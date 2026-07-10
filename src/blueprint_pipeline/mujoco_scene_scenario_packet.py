@@ -9,7 +9,8 @@ import os
 import re
 import shutil
 import subprocess
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
@@ -814,7 +815,7 @@ def _asset_inventory(local_asset_root: Path | None) -> Dict[str, Any]:
 def _world_included_models(world_file: Path) -> List[Dict[str, Any]]:
     try:
         root = ET.parse(world_file).getroot()
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         return []
     rows: List[Dict[str, Any]] = []
     for model in root.findall(".//model"):
@@ -908,7 +909,7 @@ def _sdf_visual_meshes(local_asset_root: Path, model_name: str) -> List[Dict[str
         return []
     try:
         root = ET.parse(model_sdf).getroot()
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         return []
     rows: List[Dict[str, Any]] = []
     for link in root.findall(".//link"):

@@ -6,15 +6,15 @@
 
 This repo must stay aligned with:
 
-- `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md`
-- `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md`
+- `$HOME/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md`
+- `$HOME/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md`
 
 ## Read First
 
-1. `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md`
-2. `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md`
-3. `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md`
-4. `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`
+1. `$HOME/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md`
+2. `$HOME/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md`
+3. `$HOME/workspace/BlueprintCapturePipeline/README.md`
+4. `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`
 
 ## Product Rules
 
@@ -43,7 +43,7 @@ This repo must stay aligned with:
   episode-consistency scoring separate. The WAM/evaluator may prepare
   `wam_episode_consistency_request.json` and normalize an external scorer result,
   but it must not claim forward/inverse consistency from WAM execution alone.
-- For Paperclip/autonomous-loop closeouts, use `/Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md` before claiming `done`, `blocked`, or `awaiting_human_decision`.
+- For Paperclip/autonomous-loop closeouts, use `$HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md` before claiming `done`, `blocked`, or `awaiting_human_decision`.
 
 ## Commands
 

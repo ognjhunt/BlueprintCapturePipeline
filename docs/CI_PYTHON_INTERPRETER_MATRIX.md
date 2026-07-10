@@ -26,6 +26,12 @@ as launch or deploy proof:
 on Python `3.10`, `3.11`, and `3.12`; `pyproject.toml` and `uv.lock` must keep
 `requires-python = ">=3.10,<3.13"`.
 
+The `Python Compatibility` workflow installs the frozen lock independently on
+all three advertised interpreters and runs the bounded grounding, public-claim,
+and SC3 protocol contract suite declared in the machine-readable matrix. Those
+jobs prove package/contract compatibility only; the canonical launch lanes in
+the table above must still pass on Python `3.12` for the exact release commit.
+
 Python `3.13` is not launch-proof evidence. If a local paid-gate subcommand or
 operator run uses Python `3.13`, record it as non-canonical and rerun the gate
 under Python `3.12` before making a launch-readiness claim.
@@ -40,3 +46,5 @@ python scripts/validate_python_interpreter_matrix.py --assert-current
 
 `--assert-current` is required in CI and launch-gate environments so a shell
 using Python `3.13` fails instead of producing mixed-version proof.
+Compatibility jobs intentionally omit `--assert-current`; the validator still
+requires their workflow matrix to cover every advertised package interpreter.

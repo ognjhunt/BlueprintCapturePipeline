@@ -1,5 +1,9 @@
 # BlueprintCapture (iOS) Beta Blockers — Specs
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 The iPhone app is the **only external capture path** for the beta, so its blockers gate the whole launch. Headline: the app **builds** and the underlying capture/upload engine is **high quality**, but the *shipping UI* (`BPAppRoot`, the "ink/paper/brass" redesign that was made the app root) is a **sample-data prototype** disconnected from that engine. A real capturer today cannot authenticate, record, or upload anything. All findings were adversarially re-verified.
 
 Verified healthy (do not re-audit): the app compiles (0 errors); `CaptureUploadService` + `BackgroundFirebaseStorageUploader` (background `URLSession`, resumable, per-file sha256, retry/cancel, disk preflight, idempotent finalize, fail-closed registration) are solid; the `capture_job_id` **data contract** is intact end-to-end (see INDEX). The problem is the redesign never *calls* the engine.

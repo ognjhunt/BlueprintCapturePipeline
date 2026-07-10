@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
 import sys
 from pathlib import Path
 
@@ -87,6 +86,50 @@ def _ready_provider_launch_request(
 
 
 def _python_command(code: str) -> str:
+    ownership_prefix = (
+        "import json, os, sys; "
+        "p=os.environ['BLUEPRINT_PROVIDER_ALLOCATION_RECORD_PATH']; "
+        "t=p+'.tmp'; "
+        "r={'schema_version':'robot_eval_provider_allocation_record.v1',"
+        "'launch_attempt_id':os.environ['BLUEPRINT_PROVIDER_LAUNCH_ATTEMPT_ID'],"
+        "'provider_resource_id':'test-provider-resource',"
+        "'persisted_before_provider_side_effects':True,"
+        "'teardown_argv':[sys.executable,'-c','raise SystemExit(0)'],"
+        "'verify_absent_argv':[sys.executable,'-c','raise SystemExit(0)']}; "
+        "f=open(t,'w',encoding='utf-8'); json.dump(r,f); f.flush(); "
+        "os.fsync(f.fileno()); f.close(); os.replace(t,p); "
+    )
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(ownership_prefix + code)}"
+
+
+def _timeout_provider_command(*, resource_path: Path, child_pid_path: Path) -> str:
+    teardown_code = (
+        "from pathlib import Path; "
+        f"Path({str(resource_path)!r}).unlink(missing_ok=True)"
+    )
+    verify_code = (
+        "from pathlib import Path; "
+        f"raise SystemExit(1 if Path({str(resource_path)!r}).exists() else 0)"
+    )
+    code = (
+        "import json, os, subprocess, sys, time; "
+        "p=os.environ['BLUEPRINT_PROVIDER_ALLOCATION_RECORD_PATH']; "
+        "t=p+'.tmp'; "
+        "r={'schema_version':'robot_eval_provider_allocation_record.v1',"
+        "'launch_attempt_id':os.environ['BLUEPRINT_PROVIDER_LAUNCH_ATTEMPT_ID'],"
+        "'provider_resource_id':'test-timeout-resource',"
+        "'persisted_before_provider_side_effects':True,"
+        f"'teardown_argv':[sys.executable,'-c',{teardown_code!r}],"
+        f"'verify_absent_argv':[sys.executable,'-c',{verify_code!r}]}}; "
+        "f=open(t,'w',encoding='utf-8'); json.dump(r,f); f.flush(); "
+        "os.fsync(f.fileno()); f.close(); os.replace(t,p); "
+        f"open({str(resource_path)!r},'w',encoding='utf-8').write('allocated'); "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+        f"open({str(child_pid_path)!r},'w',encoding='utf-8').write(str(child.pid)); "
+        "print('partial out', flush=True); "
+        "print('partial err', file=sys.stderr, flush=True); "
+        "time.sleep(60)"
+    )
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
@@ -877,28 +920,33 @@ def test_provider_launcher_records_command_not_found_and_timeout(
     assert missing["status"] == "blocked"
     assert missing["reason"] == "gpu_provider_launch_command_not_found"
 
-    def timeout_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(
-            cmd=["fake-provider"],
-            timeout=3,
-            output=b"partial out",
-            stderr=b"partial err",
-        )
-
-    monkeypatch.setattr(launcher.subprocess, "run", timeout_run)
+    resource_path = tmp_path / "provider-resource"
+    child_pid_path = tmp_path / "provider-child.pid"
     timed_out = run_gpu_provider_launcher(
         provider_launch_request_path=request_path,
         output_path=tmp_path / "timeout_result.json",
         allow_provider_launch=True,
-        provider_launch_command="fake-provider",
-        timeout_seconds=3,
+        provider_launch_command=_timeout_provider_command(
+            resource_path=resource_path,
+            child_pid_path=child_pid_path,
+        ),
+        timeout_seconds=1,
     )
 
     assert timed_out["status"] == "failed"
     assert timed_out["reason"] == "provider_launcher_command_timeout"
     assert timed_out["execution_performed"] is True
-    assert (tmp_path / "gpu_provider_launcher.stdout.log").read_text(encoding="utf-8") == "partial out"
-    assert (tmp_path / "gpu_provider_launcher.stderr.log").read_text(encoding="utf-8") == "partial err"
+    assert timed_out["local_process_cleanup"]["process_group_absent_verified"] is True
+    assert timed_out["provider_cleanup"]["provider_absence_verified"] is True
+    assert timed_out["provider_absence_verified"] is True
+    assert not resource_path.exists()
+    assert child_pid_path.is_file()
+    assert "partial out" in (tmp_path / "gpu_provider_launcher.stdout.log").read_text(
+        encoding="utf-8"
+    )
+    assert "partial err" in (tmp_path / "gpu_provider_launcher.stderr.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_provider_launcher_cli_provider_request_and_error_paths(

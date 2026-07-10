@@ -102,6 +102,86 @@ def test_live_pipeline_manifest_alert_sends_bounded_webhook(
     assert "hooks.example" not in json.dumps(audit)
 
 
+def test_live_pipeline_manifest_alert_rejects_unsafe_webhook_url(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    _write_json(manifest, {"status": "blocked", "blockers": ["operator_action"]})
+
+    audit = alert.build_live_pipeline_manifest_alert(
+        manifest_path=manifest,
+        output_path=tmp_path / "alert.json",
+        webhook_url="file:///etc/passwd",
+        require_webhook=True,
+    )
+
+    assert audit["notification_status"] == "failed"
+    assert audit["notification_attempted"] is True
+    assert "credential-free HTTPS origin" in audit["notification_error"]
+    assert alert._exit_code(audit) == 1
+
+
+def test_spend_admission_lock_uses_dedicated_critical_page_message(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "paid-spend-admission.json"
+    _write_json(
+        manifest,
+        {
+            "schema_version": "blueprint.paid_spend_admission_lock.v1",
+            "status": "blocked",
+            "effective_spend_usd": 5000.0,
+            "hard_stop_usd": 5000.0,
+            "blockers": ["cohort_hard_stop_reached"],
+        },
+    )
+
+    audit = alert.build_live_pipeline_manifest_alert(
+        manifest_path=manifest,
+        output_path=tmp_path / "page-audit.json",
+        webhook_url="https://hooks.example/blueprint",
+        require_webhook=True,
+        dry_run=True,
+    )
+
+    assert audit["alert_required"] is True
+    assert audit["notification_status"] == "dry_run"
+    assert "paid spend admission is locked" in audit["message_text"]
+    assert "effective_spend_usd=5000.0" in audit["message_text"]
+    assert "cohort_hard_stop_reached" in audit["message_text"]
+
+
+def test_spend_override_still_requires_threshold_crossing_page(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "paid-spend-admission.json"
+    _write_json(
+        manifest,
+        {
+            "schema_version": "blueprint.paid_spend_admission_lock.v1",
+            "status": "override_open",
+            "effective_spend_usd": 5000.0,
+            "hard_stop_usd": 5000.0,
+            "blockers": [],
+            "page_event": {
+                "required": True,
+                "delivery_status": "external_pending",
+            },
+        },
+    )
+
+    audit = alert.build_live_pipeline_manifest_alert(
+        manifest_path=manifest,
+        output_path=tmp_path / "page-audit.json",
+        require_webhook=True,
+    )
+
+    assert audit["alert_required"] is True
+    assert audit["notification_status"] == "blocked_missing_required_webhook"
+    assert "paid spend override is active" in audit["message_text"]
+    assert "threshold crossing requires operator notification" in audit["message_text"]
+
+
 def test_live_pipeline_manifest_alert_cli_exit_codes(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     _write_json(manifest, {"status": "blocked", "blockers": ["missing_inbox"]})

@@ -1,5 +1,9 @@
 # Beta-Launch Blocker Audit — 2026-07-03
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 A cross-repo audit of everything that blocks a **truthful external beta** of Blueprint, partitioned by repo, with one spec per issue. Every hard/high finding was adversarially re-verified against real code (an independent agent tried to *refute* each one); one suspected hard blocker was refuted and downgraded, two were downgraded with reasons, and the gap sweep surfaced new blockers the single-repo passes missed.
 
 - Specs: [cross-repo](cross-repo/SPECS.md) · [BlueprintCapture (iOS)](blueprint-capture/SPECS.md) · [Blueprint-WebApp](blueprint-webapp/SPECS.md) · [BlueprintCapturePipeline](blueprint-capture-pipeline/SPECS.md)

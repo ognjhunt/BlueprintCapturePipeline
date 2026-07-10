@@ -107,12 +107,12 @@ Required for downstream site-world runtime handoff:
 
 ```bash
 export SITE_WORLD_RUNTIME_SERVICE_URL="http://127.0.0.1:8791"
+export SITE_WORLD_RUNTIME_SERVICE_API_KEY="<nonempty-runtime-secret>"
 ```
 
 Optional:
 
 ```bash
-export SITE_WORLD_RUNTIME_SERVICE_API_KEY=""
 export SITE_WORLD_RUNTIME_SERVICE_TIMEOUT_SECONDS="120"
 export WORLD_MODEL_EMIT_PRESENTATION="true"
 export WORLD_MODEL_ALLOW_GENERATIVE_COMPLETION="limited"
@@ -127,8 +127,9 @@ export SPLAT_ANALYZER_RUN_LOCAL="/opt/splat_analyzer/run_local.py"
 # or:
 export SPLAT_ANALYZER_COMMAND='python /opt/splat_analyzer/run_local.py --ply {SPLAT_PATH} --prompt {PROMPT} --quality medium --job_dir {JOB_DIR}'
 export COSMOS_MODEL_ID="nvidia/Cosmos-Predict2.5-2B"
+export COSMOS_MODEL_REVISION="0d37c7498f54cee3c599d438d895a0a4a8608064"
 export COSMOS_OFFICIAL_REPO_ROOT="$HOME/workspace/cosmos-predict2.5"
-export COSMOS_OFFICIAL_REPO_REF="main"
+export COSMOS_OFFICIAL_REPO_REF="661da4774b0ca41d082a0ecbeb47550bcf07e03f"
 export COSMOS_OFFICIAL_REPO_UV_EXTRA="cu128"
 export COSMOS_WORKER_PYTHON_BIN="$COSMOS_OFFICIAL_REPO_ROOT/.venv/bin/python"
 export COSMOS_DISABLE_GUARDRAILS="1"
@@ -193,11 +194,12 @@ Useful diagnostics:
 From the BlueprintValidation repo:
 
 ```bash
-cd /Users/nijelhunt_1/workspace/BlueprintValidation
+cd $HOME/workspace/BlueprintValidation
 uv sync --extra vision
 export SITE_WORLD_RUNTIME_SERVICE_URL="http://127.0.0.1:8791"
+export SITE_WORLD_RUNTIME_SERVICE_API_KEY="<same-nonempty-runtime-secret>"
 
-cd /Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+cd $HOME/workspace/BlueprintCapturePipeline
 source .venv/bin/activate
 ./scripts/start_native_runtime_vast.sh
 ```

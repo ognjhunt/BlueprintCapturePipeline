@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import yaml
+from defusedxml import ElementTree as DefusedET
 
 from .common import ensure_dir, optional_read_json, read_json_any, utc_now_iso, write_json
 from .mujoco_g1_simulator_command import (
@@ -998,7 +999,7 @@ def _navigation_command(
 
 
 def _write_camera_robot_xml(source_robot_xml: Path, output_robot_xml: Path) -> None:
-    tree = ET.parse(source_robot_xml)
+    tree = DefusedET.parse(source_robot_xml)
     root = tree.getroot()
     compiler = root.find("compiler")
     mesh_dir = source_robot_xml.parent / "meshes"

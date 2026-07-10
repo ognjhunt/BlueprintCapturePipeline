@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
+import json
+import math
+import random
+import re
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .failure_diagnosis_contract import (
@@ -36,6 +47,7 @@ from .wam_eval_substrate import (
     normalize_evaluation_substrate,
     write_evaluation_substrate_registry,
 )
+from .sc3_fidelity_contracts import SC3_OOD_AXES
 from .wam_provider_runtime import (
     classical_sim_cross_check_plan as _classical_sim_cross_check_plan,
     customer_validation_envelope as _customer_validation_envelope,
@@ -66,6 +78,21 @@ POLICY_RANKING_SCORECARD_SCHEMA_VERSION = "policy_ranking_scorecard.v1"
 POLICY_RANKING_TIE_BAND = 0.05
 POLICY_RANKING_HIGH_UNCERTAINTY_THRESHOLD = 0.65
 POLICY_RANKING_HIGH_OOD_RATE_THRESHOLD = 0.5
+POLICY_RANKING_MIN_REPLICATES_PER_CONDITION = 20
+POLICY_RANKING_MULTIPLICITY_ALPHA = 0.05
+POLICY_RANKING_BOOTSTRAP_ITERATIONS = 4096
+DECISION_AUTHORITY_REGISTRY_SCHEMA_VERSION = "blueprint.wam_decision_authority_registry.v1"
+DECISION_EVIDENCE_SCHEMA_VERSIONS = {
+    "execution": "blueprint.wam_replicate_execution_evidence.v1",
+    "media": "blueprint.wam_replicate_media_evidence.v1",
+    "outcome_label": "blueprint.wam_replicate_outcome_label_evidence.v1",
+}
+MATCHED_CONDITION_MANIFEST_SCHEMA_VERSION = "blueprint.wam_matched_condition_manifest.v1"
+SHA256_REF_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+PINNED_DECISION_GOVERNANCE_PUBLIC_KEY_B64 = "UZqeANEDQXb26TVtFs/0EVxZHkLPa1pS77GwOxgOIV4="
+PINNED_DECISION_GOVERNANCE_KEY_FINGERPRINT = (
+    "sha256:d86af580d168c7dd2de471b979ab2f0f5e2cb68f99f4cf58cf6ce1ea7c2d4520"
+)
 REAL_WORLD_VALIDATION_FOLLOWUP_SCHEMA_VERSION = "real_world_validation_followup_request.v1"
 SRCC_VALIDATION_PLAN_SCHEMA_VERSION = "srcc_validation_plan.v1"
 NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION = "robot_eval_job_normalized_attempt_trace.v1"
@@ -247,12 +274,7 @@ def _consistency_support_signal_summary(
 ) -> Dict[str, Any]:
     sources: list[Mapping[str, Any]] = [labels, *label_rows]
     signal_fields_present = sorted(
-        {
-            key
-            for source in sources
-            for key in CONSISTENCY_SIGNAL_KEYS
-            if key in source
-        }
+        {key for source in sources for key in CONSISTENCY_SIGNAL_KEYS if key in source}
     )
     overclaim_fields_present = sorted(
         {
@@ -263,9 +285,7 @@ def _consistency_support_signal_summary(
         }
     )
     proven_label_count = sum(
-        1
-        for row in label_rows
-        if any(_truthy(row.get(key)) for key in CONSISTENCY_SIGNAL_KEYS)
+        1 for row in label_rows if any(_truthy(row.get(key)) for key in CONSISTENCY_SIGNAL_KEYS)
     )
     return {
         "schema_version": CONSISTENCY_SIGNAL_SUMMARY_SCHEMA_VERSION,
@@ -476,14 +496,11 @@ def _short_visual_sanity_gate_from_labels(labels: Mapping[str, Any]) -> Dict[str
 
     blockers = sorted(set(blockers))
     return {
-        "status": "passed"
-        if not blockers
-        else "blocked_visual_review_required",
+        "status": "passed" if not blockers else "blocked_visual_review_required",
         "passed": not blockers,
         "manifest_path": manifest_path or None,
         "manifest_status": _string(manifest.get("status")) or None,
-        "short_visual_sanity_passed": manifest.get("short_visual_sanity_passed")
-        is True,
+        "short_visual_sanity_passed": manifest.get("short_visual_sanity_passed") is True,
         "visual_profile": _string(manifest.get("visual_profile")) or None,
         "visually_useful_rollout": manifest.get("visually_useful_rollout") is True,
         "contact_sheet_refs": contact_sheet_refs,
@@ -517,8 +534,7 @@ def _visual_review_gate_from_labels(labels: Mapping[str, Any]) -> Dict[str, Any]
     ) or bool(
         label_rows
         and all(
-            bool(row.get("visual_rollout_useful_for_task_success_review"))
-            for row in label_rows
+            bool(row.get("visual_rollout_useful_for_task_success_review")) for row in label_rows
         )
     )
     fixture_only = bool(labels.get("fixture_evaluator_only")) or any(
@@ -711,12 +727,30 @@ def _rollout_for_run(
         if not _policy_supports(policy, capability)
     ]
     forced_failure = _forced_failures(policy, run)
-    ood_flags: list[str] = []
     variation_name = _string(run.get("variation_name") or run.get("variationName"))
-    if any(marker in variation_name.lower() for marker in ("wrong_object", "glare", "missing_label")):
-        ood_flags.append("vision_distribution_shift")
-    if forced_failure:
-        ood_flags.append("fixture_forced_failure")
+    registered_ood = _mapping(run.get("registered_ood") or run.get("registeredOod"))
+    ood_flags = sorted(
+        axis for axis, value in registered_ood.items() if axis in SC3_OOD_AXES and value is True
+    )
+    ood_registration_blockers = sorted(
+        {
+            *(["ood_axes_registration_missing"] if not registered_ood else []),
+            *[f"unknown_ood_axis:{axis}" for axis in registered_ood if axis not in SC3_OOD_AXES],
+            *[
+                f"ood_axis_value_not_strict_boolean:{axis}"
+                for axis, value in registered_ood.items()
+                if axis in SC3_OOD_AXES and not isinstance(value, bool)
+            ],
+            *[
+                f"ood_axis_registration_missing:{axis}"
+                for axis in SC3_OOD_AXES
+                if axis not in registered_ood
+            ],
+        }
+    )
+    registered_ood_axes_complete = not ood_registration_blockers and set(registered_ood) == set(
+        SC3_OOD_AXES
+    )
     uncertainty = min(
         0.95,
         round(
@@ -743,6 +777,11 @@ def _rollout_for_run(
         "evaluation_substrate": substrate,
         "policy_id": policy_id,
         "scenario_eval_run_id": run_id,
+        "condition_id": _string(run.get("condition_id") or run.get("conditionId")) or None,
+        "replicate_id": _string(run.get("replicate_id") or run.get("replicateId")) or None,
+        "replicate_seed": run.get("replicate_seed")
+        if run.get("replicate_seed") is not None
+        else run.get("seed"),
         "generated_video_available": False,
         "deterministic_fixture_frames": [
             {
@@ -787,6 +826,9 @@ def _rollout_for_run(
         "failure_mode_ids": failure_modes,
         "uncertainty_score": uncertainty,
         "ood_flags": ood_flags,
+        "ood_registration_blockers": ood_registration_blockers,
+        "registered_ood_axes_complete": registered_ood_axes_complete,
+        "ood_axes_source": "frozen_registered_ood_mapping",
         "metrics": {
             "cycle_time_seconds": round(18.0 + index * 0.05 + len(missing) * 2.0, 6),
             "intervention_count": 0 if success else 1,
@@ -853,7 +895,9 @@ def _rollout_results(
         "failure_mode_ids": sorted(
             {mode for rollout in rollouts for mode in _string_list(rollout.get("failure_mode_ids"))}
         ),
-        "ood_rollout_count": sum(1 for rollout in rollouts if _string_list(rollout.get("ood_flags"))),
+        "ood_rollout_count": sum(
+            1 for rollout in rollouts if _string_list(rollout.get("ood_flags"))
+        ),
         "rollouts": [dict(rollout) for rollout in rollouts],
         "claim_boundary": _claim_boundary(substrate=substrate, generated_at=generated_at),
     }
@@ -866,9 +910,7 @@ def _normalized_attempt_trace(
     generated_at: str,
 ) -> Dict[str, Any]:
     label_rows = [
-        dict(label)
-        for label in labels.get("labels", []) or []
-        if isinstance(label, Mapping)
+        dict(label) for label in labels.get("labels", []) or [] if isinstance(label, Mapping)
     ]
     short_visual_sanity_gate = _short_visual_sanity_gate_from_labels(labels)
     shared_review_refs = _review_label_refs(labels)
@@ -893,16 +935,8 @@ def _normalized_attempt_trace(
             [
                 *_string_list(label.get("visual_review_blockers")),
                 *_string_list(short_visual_sanity_gate.get("blockers")),
-                *(
-                    ["review_grade_label_refs_missing"]
-                    if not review_label_refs
-                    else []
-                ),
-                *(
-                    ["task_success_label_not_strict_boolean"]
-                    if not strict_boolean_verdict
-                    else []
-                ),
+                *(["review_grade_label_refs_missing"] if not review_label_refs else []),
+                *(["task_success_label_not_strict_boolean"] if not strict_boolean_verdict else []),
             ]
         )
         # The upstream label field is a claim; review-grade standing must be re-derived
@@ -944,8 +978,7 @@ def _normalized_attempt_trace(
                 ),
                 "source_trace_refs": _dedupe_refs(["vision_success_labels.json"]),
                 "frame_or_clip_refs": frame_or_clip_refs,
-                "visual_smoke_ref": label.get("visual_smoke_ref")
-                or label.get("visualSmokeRef"),
+                "visual_smoke_ref": label.get("visual_smoke_ref") or label.get("visualSmokeRef"),
                 "visual_smoke_status": label.get("visual_smoke_status"),
                 "visual_rollout_useful_for_task_success_review": bool(
                     label.get("visual_rollout_useful_for_task_success_review")
@@ -988,7 +1021,13 @@ def _normalized_attempt_trace(
         )
     successful = [attempt for attempt in attempts if attempt["success"]]
     failed = [attempt for attempt in attempts if not attempt["success"]]
-    run_ids = sorted({_string(attempt.get("scenario_eval_run_id")) for attempt in attempts if attempt.get("scenario_eval_run_id")})
+    run_ids = sorted(
+        {
+            _string(attempt.get("scenario_eval_run_id"))
+            for attempt in attempts
+            if attempt.get("scenario_eval_run_id")
+        }
+    )
     return {
         "schema_version": NORMALIZED_ATTEMPT_TRACE_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1059,14 +1098,14 @@ def _failure_labels(
             failure_reason="fixture_wam_predicted_task_failure",
         )
         unknown_when_evidence_weak = bool(
-            not frame_refs or not evidence_refs or review_status == "non_reviewable_failure_hypothesis"
+            not frame_refs
+            or not evidence_refs
+            or review_status == "non_reviewable_failure_hypothesis"
         )
         visual_smoke_status = (
             _string(attempt.get("visual_smoke_status")) or FIXTURE_VISUAL_SMOKE_STATUS
         )
-        visual_rollout_useful = bool(
-            attempt.get("visual_rollout_useful_for_task_success_review")
-        )
+        visual_rollout_useful = bool(attempt.get("visual_rollout_useful_for_task_success_review"))
         attempt_visual_blockers = _string_list(attempt.get("visual_review_blockers"))
         short_visual_sanity_gate = _mapping(attempt.get("short_visual_sanity_gate"))
         review_label_refs = _string_list(attempt.get("review_label_refs"))
@@ -1147,9 +1186,13 @@ def _failure_labels(
         coverage_blockers.append("failure_labels_missing_review_status")
     deduped_nonreviewable_labels = sorted(set(nonreviewable_labels))
     visual_review_blockers = sorted(set(visual_review_blockers))
-    visual_rollout_useful_for_review = bool(failures) and not visual_review_blockers and all(
-        bool(attempt.get("visual_rollout_useful_for_task_success_review"))
-        for attempt in failures
+    visual_rollout_useful_for_review = (
+        bool(failures)
+        and not visual_review_blockers
+        and all(
+            bool(attempt.get("visual_rollout_useful_for_task_success_review"))
+            for attempt in failures
+        )
     )
     return {
         "schema_version": FAILURE_LABELS_SCHEMA_VERSION,
@@ -1164,12 +1207,16 @@ def _failure_labels(
         "visual_smoke_statuses": sorted(set(visual_smoke_statuses)),
         "visual_rollout_useful_for_task_success_review": visual_rollout_useful_for_review,
         "visual_review_blockers": visual_review_blockers,
-        "fixture_evaluator_only": any(bool(attempt.get("fixture_evaluator_only")) for attempt in failures),
+        "fixture_evaluator_only": any(
+            bool(attempt.get("fixture_evaluator_only")) for attempt in failures
+        ),
         "review_grade_failure_diagnosis": False,
         "authoritative_failure_diagnosis": False,
         "label_count": len(failures),
         "failed_attempt_count": len(failures),
-        "covered_failed_attempt_ids": sorted(_string(attempt.get("attempt_id")) for attempt in failures),
+        "covered_failed_attempt_ids": sorted(
+            _string(attempt.get("attempt_id")) for attempt in failures
+        ),
         "missing_failed_attempt_ids": [],
         "covered_failed_scenario_eval_run_ids": sorted(
             {
@@ -1296,13 +1343,15 @@ def _prediction_ledgers(
     aggregation_map: Dict[tuple[str, str, str, str, str], Dict[str, Any]] = {}
     dominant_map: Dict[str, Dict[str, Any]] = {}
     for record in failures:
-        label = labels_by_run.get(_string(record.get("scenario_eval_run_id"))) or labels_by_attempt.get(
-            _string(record.get("attempt_id"))
-        )
+        label = labels_by_run.get(
+            _string(record.get("scenario_eval_run_id"))
+        ) or labels_by_attempt.get(_string(record.get("attempt_id")))
         failure_mode_ids = _string_list(
             (label or {}).get("failure_mode_ids") if label else record.get("failure_mode_ids")
         ) or ["unknown_failure_mode"]
-        root_cause = _string((label or {}).get("root_cause_category")) or _failure_root_cause_category(
+        root_cause = _string(
+            (label or {}).get("root_cause_category")
+        ) or _failure_root_cause_category(
             failure_mode_ids,
             failure_reason=_string((label or {}).get("failure_reason")),
         )
@@ -1616,6 +1665,830 @@ def _write_wam_artifacts(job_dir: Path, payloads: Mapping[str, Mapping[str, Any]
         write_json(job_dir / WAM_ARTIFACT_PATHS[key], payload)
 
 
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _contained_evidence_file(
+    *,
+    evidence_root: Path | None,
+    relative_path: object,
+    max_bytes: int,
+) -> tuple[Path | None, str | None]:
+    if evidence_root is None:
+        return None, "evidence_root_missing"
+    text = _string(relative_path)
+    path = Path(text)
+    if not text or path.is_absolute() or ".." in path.parts:
+        return None, "evidence_path_invalid"
+    root = evidence_root.resolve()
+    candidate = root / path
+    try:
+        resolved = candidate.resolve(strict=True)
+        metadata = candidate.stat()
+    except OSError:
+        return None, "evidence_file_missing_or_unreadable"
+    if candidate.is_symlink() or not resolved.is_relative_to(root):
+        return None, "evidence_path_symlink_or_escape"
+    if not candidate.is_file() or metadata.st_size <= 0 or metadata.st_size > max_bytes:
+        return None, "evidence_file_type_or_size_invalid"
+    return candidate, None
+
+
+def _load_hash_verified_json(
+    *,
+    evidence_root: Path | None,
+    reference: object,
+) -> tuple[dict[str, Any], str | None, str | None, list[str]]:
+    ref = _mapping(reference)
+    expected_digest = _string(ref.get("sha256")).lower()
+    relative_path = _string(ref.get("path"))
+    blockers: list[str] = []
+    if SHA256_REF_PATTERN.fullmatch(expected_digest) is None:
+        blockers.append("evidence_sha256_invalid")
+    path, path_blocker = _contained_evidence_file(
+        evidence_root=evidence_root,
+        relative_path=relative_path,
+        max_bytes=1024 * 1024,
+    )
+    if path_blocker:
+        blockers.append(path_blocker)
+    actual_digest: str | None = None
+    payload: dict[str, Any] = {}
+    if path is not None:
+        try:
+            actual_digest = _sha256_path(path)
+            raw = read_json_any(path)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            blockers.append("evidence_json_unreadable")
+        else:
+            payload = _mapping(raw)
+            if not payload:
+                blockers.append("evidence_json_not_object")
+    if actual_digest is not None and actual_digest != expected_digest:
+        blockers.append("evidence_sha256_mismatch")
+    return payload, actual_digest, relative_path or None, sorted(set(blockers))
+
+
+def _load_hash_verified_artifact(
+    *,
+    evidence_root: Path | None,
+    reference: object,
+) -> tuple[str | None, str | None, list[str]]:
+    ref = _mapping(reference)
+    expected_digest = _string(ref.get("sha256")).lower()
+    relative_path = _string(ref.get("path"))
+    blockers: list[str] = []
+    if SHA256_REF_PATTERN.fullmatch(expected_digest) is None:
+        blockers.append("artifact_sha256_invalid")
+    path, path_blocker = _contained_evidence_file(
+        evidence_root=evidence_root,
+        relative_path=relative_path,
+        max_bytes=512 * 1024 * 1024,
+    )
+    if path_blocker:
+        blockers.append(path_blocker)
+    actual_digest: str | None = None
+    if path is not None:
+        try:
+            actual_digest = _sha256_path(path)
+        except OSError:
+            blockers.append("artifact_unreadable")
+    if actual_digest is not None and actual_digest != expected_digest:
+        blockers.append("artifact_sha256_mismatch")
+    return actual_digest, relative_path or None, sorted(set(blockers))
+
+
+def _canonical_signature_payload(
+    payload: Mapping[str, Any],
+    *,
+    signature_field: str,
+) -> bytes:
+    unsigned = dict(payload)
+    unsigned.pop(signature_field, None)
+    return json.dumps(
+        unsigned,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def _decode_ed25519_public_key(value: object) -> tuple[bytes | None, str | None]:
+    try:
+        raw = base64.b64decode(_string(value), validate=True)
+    except (binascii.Error, ValueError):
+        return None, "public_key_base64_invalid"
+    if len(raw) != 32:
+        return None, "public_key_length_invalid"
+    return raw, None
+
+
+def _public_key_fingerprint(raw: bytes) -> str:
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _verify_ed25519_signature(
+    *,
+    payload: Mapping[str, Any],
+    signature_field: str,
+    public_key_b64: object,
+    expected_fingerprint: str,
+) -> list[str]:
+    signature = _mapping(payload.get(signature_field))
+    blockers: list[str] = []
+    if signature.get("algorithm") != "ed25519":
+        blockers.append("signature_algorithm_invalid")
+    if signature.get("key_fingerprint") != expected_fingerprint:
+        blockers.append("signature_key_fingerprint_mismatch")
+    raw_public_key, key_blocker = _decode_ed25519_public_key(public_key_b64)
+    if key_blocker:
+        blockers.append(key_blocker)
+    elif _public_key_fingerprint(raw_public_key) != expected_fingerprint:
+        blockers.append("public_key_fingerprint_mismatch")
+    try:
+        raw_signature = base64.b64decode(
+            _string(signature.get("signature_base64")),
+            validate=True,
+        )
+    except (binascii.Error, ValueError):
+        blockers.append("signature_base64_invalid")
+        raw_signature = b""
+    if len(raw_signature) != 64:
+        blockers.append("signature_length_invalid")
+    if raw_public_key is not None and len(raw_signature) == 64:
+        try:
+            Ed25519PublicKey.from_public_bytes(raw_public_key).verify(
+                raw_signature,
+                _canonical_signature_payload(
+                    payload,
+                    signature_field=signature_field,
+                ),
+            )
+        except (InvalidSignature, ValueError):
+            blockers.append("signature_verification_failed")
+    return sorted(set(blockers))
+
+
+def _decision_authority_registry(
+    *,
+    substrate: str,
+    evidence_root: Path | None,
+    reference: object,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any], list[str]]:
+    payload, digest, path, blockers = _load_hash_verified_json(
+        evidence_root=evidence_root,
+        reference=reference,
+    )
+    if payload.get("schema_version") != DECISION_AUTHORITY_REGISTRY_SCHEMA_VERSION:
+        blockers.append("authority_registry_schema_invalid")
+    if payload.get("status") != "approved":
+        blockers.append("authority_registry_not_approved")
+    if payload.get("evaluation_substrate") != substrate:
+        blockers.append("authority_registry_substrate_mismatch")
+    if payload.get("fixture_evidence_decision_grade_allowed") is not False:
+        blockers.append("authority_registry_fixture_boundary_invalid")
+    if len(_string(payload.get("approved_by"))) < 3:
+        blockers.append("authority_registry_approver_missing")
+    if not _string(payload.get("registry_id")):
+        blockers.append("authority_registry_id_missing")
+    registry_version = payload.get("registry_version")
+    if (
+        isinstance(registry_version, bool)
+        or not isinstance(registry_version, int)
+        or registry_version < 1
+    ):
+        blockers.append("authority_registry_version_invalid")
+    pinned_public_key, pinned_key_blocker = _decode_ed25519_public_key(
+        PINNED_DECISION_GOVERNANCE_PUBLIC_KEY_B64
+    )
+    if pinned_key_blocker:
+        blockers.append(f"pinned_governance_{pinned_key_blocker}")
+    elif _public_key_fingerprint(pinned_public_key) != PINNED_DECISION_GOVERNANCE_KEY_FINGERPRINT:
+        blockers.append("pinned_governance_key_fingerprint_invalid")
+    blockers.extend(
+        f"governance:{item}"
+        for item in _verify_ed25519_signature(
+            payload=payload,
+            signature_field="governance_signature",
+            public_key_b64=PINNED_DECISION_GOVERNANCE_PUBLIC_KEY_B64,
+            expected_fingerprint=PINNED_DECISION_GOVERNANCE_KEY_FINGERPRINT,
+        )
+    )
+    raw_authorities = payload.get("authorities")
+    authorities: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw_authorities, list):
+        blockers.append("authority_registry_authorities_missing")
+        raw_authorities = []
+    for index, raw_authority in enumerate(raw_authorities):
+        authority = _mapping(raw_authority)
+        authority_id = _string(authority.get("authority_id"))
+        role = _string(authority.get("role"))
+        prefix = f"authority_registry_entry:{index}"
+        if not authority_id:
+            blockers.append(f"{prefix}:authority_id_missing")
+            continue
+        if authority_id in authorities:
+            blockers.append(f"{prefix}:authority_id_duplicate")
+        if role not in {"runtime", "reviewer"}:
+            blockers.append(f"{prefix}:role_invalid")
+        raw_key, key_blocker = _decode_ed25519_public_key(authority.get("public_key_base64"))
+        if key_blocker:
+            blockers.append(f"{prefix}:{key_blocker}")
+        expected_fingerprint = _string(authority.get("public_key_fingerprint"))
+        if (
+            raw_key is None
+            or not expected_fingerprint
+            or _public_key_fingerprint(raw_key) != expected_fingerprint
+        ):
+            blockers.append(f"{prefix}:public_key_fingerprint_invalid")
+        authorities[authority_id] = authority
+    runtime_ids = {
+        authority_id
+        for authority_id, authority in authorities.items()
+        if authority.get("role") == "runtime"
+    }
+    reviewer_ids = {
+        authority_id
+        for authority_id, authority in authorities.items()
+        if authority.get("role") == "reviewer"
+    }
+    if not runtime_ids:
+        blockers.append("trusted_runtime_authorities_missing")
+    if not reviewer_ids:
+        blockers.append("trusted_reviewer_authorities_missing")
+    if runtime_ids & reviewer_ids:
+        blockers.append("authority_registry_roles_not_separated")
+    blockers = sorted(set(blockers))
+    return (
+        authorities,
+        {
+            "path": path,
+            "sha256": digest,
+            "registry_id": payload.get("registry_id"),
+            "registry_version": payload.get("registry_version"),
+            "governance_key_fingerprint": (PINNED_DECISION_GOVERNANCE_KEY_FINGERPRINT),
+            "status": "verified" if not blockers else "blocked",
+        },
+        blockers,
+    )
+
+
+def _decision_grade_evidence_validation(
+    *,
+    label_rows: Sequence[Mapping[str, Any]],
+    substrate: str,
+    evidence_root: Path | None,
+    authority_registry_reference: object,
+) -> dict[str, Any]:
+    if substrate == "fixture_wam":
+        return {
+            "status": "inconclusive",
+            "authority_registry": None,
+            "validated_rows": [],
+            "blockers": ["ranking_fixture_substrate_support_only"],
+            "claim_boundary": {
+                "fixture_evidence_is_support_only": True,
+                "hash_verification_is_not_external_runtime_truth": True,
+            },
+        }
+    authorities, registry, blockers = _decision_authority_registry(
+        substrate=substrate,
+        evidence_root=evidence_root,
+        reference=authority_registry_reference,
+    )
+    seen_manifest_digests: dict[tuple[str, str], str] = {}
+    seen_artifact_digests: dict[str, str] = {}
+    seen_evidence_ids: dict[str, str] = {}
+    seen_runtime_result_ids: dict[str, str] = {}
+    validated_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(label_rows):
+        policy_id = _string(row.get("policy_id"))
+        condition_id = _string(row.get("condition_id"))
+        replicate_id = _string(row.get("replicate_id"))
+        run_id = _string(row.get("scenario_eval_run_id"))
+        seed = row.get("replicate_seed")
+        result = row.get("task_success")
+        matched_pair_id = _string(row.get("matched_pair_id"))
+        task_id = _string(row.get("task_id"))
+        scenario_id = _string(row.get("scenario_id"))
+        criterion_id = _string(row.get("criterion_id"))
+        initial_state_id = _string(row.get("initial_state_id"))
+        runtime_result_id = _string(row.get("runtime_result_id"))
+        row_id = f"{policy_id or 'missing'}:{condition_id or 'missing'}:{seed!s}"
+        row_blockers: list[str] = []
+        if not runtime_result_id:
+            row_blockers.append("runtime_result_id_missing")
+        else:
+            first_row = seen_runtime_result_ids.get(runtime_result_id)
+            if first_row is not None:
+                row_blockers.append(f"runtime_result_id_reused_from:{first_row}")
+            else:
+                seen_runtime_result_ids[runtime_result_id] = row_id
+        condition_manifest, condition_digest, condition_path, condition_blockers = (
+            _load_hash_verified_json(
+                evidence_root=evidence_root,
+                reference=row.get("matched_condition_manifest"),
+            )
+        )
+        row_blockers.extend(f"condition_manifest:{item}" for item in condition_blockers)
+        if condition_manifest.get("schema_version") != MATCHED_CONDITION_MANIFEST_SCHEMA_VERSION:
+            row_blockers.append("condition_manifest:schema_invalid")
+        if condition_manifest.get("status") != "frozen":
+            row_blockers.append("condition_manifest:status_invalid")
+        condition_bindings = {
+            "condition_id": condition_id,
+            "replicate_seed": seed,
+            "matched_pair_id": matched_pair_id,
+            "replicate_id": replicate_id,
+            "scenario_eval_run_id": run_id,
+            "task_id": task_id,
+            "scenario_id": scenario_id,
+            "criterion_id": criterion_id,
+            "initial_state_id": initial_state_id,
+        }
+        for key, expected in condition_bindings.items():
+            if condition_manifest.get(key) != expected:
+                row_blockers.append(f"condition_manifest:binding_mismatch:{key}")
+        evidence = _mapping(row.get("decision_grade_evidence"))
+        validated_kinds: dict[str, Any] = {}
+        for kind, schema_version in DECISION_EVIDENCE_SCHEMA_VERSIONS.items():
+            payload, digest, path, ref_blockers = _load_hash_verified_json(
+                evidence_root=evidence_root,
+                reference=evidence.get(kind),
+            )
+            row_blockers.extend(f"{kind}:{item}" for item in ref_blockers)
+            if digest is not None:
+                digest_key = (kind, digest)
+                first_row = seen_manifest_digests.get(digest_key)
+                if first_row is not None:
+                    row_blockers.append(f"{kind}:evidence_manifest_reused_from:{first_row}")
+                else:
+                    seen_manifest_digests[digest_key] = row_id
+            if payload.get("schema_version") != schema_version:
+                row_blockers.append(f"{kind}:schema_invalid")
+            expected_status = {
+                "execution": "completed",
+                "media": "valid",
+                "outcome_label": "accepted_reviewed_label",
+            }[kind]
+            if payload.get("status") != expected_status:
+                row_blockers.append(f"{kind}:status_invalid")
+            expected_bindings = {
+                "policy_id": policy_id,
+                "condition_id": condition_id,
+                "replicate_id": replicate_id,
+                "replicate_seed": seed,
+                "scenario_eval_run_id": run_id,
+                "matched_pair_id": matched_pair_id,
+                "task_id": task_id,
+                "scenario_id": scenario_id,
+                "criterion_id": criterion_id,
+                "initial_state_id": initial_state_id,
+                "runtime_result_id": runtime_result_id,
+                "condition_manifest_sha256": condition_digest,
+                "authority_registry_sha256": registry.get("sha256"),
+                "result_task_success": result,
+            }
+            for key, expected in expected_bindings.items():
+                if payload.get(key) != expected:
+                    row_blockers.append(f"{kind}:binding_mismatch:{key}")
+            evidence_id = _string(payload.get("evidence_id"))
+            if not evidence_id:
+                row_blockers.append(f"{kind}:evidence_id_missing")
+            else:
+                first_row = seen_evidence_ids.get(evidence_id)
+                if first_row is not None:
+                    row_blockers.append(f"{kind}:evidence_id_reused_from:{first_row}")
+                else:
+                    seen_evidence_ids[evidence_id] = row_id
+            authority = _mapping(payload.get("authority"))
+            required_role = "runtime" if kind == "execution" else "reviewer"
+            authority_id = _string(authority.get("authority_id"))
+            registered_authority = _mapping(authorities.get(authority_id))
+            if authority.get("role") != required_role:
+                row_blockers.append(f"{kind}:authority_role_invalid")
+            if registered_authority.get("role") != required_role:
+                row_blockers.append(f"{kind}:authority_untrusted")
+            registered_fingerprint = _string(registered_authority.get("public_key_fingerprint"))
+            if authority.get("public_key_fingerprint") != registered_fingerprint:
+                row_blockers.append(f"{kind}:authority_fingerprint_mismatch")
+            row_blockers.extend(
+                f"{kind}:authority_signature:{item}"
+                for item in _verify_ed25519_signature(
+                    payload=payload,
+                    signature_field="signature",
+                    public_key_b64=registered_authority.get("public_key_base64"),
+                    expected_fingerprint=registered_fingerprint,
+                )
+            )
+            artifact_digest: str | None = None
+            artifact_path: str | None = None
+            artifact_digest, artifact_path, artifact_blockers = _load_hash_verified_artifact(
+                evidence_root=evidence_root,
+                reference=payload.get("artifact"),
+            )
+            row_blockers.extend(f"{kind}:{item}" for item in artifact_blockers)
+            if artifact_digest is not None:
+                first_row = seen_artifact_digests.get(artifact_digest)
+                if first_row is not None:
+                    row_blockers.append(f"{kind}:evidence_artifact_reused_from:{first_row}")
+                else:
+                    seen_artifact_digests[artifact_digest] = row_id
+            validated_kinds[kind] = {
+                "path": path,
+                "sha256": digest,
+                "artifact_path": artifact_path,
+                "artifact_sha256": artifact_digest,
+                "authority_id": authority_id or None,
+            }
+        row_blockers = sorted(set(row_blockers))
+        blockers.extend(f"ranking_evidence:{row_id}:{item}" for item in row_blockers)
+        validated_rows.append(
+            {
+                "row_index": index,
+                "policy_id": policy_id or None,
+                "condition_id": condition_id or None,
+                "replicate_seed": seed,
+                "matched_pair_id": matched_pair_id or None,
+                "runtime_result_id": runtime_result_id or None,
+                "condition_manifest": {
+                    "path": condition_path,
+                    "sha256": condition_digest,
+                },
+                "status": "verified" if not row_blockers else "blocked",
+                "evidence": validated_kinds,
+                "blockers": row_blockers,
+            }
+        )
+    blockers = sorted(set(blockers))
+    return {
+        "status": "verified" if label_rows and not blockers else "inconclusive",
+        "authority_registry": registry,
+        "validated_rows": validated_rows,
+        "blockers": blockers or ([] if label_rows else ["ranking_evidence_rows_missing"]),
+        "claim_boundary": {
+            "fixture_evidence_is_support_only": True,
+            "hash_verification_is_not_external_runtime_truth": True,
+            "nonfixture_authorities_must_be_registry_approved": True,
+        },
+    }
+
+
+def _empirical_quantile(values: Sequence[float], probability: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    position = max(0.0, min(1.0, probability)) * (len(ordered) - 1)
+    lower_index = int(math.floor(position))
+    upper_index = int(math.ceil(position))
+    if lower_index == upper_index:
+        return ordered[lower_index]
+    weight = position - lower_index
+    return ordered[lower_index] * (1.0 - weight) + ordered[upper_index] * weight
+
+
+def _matched_cluster_bootstrap_pairwise(
+    *,
+    label_rows: Sequence[Mapping[str, Any]],
+    policy_ids: Sequence[str],
+) -> dict[str, Any]:
+    pairs = list(combinations(sorted(set(policy_ids)), 2))
+    pair_count = len(pairs)
+    if not pairs:
+        return {
+            "schema_version": "policy_ranking_matched_cluster_bootstrap.v1",
+            "status": "inconclusive",
+            "winner_policy_id": None,
+            "pairwise_intervals": [],
+            "blockers": ["paired_policy_comparisons_missing"],
+        }
+    lookup: dict[tuple[str, str], int] = {}
+    pair_designs: dict[str, tuple[str, int]] = {}
+    blockers: list[str] = []
+    for row in label_rows:
+        policy_id = _string(row.get("policy_id"))
+        condition_id = _string(row.get("condition_id"))
+        matched_pair_id = _string(row.get("matched_pair_id"))
+        seed = row.get("replicate_seed")
+        result = row.get("task_success")
+        if (
+            policy_id
+            and condition_id
+            and matched_pair_id
+            and isinstance(seed, int)
+            and not isinstance(seed, bool)
+            and isinstance(result, bool)
+        ):
+            key = (policy_id, matched_pair_id)
+            if key in lookup:
+                blockers.append(f"paired_runtime_result_duplicate:{policy_id}:{matched_pair_id}")
+            lookup[key] = 1 if result else 0
+            design = (condition_id, seed)
+            existing_design = pair_designs.get(matched_pair_id)
+            if existing_design is not None and existing_design != design:
+                blockers.append(f"paired_design_identity_mismatch:{matched_pair_id}")
+            else:
+                pair_designs[matched_pair_id] = design
+    alpha_per_pair = POLICY_RANKING_MULTIPLICITY_ALPHA / pair_count
+    pairwise_intervals: list[dict[str, Any]] = []
+    for policy_a, policy_b in pairs:
+        differences_by_condition: dict[str, list[float]] = {}
+        pair_ids_a = {pair_id for policy, pair_id in lookup if policy == policy_a}
+        pair_ids_b = {pair_id for policy, pair_id in lookup if policy == policy_b}
+        if pair_ids_a != pair_ids_b:
+            blockers.append(f"paired_identity_set_incomplete:{policy_a}:{policy_b}")
+        for pair_id in sorted(pair_ids_a & pair_ids_b):
+            design = pair_designs.get(pair_id)
+            if design is None:
+                blockers.append(f"paired_design_missing:{pair_id}")
+                continue
+            condition, _seed = design
+            differences_by_condition.setdefault(condition, []).append(
+                float(lookup[(policy_a, pair_id)] - lookup[(policy_b, pair_id)])
+            )
+        if not differences_by_condition:
+            blockers.append(f"paired_clusters_missing:{policy_a}:{policy_b}")
+            continue
+        condition_effects = [
+            sum(values) / len(values) for values in differences_by_condition.values()
+        ]
+        observed_effect = sum(condition_effects) / len(condition_effects)
+        seed_material = json.dumps(
+            {
+                "policy_a": policy_a,
+                "policy_b": policy_b,
+                "differences_by_condition": differences_by_condition,
+                "iterations": POLICY_RANKING_BOOTSTRAP_ITERATIONS,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        rng = random.Random(int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big"))
+        condition_names = sorted(differences_by_condition)
+        bootstrap_effects: list[float] = []
+        for _ in range(POLICY_RANKING_BOOTSTRAP_ITERATIONS):
+            sampled_condition_effects: list[float] = []
+            for _condition_index in condition_names:
+                condition = condition_names[rng.randrange(len(condition_names))]
+                values = differences_by_condition[condition]
+                sampled = [values[rng.randrange(len(values))] for _ in values]
+                sampled_condition_effects.append(sum(sampled) / len(sampled))
+            bootstrap_effects.append(
+                sum(sampled_condition_effects) / len(sampled_condition_effects)
+            )
+        lower = _empirical_quantile(bootstrap_effects, alpha_per_pair / 2.0)
+        upper = _empirical_quantile(bootstrap_effects, 1.0 - alpha_per_pair / 2.0)
+        pairwise_intervals.append(
+            {
+                "policy_a": policy_a,
+                "policy_b": policy_b,
+                "effect": "task_success_rate_difference_policy_a_minus_policy_b",
+                "observed_effect": round(observed_effect, 6),
+                "lower": round(lower, 6),
+                "upper": round(upper, 6),
+                "excludes_zero": bool(lower > 0.0 or upper < 0.0),
+                "condition_count": len(differences_by_condition),
+                "matched_seed_count": sum(
+                    len(values) for values in differences_by_condition.values()
+                ),
+                "bootstrap_iterations": POLICY_RANKING_BOOTSTRAP_ITERATIONS,
+                "familywise_alpha": POLICY_RANKING_MULTIPLICITY_ALPHA,
+                "bonferroni_pair_alpha": alpha_per_pair,
+            }
+        )
+    all_intervals_exclude_zero = bool(pairwise_intervals) and all(
+        row["excludes_zero"] for row in pairwise_intervals
+    )
+
+    def candidate_beats(candidate: str, other: str) -> bool:
+        for row in pairwise_intervals:
+            if {row["policy_a"], row["policy_b"]} != {candidate, other}:
+                continue
+            if row["policy_a"] == candidate:
+                return _number(row.get("lower")) > 0.0
+            return _number(row.get("upper")) < 0.0
+        return False
+
+    winner_candidates = [
+        candidate
+        for candidate in sorted(set(policy_ids))
+        if all(
+            candidate_beats(candidate, other)
+            for other in sorted(set(policy_ids))
+            if other != candidate
+        )
+    ]
+    winner_policy_id = (
+        winner_candidates[0] if all_intervals_exclude_zero and len(winner_candidates) == 1 else None
+    )
+    if not all_intervals_exclude_zero:
+        blockers.append("adjusted_paired_interval_includes_zero")
+    if winner_policy_id is None:
+        blockers.append("simultaneous_pairwise_winner_not_proven")
+    blockers = sorted(set(blockers))
+    return {
+        "schema_version": "policy_ranking_matched_cluster_bootstrap.v1",
+        "status": "winner_proven" if not blockers else "inconclusive",
+        "method": "deterministic_matched_condition_seed_hierarchical_cluster_bootstrap",
+        "multiplicity_control": "bonferroni_all_policy_pairs",
+        "familywise_alpha": POLICY_RANKING_MULTIPLICITY_ALPHA,
+        "pair_count": pair_count,
+        "all_adjusted_pairwise_intervals_exclude_zero": (all_intervals_exclude_zero),
+        "winner_policy_id": winner_policy_id,
+        "pairwise_intervals": pairwise_intervals,
+        "blockers": blockers,
+    }
+
+
+def _blocked_matched_cluster_bootstrap_pairwise(
+    *,
+    policy_ids: Sequence[str],
+    blockers: Sequence[str],
+    submitted_row_count: int,
+    verified_row_count: int,
+) -> dict[str, Any]:
+    """Return a non-decision surface when upstream evidence is not verified."""
+    return {
+        "schema_version": "policy_ranking_matched_cluster_bootstrap.v1",
+        "status": "inconclusive",
+        "method": "deterministic_matched_condition_seed_hierarchical_cluster_bootstrap",
+        "multiplicity_control": "bonferroni_all_policy_pairs",
+        "familywise_alpha": POLICY_RANKING_MULTIPLICITY_ALPHA,
+        "pair_count": len(list(combinations(sorted(set(policy_ids)), 2))),
+        "all_adjusted_pairwise_intervals_exclude_zero": False,
+        "winner_policy_id": None,
+        "pairwise_intervals": [],
+        "submitted_row_count": submitted_row_count,
+        "verified_row_count": verified_row_count,
+        "blockers": sorted(
+            set(
+                [
+                    "paired_inference_requires_decision_grade_verified_rows",
+                    *blockers,
+                ]
+            )
+        ),
+    }
+
+
+def _decision_grade_replicate_validation(
+    *,
+    label_rows: Sequence[Mapping[str, Any]],
+    policy_ids: Sequence[str],
+    substrate: str,
+    evidence_root: Path | None,
+    authority_registry_reference: object,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    cells: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    matched_designs: dict[tuple[str, int], dict[str, object]] = {}
+    matched_policies: dict[tuple[str, int], set[str]] = {}
+    pair_id_to_design: dict[str, tuple[str, int]] = {}
+    for row in label_rows:
+        policy_id = _string(row.get("policy_id")) or "policy"
+        condition_id = _string(row.get("condition_id"))
+        replicate_id = _string(row.get("replicate_id"))
+        run_id = _string(row.get("scenario_eval_run_id"))
+        seed = row.get("replicate_seed")
+        matched_pair_id = _string(row.get("matched_pair_id"))
+        task_id = _string(row.get("task_id"))
+        scenario_id = _string(row.get("scenario_id"))
+        criterion_id = _string(row.get("criterion_id"))
+        initial_state_id = _string(row.get("initial_state_id"))
+        condition_manifest_sha256 = _string(
+            _mapping(row.get("matched_condition_manifest")).get("sha256")
+        ).lower()
+        if not isinstance(row.get("task_success"), bool):
+            blockers.append("ranking_task_success_not_strict_boolean")
+        if not condition_id:
+            blockers.append("ranking_condition_id_missing")
+        if not replicate_id:
+            blockers.append("ranking_replicate_id_missing")
+        if not run_id:
+            blockers.append("ranking_scenario_eval_run_id_missing")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            blockers.append("ranking_replicate_seed_missing_or_invalid")
+        for field, value in (
+            ("matched_pair_id", matched_pair_id),
+            ("task_id", task_id),
+            ("scenario_id", scenario_id),
+            ("criterion_id", criterion_id),
+            ("initial_state_id", initial_state_id),
+        ):
+            if not value:
+                blockers.append(f"ranking_{field}_missing")
+        if SHA256_REF_PATTERN.fullmatch(condition_manifest_sha256) is None:
+            blockers.append("ranking_condition_manifest_sha256_invalid")
+        if condition_id and isinstance(seed, int) and not isinstance(seed, bool):
+            design_key = (condition_id, seed)
+            design = {
+                "matched_pair_id": matched_pair_id,
+                "replicate_id": replicate_id,
+                "scenario_eval_run_id": run_id,
+                "task_id": task_id,
+                "scenario_id": scenario_id,
+                "criterion_id": criterion_id,
+                "initial_state_id": initial_state_id,
+                "condition_manifest_sha256": condition_manifest_sha256,
+            }
+            expected_design = matched_designs.get(design_key)
+            if expected_design is None:
+                matched_designs[design_key] = design
+            else:
+                for field, expected in expected_design.items():
+                    if design.get(field) != expected:
+                        blockers.append(
+                            f"ranking_matched_design_mismatch:{condition_id}:{seed}:{field}"
+                        )
+            matched_policies.setdefault(design_key, set()).add(policy_id)
+            if matched_pair_id:
+                existing_key = pair_id_to_design.get(matched_pair_id)
+                if existing_key is not None and existing_key != design_key:
+                    blockers.append(f"ranking_matched_pair_id_reused:{matched_pair_id}")
+                else:
+                    pair_id_to_design[matched_pair_id] = design_key
+        if condition_id:
+            cells.setdefault((policy_id, condition_id), []).append(row)
+    condition_ids = sorted({condition_id for _, condition_id in cells})
+    cell_rows: list[dict[str, Any]] = []
+    seed_sets: dict[tuple[str, str], set[int]] = {}
+    for policy_id in policy_ids:
+        for condition_id in condition_ids:
+            rows = cells.get((policy_id, condition_id), [])
+            replicate_ids = [_string(row.get("replicate_id")) for row in rows]
+            seeds = {
+                int(row["replicate_seed"])
+                for row in rows
+                if isinstance(row.get("replicate_seed"), int)
+                and not isinstance(row.get("replicate_seed"), bool)
+            }
+            seed_sets[(policy_id, condition_id)] = seeds
+            if len(rows) < POLICY_RANKING_MIN_REPLICATES_PER_CONDITION:
+                blockers.append(
+                    f"ranking_cell_replicates_lt_{POLICY_RANKING_MIN_REPLICATES_PER_CONDITION}:"
+                    f"{policy_id}:{condition_id}"
+                )
+            if len(seeds) < POLICY_RANKING_MIN_REPLICATES_PER_CONDITION:
+                blockers.append(
+                    f"ranking_cell_unique_seeds_lt_{POLICY_RANKING_MIN_REPLICATES_PER_CONDITION}:"
+                    f"{policy_id}:{condition_id}"
+                )
+            if len(set(replicate_ids)) != len(replicate_ids) or any(
+                not value for value in replicate_ids
+            ):
+                blockers.append(f"ranking_replicate_ids_duplicate:{policy_id}:{condition_id}")
+            if len(seeds) != len(rows):
+                blockers.append(f"ranking_replicate_seeds_duplicate:{policy_id}:{condition_id}")
+            cell_rows.append(
+                {
+                    "policy_id": policy_id,
+                    "condition_id": condition_id,
+                    "trial_count": len(rows),
+                    "unique_seed_count": len(seeds),
+                    "replicate_ids_unique": len(set(replicate_ids)) == len(replicate_ids),
+                    "replicate_seeds_unique": len(seeds) == len(rows),
+                }
+            )
+    evidence_validation = _decision_grade_evidence_validation(
+        label_rows=label_rows,
+        substrate=substrate,
+        evidence_root=evidence_root,
+        authority_registry_reference=authority_registry_reference,
+    )
+    blockers.extend(_string_list(evidence_validation.get("blockers")))
+    expected_policies = set(policy_ids)
+    for (condition_id, seed), observed_policies in matched_policies.items():
+        if observed_policies != expected_policies:
+            blockers.append(
+                f"ranking_matched_pair_policy_coverage_incomplete:{condition_id}:{seed}"
+            )
+    for condition_id in condition_ids:
+        expected: set[int] | None = None
+        for policy_id in policy_ids:
+            seeds = seed_sets.get((policy_id, condition_id), set())
+            if expected is None:
+                expected = seeds
+            elif seeds != expected:
+                blockers.append(f"ranking_matched_seed_set_mismatch:{condition_id}")
+                break
+    blockers = sorted(set(blockers))
+    return {
+        "schema_version": "policy_ranking_replicate_validation.v1",
+        "status": "decision_grade" if cells and not blockers else "inconclusive",
+        "minimum_replicates_per_policy_condition": (POLICY_RANKING_MIN_REPLICATES_PER_CONDITION),
+        "condition_ids": condition_ids,
+        "cells": cell_rows,
+        "matched_seed_sets_required": True,
+        "evidence_validation": evidence_validation,
+        "blockers": blockers or ([] if cells else ["ranking_replicate_cells_missing"]),
+    }
+
+
 def _policy_scorecard(
     *,
     substrate: str,
@@ -1623,8 +2496,11 @@ def _policy_scorecard(
     generated_at: str,
     required_scenario_eval_run_ids: Sequence[str] = (),
     policy_ids: Sequence[str] = (),
+    evidence_root: Path | None = None,
 ) -> Dict[str, Any]:
-    label_rows = [dict(item) for item in labels.get("labels", []) or [] if isinstance(item, Mapping)]
+    label_rows = [
+        dict(item) for item in labels.get("labels", []) or [] if isinstance(item, Mapping)
+    ]
     visual_review_gate = _visual_review_gate_from_labels(labels)
     consistency_signal_summary = _consistency_support_signal_summary(
         labels=labels,
@@ -1645,10 +2521,7 @@ def _policy_scorecard(
     declared_policy_ids = _ordered_unique_strings(
         [
             *policy_ids,
-            *[
-                _string(label.get("policy_id")) or "policy"
-                for label in label_rows
-            ],
+            *[_string(label.get("policy_id")) or "policy" for label in label_rows],
         ]
     )
     rows: list[Dict[str, Any]] = []
@@ -1665,9 +2538,7 @@ def _policy_scorecard(
         )
         run_attempt_counts = {
             run_id: sum(
-                1
-                for label in policy_labels
-                if _string(label.get("scenario_eval_run_id")) == run_id
+                1 for label in policy_labels if _string(label.get("scenario_eval_run_id")) == run_id
             )
             for run_id in observed_run_ids
         }
@@ -1707,7 +2578,7 @@ def _policy_scorecard(
                 "coverage_complete": policy_coverage_complete,
             }
         )
-        success_count = sum(1 for label in policy_labels if bool(label.get("task_success")))
+        success_count = sum(1 for label in policy_labels if label.get("task_success") is True)
         uncertainties = [
             value
             for label in policy_labels
@@ -1728,9 +2599,7 @@ def _policy_scorecard(
                 if uncertainties
                 else None,
                 "ood_flag_count": ood_flag_count,
-                "ood_rate": round(ood_flag_count / len(policy_labels), 6)
-                if policy_labels
-                else 0.0,
+                "ood_rate": round(ood_flag_count / len(policy_labels), 6) if policy_labels else 0.0,
                 "failure_taxonomy": sorted(
                     {
                         mode
@@ -1750,7 +2619,55 @@ def _policy_scorecard(
     )
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
+    replicate_validation = _decision_grade_replicate_validation(
+        label_rows=label_rows,
+        policy_ids=declared_policy_ids,
+        substrate=substrate,
+        evidence_root=evidence_root,
+        authority_registry_reference=labels.get("decision_grade_authority_registry"),
+    )
+    evidence_validation = _mapping(replicate_validation.get("evidence_validation"))
+    evidence_row_results = evidence_validation.get("validated_rows")
+    if not isinstance(evidence_row_results, list):
+        evidence_row_results = []
+    verified_row_indices = sorted(
+        {
+            int(row_result["row_index"])
+            for row_result in evidence_row_results
+            if isinstance(row_result, Mapping)
+            and row_result.get("status") == "verified"
+            and isinstance(row_result.get("row_index"), int)
+            and not isinstance(row_result.get("row_index"), bool)
+            and 0 <= int(row_result["row_index"]) < len(label_rows)
+        }
+    )
+    all_rows_explicitly_verified = bool(label_rows) and (
+        evidence_validation.get("status") == "verified"
+        and verified_row_indices == list(range(len(label_rows)))
+    )
+    if replicate_validation.get("status") == "decision_grade" and all_rows_explicitly_verified:
+        pairwise_inference = _matched_cluster_bootstrap_pairwise(
+            label_rows=[label_rows[index] for index in verified_row_indices],
+            policy_ids=declared_policy_ids,
+        )
+    else:
+        inference_blockers = [
+            *_string_list(replicate_validation.get("blockers")),
+            *_string_list(evidence_validation.get("blockers")),
+        ]
+        if replicate_validation.get("status") != "decision_grade":
+            inference_blockers.append("decision_grade_replicate_validation_not_passed")
+        if not all_rows_explicitly_verified:
+            inference_blockers.append("decision_grade_evidence_rows_not_all_verified")
+        pairwise_inference = _blocked_matched_cluster_bootstrap_pairwise(
+            policy_ids=declared_policy_ids,
+            blockers=inference_blockers,
+            submitted_row_count=len(label_rows),
+            verified_row_count=len(verified_row_indices),
+        )
+    comparison_count = int(pairwise_inference.get("pair_count") or 0)
     score_range_blockers: list[str] = []
+    ood_registration_contract_blockers: list[str] = []
     for label in label_rows:
         uncertainty = _optional_number(label.get("uncertainty_score"))
         if uncertainty is not None and not 0.0 <= uncertainty <= 1.0:
@@ -1758,6 +2675,11 @@ def _policy_scorecard(
         confidence = _optional_number(label.get("confidence"))
         if confidence is not None and not 0.0 <= confidence <= 1.0:
             score_range_blockers.append("confidence_score_out_of_range")
+        if label.get("registered_ood_axes_complete") is not True:
+            ood_registration_contract_blockers.append("registered_ood_axes_incomplete")
+        ood_registration_contract_blockers.extend(
+            _string_list(label.get("ood_registration_blockers"))
+        )
     score_ranges_valid = not score_range_blockers
     coverage_complete = bool(
         declared_policy_ids
@@ -1776,6 +2698,14 @@ def _policy_scorecard(
         and top_policy_margin is not None
         and top_policy_margin <= POLICY_RANKING_TIE_BAND
     )
+    interval_winner_proven = bool(
+        len(ranked) >= 2
+        and replicate_validation.get("status") == "decision_grade"
+        and pairwise_inference.get("status") == "winner_proven"
+        and pairwise_inference.get("winner_policy_id") == ranked[0].get("policy_id")
+    )
+    if replicate_validation.get("status") == "decision_grade":
+        ranking_ambiguous = not interval_winner_proven
     uncertainty_penalty_applied = any(
         _optional_number(row.get("mean_uncertainty")) is not None
         and _number(row.get("mean_uncertainty")) >= POLICY_RANKING_HIGH_UNCERTAINTY_THRESHOLD
@@ -1816,6 +2746,10 @@ def _policy_scorecard(
     )
     if comparison_blockers:
         status = "blocked_inconclusive_ranking"
+    elif replicate_validation.get("status") != "decision_grade":
+        status = "completed_inconclusive_insufficient_replicates"
+    elif ood_registration_contract_blockers:
+        status = "blocked_inconclusive_ood_registration"
     elif visual_review_required:
         status = "completed_visual_review_required"
     elif ranking_ambiguous:
@@ -1831,16 +2765,20 @@ def _policy_scorecard(
         and not ranking_ambiguous
         and not uncertainty_penalty_applied
         and not ood_blockers
+        and interval_winner_proven
+        and not ood_registration_contract_blockers
     )
     evaluator_top_policy_id = ranked[0]["policy_id"] if ranked else None
     confidence_level = "blocked"
     if not comparison_blockers:
-        if ranking_ambiguous:
+        if replicate_validation.get("status") != "decision_grade":
+            confidence_level = "inconclusive_insufficient_replicates"
+        elif ranking_ambiguous:
             confidence_level = "ambiguous"
         elif uncertainty_penalty_applied or ood_blockers:
             confidence_level = "low"
         else:
-            confidence_level = "medium_evaluator_only"
+            confidence_level = "decision_grade_evaluator_only"
     review_grade_policy_ranking = bool(
         status == "completed"
         and visual_review_gate["review_grade_success_labels"]
@@ -1851,7 +2789,11 @@ def _policy_scorecard(
         "generated_at": generated_at,
         "status": status,
         "evaluation_substrate": substrate,
-        "ranking_basis": "fixture_vision_success_labels_over_model_derived_wam_rollouts",
+        "ranking_basis": (
+            "fixture_vision_success_labels_over_model_derived_wam_rollouts"
+            if substrate == "fixture_wam"
+            else "hash_verified_matched_nonfixture_execution_media_and_review_labels"
+        ),
         "visual_smoke_status": visual_review_gate["visual_smoke_status"],
         "visual_smoke_statuses": visual_review_gate["visual_smoke_statuses"],
         "visual_rollout_useful_for_task_success_review": visual_review_gate[
@@ -1903,6 +2845,9 @@ def _policy_scorecard(
             "fixture_evaluator_only_ranking_is_not_review_grade": True,
             "review_grade_policy_ranking_requires_short_visual_sanity_manifest": True,
             "review_grade_policy_ranking_requires_review_label_refs": True,
+            "decision_grade_requires_unique_hash_verified_replicate_evidence": True,
+            "winner_requires_all_adjusted_paired_intervals_exclude_zero": True,
+            "unpaired_pooled_wilson_intervals_used_for_winner_claim": False,
         },
         "policy_count": len(ranked),
         "scenario_attempt_count": len(label_rows),
@@ -1913,8 +2858,18 @@ def _policy_scorecard(
         "extra_by_policy": extra_by_policy,
         "attempt_count_by_policy": attempt_count_by_policy,
         "comparison_blockers": comparison_blockers,
+        "decision_grade_replicate_validation": replicate_validation,
+        "paired_cluster_bootstrap_inference": pairwise_inference,
+        "interval_winner_proven": interval_winner_proven,
+        "multiplicity_control": {
+            "method": "bonferroni_all_policy_pairs_cluster_bootstrap",
+            "familywise_alpha": POLICY_RANKING_MULTIPLICITY_ALPHA,
+            "comparison_count": comparison_count,
+        },
         "score_ranges_valid": score_ranges_valid,
         "score_range_blockers": _dedupe(score_range_blockers),
+        "ood_registration_complete": not ood_registration_contract_blockers,
+        "ood_registration_blockers": _dedupe(ood_registration_contract_blockers),
         "forward_inverse_consistency_signal_summary": consistency_signal_summary,
         "policy_rankings": ranked,
         "evaluator_top_policy_id": evaluator_top_policy_id,
@@ -1934,14 +2889,12 @@ def _policy_scorecard(
             },
         },
         "failure_taxonomy": sorted(
-            {
-                mode
-                for label in label_rows
-                for mode in _string_list(label.get("failure_mode_ids"))
-            }
+            {mode for label in label_rows for mode in _string_list(label.get("failure_mode_ids"))}
         ),
         "uncertainty_ood_summary": {
-            "ood_label_count": sum(1 for label in label_rows if _string_list(label.get("ood_flags"))),
+            "ood_label_count": sum(
+                1 for label in label_rows if _string_list(label.get("ood_flags"))
+            ),
             "mean_uncertainty": round(
                 sum(_number(label.get("uncertainty_score")) for label in label_rows)
                 / len(label_rows),
@@ -1960,6 +2913,8 @@ def _policy_scorecard(
             ],
             "fixture_evaluator_only": visual_review_gate["fixture_evaluator_only"],
             "review_grade_policy_ranking": review_grade_policy_ranking,
+            "fixture_evidence_cannot_be_decision_grade": True,
+            "winner_claim_uses_paired_clustered_inference": True,
         },
     }
 
@@ -2045,7 +3000,11 @@ def _policy_metadata(policies: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[st
 
 
 def _policy_ranking_rows(scorecard: Mapping[str, Any]) -> list[Dict[str, Any]]:
-    rows = [dict(item) for item in scorecard.get("policy_rankings", []) or [] if isinstance(item, Mapping)]
+    rows = [
+        dict(item)
+        for item in scorecard.get("policy_rankings", []) or []
+        if isinstance(item, Mapping)
+    ]
     return sorted(
         rows,
         key=lambda row: (
@@ -2096,16 +3055,14 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
     uncertainty_delta = None
     if top.get("mean_uncertainty") is not None and runner_up.get("mean_uncertainty") is not None:
         uncertainty_delta = round(
-            _number(runner_up.get("mean_uncertainty"))
-            - _number(top.get("mean_uncertainty")),
+            _number(runner_up.get("mean_uncertainty")) - _number(top.get("mean_uncertainty")),
             6,
         )
     shortlist = [
         row
         for row in ranked
         if round(
-            _number(top.get("predicted_success_rate"))
-            - _number(row.get("predicted_success_rate")),
+            _number(top.get("predicted_success_rate")) - _number(row.get("predicted_success_rate")),
             6,
         )
         < CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN
@@ -2138,6 +3095,11 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
     low_confidence = bool(
         scorecard_status == "completed_low_confidence_ranking" or low_confidence_reasons
     )
+    replicate_validation = _mapping(scorecard.get("decision_grade_replicate_validation"))
+    replicate_inconclusive = bool(
+        replicate_validation.get("status") != "decision_grade"
+        or not scorecard.get("interval_winner_proven")
+    )
     if comparison_blockers or scorecard_status == "blocked_inconclusive_ranking":
         return {
             "status": "blocked_inconclusive_candidate_selection",
@@ -2160,7 +3122,9 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
         }
     return {
         "status": (
-            "visual_review_required_candidate_shortlist"
+            "inconclusive_insufficient_replicates_candidate_shortlist"
+            if replicate_inconclusive
+            else "visual_review_required_candidate_shortlist"
             if visual_review_required
             else "ambiguous_candidate_shortlist"
             if ambiguous
@@ -2169,7 +3133,7 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
             else "clear_winner"
         ),
         "top_policy_id": None
-        if ambiguous or visual_review_required or low_confidence
+        if replicate_inconclusive or ambiguous or visual_review_required or low_confidence
         else top.get("policy_id"),
         "evaluator_top_policy_id": top.get("policy_id"),
         "runner_up_policy_id": runner_up.get("policy_id"),
@@ -2178,9 +3142,13 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
             "mean_uncertainty_advantage": uncertainty_delta,
             "ambiguity_threshold": CANDIDATE_SELECTION_AMBIGUITY_SUCCESS_RATE_MARGIN,
         },
-        "ranking_ambiguous": bool(ambiguous or visual_review_required or low_confidence),
+        "ranking_ambiguous": bool(
+            replicate_inconclusive or ambiguous or visual_review_required or low_confidence
+        ),
         "tie_or_ambiguity_status": (
-            "visual_review_required"
+            "insufficient_replicates_or_interval_overlap"
+            if replicate_inconclusive
+            else "visual_review_required"
             if visual_review_required
             else "ambiguous"
             if ambiguous
@@ -2189,10 +3157,15 @@ def _candidate_selection_summary(scorecard: Mapping[str, Any]) -> Dict[str, Any]
             else "clear"
         ),
         "candidate_shortlist": fallback_shortlist
-        if ambiguous or visual_review_required or low_confidence
+        if replicate_inconclusive or ambiguous or visual_review_required or low_confidence
         else [],
         "ambiguity_reasons": (
             [
+                "decision_grade_replicate_or_interval_evidence_missing",
+                *_string_list(replicate_validation.get("blockers")),
+            ]
+            if replicate_inconclusive
+            else [
                 "visual_review_blockers_or_fixture_only_labels_prevent_winner_claim",
                 *visual_blockers,
                 *_string_list(short_visual_sanity_gate.get("blockers")),
@@ -2252,12 +3225,18 @@ def _scenario_matrix_coverage(
     rows = _label_rows(labels)
     matrix_run_ids = sorted(metadata)
     covered_run_ids = sorted(
-        {_string(label.get("scenario_eval_run_id")) for label in rows if label.get("scenario_eval_run_id")}
+        {
+            _string(label.get("scenario_eval_run_id"))
+            for label in rows
+            if label.get("scenario_eval_run_id")
+        }
     )
     required_run_ids = matrix_run_ids or covered_run_ids
     missing_run_ids = sorted(set(required_run_ids) - set(covered_run_ids))
     policy_count = int(_number(scorecard.get("policy_count"), 0) or 0)
-    expected_attempt_count = len(required_run_ids) * policy_count if required_run_ids and policy_count else None
+    expected_attempt_count = (
+        len(required_run_ids) * policy_count if required_run_ids and policy_count else None
+    )
     observed_attempt_count = len(rows)
     return {
         "scenario_eval_run_count": len(required_run_ids),
@@ -2319,9 +3298,7 @@ def _decisive_scenarios(
                     "failure_mode_ids": sorted(
                         {mode for outcome in outcomes for mode in outcome["failure_mode_ids"]}
                     ),
-                    "exemplar_evidence_refs": [
-                        outcome["evidence_ref"] for outcome in outcomes[:4]
-                    ],
+                    "exemplar_evidence_refs": [outcome["evidence_ref"] for outcome in outcomes[:4]],
                 }
             )
     return decisive
@@ -2378,7 +3355,11 @@ def _ood_blockers(labels: Mapping[str, Any]) -> list[Dict[str, Any]]:
                 row["exemplar_evidence_refs"].append(_label_evidence_ref(label))
     return [
         {
-            **{key: value for key, value in row.items() if key not in {"scenario_eval_run_ids", "affected_policy_ids"}},
+            **{
+                key: value
+                for key, value in row.items()
+                if key not in {"scenario_eval_run_ids", "affected_policy_ids"}
+            },
             "scenario_eval_run_ids": sorted(row["scenario_eval_run_ids"]),
             "affected_policy_ids": sorted(row["affected_policy_ids"]),
         }
@@ -2493,9 +3474,7 @@ def _failure_clusters(
 ) -> list[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
     for label in [
-        dict(item)
-        for item in failure_labels.get("labels", []) or []
-        if isinstance(item, Mapping)
+        dict(item) for item in failure_labels.get("labels", []) or [] if isinstance(item, Mapping)
     ]:
         modes = _string_list(label.get("failure_mode_ids")) or ["unknown_needs_review"]
         for mode in modes:
@@ -2953,8 +3932,7 @@ def _customer_handoff_report(
     visual_gate = {
         "status": scorecard.get("review_grade_policy_ranking_status")
         or "blocked_visual_review_required",
-        "visual_smoke_status": scorecard.get("visual_smoke_status")
-        or FIXTURE_VISUAL_SMOKE_STATUS,
+        "visual_smoke_status": scorecard.get("visual_smoke_status") or FIXTURE_VISUAL_SMOKE_STATUS,
         "visual_rollout_useful_for_task_success_review": bool(
             scorecard.get("visual_rollout_useful_for_task_success_review")
         ),
@@ -2978,14 +3956,10 @@ def _customer_handoff_report(
         "candidate_selection_summary": {
             "status": candidate_selection_report.get("status"),
             "top_policy_id": candidate_selection_report.get("top_policy_id"),
-            "evaluator_top_policy_id": candidate_selection_report.get(
-                "evaluator_top_policy_id"
-            ),
+            "evaluator_top_policy_id": candidate_selection_report.get("evaluator_top_policy_id"),
             "runner_up_policy_id": candidate_selection_report.get("runner_up_policy_id"),
             "margin": candidate_selection_report.get("margin"),
-            "tie_or_ambiguity_status": candidate_selection_report.get(
-                "tie_or_ambiguity_status"
-            ),
+            "tie_or_ambiguity_status": candidate_selection_report.get("tie_or_ambiguity_status"),
             "candidate_shortlist": candidate_selection_report.get("candidate_shortlist"),
         },
         "legacy_scorecard_top_policy_id": scorecard.get("top_policy_id"),
@@ -3117,6 +4091,7 @@ def _blocked_wam_artifacts(
             _string(run.get("scenario_eval_run_id")) for run in _matrix_runs(matrix)
         ],
         policy_ids=[_string(policy.get("policy_id")) for policy in policies],
+        evidence_root=job_dir,
     )
     claim_boundary = _claim_boundary(substrate=substrate, generated_at=generated_at)
     review_queue = _vision_review_queue(
@@ -3388,7 +4363,9 @@ def run_wam_eval_job(
             if last_status == "completed" and rollouts:
                 break
         provider_command_used = True
-        provider_execution_status = "completed" if last_status == "completed" and rollouts else "blocked"
+        provider_execution_status = (
+            "completed" if last_status == "completed" and rollouts else "blocked"
+        )
         provider_payload = _mapping(last_payload)
         provider_execution_detail = {
             **last_detail,
@@ -3430,10 +4407,9 @@ def run_wam_eval_job(
         substrate=substrate,
         labels=labels,
         generated_at=generated,
-        required_scenario_eval_run_ids=[
-            _string(run.get("scenario_eval_run_id")) for run in runs
-        ],
+        required_scenario_eval_run_ids=[_string(run.get("scenario_eval_run_id")) for run in runs],
         policy_ids=[_string(policy.get("policy_id")) for policy in policies],
+        evidence_root=resolved_job_dir,
     )
     claim_boundary = _claim_boundary(substrate=substrate, generated_at=generated)
     if provider_command_used and provider_execution_status == "completed":

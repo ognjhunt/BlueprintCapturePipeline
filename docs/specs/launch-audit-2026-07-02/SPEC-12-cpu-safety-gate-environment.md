@@ -1,5 +1,9 @@
 # SPEC-12: Make CPU safety gates actually run (`pxr`/`mujoco` in the canonical env + CI)
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 - Status: Proposed
 - Priority: **P1 — major** (protects against paid-GPU spend on broken renders)
 - Area: canonical `.venv`, CI workflow, `tests/test_cpu_env_contract.py` consumers

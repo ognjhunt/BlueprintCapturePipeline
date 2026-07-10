@@ -349,7 +349,12 @@ def test_mjcf_wrapper_uses_exact_grey_scene_material_without_texture(
     assert 'texture="blueprint_scene_tex"' not in xml
 
 
-def test_mujoco_loads_textured_scene_wrapper_when_available(tmp_path: Path) -> None:
+def test_mujoco_loads_textured_scene_wrapper_when_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform == "darwin":
+        monkeypatch.delenv("MUJOCO_GL", raising=False)
     mujoco = pytest.importorskip("mujoco")
     scene_obj = tmp_path / "scene.obj"
     g1_xml = tmp_path / "g1.xml"

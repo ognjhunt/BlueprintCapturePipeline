@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .common import PipelineError, ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
+from .object_index_artifacts import resolve_current_object_index_artifacts
 from .runtime_layer_grounding import with_grounding_fields
 from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
 
@@ -187,10 +188,33 @@ def _normalize_bbox(entry: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _candidate_object_index_paths(capture_root: Path) -> List[Path]:
+    resolved = resolve_current_object_index_artifacts(capture_root)
+    path_text = str(
+        resolved.get("object_index_path") or resolved.get("audit_object_index_path") or ""
+    ).strip()
+    if path_text:
+        return [Path(path_text)]
+    if resolved.get("source") == "immutable_derived_run":
+        return [
+            capture_root
+            / "pipeline"
+            / "derived"
+            / "object_index"
+            / ".invalid-current"
+            / "object_index.json"
+        ]
     return [
         capture_root / "raw" / "object_index.json",
         capture_root / "raw" / "arkit" / "objects" / "index.json",
     ]
+
+
+def _object_index_build_report_path(capture_root: Path) -> Path:
+    resolved = resolve_current_object_index_artifacts(capture_root)
+    path_text = str(resolved.get("build_report_path") or "").strip()
+    if path_text:
+        return Path(path_text)
+    return capture_root / "raw" / "object_index_build_report.json"
 
 
 def _optional_json(path: Path) -> Dict[str, Any]:
@@ -229,7 +253,7 @@ def _object_index_summary(capture_root: Path) -> Dict[str, Any]:
             summary["has_entries"] = True
         summary["entry_count"] = max(int(summary["entry_count"]), len(entries))
 
-    build_report = _optional_json(capture_root / "raw" / "object_index_build_report.json")
+    build_report = _optional_json(_object_index_build_report_path(capture_root))
     empty_index_cause = str(build_report.get("empty_index_cause") or "").strip() or None
     if empty_index_cause:
         summary["empty_index_cause"] = empty_index_cause
@@ -292,7 +316,7 @@ def build_missing_object_geometry_manifest(
             "runtime_blocker_count": len(runtime_blockers),
         },
         confidence=0.0,
-        canonical_truth=True,
+        canonical_truth=False,
         presentation_only=False,
         extra={"provider_name": provider_name},
     )
@@ -382,6 +406,16 @@ def _load_object_entries(capture_root: Path) -> Tuple[List[Dict[str, Any]], Path
                         if str(value).strip()
                     ] if isinstance(raw.get("all_crops"), list) else [],
                     "pointCloudFile": str(raw.get("pointCloudFile") or "").strip() or None,
+                    "metric_placement_ready": raw.get("metric_placement_ready") is True,
+                    "geometry_source_class": str(raw.get("geometry_source_class") or "").strip()
+                    or "unverified_geometry",
+                    "metric_geometry_evidence": [
+                        dict(item)
+                        for item in raw.get("metric_geometry_evidence", [])
+                        if isinstance(item, Mapping)
+                    ]
+                    if isinstance(raw.get("metric_geometry_evidence"), list)
+                    else [],
                     "source_entry": dict(raw),
                 }
             )
@@ -824,7 +858,9 @@ def _support_link_for_target(
     target: Mapping[str, Any],
     other_objects: Sequence[Mapping[str, Any]],
 ) -> Optional[str]:
-    target_bbox = target["placement_bbox"]
+    target_bbox = target.get("placement_bbox")
+    if not isinstance(target_bbox, Mapping):
+        return None
     center = target_bbox["center"]
     bottom_z = float(center[2]) - float(target_bbox["extents"][2]) * 0.5
     best: Optional[tuple[float, str]] = None
@@ -914,6 +950,7 @@ def run_object_geometry_stage(
             for item in selected_views
         ]
 
+        metric_placement_ready = entry.get("metric_placement_ready") is True
         source_mesh, mesh_source = _load_mesh_or_points(entry=entry, index_path=index_path, capture_root=context.capture_root)
         if source_mesh is None:
             source_mesh = _box_mesh_from_bbox(entry["boundingBox"])
@@ -923,7 +960,11 @@ def run_object_geometry_stage(
         mesh_path = _export_mesh(local_mesh, mesh_glb_path)
         mesh_bounds = _mesh_bounds(local_mesh)
 
-        hull_meshes, hull_method = _collision_hull_meshes(local_mesh)
+        hull_meshes, hull_method = (
+            _collision_hull_meshes(local_mesh)
+            if metric_placement_ready
+            else ([], "not_available_2d_visualization_proxy")
+        )
         hull_entries: List[Dict[str, Any]] = []
         for idx, hull_mesh in enumerate(hull_meshes):
             hull_path = object_dir / "collision_hulls" / f"hull_{idx:02d}.glb"
@@ -936,7 +977,11 @@ def run_object_geometry_stage(
                 }
             )
 
-        support_surfaces, support_method = _support_surfaces(local_mesh, entry["boundingBox"])
+        support_surfaces, support_method = (
+            _support_surfaces(local_mesh, entry["boundingBox"])
+            if metric_placement_ready
+            else ([], "not_available_2d_visualization_proxy")
+        )
         ai_hints = _heuristic_ai_hints(
             entry=entry,
             mesh_source=mesh_source,
@@ -963,7 +1008,13 @@ def run_object_geometry_stage(
                 ai_hints["source"] = "ai_runner"
 
         provenance = build_provenance_record(
-            grounding_level="reconstructed" if mesh_source == "source_mesh" else "inferred",
+            grounding_level=(
+                "reconstructed"
+                if metric_placement_ready and mesh_source == "source_mesh"
+                else "inferred_metric"
+                if metric_placement_ready
+                else "observed_2d_proxy"
+            ),
             evidence_sources=[
                 mesh_path,
                 *[str(item.get("image_path") or "") for item in selected_views if isinstance(item, Mapping)],
@@ -973,12 +1024,15 @@ def run_object_geometry_stage(
                 "collision_hull_count": len(hull_entries),
                 "support_surface_count": len(support_surfaces),
             },
-            confidence=0.9 if mesh_source == "source_mesh" else 0.7,
-            canonical_truth=True,
-            presentation_only=False,
+            confidence=0.9 if metric_placement_ready and mesh_source == "source_mesh" else 0.7 if metric_placement_ready else 0.35,
+            canonical_truth=metric_placement_ready,
+            presentation_only=not metric_placement_ready,
             extra={
                 "source_mode": view_payload["source_mode"],
                 "provider_name": provider_name,
+                "metric_placement_ready": metric_placement_ready,
+                "physics_ready": metric_placement_ready and bool(hull_entries or support_surfaces),
+                "two_dimensional_proxy_not_canonical_or_physics_ready": not metric_placement_ready,
             },
         )
         geometry_record = with_grounding_fields(
@@ -995,7 +1049,12 @@ def run_object_geometry_stage(
             "source_mode": view_payload["source_mode"],
             "provider_name": provider_name,
             "source_bbox": entry["boundingBox"],
-            "placement_bbox": entry["boundingBox"],
+            "placement_bbox": entry["boundingBox"] if metric_placement_ready else None,
+            "visualization_proxy_bbox": entry["boundingBox"] if not metric_placement_ready else None,
+            "metric_placement_ready": metric_placement_ready,
+            "physics_ready": metric_placement_ready and bool(hull_entries or support_surfaces),
+            "geometry_source_class": entry.get("geometry_source_class"),
+            "metric_geometry_evidence": list(entry.get("metric_geometry_evidence") or []),
             "mesh_glb_path": mesh_path,
             "mesh_source": mesh_source,
             "mesh_bounds_local": mesh_bounds,
@@ -1018,11 +1077,20 @@ def run_object_geometry_stage(
     by_id = {str(item.get("object_id") or ""): item for item in geometry_objects}
     for item in geometry_objects:
         object_id = str(item.get("object_id") or "")
+        placement = item.get("placement_bbox")
+        if not isinstance(placement, Mapping):
+            item["nearby_articulated_fixture_ids"] = []
+            item["nearby_context_ids"] = []
+            item["support_object_id"] = None
+            continue
         item["nearby_articulated_fixture_ids"] = [
             other_id
             for other_id in articulation_ids
-            if other_id in by_id and other_id != object_id and _distance(
-                item["placement_bbox"]["center"],
+            if other_id in by_id
+            and other_id != object_id
+            and isinstance(by_id[other_id].get("placement_bbox"), Mapping)
+            and _distance(
+                placement["center"],
                 by_id[other_id]["placement_bbox"]["center"],
             ) <= 2.5
         ]
@@ -1030,21 +1098,22 @@ def run_object_geometry_stage(
             str(other.get("object_id") or "")
             for other in geometry_objects
             if str(other.get("object_id") or "") != object_id
-            and _distance(item["placement_bbox"]["center"], other["placement_bbox"]["center"]) <= 2.0
+            and isinstance(other.get("placement_bbox"), Mapping)
+            and _distance(placement["center"], other["placement_bbox"]["center"]) <= 2.0
         ]
         item["support_object_id"] = _support_link_for_target(target=item, other_objects=geometry_objects)
 
     manifest_path = output_root / "object_geometry_manifest.json"
     manifest_provenance = build_provenance_record(
-        grounding_level="reconstructed" if geometry_objects else "inferred",
+        grounding_level="reconstructed" if any(item.get("metric_placement_ready") for item in geometry_objects) else "observed_2d_proxy",
         evidence_sources=[str(index_path)],
         observation_coverage={
             "object_count": len(geometry_objects),
             "runtime_blocker_count": len([str(item) for item in index_summary.get("runtime_blockers", []) if str(item).strip()]),
         },
-        confidence=1.0 if geometry_objects else 0.0,
-        canonical_truth=True,
-        presentation_only=False,
+        confidence=1.0 if geometry_objects and all(item.get("metric_placement_ready") for item in geometry_objects) else 0.35 if geometry_objects else 0.0,
+        canonical_truth=bool(geometry_objects) and all(item.get("metric_placement_ready") for item in geometry_objects),
+        presentation_only=bool(geometry_objects) and not any(item.get("metric_placement_ready") for item in geometry_objects),
     )
     write_json(
         manifest_path,
@@ -1068,6 +1137,8 @@ def run_object_geometry_stage(
             ),
             "provenance": manifest_provenance,
             "objects": geometry_objects,
+            "metric_geometry_object_count": sum(1 for item in geometry_objects if item.get("metric_placement_ready")),
+            "physics_ready_object_count": sum(1 for item in geometry_objects if item.get("physics_ready")),
             },
             provenance=manifest_provenance,
         ),

@@ -44,6 +44,7 @@ Usage (CLI):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 from dataclasses import asdict, dataclass, fields
@@ -53,12 +54,13 @@ from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 import numpy as np
 
 from .clip_curation_stage import load_clip_records, load_image_gray
+from .camera_geometry_validation import validate_se3_matrix
 from .common import PipelineError, utc_now_iso, write_json
 from .logging_utils import log_event
 
 logger = logging.getLogger("blueprint.semantic_dedup")
 
-DEDUP_MANIFEST_SCHEMA_VERSION = "semantic_dedup_manifest.v1"
+DEDUP_MANIFEST_SCHEMA_VERSION = "semantic_dedup_manifest.v2"
 DEFAULT_OUTPUT_SUBDIR = Path("derived") / "semantic_dedup"
 
 # Encoders expected in production. Kept as documentation-of-intent in the
@@ -102,6 +104,9 @@ class DownsampledPixelEmbeddingProvider:
 
     name = "downsampled_pixel_fixture"
     version = "1.0"
+    production_ready = False
+    model_id = ""
+    revision = ""
 
     def __init__(self, grid: int = 16) -> None:
         self.grid = int(grid)
@@ -137,7 +142,7 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     denom = float(np.linalg.norm(a)) * float(np.linalg.norm(b))
     if denom <= 1e-12:
         return 0.0
-    return float(np.dot(a, b) / denom)
+    return float(np.clip(np.dot(a, b) / denom, -1.0, 1.0))
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +173,50 @@ class SemanticDedupConfig:
     # Fail-closed: cluster members whose trajectory cannot be compared are
     # dropped (they cannot demonstrate diverse motion). Set true to keep.
     keep_unverifiable_cluster_members: bool = False
+    # Production decisions require a real encoder, multiple keyframes, and
+    # measurable SE(3)-relative trajectories. Fixture mode remains explicit.
+    production_mode: bool = True
+    keyframe_samples: int = 3
+    min_keyframe_embeddings: int = 3
+    # Deterministic multi-table angular LSH bounds similarity candidate work.
+    ann_table_count: int = 16
+    ann_projection_bits: int = 16
+    ann_hamming_probe_radius: int = 1
+    ann_bucket_capacity: int = 8
+    ann_max_candidates_per_vector: int = 64
+    ann_seed: int = 1741
+    max_clip_count: int = 100_000
+    max_embedding_memory_bytes: int = 512 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.similarity_threshold <= 1.0:
+            raise PipelineError("similarity_threshold must be in (0, 1]")
+        if self.trajectory_resample_points < 2:
+            raise PipelineError("trajectory_resample_points must be >= 2")
+        if self.min_trajectory_rms_m < 0.0:
+            raise PipelineError("min_trajectory_rms_m must be non-negative")
+        if self.keyframe_samples < 1:
+            raise PipelineError("keyframe_samples must be >= 1")
+        if not 1 <= self.min_keyframe_embeddings <= self.keyframe_samples:
+            raise PipelineError(
+                "min_keyframe_embeddings must be between 1 and keyframe_samples"
+            )
+        if not 1 <= self.ann_table_count <= 64:
+            raise PipelineError("ann_table_count must be between 1 and 64")
+        if not 2 <= self.ann_projection_bits <= 32:
+            raise PipelineError("ann_projection_bits must be between 2 and 32")
+        if not 0 <= self.ann_hamming_probe_radius <= 1:
+            raise PipelineError("ann_hamming_probe_radius must be 0 or 1")
+        if not 1 <= self.ann_bucket_capacity <= 256:
+            raise PipelineError("ann_bucket_capacity must be between 1 and 256")
+        if not 1 <= self.ann_max_candidates_per_vector <= 4096:
+            raise PipelineError(
+                "ann_max_candidates_per_vector must be between 1 and 4096"
+            )
+        if self.max_clip_count < 1:
+            raise PipelineError("max_clip_count must be positive")
+        if self.max_embedding_memory_bytes < 1024 * 1024:
+            raise PipelineError("max_embedding_memory_bytes must be at least 1 MiB")
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "SemanticDedupConfig":
@@ -202,38 +251,78 @@ class SemanticDedupConfig:
 # ---------------------------------------------------------------------------
 
 
-def _clip_keyframe_image(
-    clip: Mapping[str, Any], bundle_dir: Optional[Path]
-) -> Optional[np.ndarray]:
-    """Load the middle image-bearing frame of a clip (read-only)."""
+def _clip_keyframe_images(
+    clip: Mapping[str, Any], bundle_dir: Optional[Path], *, sample_count: int
+) -> List[np.ndarray]:
+    """Load deterministic first/middle/last image-bearing keyframes."""
+
     frames = clip.get("frames") or []
     candidates = [f for f in frames if isinstance(f, Mapping) and f.get("image_path")]
     if not candidates:
-        return None
-    frame = candidates[len(candidates) // 2]
-    raw_path = Path(str(frame["image_path"]))
-    path = raw_path if raw_path.is_absolute() or bundle_dir is None else bundle_dir / raw_path
-    return load_image_gray(path)
+        return []
+    sample_count = min(max(1, sample_count), len(candidates))
+    indices = sorted(
+        {
+            int(round(index))
+            for index in np.linspace(0, len(candidates) - 1, sample_count)
+        }
+    )
+    images: List[np.ndarray] = []
+    for index in indices:
+        raw_path = Path(str(candidates[index]["image_path"]))
+        path = raw_path if raw_path.is_absolute() or bundle_dir is None else bundle_dir / raw_path
+        image = load_image_gray(path)
+        if image is not None:
+            images.append(image)
+    return images
 
 
 def _clip_trajectory(clip: Mapping[str, Any]) -> Optional[np.ndarray]:
-    positions: List[Tuple[float, float, float]] = []
+    poses: List[np.ndarray] = []
     for frame in clip.get("frames") or []:
         if not isinstance(frame, Mapping):
             continue
         T = frame.get("T_world_camera")
         if T is None:
             continue
-        try:
-            mat = np.asarray(T, dtype=np.float64)
-            if mat.shape != (4, 4):
-                continue
-            positions.append((float(mat[0, 3]), float(mat[1, 3]), float(mat[2, 3])))
-        except Exception:
-            continue
-    if len(positions) < 2:
+        validation = validate_se3_matrix(T, field="T_world_camera")
+        if not validation["valid"]:
+            return None
+        poses.append(np.asarray(validation["matrix"], dtype=np.float64))
+    if len(poses) < 2:
         return None
-    return np.asarray(positions, dtype=np.float64)
+    origin = poses[0]
+    origin_rotation_inverse = origin[:3, :3].T
+    origin_translation = origin[:3, 3]
+    # Express positions in the first camera frame. This is invariant to a
+    # session-wide rigid translation/rotation while preserving relative motion.
+    relative = [
+        origin_rotation_inverse @ (pose[:3, 3] - origin_translation)
+        for pose in poses
+    ]
+    return np.asarray(relative, dtype=np.float64)
+
+
+def _aggregate_keyframe_embeddings(
+    images: Sequence[np.ndarray],
+    *,
+    provider: EmbeddingProvider,
+    minimum: int,
+) -> tuple[Optional[np.ndarray], List[str]]:
+    vectors: List[np.ndarray] = []
+    hashes: List[str] = []
+    for image in images:
+        array = np.asarray(image)
+        hashes.append(hashlib.sha256(array.tobytes(order="C")).hexdigest())
+        vector = np.asarray(provider.embed_image(array), dtype=np.float64).reshape(-1)
+        norm = float(np.linalg.norm(vector))
+        if vector.size and np.isfinite(vector).all() and norm > 1e-12:
+            vectors.append(vector / norm)
+    if len(vectors) < minimum or len({vector.shape for vector in vectors}) != 1:
+        return None, hashes
+    concatenated = np.concatenate(vectors)
+    norm = float(np.linalg.norm(concatenated))
+    return (concatenated / norm if norm > 1e-12 else None), hashes
 
 
 def resample_trajectory(trajectory: np.ndarray, points: int) -> np.ndarray:
@@ -264,14 +353,21 @@ def trajectory_rms_distance(a: np.ndarray, b: np.ndarray, *, resample_points: in
 # ---------------------------------------------------------------------------
 
 
-def _union_find_clusters(
+def _ann_union_find_clusters(
     embeddings: Sequence[Optional[np.ndarray]],
     threshold: float,
-) -> Tuple[List[Optional[int]], Dict[Tuple[int, int], float]]:
-    """Single-linkage clustering over cosine similarity > threshold.
+    *,
+    table_count: int,
+    projection_bits: int,
+    hamming_probe_radius: int,
+    bucket_capacity: int,
+    max_candidates_per_vector: int,
+    seed: int,
+) -> Tuple[List[Optional[int]], Dict[Tuple[int, int], float], Dict[str, Any]]:
+    """Bounded single-linkage clustering with deterministic angular LSH.
 
     Returns (cluster assignment per index or None when not embeddable,
-    pairwise similarities for joined pairs).
+    sparse candidate similarities, index diagnostics).
     """
     n = len(embeddings)
     parent = list(range(n))
@@ -287,17 +383,64 @@ def _union_find_clusters(
         if ri != rj:
             parent[max(ri, rj)] = min(ri, rj)
 
+    dimensions = {
+        np.asarray(item).reshape(-1).shape[0]
+        for item in embeddings
+        if item is not None
+    }
+    if len(dimensions) > 1:
+        raise PipelineError("Embedding dims differ across semantic dedup inputs")
+    dimension = next(iter(dimensions), 0)
+    rng = np.random.default_rng(int(seed))
+    projections = [
+        rng.standard_normal((projection_bits, dimension), dtype=np.float32)
+        for _ in range(table_count)
+    ]
+    buckets: List[Dict[int, List[int]]] = [{} for _ in range(table_count)]
     pair_sims: Dict[Tuple[int, int], float] = {}
+    candidate_comparison_count = 0
+
+    def signatures(vector: np.ndarray) -> List[int]:
+        result: List[int] = []
+        for projection in projections:
+            bits = projection @ vector
+            signature = 0
+            for bit_index, enabled in enumerate(bits >= 0.0):
+                if bool(enabled):
+                    signature |= 1 << bit_index
+            result.append(signature)
+        return result
+
     for i in range(n):
         if embeddings[i] is None:
             continue
-        for j in range(i + 1, n):
-            if embeddings[j] is None:
-                continue
-            sim = cosine_similarity(embeddings[i], embeddings[j])
-            pair_sims[(i, j)] = sim
+        vector = np.asarray(embeddings[i], dtype=np.float32).reshape(-1)
+        vector_signatures = signatures(vector)
+        candidates: set[int] = set()
+        # Exact buckets come first so a known duplicate cannot be displaced by
+        # multiprobe noise when the global per-vector comparison cap is hit.
+        for table_index, signature in enumerate(vector_signatures):
+            table = buckets[table_index]
+            candidates.update(table.get(signature, ()))
+        if hamming_probe_radius == 1 and len(candidates) < max_candidates_per_vector:
+            for table_index, signature in enumerate(vector_signatures):
+                table = buckets[table_index]
+                for bit_index in range(projection_bits):
+                    candidates.update(table.get(signature ^ (1 << bit_index), ()))
+                    if len(candidates) >= max_candidates_per_vector:
+                        break
+                if len(candidates) >= max_candidates_per_vector:
+                    break
+        for j in sorted(candidates)[:max_candidates_per_vector]:
+            candidate_comparison_count += 1
+            sim = cosine_similarity(embeddings[j], embeddings[i])
             if sim > threshold:
-                union(i, j)
+                pair_sims[(j, i)] = sim
+                union(j, i)
+        for table_index, signature in enumerate(vector_signatures):
+            bucket = buckets[table_index].setdefault(signature, [])
+            if len(bucket) < bucket_capacity:
+                bucket.append(i)
 
     root_to_cluster: Dict[int, int] = {}
     assignments: List[Optional[int]] = []
@@ -311,7 +454,25 @@ def _union_find_clusters(
             root_to_cluster[root] = next_cluster
             next_cluster += 1
         assignments.append(root_to_cluster[root])
-    return assignments, pair_sims
+    exhaustive_pair_count = n * max(0, n - 1) // 2
+    return assignments, pair_sims, {
+        "backend": "deterministic_angular_lsh",
+        "table_count": table_count,
+        "projection_bits": projection_bits,
+        "hamming_probe_radius": hamming_probe_radius,
+        "bucket_capacity": bucket_capacity,
+        "max_candidates_per_vector": max_candidates_per_vector,
+        "seed": int(seed),
+        "embedding_dimension": dimension,
+        "candidate_comparison_count": candidate_comparison_count,
+        "exhaustive_pair_count": exhaustive_pair_count,
+        "candidate_fraction": (
+            round(candidate_comparison_count / exhaustive_pair_count, 8)
+            if exhaustive_pair_count
+            else 0.0
+        ),
+        "pairwise_similarity_matrix_materialized": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -333,18 +494,55 @@ def dedup_clips(
     """
     config = config or SemanticDedupConfig()
     provider = provider or DownsampledPixelEmbeddingProvider()
+    if len(clips) > config.max_clip_count:
+        raise PipelineError(
+            f"semantic_dedup_clip_count_exceeds_limit:{len(clips)}>{config.max_clip_count}"
+        )
 
     clip_ids = [
         str(clip.get("clip_id") or clip.get("id") or f"clip_{index}")
         for index, clip in enumerate(clips)
     ]
 
+    minimum_embeddings = (
+        config.min_keyframe_embeddings if config.production_mode else 1
+    )
     embeddings: List[Optional[np.ndarray]] = []
+    keyframe_hashes: List[List[str]] = []
     for clip in clips:
-        image = _clip_keyframe_image(clip, bundle_dir)
-        embeddings.append(None if image is None else np.asarray(provider.embed_image(image)))
+        images = _clip_keyframe_images(
+            clip,
+            bundle_dir,
+            sample_count=config.keyframe_samples,
+        )
+        embedding, hashes = _aggregate_keyframe_embeddings(
+            images,
+            provider=provider,
+            minimum=minimum_embeddings,
+        )
+        embeddings.append(embedding)
+        keyframe_hashes.append(hashes)
 
-    assignments, pair_sims = _union_find_clusters(embeddings, config.similarity_threshold)
+    embedding_memory_bytes = sum(
+        int(np.asarray(embedding).nbytes)
+        for embedding in embeddings
+        if embedding is not None
+    )
+    if embedding_memory_bytes > config.max_embedding_memory_bytes:
+        raise PipelineError(
+            "semantic_dedup_embedding_memory_limit_exceeded:"
+            f"{embedding_memory_bytes}>{config.max_embedding_memory_bytes}"
+        )
+    assignments, pair_sims, ann_diagnostics = _ann_union_find_clusters(
+        embeddings,
+        config.similarity_threshold,
+        table_count=config.ann_table_count,
+        projection_bits=config.ann_projection_bits,
+        hamming_probe_radius=config.ann_hamming_probe_radius,
+        bucket_capacity=config.ann_bucket_capacity,
+        max_candidates_per_vector=config.ann_max_candidates_per_vector,
+        seed=config.ann_seed,
+    )
 
     trajectories = [_clip_trajectory(clip) for clip in clips]
 
@@ -356,22 +554,42 @@ def dedup_clips(
                 "cluster_id": assignments[index],
                 "kept": True,
                 "embeddable": embeddings[index] is not None,
+                "keyframe_sha256": keyframe_hashes[index],
+                "keyframe_count": len(keyframe_hashes[index]),
+                "trajectory_verifiable": trajectories[index] is not None,
                 "similarity_to_kept": None,
                 "trajectory_rms_to_kept_m": None,
                 "drop_reason": None,
             }
         )
         if embeddings[index] is None:
-            # No keyframe image -> cannot cluster; kept, flagged for audit.
-            member_records[index]["drop_reason"] = None
-            member_records[index]["note"] = "not_embeddable_kept_unclustered"
+            if config.production_mode:
+                member_records[index]["kept"] = False
+                member_records[index]["drop_reason"] = "keyframe_embedding_unverifiable"
+                member_records[index]["note"] = "not_embeddable_excluded_from_production"
+            else:
+                member_records[index]["note"] = "not_embeddable_kept_fixture_only"
+        elif trajectories[index] is None and config.production_mode:
+            member_records[index]["kept"] = False
+            member_records[index]["drop_reason"] = "trajectory_not_measurable_fail_closed"
 
     # Stage 2: trajectory verification within each cluster, in input order
     # (keep-first policy: the earliest member of a duplicate group wins).
     clusters: Dict[int, List[int]] = {}
     for index, cluster_id in enumerate(assignments):
-        if cluster_id is not None:
+        if cluster_id is not None and member_records[index]["kept"]:
             clusters.setdefault(cluster_id, []).append(index)
+
+    def similarity_for(left: int, right: int) -> float:
+        pair = (min(left, right), max(left, right))
+        cached = pair_sims.get(pair)
+        if cached is not None:
+            return cached
+        left_embedding = embeddings[left]
+        right_embedding = embeddings[right]
+        if left_embedding is None or right_embedding is None:
+            return 0.0
+        return cosine_similarity(left_embedding, right_embedding)
 
     for cluster_id, members in sorted(clusters.items()):
         kept_members: List[int] = []
@@ -397,23 +615,26 @@ def dedup_clips(
                     duplicate_rms = rms
                     break
             if duplicate_of is not None:
-                pair = (min(index, duplicate_of), max(index, duplicate_of))
                 record["kept"] = False
                 record["duplicate_of_clip_id"] = clip_ids[duplicate_of]
-                record["similarity_to_kept"] = round(pair_sims.get(pair, 0.0), 6)
+                record["similarity_to_kept"] = round(
+                    similarity_for(index, duplicate_of), 6
+                )
                 record["trajectory_rms_to_kept_m"] = round(float(duplicate_rms), 6)
                 record["drop_reason"] = "duplicate_trajectory_within_visual_cluster"
             elif unverifiable_against is not None and not config.keep_unverifiable_cluster_members:
-                pair = (min(index, unverifiable_against), max(index, unverifiable_against))
                 record["kept"] = False
                 record["duplicate_of_clip_id"] = clip_ids[unverifiable_against]
-                record["similarity_to_kept"] = round(pair_sims.get(pair, 0.0), 6)
+                record["similarity_to_kept"] = round(
+                    similarity_for(index, unverifiable_against), 6
+                )
                 record["drop_reason"] = "trajectory_not_measurable_fail_closed"
             else:
                 kept_members.append(index)
                 if kept_members[0] != index:
-                    pair = (min(index, kept_members[0]), max(index, kept_members[0]))
-                    record["similarity_to_kept"] = round(pair_sims.get(pair, 0.0), 6)
+                    record["similarity_to_kept"] = round(
+                        similarity_for(index, kept_members[0]), 6
+                    )
                     traj_a = trajectories[index]
                     traj_b = trajectories[kept_members[0]]
                     if traj_a is not None and traj_b is not None:
@@ -428,6 +649,29 @@ def dedup_clips(
 
     kept_clip_ids = [r["clip_id"] for r in member_records if r["kept"]]
     dropped = [r for r in member_records if not r["kept"]]
+
+    provider_model_id = str(getattr(provider, "model_id", "") or "").strip()
+    provider_revision = str(getattr(provider, "revision", "") or "").strip()
+    provider_production_ready = bool(getattr(provider, "production_ready", False))
+    provider_is_production = (
+        provider.name in PRODUCTION_EMBEDDING_BACKENDS
+        and provider_production_ready
+        and bool(provider_model_id)
+        and len(provider_revision) == 40
+        and all(character in "0123456789abcdef" for character in provider_revision.lower())
+    )
+    production_blockers: List[str] = []
+    if config.production_mode and not provider_is_production:
+        production_blockers.append("production_embedding_provider_not_approved")
+    if config.production_mode and any(not record["embeddable"] for record in member_records):
+        production_blockers.append("one_or_more_clips_missing_required_keyframe_embeddings")
+    if config.production_mode and any(
+        not record["trajectory_verifiable"] for record in member_records
+    ):
+        production_blockers.append("one_or_more_clips_missing_valid_relative_se3_trajectory")
+    production_accepted_clip_ids = (
+        kept_clip_ids if config.production_mode and not production_blockers else []
+    )
 
     cluster_summaries = [
         {
@@ -462,13 +706,27 @@ def dedup_clips(
         "embedding_provider": {
             "name": provider.name,
             "version": provider.version,
+            "model_id": provider_model_id or None,
+            "revision": provider_revision or None,
+            "production_ready_declared": provider_production_ready,
             "production_backends": list(PRODUCTION_EMBEDDING_BACKENDS),
-            "is_production_backend": provider.name in PRODUCTION_EMBEDDING_BACKENDS,
+            "is_production_backend": provider_is_production,
+        },
+        "scalability": {
+            **ann_diagnostics,
+            "input_clip_limit": config.max_clip_count,
+            "embedding_memory_bytes": embedding_memory_bytes,
+            "embedding_memory_limit_bytes": config.max_embedding_memory_bytes,
+            "keyframes_loaded_one_clip_at_a_time": True,
+            "bounded_candidate_index": True,
         },
         "clusters": cluster_summaries,
         "clips": member_records,
         "kept_clip_ids": kept_clip_ids,
+        "production_accepted_clip_ids": production_accepted_clip_ids,
         "dropped_clip_ids": [r["clip_id"] for r in dropped],
+        "production_status": "passed" if config.production_mode and not production_blockers else "blocked",
+        "production_blockers": sorted(set(production_blockers)),
         # Coverage counts are POST-dedup by contract: buyer-facing "N clips"
         # must never include duplicates.
         "coverage": {
@@ -491,6 +749,7 @@ def run_semantic_dedup_stage(
     config_path: Optional[str | Path] = None,
     provider: Optional[EmbeddingProvider] = None,
     output_dir: Optional[str | Path] = None,
+    accepted_clip_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Dedup the clips of a bundle directory and write the dedup manifest.
 
@@ -506,7 +765,28 @@ def run_semantic_dedup_stage(
     config = config or SemanticDedupConfig()
 
     clips = load_clip_records(bundle_dir)
+    if accepted_clip_ids is not None:
+        accepted = {str(item).strip() for item in accepted_clip_ids if str(item).strip()}
+        clips = [
+            clip
+            for index, clip in enumerate(clips)
+            if str(
+                clip.get("clip_id")
+                or clip.get("id")
+                or f"clip_{index:06d}"
+            ).strip()
+            in accepted
+        ]
     manifest = dedup_clips(clips, config=config, provider=provider, bundle_dir=bundle_dir)
+    manifest["canonical_input_filter"] = {
+        "applied": accepted_clip_ids is not None,
+        "accepted_clip_ids": sorted(
+            {str(item).strip() for item in accepted_clip_ids or [] if str(item).strip()}
+        ),
+        "exact_input_match": accepted_clip_ids is not None
+        and len(clips)
+        == len({str(item).strip() for item in accepted_clip_ids or [] if str(item).strip()}),
+    }
 
     out_dir = Path(output_dir) if output_dir is not None else bundle_dir / DEFAULT_OUTPUT_SUBDIR
     manifest_path = out_dir / "semantic_dedup_manifest.json"
@@ -525,7 +805,13 @@ def run_semantic_dedup_stage(
     )
 
     return {
-        "status": "completed",
+        "status": (
+            "blocked"
+            if config.production_mode and manifest["production_blockers"]
+            else "completed"
+            if config.production_mode
+            else "completed_fixture_only"
+        ),
         "bundle_dir": str(bundle_dir),
         "manifest_path": str(manifest_path),
         "embedding_provider": dict(manifest["embedding_provider"]),
@@ -533,6 +819,8 @@ def run_semantic_dedup_stage(
         "post_dedup_clip_count": manifest["coverage"]["post_dedup_clip_count"],
         "dropped_duplicate_count": manifest["coverage"]["dropped_duplicate_count"],
         "kept_clip_ids": list(manifest["kept_clip_ids"]),
+        "production_accepted_clip_ids": list(manifest["production_accepted_clip_ids"]),
+        "production_blockers": list(manifest["production_blockers"]),
     }
 
 
@@ -557,7 +845,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         output_dir=args.output_dir,
     )
     print(json.dumps(result, indent=2))
-    return 0
+    return 0 if result["status"] != "blocked" else 2
 
 
 if __name__ == "__main__":  # pragma: no cover

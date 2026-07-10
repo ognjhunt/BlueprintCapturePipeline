@@ -1,8 +1,11 @@
 import json
+import threading
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import google.cloud
 
 import blueprint_pipeline.pubsub_handoff_listener as listener_module
 from blueprint_pipeline.common import PipelineError
@@ -108,6 +111,7 @@ class FakeSubscriber:
     def __init__(self, received_messages: list[object]) -> None:
         self.received_messages = received_messages
         self.acknowledged: list[str] = []
+        self.ack_deadline_requests: list[dict] = []
         self.pull_requests: list[dict] = []
 
     def pull(self, *, request: dict, timeout: int) -> object:
@@ -116,6 +120,9 @@ class FakeSubscriber:
 
     def acknowledge(self, *, request: dict) -> None:
         self.acknowledged.extend(request["ack_ids"])
+
+    def modify_ack_deadline(self, *, request: dict) -> None:
+        self.ack_deadline_requests.append(request)
 
 
 def test_parse_handoff_payload_requires_identity_consistency() -> None:
@@ -148,6 +155,11 @@ def test_parse_handoff_payload_blocks_mismatched_raw_prefix() -> None:
                 "raw_prefix_uri": "gs://capture-bucket/scenes/other/captures/capture-1/raw",
             }
         )
+
+
+def test_parse_handoff_payload_rejects_invalid_utf8_as_permanent_input_error() -> None:
+    with pytest.raises(PipelineError, match="not valid UTF-8"):
+        parse_handoff_payload(b"\xff\xfe")
 
 
 def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
@@ -220,7 +232,7 @@ def test_process_handoff_threads_robot_eval_request_without_live_spend(
             "capture_id": "capture-1",
             "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
             "robot_eval_job_request_uri": f"gs://capture-bucket/{robot_request_key}",
-            "robot_eval_job_id": "customer job 1",
+            "robot_eval_job_id": "customer-job-1",
             "robot_eval_provisioner": "runpod",
             "robot_eval_simulator": "mujoco",
             "robot_eval_evaluation_substrate": "wam",
@@ -234,7 +246,8 @@ def test_process_handoff_threads_robot_eval_request_without_live_spend(
 
     capture_root = tmp_path / "capture-bucket" / prefix
     staged_request = capture_root / "pipeline" / "robot_eval_requests" / "request-1.json"
-    assert result["status"] == "processed"
+    assert result["status"] == "retryable_blocked"
+    assert result["queue_disposition"] == "retryable"
     assert staged_request.is_file()
     assert calls == [
         {
@@ -243,7 +256,7 @@ def test_process_handoff_threads_robot_eval_request_without_live_spend(
             "run_evaluation_prep": True,
             "resume_completed_stages": True,
             "robot_eval_job_request": str(staged_request),
-            "robot_eval_job_id": "customer job 1",
+            "robot_eval_job_id": "customer-job-1",
             "robot_eval_provisioner": "runpod",
             "robot_eval_simulator": "mujoco",
             "robot_eval_evaluation_substrate": "wam",
@@ -252,6 +265,32 @@ def test_process_handoff_threads_robot_eval_request_without_live_spend(
             "allow_robot_eval_simulator_execution": False,
         }
     ]
+    ledger = json.loads(
+        (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["status"] == "retryable_blocked"
+    assert ledger["retry_blockers"] == ["blocked"]
+
+    def restored_run_e2e(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "robot_eval_job": {"status": "completed"}}
+
+    retried = process_handoff_payload(
+        {
+            "bucket": "capture-bucket",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "robot_eval_job_request_uri": f"gs://capture-bucket/{robot_request_key}",
+            "robot_eval_job_id": "customer-job-1",
+        },
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=restored_run_e2e,
+        storage_client=client,  # type: ignore[arg-type]
+    )
+    assert retried["status"] == "processed"
+    assert len(calls) == 2
 
 
 def test_process_handoff_stages_control_plane_inbox_without_running_e2e(
@@ -370,6 +409,11 @@ def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:
     )
     assert ledger["status"] == "completed"
     assert ledger["attempt_count"] == 1
+    commit = json.loads(
+        (capture_root / "pipeline_job_output_commit.json").read_text(encoding="utf-8")
+    )
+    assert commit["status"] == "committed"
+    assert ledger["output_result_sha256"] == commit["result_sha256"]
 
     status = read_handoff_job_status(
         storage_root=tmp_path,
@@ -392,8 +436,68 @@ def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:
             "stage": "run_e2e",
             "started_at": ledger["last_attempt_started_at"],
             "status": "completed",
+            "queue_disposition": "terminal_success",
+            "output_commit_status": "committed",
+            "output_commit_path": "pipeline_job_output_commit.json",
+            "blockers": [],
         }
     ]
+
+
+def test_expired_lease_recovers_existing_output_commit_without_rerun(
+    tmp_path: Path,
+) -> None:
+    prefix = "scenes/scene-1/captures/capture-1"
+    client = FakeStorageClient(
+        [
+            FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+            FakeBlob(f"{prefix}/pipeline_handoff.json", b"{}"),
+        ]
+    )
+    payload = {
+        "bucket": "capture-bucket",
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+    }
+    capture_root = tmp_path / "capture-bucket" / prefix
+    assert process_handoff_payload(
+        payload,
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=lambda **_kwargs: {"status": "ok"},
+        storage_client=client,  # type: ignore[arg-type]
+    )["status"] == "processed"
+    ledger_path = capture_root / "pipeline_job_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    listener_module.write_json(
+        ledger_path,
+        {
+            **ledger,
+            "status": "processing",
+            "lease_owner": "crashed-worker",
+            "lease_token": "dead-token",
+            "lease_expires_at": "2020-01-01T00:00:00Z",
+        },
+    )
+    calls: list[str] = []
+    recovered = process_handoff_payload(
+        payload,
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=lambda **_kwargs: calls.append("rerun") or {"status": "ok"},
+        storage_client=client,  # type: ignore[arg-type]
+        lease_owner="recovery-worker",
+    )
+    assert recovered["status"] == "skipped_committed_output_recovered"
+    assert recovered["queue_disposition"] == "terminal_success"
+    assert calls == []
+    final_ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert final_ledger["status"] == "completed"
+    assert final_ledger["attempt_count"] == 2
+    assert final_ledger["attempt_history"][-1]["status"] == (
+        "completed_from_output_commit"
+    )
 
 
 def test_read_handoff_job_status_reports_not_staged(tmp_path: Path) -> None:
@@ -678,11 +782,12 @@ def test_main_status_mode_surfaces_retryable_failure(
     assert printed["attempt_history"][0]["status"] == "failed_retryable"
 
 
-def test_pull_and_process_acks_successes_while_leaving_poison_unacked(
+def test_pull_and_process_acks_successes_and_permanent_invalid_payload(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    pubsub_v1 = pytest.importorskip("google.cloud.pubsub_v1")
+    pubsub_v1 = types.SimpleNamespace()
+    monkeypatch.setattr(google.cloud, "pubsub_v1", pubsub_v1, raising=False)
 
     def received(ack_id: str, message_id: str, data: bytes) -> object:
         return types.SimpleNamespace(
@@ -725,23 +830,225 @@ def test_pull_and_process_acks_successes_while_leaving_poison_unacked(
         processed_payloads.append(payload)
         return {"status": "processed"}
 
-    monkeypatch.setattr(pubsub_v1, "SubscriberClient", lambda: subscriber)
+    monkeypatch.setattr(
+        pubsub_v1,
+        "SubscriberClient",
+        lambda: subscriber,
+        raising=False,
+    )
     monkeypatch.setattr(
         listener_module,
         "process_handoff_payload",
         fake_process_handoff_payload,
     )
 
-    processed = pull_and_process(
+    acknowledged = pull_and_process(
         subscription="projects/p/subscriptions/s",
         storage_root=tmp_path,
         provider="openai",
         max_messages=3,
     )
 
-    assert processed == 2
+    assert acknowledged == 3
     assert processed_payloads == [payload_one, payload_two]
-    assert subscriber.acknowledged == ["ack-good-1", "ack-good-2"]
+    assert subscriber.acknowledged == ["ack-good-1", "ack-poison", "ack-good-2"]
+    permanent_invalid = list(
+        (tmp_path / ".pubsub_delivery_evidence" / "permanent_invalid").glob("*.json")
+    )
+    assert len(permanent_invalid) == 1
+    invalid_record = json.loads(permanent_invalid[0].read_text(encoding="utf-8"))
+    assert invalid_record["raw_payload_stored"] is False
+    assert invalid_record["payload_sha256"]
+    assert any(
+        request["ack_deadline_seconds"] > 0
+        for request in subscriber.ack_deadline_requests
+    )
+
+
+def test_concurrent_duplicate_delivery_observes_active_lease_and_executes_once(
+    tmp_path: Path,
+) -> None:
+    prefix = "scenes/scene-1/captures/capture-1"
+    client = FakeStorageClient(
+        [
+            FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+            FakeBlob(f"{prefix}/pipeline_handoff.json", b"{}"),
+        ]
+    )
+    payload = {
+        "bucket": "capture-bucket",
+        "scene_id": "scene-1",
+        "capture_id": "capture-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+    }
+    entered = threading.Event()
+    release = threading.Event()
+    results: list[dict] = []
+    calls: list[str] = []
+
+    def slow_run(**_kwargs: object) -> dict:
+        calls.append("run")
+        entered.set()
+        assert release.wait(timeout=5)
+        return {"status": "ok"}
+
+    thread = threading.Thread(
+        target=lambda: results.append(
+            process_handoff_payload(
+                payload,
+                storage_root=tmp_path,
+                provider="openai",
+                run_e2e=slow_run,
+                storage_client=client,  # type: ignore[arg-type]
+                lease_owner="worker-one",
+            )
+        )
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    duplicate = process_handoff_payload(
+        payload,
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=slow_run,
+        storage_client=client,  # type: ignore[arg-type]
+        lease_owner="worker-two",
+    )
+    release.set()
+    thread.join(timeout=5)
+
+    assert duplicate["status"] == "lease_active_retryable"
+    assert duplicate["queue_disposition"] == "retryable"
+    assert results[0]["status"] == "processed"
+    assert calls == ["run"]
+
+
+def test_expired_job_lease_is_recovered_with_new_attempt(tmp_path: Path) -> None:
+    capture_root = (
+        tmp_path
+        / "capture-bucket"
+        / "scenes"
+        / "scene-1"
+        / "captures"
+        / "capture-1"
+    )
+    now = datetime(2026, 7, 9, 12, tzinfo=timezone.utc)
+    first_status, first = listener_module._claim_job_lease(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        owner="worker-one",
+        lease_seconds=30,
+        now=now,
+    )
+    active_status, _ = listener_module._claim_job_lease(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        owner="worker-two",
+        lease_seconds=30,
+        now=now + timedelta(seconds=20),
+    )
+    recovered_status, recovered = listener_module._claim_job_lease(
+        capture_root,
+        scene_id="scene-1",
+        capture_id="capture-1",
+        owner="worker-two",
+        lease_seconds=30,
+        now=now + timedelta(seconds=31),
+    )
+
+    assert first_status == "claimed"
+    assert first["attempt_count"] == 1
+    assert active_status == "active"
+    assert recovered_status == "claimed"
+    assert recovered["attempt_count"] == 2
+    assert recovered["recovered_expired_lease"] is True
+    assert recovered["previous_lease_owner"] == "worker-one"
+
+
+def test_corrupt_job_ledger_fails_closed_without_execution_or_overwrite(
+    tmp_path: Path,
+) -> None:
+    prefix = "scenes/scene-1/captures/capture-1"
+    capture_root = tmp_path / "capture-bucket" / prefix
+    capture_root.mkdir(parents=True)
+    ledger_path = capture_root / "pipeline_job_ledger.json"
+    ledger_path.write_bytes(b'{"status":"processing"')
+    calls: list[str] = []
+    result = process_handoff_payload(
+        {
+            "bucket": "capture-bucket",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        },
+        storage_root=tmp_path,
+        provider="openai",
+        run_e2e=lambda **_kwargs: calls.append("run") or {"status": "ok"},
+        storage_client=FakeStorageClient([]),  # type: ignore[arg-type]
+    )
+    assert result["status"] == "job_ledger_corrupt_retryable"
+    assert result["queue_disposition"] == "retryable"
+    assert calls == []
+    assert ledger_path.read_bytes() == b'{"status":"processing"'
+
+
+def test_pull_and_process_nacks_retryable_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pubsub_v1 = types.SimpleNamespace()
+    monkeypatch.setattr(google.cloud, "pubsub_v1", pubsub_v1, raising=False)
+    payload = json.dumps(
+        {
+            "bucket": "capture-bucket",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        }
+    ).encode()
+    received = types.SimpleNamespace(
+        ack_id="ack-retry",
+        delivery_attempt=5,
+        message=types.SimpleNamespace(message_id="msg-retry", data=payload, attributes={}),
+    )
+    subscriber = FakeSubscriber([received])
+    monkeypatch.setattr(
+        pubsub_v1,
+        "SubscriberClient",
+        lambda: subscriber,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        listener_module,
+        "process_handoff_payload",
+        lambda *_args, **_kwargs: {
+            "status": "retryable_blocked",
+            "queue_disposition": "retryable",
+            "blockers": ["dependency_unavailable"],
+        },
+    )
+
+    assert pull_and_process(
+        subscription="projects/p/subscriptions/s",
+        storage_root=tmp_path,
+        provider="openai",
+        max_messages=1,
+    ) == 0
+    assert subscriber.acknowledged == []
+    assert subscriber.ack_deadline_requests[-1]["ack_deadline_seconds"] == 0
+    exhausted = list(
+        (
+            tmp_path
+            / ".pubsub_delivery_evidence"
+            / "retry_exhausted_pending_pubsub_dlq"
+        ).glob("*.json")
+    )
+    assert len(exhausted) == 1
+    record = json.loads(exhausted[0].read_text(encoding="utf-8"))
+    assert record["delivery_attempt"] == 5
+    assert record["blockers"] == ["dependency_unavailable"]
 
 
 def test_stage_handoff_synthesizes_missing_pipeline_handoff(tmp_path: Path) -> None:

@@ -906,6 +906,19 @@ def _parse_frame_intrinsics(row: Dict[str, Any]) -> Optional[Dict[str, float]]:
 # ---------------------------------------------------------------------------
 
 
+def _pose_timestamp_seconds(pose: Mapping[str, Any]) -> float:
+    """Read canonical capture-relative timestamps while retaining legacy support."""
+
+    for field in ("t_device_sec", "tCaptureSec", "timestamp_sec", "timestamp_seconds"):
+        if pose.get(field) is not None:
+            return float(pose[field])
+    if pose.get("t_device_ms") is not None:
+        return float(pose["t_device_ms"]) / 1000.0
+    if pose.get("timestamp_ms") is not None:
+        return float(pose["timestamp_ms"]) / 1000.0
+    return float(pose.get("timestamp", 0))
+
+
 def _select_frames(
     *,
     poses: List[Dict[str, Any]],
@@ -918,7 +931,7 @@ def _select_frames(
     if not poses:
         return []
 
-    sorted_poses = sorted(poses, key=lambda p: float(p.get("timestamp", 0)))
+    sorted_poses = sorted(poses, key=_pose_timestamp_seconds)
     selected: List[Dict[str, Any]] = []
     last_pos: Optional[Tuple[float, float, float]] = None
     last_t: Optional[float] = None
@@ -936,7 +949,7 @@ def _select_frames(
             frame_id = str(frame_id).zfill(6)
 
         frame_index_int = pose.get("frame_index", pose.get("frameIndex", 0))
-        t = float(pose.get("timestamp", 0))
+        t = _pose_timestamp_seconds(pose)
         T = pose.get("T_world_camera")
         if T is None:
             continue
@@ -1093,6 +1106,7 @@ def _build_dense_records(
                 "frame_uri": None,
                 "embedding_uri": None,
                 "embedding_model_id": _DINOV3_MODEL_ID,
+                "embedding_model_revision": _DINOV3_MODEL_REVISION,
                 "depth_uri": depth_uri,
                 "confidence_uri": confidence_uri,
             }
@@ -1212,6 +1226,7 @@ def _write_placeholder_frame(output_path: Path) -> bool:
 
 
 _DINOV3_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+_DINOV3_MODEL_REVISION = "ea8dc2863c51be0a264bab82070e3e8836b02d51"
 
 
 def _load_dinov3() -> Any:
@@ -1224,8 +1239,16 @@ def _load_dinov3() -> Any:
     try:
         import torch
         from transformers import AutoImageProcessor, AutoModel
-        processor = AutoImageProcessor.from_pretrained(_DINOV3_MODEL_ID)
-        model = AutoModel.from_pretrained(_DINOV3_MODEL_ID)
+        processor = AutoImageProcessor.from_pretrained(
+            _DINOV3_MODEL_ID,
+            revision=_DINOV3_MODEL_REVISION,
+            trust_remote_code=False,
+        )
+        model = AutoModel.from_pretrained(
+            _DINOV3_MODEL_ID,
+            revision=_DINOV3_MODEL_REVISION,
+            trust_remote_code=False,
+        )
         model.eval()
         if torch.cuda.is_available():
             model = model.cuda()
@@ -1481,6 +1504,9 @@ def _append_to_site_reference_index(
                 "confidence_uri": record.get("confidence_uri"),
                 "embedding_uri": record.get("embedding_uri"),
                 "embedding_model_id": record.get("embedding_model_id") or _DINOV3_MODEL_ID,
+                "embedding_model_revision": (
+                    record.get("embedding_model_revision") or _DINOV3_MODEL_REVISION
+                ),
                 "frame_uri": record.get("frame_uri"),
                 "thumbnail_uri": record.get("thumbnail_uri"),
                 "privacy_source": record.get("privacy_source", "raw_video"),

@@ -5,6 +5,33 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
 Type=oneshot
 Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
 Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
@@ -19,5 +46,3 @@ ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bi
 ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-live-pipeline-control-plane ]; then exec .venv/bin/blueprint-run-live-pipeline-control-plane; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_control_plane; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_control_plane'
 ExecStartPost=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && exec /bin/bash deploy/systemd/blueprint-control-plane-postchecks.sh'
 Nice=5
-NoNewPrivileges=true
-PrivateTmp=true

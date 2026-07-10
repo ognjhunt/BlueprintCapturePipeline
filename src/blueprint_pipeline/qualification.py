@@ -41,6 +41,7 @@ from .launch_proof_policy import (
     relative_artifact_checksum,
 )
 from .object_index_stage import ensure_object_index_stage
+from .object_index_artifacts import resolve_current_object_index_artifacts
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
 from .proof_contracts import build_rights_provenance_review
@@ -290,8 +291,9 @@ def _presentation_render_inputs(
     geometry_conditioning: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     geometry = geometry_conditioning if isinstance(geometry_conditioning, Mapping) else {}
+    privacy_video_uri = descriptor.preferred_world_model_video_uri
     payload = {
-        "raw_video_uri": descriptor.raw_video_uri,
+        "privacy_processed_video_uri": privacy_video_uri,
         "keyframe_uri": descriptor.keyframe_uri,
         "arkit_poses_uri": descriptor.arkit_poses_uri,
         "arkit_intrinsics_uri": descriptor.arkit_intrinsics_uri,
@@ -312,7 +314,7 @@ def _presentation_render_inputs(
         "site_world_spec_uri": None,
     }
     required_inputs = [
-        "raw_video_uri",
+        "privacy_processed_video_uri",
         "scene_memory_manifest_uri",
         "conditioning_bundle_uri",
     ]
@@ -408,7 +410,9 @@ def _try_read_optional_json_uri(uri: Optional[str], storage_root: Path) -> Optio
 
 
 def _object_index_runtime_blockers(capture_root: Path) -> List[str]:
-    build_report = _try_read_json(capture_root / "raw" / "object_index_build_report.json") or {}
+    resolved = resolve_current_object_index_artifacts(capture_root)
+    build_report_path = str(resolved.get("build_report_path") or "").strip()
+    build_report = _try_read_json(Path(build_report_path)) if build_report_path else {}
     runtime_preflight = build_report.get("runtime_preflight") if isinstance(build_report.get("runtime_preflight"), Mapping) else {}
     preflight_backends = runtime_preflight.get("backends") if isinstance(runtime_preflight.get("backends"), Mapping) else {}
     backend_summary = build_report.get("backend_summary") if isinstance(build_report.get("backend_summary"), Mapping) else {}
@@ -1088,6 +1092,12 @@ def _write_scene_memory_bundle(
     geometry_artifacts: Optional[Mapping[str, Any]] = None,
     depth_conditioning: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    privacy_video_uri = descriptor.preferred_world_model_video_uri
+    if not privacy_video_uri:
+        raise StageError(
+            "scene_memory",
+            "privacy_processed_video_required_for_derived_artifacts",
+        )
     policy = WorldModelPolicy.from_env()
     geometry_conditioning = (
         dict(geometry_artifacts) if isinstance(geometry_artifacts, Mapping) else {}
@@ -1172,7 +1182,7 @@ def _write_scene_memory_bundle(
     conditioning_provenance = build_provenance_record(
         grounding_level="observed",
         evidence_sources=[
-            descriptor.raw_video_uri,
+            privacy_video_uri,
             descriptor.frames_index_uri,
             descriptor.arkit_poses_uri,
             descriptor.arkit_intrinsics_uri,
@@ -1201,7 +1211,7 @@ def _write_scene_memory_bundle(
     )
     runtime_render_source = (
         "site_world_runtime_full_capture"
-        if descriptor.raw_video_uri and descriptor.arkit_poses_uri and descriptor.arkit_intrinsics_uri
+        if privacy_video_uri and descriptor.arkit_poses_uri and descriptor.arkit_intrinsics_uri
         else str(canonical_world_model.get("render_source") or "unavailable")
     )
     scene_representation = (
@@ -1215,7 +1225,8 @@ def _write_scene_memory_bundle(
         "scene_id": descriptor.scene_id,
         "capture_id": descriptor.capture_id,
         "generated_at": utc_now_iso(),
-        "raw_video_uri": descriptor.raw_video_uri,
+        "privacy_processed_video_uri": privacy_video_uri,
+        "world_model_video_uri": privacy_video_uri,
         "frames_index_uri": descriptor.frames_index_uri,
         "keyframe_uri": descriptor.keyframe_uri,
         "arkit": {
@@ -1520,7 +1531,7 @@ def _write_scene_memory_bundle(
         "camera_behavior": camera_behavior,
         "render_inputs": render_inputs,
         "required_dependencies": {
-            "raw_video_uri": descriptor.raw_video_uri,
+            "privacy_processed_video_uri": privacy_video_uri,
             "arkit_poses_uri": descriptor.arkit_poses_uri,
             "arkit_intrinsics_uri": descriptor.arkit_intrinsics_uri,
             "arkit_depth_prefix_uri": descriptor.arkit_depth_prefix_uri,
@@ -4413,11 +4424,19 @@ def run_qualification_pipeline(
                 stage_result = {}
             if isinstance(stage_result.get("grounding_payload"), Mapping):
                 grounding_payload = dict(stage_result["grounding_payload"])
-            object_index_uri = (
-                str(stage_result.get("object_index_uri") or "").strip()
-                or str(descriptor.object_index_uri or "").strip()
-                or resolve_object_index_uri(descriptor.raw_prefix_uri, manifest)
-            )
+            try:
+                stage_current_usable_count = int(stage_result.get("current_usable_object_count"))
+            except (TypeError, ValueError):
+                stage_current_usable_count = None
+            if stage_current_usable_count is not None and stage_current_usable_count <= 0:
+                # A blocked immutable rerun explicitly clears stale descriptor/raw fallbacks.
+                object_index_uri = None
+            else:
+                object_index_uri = (
+                    str(stage_result.get("object_index_uri") or "").strip()
+                    or str(descriptor.object_index_uri or "").strip()
+                    or resolve_object_index_uri(descriptor.raw_prefix_uri, manifest)
+                )
             if object_index_uri:
                 object_index_path = resolve_gs_uri_to_path(object_index_uri, storage_root)
                 object_index_entries = load_object_index(object_index_uri, gcs_root=storage_root)

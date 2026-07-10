@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from scripts.build_launch_readiness_packet import (
+    _ci_evidence_blockers,
     _forwarding_packet_blockers,
     build_launch_readiness_packet,
+    launch_readiness_exit_code,
 )
+from tests import test_release_evidence_graph as release_graph_fixture
+
+
+_PIPELINE_TRUST: dict[Path, release_graph_fixture.TrustContext] = {}
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -25,6 +37,36 @@ def _pipeline_source(head: str) -> dict[str, object]:
         "repo_name": "BlueprintCapturePipeline",
         "head": head,
     }
+
+
+def _valid_paid_release_evidence_graph(
+    head: str, pipeline_repo: Path
+) -> dict[str, object]:
+    """Build the same signed v2 graph shape trusted by the production validator."""
+
+    trust = _PIPELINE_TRUST[pipeline_repo.resolve()]
+    evidence_dir = pipeline_repo / "output" / "test-release-evidence"
+    previous = (
+        release_graph_fixture.REPOSITORY_SHA,
+        release_graph_fixture.IMAGE_DIGEST,
+        release_graph_fixture.NOW,
+    )
+    release_graph_fixture.REPOSITORY_SHA = head
+    release_graph_fixture.IMAGE_DIGEST = f"sha256:{'a' * 64}"
+    release_graph_fixture.NOW = datetime(2026, 7, 7, tzinfo=timezone.utc)
+    try:
+        release_graph_fixture._write_scope(evidence_dir, "PAID", trust=trust)
+        graph = release_graph_fixture._evaluate(
+            evidence_dir, trust=trust, scope="PAID"
+        )
+    finally:
+        (
+            release_graph_fixture.REPOSITORY_SHA,
+            release_graph_fixture.IMAGE_DIGEST,
+            release_graph_fixture.NOW,
+        ) = previous
+    assert graph["status"] == "passed"
+    return graph
 
 
 def _beta_data_retention_policy_payload() -> dict[str, object]:
@@ -116,9 +158,25 @@ def _init_clean_repo_at_origin_main(
 
 
 def _init_clean_pipeline_repo_at_origin_main(repo: Path) -> str:
-    return _init_clean_repo_at_origin_main(
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    requirements = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs"
+            / "release_evidence_requirements.json"
+        ).read_text(encoding="utf-8")
+    )
+    fingerprint = hashlib.sha256(public_key).hexdigest()
+    for authority in requirements["attestation_authorities"].values():
+        authority["public_key_sha256"] = fingerprint
+    head = _init_clean_repo_at_origin_main(
         repo,
         tracked_files={
+            "docs/release_evidence_requirements.json": json.dumps(requirements),
             "docs/beta_data_retention_policy_2026-07-09.json": json.dumps(
                 _beta_data_retention_policy_payload()
             ),
@@ -135,9 +193,17 @@ def _init_clean_pipeline_repo_at_origin_main(repo: Path) -> str:
             ),
         },
     )
+    _PIPELINE_TRUST[repo.resolve()] = release_graph_fixture.TrustContext(
+        requirements_path=repo / "docs" / "release_evidence_requirements.json",
+        private_key=private_key,
+        public_key_base64=base64.b64encode(public_key).decode("ascii"),
+    )
+    return head
 
 
-def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp_path: Path) -> None:
+def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(
+    tmp_path: Path,
+) -> None:
     pipeline = tmp_path / "BlueprintCapturePipeline"
     webapp = tmp_path / "Blueprint-WebApp"
     contracts = tmp_path / "BlueprintContracts"
@@ -166,9 +232,12 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     _write_json(
         pipeline / "output" / "paid_marketplace_launch_gate.json",
         {
-            "schema_version": "v1",
+            "schema_version": "blueprint.paid_marketplace_launch_gate.v2",
             "overall_status": "automated_contracts_passed_manual_ops_required",
             "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "release_evidence_graph": _valid_paid_release_evidence_graph(
+                heads["pipeline"], pipeline
+            ),
             "closeout_summary": {
                 "remaining_manual_evidence_ids": ["buyer_payment_settlement"],
             },
@@ -228,7 +297,7 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         evidence_id="pipeline_full_test_lane_ci_evidence",
         head_sha=heads["pipeline"],
         workflow="Full Test Lane",
-        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 3},
+        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 0},
     )
     _write_ci_evidence(
         pipeline / "output" / "pipeline_sim_only_local_gate_ci_evidence.json",
@@ -267,14 +336,10 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
         "pipeline_sim_only_local_gate_ci": "success",
         "webapp_main_ci": "success",
         "beta_data_retention_policy": "declared_validator_enforced_operator_signoff_required",
-        "beta_data_residency_transfer_policy": (
-            "declared_us_only_scope_operator_signoff_required"
-        ),
+        "beta_data_residency_transfer_policy": ("declared_us_only_scope_operator_signoff_required"),
         "operator_evidence": "blocked",
     }
-    assert packet["remaining_blockers"]["manual_live_evidence_ids"] == [
-        "buyer_payment_settlement"
-    ]
+    assert packet["remaining_blockers"]["manual_live_evidence_ids"] == ["buyer_payment_settlement"]
     assert packet["remaining_blockers"]["external_alpha_manual_items"] == [
         "android_capture_contract_tests:manual_required"
     ]
@@ -286,9 +351,13 @@ def test_launch_readiness_packet_links_artifacts_and_preserves_live_blockers(tmp
     ]
     assert packet["remaining_blockers"]["ci_evidence_blockers"] == []
     assert packet["claim_boundary"]["automated_contracts_do_not_prove_real_pubsub_delivery"] is True
-    assert packet["claim_boundary"]["beta_data_retention_policy_is_declared_contract_not_signed_dpa"] is True
+    assert (
+        packet["claim_boundary"]["beta_data_retention_policy_is_declared_contract_not_signed_dpa"]
+        is True
+    )
     assert packet["operator_evidence_status"]["evidence_file_present"] is False
     assert packet["operator_evidence_status"]["remaining_ids"] == ["buyer_payment_settlement"]
+    assert launch_readiness_exit_code(packet) == 1
 
 
 def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path: Path) -> None:
@@ -306,9 +375,12 @@ def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path
     _write_json(
         pipeline / "output" / "paid_marketplace_launch_gate.json",
         {
-            "schema_version": "v1",
+            "schema_version": "blueprint.paid_marketplace_launch_gate.v2",
             "overall_status": "automated_contracts_passed_manual_ops_required",
             "pipeline_source": _pipeline_source(heads["pipeline"]),
+            "release_evidence_graph": _valid_paid_release_evidence_graph(
+                heads["pipeline"], pipeline
+            ),
             "closeout_summary": {
                 "remaining_manual_evidence_ids": [
                     "buyer_payment_settlement",
@@ -381,7 +453,7 @@ def test_launch_readiness_packet_filters_verified_operator_evidence_ids(tmp_path
         evidence_id="pipeline_full_test_lane_ci_evidence",
         head_sha=heads["pipeline"],
         workflow="Full Test Lane",
-        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 3},
+        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 0},
     )
     _write_ci_evidence(
         pipeline / "output" / "pipeline_sim_only_local_gate_ci_evidence.json",
@@ -429,9 +501,12 @@ def test_launch_readiness_packet_blocks_stale_pipeline_artifact_source_heads(
     _write_json(
         pipeline / "output" / "paid_marketplace_launch_gate.json",
         {
-            "schema_version": "v1",
+            "schema_version": "blueprint.paid_marketplace_launch_gate.v2",
             "pipeline_source": _pipeline_source(stale_head),
             "overall_status": "automated_contracts_passed_manual_ops_required",
+            "release_evidence_graph": _valid_paid_release_evidence_graph(
+                heads["pipeline"], pipeline
+            ),
             "closeout_summary": {"remaining_manual_evidence_ids": []},
         },
     )
@@ -484,7 +559,7 @@ def test_launch_readiness_packet_blocks_stale_pipeline_artifact_source_heads(
         evidence_id="pipeline_full_test_lane_ci_evidence",
         head_sha=heads["pipeline"],
         workflow="Full Test Lane",
-        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 3},
+        test_counts={"tests": 3917, "failures": 0, "errors": 0, "skipped": 0},
     )
     _write_ci_evidence(
         pipeline / "output" / "pipeline_sim_only_local_gate_ci_evidence.json",
@@ -512,9 +587,10 @@ def test_launch_readiness_packet_blocks_stale_pipeline_artifact_source_heads(
         f"artifact_source_head_mismatch:paid_marketplace_launch_gate_json:{stale_head}",
         "artifact_source_head_missing:live_pipeline_setup_audit",
     ]
-    assert packet["remaining_blockers"]["artifact_source_blockers"] == packet[
-        "artifact_source_blockers"
-    ]
+    assert (
+        packet["remaining_blockers"]["artifact_source_blockers"]
+        == packet["artifact_source_blockers"]
+    )
 
 
 def test_forwarding_packet_blockers_reject_false_calm_without_probe() -> None:
@@ -535,6 +611,28 @@ def test_forwarding_packet_blockers_reject_false_calm_without_probe() -> None:
         "webapp_forwarding_probe_not_attempted",
         "webapp_forwarding_probe_not_reachable:not_requested",
     ]
+
+
+def test_launch_readiness_exit_code_is_zero_only_for_ready_packet() -> None:
+    assert launch_readiness_exit_code({"status": "ready"}) == 0
+    assert launch_readiness_exit_code({"status": "incomplete_packet"}) == 1
+    assert launch_readiness_exit_code({"status": "local_ready_live_external_blocked"}) == 1
+
+
+def test_launch_readiness_blocks_successful_ci_evidence_with_skips() -> None:
+    artifact = {
+        "id": "pipeline_full_test_lane_ci_evidence",
+        "repo_name": "BlueprintCapturePipeline",
+        "exists": True,
+        "schema_version": "blueprint.github_actions_evidence.v1",
+        "conclusion": "success",
+        "head_sha": "a" * 40,
+        "test_counts": {"tests": 10, "failures": 0, "errors": 0, "skipped": 1},
+    }
+
+    blockers = _ci_evidence_blockers([artifact], {"BlueprintCapturePipeline": {"head": "a" * 40}})
+
+    assert blockers == ["ci_evidence_test_skips:pipeline_full_test_lane_ci_evidence:1"]
 
 
 def test_forwarding_packet_blockers_reject_localhost_probe_as_production_ready() -> None:
@@ -585,15 +683,16 @@ def test_launch_readiness_packet_blocks_missing_required_artifacts(tmp_path: Pat
     assert "missing_artifact:paid_marketplace_launch_gate_json" in packet["artifact_blockers"]
     assert "missing_artifact:webapp_forwarding_preflight" in packet["artifact_blockers"]
     assert "missing_artifact:beta_data_retention_policy_json" in packet["artifact_blockers"]
-    assert "missing_artifact:beta_data_residency_transfer_policy_json" in packet[
-        "artifact_blockers"
-    ]
-    assert "missing_ci_evidence:pipeline_full_test_lane_ci_evidence" in packet[
-        "ci_evidence_blockers"
-    ]
-    assert "missing_ci_evidence:pipeline_sim_only_local_gate_ci_evidence" in packet[
-        "ci_evidence_blockers"
-    ]
+    assert (
+        "missing_artifact:beta_data_residency_transfer_policy_json" in packet["artifact_blockers"]
+    )
+    assert (
+        "missing_ci_evidence:pipeline_full_test_lane_ci_evidence" in packet["ci_evidence_blockers"]
+    )
+    assert (
+        "missing_ci_evidence:pipeline_sim_only_local_gate_ci_evidence"
+        in packet["ci_evidence_blockers"]
+    )
 
 
 def test_launch_readiness_packet_records_origin_main_when_local_checkout_is_dirty_feature(

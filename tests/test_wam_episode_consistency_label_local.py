@@ -82,6 +82,7 @@ def _request(tmp_path: Path, video: Path) -> Path:
 def test_local_wam_episode_consistency_blocks_without_gate(tmp_path: Path, monkeypatch) -> None:
     video = _write_motion_video(tmp_path / "rollout.mp4")
     monkeypatch.delenv(consistency_labeler.GATE_ENV, raising=False)
+    monkeypatch.delenv(consistency_labeler.LEGACY_GATE_ENV, raising=False)
 
     result = consistency_labeler.build_local_wam_episode_consistency_labels(
         input_path=_request(tmp_path, video),
@@ -93,7 +94,7 @@ def test_local_wam_episode_consistency_blocks_without_gate(tmp_path: Path, monke
     assert result["raw_credentials_written_to_artifacts"] is False
 
 
-def test_local_wam_episode_consistency_scores_motion_without_claim_upgrades(
+def test_local_visual_motion_smoke_never_emits_forward_inverse_proof(
     tmp_path: Path, monkeypatch
 ) -> None:
     video = _write_motion_video(tmp_path / "rollout.mp4")
@@ -108,15 +109,20 @@ def test_local_wam_episode_consistency_scores_motion_without_claim_upgrades(
     )
 
     assert result["status"] == "completed"
-    assert result["provider"] == "local_cv_wam_episode_consistency_judge"
+    assert result["provider"] == "local_cv_visual_motion_smoke"
     assert result["rollout_check_count"] == 1
     check = result["rollout_checks"][0]
-    assert check["forward_consistent"] is True
-    assert check["inverse_consistent"] is True
+    assert check["visual_motion_smoke_passed"] is True
+    assert check["forward_consistent"] is False
+    assert check["inverse_consistent"] is False
+    assert check["forward_inverse_consistency_proven"] is False
     assert check["visual_evidence_used"] is True
-    assert check["action_trace_evidence_used"] is True
-    assert check["local_cv_scorer_is_not_vlm_semantic_judge"] is True
+    assert check["action_trace_evidence_used"] is False
+    assert check["visible_action_alignment_evidence"] == []
+    assert check["local_cv_smoke_is_not_vlm_semantic_judge"] is True
     assert check["task_success_proven"] is False
     assert check["rank_fidelity_result_proven"] is False
-    assert result["claim_boundary"]["local_cv_scorer_is_not_vlm_semantic_judge"] is True
+    assert result["forward_inverse_consistency_proven"] is False
+    assert result["claim_boundary"]["artifact_is_visual_motion_smoke_only"] is True
+    assert result["claim_boundary"]["visual_motion_smoke_reads_action_values"] is False
     assert output.is_file()

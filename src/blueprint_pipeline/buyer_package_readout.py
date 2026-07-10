@@ -23,6 +23,7 @@ BUYER_PACKAGE_READOUT_SCHEMA_VERSION = "buyer_package_readout.v1"
 # here: pricing/entitlement wiring is out of band and must never gate evidence review.
 BUYER_CRITICAL_SECTIONS: tuple[str, ...] = (
     "cards",
+    "canonical_training_quality",
     "rights_privacy_provenance",
     "robot_pov_evidence",
     "failure_evidence",
@@ -55,6 +56,11 @@ BUYER_BLOCKER_CLASS_COPY: dict[str, dict[str, str]] = {
         "headline": "Package cards are incomplete.",
         "body": "One or more site, task, scenario, or evaluation cards are missing.",
         "next_step": "Rebuild the robot-evaluation dataset cards before delivery.",
+    },
+    "canonical_training_quality": {
+        "headline": "Canonical training-quality checks are incomplete.",
+        "body": "Curation, production dedup, grounded captions, and action normalization are not all bound to the exported IDs.",
+        "next_step": "Run the canonical quality pipeline and regenerate exports from accepted clip and attempt IDs only.",
     },
     "rights_privacy_provenance": {
         "headline": "Rights, privacy, or provenance evidence is incomplete.",
@@ -323,19 +329,81 @@ def build_buyer_package_readout(
         eval_cards_included="eval_cards" in included,
     )
 
-    rights_present = "rights_packet" in included
-    sections["rights_privacy_provenance"] = _presence_section(
-        present=rights_present,
-        missing_blocker="rights_packet_missing",
-        rights_packet_included=rights_present,
-        rights_privacy_scope_proven=_strict_bool(
-            claim_boundary.get("rights_privacy_scope_proven")
+    canonical_quality = _mapping(
+        manifest.get("canonical_training_quality_pipeline")
+    )
+    canonical_quality_blockers: list[str] = []
+    if "canonical_training_quality_pipeline" not in included and not str(
+        manifest.get("canonical_training_quality_pipeline_path") or ""
+    ).strip():
+        canonical_quality_blockers.append("canonical_pipeline_manifest_missing")
+    if canonical_quality.get("status") != "passed":
+        canonical_quality_blockers.append("canonical_pipeline_not_passed")
+    accepted_clip_ids = _string_list(canonical_quality.get("accepted_clip_ids"))
+    accepted_attempt_ids = _string_list(
+        canonical_quality.get("accepted_attempt_ids")
+    )
+    if not accepted_clip_ids:
+        canonical_quality_blockers.append("canonical_accepted_clip_ids_missing")
+    if not accepted_attempt_ids:
+        canonical_quality_blockers.append("canonical_accepted_attempt_ids_missing")
+    if not _strict_bool(manifest.get("premium_quality_eligible")):
+        canonical_quality_blockers.append("premium_quality_not_eligible")
+    if not _strict_bool(manifest.get("native_training_export_eligible")):
+        canonical_quality_blockers.append("native_training_export_not_eligible")
+    if _manifest_bool(export_policy.get("rejected_clips_exported")):
+        canonical_quality_blockers.append("rejected_clips_present_in_export")
+    if not _strict_bool(
+        export_policy.get("self_attested_metadata_is_canonical_stage_proof")
+        is False
+    ):
+        canonical_quality_blockers.append(
+            "self_attested_metadata_proof_boundary_missing"
+        )
+    sections["canonical_training_quality"] = _section(
+        "present" if not canonical_quality_blockers else "missing",
+        canonical_quality_blockers,
+        pipeline_status=canonical_quality.get("status"),
+        accepted_clip_ids=accepted_clip_ids,
+        accepted_attempt_ids=accepted_attempt_ids,
+        premium_quality_eligible=_strict_bool(
+            manifest.get("premium_quality_eligible")
         ),
+        native_training_export_eligible=_strict_bool(
+            manifest.get("native_training_export_eligible")
+        ),
+        rejected_clips_exported=_manifest_bool(
+            export_policy.get("rejected_clips_exported")
+        ),
+        self_attested_metadata_is_canonical_stage_proof=False,
+    )
+
+    rights_present = "rights_packet" in included
+    consent_evidence_present = _strict_bool(
+        consent_evidence.get("consent_evidence_present")
+    )
+    rights_scope_proven = _strict_bool(
+        claim_boundary.get("rights_privacy_scope_proven")
+    )
+    provenance_chain_present = "proof_boundaries" in included
+    rights_blockers: list[str] = []
+    if not rights_present:
+        rights_blockers.append("rights_packet_missing")
+    if not consent_evidence_present:
+        consent_status = str(consent_evidence.get("status") or "missing").strip()
+        rights_blockers.append(f"consent_evidence_not_valid:{consent_status}")
+    if not rights_scope_proven:
+        rights_blockers.append("rights_privacy_scope_not_proven")
+    if not provenance_chain_present:
+        rights_blockers.append("provenance_chain_missing")
+    sections["rights_privacy_provenance"] = _section(
+        "present" if not rights_blockers else "missing",
+        rights_blockers,
+        rights_packet_included=rights_present,
+        rights_privacy_scope_proven=rights_scope_proven,
         consent_evidence_record_included="consent_evidence" in included
         or bool(str(consent_evidence.get("path") or "").strip()),
-        consent_evidence_present=_manifest_bool(
-            consent_evidence.get("consent_evidence_present")
-        ),
+        consent_evidence_present=consent_evidence_present,
         consent_evidence_status=consent_evidence.get("status"),
         revenue_share_review_included=bool(revenue_share_review),
         revenue_share_review_status=revenue_share_review.get("status"),
@@ -378,7 +446,7 @@ def build_buyer_package_readout(
         ),
         dpa_approval_claimed=False,
         external_delivery_claim_allowed=False,
-        provenance_chain_present="proof_boundaries" in included,
+        provenance_chain_present=provenance_chain_present,
     )
     sections["revocation_takedown"] = _section(
         "takedown_required" if revocation_required else "not_required",
@@ -510,25 +578,60 @@ def build_buyer_package_readout(
         ),
     )
 
-    failure_present = "failure_labels" in included
+    raw_hypotheses_present = "failure_labels" in included
+    accepted_failure_labels_present = "accepted_failure_labels" in included
+    review_ledger_present = "review_resolution_ledger" in included
+    failure_review_present = "failure_evidence_review" in included
     failure_label_count = _int_or_none(manifest_counts.get("failure_label_count"))
+    raw_hypothesis_count = _int_or_none(
+        manifest_counts.get("raw_failure_hypothesis_count")
+    )
+    failed_attempt_count = _int_or_none(manifest_counts.get("failed_attempt_count"))
     failure_review = _mapping(manifest.get("failure_evidence_review"))
     zero_failures_reviewed = _strict_bool(
         manifest_counts.get("zero_failures_reviewed")
-    ) or _strict_bool(failure_review.get("zero_failures_reviewed"))
+    ) and _strict_bool(failure_review.get("zero_failures_reviewed"))
     failure_blockers: list[str] = []
-    if not failure_present:
-        failure_blockers.append("failure_labels_missing")
-    if failure_present and failure_label_count is None:
-        failure_blockers.append("failure_label_count_unknown")
-    if failure_present and failure_label_count == 0 and not zero_failures_reviewed:
+    if not raw_hypotheses_present:
+        failure_blockers.append("raw_failure_hypotheses_missing")
+    if not accepted_failure_labels_present:
+        failure_blockers.append("accepted_failure_labels_missing")
+    if not review_ledger_present:
+        failure_blockers.append("review_resolution_ledger_missing")
+    if not failure_review_present:
+        failure_blockers.append("failure_evidence_review_missing")
+    elif failure_review.get("status") != "passed":
+        failure_blockers.append("failure_evidence_review_not_passed")
+    if failure_label_count is None:
+        failure_blockers.append("accepted_failure_label_count_unknown")
+    if raw_hypothesis_count is None:
+        failure_blockers.append("raw_failure_hypothesis_count_unknown")
+    if failed_attempt_count is None:
+        failure_blockers.append("failed_attempt_count_unknown")
+    if (
+        failed_attempt_count is not None
+        and failed_attempt_count > 0
+        and (failure_label_count is None or failure_label_count <= 0)
+    ):
+        failure_blockers.append("failed_attempts_without_accepted_failure_labels")
+    if (
+        failed_attempt_count == 0
+        and failure_label_count == 0
+        and not zero_failures_reviewed
+    ):
         failure_blockers.append("failure_labels_empty_without_zero_failures_reviewed")
     sections["failure_evidence"] = _section(
         "present" if not failure_blockers else "missing",
         failure_blockers,
-        failure_label_count=_int_or_none(manifest_counts.get("failure_label_count")),
+        failure_label_count=failure_label_count,
+        raw_failure_hypothesis_count=raw_hypothesis_count,
+        failed_attempt_count=failed_attempt_count,
         zero_failures_reviewed=zero_failures_reviewed,
-        failure_cases_preserved=failure_present,
+        raw_failure_hypotheses_preserved=raw_hypotheses_present,
+        accepted_training_labels_reviewed=accepted_failure_labels_present
+        and review_ledger_present
+        and failure_review.get("status") == "passed",
+        pending_or_nonreviewable_labels_training_eligible=False,
     )
 
     criteria_present = "task_cards" in included and "eval_cards" in included
@@ -587,10 +690,21 @@ def build_buyer_package_readout(
     sim_vs_real_calibration_score = _float_or_none(
         calibration_report.get("sim_vs_real_calibration_score")
     )
-    sim_vs_real_calibration_claim_allowed = bool(
-        calibration_report.get("status") == "completed"
-        and accepted_calibration_anchor_count > 0
-        and sim_vs_real_calibration_score is not None
+    rank_fidelity_claim_eligibility = _mapping(
+        calibration_report.get("rank_fidelity_claim_eligibility")
+    )
+    joint_rank_fidelity = _mapping(
+        _mapping(rank_fidelity_claim_eligibility.get("metrics")).get(
+            "joint_rank_fidelity"
+        )
+    )
+    public_rank_fidelity_claim_eligible = bool(
+        rank_fidelity_claim_eligibility.get("status") == "eligible"
+        and rank_fidelity_claim_eligibility.get(
+            "public_rank_fidelity_claim_eligible"
+        )
+        is True
+        and joint_rank_fidelity.get("eligible") is True
     )
     sections["calibration"] = _presence_section(
         present=calibration_present,
@@ -600,21 +714,27 @@ def build_buyer_package_readout(
         calibration_report_status=calibration_report.get("status"),
         accepted_real_world_calibration_anchor_count=accepted_calibration_anchor_count,
         sim_vs_real_calibration_score=sim_vs_real_calibration_score,
-        sim_vs_real_calibration_claim_allowed=sim_vs_real_calibration_claim_allowed,
+        rank_fidelity_claim_eligibility=rank_fidelity_claim_eligibility,
+        public_rank_fidelity_claim_eligible=public_rank_fidelity_claim_eligible,
+        deployment_accuracy_claim_supported=False,
+        real_world_success_rate_prediction_claim_supported=False,
         no_real_world_calibration_anchors_present=(
             accepted_calibration_anchor_count == 0
         ),
-        results_are_not_real_world_performance_predictions=(
-            not sim_vs_real_calibration_claim_allowed
-        ),
+        results_are_not_real_world_performance_predictions=True,
         buyer_disclosure=(
             "No accepted real-world calibration anchors are included; simulator or "
             "generated results must not be presented as real-world performance "
             "predictions."
             if accepted_calibration_anchor_count == 0
             else (
-                "Calibration anchors are present; use only the report's stated "
-                "calibration score and claim boundary."
+                "The included preregistered study supports only its bounded "
+                "external rank-fidelity estimand; it is not deployment accuracy "
+                "or a real-world success-rate prediction."
+                if public_rank_fidelity_claim_eligible
+                else "Calibration anchors are present for diagnostics, but the "
+                "report does not authorize a public rank-fidelity, deployment-"
+                "accuracy, or real-world success-rate prediction claim."
             )
         ),
     )
@@ -642,6 +762,13 @@ def build_buyer_package_readout(
         integrity_blockers.append("checksums_manifest_missing")
     if not package_files:
         integrity_blockers.append("package_file_inventory_missing")
+    archive_signing = _mapping(manifest.get("archive_identity_signing"))
+    if archive_signing.get("status") != "ready":
+        integrity_blockers.append("archive_identity_signing_not_ready")
+    if archive_signing.get("algorithm") != "Ed25519":
+        integrity_blockers.append("archive_signature_algorithm_invalid")
+    if not str(archive_signing.get("key_id") or "").strip():
+        integrity_blockers.append("archive_signing_key_id_missing")
     # A lerobot-format export the buyer cannot load back (LeRobotDataset round
     # trip) must never read "ready": require a passed round-trip verdict for
     # every lerobot-format export the package claims to include.
@@ -667,6 +794,9 @@ def build_buyer_package_readout(
         checksums_path=manifest.get("checksums_path"),
         package_file_count=len(package_files),
         schema_version=manifest.get("schema_version"),
+        archive_identity_signing_status=archive_signing.get("status"),
+        archive_signature_algorithm=archive_signing.get("algorithm"),
+        archive_signing_key_id=archive_signing.get("key_id"),
         lerobot_round_trip_validation=lerobot_round_trip,
     )
 
@@ -735,17 +865,24 @@ def build_buyer_package_readout(
             accepted_calibration_anchor_count
         ),
         "sim_vs_real_calibration_score": sim_vs_real_calibration_score,
-        "sim_vs_real_calibration_claim_allowed": sim_vs_real_calibration_claim_allowed,
+        "rank_fidelity_claim_eligibility": rank_fidelity_claim_eligibility,
+        "public_rank_fidelity_claim_eligible": public_rank_fidelity_claim_eligible,
+        "deployment_accuracy_claim_supported": False,
+        "real_world_success_rate_prediction_claim_supported": False,
         "no_real_world_calibration_anchors_present": (
             accepted_calibration_anchor_count == 0
         ),
-        "results_are_not_real_world_performance_predictions": (
-            not sim_vs_real_calibration_claim_allowed
-        ),
+        "results_are_not_real_world_performance_predictions": True,
         "scaniverse_assets_are_raw_capture_evidence": False,
         "scaniverse_assets_are_task_success_evidence": False,
         "scaniverse_assets_are_physics_contact_evidence": False,
         "readout_summarizes_existing_evidence_only": True,
+        "premium_quality_eligible": not canonical_quality_blockers
+        and _strict_bool(manifest.get("premium_quality_eligible")),
+        "native_training_export_eligible": not canonical_quality_blockers
+        and _strict_bool(manifest.get("native_training_export_eligible")),
+        "rejected_clips_exported": False,
+        "self_attested_metadata_is_canonical_stage_proof": False,
         "consent_revocation_blocks_downstream_use": revocation_required,
         "local_package_access_revoked": _manifest_bool(
             revocation_takedown.get("local_package_access_revoked")
@@ -854,8 +991,12 @@ def render_buyer_package_readout_markdown(readout: Mapping[str, Any]) -> str:
                 "results are not real-world performance predictions."
                 if boundary.get("no_real_world_calibration_anchors_present") is True
                 else (
-                    "- Sim-vs-real calibration is bounded by the included calibration "
-                    "report and does not approve deployment."
+                    "- The included anchors are diagnostic only; no public rank-fidelity "
+                    "claim is eligible and they do not approve deployment."
+                    if boundary.get("public_rank_fidelity_claim_eligible") is not True
+                    else "- The preregistered external rank-fidelity claim is bounded "
+                    "by the included metric-specific eligibility report and does not "
+                    "predict task success or approve deployment."
                 )
             ),
             (

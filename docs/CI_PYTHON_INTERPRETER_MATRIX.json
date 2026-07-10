@@ -30,5 +30,17 @@
       "evidence_role": "sim-only local gate artifact regeneration"
     }
   ],
-  "launch_claim_policy": "Canonical Pipeline launch evidence must be produced on Python 3.12. Python 3.10 and 3.11 remain package-supported compatibility interpreters, but they are not the canonical CI evidence interpreter. Python 3.13 output is non-canonical until this matrix, pyproject, uv.lock, and CI are deliberately updated together."
+  "compatibility_ci": {
+    "path": ".github/workflows/python-compatibility.yml",
+    "job": "compatibility",
+    "python_versions": ["3.10", "3.11", "3.12"],
+    "suite": [
+      "scripts/validate_python_interpreter_matrix.py",
+      "tests/test_eval_ready_task_grounding.py",
+      "tests/test_public_scientific_claims.py",
+      "tests/test_sc3_eval_protocol.py"
+    ],
+    "evidence_role": "install and bounded contract compatibility; not canonical launch evidence"
+  },
+  "launch_claim_policy": "Canonical Pipeline launch evidence must be produced on Python 3.12. Python 3.10, 3.11, and 3.12 are exercised by the declared compatibility workflow, but compatibility runs on 3.10 and 3.11 are not canonical launch evidence. Python 3.13 output is non-canonical until this matrix, pyproject, uv.lock, and CI are deliberately updated together."
 }

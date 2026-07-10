@@ -3,18 +3,32 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
+import socket
 import tempfile
+import threading
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from google.cloud import storage
 
-from .common import PipelineError, utc_now_iso
+from .common import PipelineError, utc_now_iso, write_json
 from .run_e2e import run_end_to_end
+from .security_controls import (
+    SecurityValidationError,
+    contained_path,
+    prove_path_contained,
+    strict_gcs_bucket,
+    strict_identifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +55,10 @@ class HandoffMessage:
 
 def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMessage:
     if isinstance(payload, bytes):
-        payload = payload.decode("utf-8")
+        try:
+            payload = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise PipelineError("Pub/Sub handoff payload is not valid UTF-8.") from exc
     if isinstance(payload, str):
         try:
             data = json.loads(payload)
@@ -50,9 +67,21 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
     else:
         data = dict(payload)
 
-    bucket = _required_string(data, "bucket")
-    scene_id = _required_string(data, "scene_id")
-    capture_id = _required_string(data, "capture_id")
+    try:
+        bucket = strict_gcs_bucket(_required_string(data, "bucket"))
+        scene_id = strict_identifier(_required_string(data, "scene_id"), field="scene_id")
+        capture_id = strict_identifier(
+            _required_string(data, "capture_id"),
+            field="capture_id",
+        )
+        robot_eval_job_id = _optional_string(data, "robot_eval_job_id")
+        if robot_eval_job_id:
+            robot_eval_job_id = strict_identifier(
+                robot_eval_job_id,
+                field="robot_eval_job_id",
+            )
+    except SecurityValidationError as exc:
+        raise PipelineError(f"Invalid Pub/Sub handoff identity: {exc}") from exc
     raw_prefix_uri = _required_string(data, "raw_prefix_uri")
     if raw_prefix_uri != f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/raw":
         raise PipelineError(
@@ -63,6 +92,13 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
     pipeline_handoff_uri = data.get("pipeline_handoff_uri")
     if pipeline_handoff_uri is not None and not isinstance(pipeline_handoff_uri, str):
         raise PipelineError("Pub/Sub handoff pipeline_handoff_uri must be a string when present.")
+    expected_pipeline_handoff_uri = (
+        f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline_handoff.json"
+    )
+    if pipeline_handoff_uri is not None and pipeline_handoff_uri != expected_pipeline_handoff_uri:
+        raise PipelineError(
+            "Pub/Sub handoff pipeline_handoff_uri does not match bucket/scene/capture identity."
+        )
 
     robot_eval_job_request_uri = _optional_string(
         data,
@@ -84,7 +120,7 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
         pipeline_handoff_uri=pipeline_handoff_uri,
         robot_eval_job_request_uri=robot_eval_job_request_uri,
         robot_eval_request_inbox_uri=robot_eval_request_inbox_uri,
-        robot_eval_job_id=_optional_string(data, "robot_eval_job_id"),
+        robot_eval_job_id=robot_eval_job_id,
         robot_eval_provisioner=_optional_string(data, "robot_eval_provisioner"),
         robot_eval_simulator=_optional_string(data, "robot_eval_simulator"),
         robot_eval_evaluation_substrate=_optional_string(
@@ -102,7 +138,20 @@ def stage_handoff_capture(
     storage_client: storage.Client | None = None,
 ) -> Path:
     client = storage_client or storage.Client()
-    capture_root = storage_root / handoff.bucket / handoff.capture_prefix
+    resolved_storage_root = storage_root.resolve()
+    bucket_root = contained_path(
+        resolved_storage_root,
+        handoff.bucket,
+        field="Pub/Sub staging bucket path",
+    )
+    capture_root = contained_path(
+        bucket_root,
+        "scenes",
+        handoff.scene_id,
+        "captures",
+        handoff.capture_id,
+        field="Pub/Sub capture staging path",
+    )
     capture_root.mkdir(parents=True, exist_ok=True)
 
     blobs = list(client.list_blobs(handoff.bucket, prefix=f"{handoff.capture_prefix}/"))
@@ -110,9 +159,33 @@ def stage_handoff_capture(
         raise PipelineError(f"No objects found for handoff prefix: {handoff.capture_prefix}/")
 
     for blob in blobs:
-        if blob.name.endswith("/"):
+        blob_name = str(blob.name or "")
+        expected_prefix = f"{handoff.capture_prefix}/"
+        if not blob_name.startswith(expected_prefix):
+            raise PipelineError("Pub/Sub blob escaped the declared capture prefix")
+        blob_path = PurePosixPath(blob_name)
+        if (
+            blob_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in blob_path.parts)
+            or "\\" in blob_name
+            or "\x00" in blob_name
+        ):
+            raise PipelineError("Pub/Sub blob name contains an unsafe path")
+        if blob_name.endswith("/"):
             continue
-        destination = storage_root / handoff.bucket / blob.name
+        try:
+            destination = contained_path(
+                bucket_root,
+                *blob_path.parts,
+                field="Pub/Sub blob destination",
+            )
+            prove_path_contained(
+                capture_root,
+                destination,
+                field="Pub/Sub blob capture destination",
+            )
+        except SecurityValidationError as exc:
+            raise PipelineError(str(exc)) from exc
         destination.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(destination))
 
@@ -219,7 +292,7 @@ def _synthesize_pipeline_handoff(handoff: HandoffMessage, *, capture_root: Path)
         payload["requested_outputs"] = requested_outputs
 
     destination = capture_root / "pipeline_handoff.json"
-    destination.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    write_json(destination, payload)
     logger.info(
         "pubsub_handoff.synthesized_pipeline_handoff",
         extra={
@@ -319,10 +392,34 @@ def _stage_control_plane_input(
 
 
 JOB_LEDGER_FILENAME = "pipeline_job_ledger.json"
+JOB_OUTPUT_COMMIT_FILENAME = "pipeline_job_output_commit.json"
 JOB_LEDGER_SCHEMA_VERSION = "pipeline_job_ledger.v1"
+JOB_OUTPUT_COMMIT_SCHEMA_VERSION = "pipeline_job_output_commit.v1"
 JOB_STATUS_SCHEMA_VERSION = "pipeline_job_status.v1"
 PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
-_JOB_RETRYABLE_STATUSES = {"processing", "failed_retryable"}
+DEFAULT_JOB_LEASE_SECONDS = 900
+DEFAULT_ACK_DEADLINE_SECONDS = 600
+DEFAULT_MAX_DELIVERY_ATTEMPTS = 5
+_JOB_RETRYABLE_STATUSES = {
+    "processing",
+    "failed_retryable",
+    "retryable_blocked",
+    "lease_active_retryable",
+}
+_HANDOFF_TERMINAL_SUCCESS_STATUSES = {
+    "completed",
+    "ok",
+    "qualified",
+    "processed",
+    "skipped",
+    "succeeded",
+}
+_ROBOT_EVAL_RETRYABLE_STATUSES = {
+    "blocked",
+    "retryable_blocked",
+    "fatal_infrastructure",
+    "blocked_all_requests_retryable",
+}
 _PROVIDER_STATUS_FILENAMES = {
     "wam_compute_run_result.json",
     "runpod_wam_async_poll_manifest.json",
@@ -352,15 +449,228 @@ def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
         return {}
     try:
         loaded = json.loads(ledger_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+            "status": "corrupt",
+            "ledger_read_error": type(exc).__name__,
+        }
+    if not isinstance(loaded, dict):
+        return {
+            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+            "status": "corrupt",
+            "ledger_read_error": "not_mapping",
+        }
+    return loaded
 
 
-def _write_job_ledger(capture_root: Path, ledger: Mapping[str, Any]) -> None:
-    (capture_root / JOB_LEDGER_FILENAME).write_text(
-        json.dumps(dict(ledger), indent=2, sort_keys=True), encoding="utf-8"
-    )
+@contextmanager
+def _locked_job_ledger(capture_root: Path) -> Iterator[dict[str, Any]]:
+    """Hold the per-capture ledger lock while reading or committing state.
+
+    ``flock`` supplies cross-process exclusion. ``write_json`` supplies the
+    same-filesystem temp/fsync/replace commit, so a killed writer leaves either
+    the prior complete ledger or the complete next revision.
+    """
+
+    capture_root.mkdir(parents=True, exist_ok=True)
+    lock_path = capture_root / f".{JOB_LEDGER_FILENAME}.lock"
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield _read_job_ledger(capture_root)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _commit_job_ledger(
+    capture_root: Path,
+    ledger: Mapping[str, Any],
+    *,
+    previous_revision: int,
+) -> dict[str, Any]:
+    committed = {
+        **dict(ledger),
+        "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+        "revision": previous_revision + 1,
+    }
+    write_json(capture_root / JOB_LEDGER_FILENAME, committed)
+    return committed
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _iso_at(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _lease_owner() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
+
+
+def _claim_job_lease(
+    capture_root: Path,
+    *,
+    scene_id: str,
+    capture_id: str,
+    owner: str,
+    lease_seconds: int,
+    now: datetime | None = None,
+) -> tuple[str, dict[str, Any]]:
+    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    with _locked_job_ledger(capture_root) as ledger:
+        revision = int(ledger.get("revision") or 0)
+        status = _string(ledger.get("status"))
+        if status == "corrupt":
+            return "corrupt", dict(ledger)
+        if status == "completed":
+            return "completed", dict(ledger)
+        expires_at = _parse_utc_timestamp(ledger.get("lease_expires_at"))
+        if (
+            status == "processing"
+            and expires_at is not None
+            and expires_at > current_time
+            and _string(ledger.get("lease_owner")) != owner
+        ):
+            return "active", dict(ledger)
+
+        attempt_count = int(ledger.get("attempt_count") or 0) + 1
+        started_at = _string(ledger.get("started_at")) or _iso_at(current_time)
+        token = uuid.uuid4().hex
+        claimed = _commit_job_ledger(
+            capture_root,
+            {
+                "status": "processing",
+                "scene_id": scene_id,
+                "capture_id": capture_id,
+                "attempt_count": attempt_count,
+                "started_at": started_at,
+                "updated_at": _iso_at(current_time),
+                "last_attempt_started_at": _iso_at(current_time),
+                "attempt_history": _attempt_history(ledger),
+                "lease_owner": owner,
+                "lease_token": token,
+                "lease_acquired_at": _iso_at(current_time),
+                "lease_heartbeat_at": _iso_at(current_time),
+                "lease_expires_at": _iso_at(
+                    current_time + timedelta(seconds=max(1, lease_seconds))
+                ),
+                "recovered_expired_lease": status == "processing",
+                "previous_lease_owner": ledger.get("lease_owner")
+                if status == "processing"
+                else None,
+            },
+            previous_revision=revision,
+        )
+        return "claimed", claimed
+
+
+def _heartbeat_job_lease(
+    capture_root: Path,
+    *,
+    owner: str,
+    token: str,
+    lease_seconds: int,
+) -> bool:
+    now = datetime.now(timezone.utc)
+    with _locked_job_ledger(capture_root) as ledger:
+        if (
+            ledger.get("status") != "processing"
+            or _string(ledger.get("lease_owner")) != owner
+            or _string(ledger.get("lease_token")) != token
+        ):
+            return False
+        revision = int(ledger.get("revision") or 0)
+        _commit_job_ledger(
+            capture_root,
+            {
+                **ledger,
+                "updated_at": _iso_at(now),
+                "lease_heartbeat_at": _iso_at(now),
+                "lease_expires_at": _iso_at(
+                    now + timedelta(seconds=max(1, lease_seconds))
+                ),
+            },
+            previous_revision=revision,
+        )
+    return True
+
+
+def _finish_job_lease(
+    capture_root: Path,
+    *,
+    owner: str,
+    token: str,
+    update: Mapping[str, Any],
+) -> dict[str, Any]:
+    with _locked_job_ledger(capture_root) as ledger:
+        if (
+            ledger.get("status") != "processing"
+            or _string(ledger.get("lease_owner")) != owner
+            or _string(ledger.get("lease_token")) != token
+        ):
+            raise PipelineError("Pub/Sub job ledger lease ownership was lost before commit.")
+        revision = int(ledger.get("revision") or 0)
+        return _commit_job_ledger(
+            capture_root,
+            {
+                **ledger,
+                **dict(update),
+                "lease_owner": None,
+                "lease_token": None,
+                "lease_expires_at": None,
+            },
+            previous_revision=revision,
+        )
+
+
+class _JobLeaseHeartbeat:
+    def __init__(
+        self,
+        *,
+        capture_root: Path,
+        owner: str,
+        token: str,
+        lease_seconds: int,
+    ) -> None:
+        self.capture_root = capture_root
+        self.owner = owner
+        self.token = token
+        self.lease_seconds = max(1, lease_seconds)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        interval = max(1.0, min(float(self.lease_seconds) / 3.0, 60.0))
+        while not self._stop.wait(interval):
+            if not _heartbeat_job_lease(
+                self.capture_root,
+                owner=self.owner,
+                token=self.token,
+                lease_seconds=self.lease_seconds,
+            ):
+                return
+
+    def __enter__(self) -> "_JobLeaseHeartbeat":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
 
 
 def _string(value: Any) -> str:
@@ -389,6 +699,48 @@ def _attempt_history(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(history, list):
         return []
     return [dict(item) for item in history if isinstance(item, Mapping)]
+
+
+def _output_commit(
+    capture_root: Path,
+    *,
+    scene_id: str,
+    capture_id: str,
+) -> dict[str, Any]:
+    commit = _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME)
+    if (
+        commit.get("schema_version") != JOB_OUTPUT_COMMIT_SCHEMA_VERSION
+        or commit.get("status") != "committed"
+        or commit.get("scene_id") != scene_id
+        or commit.get("capture_id") != capture_id
+        or not _string(commit.get("result_sha256"))
+    ):
+        return {}
+    return commit
+
+
+def _write_output_commit(
+    capture_root: Path,
+    *,
+    scene_id: str,
+    capture_id: str,
+    attempt_count: int,
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    encoded = json.dumps(dict(result), sort_keys=True, default=str).encode("utf-8")
+    commit = {
+        "schema_version": JOB_OUTPUT_COMMIT_SCHEMA_VERSION,
+        "status": "committed",
+        "committed_at": utc_now_iso(),
+        "scene_id": scene_id,
+        "capture_id": capture_id,
+        "attempt_count": attempt_count,
+        "result_sha256": sha256(encoded).hexdigest(),
+        "result_status": result.get("status"),
+        "commit_is_idempotency_evidence_not_task_success": True,
+    }
+    write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, commit)
+    return commit
 
 
 def _looks_like_provider_status_artifact(path: Path, payload: Mapping[str, Any]) -> bool:
@@ -520,7 +872,25 @@ def read_handoff_job_status(
 ) -> dict[str, Any]:
     """Read durable local job state for a staged Pub/Sub handoff capture."""
 
-    capture_root = storage_root / bucket / "scenes" / scene_id / "captures" / capture_id
+    try:
+        safe_bucket = strict_gcs_bucket(bucket)
+        safe_scene_id = strict_identifier(scene_id, field="scene_id")
+        safe_capture_id = strict_identifier(capture_id, field="capture_id")
+        bucket_root = contained_path(
+            storage_root,
+            safe_bucket,
+            field="Pub/Sub status bucket path",
+        )
+        capture_root = contained_path(
+            bucket_root,
+            "scenes",
+            safe_scene_id,
+            "captures",
+            safe_capture_id,
+            field="Pub/Sub status capture path",
+        )
+    except SecurityValidationError as exc:
+        raise PipelineError(f"Invalid Pub/Sub job status identity: {exc}") from exc
     ledger = _read_job_ledger(capture_root)
     run_e2e_stage_ledger = _read_optional_json_object(
         capture_root / "pipeline" / "run_e2e_stage_ledger.json"
@@ -596,6 +966,75 @@ def read_handoff_job_status(
     }
 
 
+def _handoff_capture_root(
+    handoff: HandoffMessage,
+    *,
+    storage_root: Path,
+) -> Path:
+    try:
+        bucket_root = contained_path(
+            storage_root.resolve(),
+            handoff.bucket,
+            field="Pub/Sub lease bucket path",
+        )
+        return contained_path(
+            bucket_root,
+            "scenes",
+            handoff.scene_id,
+            "captures",
+            handoff.capture_id,
+            field="Pub/Sub lease capture path",
+        )
+    except SecurityValidationError as exc:
+        raise PipelineError(str(exc)) from exc
+
+
+def _handoff_result_disposition(result: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """Map pipeline/job results to Pub/Sub acknowledgement semantics."""
+
+    statuses: list[str] = []
+    for value in (
+        result.get("status"),
+        result.get("pipeline_status"),
+        _mapping(result.get("robot_eval_job")).get("status"),
+        _mapping(result.get("robot_eval_request_inbox")).get("status"),
+    ):
+        normalized = _string(value).lower()
+        if normalized:
+            statuses.append(normalized)
+    retryable = [
+        status
+        for status in statuses
+        if status in _ROBOT_EVAL_RETRYABLE_STATUSES
+        or "retryable" in status
+        or status.startswith("blocked")
+        or status.startswith("failed")
+    ]
+    if retryable:
+        return "retryable_blocked", retryable
+    if statuses and all(
+        status in _HANDOFF_TERMINAL_SUCCESS_STATUSES
+        or status.startswith("completed")
+        or status.endswith("_completed")
+        or status in {
+            "fixture_evaluation_completed",
+            "simulator_command_completed",
+            "skipped_already_processed",
+        }
+        for status in statuses
+    ):
+        return "terminal_success", []
+    # run_e2e historically has no top-level status. Presence of its canonical
+    # pipeline/final-artifact fields is the terminal-success contract.
+    if result.get("pipeline_status") and result.get("final_bundle_path"):
+        return "terminal_success", []
+    return "retryable_blocked", ["pipeline_result_terminal_state_not_proven"]
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
 def process_handoff_payload(
     payload: bytes | str | Mapping[str, Any],
     *,
@@ -610,19 +1049,37 @@ def process_handoff_payload(
     control_plane_work_dir: str | Path | None = None,
     control_plane_staged_inputs_path: str | Path | None = None,
     overwrite_control_plane_input: bool = False,
+    lease_owner: str | None = None,
+    lease_seconds: int = DEFAULT_JOB_LEASE_SECONDS,
 ) -> dict[str, Any]:
     handoff = parse_handoff_payload(payload)
-    capture_root = stage_handoff_capture(
-        handoff,
-        storage_root=storage_root,
-        storage_client=storage_client,
+    capture_root = _handoff_capture_root(handoff, storage_root=storage_root)
+    owner = lease_owner or _lease_owner()
+    claim_status, ledger = _claim_job_lease(
+        capture_root,
+        scene_id=handoff.scene_id,
+        capture_id=handoff.capture_id,
+        owner=owner,
+        lease_seconds=lease_seconds,
     )
-
-    # Idempotency: Pub/Sub is at-least-once, so a redelivered message for a
-    # capture that already completed must not re-run (and re-bill) the
-    # pipeline. A "processing" marker from a crashed run is retried.
-    ledger = _read_job_ledger(capture_root)
-    if ledger.get("status") == "completed":
+    if claim_status == "completed":
+        commit = _output_commit(
+            capture_root,
+            scene_id=handoff.scene_id,
+            capture_id=handoff.capture_id,
+        )
+        if not commit:
+            return {
+                "schema_version": "v1",
+                "status": "completed_output_commit_missing_retryable",
+                "queue_disposition": "retryable",
+                "bucket": handoff.bucket,
+                "scene_id": handoff.scene_id,
+                "capture_id": handoff.capture_id,
+                "capture_root": str(capture_root),
+                "job_ledger": ledger,
+                "blockers": ["completed_handoff_output_commit_missing_or_invalid"],
+            }
         logger.info(
             "pubsub_handoff.skipped_already_processed",
             extra={
@@ -637,92 +1094,154 @@ def process_handoff_payload(
             "scene_id": handoff.scene_id,
             "capture_id": handoff.capture_id,
             "capture_root": str(capture_root),
+            "queue_disposition": "terminal_success",
+            "output_commit": commit,
             "job_ledger": ledger,
         }
-
-    attempt_count = int(ledger.get("attempt_count") or 0) + 1
-    previous_history = _attempt_history(ledger)
-    job_started_at = str(ledger.get("started_at") or "").strip() or utc_now_iso()
-    attempt_started_at = utc_now_iso()
-    _write_job_ledger(
-        capture_root,
-        {
-            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
-            "status": "processing",
+    if claim_status == "active":
+        return {
+            "schema_version": "v1",
+            "status": "lease_active_retryable",
+            "queue_disposition": "retryable",
+            "bucket": handoff.bucket,
             "scene_id": handoff.scene_id,
             "capture_id": handoff.capture_id,
-            "attempt_count": attempt_count,
-            "started_at": job_started_at,
-            "updated_at": attempt_started_at,
-            "last_attempt_started_at": attempt_started_at,
-            "attempt_history": previous_history,
-        },
+            "capture_root": str(capture_root),
+            "job_ledger": ledger,
+            "blockers": ["handoff_job_active_lease"],
+        }
+    if claim_status == "corrupt":
+        return {
+            "schema_version": "v1",
+            "status": "job_ledger_corrupt_retryable",
+            "queue_disposition": "retryable",
+            "bucket": handoff.bucket,
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "capture_root": str(capture_root),
+            "job_ledger": ledger,
+            "blockers": ["handoff_job_ledger_corrupt"],
+        }
+
+    attempt_count = int(ledger.get("attempt_count") or 0)
+    previous_history = _attempt_history(ledger)
+    job_started_at = _string(ledger.get("started_at")) or utc_now_iso()
+    attempt_started_at = _string(ledger.get("last_attempt_started_at")) or utc_now_iso()
+    token = _string(ledger.get("lease_token"))
+    recovered_commit = _output_commit(
+        capture_root,
+        scene_id=handoff.scene_id,
+        capture_id=handoff.capture_id,
     )
-    run_kwargs: dict[str, Any] = {
-        "capture_root": str(capture_root),
-        "provider": provider,
-        "run_evaluation_prep": run_evaluation_prep,
-        "resume_completed_stages": True,
-    }
-    robot_eval_job_request = _resolve_staged_handoff_path(
-        handoff.robot_eval_job_request_uri,
-        handoff=handoff,
-        capture_root=capture_root,
-        storage_root=storage_root,
-        expect_directory=False,
-    )
-    robot_eval_request_inbox = _resolve_staged_handoff_path(
-        handoff.robot_eval_request_inbox_uri,
-        handoff=handoff,
-        capture_root=capture_root,
-        storage_root=storage_root,
-        expect_directory=True,
-    )
-    if robot_eval_job_request is not None:
-        run_kwargs["robot_eval_job_request"] = str(robot_eval_job_request)
-    if robot_eval_request_inbox is not None:
-        run_kwargs["robot_eval_request_inbox"] = str(robot_eval_request_inbox)
-    if robot_eval_job_request is not None or robot_eval_request_inbox is not None:
-        run_kwargs.update(
-            {
-                "robot_eval_job_id": handoff.robot_eval_job_id,
-                "robot_eval_provisioner": (
-                    handoff.robot_eval_provisioner or "fixture_local"
-                ),
-                "robot_eval_simulator": handoff.robot_eval_simulator or "fixture",
-                "robot_eval_evaluation_substrate": (
-                    handoff.robot_eval_evaluation_substrate
-                ),
-                "robot_eval_budget_usd": handoff.robot_eval_budget_usd,
-                "allow_robot_eval_gpu_provisioning": False,
-                "allow_robot_eval_simulator_execution": False,
-            }
+    if ledger.get("recovered_expired_lease") is True and recovered_commit:
+        recovered_at = utc_now_iso()
+        recovered_record = {
+            "attempt_number": attempt_count,
+            "status": "completed_from_output_commit",
+            "stage": "output_commit_recovery",
+            "started_at": attempt_started_at,
+            "completed_at": recovered_at,
+            "result_sha256": recovered_commit.get("result_sha256"),
+        }
+        completed_ledger = _finish_job_lease(
+            capture_root,
+            owner=owner,
+            token=token,
+            update={
+                "status": "completed",
+                "updated_at": recovered_at,
+                "completed_at": recovered_at,
+                "output_commit_status": "committed",
+                "output_commit_path": JOB_OUTPUT_COMMIT_FILENAME,
+                "attempt_history": [*previous_history, recovered_record],
+            },
         )
+        return {
+            "schema_version": "v1",
+            "status": "skipped_committed_output_recovered",
+            "queue_disposition": "terminal_success",
+            "bucket": handoff.bucket,
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "capture_root": str(capture_root),
+            "output_commit": recovered_commit,
+            "job_ledger": completed_ledger,
+        }
     control_plane_staging: dict[str, Any] | None = None
-    failure_stage = "run_e2e"
+    failure_stage = "stage_handoff_capture"
     try:
-        if stage_control_plane:
-            failure_stage = "control_plane_staging"
-            if control_plane_manifest_path is None:
-                raise PipelineError(
-                    "Pub/Sub handoff control-plane staging requires a manifest path."
-                )
-            control_plane_staging = _stage_control_plane_input(
+        with _JobLeaseHeartbeat(
+            capture_root=capture_root,
+            owner=owner,
+            token=token,
+            lease_seconds=lease_seconds,
+        ):
+            staged_capture_root = stage_handoff_capture(
                 handoff=handoff,
-                capture_root=capture_root,
-                manifest_path=control_plane_manifest_path,
-                work_dir=control_plane_work_dir,
-                staged_inputs_path=control_plane_staged_inputs_path,
-                overwrite=overwrite_control_plane_input,
+                storage_root=storage_root,
+                storage_client=storage_client,
             )
-        failure_stage = "run_e2e"
-        if run_e2e_enabled:
-            result = run_e2e(**run_kwargs)
-        else:
-            result = {
-                "status": "skipped",
-                "reason": "run_e2e_disabled_after_control_plane_staging",
+            run_kwargs: dict[str, Any] = {
+                "capture_root": str(staged_capture_root),
+                "provider": provider,
+                "run_evaluation_prep": run_evaluation_prep,
+                "resume_completed_stages": True,
             }
+            robot_eval_job_request = _resolve_staged_handoff_path(
+                handoff.robot_eval_job_request_uri,
+                handoff=handoff,
+                capture_root=staged_capture_root,
+                storage_root=storage_root,
+                expect_directory=False,
+            )
+            robot_eval_request_inbox = _resolve_staged_handoff_path(
+                handoff.robot_eval_request_inbox_uri,
+                handoff=handoff,
+                capture_root=staged_capture_root,
+                storage_root=storage_root,
+                expect_directory=True,
+            )
+            if robot_eval_job_request is not None:
+                run_kwargs["robot_eval_job_request"] = str(robot_eval_job_request)
+            if robot_eval_request_inbox is not None:
+                run_kwargs["robot_eval_request_inbox"] = str(robot_eval_request_inbox)
+            if robot_eval_job_request is not None or robot_eval_request_inbox is not None:
+                run_kwargs.update(
+                    {
+                        "robot_eval_job_id": handoff.robot_eval_job_id,
+                        "robot_eval_provisioner": handoff.robot_eval_provisioner
+                        or "fixture_local",
+                        "robot_eval_simulator": handoff.robot_eval_simulator
+                        or "fixture",
+                        "robot_eval_evaluation_substrate": handoff.robot_eval_evaluation_substrate,
+                        "robot_eval_budget_usd": handoff.robot_eval_budget_usd,
+                        "allow_robot_eval_gpu_provisioning": False,
+                        "allow_robot_eval_simulator_execution": False,
+                    }
+                )
+            if stage_control_plane:
+                failure_stage = "control_plane_staging"
+                if control_plane_manifest_path is None:
+                    raise PipelineError(
+                        "Pub/Sub handoff control-plane staging requires a manifest path."
+                    )
+                control_plane_staging = _stage_control_plane_input(
+                    handoff=handoff,
+                    capture_root=staged_capture_root,
+                    manifest_path=control_plane_manifest_path,
+                    work_dir=control_plane_work_dir,
+                    staged_inputs_path=control_plane_staged_inputs_path,
+                    overwrite=overwrite_control_plane_input,
+                )
+            failure_stage = "run_e2e"
+            result = (
+                run_e2e(**run_kwargs)
+                if run_e2e_enabled
+                else {
+                    "status": "skipped",
+                    "reason": "run_e2e_disabled_after_control_plane_staging",
+                }
+            )
     except Exception as exc:
         failed_at = utc_now_iso()
         failure_record = {
@@ -734,17 +1253,13 @@ def process_handoff_payload(
             "error_type": type(exc).__name__,
             "error": str(exc),
         }
-        _write_job_ledger(
+        _finish_job_lease(
             capture_root,
-            {
-                "schema_version": JOB_LEDGER_SCHEMA_VERSION,
+            owner=owner,
+            token=token,
+            update={
                 "status": "failed_retryable",
-                "scene_id": handoff.scene_id,
-                "capture_id": handoff.capture_id,
-                "attempt_count": attempt_count,
-                "started_at": job_started_at,
                 "updated_at": failed_at,
-                "last_attempt_started_at": attempt_started_at,
                 "last_failed_at": failed_at,
                 "last_error_type": type(exc).__name__,
                 "last_error": str(exc),
@@ -752,6 +1267,7 @@ def process_handoff_payload(
             },
         )
         raise
+
     completed_at = utc_now_iso()
     control_plane_staging_status = (
         str(control_plane_staging.get("status") or "") or None
@@ -764,13 +1280,30 @@ def process_handoff_payload(
         if control_plane_staging
         else None
     )
+    disposition, result_blockers = _handoff_result_disposition(result)
+    terminal_success = disposition == "terminal_success"
+    output_commit = (
+        _write_output_commit(
+            capture_root,
+            scene_id=handoff.scene_id,
+            capture_id=handoff.capture_id,
+            attempt_count=attempt_count,
+            result=result,
+        )
+        if terminal_success
+        else None
+    )
     completion_record = {
         "attempt_number": attempt_count,
-        "status": "completed",
+        "status": "completed" if terminal_success else "retryable_blocked",
         "stage": "run_e2e",
         "started_at": attempt_started_at,
         "completed_at": completed_at,
         "run_e2e_status": str(result.get("status") or "") or None,
+        "queue_disposition": disposition,
+        "output_commit_status": "committed" if output_commit else None,
+        "output_commit_path": JOB_OUTPUT_COMMIT_FILENAME if output_commit else None,
+        "blockers": result_blockers,
     }
     if control_plane_staging:
         completion_record.update(
@@ -781,7 +1314,7 @@ def process_handoff_payload(
         )
     ledger_update = {
         "schema_version": JOB_LEDGER_SCHEMA_VERSION,
-        "status": "completed",
+        "status": "completed" if terminal_success else "retryable_blocked",
         "scene_id": handoff.scene_id,
         "capture_id": handoff.capture_id,
         "attempt_count": attempt_count,
@@ -790,8 +1323,15 @@ def process_handoff_payload(
         "last_attempt_started_at": attempt_started_at,
         "completed_at": completed_at,
         "run_e2e_status": str(result.get("status") or "") or None,
-        "last_error_type": None,
-        "last_error": None,
+        "last_error_type": None if terminal_success else "RetryableBlockedResult",
+        "last_error": None if terminal_success else ",".join(result_blockers),
+        "retry_blockers": result_blockers,
+        "queue_disposition": disposition,
+        "output_commit_status": "committed" if output_commit else None,
+        "output_commit_path": JOB_OUTPUT_COMMIT_FILENAME if output_commit else None,
+        "output_result_sha256": output_commit.get("result_sha256")
+        if output_commit
+        else None,
         "attempt_history": [*previous_history, completion_record],
     }
     if control_plane_staging:
@@ -801,20 +1341,119 @@ def process_handoff_payload(
                 "control_plane_staging_path": control_plane_staging_path,
             }
         )
-    _write_job_ledger(
+    _finish_job_lease(
         capture_root,
-        ledger_update,
+        owner=owner,
+        token=token,
+        update=ledger_update,
     )
     return {
         "schema_version": "v1",
-        "status": "processed",
+        "status": "processed" if terminal_success else "retryable_blocked",
+        "queue_disposition": "terminal_success" if terminal_success else "retryable",
+        "blockers": result_blockers,
         "bucket": handoff.bucket,
         "scene_id": handoff.scene_id,
         "capture_id": handoff.capture_id,
         "capture_root": str(capture_root),
         "run_e2e": result,
         "control_plane_staging": control_plane_staging,
+        "output_commit": output_commit,
     }
+
+
+class _AckDeadlineHeartbeat:
+    """Keep a synchronous pull message leased while its durable job lease runs."""
+
+    def __init__(
+        self,
+        *,
+        subscriber: Any,
+        subscription: str,
+        ack_id: str,
+        ack_deadline_seconds: int,
+    ) -> None:
+        self.subscriber = subscriber
+        self.subscription = subscription
+        self.ack_id = ack_id
+        self.ack_deadline_seconds = max(10, min(600, ack_deadline_seconds))
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _modify(self, seconds: int) -> None:
+        modify = getattr(self.subscriber, "modify_ack_deadline", None)
+        if not callable(modify):
+            return
+        modify(
+            request={
+                "subscription": self.subscription,
+                "ack_ids": [self.ack_id],
+                "ack_deadline_seconds": seconds,
+            }
+        )
+
+    def _run(self) -> None:
+        interval = max(5.0, min(float(self.ack_deadline_seconds) / 2.0, 60.0))
+        while not self._stop.wait(interval):
+            try:
+                self._modify(self.ack_deadline_seconds)
+            except Exception:  # noqa: BLE001 - durable lease remains authoritative
+                logger.exception("pubsub_handoff.ack_deadline_extension_failed")
+
+    def __enter__(self) -> "_AckDeadlineHeartbeat":
+        try:
+            self._modify(self.ack_deadline_seconds)
+        except Exception:  # noqa: BLE001 - durable lease prevents duplicate execution
+            logger.exception("pubsub_handoff.initial_ack_deadline_extension_failed")
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def nack(self) -> None:
+        try:
+            self._modify(0)
+        except Exception:  # noqa: BLE001 - leaving unacked still preserves retry semantics
+            logger.exception("pubsub_handoff.explicit_nack_failed")
+
+
+def _write_delivery_evidence(
+    *,
+    storage_root: Path,
+    message: Any,
+    received: Any,
+    disposition: str,
+    blockers: Sequence[str],
+) -> Path:
+    raw_data = bytes(message.data) if isinstance(message.data, bytes) else str(
+        message.data
+    ).encode("utf-8", errors="replace")
+    digest = sha256(raw_data).hexdigest()
+    message_id = _string(getattr(message, "message_id", None))
+    record_path = (
+        storage_root
+        / ".pubsub_delivery_evidence"
+        / disposition
+        / f"{digest[:24]}.json"
+    )
+    write_json(
+        record_path,
+        {
+            "schema_version": "pubsub_delivery_failure_evidence.v1",
+            "generated_at": utc_now_iso(),
+            "status": disposition,
+            "queue_disposition": disposition,
+            "message_id": message_id or None,
+            "payload_sha256": digest,
+            "payload_byte_count": len(raw_data),
+            "raw_payload_stored": False,
+            "delivery_attempt": getattr(received, "delivery_attempt", None),
+            "blockers": list(blockers),
+        },
+    )
+    return record_path
 
 
 def pull_and_process(
@@ -830,6 +1469,8 @@ def pull_and_process(
     control_plane_work_dir: str | Path | None = None,
     control_plane_staged_inputs_path: str | Path | None = None,
     overwrite_control_plane_input: bool = False,
+    ack_deadline_seconds: int = DEFAULT_ACK_DEADLINE_SECONDS,
+    max_delivery_attempts: int = DEFAULT_MAX_DELIVERY_ATTEMPTS,
 ) -> int:
     from google.cloud import pubsub_v1
 
@@ -851,28 +1492,96 @@ def pull_and_process(
                 "attributes": dict(message.attributes),
             },
         )
-        # One poison message must not block the batch: successes still ack;
-        # the failed message stays un-acked so the subscription's retry /
-        # dead-letter policy owns redelivery. The job ledger written by
-        # process_handoff_payload makes redelivered completions no-ops.
+        # Contract-invalid payloads are permanent and can be acknowledged after
+        # typed logging. Retryable work is explicitly nacked; the subscription's
+        # configured dead-letter policy owns exhausted delivery routing.
         try:
-            process_handoff_payload(
-                message.data,
+            parse_handoff_payload(message.data)
+        except PipelineError as exc:
+            evidence_path = _write_delivery_evidence(
                 storage_root=storage_root,
-                provider=provider,
-                run_evaluation_prep=run_evaluation_prep,
-                run_e2e_enabled=run_e2e_enabled,
-                stage_control_plane=stage_control_plane,
-                control_plane_manifest_path=control_plane_manifest_path,
-                control_plane_work_dir=control_plane_work_dir,
-                control_plane_staged_inputs_path=control_plane_staged_inputs_path,
-                overwrite_control_plane_input=overwrite_control_plane_input,
+                message=message,
+                received=received,
+                disposition="permanent_invalid",
+                blockers=[str(exc)],
             )
+            logger.error(
+                "pubsub_handoff.permanent_invalid",
+                extra={
+                    "message_id": message.message_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "queue_disposition": "permanent_invalid_ack",
+                    "failure_evidence_path": str(evidence_path),
+                },
+            )
+            ack_ids.append(received.ack_id)
+            continue
+        heartbeat = _AckDeadlineHeartbeat(
+            subscriber=subscriber,
+            subscription=subscription,
+            ack_id=received.ack_id,
+            ack_deadline_seconds=ack_deadline_seconds,
+        )
+        try:
+            with heartbeat:
+                result = process_handoff_payload(
+                    message.data,
+                    storage_root=storage_root,
+                    provider=provider,
+                    run_evaluation_prep=run_evaluation_prep,
+                    run_e2e_enabled=run_e2e_enabled,
+                    stage_control_plane=stage_control_plane,
+                    control_plane_manifest_path=control_plane_manifest_path,
+                    control_plane_work_dir=control_plane_work_dir,
+                    control_plane_staged_inputs_path=control_plane_staged_inputs_path,
+                    overwrite_control_plane_input=overwrite_control_plane_input,
+                )
         except Exception:
+            delivery_attempt = getattr(received, "delivery_attempt", None)
+            if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:
+                _write_delivery_evidence(
+                    storage_root=storage_root,
+                    message=message,
+                    received=received,
+                    disposition="retry_exhausted_pending_pubsub_dlq",
+                    blockers=["handoff_processing_exception"],
+                )
             logger.exception(
                 "pubsub_handoff.processing_failed",
-                extra={"message_id": message.message_id},
+                extra={
+                    "message_id": message.message_id,
+                    "queue_disposition": "retryable_nack",
+                    "delivery_attempt": getattr(received, "delivery_attempt", None),
+                    "max_delivery_attempts": max_delivery_attempts,
+                },
             )
+            heartbeat.nack()
+            continue
+        if result.get("queue_disposition") == "retryable" or result.get(
+            "status"
+        ) in _JOB_RETRYABLE_STATUSES:
+            delivery_attempt = getattr(received, "delivery_attempt", None)
+            if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:
+                _write_delivery_evidence(
+                    storage_root=storage_root,
+                    message=message,
+                    received=received,
+                    disposition="retry_exhausted_pending_pubsub_dlq",
+                    blockers=[str(item) for item in result.get("blockers") or []],
+                )
+            logger.warning(
+                "pubsub_handoff.retryable_result",
+                extra={
+                    "message_id": message.message_id,
+                    "status": result.get("status"),
+                    "blockers": result.get("blockers") or [],
+                    "delivery_attempt": getattr(received, "delivery_attempt", None),
+                    "max_delivery_attempts": max_delivery_attempts,
+                    "dead_letter_policy_owns_exhausted_delivery": True,
+                },
+            )
+            heartbeat.nack()
             continue
         ack_ids.append(received.ack_id)
 
@@ -933,15 +1642,36 @@ def _resolve_staged_handoff_path(
     if not value:
         return None
     if value.startswith("gs://"):
-        prefix = f"gs://{handoff.bucket}/"
+        prefix = f"gs://{handoff.bucket}/{handoff.capture_prefix}/"
         if not value.startswith(prefix):
             raise PipelineError(
-                "Pub/Sub handoff robot eval path must reference the handoff bucket."
+                "Pub/Sub handoff robot eval path must remain in the staged capture prefix."
             )
-        local_path = storage_root / handoff.bucket / value[len(prefix) :]
+        relative = PurePosixPath(value[len(f"gs://{handoff.bucket}/") :])
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            raise PipelineError("Pub/Sub handoff robot eval path is unsafe.")
+        local_path = contained_path(
+            storage_root / handoff.bucket,
+            *relative.parts,
+            field="staged robot eval path",
+        )
     else:
         path = Path(value)
-        local_path = path if path.is_absolute() else capture_root / path
+        if path.is_absolute():
+            raise PipelineError("Pub/Sub handoff robot eval path may not be absolute.")
+        local_path = contained_path(
+            capture_root,
+            *path.parts,
+            field="staged robot eval path",
+        )
+    try:
+        local_path = prove_path_contained(
+            capture_root,
+            local_path,
+            field="staged robot eval path",
+        )
+    except SecurityValidationError as exc:
+        raise PipelineError(str(exc)) from exc
     if expect_directory:
         if not local_path.is_dir():
             raise PipelineError(
@@ -1039,7 +1769,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--stage-control-plane requires --control-plane-manifest")
     if args.skip_run_e2e and not args.stage_control_plane:
         parser.error("--skip-run-e2e requires --stage-control-plane")
-    processed = pull_and_process(
+    acknowledged = pull_and_process(
         subscription=args.subscription,
         storage_root=storage_root,
         provider=args.provider,
@@ -1052,7 +1782,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         control_plane_staged_inputs_path=args.control_plane_staged_inputs_path,
         overwrite_control_plane_input=args.overwrite_control_plane_input,
     )
-    print(json.dumps({"processed": processed, "storage_root": str(storage_root)}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "acknowledged": acknowledged,
+                "acknowledged_means_terminal_success_or_permanent_invalid": True,
+                "storage_root": str(storage_root),
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

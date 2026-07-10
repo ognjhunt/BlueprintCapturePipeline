@@ -1,0 +1,225 @@
+name: Critical Capability Lanes
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "External capability lane to execute on its prepared runner."
+        required: true
+        type: choice
+        options:
+          - pubsub_emulator_integration
+          - native_lerobot_export
+          - gpu_provider_canary
+      native_lerobot_export_dir:
+        description: "Absolute export path on the prepared LeRobot runner."
+        required: false
+        type: string
+      gpu_image_uri:
+        description: "Exact Unitree GR00T/SONIC image URI pinned with @sha256:<64 hex>."
+        required: false
+        type: string
+      gpu_max_hourly_rate:
+        description: "Maximum hourly Vast rate in USD; contract maximum is 1.00."
+        required: false
+        default: "0.60"
+        type: string
+      gpu_target_spend_usd:
+        description: "Target spend for this one canary; must not exceed the hard cap."
+        required: false
+        default: "0.20"
+        type: string
+      gpu_hard_cap_usd:
+        description: "Hard spend cap for this one canary; contract maximum is 1.00 USD."
+        required: false
+        default: "0.50"
+        type: string
+      gpu_max_live_minutes:
+        description: "Maximum live instance duration; contract maximum is 30 minutes."
+        required: false
+        default: "20"
+        type: string
+      gpu_startup_timeout_seconds:
+        description: "Startup timeout bounded by the live window and at most 1800 seconds."
+        required: false
+        default: "900"
+        type: string
+
+jobs:
+  pubsub-emulator-integration:
+    if: inputs.lane == 'pubsub_emulator_integration'
+    name: Pub/Sub emulator integration
+    runs-on: [self-hosted, linux, blueprint-pubsub-emulator]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen Pub/Sub integration dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev --extra cloud
+
+      - name: Run emulator round trip
+        env:
+          PUBSUB_EMULATOR_HOST: ${{ vars.BLUEPRINT_PUBSUB_EMULATOR_HOST }}
+        run: |
+          uv run python scripts/run_pubsub_emulator_integration.py \
+            --output output/ci/critical-lanes/pubsub_emulator_integration.json
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pubsub-emulator-integration-${{ github.sha }}
+          path: |
+            output/ci/critical-lanes/pubsub_emulator_integration.json
+            output/ci/critical-lanes/pubsub_emulator_round_trip_source.json
+          if-no-files-found: error
+          retention-days: 90
+
+  native-lerobot-export:
+    if: inputs.lane == 'native_lerobot_export'
+    name: Native LeRobot export round trip
+    runs-on: [self-hosted, linux, blueprint-native-lerobot]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen native LeRobot dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev --extra groot-libero
+
+      - name: Require native round trip
+        env:
+          NATIVE_LEROBOT_EXPORT_DIR: ${{ inputs.native_lerobot_export_dir }}
+        run: |
+          test -n "${NATIVE_LEROBOT_EXPORT_DIR}"
+          uv run python scripts/run_native_lerobot_export_probe.py \
+            --export-dir "${NATIVE_LEROBOT_EXPORT_DIR}" \
+            --output output/ci/critical-lanes/native_lerobot_export.json
+
+      - name: Upload native LeRobot evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-lerobot-export-${{ github.sha }}
+          path: |
+            output/ci/critical-lanes/native_lerobot_export.json
+            output/ci/critical-lanes/native_lerobot_export_source_manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  gpu-provider-canary:
+    if: inputs.lane == 'gpu_provider_canary'
+    name: Pinned GPU provider canary
+    runs-on: [self-hosted, linux, x64, blueprint-gpu-canary]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen GPU canary runtime
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev --extra cloud
+
+      - name: Validate exact image and bounded canary inputs
+        env:
+          GPU_IMAGE_URI: ${{ inputs.gpu_image_uri }}
+          APPROVED_GPU_IMAGE_URI: ${{ vars.BLUEPRINT_GPU_CANARY_APPROVED_IMAGE_URI }}
+          GPU_MAX_HOURLY_RATE: ${{ inputs.gpu_max_hourly_rate }}
+          GPU_TARGET_SPEND_USD: ${{ inputs.gpu_target_spend_usd }}
+          GPU_HARD_CAP_USD: ${{ inputs.gpu_hard_cap_usd }}
+          GPU_MAX_LIVE_MINUTES: ${{ inputs.gpu_max_live_minutes }}
+          GPU_STARTUP_TIMEOUT_SECONDS: ${{ inputs.gpu_startup_timeout_seconds }}
+        run: |
+          uv run python scripts/build_gpu_provider_canary_evidence.py preflight \
+            --image-uri "${GPU_IMAGE_URI}" \
+            --approved-image-uri "${APPROVED_GPU_IMAGE_URI}" \
+            --repository-sha '${{ github.sha }}' \
+            --max-hourly-rate "${GPU_MAX_HOURLY_RATE}" \
+            --target-spend-usd "${GPU_TARGET_SPEND_USD}" \
+            --hard-cap-usd "${GPU_HARD_CAP_USD}" \
+            --max-live-minutes "${GPU_MAX_LIVE_MINUTES}" \
+            --startup-timeout-seconds "${GPU_STARTUP_TIMEOUT_SECONDS}" \
+            --output output/ci/critical-lanes/gpu-provider-canary-preflight.json
+
+      - name: Execute bounded Unitree GR00T SONIC Vast image canary
+        env:
+          BLUEPRINT_ALLOW_VAST_API_CALLS: "true"
+          BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH: "true"
+          GPU_IMAGE_URI: ${{ inputs.gpu_image_uri }}
+          GPU_MAX_HOURLY_RATE: ${{ inputs.gpu_max_hourly_rate }}
+          GPU_TARGET_SPEND_USD: ${{ inputs.gpu_target_spend_usd }}
+          GPU_HARD_CAP_USD: ${{ inputs.gpu_hard_cap_usd }}
+          GPU_MAX_LIVE_MINUTES: ${{ inputs.gpu_max_live_minutes }}
+          GPU_STARTUP_TIMEOUT_SECONDS: ${{ inputs.gpu_startup_timeout_seconds }}
+        run: |
+          uv run python -m blueprint_pipeline.unitree_groot_n17_sonic_vast_image_canary \
+            --job-dir output/ci/critical-lanes/gpu-canary-run \
+            --public-image "${GPU_IMAGE_URI}" \
+            --min-gpu-ram-mb 48000 \
+            --max-hourly-rate "${GPU_MAX_HOURLY_RATE}" \
+            --target-spend-usd "${GPU_TARGET_SPEND_USD}" \
+            --hard-cap-usd "${GPU_HARD_CAP_USD}" \
+            --max-live-minutes "${GPU_MAX_LIVE_MINUTES}" \
+            --session-max-live-minutes "${GPU_MAX_LIVE_MINUTES}" \
+            --startup-timeout-seconds "${GPU_STARTUP_TIMEOUT_SECONDS}" \
+            --poll-interval-seconds 15
+
+      - name: Convert executed canary to strict critical-lane evidence
+        if: always()
+        env:
+          GPU_IMAGE_URI: ${{ inputs.gpu_image_uri }}
+          APPROVED_GPU_IMAGE_URI: ${{ vars.BLUEPRINT_GPU_CANARY_APPROVED_IMAGE_URI }}
+          GPU_MAX_HOURLY_RATE: ${{ inputs.gpu_max_hourly_rate }}
+          GPU_TARGET_SPEND_USD: ${{ inputs.gpu_target_spend_usd }}
+          GPU_HARD_CAP_USD: ${{ inputs.gpu_hard_cap_usd }}
+          GPU_MAX_LIVE_MINUTES: ${{ inputs.gpu_max_live_minutes }}
+          GPU_STARTUP_TIMEOUT_SECONDS: ${{ inputs.gpu_startup_timeout_seconds }}
+        run: |
+          uv run python scripts/build_gpu_provider_canary_evidence.py convert \
+            --result output/ci/critical-lanes/gpu-canary-run/vast_unitree_groot_sonic_image_canary_result.json \
+            --job-dir output/ci/critical-lanes/gpu-canary-run \
+            --evidence-dir output/ci/critical-lanes/gpu-canary-evidence \
+            --image-uri "${GPU_IMAGE_URI}" \
+            --approved-image-uri "${APPROVED_GPU_IMAGE_URI}" \
+            --repository-sha '${{ github.sha }}' \
+            --max-hourly-rate "${GPU_MAX_HOURLY_RATE}" \
+            --target-spend-usd "${GPU_TARGET_SPEND_USD}" \
+            --hard-cap-usd "${GPU_HARD_CAP_USD}" \
+            --max-live-minutes "${GPU_MAX_LIVE_MINUTES}" \
+            --startup-timeout-seconds "${GPU_STARTUP_TIMEOUT_SECONDS}" \
+            --output output/ci/critical-lanes/gpu-canary-evidence/gpu_provider_canary.json
+
+      - name: Upload GPU-canary gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gpu-provider-canary-${{ github.sha }}
+          path: |
+            output/ci/critical-lanes/gpu-provider-canary-preflight.json
+            output/ci/critical-lanes/gpu-canary-evidence
+          if-no-files-found: error
+          retention-days: 90

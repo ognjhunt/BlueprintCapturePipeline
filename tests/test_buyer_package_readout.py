@@ -21,12 +21,39 @@ def _complete_export_manifest() -> dict:
             "rights_packet": "robot_eval_dataset/rights_packet.json",
             "proof_boundaries": "robot_eval_dataset/proof_boundaries.json",
             "failure_labels": "failure_labels.json",
+            "accepted_failure_labels": "accepted_failure_labels.json",
+            "review_resolution_ledger": "review_resolution_ledger.json",
+            "failure_evidence_review": "failure_evidence_review.json",
             "calibration_report": "calibration_report.json",
             "robot_pov_observation_manifest": "robot_pov_observation_manifest.json",
             "replay_review_instructions": "replay_review_instructions.md",
             "simulator_command_batch_metrics": "simulator_command_batch_metrics.json",
+            "canonical_training_quality_pipeline": (
+                "canonical_training_quality_pipeline.json"
+            ),
         },
-        "manifest_counts": {"failure_label_count": 3},
+        "manifest_counts": {
+            "failure_label_count": 3,
+            "raw_failure_hypothesis_count": 4,
+            "failed_attempt_count": 3,
+            "zero_failures_reviewed": False,
+        },
+        "failure_evidence_review": {
+            "status": "passed",
+            "accepted_training_label_count": 3,
+            "raw_hypothesis_count": 4,
+            "failed_attempt_count": 3,
+            "zero_failures_reviewed": False,
+            "blockers": [],
+        },
+        "archive_identity_signing": {
+            "status": "ready",
+            "algorithm": "Ed25519",
+            "key_id": "test-key",
+            "public_key_sha256": "a" * 64,
+            "identity_signature_required": True,
+            "blockers": [],
+        },
         "task_success_metrics": {
             "source_artifact": "simulator_command_batch_metrics.json",
             "metric_coverage_complete": True,
@@ -42,8 +69,26 @@ def _complete_export_manifest() -> dict:
             "clips_manifest_included": True,
             "visual_augmentation_packet_included": True,
             "visual_augmentation_generated_videos_are_raw_capture_evidence": False,
+            "rejected_clips_exported": False,
+            "self_attested_metadata_is_canonical_stage_proof": False,
         },
-        "claim_boundary": {"rights_privacy_scope_proven": False},
+        "canonical_training_quality_pipeline": {
+            "status": "passed",
+            "accepted_clip_ids": ["clip-1"],
+            "accepted_attempt_ids": ["attempt-1"],
+            "blockers": [],
+        },
+        "canonical_training_quality_pipeline_path": (
+            "canonical_training_quality_pipeline.json"
+        ),
+        "premium_quality_eligible": True,
+        "native_training_export_eligible": True,
+        "claim_boundary": {"rights_privacy_scope_proven": True},
+        "consent_evidence": {
+            "status": "consent_evidence_present",
+            "consent_evidence_present": True,
+            "consent_revoked": False,
+        },
         "checksums_path": "checksums.json",
         "replay_review_instructions_path": "replay_review_instructions.md",
         "package_files": {"dataset_card": {"path": "dataset_card.json"}},
@@ -59,7 +104,8 @@ def test_empty_export_manifest_fails_closed() -> None:
     assert "cards:card_missing:site_card" in blockers
     assert "rights_privacy_provenance:rights_packet_missing" in blockers
     assert "robot_pov_evidence:robot_pov_evidence_missing" in blockers
-    assert "failure_evidence:failure_labels_missing" in blockers
+    assert "failure_evidence:raw_failure_hypotheses_missing" in blockers
+    assert "failure_evidence:accepted_failure_labels_missing" in blockers
     assert "task_success_criteria:task_success_criteria_source_missing" in blockers
     assert "calibration:calibration_report_missing" in blockers
     assert "export_integrity:checksums_manifest_missing" in blockers
@@ -88,7 +134,7 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert boundary["physical_deployment_ready"] is False
     assert boundary["package_purchase_is_not_deployment_approval"] is True
     assert boundary["accepted_real_world_calibration_anchor_count"] == 0
-    assert boundary["sim_vs_real_calibration_claim_allowed"] is False
+    assert boundary["public_rank_fidelity_claim_eligible"] is False
     assert boundary["no_real_world_calibration_anchors_present"] is True
     assert boundary["results_are_not_real_world_performance_predictions"] is True
     calibration = readout["sections"]["calibration"]
@@ -120,7 +166,7 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert "not real-world performance predictions" in markdown
 
 
-def test_readout_surfaces_calibration_anchor_claim_boundary() -> None:
+def test_readout_projects_metric_specific_claim_eligibility_without_recomputing() -> None:
     manifest = _complete_export_manifest()
     manifest["calibration_report"] = {
         "schema_version": "sim_vs_real_calibration_report.v1",
@@ -135,20 +181,42 @@ def test_readout_surfaces_calibration_anchor_claim_boundary() -> None:
     boundary = readout["claim_boundary"]
     assert calibration["accepted_real_world_calibration_anchor_count"] == 4
     assert calibration["sim_vs_real_calibration_score"] == 0.75
-    assert calibration["sim_vs_real_calibration_claim_allowed"] is True
+    assert calibration["public_rank_fidelity_claim_eligible"] is False
     assert calibration["no_real_world_calibration_anchors_present"] is False
     assert boundary["accepted_real_world_calibration_anchor_count"] == 4
     assert boundary["sim_vs_real_calibration_score"] == 0.75
-    assert boundary["sim_vs_real_calibration_claim_allowed"] is True
-    assert boundary["results_are_not_real_world_performance_predictions"] is False
+    assert boundary["public_rank_fidelity_claim_eligible"] is False
+    assert boundary["results_are_not_real_world_performance_predictions"] is True
 
     markdown = render_buyer_package_readout_markdown(readout)
-    assert "bounded by the included calibration report" in markdown
+    assert "diagnostic only" in markdown
+
+    manifest["calibration_report"]["rank_fidelity_claim_eligibility"] = {
+        "schema_version": "rank_fidelity_claim_eligibility.v1",
+        "status": "eligible",
+        "public_rank_fidelity_claim_eligible": True,
+        "metrics": {"joint_rank_fidelity": {"eligible": True, "blockers": []}},
+        "blockers": [],
+    }
+    projected = build_buyer_package_readout(export_manifest=manifest)
+    projected_calibration = projected["sections"]["calibration"]
+    projected_boundary = projected["claim_boundary"]
+    assert projected_calibration["public_rank_fidelity_claim_eligible"] is True
+    assert projected_boundary["public_rank_fidelity_claim_eligible"] is True
+    assert projected_boundary["deployment_accuracy_claim_supported"] is False
+    assert projected_boundary["real_world_success_rate_prediction_claim_supported"] is False
+    assert "metric-specific eligibility report" in render_buyer_package_readout_markdown(
+        projected
+    )
 
 
 def test_failure_evidence_requires_label_count_or_reviewed_zero_attestation() -> None:
     manifest = _complete_export_manifest()
     manifest["manifest_counts"]["failure_label_count"] = 0
+    manifest["manifest_counts"]["failed_attempt_count"] = 0
+    manifest["failure_evidence_review"]["accepted_training_label_count"] = 0
+    manifest["failure_evidence_review"]["failed_attempt_count"] = 0
+    manifest["failure_evidence_review"]["zero_failures_reviewed"] = False
 
     readout = build_buyer_package_readout(export_manifest=manifest)
 
@@ -159,6 +227,7 @@ def test_failure_evidence_requires_label_count_or_reviewed_zero_attestation() ->
     )
 
     manifest["manifest_counts"]["zero_failures_reviewed"] = True
+    manifest["failure_evidence_review"]["zero_failures_reviewed"] = True
     passed = build_buyer_package_readout(export_manifest=manifest)
     assert passed["status"] == "buyer_readout_ready_review_required"
     assert passed["sections"]["failure_evidence"]["zero_failures_reviewed"] is True
@@ -254,6 +323,11 @@ def test_customer_facing_status_copy_covers_every_blocker_class() -> None:
     manifest.pop("replay_review_instructions_path")
     manifest["package_files"] = {}
     manifest["consent_evidence"] = {"consent_revoked": True}
+    manifest["canonical_training_quality_pipeline"]["status"] = "blocked"
+    manifest["canonical_training_quality_pipeline"]["accepted_clip_ids"] = []
+    manifest["canonical_training_quality_pipeline"]["accepted_attempt_ids"] = []
+    manifest["premium_quality_eligible"] = False
+    manifest["native_training_export_eligible"] = False
 
     readout = build_buyer_package_readout(export_manifest=manifest)
     customer_status = readout["customer_facing_status"]
@@ -435,7 +509,15 @@ def test_string_false_manifest_booleans_do_not_overclaim() -> None:
 
     readout = build_buyer_package_readout(export_manifest=manifest)
 
-    assert readout["status"] == "buyer_readout_ready_review_required"
+    assert readout["status"] == "blocked_incomplete_package"
+    assert (
+        "rights_privacy_provenance:consent_evidence_not_valid:missing"
+        in readout["blockers"]
+    )
+    assert (
+        "rights_privacy_provenance:rights_privacy_scope_not_proven"
+        in readout["blockers"]
+    )
     rights = readout["sections"]["rights_privacy_provenance"]
     assert rights["rights_privacy_scope_proven"] is False
     assert rights["consent_evidence_present"] is False

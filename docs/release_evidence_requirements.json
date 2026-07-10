@@ -1,0 +1,397 @@
+{
+  "schema_version": "blueprint.release_evidence_requirements.v2",
+  "evidence_envelope_schema_version": "blueprint.release_evidence.v2",
+  "attestation_authorities": {
+    "release_pipeline_ci_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_full_test_lane_ci_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_dependency_policy_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_container_contract_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_sast_policy_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_supply_chain_contract_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_codeql_analysis_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_sim_only_gate_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_ptdp_end_to_end_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_native_lerobot_export_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_sc3_inputs_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_restore_drill_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_provider_canary_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_pubsub_integration_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_artifact_signature_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_immutable_retention_v1": {"algorithm": "ed25519", "public_key_sha256": null},
+    "release_deployment_readback_v1": {"algorithm": "ed25519", "public_key_sha256": null}
+  },
+  "node_validation": {
+    "pipeline_ci": {
+      "source_schema_version": "blueprint.github_actions_evidence.v1",
+      "source_status_field": "conclusion",
+      "semantic_validator": "pipeline_ci",
+      "trusted_attestation_authority_id": "release_pipeline_ci_v1"
+    },
+    "full_test_lane_ci": {
+      "source_schema_version": "blueprint.github_actions_evidence.v1",
+      "source_status_field": "conclusion",
+      "semantic_validator": "full_test_lane_ci",
+      "trusted_attestation_authority_id": "release_full_test_lane_ci_v1"
+    },
+    "dependency_policy": {
+      "source_schema_version": "blueprint_dependency_security_gate.v1",
+      "source_status_field": "status",
+      "semantic_validator": "dependency_policy",
+      "trusted_attestation_authority_id": "release_dependency_policy_v1"
+    },
+    "container_contract": {
+      "source_schema_version": "blueprint.critical_capability_lane_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "container_contract",
+      "trusted_attestation_authority_id": "release_container_contract_v1"
+    },
+    "sast_policy": {
+      "source_schema_version": "blueprint.bandit_policy_gate.v1",
+      "source_status_field": "status",
+      "semantic_validator": "sast_policy",
+      "trusted_attestation_authority_id": "release_sast_policy_v1"
+    },
+    "supply_chain_contract": {
+      "source_schema_version": "blueprint.supply_chain_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "supply_chain_contract",
+      "trusted_attestation_authority_id": "release_supply_chain_contract_v1"
+    },
+    "codeql_analysis": {
+      "source_schema_version": "blueprint.github_codeql_evidence.v1",
+      "source_status_field": "conclusion",
+      "semantic_validator": "codeql_analysis",
+      "trusted_attestation_authority_id": "release_codeql_analysis_v1"
+    },
+    "sim_only_gate": {
+      "source_schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
+      "source_status_field": "status",
+      "semantic_validator": "sim_only_gate",
+      "trusted_attestation_authority_id": "release_sim_only_gate_v1"
+    },
+    "ptdp_end_to_end": {
+      "source_schema_version": "blueprint.ptdp_end_to_end_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "ptdp_end_to_end",
+      "trusted_attestation_authority_id": "release_ptdp_end_to_end_v1"
+    },
+    "native_lerobot_export": {
+      "source_schema_version": "blueprint.critical_capability_lane_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "native_lerobot_export",
+      "trusted_attestation_authority_id": "release_native_lerobot_export_v1"
+    },
+    "sc3_inputs": {
+      "source_schema_version": "blueprint.sc3_claim_inputs_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "sc3_inputs",
+      "trusted_attestation_authority_id": "release_sc3_inputs_v1"
+    },
+    "restore_drill": {
+      "source_schema_version": "capture_truth_restore_drill.v1",
+      "source_status_field": "status",
+      "semantic_validator": "restore_drill",
+      "trusted_attestation_authority_id": "release_restore_drill_v1"
+    },
+    "provider_canary": {
+      "source_schema_version": "blueprint.critical_capability_lane_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "provider_canary",
+      "trusted_attestation_authority_id": "release_provider_canary_v1"
+    },
+    "pubsub_integration": {
+      "source_schema_version": "blueprint.critical_capability_lane_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "pubsub_integration",
+      "trusted_attestation_authority_id": "release_pubsub_integration_v1"
+    },
+    "artifact_signature": {
+      "source_schema_version": "blueprint.release_signature_verification.v1",
+      "source_status_field": "status",
+      "semantic_validator": "artifact_signature",
+      "trusted_attestation_authority_id": "release_artifact_signature_v1"
+    },
+    "immutable_retention": {
+      "source_schema_version": "blueprint.immutable_release_evidence_receipt.v1",
+      "source_status_field": "status",
+      "semantic_validator": "immutable_retention",
+      "trusted_attestation_authority_id": "release_immutable_retention_v1"
+    },
+    "deployment_readback": {
+      "source_schema_version": "blueprint.deployment_readback_evidence.v1",
+      "source_status_field": "status",
+      "semantic_validator": "deployment_readback",
+      "trusted_attestation_authority_id": "release_deployment_readback_v1"
+    }
+  },
+  "scopes": {
+    "BASE": [
+      "pipeline_ci",
+      "full_test_lane_ci",
+      "dependency_policy",
+      "container_contract",
+      "sast_policy",
+      "supply_chain_contract",
+      "codeql_analysis",
+      "artifact_signature",
+      "immutable_retention"
+    ],
+    "SIM": [
+      "pipeline_ci",
+      "full_test_lane_ci",
+      "dependency_policy",
+      "container_contract",
+      "sast_policy",
+      "supply_chain_contract",
+      "codeql_analysis",
+      "artifact_signature",
+      "immutable_retention",
+      "sim_only_gate"
+    ],
+    "PTDP": [
+      "pipeline_ci",
+      "full_test_lane_ci",
+      "dependency_policy",
+      "container_contract",
+      "sast_policy",
+      "supply_chain_contract",
+      "codeql_analysis",
+      "artifact_signature",
+      "immutable_retention",
+      "native_lerobot_export",
+      "ptdp_end_to_end"
+    ],
+    "SC3": [
+      "pipeline_ci",
+      "full_test_lane_ci",
+      "dependency_policy",
+      "container_contract",
+      "sast_policy",
+      "supply_chain_contract",
+      "codeql_analysis",
+      "artifact_signature",
+      "immutable_retention",
+      "sim_only_gate",
+      "native_lerobot_export",
+      "sc3_inputs",
+      "provider_canary"
+    ],
+    "PAID": [
+      "pipeline_ci",
+      "full_test_lane_ci",
+      "dependency_policy",
+      "container_contract",
+      "sast_policy",
+      "supply_chain_contract",
+      "codeql_analysis",
+      "sim_only_gate",
+      "ptdp_end_to_end",
+      "native_lerobot_export",
+      "sc3_inputs",
+      "restore_drill",
+      "provider_canary",
+      "pubsub_integration",
+      "artifact_signature",
+      "immutable_retention"
+    ],
+    "LIVE": [
+      "pipeline_ci",
+      "full_test_lane_ci",
+      "dependency_policy",
+      "container_contract",
+      "sast_policy",
+      "supply_chain_contract",
+      "codeql_analysis",
+      "sim_only_gate",
+      "ptdp_end_to_end",
+      "native_lerobot_export",
+      "sc3_inputs",
+      "restore_drill",
+      "provider_canary",
+      "pubsub_integration",
+      "artifact_signature",
+      "immutable_retention",
+      "deployment_readback"
+    ]
+  },
+  "nodes": {
+    "pipeline_ci": {
+      "evidence_schema_version": "blueprint.github_actions_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["success"],
+        "SIM": ["success"],
+        "PTDP": ["success"],
+        "SC3": ["success"],
+        "PAID": ["success"],
+        "LIVE": ["success"]
+      },
+      "max_age_seconds": 86400
+    },
+    "full_test_lane_ci": {
+      "evidence_schema_version": "blueprint.github_actions_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["success"],
+        "SIM": ["success"],
+        "PTDP": ["success"],
+        "SC3": ["success"],
+        "PAID": ["success"],
+        "LIVE": ["success"]
+      },
+      "max_age_seconds": 86400
+    },
+    "dependency_policy": {
+      "evidence_schema_version": "blueprint_dependency_security_gate.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["passed"],
+        "SIM": ["passed"],
+        "PTDP": ["passed"],
+        "SC3": ["passed"],
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 86400
+    },
+    "container_contract": {
+      "evidence_schema_version": "blueprint.container_production_contract.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["success"],
+        "SIM": ["success"],
+        "PTDP": ["success"],
+        "SC3": ["success"],
+        "PAID": ["success"],
+        "LIVE": ["success"]
+      },
+      "max_age_seconds": 86400
+    },
+    "sast_policy": {
+      "evidence_schema_version": "blueprint.bandit_policy_gate.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["passed"],
+        "SIM": ["passed"],
+        "PTDP": ["passed"],
+        "SC3": ["passed"],
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 86400
+    },
+    "supply_chain_contract": {
+      "evidence_schema_version": "blueprint.supply_chain_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["passed"],
+        "SIM": ["passed"],
+        "PTDP": ["passed"],
+        "SC3": ["passed"],
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 86400
+    },
+    "codeql_analysis": {
+      "evidence_schema_version": "blueprint.github_codeql_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["success"],
+        "SIM": ["success"],
+        "PTDP": ["success"],
+        "SC3": ["success"],
+        "PAID": ["success"],
+        "LIVE": ["success"]
+      },
+      "max_age_seconds": 86400
+    },
+    "sim_only_gate": {
+      "evidence_schema_version": "blueprint.sim_only_beta_local_gate_report.v1",
+      "accepted_statuses_by_scope": {
+        "SIM": ["passed"],
+        "SC3": ["passed"],
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 86400
+    },
+    "ptdp_end_to_end": {
+      "evidence_schema_version": "blueprint.ptdp_end_to_end_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "PTDP": ["passed"],
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 604800
+    },
+    "native_lerobot_export": {
+      "evidence_schema_version": "blueprint.native_lerobot_export.v1",
+      "accepted_statuses_by_scope": {
+        "PTDP": ["passed"],
+        "SC3": ["passed"],
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 604800
+    },
+    "sc3_inputs": {
+      "evidence_schema_version": "blueprint.sc3_claim_inputs_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "SC3": ["ready"],
+        "PAID": ["ready"],
+        "LIVE": ["ready"]
+      },
+      "max_age_seconds": 604800
+    },
+    "restore_drill": {
+      "evidence_schema_version": "blueprint.capture_truth_restore_drill.v1",
+      "accepted_statuses_by_scope": {
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 2592000
+    },
+    "provider_canary": {
+      "evidence_schema_version": "blueprint.provider_canary_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "SC3": ["passed"],
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 86400
+    },
+    "pubsub_integration": {
+      "evidence_schema_version": "blueprint.pubsub_emulator_integration.v1",
+      "accepted_statuses_by_scope": {
+        "PAID": ["passed"],
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 86400
+    },
+    "artifact_signature": {
+      "evidence_schema_version": "blueprint.release_signature_verification.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["verified"],
+        "SIM": ["verified"],
+        "PTDP": ["verified"],
+        "SC3": ["verified"],
+        "PAID": ["verified"],
+        "LIVE": ["verified"]
+      },
+      "max_age_seconds": 86400
+    },
+    "immutable_retention": {
+      "evidence_schema_version": "blueprint.immutable_release_evidence_receipt.v1",
+      "accepted_statuses_by_scope": {
+        "BASE": ["archived_immutable"],
+        "SIM": ["archived_immutable"],
+        "PTDP": ["archived_immutable"],
+        "SC3": ["archived_immutable"],
+        "PAID": ["archived_immutable"],
+        "LIVE": ["archived_immutable"]
+      },
+      "max_age_seconds": 86400
+    },
+    "deployment_readback": {
+      "evidence_schema_version": "blueprint.deployment_readback_evidence.v1",
+      "accepted_statuses_by_scope": {
+        "LIVE": ["passed"]
+      },
+      "max_age_seconds": 86400
+    }
+  }
+}

@@ -139,43 +139,23 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     )
 
 
-def test_presign_warm_inbox_channel_records_expiry_without_leaking_url(
+def test_warm_inbox_compatibility_entrypoint_requires_durable_broker(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    home = tmp_path / "home"
-    secrets = home / ".blueprint-secrets"
-    secrets.mkdir(parents=True)
-    (secrets / "digitalocean_spaces_access_key_id").write_text("access\n", encoding="utf-8")
-    (secrets / "digitalocean_spaces_secret_access_key").write_text("secret\n", encoding="utf-8")
-    (secrets / "digitalocean_spaces_bucket").write_text("blueprint-wam\n", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(home))
-
-    class FakeConfig:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.puts: list[dict] = []
-
-        def put_object(self, **kwargs):
-            self.puts.append(kwargs)
-
-        def generate_presigned_url(self, operation: str, *, Params, ExpiresIn, HttpMethod):
-            return (
-                f"https://object.example/{Params['Bucket']}/{Params['Key']}"
-                f"?signature=secret-{operation}&expires={ExpiresIn}&method={HttpMethod}"
-            )
-
-    fake_client = FakeClient()
-    monkeypatch.setitem(
-        sys.modules,
-        "boto3",
-        SimpleNamespace(client=lambda _service, **_kwargs: fake_client),
+    base_url_file = tmp_path / "broker-base-url"
+    token_file = tmp_path / "broker-token"
+    base_url_file.write_text("https://warm-broker.example", encoding="utf-8")
+    token_file.write_text("s" * 64, encoding="utf-8")
+    token_file.chmod(0o600)
+    monkeypatch.setenv(
+        "BLUEPRINT_WARM_RENDER_BROKER_BASE_URL_FILE",
+        str(base_url_file),
     )
-    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
-    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
+    monkeypatch.setenv(
+        "BLUEPRINT_WARM_RENDER_BROKER_TOKEN_FILE",
+        str(token_file),
+    )
 
     manifest = object_store.presign_warm_inbox_channel(
         tmp_path / "job",
@@ -184,12 +164,15 @@ def test_presign_warm_inbox_channel_records_expiry_without_leaking_url(
     )
 
     assert manifest["status"] == "completed"
-    assert manifest["presigned_url_expiry"]["expiry_warning"] is True
-    assert manifest["expires_at"]
-    assert manifest["warm_inbox_get_url_redacted"].endswith("?REDACTED_QUERY")
-    assert "signature=secret" not in json.dumps(manifest)
-    assert (tmp_path / "job" / "warm_inbox_get_url.txt").stat().st_mode & 0o777 == 0o600
-    assert fake_client.puts and fake_client.puts[0]["ContentType"] == "application/json"
+    assert manifest["transport"] == "durable_warm_render_broker"
+    assert manifest["single_object_transport_enabled"] is False
+    assert manifest["server_canonical_job_ids_required"] is True
+    assert manifest["server_idempotency_required"] is True
+    assert manifest["inbox_key"] is None
+    assert manifest["warm_inbox_get_url_file"] is None
+    assert manifest["warm_inbox_put_url_file"] is None
+    assert "s" * 64 not in json.dumps(manifest)
+    assert (tmp_path / "job" / "warm_broker_token.txt").stat().st_mode & 0o777 == 0o600
 
 
 def test_wam_provider_object_store_bucket_cli_and_main_edges(

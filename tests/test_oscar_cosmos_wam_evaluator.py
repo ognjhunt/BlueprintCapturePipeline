@@ -1,19 +1,30 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
 import sys
 import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from blueprint_pipeline import eval_ready_task_grounding as grounding
 from blueprint_pipeline import oscar_cosmos_wam_evaluator as evaluator
 from blueprint_pipeline import wam_backend_strategy as backend_strategy
+from blueprint_pipeline import wam_generated_video_success_label_gemini as success_label_adapter
+from blueprint_pipeline import wam_score_claim_gate as score_claim_gate
 
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+CALIBRATION_REVIEWER_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x05" * 32)
+LABEL_RUNTIME_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x06" * 32)
+LADDER_VALIDATION_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x0c" * 32)
 
 
 _WAM_RUNTIME_ENV_VARS = (
@@ -47,6 +58,193 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _configure_success_label_calibration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    provider: str = "fake-vlm",
+    model: str = "fake-video-judge",
+    prompt_template_sha256: str = "c" * 64,
+) -> None:
+    criterion_ids = [
+        "end_effector_reaches_target",
+        "target_state_change_visible",
+        "robot_caused_target_motion",
+    ]
+    criterion_ids_sha256 = hashlib.sha256(
+        json.dumps(sorted(criterion_ids), separators=(",", ":")).encode()
+    ).hexdigest()
+    rows = []
+    for index in range(20):
+        sample_id = f"calibration-sample-{index:02d}"
+        blinded_sample_id = f"blind-{index:02d}"
+        evidence = tmp_path / f"{sample_id}.json"
+        evidence.write_text(
+            json.dumps(
+                {
+                    "schema_version": "wam_success_label_calibration_sample.v1",
+                    "sample_id": sample_id,
+                    "blinded_sample_id": blinded_sample_id,
+                    "criterion_ids_sha256": criterion_ids_sha256,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        verdict = bool(index % 2)
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "blinded_sample_id": blinded_sample_id,
+                "source_evidence_artifact": {
+                    "path": str(evidence),
+                    "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+                },
+                "reported_confidence": 0.95,
+                "model_verdict": verdict,
+                "blinded_rater_votes": [
+                    {"rater_id": "rater-a", "verdict": verdict},
+                    {"rater_id": "rater-b", "verdict": verdict},
+                ],
+                "rater_votes_blinded_to_model": True,
+                "model_verdict_recorded_before_adjudication": True,
+                "adjudicated_ground_truth": verdict,
+                "adjudicator_id": "adjudicator-1",
+            }
+        )
+    dataset_payload = {
+        "schema_version": "wam_success_label_calibration_dataset.v1",
+        "provider": provider,
+        "model": model,
+        "prompt_template_sha256": prompt_template_sha256,
+        "criterion_ids": criterion_ids,
+        "registered_blinded_rater_ids": ["rater-a", "rater-b"],
+        "blinded_human_labels": True,
+        "adjudication_completed": True,
+        "inter_rater_agreement": 1.0,
+        "rows": rows,
+    }
+    public_key = CALIBRATION_REVIEWER_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    signed_bytes = json.dumps(dataset_payload, sort_keys=True, separators=(",", ":")).encode()
+    signed_payload_sha256 = hashlib.sha256(signed_bytes).hexdigest()
+    report = tmp_path / "success-label-calibration-signature-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": "sc3_signature_verification_report.v1",
+                "algorithm": "Ed25519",
+                "verification_status": "verified",
+                "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
+                "signed_payload_sha256": signed_payload_sha256,
+                "signer_key_id": "calibration-review-board-test",
+                "verifier_id": "blueprint-test-verifier",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    dataset_payload["reviewer_attestation"] = {
+        "algorithm": "Ed25519",
+        "signature_verified": True,
+        "signer_key_id": "calibration-review-board-test",
+        "verifier_id": "blueprint-test-verifier",
+        "public_key_base64": base64.b64encode(public_key).decode(),
+        "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
+        "signature_base64": base64.b64encode(
+            CALIBRATION_REVIEWER_PRIVATE_KEY.sign(signed_bytes)
+        ).decode(),
+        "signed_payload_sha256": signed_payload_sha256,
+        "verification_report_artifact": {
+            "path": str(report),
+            "sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
+        },
+    }
+    dataset = tmp_path / "success-label-calibration-dataset.json"
+    dataset.write_text(json.dumps(dataset_payload, sort_keys=True), encoding="utf-8")
+    calibration = tmp_path / "success-label-calibration.json"
+    calibration.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_success_label_calibration.v1",
+                "status": "accepted",
+                "provider": provider,
+                "model": model,
+                "prompt_template_sha256": prompt_template_sha256,
+                "criterion_ids": criterion_ids,
+                "confidence_floor": 0.8,
+                "calibration_method": ("lowest_registered_threshold_meeting_accuracy_v1"),
+                "registered_minimum_confidence_floor": 0.8,
+                "minimum_high_confidence_samples": 10,
+                "minimum_high_confidence_accuracy": 0.8,
+                "calibration_dataset_artifact": {
+                    "path": str(dataset),
+                    "sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        evaluator.WAM_SUCCESS_LABEL_CALIBRATION_ARTIFACT_ENV,
+        str(calibration),
+    )
+    monkeypatch.setenv(
+        evaluator.WAM_SUCCESS_LABEL_CALIBRATION_SHA256_ENV,
+        hashlib.sha256(calibration.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setenv(
+        evaluator.WAM_SUCCESS_LABEL_CALIBRATION_TRUSTED_PUBLIC_KEY_SHA256_ENV,
+        hashlib.sha256(public_key).hexdigest(),
+    )
+    runtime_private_key_path = tmp_path / "success-label-runtime-private.pem"
+    runtime_private_key_path.write_bytes(
+        LABEL_RUNTIME_PRIVATE_KEY.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    runtime_public_key = LABEL_RUNTIME_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    monkeypatch.setenv(
+        success_label_adapter.RUNTIME_SIGNING_PRIVATE_KEY_FILE_ENV,
+        str(runtime_private_key_path),
+    )
+    monkeypatch.setenv(
+        evaluator.WAM_SUCCESS_LABEL_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV,
+        hashlib.sha256(runtime_public_key).hexdigest(),
+    )
+
+
+def _attested_success_label_payload(
+    payload: dict[str, object],
+    *,
+    rollouts: list[dict[str, object]],
+    tmp_path: Path,
+) -> dict[str, object]:
+    return success_label_adapter.attach_success_label_runtime_attestation(
+        payload,
+        inference_input_manifest_sha256=(
+            evaluator.success_label_inference_input_sha256(
+                rollouts,
+                criterion_ids=(
+                    "end_effector_reaches_target",
+                    "target_state_change_visible",
+                    "robot_caused_target_motion",
+                ),
+            )
+        ),
+        output_dir=tmp_path
+        / f"label-attestation-{len(list(tmp_path.glob('label-attestation-*')))}",
+    )
 
 
 def _write_provider_output_zip(path: Path, *, include_runtime_result: bool = False) -> Path:
@@ -313,12 +511,14 @@ def test_wam_backend_strategy_catalog_preserves_corrected_paper_boundaries() -> 
 
     assert manifest["preferred_configured_learned_wam_backend_candidate"] == "cosmos3_wam"
     assert manifest["preferred_configured_backend_is_not_permanent_dependency"] is True
-    assert manifest["claim_boundary"][
-        "cosmos3_preference_does_not_prove_universal_all_task_grading"
-    ] is True
-    assert manifest["claim_boundary"][
-        "cosmos3_wam_never_auto_runs_without_explicit_adapter_and_gates"
-    ] is True
+    assert (
+        manifest["claim_boundary"]["cosmos3_preference_does_not_prove_universal_all_task_grading"]
+        is True
+    )
+    assert (
+        manifest["claim_boundary"]["cosmos3_wam_never_auto_runs_without_explicit_adapter_and_gates"]
+        is True
+    )
 
     oscar = by_id["oscar_wam"]
     assert oscar["base_model"] == "Cosmos-Predict2.5-2B"
@@ -330,7 +530,7 @@ def test_wam_backend_strategy_catalog_preserves_corrected_paper_boundaries() -> 
         "mmrv": 0.571,
         "spearman": 0.750,
         "pearson": 0.852,
-        "sisr_delta_pp": 1.73,
+        "success_rate_difference_pp": 1.73,
     }
     assert oscar["success_scorer_caveat"]["human_label_agreement_count"] == 78
     assert oscar["success_scorer_caveat"]["specificity"] == 0.90
@@ -351,18 +551,24 @@ def test_wam_backend_strategy_catalog_preserves_corrected_paper_boundaries() -> 
         "mmrv": 0.119,
         "scope": "overall SC3-Eval closed-loop result reported by the paper",
     }
-    assert cosmos3["sc3_eval_lineage"]["metrics"]["in_distribution_online"][
-        "sc3_eval_pearson"
-    ] == 0.984
-    assert cosmos3["sc3_eval_lineage"]["metrics"]["in_distribution_online"][
-        "cosmos_predict25_mmrv"
-    ] == 0.090
-    assert cosmos3["sc3_eval_lineage"]["metrics"]["out_of_distribution_online"][
-        "sc3_eval_pearson"
-    ] == 0.870
-    assert cosmos3["sc3_eval_lineage"]["metrics"]["out_of_distribution_online"][
-        "cosmos_predict25_pearson"
-    ] == 0.871
+    assert (
+        cosmos3["sc3_eval_lineage"]["metrics"]["in_distribution_online"]["sc3_eval_pearson"]
+        == 0.984
+    )
+    assert (
+        cosmos3["sc3_eval_lineage"]["metrics"]["in_distribution_online"]["cosmos_predict25_mmrv"]
+        == 0.090
+    )
+    assert (
+        cosmos3["sc3_eval_lineage"]["metrics"]["out_of_distribution_online"]["sc3_eval_pearson"]
+        == 0.870
+    )
+    assert (
+        cosmos3["sc3_eval_lineage"]["metrics"]["out_of_distribution_online"][
+            "cosmos_predict25_pearson"
+        ]
+        == 0.871
+    )
     assert cosmos3["sc3_eval_lineage"]["scope_caveat"] == {
         "paper_version": "arXiv:2606.18610v3",
         "source_reverified_on": "2026-07-02",
@@ -379,9 +585,12 @@ def test_wam_backend_strategy_catalog_preserves_corrected_paper_boundaries() -> 
         "max_rollout_seconds": 20,
         "blueprint_implication": "not proof of universal all-task or all-scene grading",
     }
-    assert cosmos3["sc3_eval_lineage"]["recipe_contract"]["claim_boundary"][
-        "self_consistency_does_not_prove_generated_world_rank_fidelity"
-    ] is True
+    assert (
+        cosmos3["sc3_eval_lineage"]["recipe_contract"]["claim_boundary"][
+            "self_consistency_does_not_prove_generated_world_rank_fidelity"
+        ]
+        is True
+    )
 
     assert by_id["cosmos3_super"]["recommendation_tier"] == "high_cost_adjudication"
     assert by_id["cosmos3_super"]["default_local_runtime_candidate"] is False
@@ -426,34 +635,26 @@ def test_wam_backend_strategy_is_emitted_without_auto_running_cosmos3(
     assert by_id["cosmos3_edge"]["treat_as_released_default"] is False
 
     readiness = json.loads(
-        (job_dir / "policy_model_endpoint_readiness_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (job_dir / "policy_model_endpoint_readiness_manifest.json").read_text(encoding="utf-8")
     )
-    cosmos3 = next(
-        row for row in readiness["candidates"] if row["candidate_id"] == "cosmos3_wam"
-    )
+    cosmos3 = next(row for row in readiness["candidates"] if row["candidate_id"] == "cosmos3_wam")
     assert cosmos3["preferred_for_new_configured_learned_wam"] is True
     assert cosmos3["real_model_runtime_ready"] is False
-    assert f"set_{evaluator.LOCAL_MODEL_GATE_ENV}=true" in cosmos3[
-        "what_is_needed_to_make_true"
-    ]
+    assert f"set_{evaluator.LOCAL_MODEL_GATE_ENV}=true" in cosmos3["what_is_needed_to_make_true"]
 
-    success_labels = json.loads(
-        (job_dir / "wam_success_labels.json").read_text(encoding="utf-8")
+    success_labels = json.loads((job_dir / "wam_success_labels.json").read_text(encoding="utf-8"))
+    consistency = json.loads((job_dir / "wam_consistency_checks.json").read_text(encoding="utf-8"))
+    truth = json.loads((job_dir / "policy_model_truth_boundary.json").read_text(encoding="utf-8"))
+    assert (
+        success_labels["claim_boundary"]["success_label_does_not_prove_forward_inverse_consistency"]
+        is True
     )
-    consistency = json.loads(
-        (job_dir / "wam_consistency_checks.json").read_text(encoding="utf-8")
+    assert (
+        consistency["claim_boundary"][
+            "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity"
+        ]
+        is True
     )
-    truth = json.loads(
-        (job_dir / "policy_model_truth_boundary.json").read_text(encoding="utf-8")
-    )
-    assert success_labels["claim_boundary"][
-        "success_label_does_not_prove_forward_inverse_consistency"
-    ] is True
-    assert consistency["claim_boundary"][
-        "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity"
-    ] is True
     assert truth["generated_world_rank_fidelity_result_proven"] is False
     assert truth["model_choice_does_not_prove_generated_world_rank_fidelity"] is True
 
@@ -481,9 +682,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
     assert "blocked_missing_wam_runtime" in summary["blockers"]
     assert "blocked_missing_wam_model_checkpoint" in summary["blockers"]
     rollout_input = json.loads(
-        (tmp_path / "wam_job" / "wam_rollout_input_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "wam_job" / "wam_rollout_input_manifest.json").read_text(encoding="utf-8")
     )
     assert rollout_input["status"] == "ready_for_model"
     assert rollout_input["counts"]["wam_input_video_count"] == 1
@@ -527,9 +726,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
     for filename in required:
         assert (tmp_path / "wam_job" / filename).is_file()
     action_conditioning = json.loads(
-        (tmp_path / "wam_job" / "wam_action_conditioning_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "wam_job" / "wam_action_conditioning_manifest.json").read_text(encoding="utf-8")
     )
     assert "g1_projected_skeleton_trace.jsonl" in action_conditioning["conditioning_sources"]
     pose_encoding = action_conditioning["robot_pose_encoding"]
@@ -538,9 +735,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
     assert pose_encoding["projected_skeleton_is_not_physical_robot_proprioception"] is True
     assert pose_encoding["projected_skeleton_does_not_prove_wam_visual_usefulness"] is True
     trace_binding = json.loads(
-        (tmp_path / "wam_job" / "wam_evaluator_trace_binding.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "wam_job" / "wam_evaluator_trace_binding.json").read_text(encoding="utf-8")
     )
     assert trace_binding["source_paths"]["g1_projected_skeleton_trace_jsonl"].endswith(
         "g1_projected_skeleton_trace.jsonl"
@@ -551,9 +746,7 @@ def test_oscar_cosmos_wam_evaluator_writes_blocked_dry_run_package(
     assert consistency["forward_inverse_consistency_proven"] is False
     assert consistency["action_conditioned_video_rollout_generated"] is False
     loop_manifest = json.loads(
-        (tmp_path / "wam_job" / "wam_policy_loop_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "wam_job" / "wam_policy_loop_manifest.json").read_text(encoding="utf-8")
     )
     assert loop_manifest["actual_loop_mode"] == "offline_action_conditioned_wam_evaluator"
     assert loop_manifest["closed_loop_policy_wam_interaction"] is False
@@ -639,14 +832,14 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
         generated_at="now",
     )
 
-    assert summary["status"] == "completed"
+    assert summary["status"] == "blocked"
+    assert "blocked_eval_ready_robot_projection_not_ready" in summary["blockers"]
     rollout_input = json.loads(
-        (grounded_job_dir / "wam_rollout_input_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "wam_rollout_input_manifest.json").read_text(encoding="utf-8")
     )
     assert rollout_input["eval_ready_task_grounding"]["available"] is True
-    assert rollout_input["eval_ready_task_grounding"]["learned_rollout_request_ready"] is True
+    assert rollout_input["eval_ready_task_grounding"]["learned_rollout_request_ready"] is False
+    assert rollout_input["eval_ready_task_grounding"]["robot_projection_ready"] is False
     assert rollout_input["inputs"]["robot_fk_projected_skeleton_trace_jsonl"].endswith(
         "robot_fk_projected_skeleton_trace.jsonl"
     )
@@ -655,19 +848,19 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
     )
     assert "sink right handle" in rollout_input["task_prompts"][0]["target_prompts"]
     action_conditioning = json.loads(
-        (grounded_job_dir / "wam_action_conditioning_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "wam_action_conditioning_manifest.json").read_text(encoding="utf-8")
     )
-    assert "robot_fk_projected_skeleton_trace.jsonl" in action_conditioning["conditioning_sources"]
-    assert action_conditioning["robot_pose_encoding"]["generic_robot_fk_projection_available"] is True
+    assert (
+        "robot_fk_projected_skeleton_trace.jsonl" not in action_conditioning["conditioning_sources"]
+    )
+    assert (
+        action_conditioning["robot_pose_encoding"]["generic_robot_fk_projection_available"] is False
+    )
     scorecard = json.loads(
-        (grounded_job_dir / "wam_policy_scorecard.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8")
     )
     assert scorecard["eval_ready_task_grounding_used"] is True
-    assert scorecard["handle_proxy_state"] == "on_candidate"
+    assert scorecard["handle_proxy_state"] == "off_or_unproven"
     ledger = json.loads(
         (grounded_job_dir / "wam_prediction_outcome_correlation_ledger.json").read_text(
             encoding="utf-8"
@@ -675,9 +868,7 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
     )
     assert ledger["status"] == "awaiting_real_world_outcomes"
     trace_binding = json.loads(
-        (grounded_job_dir / "wam_evaluator_trace_binding.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "wam_evaluator_trace_binding.json").read_text(encoding="utf-8")
     )
     assert trace_binding["source_paths"]["eval_ready_task_grounding"].endswith(
         "eval_ready_task_grounding.json"
@@ -703,15 +894,19 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
     assert manipulation_loop["openvla_selected_as_g1_robot_policy"] is False
     assert manipulation_loop["wam_rollout_selected_as_g1_robot_policy"] is False
     assert manipulation_loop["unitree_hand_policy_required_for_g1_manipulation"] is True
-    assert manipulation_loop["claim_boundary"][
-        "wam_evaluator_is_test_bench_not_robot_manipulation_policy"
-    ] is True
-    assert manipulation_loop["claim_boundary"][
-        "openvla_policy_is_not_selected_g1_robot_policy"
-    ] is True
-    assert manipulation_loop["claim_boundary"][
-        "wam_rollout_is_not_selected_g1_robot_policy"
-    ] is True
+    assert (
+        manipulation_loop["claim_boundary"][
+            "wam_evaluator_is_test_bench_not_robot_manipulation_policy"
+        ]
+        is True
+    )
+    assert (
+        manipulation_loop["claim_boundary"]["openvla_policy_is_not_selected_g1_robot_policy"]
+        is True
+    )
+    assert (
+        manipulation_loop["claim_boundary"]["wam_rollout_is_not_selected_g1_robot_policy"] is True
+    )
     requery_readiness = json.loads(
         (grounded_job_dir / "policy_requery_endpoint_readiness_manifest.json").read_text(
             encoding="utf-8"
@@ -719,9 +914,9 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
     )
     assert requery_readiness["status"] == "blocked"
     assert requery_readiness["live_policy_requery_endpoint_ready"] is False
-    assert "blocked_missing_live_policy_requery_endpoint_env_or_auth" in requery_readiness[
-        "blockers"
-    ]
+    assert (
+        "blocked_missing_live_policy_requery_endpoint_env_or_auth" in requery_readiness["blockers"]
+    )
     assert (
         requery_readiness["claim_boundary"][
             "source_endpoint_proof_is_not_current_live_requery_proof"
@@ -729,16 +924,13 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
         is True
     )
     assert "blocked_missing_manipulation_contact_task_attempts" in manipulation_loop["blockers"]
-    assert "blocked_missing_unitree_g1_hand_manipulation_policy" in manipulation_loop[
-        "blockers"
-    ]
-    assert "blocked_missing_real_vla_or_unitree_hand_manipulation_policy" in manipulation_loop[
-        "blockers"
-    ]
+    assert "blocked_missing_unitree_g1_hand_manipulation_policy" in manipulation_loop["blockers"]
+    assert (
+        "blocked_missing_real_vla_or_unitree_hand_manipulation_policy"
+        in manipulation_loop["blockers"]
+    )
     truth = json.loads(
-        (grounded_job_dir / "wam_evaluator_truth_boundary.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "wam_evaluator_truth_boundary.json").read_text(encoding="utf-8")
     )
     assert truth["learned_wam_model_ran"] is False
     assert truth["http_endpoint_wrapper_available"] is True
@@ -761,9 +953,7 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
         truth["why_cannot_just_create_endpoints"]
     )
     policy_truth = json.loads(
-        (grounded_job_dir / "policy_model_truth_boundary.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "policy_model_truth_boundary.json").read_text(encoding="utf-8")
     )
     assert policy_truth["schema_version"] == "policy_model_truth_boundary.v1"
     assert policy_truth["replaceable_model_adapter_boundary"] is True
@@ -777,26 +967,24 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
     assert readiness["claim_boundary"]["endpoint_creation_is_not_model_execution_proof"] is True
     oscar = next(row for row in readiness["candidates"] if row["candidate_id"] == "oscar_wam")
     assert oscar["endpoint_wrapper_can_be_created"] is False
-    assert "set_BLUEPRINT_OSCAR_WAM_COMMAND_to_runnable_adapter_command" in oscar[
-        "what_is_needed_to_make_true"
-    ]
+    assert (
+        "set_BLUEPRINT_OSCAR_WAM_COMMAND_to_runnable_adapter_command"
+        in oscar["what_is_needed_to_make_true"]
+    )
     creation_plan = json.loads(
-        (grounded_job_dir / "policy_model_endpoint_creation_plan.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "policy_model_endpoint_creation_plan.json").read_text(encoding="utf-8")
     )
     assert creation_plan["http_wrapper_binary_available"] is True
     assert creation_plan["endpoint_creation_modes"][0]["mode"] == "reference_endpoint_wrapper"
     assert creation_plan["endpoint_wrapper_missing_command_candidate_count"] >= 1
     assert creation_plan["can_create_real_model_endpoint_now"] is False
-    assert creation_plan["claim_boundary"]["http_endpoint_creation_is_not_model_execution_proof"] is True
-    assert "runnable adapter command" in " ".join(
-        creation_plan["minimum_user_supplied_inputs"]
+    assert (
+        creation_plan["claim_boundary"]["http_endpoint_creation_is_not_model_execution_proof"]
+        is True
     )
+    assert "runnable adapter command" in " ".join(creation_plan["minimum_user_supplied_inputs"])
     probe = json.loads(
-        (grounded_job_dir / "policy_model_endpoint_probe_results.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "policy_model_endpoint_probe_results.json").read_text(encoding="utf-8")
     )
     assert probe["status"] == "blocked"
     assert probe["probe_attempted_candidate_count"] == 0
@@ -804,13 +992,10 @@ def test_oscar_cosmos_wam_evaluator_consumes_eval_ready_task_grounding(
     assert "blocked_model_command_not_available" in probe["blockers"]
     assert "wrapped command to run" in " ".join(probe["why_cannot_just_create_endpoints"])
     source_discovery = json.loads(
-        (grounded_job_dir / "local_model_source_tree_discovery.json").read_text(
-            encoding="utf-8"
-        )
+        (grounded_job_dir / "local_model_source_tree_discovery.json").read_text(encoding="utf-8")
     )
     assert (
-        source_discovery["claim_boundary"]["source_tree_present_is_not_model_runtime_proof"]
-        is True
+        source_discovery["claim_boundary"]["source_tree_present_is_not_model_runtime_proof"] is True
     )
 
 
@@ -916,8 +1101,9 @@ def test_oscar_cosmos_wam_evaluator_inherits_unitree_endpoint_hand_policy_status
     assert requery_readiness["source_unitree_endpoint_hand_policy_used"] is True
     assert requery_readiness["source_endpoint_proof_is_not_current_live_endpoint"] is True
     assert requery_readiness["live_policy_requery_endpoint_ready"] is False
-    assert "source_endpoint_proof_exists_but_endpoint_not_currently_live_for_requery" in (
-        requery_readiness["blockers"]
+    assert (
+        "source_endpoint_proof_exists_but_endpoint_not_currently_live_for_requery"
+        in (requery_readiness["blockers"])
     )
 
 
@@ -1032,11 +1218,9 @@ def test_oscar_cosmos_wam_evaluator_blocks_third_person_only_wam_input(
     assert summary["status"] == "blocked"
     assert "blocked_missing_egocentric_wam_input_video" in summary["blockers"]
     rollout_input = json.loads(
-        (
-            tmp_path
-            / "third_person_only_wam_job"
-            / "wam_rollout_input_manifest.json"
-        ).read_text(encoding="utf-8")
+        (tmp_path / "third_person_only_wam_job" / "wam_rollout_input_manifest.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert rollout_input["status"] == "blocked_missing_egocentric_wam_input_video"
     assert rollout_input["counts"]["wam_input_video_count"] == 0
@@ -1123,21 +1307,20 @@ def test_oscar_cosmos_wam_evaluator_blocks_manipulation_loop_without_real_policy
     assert manipulation_loop["wam_rollout_selected_as_g1_robot_policy"] is False
     assert manipulation_loop["unitree_hand_manipulation_policy_used"] is False
     assert manipulation_loop["unitree_hand_policy_required_for_g1_manipulation"] is True
-    assert "blocked_missing_manipulation_contact_task_attempts" not in manipulation_loop[
-        "blockers"
-    ]
-    assert "blocked_no_manipulation_contact_actions_in_endpoint_trace" not in manipulation_loop[
-        "blockers"
-    ]
-    assert "blocked_missing_unitree_g1_hand_manipulation_policy" in manipulation_loop[
-        "blockers"
-    ]
-    assert "blocked_missing_real_vla_or_unitree_hand_manipulation_policy" in manipulation_loop[
-        "blockers"
-    ]
-    assert "blocked_missing_wam_generated_rollout_for_manipulation_loop" in manipulation_loop[
-        "blockers"
-    ]
+    assert "blocked_missing_manipulation_contact_task_attempts" not in manipulation_loop["blockers"]
+    assert (
+        "blocked_no_manipulation_contact_actions_in_endpoint_trace"
+        not in manipulation_loop["blockers"]
+    )
+    assert "blocked_missing_unitree_g1_hand_manipulation_policy" in manipulation_loop["blockers"]
+    assert (
+        "blocked_missing_real_vla_or_unitree_hand_manipulation_policy"
+        in manipulation_loop["blockers"]
+    )
+    assert (
+        "blocked_missing_wam_generated_rollout_for_manipulation_loop"
+        in manipulation_loop["blockers"]
+    )
 
 
 def test_oscar_cosmos_wam_evaluator_imports_openvla_provider_smoke_proof(
@@ -1193,9 +1376,7 @@ def test_oscar_cosmos_wam_evaluator_imports_openvla_provider_smoke_proof(
             encoding="utf-8"
         )
     )
-    openvla_candidate = next(
-        row for row in matrix["candidates"] if row["id"] == "openvla_policy"
-    )
+    openvla_candidate = next(row for row in matrix["candidates"] if row["id"] == "openvla_policy")
     assert openvla_candidate["provider_smoke_completed"] is True
     assert openvla_candidate["openvla_policy_action_command_imported"] is True
     assert openvla_candidate["openvla_policy_action_command_ran"] is False
@@ -1226,11 +1407,9 @@ def test_oscar_cosmos_wam_evaluator_rejects_schema_less_openvla_smoke_proof(
     assert summary["openvla_policy_action_command_ran"] is False
     assert summary["oscar_cosmos_openvla_unitree_model_ran"] is False
     proof = json.loads(
-        (
-            tmp_path
-            / "wam_openvla_untrusted_job"
-            / "openvla_provider_smoke_proof.json"
-        ).read_text(encoding="utf-8")
+        (tmp_path / "wam_openvla_untrusted_job" / "openvla_provider_smoke_proof.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert proof["status"] == "blocked"
     assert "openvla_provider_output_missing_trusted_runtime_proof" in proof["blockers"]
@@ -1274,26 +1453,20 @@ def test_oscar_cosmos_wam_evaluator_imports_unitree_unifolm_provider_smoke_proof
     assert summary["openvla_policy_action_command_ran"] is False
     proof = json.loads(
         (
-            tmp_path
-            / "wam_unitree_unifolm_bound_job"
-            / "unitree_unifolm_provider_smoke_proof.json"
+            tmp_path / "wam_unitree_unifolm_bound_job" / "unitree_unifolm_provider_smoke_proof.json"
         ).read_text(encoding="utf-8")
     )
     assert proof["status"] == "completed"
     assert proof["action"]["action_type"] == "manipulation_contact"
     openvla_proof = json.loads(
         (
-            tmp_path
-            / "wam_unitree_unifolm_bound_job"
-            / "openvla_provider_smoke_proof.json"
+            tmp_path / "wam_unitree_unifolm_bound_job" / "openvla_provider_smoke_proof.json"
         ).read_text(encoding="utf-8")
     )
     assert openvla_proof["status"] == "skipped"
     truth = json.loads(
         (
-            tmp_path
-            / "wam_unitree_unifolm_bound_job"
-            / "wam_evaluator_truth_boundary.json"
+            tmp_path / "wam_unitree_unifolm_bound_job" / "wam_evaluator_truth_boundary.json"
         ).read_text(encoding="utf-8")
     )
     assert truth["unitree_policy_action_command_ran"] is True
@@ -1336,40 +1509,45 @@ def test_policy_model_candidate_matrix_names_unitree_unifolm_candidates(
     assert by_id["unitree_unifolm_vla_policy"]["vlm_checkpoint_env"] == (
         "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT"
     )
-    assert "unitreerobotics/UnifoLM-VLA-Base:checkpoints/pytorch_model.pt" in by_id[
-        "unitree_unifolm_vla_policy"
-    ]["known_public_checkpoint_files"]
-    assert "unitreerobotics/UnifoLM-VLM-Base:<model repository root>" in by_id[
-        "unitree_unifolm_vla_policy"
-    ]["known_public_checkpoint_files"]
-    assert by_id["unitree_unifolm_vla_policy"]["claim_boundary"][
-        "checkpoint_presence_is_not_endpoint_execution"
-    ] is True
+    assert (
+        "unitreerobotics/UnifoLM-VLA-Base:checkpoints/pytorch_model.pt"
+        in by_id["unitree_unifolm_vla_policy"]["known_public_checkpoint_files"]
+    )
+    assert (
+        "unitreerobotics/UnifoLM-VLM-Base:<model repository root>"
+        in by_id["unitree_unifolm_vla_policy"]["known_public_checkpoint_files"]
+    )
+    assert (
+        by_id["unitree_unifolm_vla_policy"]["claim_boundary"][
+            "checkpoint_presence_is_not_endpoint_execution"
+        ]
+        is True
+    )
     assert by_id["unitree_unifolm_wma_policy"]["command_env"] == (
         "BLUEPRINT_UNITREE_UNIFOLM_WMA_COMMAND"
     )
     assert by_id["unitree_unifolm_wma_policy"]["checkpoint_env"] == (
         "BLUEPRINT_UNITREE_UNIFOLM_WMA_CHECKPOINT"
     )
-    assert "unitreerobotics/UnifoLM-WMA-0-Dual:unifolm_wma_dual.ckpt" in by_id[
-        "unitree_unifolm_wma_policy"
-    ]["known_public_checkpoint_files"]
-    assert by_id["unitree_unifolm_wma_policy"]["claim_boundary"][
-        "world_model_action_stack_is_not_automatically_endpoint_ready"
-    ] is True
+    assert (
+        "unitreerobotics/UnifoLM-WMA-0-Dual:unifolm_wma_dual.ckpt"
+        in by_id["unitree_unifolm_wma_policy"]["known_public_checkpoint_files"]
+    )
+    assert (
+        by_id["unitree_unifolm_wma_policy"]["claim_boundary"][
+            "world_model_action_stack_is_not_automatically_endpoint_ready"
+        ]
+        is True
+    )
 
     creation_plan = json.loads(
         (
-            tmp_path
-            / "wam_unifolm_matrix_job"
-            / "policy_model_endpoint_creation_plan.json"
+            tmp_path / "wam_unifolm_matrix_job" / "policy_model_endpoint_creation_plan.json"
         ).read_text(encoding="utf-8")
     )
     readiness = json.loads(
         (
-            tmp_path
-            / "wam_unifolm_matrix_job"
-            / "policy_model_endpoint_readiness_manifest.json"
+            tmp_path / "wam_unifolm_matrix_job" / "policy_model_endpoint_readiness_manifest.json"
         ).read_text(encoding="utf-8")
     )
     vla_readiness = next(
@@ -1377,16 +1555,19 @@ def test_policy_model_candidate_matrix_names_unitree_unifolm_candidates(
         for row in readiness["candidates"]
         if row["candidate_id"] == "unitree_unifolm_vla_policy"
     )
-    assert "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT" in vla_readiness[
-        "missing_required_checkpoint_envs"
-    ]
-    assert "set_BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT_to_local_checkpoint_path" in (
-        vla_readiness["what_is_needed_to_make_true"]
+    assert (
+        "BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT"
+        in vla_readiness["missing_required_checkpoint_envs"]
+    )
+    assert (
+        "set_BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT_to_local_checkpoint_path"
+        in (vla_readiness["what_is_needed_to_make_true"])
     )
     assert creation_plan["unitree_unifolm_policy_ready_candidate_count"] == 0
-    assert creation_plan["readiness_layer_summary"][
-        "unitree_unifolm_policy_ready_candidate_count"
-    ] == 0
+    assert (
+        creation_plan["readiness_layer_summary"]["unitree_unifolm_policy_ready_candidate_count"]
+        == 0
+    )
 
 
 def test_unitree_unifolm_vla_readiness_accepts_provider_checkpoint_alias(
@@ -1417,12 +1598,8 @@ def test_unitree_unifolm_vla_readiness_accepts_provider_checkpoint_alias(
     assert checkpoint_status["configured_env"] == "BLUEPRINT_UNITREE_UNIFOLM_POLICY_CHECKPOINT"
     assert checkpoint_status["configured"] is True
     assert checkpoint_status["exists"] is True
-    assert "BLUEPRINT_UNITREE_UNIFOLM_POLICY_CHECKPOINT" in checkpoint_status[
-        "accepted_envs"
-    ]
-    assert "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT" not in row[
-        "missing_required_checkpoint_envs"
-    ]
+    assert "BLUEPRINT_UNITREE_UNIFOLM_POLICY_CHECKPOINT" in checkpoint_status["accepted_envs"]
+    assert "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT" not in row["missing_required_checkpoint_envs"]
 
 
 def test_oscar_cosmos_wam_evaluator_imports_source_unitree_controller_proof(
@@ -1564,9 +1741,7 @@ def test_oscar_cosmos_wam_evaluator_does_not_count_unitree_trace_without_trusted
     assert summary["oscar_cosmos_openvla_unitree_model_ran"] is False
     proof = json.loads(
         (
-            tmp_path
-            / "wam_unitree_untrusted_trace_job"
-            / "source_unitree_controller_proof.json"
+            tmp_path / "wam_unitree_untrusted_trace_job" / "source_unitree_controller_proof.json"
         ).read_text(encoding="utf-8")
     )
     assert proof["trusted_artifact_checks"]["controller_truth_boundary_trusted"] is False
@@ -1632,11 +1807,16 @@ def test_oscar_cosmos_wam_evaluator_helper_edges(
     assert evaluator._command_available("'unterminated") is False
     assert evaluator._command_available("   ") is False
     assert evaluator._relative_or_absolute(tmp_path / "a", tmp_path) == "a"
-    assert evaluator._relative_or_absolute(Path("/tmp/outside-blueprint-test"), tmp_path).startswith("/")
+    assert evaluator._relative_or_absolute(
+        Path("/tmp/outside-blueprint-test"), tmp_path
+    ).startswith("/")
 
     checkpoint = tmp_path / "model.safetensors"
     checkpoint.write_bytes(b"x")
-    assert evaluator._checkpoint_like_files(checkpoint)["checkpoint_files_found"][0]["relative_path"] == checkpoint.name
+    assert (
+        evaluator._checkpoint_like_files(checkpoint)["checkpoint_files_found"][0]["relative_path"]
+        == checkpoint.name
+    )
     oscar_checkpoint = tmp_path / "__0_0.distcp"
     oscar_checkpoint.write_bytes(b"x" * (51 * 1024 * 1024))
     oscar_scan = evaluator._checkpoint_like_files(oscar_checkpoint)
@@ -1657,7 +1837,10 @@ def test_oscar_cosmos_wam_evaluator_helper_edges(
         def stat(self) -> object:
             raise OSError("no stat")
 
-    assert evaluator._checkpoint_like_files(OSErrorFile())["checkpoint_files_found"][0]["size_bytes"] is None
+    assert (
+        evaluator._checkpoint_like_files(OSErrorFile())["checkpoint_files_found"][0]["size_bytes"]
+        is None
+    )
 
     scan_root = tmp_path / "scan-root"
     scan_root.mkdir()
@@ -1684,7 +1867,10 @@ def test_oscar_cosmos_wam_evaluator_helper_edges(
         return original_stat(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "stat", fake_stat)
-    assert evaluator._checkpoint_like_files(bad_stat)["checkpoint_files_found"][0]["size_bytes"] is None
+    assert (
+        evaluator._checkpoint_like_files(bad_stat)["checkpoint_files_found"][0]["size_bytes"]
+        is None
+    )
 
 
 def test_oscar_cosmos_wam_evaluator_host_probe_and_plan_edges(
@@ -1698,11 +1884,19 @@ def test_oscar_cosmos_wam_evaluator_host_probe_and_plan_edges(
 
     monkeypatch.setattr(evaluator.platform, "system", lambda: "Linux")
     monkeypatch.setattr(evaluator.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(evaluator.subprocess, "run", lambda *_args, **_kwargs: Completed(0, '{"cuda": true}'))
+    monkeypatch.setattr(
+        evaluator.subprocess, "run", lambda *_args, **_kwargs: Completed(0, '{"cuda": true}')
+    )
     assert evaluator._local_host_probe()["torch_cuda_available"] is True
     monkeypatch.setattr(evaluator.subprocess, "run", lambda *_args, **_kwargs: Completed(1, ""))
-    assert evaluator._local_host_probe()["torch_probe_error_type"] == "torch_probe_subprocess_failed"
-    monkeypatch.setattr(evaluator.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("probe")))
+    assert (
+        evaluator._local_host_probe()["torch_probe_error_type"] == "torch_probe_subprocess_failed"
+    )
+    monkeypatch.setattr(
+        evaluator.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("probe")),
+    )
     assert evaluator._local_host_probe()["torch_probe_error_type"] == "RuntimeError"
 
     monkeypatch.setattr(
@@ -1712,7 +1906,10 @@ def test_oscar_cosmos_wam_evaluator_host_probe_and_plan_edges(
             {"label": "missing", "path": tmp_path / "missing-source", "configured_by_env": False}
         ],
     )
-    assert "blocked_missing_local_model_source_tree" in evaluator._local_source_tree_probe("oscar_wam")["blockers"]
+    assert (
+        "blocked_missing_local_model_source_tree"
+        in evaluator._local_source_tree_probe("oscar_wam")["blockers"]
+    )
     readiness = evaluator.build_policy_model_endpoint_readiness_manifest(
         generated_at="now",
         candidates=("oscar_wam",),
@@ -1721,8 +1918,12 @@ def test_oscar_cosmos_wam_evaluator_host_probe_and_plan_edges(
         explicit_checkpoint=tmp_path / "missing-checkpoint",
     )
     row = readiness["candidates"][0]
-    assert "make_configured_model_command_executable_or_on_path" in row["what_is_needed_to_make_true"]
-    assert "download_or_mount_configured_model_checkpoint_path" in row["what_is_needed_to_make_true"]
+    assert (
+        "make_configured_model_command_executable_or_on_path" in row["what_is_needed_to_make_true"]
+    )
+    assert (
+        "download_or_mount_configured_model_checkpoint_path" in row["what_is_needed_to_make_true"]
+    )
     plan = evaluator.build_policy_model_endpoint_creation_plan(
         generated_at="now",
         readiness_manifest={"candidates": ["bad", row]},
@@ -1735,9 +1936,10 @@ def test_oscar_cosmos_wam_evaluator_host_probe_and_plan_edges(
         "blocked_closed_loop_wam_policy_requery_not_yet_proven"
         in layer_summary["closed_loop_wam_policy_endpoint_blockers"]
     )
-    assert layer_summary["claim_boundary"][
-        "reference_endpoint_ready_is_not_vla_manipulation_proof"
-    ] is True
+    assert (
+        layer_summary["claim_boundary"]["reference_endpoint_ready_is_not_vla_manipulation_proof"]
+        is True
+    )
 
     ready_checkpoint = tmp_path / "ready-checkpoint"
     ready_checkpoint.mkdir()
@@ -1768,9 +1970,10 @@ def test_oscar_cosmos_wam_evaluator_host_probe_and_plan_edges(
     host_blocked_row = host_blocked["candidates"][0]
     assert host_blocked_row["configured_command_checkpoint_ready"] is True
     assert host_blocked_row["provider_or_linux_cuda_runtime_required"] is True
-    assert "blocked_oscar_linux_cuda_runtime_required" in host_blocked_row[
-        "official_adapter_host_preflight_blockers"
-    ]
+    assert (
+        "blocked_oscar_linux_cuda_runtime_required"
+        in host_blocked_row["official_adapter_host_preflight_blockers"]
+    )
 
     provider_discovery = evaluator.discover_wam_model_runtimes(
         candidates=("oscar_wam",),
@@ -1805,12 +2008,15 @@ def test_oscar_cosmos_wam_evaluator_host_probe_and_plan_edges(
     assert readiness_row["checkpoint_requirement_satisfied"] is True
     assert readiness_row["checkpoint_requirement_satisfied_by_provider_runtime"] is True
     assert readiness_row["missing_required_checkpoint_envs"] == []
-    assert "set_BLUEPRINT_OSCAR_WAM_CHECKPOINT_to_local_checkpoint_path" not in (
-        readiness_row["what_is_needed_to_make_true"]
+    assert (
+        "set_BLUEPRINT_OSCAR_WAM_CHECKPOINT_to_local_checkpoint_path"
+        not in (readiness_row["what_is_needed_to_make_true"])
     )
 
     status_dir = tmp_path / "status-videos"
-    _write_json(status_dir / "video_generation_status.json", {"videos": ["bad", {"path": "fallback.mp4"}]})
+    _write_json(
+        status_dir / "video_generation_status.json", {"videos": ["bad", {"path": "fallback.mp4"}]}
+    )
     assert evaluator._review_videos(status_dir) == [{"path": "fallback.mp4"}]
 
 
@@ -1859,7 +2065,9 @@ def test_oscar_cosmos_wam_command_and_rollout_edge_helpers(
         stdout = "[]"
         stderr = ""
 
-    monkeypatch.setattr(evaluator.subprocess, "run", lambda *_args, **_kwargs: NonMappingCompleted())
+    monkeypatch.setattr(
+        evaluator.subprocess, "run", lambda *_args, **_kwargs: NonMappingCompleted()
+    )
     payload, detail = evaluator._run_local_wam_command(
         command="python missing.py",
         input_manifest_path=input_manifest,
@@ -1871,14 +2079,34 @@ def test_oscar_cosmos_wam_command_and_rollout_edge_helpers(
     assert payload == {}
     assert detail["status"] == "completed"
 
-    assert evaluator._wam_rollout_blocked_reason(["blocked_local_wam_model_run_not_enabled"]) == "blocked_local_wam_model_run_not_enabled"
-    assert evaluator._wam_rollout_blocked_reason(["wam_model_command_failed:TimeoutExpired"]) == "blocked_wam_model_command_failed"
-    assert evaluator._wam_rollout_blocked_reason(["blocked_missing_wam_model_checkpoint"]) == "blocked_missing_wam_model_checkpoint"
-    assert evaluator._wam_rollout_blocked_reason(["blocked_missing_wam_runtime", "blocked_missing_wam_model_checkpoint"]) == "blocked_missing_wam_runtime_and_checkpoint"
+    assert (
+        evaluator._wam_rollout_blocked_reason(["blocked_local_wam_model_run_not_enabled"])
+        == "blocked_local_wam_model_run_not_enabled"
+    )
+    assert (
+        evaluator._wam_rollout_blocked_reason(["wam_model_command_failed:TimeoutExpired"])
+        == "blocked_wam_model_command_failed"
+    )
+    assert (
+        evaluator._wam_rollout_blocked_reason(["blocked_missing_wam_model_checkpoint"])
+        == "blocked_missing_wam_model_checkpoint"
+    )
+    assert (
+        evaluator._wam_rollout_blocked_reason(
+            ["blocked_missing_wam_runtime", "blocked_missing_wam_model_checkpoint"]
+        )
+        == "blocked_missing_wam_runtime_and_checkpoint"
+    )
     assert evaluator._wam_rollout_blocked_reason(["blocked_custom"]) == "blocked_custom"
-    assert evaluator._wam_rollout_blocked_reason([]) == "blocked_missing_wam_model_runtime_or_checkpoint"
+    assert (
+        evaluator._wam_rollout_blocked_reason([])
+        == "blocked_missing_wam_model_runtime_or_checkpoint"
+    )
     assert evaluator._rollout_video_path({}, base_dir=tmp_path) is None
-    assert evaluator._rollout_video_path({"generated_video_path": "video.mp4"}, base_dir=tmp_path) == tmp_path / "video.mp4"
+    assert (
+        evaluator._rollout_video_path({"generated_video_path": "video.mp4"}, base_dir=tmp_path)
+        == tmp_path / "video.mp4"
+    )
 
 
 def test_generated_rollout_visual_smoke_flags_flat_dark_rollout(tmp_path: Path) -> None:
@@ -1940,15 +2168,9 @@ def test_generated_rollout_visual_smoke_rejects_non_scene_first_frame(
     assert smoke["status"] == "failed_visual_quality_smoke"
     assert "generated_rollout_first_frame_not_scene_like" in smoke["blockers"]
     assert (
-        smoke["rollouts"][0]["visual_quality_flags"][
-            "first_frame_preserves_source_scene"
-        ]
-        is False
+        smoke["rollouts"][0]["visual_quality_flags"]["first_frame_preserves_source_scene"] is False
     )
-    assert (
-        smoke["claim_boundary"]["visual_rollout_useful_for_task_success_review"]
-        is False
-    )
+    assert smoke["claim_boundary"]["visual_rollout_useful_for_task_success_review"] is False
 
 
 def test_generated_rollout_visual_smoke_rejects_scene_structure_loss(
@@ -1987,13 +2209,8 @@ def test_generated_rollout_visual_smoke_rejects_scene_structure_loss(
 
     assert smoke["status"] == "failed_visual_quality_smoke"
     assert "generated_rollout_later_frames_lost_scene_structure" in smoke["blockers"]
-    assert smoke["rollouts"][0]["visual_quality_flags"][
-        "later_frames_lost_scene_structure"
-    ] is True
-    assert (
-        smoke["claim_boundary"]["visual_rollout_useful_for_task_success_review"]
-        is False
-    )
+    assert smoke["rollouts"][0]["visual_quality_flags"]["later_frames_lost_scene_structure"] is True
+    assert smoke["claim_boundary"]["visual_rollout_useful_for_task_success_review"] is False
 
 
 def test_oscar_cosmos_wam_evaluator_blocks_labels_and_consistency_for_flat_dark_rollout(
@@ -2005,6 +2222,7 @@ def test_oscar_cosmos_wam_evaluator_blocks_labels_and_consistency_for_flat_dark_
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING", "true")
+    _configure_success_label_calibration(tmp_path, monkeypatch)
     monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING", "true")
     input_job = _input_job(tmp_path)
     checkpoint = tmp_path / "checkpoints" / "model"
@@ -2063,6 +2281,7 @@ request = json.loads(Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"]).read_
 rollout = request["rollouts"][0]
 payload = {{
     "schema_version": "wam_success_labels.command.v1",
+    "status": "completed",
     "provider": "fake-vlm",
     "labels": [
         {{
@@ -2076,7 +2295,14 @@ payload = {{
         }}
     ],
 }}
-Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+from blueprint_pipeline.wam_generated_video_success_label_gemini import attach_success_label_runtime_attestation
+output_path = Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"])
+payload = attach_success_label_runtime_attestation(
+    payload,
+    inference_input_manifest_sha256=request["inference_input_manifest_sha256"],
+    output_dir=output_path.parent,
+)
+output_path.write_text(json.dumps(payload), encoding="utf-8")
 """.strip(),
         encoding="utf-8",
     )
@@ -2146,9 +2372,9 @@ Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(paylo
     )
     assert generated["status"] == "completed_visual_quality_failed"
     assert generated["valid_reviewable_generated_video_available"] is False
-    assert "blocked_generated_rollout_not_visually_useful_for_success_review" in generated[
-        "blockers"
-    ]
+    assert (
+        "blocked_generated_rollout_not_visually_useful_for_success_review" in generated["blockers"]
+    )
     assert "generated_rollout_later_frames_flat_or_dark" in generated["blockers"]
     loop_manifest = json.loads(
         (job_dir / "wam_policy_loop_manifest.json").read_text(encoding="utf-8")
@@ -2157,87 +2383,75 @@ Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(paylo
     assert loop_manifest["wam_generated_rollout_status"] == "completed_visual_quality_failed"
     assert loop_manifest["action_conditioned_video_rollout_generated"] is True
     assert loop_manifest["policy_observes_wam_generated_next_observation"] is False
-    assert "generated_rollout_later_frames_flat_or_dark" in loop_manifest[
-        "generated_rollout_visual_quality_blockers"
-    ]
+    assert (
+        "generated_rollout_later_frames_flat_or_dark"
+        in loop_manifest["generated_rollout_visual_quality_blockers"]
+    )
     assert loop_manifest["single_step_policy_requery_frame_useful"] is True
-    assert "blocked_missing_policy_requery_endpoint" in loop_manifest[
-        "why_policy_requery_not_run"
-    ]
-    assert "generated_rollout_later_frames_flat_or_dark" in loop_manifest[
-        "why_wam_success_label_not_run"
-    ]
+    assert "blocked_missing_policy_requery_endpoint" in loop_manifest["why_policy_requery_not_run"]
+    assert (
+        "generated_rollout_later_frames_flat_or_dark"
+        in loop_manifest["why_wam_success_label_not_run"]
+    )
     success_request = json.loads(
         (job_dir / "wam_success_label_request.json").read_text(encoding="utf-8")
     )
     assert success_request["status"] == "blocked_generated_rollout_visual_quality"
-    success_labels = json.loads(
-        (job_dir / "wam_success_labels.json").read_text(encoding="utf-8")
-    )
+    success_labels = json.loads((job_dir / "wam_success_labels.json").read_text(encoding="utf-8"))
     assert success_labels["status"] == "blocked"
     assert success_labels["label_count"] == 0
     assert success_labels["command_result"] is None
-    assert "blocked_generated_rollout_not_visually_useful_for_success_review" in success_labels[
-        "blockers"
-    ]
-    failure_labels = json.loads(
-        (job_dir / "failure_labels.json").read_text(encoding="utf-8")
+    assert (
+        "blocked_generated_rollout_not_visually_useful_for_success_review"
+        in success_labels["blockers"]
     )
+    failure_labels = json.loads((job_dir / "failure_labels.json").read_text(encoding="utf-8"))
     assert failure_labels["status"] == "review_required"
     assert failure_labels["visual_smoke_status"] == "failed_visual_quality_smoke"
     assert failure_labels["visual_rollout_useful_for_task_success_review"] is False
     assert failure_labels["review_grade_failure_diagnosis"] is False
-    assert "generated_rollout_later_frames_flat_or_dark" in failure_labels[
-        "visual_review_blockers"
-    ]
+    assert "generated_rollout_later_frames_flat_or_dark" in failure_labels["visual_review_blockers"]
     assert failure_labels["failure_diagnosis_coverage_complete"] is True
     assert failure_labels["failure_diagnosis_complete"] is False
-    assert "generated_rollout_later_frames_flat_or_dark" in failure_labels[
-        "failure_diagnosis_blockers"
-    ]
-    assert "failure_labels_nonreviewable_failure_hypotheses" in failure_labels[
-        "failure_diagnosis_blockers"
-    ]
-    assert failure_labels["claim_boundary"][
-        "visual_smoke_required_for_review_grade_failure_diagnosis"
-    ] is True
-    assert failure_labels["labels"][0]["review_status"] == (
-        "non_reviewable_failure_hypothesis"
+    assert (
+        "generated_rollout_later_frames_flat_or_dark"
+        in failure_labels["failure_diagnosis_blockers"]
     )
+    assert (
+        "failure_labels_nonreviewable_failure_hypotheses"
+        in failure_labels["failure_diagnosis_blockers"]
+    )
+    assert (
+        failure_labels["claim_boundary"]["visual_smoke_required_for_review_grade_failure_diagnosis"]
+        is True
+    )
+    assert failure_labels["labels"][0]["review_status"] == ("non_reviewable_failure_hypothesis")
     assert failure_labels["labels"][0]["non_reviewable_failure_hypothesis"] is True
-    assert failure_labels["labels"][0]["visual_smoke_status"] == (
-        "failed_visual_quality_smoke"
+    assert failure_labels["labels"][0]["visual_smoke_status"] == ("failed_visual_quality_smoke")
+    assert failure_labels["labels"][0]["visual_rollout_useful_for_task_success_review"] is False
+    assert (
+        "generated_rollout_later_frames_flat_or_dark"
+        in failure_labels["labels"][0]["visual_review_blockers"]
     )
-    assert failure_labels["labels"][0][
-        "visual_rollout_useful_for_task_success_review"
-    ] is False
-    assert "generated_rollout_later_frames_flat_or_dark" in failure_labels["labels"][0][
-        "visual_review_blockers"
-    ]
     assert failure_labels["labels"][0]["review_grade_failure_diagnosis"] is False
     assert failure_labels["labels"][0]["evidence_refs"]
     consistency_request = json.loads(
         (job_dir / "wam_episode_consistency_request.json").read_text(encoding="utf-8")
     )
     assert consistency_request["status"] == "blocked_generated_rollout_visual_quality"
-    consistency = json.loads(
-        (job_dir / "wam_consistency_checks.json").read_text(encoding="utf-8")
-    )
+    consistency = json.loads((job_dir / "wam_consistency_checks.json").read_text(encoding="utf-8"))
     assert consistency["status"] == "blocked_generated_rollout_visual_quality"
     assert consistency["external_episode_consistency_scorer_ran"] is False
-    assert "blocked_generated_rollout_not_visually_useful_for_success_review" in consistency[
-        "blockers"
-    ]
-    scorecard = json.loads(
-        (job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8")
+    assert (
+        "blocked_generated_rollout_not_visually_useful_for_success_review"
+        in consistency["blockers"]
     )
+    scorecard = json.loads((job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8"))
     assert scorecard["status"] == "blocked"
     assert scorecard["visual_smoke_status"] == "failed_visual_quality_smoke"
     assert scorecard["visual_rollout_useful_for_task_success_review"] is False
     assert scorecard["review_grade_policy_ranking"] is False
-    assert "generated_rollout_later_frames_flat_or_dark" in scorecard[
-        "visual_review_blockers"
-    ]
+    assert "generated_rollout_later_frames_flat_or_dark" in scorecard["visual_review_blockers"]
 
 
 def test_oscar_cosmos_wam_evaluator_reports_source_tree_without_runtime(
@@ -2383,8 +2597,7 @@ print(json.dumps({"status": "completed"}))
     assert summary["real_model_endpoint_probe_claim_ready"] is True
     assert summary["real_model_endpoint_claim_blocked"] is (
         not (
-            summary["real_model_endpoint_ready"]
-            and summary["model_endpoint_command_probe_passed"]
+            summary["real_model_endpoint_ready"] and summary["model_endpoint_command_probe_passed"]
         )
     )
     assert summary["wam_generated_rollout_status"] == "completed"
@@ -2396,21 +2609,20 @@ print(json.dumps({"status": "completed"}))
         )
     )
     assert creation_plan["endpoint_wrapper_ready_candidate_count"] >= 1
-    assert creation_plan["can_create_real_model_endpoint_now"] is summary[
-        "real_model_endpoint_ready"
-    ]
-    assert creation_plan["readiness_layer_summary"]["wam_rollout_provider_ready"] is summary[
-        "real_model_endpoint_ready"
-    ]
-    assert creation_plan["readiness_layer_summary"][
-        "closed_loop_wam_policy_endpoint_ready"
-    ] is False
+    assert (
+        creation_plan["can_create_real_model_endpoint_now"] is summary["real_model_endpoint_ready"]
+    )
+    assert (
+        creation_plan["readiness_layer_summary"]["wam_rollout_provider_ready"]
+        is summary["real_model_endpoint_ready"]
+    )
+    assert (
+        creation_plan["readiness_layer_summary"]["closed_loop_wam_policy_endpoint_ready"] is False
+    )
     probe = json.loads(
-        (
-            tmp_path
-            / "wam_model_job"
-            / "policy_model_endpoint_probe_results.json"
-        ).read_text(encoding="utf-8")
+        (tmp_path / "wam_model_job" / "policy_model_endpoint_probe_results.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert probe["status"] == "completed"
     assert probe["probe_attempted_candidate_count"] == 1
@@ -2442,9 +2654,7 @@ print(json.dumps({"status": "completed"}))
     )
     assert request["claim_boundary"]["scorer_is_separate_from_wam_execution_and_evaluator"] is True
     loop_manifest = json.loads(
-        (tmp_path / "wam_model_job" / "wam_policy_loop_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "wam_model_job" / "wam_policy_loop_manifest.json").read_text(encoding="utf-8")
     )
     assert loop_manifest["learned_wam_model_ran"] is True
     assert loop_manifest["learned_wam_model_ran_this_invocation"] is True
@@ -2624,6 +2834,43 @@ def test_wam_policy_requery_blocks_generic_endpoint_action(
     )
 
 
+@pytest.mark.parametrize(
+    "endpoint_url",
+    (
+        "file:///etc/passwd",
+        "gopher://example.com/policy/action",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.0.0.2/policy/action",
+        "https://policy.example/policy/action?token=secret",
+    ),
+)
+def test_policy_requery_endpoint_rejects_unsafe_url_before_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint_url: str,
+) -> None:
+    token_file = tmp_path / "policy-token"
+    token_file.write_text("secret", encoding="utf-8")
+    monkeypatch.delenv(
+        "BLUEPRINT_POLICY_ENDPOINT_ALLOWED_ORIGINS",
+        raising=False,
+    )
+
+    payload, detail = evaluator._call_policy_requery_endpoint(
+        endpoint_row={
+            "endpoint_url": endpoint_url,
+            "auth_token_file_path": str(token_file),
+        },
+        observation={},
+        timeout_seconds=1,
+    )
+
+    assert payload is None
+    assert detail["status"] == "blocked"
+    assert detail["endpoint_invoked"] is False
+    assert any("SecurityValidationError" in item for item in detail["blockers"])
+
+
 def test_wam_policy_requery_accepts_unitree_lerobot_hand_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2791,9 +3038,10 @@ def test_wam_policy_requery_unitree_provider_replay_is_not_fresh_policy(
     assert manifest["single_step_wam_policy_requery_proven"] is False
     assert manifest["policy_requery_provider_replay_used"] is True
     assert manifest["g1_robot_policy_selected_family"] is None
-    assert "blocked_policy_requery_provider_replay_not_fresh_unitree_hand_policy" in manifest[
-        "blockers"
-    ]
+    assert (
+        "blocked_policy_requery_provider_replay_not_fresh_unitree_hand_policy"
+        in manifest["blockers"]
+    )
 
 
 def test_oscar_cosmos_wam_evaluator_blocks_placeholder_generated_video(
@@ -3021,15 +3269,22 @@ Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(json.dumps(paylo
     assert consistency["what_is_needed_to_make_forward_inverse_consistency_true"] == []
     assert consistency["rollout_checks"][0]["visual_evidence_used"] is True
     assert consistency["rollout_checks"][0]["action_trace_evidence_used"] is True
-    assert consistency["claim_boundary"][
-        "forward_inverse_consistency_is_external_episode_label_not_wam_execution"
-    ] is True
-    assert consistency["claim_boundary"][
-        "forward_inverse_consistency_does_not_prove_task_success"
-    ] is True
-    assert consistency["claim_boundary"][
-        "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity"
-    ] is True
+    assert (
+        consistency["claim_boundary"][
+            "forward_inverse_consistency_is_external_episode_label_not_wam_execution"
+        ]
+        is True
+    )
+    assert (
+        consistency["claim_boundary"]["forward_inverse_consistency_does_not_prove_task_success"]
+        is True
+    )
+    assert (
+        consistency["claim_boundary"][
+            "forward_inverse_consistency_does_not_prove_generated_world_rank_fidelity"
+        ]
+        is True
+    )
     checks = {row["check_id"]: row for row in consistency["checks"]}
     assert checks["forward_dynamics_consistency"]["status"] == "passed"
     assert checks["inverse_dynamics_consistency"]["status"] == "passed"
@@ -3054,6 +3309,7 @@ def test_oscar_cosmos_wam_evaluator_runs_success_label_command_contract(
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING", "true")
+    _configure_success_label_calibration(tmp_path, monkeypatch)
     input_job = _input_job(tmp_path)
     checkpoint = tmp_path / "checkpoints" / "model"
     checkpoint.mkdir(parents=True)
@@ -3114,8 +3370,10 @@ request = json.loads(Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"]).read_
 rollout = request["rollouts"][0]
 payload = {
     "schema_version": "wam_success_labels.command.v1",
+    "status": "completed",
     "provider": "fake-vlm",
     "model": "fake-video-judge",
+    "prompt_template_sha256": "c" * 64,
     "labels": [
         {
             "rollout_id": rollout["rollout_id"],
@@ -3125,12 +3383,31 @@ payload = {
             "confidence": 0.91,
             "rationale": "The generated video reaches the target.",
             "task_completion_evidence": ["target reached"],
+            "criterion_results": [
+                {
+                    "criterion_id": criterion_id,
+                    "passed": True,
+                    "evidence_refs": [rollout["generated_video_path"]],
+                }
+                for criterion_id in (
+                    "end_effector_reaches_target",
+                    "target_state_change_visible",
+                    "robot_caused_target_motion",
+                )
+            ],
             "failure_modes": [],
             "visual_evidence_used": True,
         }
     ],
 }
-Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+from blueprint_pipeline.wam_generated_video_success_label_gemini import attach_success_label_runtime_attestation
+output_path = Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"])
+payload = attach_success_label_runtime_attestation(
+    payload,
+    inference_input_manifest_sha256=request["inference_input_manifest_sha256"],
+    output_dir=output_path.parent,
+)
+output_path.write_text(json.dumps(payload), encoding="utf-8")
 """.strip(),
         encoding="utf-8",
     )
@@ -3153,18 +3430,13 @@ Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(pay
     assert summary["wam_success_label_judge_ran"] is True
     assert summary["forward_inverse_consistency_proven"] is False
     labels = json.loads(
-        (tmp_path / "wam_success_label_job" / "wam_success_labels.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "wam_success_label_job" / "wam_success_labels.json").read_text(encoding="utf-8")
     )
     assert labels["status"] == "completed"
     assert labels["label_count"] == 1
     assert labels["labels"][0]["success"] is True
     assert labels["labels"][0]["visual_smoke_status"] == "passed_visual_quality_smoke"
-    assert (
-        labels["labels"][0]["visual_rollout_useful_for_task_success_review"]
-        is True
-    )
+    assert labels["labels"][0]["visual_rollout_useful_for_task_success_review"] is True
     assert labels["review_grade_success_labels"] is True
     scorecard = json.loads(
         (tmp_path / "wam_success_label_job" / "wam_policy_scorecard.json").read_text(
@@ -3185,6 +3457,482 @@ Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(pay
     assert truth["forward_inverse_consistency_proven"] is False
     assert truth["external_episode_consistency_scorer_ran"] is False
     assert truth["external_episode_consistency_scorer_required"] is True
+
+
+def test_success_label_normalizer_requires_exact_unique_rollout_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("cv2")
+    pytest.importorskip("numpy")
+    _configure_success_label_calibration(tmp_path, monkeypatch)
+    one = tmp_path / "one.mp4"
+    two = tmp_path / "two.mp4"
+    _write_test_video(one, frame_count=4)
+    _write_test_video(two, frame_count=4)
+    rollouts = [
+        {"rollout_id": "rollout_1", "generated_video_path": str(one)},
+        {"rollout_id": "rollout_2", "generated_video_path": str(two)},
+    ]
+
+    def label(rollout_id: str) -> dict[str, object]:
+        return {
+            "rollout_id": rollout_id,
+            "success": True,
+            "confidence": 0.95,
+            "visual_evidence_used": True,
+            "criterion_results": [
+                {
+                    "criterion_id": criterion_id,
+                    "passed": True,
+                    "evidence_refs": [str(one if rollout_id == "rollout_1" else two)],
+                }
+                for criterion_id in (
+                    "end_effector_reaches_target",
+                    "target_state_change_visible",
+                    "robot_caused_target_motion",
+                )
+            ],
+        }
+
+    def attested(payload, source_rollouts):
+        return _attested_success_label_payload(
+            payload,
+            rollouts=source_rollouts,
+            tmp_path=tmp_path,
+        )
+
+    partial = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [label("rollout_1")],
+            },
+            rollouts,
+        ),
+        rollouts=rollouts,
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert partial["status"] == "blocked"
+    assert partial["wam_success_label_from_generated_video"] is False
+    assert partial["exact_rollout_label_coverage"] is False
+    assert "wam_success_label_missing_rollout_label:rollout_2" in partial["blockers"]
+    assert "wam_success_label_exact_rollout_coverage_required" in partial["blockers"]
+
+    duplicate = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [label("rollout_1"), label("rollout_1")],
+            },
+            [rollouts[0]],
+        ),
+        rollouts=[rollouts[0]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert duplicate["status"] == "blocked"
+    assert "wam_success_label_duplicate_rollout_label:rollout_1" in duplicate["blockers"]
+
+    complete = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [label("rollout_1"), label("rollout_2")],
+            },
+            rollouts,
+        ),
+        rollouts=rollouts,
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert complete["status"] == "completed"
+    assert complete["exact_rollout_label_coverage"] is True
+    assert complete["wam_success_label_from_generated_video"] is True
+
+    frame_fragment = label("rollout_1")
+    for result in frame_fragment["criterion_results"]:
+        result["evidence_refs"] = [f"{one}#frame=0"]
+    fragment_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [frame_fragment],
+            },
+            [rollouts[0]],
+        ),
+        rollouts=[rollouts[0]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert fragment_result["status"] == "completed"
+
+    out_of_range = label("rollout_1")
+    for result in out_of_range["criterion_results"]:
+        result["evidence_refs"] = [f"{one}#frame=999"]
+    out_of_range_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [out_of_range],
+            },
+            [rollouts[0]],
+        ),
+        rollouts=[rollouts[0]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert out_of_range_result["status"] == "blocked"
+
+    ordered_rollout = {
+        "rollout_id": "rollout_ordered",
+        "generated_video_path": str(two),
+        "episode_order_verified": True,
+        "step_video_count": 2,
+        "ordered_step_indices": [1, 2],
+        "ordered_step_videos": [
+            {
+                "step_index": 1,
+                "generated_video_path": str(one),
+                "generated_video_sha256": hashlib.sha256(one.read_bytes()).hexdigest(),
+            },
+            {
+                "step_index": 2,
+                "generated_video_path": str(two),
+                "generated_video_sha256": hashlib.sha256(two.read_bytes()).hexdigest(),
+            },
+        ],
+    }
+    last_clip_only = label("rollout_ordered")
+    for result in last_clip_only["criterion_results"]:
+        result["evidence_refs"] = [str(two)]
+    last_clip_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [last_clip_only],
+            },
+            [ordered_rollout],
+        ),
+        rollouts=[ordered_rollout],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert last_clip_result["status"] == "blocked"
+    assert last_clip_result["labels"][0]["full_episode_evidence_coverage"] is False
+
+    full_episode_label = label("rollout_ordered")
+    for result in full_episode_label["criterion_results"]:
+        result["evidence_refs"] = [str(one), str(two)]
+    reversed_rollout = {
+        **ordered_rollout,
+        "ordered_step_videos": list(reversed(ordered_rollout["ordered_step_videos"])),
+    }
+    reversed_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [full_episode_label],
+            },
+            [reversed_rollout],
+        ),
+        rollouts=[reversed_rollout],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert reversed_result["status"] == "blocked"
+    assert "wam_success_label_ordered_step_indices_not_contiguous" in reversed_result["blockers"]
+
+    duplicate_rollout = {
+        **ordered_rollout,
+        "generated_video_path": str(one),
+        "ordered_step_videos": [
+            ordered_rollout["ordered_step_videos"][0],
+            {
+                **ordered_rollout["ordered_step_videos"][0],
+                "step_index": 2,
+            },
+        ],
+    }
+    duplicate_path_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [full_episode_label],
+            },
+            [duplicate_rollout],
+        ),
+        rollouts=[duplicate_rollout],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert duplicate_path_result["status"] == "blocked"
+    assert (
+        "wam_success_label_ordered_step_video_paths_duplicate" in duplicate_path_result["blockers"]
+    )
+
+    unrelated = tmp_path / "unrelated.mp4"
+    unrelated.write_bytes(b"unrelated")
+    unbound = label("rollout_1")
+    for result in unbound["criterion_results"]:
+        result["evidence_refs"] = [str(unrelated)]
+    unbound_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [unbound],
+            },
+            [rollouts[0]],
+        ),
+        rollouts=[rollouts[0]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert unbound_result["status"] == "blocked"
+    assert "wam_success_label_criterion_evidence_file_missing" in unbound_result["blockers"]
+
+    arbitrary = label("rollout_1")
+    arbitrary["criterion_results"] = [
+        {
+            "criterion_id": "arbitrary_one_of_many",
+            "passed": True,
+            "evidence_refs": [str(one)],
+        }
+    ]
+    arbitrary_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [arbitrary],
+            },
+            [rollouts[0]],
+        ),
+        rollouts=[rollouts[0]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert arbitrary_result["status"] == "blocked"
+    assert "wam_success_label_registered_criterion_set_mismatch" in arbitrary_result["blockers"]
+
+    boolean_confidence = label("rollout_1")
+    boolean_confidence["confidence"] = True
+    boolean_confidence_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [boolean_confidence],
+            },
+            [rollouts[0]],
+        ),
+        rollouts=[rollouts[0]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert boolean_confidence_result["status"] == "blocked"
+    assert (
+        "wam_success_label_confidence_below_calibrated_floor"
+        in boolean_confidence_result["blockers"]
+    )
+
+    replayed_payload = attested(
+        {
+            "status": "completed",
+            "provider": "fake-vlm",
+            "model": "fake-video-judge",
+            "prompt_template_sha256": "c" * 64,
+            "labels": [label("rollout_1")],
+        },
+        [rollouts[0]],
+    )
+    replayed_payload["labels"][0]["rollout_id"] = "rollout_2"
+    replay_result = evaluator._normalize_wam_success_labels(
+        command_payload=replayed_payload,
+        rollouts=[rollouts[1]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert replay_result["status"] == "blocked"
+    assert "wam_success_label_inference_input_manifest_mismatch" in replay_result["blockers"]
+
+    calibration_path = Path(os.environ[evaluator.WAM_SUCCESS_LABEL_CALIBRATION_ARTIFACT_ENV])
+    downgraded_calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    downgraded_calibration["confidence_floor"] = 0.01
+    calibration_path.write_text(
+        json.dumps(downgraded_calibration, sort_keys=True),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        evaluator.WAM_SUCCESS_LABEL_CALIBRATION_SHA256_ENV,
+        hashlib.sha256(calibration_path.read_bytes()).hexdigest(),
+    )
+    threshold_result = evaluator._normalize_wam_success_labels(
+        command_payload=attested(
+            {
+                "status": "completed",
+                "provider": "fake-vlm",
+                "model": "fake-video-judge",
+                "prompt_template_sha256": "c" * 64,
+                "labels": [label("rollout_1")],
+            },
+            [rollouts[0]],
+        ),
+        rollouts=[rollouts[0]],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+    assert threshold_result["status"] == "blocked"
+    assert "wam_success_label_calibration_binding_invalid" in threshold_result["blockers"]
+
+
+def test_success_label_normalizer_requires_separate_calibration_and_runtime_authorities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("cv2")
+    pytest.importorskip("numpy")
+    _configure_success_label_calibration(tmp_path, monkeypatch)
+    video = tmp_path / "shared-authority-rollout.mp4"
+    _write_test_video(video, frame_count=4)
+    rollout = {"rollout_id": "rollout_1", "generated_video_path": str(video)}
+    shared_private_key_path = tmp_path / "shared-calibration-runtime-private.pem"
+    shared_private_key_path.write_bytes(
+        CALIBRATION_REVIEWER_PRIVATE_KEY.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    shared_public_key = CALIBRATION_REVIEWER_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    shared_fingerprint = hashlib.sha256(shared_public_key).hexdigest()
+    monkeypatch.setenv(
+        success_label_adapter.RUNTIME_SIGNING_PRIVATE_KEY_FILE_ENV,
+        str(shared_private_key_path),
+    )
+    monkeypatch.setenv(
+        evaluator.WAM_SUCCESS_LABEL_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV,
+        shared_fingerprint,
+    )
+    payload = _attested_success_label_payload(
+        {
+            "status": "completed",
+            "provider": "fake-vlm",
+            "model": "fake-video-judge",
+            "prompt_template_sha256": "c" * 64,
+            "labels": [
+                {
+                    "rollout_id": "rollout_1",
+                    "success": True,
+                    "confidence": 0.95,
+                    "visual_evidence_used": True,
+                    "criterion_results": [
+                        {
+                            "criterion_id": criterion_id,
+                            "passed": True,
+                            "evidence_refs": [str(video)],
+                        }
+                        for criterion_id in (
+                            "end_effector_reaches_target",
+                            "target_state_change_visible",
+                            "robot_caused_target_motion",
+                        )
+                    ],
+                }
+            ],
+        },
+        rollouts=[rollout],
+        tmp_path=tmp_path,
+    )
+
+    result = evaluator._normalize_wam_success_labels(
+        command_payload=payload,
+        rollouts=[rollout],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert "wam_success_label_calibration_runtime_authorities_not_separated" in result["blockers"]
+
+
+def test_success_label_normalizer_requires_explicit_visual_evidence_use() -> None:
+    result = evaluator._normalize_wam_success_labels(
+        command_payload={
+            "status": "completed",
+            "labels": [
+                {
+                    "rollout_id": "rollout_1",
+                    "success": True,
+                    "confidence": 0.95,
+                    "criterion_results": [
+                        {
+                            "criterion_id": "registered_transition",
+                            "passed": True,
+                            "evidence_refs": ["one.mp4"],
+                        }
+                    ],
+                }
+            ],
+        },
+        rollouts=[{"rollout_id": "rollout_1", "generated_video_path": "one.mp4"}],
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["wam_success_label_from_generated_video"] is False
+    assert "wam_success_label_visual_evidence_used_not_explicit_true" in result["blockers"]
 
 
 def test_oscar_cosmos_wam_evaluator_uses_env_command_and_blocks_missing_rollout_video(
@@ -3422,9 +4170,7 @@ def test_oscar_cosmos_wam_evaluator_reports_imported_provider_model_run(
     assert summary["oscar_cosmos_openvla_unitree_model_ran"] is True
     truth = json.loads(
         (
-            tmp_path
-            / "wam_provider_runtime_replay_job"
-            / "wam_evaluator_truth_boundary.json"
+            tmp_path / "wam_provider_runtime_replay_job" / "wam_evaluator_truth_boundary.json"
         ).read_text(encoding="utf-8")
     )
     assert truth["learned_wam_model_ran"] is True
@@ -3629,9 +4375,9 @@ def test_wam_policy_requery_reference_endpoint_does_not_satisfy_hand_policy(
     assert result["wam_rollout_selected_as_g1_robot_policy"] is False
     assert result["unitree_hand_policy_requery_used"] is False
     assert "blocked_policy_requery_endpoint_not_unitree_g1_hand_policy" in result["blockers"]
-    assert "blocked_policy_requery_endpoint_not_real_vla_or_unitree_hand_policy" in result[
-        "blockers"
-    ]
+    assert (
+        "blocked_policy_requery_endpoint_not_real_vla_or_unitree_hand_policy" in result["blockers"]
+    )
 
 
 def test_oscar_cosmos_wam_evaluator_uses_default_job_root(
@@ -3741,19 +4487,122 @@ def test_oscar_cosmos_wam_evaluator_cli(
     assert '"learned_wam_model_ran": false' in capsys.readouterr().out
 
 
-def _passing_ladder_validation() -> dict[str, object]:
-    return {
+def _passing_ladder_validation(
+    input_job: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    expected_ranking = [
+        "endpoint_policy",
+        "endpoint_policy_noise_0p1",
+        "endpoint_policy_noise_0p3",
+    ]
+    ladder = input_job / "policy_ranking_ladder.json"
+    _write_json(
+        ladder,
+        {
+            "schema_version": "policy_ranking_ladder.v1",
+            "inner_checkpoint_sha256": "a" * 64,
+            "inner_command_configured": True,
+            "registered_action_bounds_sha256": "b" * 64,
+            "expected_ranking": expected_ranking,
+        },
+    )
+    scorecard = input_job / "policy_ranking_ladder_scorecard.json"
+    _write_json(
+        scorecard,
+        {
+            "schema_version": "policy_ranking_scorecard.v1",
+            "status": "completed",
+            "policy_rankings": [
+                {
+                    "policy_id": policy_id,
+                    "predicted_success_rate": 1.0 - index * 0.3,
+                }
+                for index, policy_id in enumerate(expected_ranking)
+            ],
+        },
+    )
+    executor_public_key = LABEL_RUNTIME_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    payload: dict[str, object] = {
         "schema_version": "policy_ranking_ladder_validation.v1",
         "status": "recovered",
         "ranker_ordering_recovered": True,
-        "expected_ranking": [
-            "endpoint_policy",
-            "endpoint_policy_noise_0p1",
-            "endpoint_policy_noise_0p3",
-        ],
+        "validation_method": score_claim_gate.CALIBRATION_ANCHOR_VALIDATION_METHOD,
+        "source_validation_recomputed": True,
+        "executor_trusted_public_key_sha256": hashlib.sha256(executor_public_key).hexdigest(),
+        "score_field": "predicted_success_rate",
+        "minimum_replicate_seed_count": 3,
+        "replicate_seed_count_by_policy": dict.fromkeys(expected_ranking, 3),
+        "empirical_ground_truth_accepted_by_policy": dict.fromkeys(expected_ranking, True),
+        "expected_ranking": expected_ranking,
+        "expected_ranking_basis": "signed_matched_runtime_outcomes",
         "spearman_rank_correlation_vs_expected": 1.0,
         "blockers": [],
+        "source_artifact_bindings": {
+            "ladder": {
+                "artifact_id": ladder.name,
+                "sha256": hashlib.sha256(ladder.read_bytes()).hexdigest(),
+            },
+            "scorecard": {
+                "artifact_id": scorecard.name,
+                "sha256": hashlib.sha256(scorecard.read_bytes()).hexdigest(),
+            },
+        },
     }
+    public_key = LADDER_VALIDATION_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    message = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    public_key_sha256 = hashlib.sha256(public_key).hexdigest()
+    signed_payload_sha256 = hashlib.sha256(message).hexdigest()
+    report = input_job / "policy-ladder-validation-signature-report.json"
+    _write_json(
+        report,
+        {
+            "schema_version": "sc3_signature_verification_report.v1",
+            "algorithm": "Ed25519",
+            "verification_status": "verified",
+            "public_key_sha256": public_key_sha256,
+            "signed_payload_sha256": signed_payload_sha256,
+            "signer_key_id": "policy-ladder-validation-authority",
+            "verifier_id": "blueprint-test-verifier",
+            "source_artifact_bindings_sha256": hashlib.sha256(
+                json.dumps(
+                    payload["source_artifact_bindings"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        },
+    )
+    payload["validation_attestation"] = {
+        "algorithm": "Ed25519",
+        "signature_verified": True,
+        "authority_role": "policy_ladder_validation_authority",
+        "signer_key_id": "policy-ladder-validation-authority",
+        "verifier_id": "blueprint-test-verifier",
+        "public_key_base64": base64.b64encode(public_key).decode(),
+        "public_key_sha256": public_key_sha256,
+        "signature_base64": base64.b64encode(LADDER_VALIDATION_PRIVATE_KEY.sign(message)).decode(),
+        "signed_payload_sha256": signed_payload_sha256,
+        "verification_report_artifact": {
+            "artifact_id": report.name,
+            "sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
+        },
+    }
+    monkeypatch.setenv(
+        score_claim_gate.CALIBRATION_ANCHOR_TRUSTED_PUBLIC_KEY_SHA256_ENV,
+        public_key_sha256,
+    )
+    monkeypatch.setenv(
+        score_claim_gate.SC3_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV,
+        hashlib.sha256(executor_public_key).hexdigest(),
+    )
+    return payload
 
 
 def test_oscar_cosmos_wam_evaluator_caps_wam_score_claim_without_consistency_or_anchors(
@@ -3791,9 +4640,7 @@ def test_oscar_cosmos_wam_evaluator_caps_wam_score_claim_without_consistency_or_
     assert anchor_check["anchors_present"] is False
     assert "calibration_anchor_validation_missing" in anchor_check["blockers"]
 
-    scorecard = json.loads(
-        (job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8")
-    )
+    scorecard = json.loads((job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8"))
     assert scorecard["wam_score_claim_grade"] == "fixture_evaluator_only"
     assert scorecard["wam_score_claim"]["max_allowed_grade"] == "review_grade"
     assert "consistency_score" in scorecard["wam_score_claim"]["consistency"]
@@ -3801,9 +4648,47 @@ def test_oscar_cosmos_wam_evaluator_caps_wam_score_claim_without_consistency_or_
 
     assert summary["wam_score_claim_grade"] == "fixture_evaluator_only"
     assert summary["wam_score_above_review_grade_allowed"] is False
-    assert summary["artifact_paths"]["wam_score_claim_gate"].endswith(
-        "wam_score_claim_gate.json"
+
+
+def test_oscar_cosmos_wam_evaluator_rejects_forged_ladder_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_wam_runtime_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    input_job = _input_job(tmp_path)
+    _write_json(
+        input_job / "policy_ranking_ladder_validation.json",
+        {
+            "schema_version": "policy_ranking_ladder_validation.v1",
+            "status": "recovered",
+            "ranker_ordering_recovered": True,
+            "expected_ranking": ["policy-a", "policy-b", "policy-c"],
+            "blockers": [],
+        },
     )
+
+    summary = evaluator.run_oscar_cosmos_wam_evaluator(
+        input_job_dir=input_job,
+        job_dir=tmp_path / "wam_forged_anchor_job",
+        generated_at="now",
+    )
+
+    anchor_check = json.loads(
+        (tmp_path / "wam_forged_anchor_job" / "wam_calibration_anchor_check.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    gate = json.loads(
+        (tmp_path / "wam_forged_anchor_job" / "wam_score_claim_gate.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert anchor_check["anchors_passed"] is False
+    assert anchor_check["evidence_binding_status"] == ("blocked_unverified_or_tampered")
+    assert gate["granted_grade"] != "calibrated_evaluator_grade"
+    assert summary["wam_score_above_review_grade_allowed"] is False
+    assert summary["artifact_paths"]["wam_score_claim_gate"].endswith("wam_score_claim_gate.json")
 
 
 def test_oscar_cosmos_wam_evaluator_review_grade_capped_without_anchors(
@@ -3814,6 +4699,7 @@ def test_oscar_cosmos_wam_evaluator_review_grade_capped_without_anchors(
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING", "true")
+    _configure_success_label_calibration(tmp_path, monkeypatch)
     input_job = _input_job(tmp_path)
     checkpoint = tmp_path / "checkpoints" / "model"
     checkpoint.mkdir(parents=True)
@@ -3874,8 +4760,10 @@ request = json.loads(Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"]).read_
 rollout = request["rollouts"][0]
 payload = {
     "schema_version": "wam_success_labels.command.v1",
+    "status": "completed",
     "provider": "fake-vlm",
     "model": "fake-video-judge",
+    "prompt_template_sha256": "c" * 64,
     "labels": [
         {
             "rollout_id": rollout["rollout_id"],
@@ -3885,12 +4773,31 @@ payload = {
             "confidence": 0.91,
             "rationale": "The generated video reaches the target.",
             "task_completion_evidence": ["target reached"],
+            "criterion_results": [
+                {
+                    "criterion_id": criterion_id,
+                    "passed": True,
+                    "evidence_refs": [rollout["generated_video_path"]],
+                }
+                for criterion_id in (
+                    "end_effector_reaches_target",
+                    "target_state_change_visible",
+                    "robot_caused_target_motion",
+                )
+            ],
             "failure_modes": [],
             "visual_evidence_used": True,
         }
     ],
 }
-Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+from blueprint_pipeline.wam_generated_video_success_label_gemini import attach_success_label_runtime_attestation
+output_path = Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"])
+payload = attach_success_label_runtime_attestation(
+    payload,
+    inference_input_manifest_sha256=request["inference_input_manifest_sha256"],
+    output_dir=output_path.parent,
+)
+output_path.write_text(json.dumps(payload), encoding="utf-8")
 """.strip(),
         encoding="utf-8",
     )
@@ -3909,9 +4816,7 @@ Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(pay
 
     assert summary["wam_success_label_from_generated_video"] is True
     gate = json.loads(
-        (tmp_path / "wam_review_cap_job" / "wam_score_claim_gate.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "wam_review_cap_job" / "wam_score_claim_gate.json").read_text(encoding="utf-8")
     )
     assert gate["requested_grade"] == "review_grade"
     assert gate["granted_grade"] == "review_grade"
@@ -3930,11 +4835,12 @@ def test_oscar_cosmos_wam_evaluator_allows_calibrated_grade_with_anchors_and_con
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING", "true")
+    _configure_success_label_calibration(tmp_path, monkeypatch)
     input_job = _input_job(tmp_path)
     # calibration anchors: passing known-ordering ladder validation
     _write_json(
         input_job / "policy_ranking_ladder_validation.json",
-        _passing_ladder_validation(),
+        _passing_ladder_validation(input_job, monkeypatch),
     )
     # reference trajectory: simulated locomotion trace with root positions
     _write_jsonl(
@@ -4012,8 +4918,10 @@ request = json.loads(Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"]).read_
 rollout = request["rollouts"][0]
 payload = {
     "schema_version": "wam_success_labels.command.v1",
+    "status": "completed",
     "provider": "fake-vlm",
     "model": "fake-video-judge",
+    "prompt_template_sha256": "c" * 64,
     "labels": [
         {
             "rollout_id": rollout["rollout_id"],
@@ -4023,12 +4931,31 @@ payload = {
             "confidence": 0.91,
             "rationale": "The generated video reaches the target.",
             "task_completion_evidence": ["target reached"],
+            "criterion_results": [
+                {
+                    "criterion_id": criterion_id,
+                    "passed": True,
+                    "evidence_refs": [rollout["generated_video_path"]],
+                }
+                for criterion_id in (
+                    "end_effector_reaches_target",
+                    "target_state_change_visible",
+                    "robot_caused_target_motion",
+                )
+            ],
             "failure_modes": [],
             "visual_evidence_used": True,
         }
     ],
 }
-Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(payload), encoding="utf-8")
+from blueprint_pipeline.wam_generated_video_success_label_gemini import attach_success_label_runtime_attestation
+output_path = Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"])
+payload = attach_success_label_runtime_attestation(
+    payload,
+    inference_input_manifest_sha256=request["inference_input_manifest_sha256"],
+    output_dir=output_path.parent,
+)
+output_path.write_text(json.dumps(payload), encoding="utf-8")
 """.strip(),
         encoding="utf-8",
     )
@@ -4071,9 +4998,7 @@ Path(os.environ["BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"]).write_text(json.dumps(pay
     assert gate["consistency"]["consistency_score"] is not None
     assert gate["calibration_anchors"]["anchor_set"]
 
-    scorecard = json.loads(
-        (job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8")
-    )
+    scorecard = json.loads((job_dir / "wam_policy_scorecard.json").read_text(encoding="utf-8"))
     assert scorecard["wam_score_claim_grade"] == "calibrated_evaluator_grade"
     assert scorecard["wam_score_claim"]["consistency"]["consistency_score"] is not None
     assert scorecard["wam_score_claim"]["calibration_anchors"]["anchor_set"]

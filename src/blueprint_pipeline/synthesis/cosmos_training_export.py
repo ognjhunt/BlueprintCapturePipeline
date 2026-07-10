@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
+from ..camera_geometry_validation import validate_camera_intrinsics, validate_se3_matrix
 from ..common import ensure_dir, read_json_any, utc_now_iso, write_json
 from ..geometry_sources import SyntheticGeometryExportError, geometry_export_gate
 from ..local_capture import resolve_local_capture_context
@@ -51,31 +52,20 @@ def _normalized_intrinsics(record: Mapping[str, Any]) -> Dict[str, float] | None
 
     Guessed focal lengths / image sizes must never feed conditioning maps;
     a record without real fx/fy/width/height is rejected, not defaulted.
-    Only the principal point may fall back to image center, and that fact is
-    recorded.
+    Principal point values are calibration data too; they are never invented.
     """
-    intrinsics = dict(record.get("intrinsics") or {}) if isinstance(record.get("intrinsics"), Mapping) else {}
-    width = intrinsics.get("width") or intrinsics.get("w")
-    height = intrinsics.get("height") or intrinsics.get("h")
-    fx = intrinsics.get("fx")
-    fy = intrinsics.get("fy")
-    if not width or not height or not fx or not fy:
+    validation = validate_camera_intrinsics(record)
+    normalized = validation.get("normalized")
+    if not isinstance(normalized, Mapping):
         return None
-    width_f = float(width)
-    height_f = float(height)
-    fx_f = float(fx)
-    fy_f = float(fy)
-    if width_f <= 0 or height_f <= 0 or fx_f <= 0 or fy_f <= 0:
-        return None
-    principal_point_defaulted = intrinsics.get("cx") is None or intrinsics.get("cy") is None
     return {
-        "fx": fx_f,
-        "fy": fy_f,
-        "cx": float(intrinsics.get("cx") if intrinsics.get("cx") is not None else width_f / 2.0),
-        "cy": float(intrinsics.get("cy") if intrinsics.get("cy") is not None else height_f / 2.0),
-        "width": width_f,
-        "height": height_f,
-        "principal_point_defaulted": float(bool(principal_point_defaulted)),
+        "fx": float(normalized["fx"]),
+        "fy": float(normalized["fy"]),
+        "cx": float(normalized["cx"]),
+        "cy": float(normalized["cy"]),
+        "width": float(normalized["width"]),
+        "height": float(normalized["height"]),
+        "principal_point_defaulted": 0.0,
     }
 
 
@@ -84,17 +74,10 @@ def _pose_matrix(record: Mapping[str, Any]) -> "np.ndarray | None":
 
     Missing/misshaped poses are rejected upstream — never identity-filled.
     """
-    raw_pose = record.get("T_world_camera")
-    if raw_pose is None:
+    validation = validate_se3_matrix(record.get("T_world_camera"), field="T_world_camera")
+    if not validation.get("valid"):
         return None
-    pose = np.array(raw_pose, dtype=np.float32)
-    if pose.ndim == 1 and pose.size == 16:
-        pose = pose.reshape(4, 4)
-    if pose.shape != (4, 4):
-        return None
-    if not np.isfinite(pose).all():
-        return None
-    return pose
+    return np.asarray(validation["matrix"], dtype=np.float32)
 
 
 # Backward-compat alias for the name used before this file's history merged.

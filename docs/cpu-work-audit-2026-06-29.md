@@ -386,7 +386,7 @@ Constraints: Keep world-model/USD backends swappable (use the standard pxr/usd-c
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Main 11-stage pipeline
 - **Goal:** Prove a single failing lane in a multi-lane capture run does not discard already-completed lane results.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/capture_orchestrator.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_capture_orchestrator.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/capture_orchestrator.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_capture_orchestrator.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/capture_orchestrator.py && .venv/bin/python -m pytest tests/test_capture_orchestrator.py -q
 
 - **Context:** The canonical orchestrator is src/blueprint_pipeline/capture_orchestrator.py:run_capture_pipeline (lines ~1462-1666) — NOT swap_orchestrator.py/nurec_worker.py, which do not exist. This is the orchestrator's most important resilience invariant for multi-lane runs (e.g. qualification + retrieval_index) and is currently unverified. While the active 'open the refrigerator' G1 POV seed lane runs on GPU, all of this orchestration logic is CPU-testable because stages are injectable/subprocess-shelled. Test file: tests/test_capture_orchestrator.py.
@@ -413,7 +413,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Main 11-stage pipeline
 - **Goal:** Make a SAM3D/object-index crash a logged, recorded blocker rather than an invisible empty index.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/qualification.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_qualification_coverage_edges.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/qualification.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_qualification_coverage_edges.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/qualification.py && .venv/bin/python -m pytest tests/test_qualification_coverage_edges.py -q
 
 - **Context:** src/blueprint_pipeline/qualification.py is the quality stage. SAM3D/object-index is the single most failure-prone GPU stage, and silently swallowing its crash hides it from operators and from qualification gating, undermining readiness/provenance guarantees. This matters for the active 'open the refrigerator' G1 lane: if object indexing silently empties, the kitchen scene loses its detected objects with no trace. Test file: tests/test_qualification_coverage_edges.py.
@@ -441,7 +441,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Main 11-stage pipeline
 - **Goal:** Pin the cross-stage contract that 2D-only object index entries deterministically land on bbox_proxy_mesh / grounding_level='inferred'.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_index_stage.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_geometry_stage.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/swap_candidates.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_object_geometry_stage_coverage_edges.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_index_stage.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_geometry_stage.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/swap_candidates.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_object_geometry_stage_coverage_edges.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/object_geometry_stage.py src/blueprint_pipeline/object_index_stage.py src/blueprint_pipeline/swap_candidates.py && .venv/bin/python -m pytest tests/test_object_geometry_stage_coverage_edges.py -q
 
 - **Context:** This is a load-bearing cross-stage contract spanning object_index_stage.py -> object_geometry_stage.py -> swap_candidates.py. With GPU/splat work paused for the active 'open the refrigerator' G1 lane, every kitchen asset is built from bbox proxies, so the fallback chain must be provably correct on CPU. Test file: tests/test_object_geometry_stage_coverage_edges.py (already contains a fake-trimesh harness, e.g. test_object_geometry_fake_trimesh_branches).
@@ -468,7 +468,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Main 11-stage pipeline
 - **Goal:** Pin the no-GPU default path: zero backends configured yields status='built', object_count==0, empty_index_cause=='backend_skipped', plus emitted artifacts.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_index_stage.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_object_index_stage.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_index_stage.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_object_index_stage.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/object_index_stage.py && .venv/bin/python -m pytest tests/test_object_index_stage.py -q
 
 - **Context:** This is precisely the no-GPU default operating mode while cloud work is paused for the active 'open the refrigerator' G1 lane. Pinning the exact empty-index classification ('backend_skipped' vs 'zero_detections'/'all_filtered') guards qualification gating, which consumes empty_index_cause. File: src/blueprint_pipeline/object_index_stage.py; test file: tests/test_object_index_stage.py (has capture-synthesis helpers and adjacent empty-case tests ~883-963).
@@ -578,7 +578,7 @@ Constraints: keep world-model backends swappable (the test must go through the p
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** provider_race orchestrator
 - **Goal:** Factor the inline bootstrap.json-zip poll into one reusable function that race_launch can be handed as marker_check, so every future wiring site shares the canonical detection logic.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -q ; python -m pytest tests/<new_helper_test>.py -q (test boot_marker_present with a monkeypatched urlopen returning an in-memory zip WITH bootstrap.json -> True, WITHOUT it -> False, and a urlopen that raises -> False, plus missing provider_output_get_url.txt -> False) ; python -m py_compile src/blueprint_pipeline/provider_race.py src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py
 
 - **Context:** src/blueprint_pipeline/provider_race.py is a complete pure-orchestration racer whose marker_check seam (signature marker_check(provider, launch_result) -> bool, called at provider_race.py:272) is the single thing standing between it and being wired into the live launch path. Without a shared, importable helper every call site re-implements the zip/bootstrap.json poll and drifts (note bootstrap.json vs runner_done are different markers in the two files). This is the foundational seam for the active 'open the refrigerator' G1 POV render lane: the G1 job at isaac_g1_kitchen_parity_job.py:599 still does single-provider launch_with_marker_retry, and a clean importable marker_check is the prerequisite for racing RunPod+Vast there.
@@ -607,7 +607,7 @@ Validation you must run and show green: python -m pytest tests/test_provider_rac
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** provider_race orchestrator
 - **Goal:** Make race_launch able to express warm-restart-then-cold and warm_only per provider so wiring it does not silently disable the cheap warm path and the warm_only guard.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/gpu_render_providers.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/gpu_render_providers.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -q (with new kwargs-forwarding + warm_only-never-cold + cold-only-provider-tolerance tests) ; python -m py_compile src/blueprint_pipeline/provider_race.py src/blueprint_pipeline/gpu_render_providers.py
 
 - **Context:** This is a correctness/cost gap that must be closed BEFORE race_launch is wired into the active G1 'open the refrigerator' lane, or wiring it will regress the warm-pod reuse strategy (forcing expensive cold ~10.7GB pulls) and break the --warm-only guard at isaac_g1_kitchen_parity_job.py:602. The racer's docstring (provider_race.py:21-26) deliberately constrains the provider surface to launch(job_dir, request, *, cold=False) + terminate(instance_id); reconciling the extra RunPod kwargs while staying provider-agnostic is the crux.
@@ -630,7 +630,7 @@ Validation: extend tests/test_provider_race.py — make FakeProvider.launch reco
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** provider_race orchestrator
 - **Goal:** Let race_launch honor the warm-restart vs cold distinction when tearing down losers so a merely-slower warm pod is stopped (preserved for reuse), not deleted.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/gpu_render_providers.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/gpu_render_providers.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -k 'warm or stop' -q ; python -m pytest tests/test_provider_race.py -q ; python -m py_compile src/blueprint_pipeline/provider_race.py
 
 - **Context:** Terminating a warm-restart pod that only lost the race defeats the warm-pool strategy (documented in MEMORY: avoiding the ~10.7GB cold image pull), forcing future cold pulls — a real cost regression hiding inside the otherwise-safe no-leak teardown. This directly affects the active G1 'open the refrigerator' render lane once race_launch is wired there, because that lane's whole point is reusing warm pods. The canonical stop-vs-terminate logic to mirror lives at isaac_g1_kitchen_parity_job.py:415-418.
@@ -653,7 +653,7 @@ Validation: in tests/test_provider_race.py add a FakeProvider variant that retur
 
 - **Priority:** P0 · **Effort:** L · **Dimension:** provider_race orchestrator
 - **Goal:** When more than one provider is requested, route the G1 parity job through provider_race.race_launch instead of single-provider launch_with_marker_retry, forwarding the winner to watch_and_collect.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/gpu_render_providers.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/gpu_render_providers.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
 - **Validate (CPU):** python -m pytest tests/test_isaac_g1_kitchen_parity_runner.py -q ; python -m pytest tests/test_provider_race.py -q ; python -m py_compile src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py src/blueprint_pipeline/provider_race.py
 
 - **Context:** This is the highest-value wiring for the active 'open the refrigerator' G1 POV seed lane: that lane is what actually fires GPU renders, and the sequential RunPod->Vast failover (the documented motivating bug in provider_race.py:3-13) is still live in its launch path at isaac_g1_kitchen_parity_job.py:599. Wiring is entirely CPU/hermetic to build and validate — real launches are paid, but the orchestration, fake providers, and a stubbed watch_and_collect are fully mockable. Depends on the marker_check helper, the cold/fallback reconciliation, and the stop-vs-terminate teardown landing first (or being included here).
@@ -737,10 +737,10 @@ When done run: `python3 -m pytest tests/test_gpu_render_providers.py tests/test_
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Dev env & deps
 - **Goal:** Add a CPU-only usd-core extra providing pxr so USD-replay and dry-render tests stop silently skipping in the project venv.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/uv.lock`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `$HOME/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`, `$HOME/workspace/BlueprintCapturePipeline/uv.lock`
 - **Validate (CPU):** `.venv/bin/python -c 'from pxr import Usd, UsdGeom, Gf; import PIL; print("ok")'` succeeds; then `.venv/bin/python -m pytest tests/test_local_render_preview.py -q` shows the 10 previously-skipped pxr tests now PASS (0 skips attributable to missing pxr). No GPU, no cloud.
 
-- **Context:** pxr is the single most valuable no-GPU guard: it catches G1 placement/camera/POV-framing bugs without a GPU and is required by the active 'open the refrigerator' G1 POV seed lane's dry-render. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml (optional-dependencies block at line 37; dev extra at line 64), /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py (_open_stage_local at line 6698 imports pxr). Verified: .venv lacks pxr; only the unrelated system python3.9 has it but cannot import the project package or blueprint_contracts.
+- **Context:** pxr is the single most valuable no-GPU guard: it catches G1 placement/camera/POV-framing bugs without a GPU and is required by the active 'open the refrigerator' G1 POV seed lane's dry-render. Files: $HOME/workspace/BlueprintCapturePipeline/pyproject.toml (optional-dependencies block at line 37; dev extra at line 64), $HOME/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py, $HOME/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py (_open_stage_local at line 6698 imports pxr). Verified: .venv lacks pxr; only the unrelated system python3.9 has it but cannot import the project package or blueprint_contracts.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -761,10 +761,10 @@ Constraints: this is a pure-CPU dependency change. Do NOT launch any GPU or paid
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Dev env & deps
 - **Goal:** After pxr lands in .venv, prove the local --dry-render path runs cold on the real kitchen USD and writes its PNG + summary JSON with no GPU.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/isaac_g1_dynamic_standing_contact_floor_asset/Collected_KitchenRoom/KitchenRoom.usd`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `$HOME/workspace/BlueprintCapturePipeline/output/isaac_g1_dynamic_standing_contact_floor_asset/Collected_KitchenRoom/KitchenRoom.usd`
 - **Validate (CPU):** `.venv/bin/python -m pytest 'tests/test_local_render_preview.py::test_dry_render_cli_runs_end_to_end_on_real_kitchen' -q` runs (does NOT skip) and passes; a manual `.venv/bin/python scripts/run_isaac_g1_kitchen_parity_eval.py --dry-render ...` (with valid scenarios + --kitchen-usd pointing at the real KitchenRoom.usd, --out-dir /tmp/dryrun) writes /tmp/dryrun/dry_render/dry_render_preview.png and dry_render_summary.json. No GPU.
 
-- **Context:** The user's memory notes --dry-render is the ~7s local iterate loop before firing ONE paid cloud render, and it is the single biggest no-GPU capability currently broken by environment alone. The real kitchen asset is present at /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/isaac_g1_dynamic_standing_contact_floor_asset/Collected_KitchenRoom/KitchenRoom.usd (592 bytes, a Collected stub). This directly supports the active 'open the refrigerator' G1 POV seed lane. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py.
+- **Context:** The user's memory notes --dry-render is the ~7s local iterate loop before firing ONE paid cloud render, and it is the single biggest no-GPU capability currently broken by environment alone. The real kitchen asset is present at $HOME/workspace/BlueprintCapturePipeline/output/isaac_g1_dynamic_standing_contact_floor_asset/Collected_KitchenRoom/KitchenRoom.usd (592 bytes, a Collected stub). This directly supports the active 'open the refrigerator' G1 POV seed lane. Files: $HOME/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py, $HOME/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -785,10 +785,10 @@ Constraints: Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Dev env & deps
 - **Goal:** Add boto3/botocore to the dev (and default-installable) dependency set so the object-store staging subprocess can run from the canonical interpreter and be exercised/mocked on CPU.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/robot_eval_provider_input_setup.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/uv.lock`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/robot_eval_provider_input_setup.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/uv.lock`
 - **Validate (CPU):** `.venv/bin/python -c 'import boto3, botocore; print(boto3.__version__)'` works; `.venv/bin/python -m pytest tests/test_wam_provider_object_store.py -q` passes (3 tests collect) and exercises staging with mocked S3. Optionally rebuild a throwaway venv with `pip install -e .[dev]` and assert `import boto3` succeeds — proving the documented command is now sufficient. No GPU, no spend.
 
-- **Context:** This is the documented root cause of staging_failed without spending on GPU. Because stage_bundle uses sys.executable, the staging subprocess inherits whatever interpreter launched the job — half of the split-brain trap. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/robot_eval_provider_input_setup.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py. Relevant to the 'open the refrigerator' G1 lane because a boto3-less launcher kills the parity job before any render.
+- **Context:** This is the documented root cause of staging_failed without spending on GPU. Because stage_bundle uses sys.executable, the staging subprocess inherits whatever interpreter launched the job — half of the split-brain trap. Files: $HOME/workspace/BlueprintCapturePipeline/pyproject.toml, $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py, $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py, $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/robot_eval_provider_input_setup.py, $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py. Relevant to the 'open the refrigerator' G1 lane because a boto3-less launcher kills the parity job before any render.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -809,10 +809,10 @@ Constraints: Do NOT launch any GPU or paid cloud pod; do NOT make any real S3/R2
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Dev env & deps
 - **Goal:** Add a CPU-only mujoco extra so the preferred no-GPU MuJoCo-parity validation substrate can run locally instead of silently skipping.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_worker_runtime_preflight.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_g1_simulator_command.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/uv.lock`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_worker_runtime_preflight.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_g1_simulator_command.py`, `$HOME/workspace/BlueprintCapturePipeline/uv.lock`
 - **Validate (CPU):** `.venv/bin/python -c 'import mujoco; print(mujoco.__version__)'` works; `.venv/bin/python -m pytest tests/test_mujoco_worker_runtime_preflight.py tests/test_mujoco_g1_simulator_command.py -q` runs the mujoco-gated tests instead of skipping for missing mujoco (tests still legitimately gated on BLUEPRINT_MUJOCO_G1_MODEL_ROOT may skip — that is expected). CPU-only.
 
-- **Context:** CPU MuJoCo parity is the explicitly-preferred no-GPU validation substrate per the user's GPU-startup strategy and the MuJoCo-parity G1 eval lane. Without a declared mujoco, the runnable CPU simulator preflight and worker runtime preflight cannot execute their physics path without an undocumented manual install. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_worker_runtime_preflight.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_g1_simulator_command.py.
+- **Context:** CPU MuJoCo parity is the explicitly-preferred no-GPU validation substrate per the user's GPU-startup strategy and the MuJoCo-parity G1 eval lane. Without a declared mujoco, the runnable CPU simulator preflight and worker runtime preflight cannot execute their physics path without an undocumented manual install. Files: $HOME/workspace/BlueprintCapturePipeline/pyproject.toml, $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py, $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_worker_runtime_preflight.py, $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_g1_simulator_command.py.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -836,7 +836,7 @@ Constraints: Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Docs / provenance / claims
 - **Goal:** Correct the 2026-06-28 CHANGELOG entry's self-claim that there is no uncommitted local state, which is false at write time.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`
 - **Validate (CPU):** Run `git status --short` (must show the 4 modified files the corrected line now enumerates). Run `git diff --stat scripts/run_isaac_g1_kitchen_parity_eval.py tests/test_isaac_g1_kitchen_parity_runner.py tests/test_local_render_preview.py docs/CHANGELOG.md`. Manually re-read docs/CHANGELOG.md lines ~60-72 to confirm the statement now matches the working tree. CPU only, no GPU/cloud.
 
 - **Context:** The repo's CLAUDE.md/AGENTS.md make provenance and capture/state truth authoritative, and the autonomous-loop evidence checklist forbids false-completion / inaccurate state self-claims. A changelog asserting 'no uncommitted local state' while a 276-line script diff (the active 'open the refrigerator' G1 POV seed lane in scripts/run_isaac_g1_kitchen_parity_eval.py) sits uncommitted is exactly the overstatement the doctrine prohibits and will mislead the next agent about what has actually landed. Verified facts: `git status --short` shows the 4 files; the false line is at docs/CHANGELOG.md:69-70.
@@ -857,7 +857,7 @@ Constraints: This is documentation-only. Keep world-model backends swappable; pr
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Docs / provenance / claims
 - **Goal:** Document the 11 commits dated today (2026-06-29) that the changelog currently skips, with the same render-seed proof boundary used in prior entries.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`, `$HOME/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`
 - **Validate (CPU):** Run `git log --pretty='%ad %h %s' --date=short | grep 2026-06-29` and confirm every listed commit's theme is represented in the new entry. Run `grep -n '^## 2026' docs/CHANGELOG.md | head -2` and confirm the newest heading is now `## 2026-06-29`. Re-read the new entry to confirm the render-seed proof-boundary caveat is present. CPU only.
 
 - **Context:** Today is 2026-06-29; a changelog whose newest entry is dated yesterday and silently skips today's 11 committed commits understates what changed and breaks the audit trail. These commits ARE the claim-sensitive G1 render-seed / head-POV lane the audit flags, so they need the explicit proof-boundary framing the rest of the changelog applies. Verified: `git log ... | grep 2026-06-29 | wc -l` = 11; newest `^## 2026` heading in docs/CHANGELOG.md is line 3 (`## 2026-06-28`). The proof-boundary language to mirror lives in scripts/run_isaac_g1_kitchen_parity_eval.py:799-815.
@@ -878,7 +878,7 @@ Constraints: Documentation-only. Keep world-model backends swappable; protect pr
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Docs / provenance / claims
 - **Goal:** Confirm the no-GPU tests backing the new features pass locally and reference that green run as the durable CPU evidence for the doc/readiness updates.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_scene_placement.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_placement_validation.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_perception_adapter.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_perception_fusion.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_perception_views.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_render_lock.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_gpu_spend_guard.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/tests/test_scene_placement.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_placement_validation.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_perception_adapter.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_perception_fusion.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_perception_views.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_render_lock.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_gpu_spend_guard.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
 - **Validate (CPU):** `python3 -m pytest tests/test_scene_placement.py tests/test_placement_validation.py tests/test_perception_adapter.py tests/test_perception_fusion.py tests/test_perception_views.py tests/test_provider_race.py tests/test_render_lock.py tests/test_warm_render_server.py tests/test_gpu_spend_guard.py tests/test_local_render_preview.py tests/test_isaac_g1_kitchen_parity_runner.py -q` exits 0 (all pass/skip, no failures/errors). `python3 -m pytest <paths> --collect-only -q` lists all 11 files. CPU only, no GPU, no network.
 
 - **Context:** The audit goal is to finish and VALIDATE everything doable on CPU before any GPU spend. Grounding the doc/readiness claims in a concrete green local run confirms the --dry-render and scene_placement claims are real and reproducible at zero cloud cost. Verified locally: `python3 -m pytest` over test_scene_placement / test_provider_race / test_render_lock / test_warm_render_server / test_gpu_spend_guard / test_local_render_preview returned 169 passed, 3 skipped in 6.27s on Python 3.9.6. All 11 listed test files exist.
@@ -924,7 +924,7 @@ This means a bundle the pipeline itself wrote with status='blocked', 'failed', o
 
 Required change: remove the unconditional file-existence override so a present-but-non-ready bundle BLOCKS the gate. If there is a real legacy need to treat a status-less bundle as ready (bundles written before the status field existed), scope the fallback narrowly: only treat the on-disk bundle as ready when it has NO 'status' key at all (legacy), never when status is present and non-ready. Prefer the simplest correct fix; do not broaden behavior.
 
-Constraints: keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; render/eval outputs are simulator support, NOT policy-success claims; do not weaken any other stage check. Add/extend tests. This change must satisfy the autonomous-loop evidence checklist at /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Constraints: keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; render/eval outputs are simulator support, NOT policy-success claims; do not weaken any other stage check. Add/extend tests. This change must satisfy the autonomous-loop evidence checklist at $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Add a regression test in tests/test_alpha_readiness.py that writes pipeline/evaluation_prep/launchable_export_bundle.json (the eval_root the function reads) with status='blocked', drives build_launch_gate_summary, and asserts checks['buyer_fulfillment_bundle_ready']['passed'] is False and that overall_status is 'blocked' (not a launchable verdict). Mirror the fixture setup from the existing happy-path test near tests/test_alpha_readiness.py:457. Add a second case where the on-disk bundle has NO status key, asserting whatever legacy behavior you chose, documented in a comment.
 
@@ -958,7 +958,7 @@ Cover at minimum:
 - closeout_summary (lines 464-491): given a report dict with automated_checks (list of {'label','status'}) and manual_checks (list of {'id','status'}), automated_contracts_prove lists only passed labels and remaining_manual_evidence_ids lists only ids whose status startswith 'manual_'.
 - should_skip (lines 242-250) and skip_evidence_class (lines 87-98): construct CommandSpec fixtures and assert the Android-SDK-missing and xcodebuild-missing branches return the expected reason / evidence-class tuple. For env-dependent branches, monkeypatch os.environ (e.g. delete ANDROID_HOME/ANDROID_SDK_ROOT) so the test is deterministic regardless of the runner's shell.
 
-Constraints: keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; these gate outputs are contract/support claims, NOT live-payment or live-device success claims — do not assert any wording that implies otherwise. Tests must be fully hermetic. This work must satisfy /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Constraints: keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; these gate outputs are contract/support claims, NOT live-payment or live-device success claims — do not assert any wording that implies otherwise. Tests must be fully hermetic. This work must satisfy $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Then run: .venv/bin/python -m pytest tests/test_paid_marketplace_launch_gate.py -q and .venv/bin/python -m py_compile scripts/run_paid_marketplace_launch_gate.py
 ```
@@ -971,7 +971,7 @@ Then run: .venv/bin/python -m pytest tests/test_paid_marketplace_launch_gate.py 
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Warm render transport / object store
 - **Goal:** Make WarmPoolClient.poll_result reject stale warm_results/<request_id>.json left in the cumulative output zip from a previous warm rerun.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
 - **Validate (CPU):** python -m pytest tests/test_warm_render_server.py -q (add a new test: build an in-memory zip whose warm_results/job-1.json is a STALE result lacking this session's token; construct a fresh WarmPoolClient with http_get=lambda u: <that zip bytes>; assert poll_result('job-1', timeout_s small, sleep=lambda s: None) returns None instead of the stale payload; keep existing test_warm_pool_client_poll_result_reads_from_output_zip green by stamping the matching token). Also run `python -m py_compile src/blueprint_pipeline/warm_render_server.py`.
 
 - **Context:** This protects the active 'open the refrigerator' G1 POV seed lane: the warm pod stays RUNNING across reruns (run_isaac_g1_kitchen_parity_job serve mode in src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py:607-624), and a stale warm_results/job-1.json would make the control plane believe a fridge-POV render completed when the real render never ran — the worst failure on a billed lane because it masks a no-op. Key file: src/blueprint_pipeline/warm_render_server.py (WarmPoolClient.submit line 225, poll_result line 237; SignedUrlJobSource.publish_result line 203; serve_render_loop result round-trip line 91). The one-shot equivalent fix lives at src/blueprint_pipeline/wam_provider_object_store.py:281.
@@ -996,7 +996,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Warm render transport / object store
 - **Goal:** Classify HTTP 401/403 on the inbox GET and output GET as expired/forbidden so an expired 12h presigned URL becomes a visible blocker, not an invisible warm-pod hang.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_wam_provider_object_store.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_wam_provider_object_store.py`
 - **Validate (CPU):** python -m pytest tests/test_warm_render_server.py tests/test_wam_provider_object_store.py -q (add: inject http_get=lambda u: (_ for _ in ()).throw(urllib.error.HTTPError(u,403,'Forbidden',{},None)); assert SignedUrlJobSource.poll and WarmPoolClient.poll_result classify it distinctly — raise/surface expired-or-forbidden — instead of returning None; assert a 404 HTTPError still yields None. Assert presign manifests carry expires_at and an expiry warning when TTL is short). Also `python -m py_compile src/blueprint_pipeline/warm_render_server.py src/blueprint_pipeline/wam_provider_object_store.py`.
 
 - **Context:** Named KNOWN issue (kitchen bundle presigned-URL 12h TTL handling). On the active 'open the refrigerator' warm lane this converts a recoverable credential refresh into a silent hang that wastes billed warm-pod time until a human notices — exactly the failure the warm strategy exists to avoid. Files: src/blueprint_pipeline/warm_render_server.py (poll 182, poll_result 243), src/blueprint_pipeline/wam_provider_object_store.py (presign 168/396), src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py (_await_warm_serve_ready 458). Test scaffolding already exists: tests/test_warm_render_server.py uses lambda http_get/http_put fakes; tests/test_wam_provider_object_store.py uses a FakeClient/SimpleNamespace boto3 stub.
@@ -1021,7 +1021,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Warm render transport / object store
 - **Goal:** Add error classification + a consecutive-failure counter to SignedUrlJobSource.poll / serve loop so a forbidden/malformed inbox surfaces a blocker rather than looping silently on a billed pod.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
 - **Validate (CPU):** python -m pytest tests/test_warm_render_server.py -q (add: an http_get that always raises a 403 HTTPError; assert poll increments a failure counter and after N calls surfaces a classified state; drive serve_render_loop with that source and assert it logs the blocker and exits with the new exit_reason rather than only on idle_timeout. Assert a 404/empty inbox does NOT trip the counter). Also `python -m py_compile src/blueprint_pipeline/warm_render_server.py`.
 
 - **Context:** Silent indefinite polling on a billed warm pod is the costliest, hardest-to-notice failure on the active 'open the refrigerator' lane. Distinguishing transient-empty from persistent-broken lets the pod fail fast and free the GPU. This also makes the TTL-expiry finding actionable end to end. File: src/blueprint_pipeline/warm_render_server.py (SignedUrlJobSource.poll 182, serve_render_loop 41). Test scaffolding: tests/test_warm_render_server.py already drives SignedUrlJobSource and serve_render_loop with lambda http_get fakes and a _FakeSource.
@@ -1046,7 +1046,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Warm render transport / object store
 - **Goal:** Make launch_with_marker_retry and _await_warm_serve_ready verify the marker belongs to THIS launch's instance_id instead of accepting mere presence of bootstrap.json / warm_serve_ready.json in the reused cumulative zip.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_job.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_job.py`
 - **Validate (CPU):** python -m pytest tests/test_isaac_g1_kitchen_parity_job.py -q (extend the marker-retry tests near line 375: make the fake urlopen return a zip whose bootstrap.json has a WRONG/absent instance_id; assert launch_with_marker_retry does NOT set marker_seen and treats the pod as flaky; add a _await_warm_serve_ready test where warm_serve_ready.json carries the wrong instance_id and assert ready is False, and a matching-instance_id case returns ready True). Also `python -m py_compile src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`.
 
 - **Context:** The marker protocol is the only guard between 'pod genuinely booted Isaac+scene for the fridge-POV render' and paying for a dud — the ~50% cold-flaky problem the retry logic catches. A stale marker on the reused output key defeats it on both the warm lane and cold retries, re-introducing false-completed runs on the active 'open the refrigerator' seed lane. Files: src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py (launch_with_marker_retry 401, _await_warm_serve_ready 424), output-key reuse at src/blueprint_pipeline/wam_provider_object_store.py:264. Existing tests at tests/test_isaac_g1_kitchen_parity_job.py:375-427 use _make_fake_provider() whose fake urlopen writes a zip with bootstrap.json (currently empty '{}').
@@ -1178,7 +1178,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Make the local .venv match pyproject so test_mujoco_scene_scenario_packet exercises the real CPU mesh-materialization path instead of the trimesh-missing fallback.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_scene_scenario_packet.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_mujoco_scene_scenario_packet.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/mujoco_scene_scenario_packet.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_mujoco_scene_scenario_packet.py`
 - **Validate (CPU):** uv sync --extra dev; .venv/bin/python -c 'import trimesh'; .venv/bin/python -m pytest tests/test_mujoco_scene_scenario_packet.py -o addopts='' (must pass, 0 failures); python -m py_compile src/blueprint_pipeline/mujople_scene_scenario_packet.py 2>/dev/null || python -m py_compile src/blueprint_pipeline/mujoco_scene_scenario_packet.py
 
 - **Context:** Verified live: `.venv/bin/python -c 'import trimesh'` -> ModuleNotFoundError; pyproject.toml declares trimesh>=4.4.0 in both `runtime` and `dev` extras; src/blueprint_pipeline/mujoco_scene_scenario_packet.py has the two branches at lines 1034 (blocked_missing_trimesh_runtime) and 1133 (blocked_no_visual_meshes_materialized); the test asserts the latter at lines 95 and 115. A green-CI/red-local split means the developer's primary validation surface is lying and masking the real mesh-materialization code path. trimesh/scipy/open3d are pure-CPU wheels.
@@ -1206,7 +1206,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Make pxr (usd-core) available on CPU so the 10 dry-render preview tests that open the real KitchenRoom USD actually run, protecting the no-GPU placement/camera/POV-framing gate for the G1 'open the refrigerator' lane.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/requirements-geometry.txt`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_scene_placement.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/requirements-geometry.txt`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_local_render_preview.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_scene_placement.py`, `$HOME/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`
 - **Validate (CPU):** pip install usd-core (or uv sync --extra dev); python -c 'from pxr import Usd, UsdGeom'; python -m pytest tests/test_local_render_preview.py -o addopts='' (10 previously-skipped tests now collected+passing, 0 skips for pxr); python -m py_compile scripts/run_isaac_g1_kitchen_parity_eval.py
 
 - **Context:** The dry-render tool (scripts/run_isaac_g1_kitchen_parity_eval.py:6671+, '--dry-render', NO GPU) is the user's stated mechanism to catch placement/camera bugs before firing a paid GPU render in the active 'open the refrigerator' G1 POV seed lane. Right now its highest-value validation (against real USD geometry) silently SKIPs locally because pxr is absent, so a placement regression would only surface on a real GPU run. usd-core ships a pure-CPU pip wheel.
@@ -1233,7 +1233,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P0 · **Effort:** M · **Dimension:** Catch-all / completeness
 - **Goal:** After the venv/usd-core fixes, run the entire ~2491-test suite to completion on CPU and record/triage any remaining failures so there is a trustworthy local baseline before GPU work resumes.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/tests`
 - **Validate (CPU):** python -m pytest -q -o addopts='' runs to completion (no -x) with 0 failures; any skips are explicitly justified; the run reports final pass/skip counts.
 
 - **Context:** Audit ran `python -m pytest -o addopts='' -x` and stopped at the first failure (test_mujoco_scene_scenario_packet) after 878 passed / 13 skipped / 1 failed — that first failure is env drift, which could be masking additional failures deeper in the run. The user wants EVERYTHING CPU-validatable green before resuming GPU work; a confirmed full-green baseline is the core completeness deliverable for this dimension.
@@ -1566,7 +1566,7 @@ Constraints: Privacy processing is rights/PII-critical per CLAUDE.md ('Protect p
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Main 11-stage pipeline
 - **Goal:** Prove _run_backend_command degrades cleanly (skipped/failed) on bad JSON, stdout-only JSON, and payload status override.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_index_stage.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_object_index_stage.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_index_stage.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_object_index_stage.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/object_index_stage.py && .venv/bin/python -m pytest tests/test_object_index_stage.py -q
 
 - **Context:** _run_backend_command in src/blueprint_pipeline/object_index_stage.py is the CPU boundary between the orchestrator and every GPU detection backend. Hardening its parsing keeps the no-GPU path used by the active 'open the refrigerator' G1 lane from crashing or mislabeling status. Test file: tests/test_object_index_stage.py.
@@ -1593,7 +1593,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Main 11-stage pipeline
 - **Goal:** Run run_retrieval_index_stage fully on CPU via the embedding_model injection seam and pin the extraction/dedup/coverage flow and idempotent skip.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/retrieval_index_stage.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_retrieval_index_stage_coverage.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/retrieval_index_stage.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_retrieval_index_stage_coverage.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/retrieval_index_stage.py && .venv/bin/python -m pytest tests/test_retrieval_index_stage_coverage.py -q
 
 - **Context:** Retrieval is the cross-session site-memory backbone and is fully runnable on CPU via the documented embedding_model injection seam. Pinning extraction+dedup+coverage keeps the highest-value pure-CPU stage validated while GPU embeddings are paused for the active 'open the refrigerator' G1 lane. File: src/blueprint_pipeline/retrieval_index_stage.py; test file: tests/test_retrieval_index_stage_coverage.py.
@@ -1620,7 +1620,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Main 11-stage pipeline
 - **Goal:** Add an explicit invariant test for resolve_geometry_source's backend selection priority order.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/geometry_sources.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_small_runtime_helper_coverage.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/geometry_sources.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_small_runtime_helper_coverage.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/geometry_sources.py && .venv/bin/python -m pytest tests/test_small_runtime_helper_coverage.py -q
 
 - **Context:** src/blueprint_pipeline/geometry_sources.py implements the CLAUDE.md 'keep world-model backends swappable' rule. An explicit priority-ladder test prevents a future backend from silently shadowing arkit/arcore selection — important because the active 'open the refrigerator' G1 lane depends on correct geometry-source selection for the kitchen scene. Test file: tests/test_small_runtime_helper_coverage.py (existing per-source coverage ~305-408).
@@ -1647,7 +1647,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Main 11-stage pipeline
 - **Goal:** Pin the non-forced volume filter boundary and exclude-vs-articulated keyword precedence in candidate selection.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/swap_candidates.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_swap_candidates_coverage.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/swap_candidates.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_swap_candidates_coverage.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/swap_candidates.py && .venv/bin/python -m pytest tests/test_swap_candidates_coverage.py -q
 
 - **Context:** src/blueprint_pipeline/swap_candidates.py is the backend-swappable candidate-selection core. The min_volume boundary and exclude/force precedence determine which objects become separate sim assets — directly relevant to the active 'open the refrigerator' G1 lane, where the fridge must be selected as a manipulable/articulated asset. Pure-CPU branch decisions, cheap to pin. Test file: tests/test_swap_candidates_coverage.py.
@@ -1674,7 +1674,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Main 11-stage pipeline
 - **Goal:** Cover the gemini-object-enumeration success path (underscore normalization, prompt_source, empty-objects fallback) with a fake genai, no paid call.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/scene_semantics.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_scene_semantics.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/scene_semantics.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_scene_semantics.py`
 - **Validate (CPU):** .venv/bin/python -m py_compile src/blueprint_pipeline/scene_semantics.py && .venv/bin/python -m pytest tests/test_scene_semantics.py -q
 
 - **Context:** src/blueprint_pipeline/scene_semantics.py object enumeration drives the SAM3D detection prompt bank — a regression in gemini-object-enumeration normalization silently weakens detection on every real capture, including the kitchen scene behind the active 'open the refrigerator' G1 lane. The parsing/normalization logic is fully mockable for free via the existing _fake_genai_module. Test file: tests/test_scene_semantics.py.
@@ -1952,7 +1952,7 @@ Add tests in tests/test_scene_placement.py: eye==target camera raises (or return
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** provider_race orchestrator
 - **Goal:** Expose a CLI surface so operators can request a multi-provider race, while keeping single --provider as the backward-compatible default.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_particlefield_render_job.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
 - **Validate (CPU):** python -m pytest tests/test_isaac_g1_kitchen_parity_runner.py -q ; ls tests | grep -i particlefield (then pytest that file) ; python -m py_compile src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py src/blueprint_pipeline/isaac_particlefield_render_job.py
 
 - **Context:** Even once race_launch is wired internally, operators have no way to request a race — the feature stays dormant. This is pure argument parsing, fully CPU/hermetic. It complements the G1 race wiring for the active 'open the refrigerator' lane by giving the operator the actual switch to flip. Pairs naturally with the internal wiring task but is independently testable.
@@ -1975,7 +1975,7 @@ Validation: add hermetic argparse-level tests (call main(argv) with --allow-paid
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** provider_race orchestrator
 - **Goal:** Make the interaction between race_launch and the serve=True warm-pool branch explicit so a race never tears down the warm pod the caller needs alive.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_runner.py`
 - **Validate (CPU):** python -m pytest tests/test_isaac_g1_kitchen_parity_runner.py -k 'serve or warm' -q ; python -m pytest tests/test_isaac_g1_kitchen_parity_runner.py -q ; python -m py_compile src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py src/blueprint_pipeline/provider_race.py
 
 - **Context:** If race_launch is naively wired into the serve path it would tear down the warm pod the caller needs alive, breaking the WarmPoolClient lifecycle — the warm-serve lane (used by the active G1 'open the refrigerator' render lane for low-latency repeated submissions) would silently break. The two markers differ: race/bootstrap.json (early heartbeat) vs warm_serve_ready.json (Isaac booted + scene loaded), so the interaction can't be left implicit. Best done after, or together with, the G1 race wiring.
@@ -1998,7 +1998,7 @@ Validation: add hermetic tests asserting your chosen behavior. For (A): a serve=
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** provider_race orchestrator
 - **Goal:** Give ProviderCircuitBreaker cross-launch memory by persisting its state to JSON and emitting its snapshot (plus skipped providers) into the launch manifest.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -k 'persist or snapshot or reload' -q ; python -m pytest tests/test_provider_race.py -q ; python -m pytest tests/test_isaac_g1_kitchen_parity_runner.py -q ; python -m py_compile src/blueprint_pipeline/provider_race.py src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py
 
 - **Context:** The circuit breaker's entire value is memory across launches so a chronically bad GPU pool stops being raced and paid for. Without persistence it resets every run and never trips in production. This protects spend on the active 'open the refrigerator' G1 render lane once racing is enabled. Depends on the G1 race wiring existing for the manifest-emission half; the persistence half is independently buildable and testable now.
@@ -2021,7 +2021,7 @@ Validation: add hermetic tests (tmp_path only): (a) a breaker recorded into a tr
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** provider_race orchestrator
 - **Goal:** Add a hermetic test proving that when the breaker trips every provider, race_launch still races them all healthiest-first rather than dead-ending.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -k all_tripped -q ; python -m pytest tests/test_provider_race.py -q ; python -m py_compile tests/test_provider_race.py
 
 - **Context:** This is the explicit 'don't dead-end the job' safety branch — load-bearing for the active 'open the refrigerator' lane, since a transient bad streak across BOTH providers must still attempt a launch rather than returning blocked. It is currently untested, so a regression that returns no_providers when all are tripped would pass CI silently.
@@ -2044,7 +2044,7 @@ Validation: python -m pytest tests/test_provider_race.py -k all_tripped (or your
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** provider_race orchestrator
 - **Goal:** Add a deterministic test that a slower-but-healthy provider gets outcome 'booted_lost' and is recorded as a breaker SUCCESS, not penalized as a dud.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -k booted_lost -q ; python -m pytest tests/test_provider_race.py -q ; python -m py_compile tests/test_provider_race.py
 
 - **Context:** booted_lost -> success is load-bearing: it prevents a healthy-but-slower provider from being unfairly tripped as a dud over time. Without a test, a refactor could misclassify it and wrongly trip a healthy provider — directly harming provider availability for the active 'open the refrigerator' G1 render lane. Deterministic construction (controllable marker) is the key challenge.
@@ -2067,7 +2067,7 @@ Validation: python -m pytest tests/test_provider_race.py -k booted_lost and the 
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** provider_race orchestrator
 - **Goal:** Cover the two swallow-and-continue resilience paths: a marker_check that raises then recovers, and a loser terminate() that raises.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -k 'marker_raises or terminate_raises' -q ; python -m pytest tests/test_provider_race.py -q ; python -m py_compile tests/test_provider_race.py
 
 - **Context:** These are the resilience guarantees that keep a flaky boot probe or a flaky teardown API from sinking the whole race or leaking an exception to the caller — important for the active 'open the refrigerator' lane where real provider APIs are intermittently flaky. They are currently unverified, so the swallow-and-continue behavior could regress unnoticed.
@@ -2275,10 +2275,10 @@ When done run: `python3 -m pytest tests/test_isaac_g1_kitchen_parity_job.py -q` 
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Dev env & deps
 - **Goal:** Fix the inconsistency where the dev extra declares trimesh but the assembled .venv lacks it, unblocking geometry/scenario-packet tests.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_robot_eval_job_orchestrator.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_mujoco_scene_scenario_packet.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/uv.lock`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_robot_eval_job_orchestrator.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_mujoco_scene_scenario_packet.py`, `$HOME/workspace/BlueprintCapturePipeline/uv.lock`
 - **Validate (CPU):** `.venv/bin/python -c 'import trimesh; print(trimesh.__version__)'` works; `.venv/bin/python -m pytest tests/test_mujoco_scene_scenario_packet.py -q` runs (does not skip for missing trimesh). Throwaway `pip install -e .[dev]` venv imports trimesh, proving the documented command is sufficient. CPU-only.
 
-- **Context:** The mismatch between the declared dev extra (includes trimesh) and the actual .venv (lacks it) is direct evidence of the reproducibility gap being audited. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_robot_eval_job_orchestrator.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_mujoco_scene_scenario_packet.py.
+- **Context:** The mismatch between the declared dev extra (includes trimesh) and the actual .venv (lacks it) is direct evidence of the reproducibility gap being audited. Files: $HOME/workspace/BlueprintCapturePipeline/pyproject.toml, $HOME/workspace/BlueprintCapturePipeline/tests/test_robot_eval_job_orchestrator.py, $HOME/workspace/BlueprintCapturePipeline/tests/test_mujoco_scene_scenario_packet.py.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -2299,10 +2299,10 @@ Constraints: Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Dev env & deps
 - **Goal:** Replace the two conflicting, incomplete setup paths with one canonical Python 3.12 command that installs the full no-GPU dep set and a one-line import probe to verify it.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.python-version`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/uv.lock`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/README.md`, `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/.python-version`, `$HOME/workspace/BlueprintCapturePipeline/uv.lock`
 - **Validate (CPU):** From a clean checkout, run ONLY the documented command, then the probe `python -c 'import pxr, PIL, mujoco, trimesh, boto3, blueprint_pipeline, blueprint_contracts; print("full CPU env ok")'` succeeds; `python -m pytest -q` shows 0 skips attributable to missing pxr/mujoco/trimesh (compare skip count before/after). No GPU, no cloud.
 
-- **Context:** The user explicitly wants ONE documented setup that makes pytest, --dry-render, and usd-core replay fully runnable locally. The current docs mislead by implying `[dev]` is enough. This task depends on the usd-core/mujoco/boto3 extras existing first. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.python-version, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/uv.lock.
+- **Context:** The user explicitly wants ONE documented setup that makes pytest, --dry-render, and usd-core replay fully runnable locally. The current docs mislead by implying `[dev]` is enough. This task depends on the usd-core/mujoco/boto3 extras existing first. Files: $HOME/workspace/BlueprintCapturePipeline/README.md, $HOME/workspace/BlueprintCapturePipeline/pyproject.toml, $HOME/workspace/BlueprintCapturePipeline/.python-version, $HOME/workspace/BlueprintCapturePipeline/uv.lock.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -2324,10 +2324,10 @@ Constraints: Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Dev env & deps
 - **Goal:** Add a fail-fast CPU env doctor (console entry + test) that imports the full no-GPU stack and reports exactly which modules are missing from the current interpreter.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py`, `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/tests/conftest.py`
 - **Validate (CPU):** Run the doctor under .venv: before the usd-core/mujoco/trimesh extras land it FAILS listing pxr+mujoco+trimesh missing; after they land it PASSES. The new pytest (`.venv/bin/python -m pytest tests/test_cpu_env_doctor.py -q` or wherever placed) asserts the return shape and passes. CPU-only, no cloud.
 
-- **Context:** A fail-fast doctor turns a confusing pre-pod failure into an actionable 'pxr missing in this interpreter' message and gives the paused-GPU effort a green/red gate for 'is my CPU env complete?' before anything is attempted — directly de-risking the 'open the refrigerator' G1 lane launch. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py.
+- **Context:** A fail-fast doctor turns a confusing pre-pod failure into an actionable 'pxr missing in this interpreter' message and gives the paused-GPU effort a green/red gate for 'is my CPU env complete?' before anything is attempted — directly de-risking the 'open the refrigerator' G1 lane launch. Files: $HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/cpu_simulator_preflight.py, $HOME/workspace/BlueprintCapturePipeline/pyproject.toml, $HOME/workspace/BlueprintCapturePipeline/tests/conftest.py.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -2350,7 +2350,7 @@ Constraints: Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Docs / provenance / claims
 - **Goal:** Reword the User-Facing warm-render bullet so it no longer reads as proven live multi-job reuse, matching the module's hermetic-only validation.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
 - **Validate (CPU):** Re-read docs/CHANGELOG.md lines ~18-24 against src/blueprint_pipeline/warm_render_server.py lines 1-8 and confirm the User-Facing line no longer asserts proven live multi-job reuse. Run `python3 -m pytest tests/test_warm_render_server.py -q` and confirm it passes and contains only hermetic (no live-GPU) coverage. CPU only.
 
 - **Context:** Cloud is paused, so live multi-job reuse cannot be proven now — the claim must be scoped down rather than left implying live success. The unqualified phrasing at docs/CHANGELOG.md:20-21 contradicts the module docstring at src/blueprint_pipeline/warm_render_server.py:1-8 ('guarded on-GPU validation', 'hermetically testable', imports no isaacsim/pxr). This is part of the warm --serve lane that supports the active G1 kitchen-parity render flow.
@@ -2371,7 +2371,7 @@ Constraints: Documentation-only. PLATFORM_CONTEXT and the autonomous-loop checkl
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Docs / provenance / claims
 - **Goal:** Add a README subsection naming scripts/run_isaac_g1_kitchen_parity_eval.py and the 'open the refrigerator' head-POV seed lane, with an explicit claim boundary.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/README.md`, `$HOME/workspace/BlueprintCapturePipeline/scripts/run_isaac_g1_kitchen_parity_eval.py`
 - **Validate (CPU):** Run `grep -n -i 'run_isaac_g1_kitchen_parity\|head.POV\|render seed\|--dry-render' README.md` and confirm non-empty after the edit. Re-read the new subsection against scripts/run_isaac_g1_kitchen_parity_eval.py:799-815 to confirm the boundary wording is consistent (support not success). CPU only (doc edit).
 
 - **Context:** README + AGENTS.md are the designated 'read first' product surface and where claim boundaries for lanes are stated. Leaving the entire active G1 render lane undocumented means its boundaries live only in code docstrings and an uncommitted changelog — an overstatement/understatement risk and a violation of the 'render seeds are support not success' rule. Verified: README.md has 0 mentions of the script; proof-boundary docstrings are at scripts/run_isaac_g1_kitchen_parity_eval.py:799-815.
@@ -2392,7 +2392,7 @@ Constraints: Documentation-only. Keep world-model backends swappable; protect pr
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Docs / provenance / claims
 - **Goal:** Add concise README entries (with claim boundaries) for scene_placement, warm_render_server, provider_race, render_lock, gpu_spend_guard, and the local --dry-render tool, and link the package README.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/scene_placement/README.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/render_lock.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/scripts/gpu_spend_guard.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/README.md`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/scene_placement/README.md`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/render_lock.py`, `$HOME/workspace/BlueprintCapturePipeline/scripts/gpu_spend_guard.py`
 - **Validate (CPU):** Run `grep -n -i 'scene_placement\|provider_race\|warm_render\|render_lock\|spend_guard\|dry.render' README.md` and confirm non-empty after the edit. Confirm the relative link to src/blueprint_pipeline/scene_placement/README.md resolves (file exists). Confirm each module's claim wording matches its source docstring (e.g. warm_render_server.py header 'guarded on-GPU validation'; scene_placement/README.md 'no isaacsim, torch, google-genai, or GPU'). CPU only.
 
 - **Context:** These are the major new features the user explicitly listed. Undocumented spend-guard/provider-race code can be misread as proven live-provider capability, and an unlinked scene_placement README means the swappability contract is not discoverable from the top-level docs. scene_placement powers the dynamic stand-pose placement in the active G1 'open the refrigerator' lane. Verified: all six files exist; README grep returns empty; scene_placement/README.md documents the no-GPU import contract.
@@ -2420,7 +2420,7 @@ Constraints: Documentation-only. PLATFORM_CONTEXT/WORLD_MODEL_STRATEGY require p
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Docs / provenance / claims
 - **Goal:** Give the new lanes explicit rows in the strict readiness matrix using its own status and blocker-class vocabulary, so readiness is never implied by omission.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/READINESS_MATRIX.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/docs/READINESS_MATRIX.md`, `$HOME/workspace/BlueprintCapturePipeline/README.md`
 - **Validate (CPU):** Run `grep -n -i 'render\|g1\|isaac\|placement\|warm\|provider_race\|spend_guard' docs/READINESS_MATRIX.md` and confirm non-empty after the edit. Confirm each new row's Status is one of `ready`/`partial`/`blocked` and each blocker uses a defined class (`live-provider`/`hardware`/etc.) from the matrix header. Re-read the rows to confirm no CPU-only lane is overstated and no GPU-dependent lane is marked `ready`. CPU only.
 
 - **Context:** The whole point of READINESS_MATRIX is to fail-closed about unproven external runtime. Brand-new lanes that touch live GPU spend with zero matrix rows let readiness be implied by omission — the opposite of the strict contract the README promises. With cloud paused, marking the live/GPU-dependent lanes `partial` with a `live-provider`/`hardware` blocker and the CPU-hermetic lanes `ready` is the honest state. Verified: matrix grep returns nothing; its Status Rules and Blocker Class Rules are defined in the header (lines ~5-30); existing rows like `qualification` use `ready` and `zero-shot Cosmos` uses `blocked`.
@@ -2465,7 +2465,7 @@ Decide and implement the intended policy (keep it explicit and minimal):
 (a) a configurable count/severity of 'needs_more_evidence' capability checks (or any 'needs_more_evidence' check combined with metric_ready being False) forces status away from 'ready' (to 'risky' or 'not_ready_yet' per existing semantics); and/or gate 'ready' on metric_ready / absence of evidence_gaps. Read how 'ready' is currently produced upstream (qualification_record['readiness_state']) and how metric_ready is available to this function — thread it in if needed without changing call signatures used elsewhere unless you also update all callers.
 (b) either compute human_review_required from evidence (e.g. True whenever there are any blockers/evidence_gaps or status != 'ready'), or, if it is intentionally always-on, leave it True but add a clear comment documenting it as an invariant. Pick one and make the code self-explanatory.
 
-Do not regress the existing high-blocker downgrade (tests/test_qualification_coverage_edges.py:624-639) or hidden-zone risky path. Keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; readiness logic is secondary support, NOT a policy-success claim. Add/extend tests. This must satisfy /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Do not regress the existing high-blocker downgrade (tests/test_qualification_coverage_edges.py:624-639) or hidden-zone risky path. Keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; readiness logic is secondary support, NOT a policy-success claim. Add/extend tests. This must satisfy $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Add a test to tests/test_qualification_coverage_edges.py: a qualification_record with readiness_state='ready', a blocker_register containing ONLY medium 'needs_more_evidence' entries, and metric_ready False -> assert the decided status is NOT 'ready'. Add a second assertion on the human_review_required behavior you chose.
 
@@ -2492,7 +2492,7 @@ The chain in src/blueprint_pipeline/qualification.py encodes: a 'blocked' capabi
 
 Add a parametrized test in tests/test_qualification_coverage_edges.py over each capability check id produced by _build_capability_checks (read the function to confirm the exact ids; per the audit they are: clearance_precheck, reach_envelope_precheck, workcell_occupancy_analysis, choke_point_detection, occlusion_analysis, route_viability_hypotheses, coexistence_fit). For each id, construct the minimal geometry_evidence / route_graph / scope_record (and any other inputs _build_capability_checks consumes) that drives THAT specific check to status 'blocked', then run the real chain _build_capability_checks -> _build_blocker_register -> _build_readiness_decision and assert the decided status == 'not_ready_yet'. Prefer driving the inputs through the real builders rather than hand-building the blocker_register, so the test exercises the actual mapping. If a particular check cannot be independently driven to 'blocked' via inputs, document why in a comment and assert via the blocker_register path for that id only.
 
-Constraints: keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; readiness logic is support, NOT a policy-success claim. Do not modify production logic unless you find a check that cannot reach 'blocked' at all (in that case, surface it as a finding in your final message rather than silently changing thresholds). This must satisfy /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Constraints: keep world-model backends swappable; protect provenance, rights, privacy, and raw-capture truth; readiness logic is support, NOT a policy-success claim. Do not modify production logic unless you find a check that cannot reach 'blocked' at all (in that case, surface it as a finding in your final message rather than silently changing thresholds). This must satisfy $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Then run: .venv/bin/python -m pytest tests/test_qualification_coverage_edges.py -q and .venv/bin/python -m py_compile src/blueprint_pipeline/qualification.py
 ```
@@ -2519,7 +2519,7 @@ Change:
 1. Import/reference the shared hidden-zone constant in the orchestrator instead of the literal 0.35. Avoid creating an import cycle — check whether agent_runtime/orchestrator.py can import from qualification.py cleanly; if a direct import risks a cycle, hoist maximum_hidden_zone_bound into a small shared constants location both modules import, or expose a lightweight accessor. Keep the value identical (0.35).
 2. Give the 0.7 route-edge confidence cutoff a named, documented module-level constant (e.g. MINIMUM_ROUTE_EDGE_CONFIDENCE = 0.7) with a one-line comment on what it gates.
 
-Constraints: keep world-model backends swappable (do not couple modules more than needed; a shared constant is fine, a hard cross-module dependency chain is not); protect provenance, rights, privacy, and raw-capture truth; these thresholds gate review/readiness support, NOT policy-success claims. Add/extend tests. This must satisfy /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Constraints: keep world-model backends swappable (do not couple modules more than needed; a shared constant is fine, a hard cross-module dependency chain is not); protect provenance, rights, privacy, and raw-capture truth; these thresholds gate review/readiness support, NOT policy-success claims. Add/extend tests. This must satisfy $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Add an assertion in tests/test_agent_runtime_orchestrator_coverage.py that the orchestrator's hidden-zone threshold equals qualification._GENERIC_CAPABILITY_ENVELOPE['maximum_hidden_zone_bound'] (so a future edit to one is caught), plus a test that an edge with confidence just below MINIMUM_ROUTE_EDGE_CONFIDENCE is flagged and one just at/above is not.
 
@@ -2554,7 +2554,7 @@ Add tests that monkeypatch the side-effecting helpers — at minimum gate._run, 
 
 Separately add a guard test that, with all run legs monkeypatched OR by calling gate._pipeline_pytest_command() directly, asserts every pytest path in that list resolves to an existing file under the pipeline repo root (e.g. (pipeline_repo / path).is_file()). The current list is a hardcoded literal (lines ~91-102): tests/test_alpha_readiness.py, tests/test_qualification_alpha.py, tests/test_site_world_packaging.py, tests/test_storage_trigger.py, tests/test_webapp_sync.py, tests/test_world_model_candidate_parity.py — a renamed/removed test would make the gate silently skip coverage.
 
-Constraints: hermetic, no subprocess/GPU/cloud/xcode; keep world-model backends swappable; protect provenance, rights, privacy, raw-capture truth; gate output is a contract/support claim NOT a policy-success claim. This must satisfy /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Constraints: hermetic, no subprocess/GPU/cloud/xcode; keep world-model backends swappable; protect provenance, rights, privacy, raw-capture truth; gate output is a contract/support claim NOT a policy-success claim. This must satisfy $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Then run: .venv/bin/python -m pytest tests/test_external_alpha_launch_gate.py -q and .venv/bin/python -m py_compile scripts/run_external_alpha_launch_gate.py
 ```
@@ -2579,7 +2579,7 @@ src/blueprint_pipeline/agent_runtime/orchestrator.py run_agent_review (lines ~86
 
 Extend the fake-provider run_agent_review test (or add a new one) in tests/test_agent_runtime_orchestrator_coverage.py: build an on-disk capture fixture whose geometry_evidence has hidden_zone_bound > 0.35 (so _evidence_audit emits the hidden-zone high-severity gap with detail string 'Hidden-zone bound ... exceeds the readiness envelope.'). Run run_agent_review with the offline fake provider (override returns None so local-builders fire). Then assert the SAME gap detail string appears in: evidence_audit.json, agent_blocker_register.json, and at least one recapture_plan.json step — and ideally in agent_review_memo.md. Read src/blueprint_pipeline/agent_runtime/artifacts.py to confirm the exact artifact filenames and the on-disk layout run_agent_review writes, and how to load each. Assert by reading the written artifacts from the run output directory, not by re-deriving values in the test.
 
-Constraints: deterministic, offline, no GPU/cloud/LLM; keep world-model backends swappable; protect provenance, rights, privacy, raw-capture truth; reviewer artifacts are human-review support, NOT policy-success claims. This must satisfy /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Constraints: deterministic, offline, no GPU/cloud/LLM; keep world-model backends swappable; protect provenance, rights, privacy, raw-capture truth; reviewer artifacts are human-review support, NOT policy-success claims. This must satisfy $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Then run: .venv/bin/python -m pytest tests/test_agent_runtime_orchestrator_coverage.py -q and .venv/bin/python -m py_compile src/blueprint_pipeline/agent_runtime/orchestrator.py
 ```
@@ -2592,7 +2592,7 @@ Then run: .venv/bin/python -m pytest tests/test_agent_runtime_orchestrator_cover
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Warm render transport / object store
 - **Goal:** Make presign_warm_inbox_channel write a run-unique inbox key (or clear a pre-existing one) so a restarted pod resetting _last_seq=0 cannot re-claim an already-served job.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_wam_provider_object_store.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_wam_provider_object_store.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
 - **Validate (CPU):** python -m pytest tests/test_wam_provider_object_store.py tests/test_warm_render_server.py -q (add a presign_warm_inbox_channel test mirroring tests/test_wam_provider_object_store.py:37-121: assert it writes a run-unique inbox_key — or clears a pre-existing inbox object via delete_object — plus 0600 url files and status=completed; pair with a warm_render_server test driving SignedUrlJobSource with _last_seq reset to 0 and asserting a previously-served seq is NOT re-claimed when the inbox is run-scoped/drained). Also `python -m py_compile src/blueprint_pipeline/wam_provider_object_store.py src/blueprint_pipeline/warm_render_server.py`.
 
 - **Context:** The inbox half of the same stale/uniqueness class as the fixed output-key bug. A re-claimed job on the active 'open the refrigerator' warm lane means a duplicate paid render or a wrong-scenario render attributed to a new request — silent cross-run contamination, currently entirely untested. Files: src/blueprint_pipeline/wam_provider_object_store.py (presign_warm_inbox_channel 392, _job_key_component 71, output-path stale clear 280), src/blueprint_pipeline/warm_render_server.py (SignedUrlJobSource dedup 193). The output-key clear pattern to mirror is the delete_object at line 281. Test scaffolding: tests/test_wam_provider_object_store.py FakeClient (add put_object/delete_object/generate_presigned_url) + SimpleNamespace boto3 stub.
@@ -2617,7 +2617,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Warm render transport / object store
 - **Goal:** Give each --serve session a clean results area (per-session out subdir or explicit clear of warm_results + stale markers) so the cumulative output zip stops growing unbounded and stops carrying stale results/markers.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
 - **Validate (CPU):** python -m pytest tests/test_warm_render_server.py -q (add: pre-populate tmp_path/out/warm_results with a stale json and tmp_path/out/bootstrap.json; construct the new serve-session entrypoint/flag; assert the stale result is cleared or isolated under a prior-session subdir and the new session's results land in a clean namespace; assert the default constructor still does NOT clear, keeping existing tests green). Also `python -m py_compile src/blueprint_pipeline/warm_render_server.py`.
 
 - **Context:** Unbounded growth on the exact object the control plane polls turns the 'seconds per rerun' warm lane (the active 'open the refrigerator' seed lane) into progressively slower/costlier polls, and is the root enabler of both the stale-result and stale-marker correctness bugs. File: src/blueprint_pipeline/warm_render_server.py (SignedUrlJobSource.__init__ 171, publish_result 203; poll_result reads the zip at 246). Test scaffolding: tests/test_warm_render_server.py uses tmp_path + SignedUrlJobSource directly (see test_signed_url_job_source_publishes_result_into_out_dir at line 162).
@@ -2642,7 +2642,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** M · **Dimension:** Warm render transport / object store
 - **Goal:** Cover the warm inbox presign + serve-ready orchestration (currently zero tests) so every robustness fix has a regression net and the happy path is verified.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_wam_provider_object_store.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_job.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/tests/test_wam_provider_object_store.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_isaac_g1_kitchen_parity_job.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/wam_provider_object_store.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`
 - **Validate (CPU):** python -m pytest tests/test_wam_provider_object_store.py tests/test_isaac_g1_kitchen_parity_job.py -q (new presign_warm_inbox_channel completed+blocked tests pass; new _await_warm_serve_ready ready/timeout/bootstrap-phase-only tests pass). Also `python -m py_compile tests/test_wam_provider_object_store.py tests/test_isaac_g1_kitchen_parity_job.py`.
 
 - **Context:** This transport is what the paused GPU 'open the refrigerator' lane resumes on; the happy path itself is currently unverified, so a refactor or any of the staleness/TTL/marker fixes could break inbox presign or serve-ready detection with no signal. These are pure-transport functions, fully CPU-testable. Files: src/blueprint_pipeline/wam_provider_object_store.py (presign_warm_inbox_channel 392), src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py (_await_warm_serve_ready 424). Reusable scaffolding: FakeClient/SimpleNamespace boto3 stub at tests/test_wam_provider_object_store.py:50-83; fake-provider urlopen-returns-zip pattern at tests/test_isaac_g1_kitchen_parity_job.py:360-372.
@@ -2683,7 +2683,7 @@ In the BlueprintCapturePipeline repo (cwd = repo root), three modules each defin
 - src/blueprint_pipeline/scene_semantics.py defines `_DEFAULT_MODEL_CASCADE` (around line 234) as ['gemini-3-flash-preview', 'gemini-3.1-pro-preview', 'gemini-2.5-flash', 'gemini-2.5-pro'].
 - src/blueprint_pipeline/render_visual_qc.py (around line 30) uses 'gemini-3.1-pro-preview' as tier #2.
 - src/blueprint_pipeline/scene_placement/target_resolver.py (around lines 42-43) uses 'gemini-3-pro-preview' as tier #2.
-The documented canonical cascade (see /Users/nijelhunt_1/.claude/projects/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/memory/MEMORY.md 'Model cascade' line) is gemini-3-flash-preview -> gemini-3-pro-preview -> gemini-2.5-flash -> gemini-2.5-pro, i.e. 'gemini-3-pro-preview' (no '.1'). An invalid model id silently fails generate_content (caught by the broad `except Exception: continue`) and falls through, so a wrong id degrades the cascade with NO error surfaced.
+The documented canonical cascade (see `$HOME/.claude/projects/-Users-example-workspace-BlueprintCapturePipeline/memory/MEMORY.md` 'Model cascade' line) is gemini-3-flash-preview -> gemini-3-pro-preview -> gemini-2.5-flash -> gemini-2.5-pro, i.e. 'gemini-3-pro-preview' (no '.1'). An invalid model id silently fails generate_content (caught by the broad `except Exception: continue`) and falls through, so a wrong id degrades the cascade with NO error surfaced.
 
 Do this:
 1. Reconcile all three modules to ONE canonical second-tier id. Default to 'gemini-3-pro-preview' to match MEMORY.md and target_resolver.py UNLESS you find in-repo evidence (a comment, doc, or commit message) that 'gemini-3.1-pro-preview' is the intended id; if you keep '3.1', add a short code comment in scene_semantics.py and render_visual_qc.py explaining why it intentionally differs from the documented cascade, and note that confirming whether 'gemini-3.1-pro-preview' is a REAL served model id needs a real API key / Google docs (flag for human verification, do not call the API).
@@ -3119,7 +3119,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Wire `ruff check` into .github/workflows/ci.yml and fix the 25 currently-ungated lint errors so dead imports/style drift can't accumulate.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.github/workflows/ci.yml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_simulator_beta_readiness.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/.github/workflows/ci.yml`, `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_simulator_beta_readiness.py`
 - **Validate (CPU):** ruff check src tests scripts (exit 0, zero errors); grep 'ruff' .github/workflows/ci.yml shows the new step; python -m pytest -q -o addopts='' still passes after the fixes.
 
 - **Context:** Lint is configured but unenforced, so unused imports and style violations accumulate silently. Adding ruff to CI is the single highest-leverage CPU-only quality gate available and costs nothing. Verified: ci.yml has only checkout/install-uv/uv-sync/pytest steps; ruff reports 'Found 25 errors. [*] 12 fixable'.
@@ -3146,7 +3146,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Track the 695KB uv.lock and have CI run `uv sync --frozen --extra dev` so the CPU test environment is deterministic and can't silently drift.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.gitignore`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/uv.lock`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.github/workflows/ci.yml`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/.gitignore`, `$HOME/workspace/BlueprintCapturePipeline/uv.lock`, `$HOME/workspace/BlueprintCapturePipeline/.github/workflows/ci.yml`
 - **Validate (CPU):** grep -c 'uv.lock' .gitignore returns 0; git ls-files | grep -x uv.lock returns uv.lock; grep 'frozen\|locked' .github/workflows/ci.yml shows the new flag; uv sync --frozen --extra dev resolves with no errors; python -m pytest -q -o addopts='' passes.
 
 - **Context:** Verified: `grep -n uv.lock .gitignore` -> line 81; uv.lock exists on disk (695157 bytes) but is untracked; ci.yml uses `uv sync --extra dev`. Committing the lock + `--frozen` makes the CPU-only test environment deterministic at zero cost and prevents transitive-bump drift between local and CI. Note ordering: if pyproject extras change in the venv-sync/usd-core tasks, regenerate uv.lock so the committed lock reflects them.
@@ -3173,7 +3173,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P1 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Add output/, robot_eval_jobs/, policy_endpoint_setups/, .local_runs/, local_runs_worldlabs/, and tools/splat_render/node_modules/ to .gcloudignore so a gcloud deploy doesn't upload large run data (which is provenance/raw-capture-adjacent).
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.gcloudignore`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.gitignore`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/main.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/functions/storage_trigger.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/.gcloudignore`, `$HOME/workspace/BlueprintCapturePipeline/.gitignore`, `$HOME/workspace/BlueprintCapturePipeline/main.py`, `$HOME/workspace/BlueprintCapturePipeline/functions/storage_trigger.py`
 - **Validate (CPU):** For each of output/ robot_eval_jobs/ policy_endpoint_setups/ .local_runs/ tools/splat_render/node_modules/ : `grep -F '<path>' .gcloudignore` returns a match; optionally `gcloud meta list-files-for-upload . | grep -E 'output/|robot_eval_jobs/|node_modules/'` returns nothing; python -m py_compile main.py functions/storage_trigger.py succeeds.
 
 - **Context:** Verified .gcloudignore contents: it lists .git, .venv, docs/, skillpacks/, tests/, local_runs_worldlabs/, local_runs/, runs/ — but omits output/, robot_eval_jobs/, policy_endpoint_setups/, .local_runs/, and tools/splat_render/node_modules/. An accidental gcloud deploy uploading 15GB+ of binary run artifacts is slow, may fail, and could push raw-capture-adjacent run data into a deploy bundle. The dirs are already gitignored; .gcloudignore should mirror that.
@@ -3265,7 +3265,7 @@ In the BlueprintCapturePipeline repo (cwd = repo root), add a deterministic test
 
 - **Priority:** P2 · **Effort:** M · **Dimension:** Main 11-stage pipeline
 - **Goal:** Validate object_geometry's real geometry math against actual trimesh/scipy, not just the hand-rolled fake stub.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_geometry_stage.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_object_geometry_stage_coverage_edges.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/object_geometry_stage.py`, `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_object_geometry_stage_coverage_edges.py`
 - **Validate (CPU):** .venv/bin/pip install trimesh scipy && .venv/bin/python -m py_compile src/blueprint_pipeline/object_geometry_stage.py && .venv/bin/python -m pytest tests/test_object_geometry_stage_coverage_edges.py -q
 
 - **Context:** All collision geometry and support-surface inference in src/blueprint_pipeline/object_geometry_stage.py is pure-CPU math currently unvalidated against the real library locally. With GPU/splat paused for the active 'open the refrigerator' G1 lane, every kitchen asset's collision geometry flows through this code, so a real-vs-fake divergence would only surface on a GPU image. pyproject.toml gets a dev/test extra; test file: tests/test_object_geometry_stage_coverage_edges.py.
@@ -3293,17 +3293,17 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only (trimesh and 
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Main 11-stage pipeline
 - **Goal:** Replace non-existent swap_orchestrator.py / nurec_worker.py entries with the real orchestrator and geometry modules.
-- **Files:** `/Users/nijelhunt_1/.claude/projects/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/memory/MEMORY.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/capture_orchestrator.py`
-- **Validate (CPU):** ls src/blueprint_pipeline/swap_orchestrator.py src/blueprint_pipeline/nurec_worker.py 2>&1 | grep -q 'No such file' && grep -n 'def run_capture_pipeline' src/blueprint_pipeline/capture_orchestrator.py && grep -n 'capture_orchestrator.py' /Users/nijelhunt_1/.claude/projects/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/memory/MEMORY.md
+- **Files:** `$HOME/.claude/projects/-Users-example-workspace-BlueprintCapturePipeline/memory/MEMORY.md`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/capture_orchestrator.py`
+- **Validate (CPU):** ls src/blueprint_pipeline/swap_orchestrator.py src/blueprint_pipeline/nurec_worker.py 2>&1 | grep -q 'No such file' && grep -n 'def run_capture_pipeline' src/blueprint_pipeline/capture_orchestrator.py && grep -n 'capture_orchestrator.py' "$HOME/.claude/projects/-Users-example-workspace-BlueprintCapturePipeline/memory/MEMORY.md"
 
-- **Context:** Accurate entry-point docs are a prerequisite for reliable CPU-first validation. MEMORY.md currently points reviewers at non-existent files (swap_orchestrator.py / nurec_worker.py), which already misdirected this audit pass and risks tests being written against the wrong module. The real orchestrator is src/blueprint_pipeline/capture_orchestrator.py:run_capture_pipeline. File to edit: /Users/nijelhunt_1/.claude/projects/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/memory/MEMORY.md.
+- **Context:** Accurate entry-point docs are a prerequisite for reliable CPU-first validation. MEMORY.md currently points reviewers at non-existent files (swap_orchestrator.py / nurec_worker.py), which already misdirected this audit pass and risks tests being written against the wrong module. The real orchestrator is src/blueprint_pipeline/capture_orchestrator.py:run_capture_pipeline. File to edit: `$HOME/.claude/projects/-Users-example-workspace-BlueprintCapturePipeline/memory/MEMORY.md`.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
 ```text
 In the BlueprintCapturePipeline repo (cwd = repo root), correct documentation drift in the project memory file.
 
-Background: The memory file at /Users/nijelhunt_1/.claude/projects/-Users-nijelhunt-1-workspace-BlueprintCapturePipeline/memory/MEMORY.md has a 'Key Files' section pointing to src/blueprint_pipeline/swap_orchestrator.py ('Main orchestrator') and src/blueprint_pipeline/nurec_worker.py ('NuRec reconstruction worker'). Neither file exists (verified: `ls` returns ENOENT for both). The real orchestrator is src/blueprint_pipeline/capture_orchestrator.py:run_capture_pipeline, and NuRec/geometry is handled by src/blueprint_pipeline/geometry_stage.py + src/blueprint_pipeline/geometry_sources.py (plus a synthesis/ package). This drift misdirects every audit/onboarding pass.
+Background: The memory file at `$HOME/.claude/projects/-Users-example-workspace-BlueprintCapturePipeline/memory/MEMORY.md` has a 'Key Files' section pointing to src/blueprint_pipeline/swap_orchestrator.py ('Main orchestrator') and src/blueprint_pipeline/nurec_worker.py ('NuRec reconstruction worker'). Neither file exists (verified: `ls` returns ENOENT for both). The real orchestrator is src/blueprint_pipeline/capture_orchestrator.py:run_capture_pipeline, and NuRec/geometry is handled by src/blueprint_pipeline/geometry_stage.py + src/blueprint_pipeline/geometry_sources.py (plus a synthesis/ package). This drift misdirects every audit/onboarding pass.
 
 Task:
 1. Confirm the facts: `ls src/blueprint_pipeline/swap_orchestrator.py src/blueprint_pipeline/nurec_worker.py` (both ENOENT) and `grep -n 'def run_capture_pipeline' src/blueprint_pipeline/capture_orchestrator.py` (present). Also confirm geometry_stage.py and geometry_sources.py exist.
@@ -3461,7 +3461,7 @@ Constraints: keep world-model backends swappable; protect provenance/rights/priv
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** provider_race orchestrator
 - **Goal:** Cover the attempts = ceil(marker_timeout/poll_interval) edge cases so an off-by-one can't reap a healthy pod one poll early or add a paid extra wait.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/tests/test_provider_race.py`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
 - **Validate (CPU):** python -m pytest tests/test_provider_race.py -k 'poll_budget or boundary' -q ; python -m pytest tests/test_provider_race.py -q ; python -m py_compile tests/test_provider_race.py
 
 - **Context:** The G1 job uses generous 900s marker_timeouts (isaac_g1_kitchen_parity_job.py default marker_timeout=900), so the discretization math directly governs both cost and the false-dud rate for the active 'open the refrigerator' render lane. An off-by-one would either reap a pod one poll too early (false dud -> wrongly trip a healthy provider) or do an extra paid wait. Currently untested.
@@ -3484,7 +3484,7 @@ Validation: python -m pytest tests/test_provider_race.py -k 'poll_budget or boun
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** provider_race orchestrator
 - **Goal:** Record, in checked-in docs, that provider_race is built-but-dormant (or, once wired, how to enable it) so the next operator doesn't assume the sequential-failover stall is already fixed.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/docs/CHANGELOG.md`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/provider_race.py`
 - **Validate (CPU):** python -m pytest --collect-only -q ; python -m py_compile src/blueprint_pipeline/provider_race.py
 
 - **Context:** Right now the dormant status is recorded only in private memory; a checked-in doc prevents someone from assuming the sequential RunPod->Vast failover stall (which still affects the active 'open the refrigerator' G1 render lane) is already fixed when it is not. Best done LAST so it reflects whatever wiring actually landed.
@@ -3642,10 +3642,10 @@ When done run: `python3 -m pytest tests/test_isaac_particlefield_render_job.py -
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Dev env & deps
 - **Goal:** Document that pytest MUST run from .venv and explain the dual blueprint_contracts source (pinned git commit vs sibling checkout) so contributors stop seeing false skips/errors.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/tests/conftest.py`, `$HOME/workspace/BlueprintCapturePipeline/pyproject.toml`, `$HOME/workspace/BlueprintCapturePipeline/README.md`
 - **Validate (CPU):** `.venv/bin/python -m pytest --collect-only -q` collects ~2491 with no errors; the docs now name `.venv/bin/python -m pytest` as the canonical command. `.venv/bin/python -c 'import blueprint_contracts; print(blueprint_contracts.__file__)'` resolves from the pinned/installed source. No GPU, no cloud.
 
-- **Context:** Reproducible pytest is the baseline CPU validation. The audit confirmed 2491 tests collect cleanly under .venv but the docs never say which interpreter — and the only interpreter with pxr (system 3.9) is precisely the one that cannot import the contracts/project. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/conftest.py, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml, /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md.
+- **Context:** Reproducible pytest is the baseline CPU validation. The audit confirmed 2491 tests collect cleanly under .venv but the docs never say which interpreter — and the only interpreter with pxr (system 3.9) is precisely the one that cannot import the contracts/project. Files: $HOME/workspace/BlueprintCapturePipeline/tests/conftest.py, $HOME/workspace/BlueprintCapturePipeline/pyproject.toml, $HOME/workspace/BlueprintCapturePipeline/README.md.
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -3666,10 +3666,10 @@ Constraints: Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Dev env & deps
 - **Goal:** Delete the unreferenced hand-built Python 3.13 boto3-only venv once boto3 is in the canonical interpreter, so it stops masquerading as a real environment.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/runpod_launch_venv/pyvenv.cfg`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/output/runpod_launch_venv/pyvenv.cfg`
 - **Validate (CPU):** `grep -rn 'runpod_launch_venv' --include='*.py' --include='*.sh' --include='*.md' .` returns no code references; after the boto3-in-dev task, `.venv/bin/python -m blueprint_pipeline.wam_provider_object_store --help` works without the side venv; `ls output/runpod_launch_venv` reports no such directory after removal. No GPU, no cloud.
 
-- **Context:** Orphan venvs that no code references are a reproducibility hazard: this one encodes an undocumented manual fix and shares boto3 1.43.36 with .venv, so it can be mistaken for the project environment. Removing it forces boto3 to be solved in pyproject. Depends on the boto3-in-dev task. Files: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/runpod_launch_venv/pyvenv.cfg (and the enclosing directory).
+- **Context:** Orphan venvs that no code references are a reproducibility hazard: this one encodes an undocumented manual fix and shares boto3 1.43.36 with .venv, so it can be mistaken for the project environment. Removing it forces boto3 to be solved in pyproject. Depends on the boto3-in-dev task. Files: $HOME/workspace/BlueprintCapturePipeline/output/runpod_launch_venv/pyvenv.cfg (and the enclosing directory).
 
 <details><summary>Prompt (copy into a fresh session)</summary>
 
@@ -3708,7 +3708,7 @@ Add a lightweight, non-invasive guard or documentation so the interpreter requir
 - Preferred: in scripts/run_external_alpha_launch_gate.py and scripts/run_paid_marketplace_launch_gate.py, before invoking the pipeline pytest leg, check that the interpreter that will run pytest can import the required runtime deps (e.g. import 'PIL'); if not, print a clear, actionable message naming the .venv requirement (e.g. 'Run this gate with the project .venv interpreter: .venv/bin/python -m scripts/...; system python lacks Pillow and other runtime deps') and exit non-zero, instead of letting pytest emit a confusing collection error. Keep it a guard/diagnostic only — do NOT change which tests run or alter gate pass/fail semantics for a correctly-provisioned environment.
 - Also add a short note in pyproject.toml comments or the gate scripts' module docstrings documenting the .venv requirement.
 
-Constraints: do not modify production import chains or robot_initial_observation; keep world-model backends swappable; protect provenance, rights, privacy, raw-capture truth; gate output is support, NOT a policy-success claim. This must satisfy /Users/nijelhunt_1/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
+Constraints: do not modify production import chains or robot_initial_observation; keep world-model backends swappable; protect provenance, rights, privacy, raw-capture truth; gate output is support, NOT a policy-success claim. This must satisfy $HOME/workspace/Blueprint-WebApp/docs/autonomous-loop-evidence-checklist-2026-05-03.md before claiming done.
 
 Reproduce the problem first: /usr/bin/python3 -m pytest tests/test_alpha_readiness.py --collect-only (should fail with No module named 'PIL'); contrast: .venv/bin/python -m pytest tests/test_alpha_readiness.py --collect-only (should collect). Then verify your guard message fires under the missing-deps interpreter and does NOT fire under .venv.
 
@@ -3723,7 +3723,7 @@ Then run: .venv/bin/python -m pytest tests/test_external_alpha_launch_gate.py -q
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Warm render transport / object store
 - **Goal:** Reduce poll_result egress/latency by adding If-None-Match / If-Modified-Since conditional GET (or at least exponential backoff) so it stops re-downloading the full cumulative output zip ~60x per job.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/warm_render_server.py`, `$HOME/workspace/BlueprintCapturePipeline/tests/test_warm_render_server.py`
 - **Validate (CPU):** python -m pytest tests/test_warm_render_server.py -q (add: wrap http_get in a call counter; assert poll_result issues fewer full downloads via backoff, or sends an If-None-Match/conditional request and treats a 304-equivalent as 'keep waiting' without re-parsing; assert the existing reads-from-output-zip and times-out-when-absent tests still pass). Also `python -m py_compile src/blueprint_pipeline/warm_render_server.py`.
 
 - **Context:** On the active 'open the refrigerator' warm lane the whole point is cheap, fast reruns; re-downloading a growing multi-artifact zip ~60x per job inflates poll latency and egress, eroding the warm-pod cost advantage. It compounds with the no-cleanup issue and is trivially fixable. File: src/blueprint_pipeline/warm_render_server.py (poll_result 237-252, _http_get_bytes 151). Test scaffolding: tests/test_warm_render_server.py wraps http_get in lambdas and drives clock/sleep (see test_warm_pool_client_poll_result_reads_from_output_zip line 184).
@@ -3972,7 +3972,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** git rm --cached the vendored node_modules so it stops bloating clones, diffs, and code search, while keeping files on disk and restorable via npm ci.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.gitignore`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/tools/splat_render/package-lock.json`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/.gitignore`, `$HOME/workspace/BlueprintCapturePipeline/tools/splat_render/package-lock.json`
 - **Validate (CPU):** git rm -r --cached tools/splat_render/node_modules; git status --short | grep -c '^D' (~1693 deletions staged); ls tools/splat_render/node_modules >/dev/null (files still on disk); git ls-files | grep -x tools/splat_render/package-lock.json (present); python -m pytest -q -o addopts='' unaffected.
 
 - **Context:** Verified: `git ls-files | grep -c tools/splat_render/node_modules` = 1693; total tracked = 2786; both tools/splat_render/package.json and package-lock.json exist. Vendored node_modules dominates the file count, pollutes diffs/search, and can carry transitive-dependency CVEs that look like first-party code. .gitignore already declares intent to ignore it — the tracking is a pre-ignore leftover.
@@ -3999,7 +3999,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Untrack the committed run dump at the repo root that leaks a machine-local absolute path and a transient 'blocked' state.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/wam_provider_output.json`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.gitignore`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/wam_provider_output.json`, `$HOME/workspace/BlueprintCapturePipeline/.gitignore`
 - **Validate (CPU):** grep -rl wam_provider_output.json src tests scripts (returns nothing referencing it as a fixture); git rm --cached wam_provider_output.json; git status --short shows it staged for deletion / untracked; grep -F 'wam_provider_output.json' .gitignore returns a match; python -m pytest -q -o addopts='' passes.
 
 - **Context:** Verified: `git ls-files | grep wam_provider_output.json` -> tracked at root. The run dirs output/, runs/, robot_eval_jobs/ are correctly gitignored; this file is the lone committed run-dump leak. It leaks a machine-specific absolute path and a meaningless transient 'blocked' state, and sets a bad precedent for committing run dumps.
@@ -4007,7 +4007,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 <details><summary>Prompt (copy into a fresh session)</summary>
 
 ```text
-In the BlueprintCapturePipeline repo (cwd = repo root), wam_provider_output.json is tracked at the repo root (committed in 91ed947c). It is generated runtime output: schema oscar_wam_provider_command_adapter.v1, status='blocked' with blocker 'blocked_missing_BLUEPRINT_WAM_ROLLOUT_INPUT', and an absolute machine-local work_dir under /Users/nijelhunt_1/workspace/.../robot_eval_jobs/. It is output, not source.
+In the BlueprintCapturePipeline repo (cwd = repo root), wam_provider_output.json is tracked at the repo root (committed in 91ed947c). It is generated runtime output: schema oscar_wam_provider_command_adapter.v1, status='blocked' with blocker 'blocked_missing_BLUEPRINT_WAM_ROLLOUT_INPUT', and an absolute machine-local work_dir under $HOME/workspace/.../robot_eval_jobs/. It is output, not source.
 
 Do this:
 1. Confirm no source/test references it: `grep -rl wam_provider_output.json src tests scripts` should return nothing (it is a default output filename, not a fixture). If something writes to it as a default path, leave the code but ensure the default lands in an already-gitignored run dir.
@@ -4025,7 +4025,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Replace the 7 self-described-legacy markdown notes under agent_skills/ with one-line pointers (or delete them) so the only source of truth is skillpacks/industrial_readiness/skills/.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/agent_skills/README.md`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/agent_skills`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/skillpacks/industrial_readiness/skills`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/agent_skills/README.md`, `$HOME/workspace/BlueprintCapturePipeline/agent_skills`, `$HOME/workspace/BlueprintCapturePipeline/skillpacks/industrial_readiness/skills`
 - **Validate (CPU):** For each file, `diff agent_skills/<name>.md skillpacks/industrial_readiness/skills/<name>/SKILL.md` shows divergence (justifying removal); after the change either the files are git-removed or are <=2 lines pointing to the canonical path; grep -rl 'agent_skills/' src tests scripts returns nothing; python -m pytest -q -o addopts='' passes.
 
 - **Context:** Verified: agent_skills/README.md declares the files legacy and names skillpacks/industrial_readiness/skills/ as canonical; that skillpack dir contains all the corresponding skills (blocker_taxonomist, capability_envelope_writer, evidence_auditor, intake_normalizer, readiness_report_writer, recapture_planner, standards_retriever, plus more). Stale duplicated docs drift from the canonical skillpack and confuse human and agent readers. This is the notes-drift-vs-reality item: the notes say 'legacy' but the files are still full-content duplicates.
@@ -4052,7 +4052,7 @@ Do NOT launch any GPU or paid cloud pod; this is CPU/no-spend only.
 
 - **Priority:** P2 · **Effort:** S · **Dimension:** Catch-all / completeness
 - **Goal:** Add a gitleaks (or trufflehog) CI step so the verified-clean secrets posture stays clean and the two tracked .env.example files are guarded against ever gaining a real value.
-- **Files:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.github/workflows/ci.yml`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/configs/native_runtime_vast.env.example`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/deploy/systemd/pipeline-control-plane.env.example`, `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/model_access_env.py`
+- **Files:** `$HOME/workspace/BlueprintCapturePipeline/.github/workflows/ci.yml`, `$HOME/workspace/BlueprintCapturePipeline/configs/native_runtime_vast.env.example`, `$HOME/workspace/BlueprintCapturePipeline/deploy/systemd/pipeline-control-plane.env.example`, `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/model_access_env.py`
 - **Validate (CPU):** git ls-files | grep -E '\.env' returns only the two .example files; `grep -riE 'sk-[A-Za-z0-9]{20}|hf_[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|-----BEGIN' $(git ls-files)` returns nothing; the new ci.yml step is present and (if gitleaks is installed) a local `gitleaks detect --no-banner` exits 0.
 
 - **Context:** The dimension explicitly asks to verify no secrets in repo/logs and that ~/.blueprint-secrets is file-based — all confirmed clean. The one place to keep watching is the two tracked .env.example files, which must stay placeholder-only. A CPU-only gitleaks/trufflehog CI step provides ongoing assurance at zero spend and converts a one-time manual audit into a durable guard.

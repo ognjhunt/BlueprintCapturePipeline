@@ -31,16 +31,22 @@ DEFAULT_SAM3_MODEL_REF = "sam3.pt"
 SAM3_PROVIDER_KIND_ENV = "BLUEPRINT_WAM_SAM3_PROVIDER_KIND"
 SAM3_TRANSFORMERS_ENV = "BLUEPRINT_WAM_ALLOW_SAM3_TRANSFORMERS_PROVIDER"
 SAM3_HF_MODEL_ENV = "BLUEPRINT_WAM_SAM3_HF_MODEL_ID"
+SAM3_HF_REVISION_ENV = "BLUEPRINT_WAM_SAM3_HF_MODEL_REVISION"
 DEFAULT_SAM3_HF_MODEL_ID = "facebook/sam3"
+DEFAULT_SAM3_HF_MODEL_REVISION = "3c879f39826c281e95690f02c7821c4de09afae7"
 DEPTH_COMMAND_ENV = "BLUEPRINT_WAM_DEPTH_PROVIDER_COMMAND"
 AUTO_DEPTH_ENV = "BLUEPRINT_ALLOW_WAM_AUTO_DEPTH_PROVIDER"
 DEPTH_PROVIDER_KIND_ENV = "BLUEPRINT_WAM_DEPTH_PROVIDER_KIND"
 DEPTH_MODEL_ENV = "BLUEPRINT_WAM_DEPTH_MODEL_ID"
+DEPTH_MODEL_REVISION_ENV = "BLUEPRINT_WAM_DEPTH_MODEL_REVISION"
 DEFAULT_DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+DEFAULT_DEPTH_MODEL_REVISION = "5426e4f0f36572d16453bbda7a8389317b1bef99"
 AUTO_DA3_ENV = "BLUEPRINT_ALLOW_WAM_AUTO_DA3_PROVIDER"
 DA3_MODEL_ENV = "BLUEPRINT_WAM_DA3_MODEL_ID"
+DA3_MODEL_REVISION_ENV = "BLUEPRINT_WAM_DA3_MODEL_REVISION"
 DA3_PROCESS_RES_ENV = "BLUEPRINT_WAM_DA3_PROCESS_RES"
 DEFAULT_DA3_MODEL_ID = "depth-anything/DA3-BASE"
+DEFAULT_DA3_MODEL_REVISION = "f4a6c9b3c95e41c82048423d3493a81ec3fa810e"
 SAM3_CONFIDENCE_ENV = "BLUEPRINT_WAM_SAM3_CONFIDENCE"
 SAM3_DEVICE_ENV = "BLUEPRINT_WAM_SAM3_DEVICE"
 DA3_DEVICE_ENV = "BLUEPRINT_WAM_DA3_DEVICE"
@@ -470,6 +476,9 @@ def _run_transformers_sam3_provider(
     job_dir: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     model_id = _string(os.environ.get(SAM3_HF_MODEL_ENV)) or DEFAULT_SAM3_HF_MODEL_ID
+    model_revision = (
+        _string(os.environ.get(SAM3_HF_REVISION_ENV)) or DEFAULT_SAM3_HF_MODEL_REVISION
+    )
     confidence_threshold = max(0.0, min(1.0, _float_env(SAM3_CONFIDENCE_ENV, 0.05)))
     device_name = _select_torch_device(SAM3_DEVICE_ENV)
     status = {
@@ -486,6 +495,8 @@ def _run_transformers_sam3_provider(
         "transformers_provider_enabled": _truthy(os.environ.get(SAM3_TRANSFORMERS_ENV)),
         "model_id_env": SAM3_HF_MODEL_ENV,
         "model_id": model_id,
+        "model_revision": model_revision,
+        "model_remote_code_trusted": False,
         "hf_token_present": bool(_hf_token_value()),
         "module_transformers_available": _module_available("transformers"),
         "runtime_package": None,
@@ -497,6 +508,11 @@ def _run_transformers_sam3_provider(
         status["blockers"].append("sam3_transformers_provider_not_enabled")
     if not status["module_transformers_available"]:
         status["blockers"].append("sam3_transformers_package_missing")
+    if (
+        model_id != DEFAULT_SAM3_HF_MODEL_ID
+        or model_revision != DEFAULT_SAM3_HF_MODEL_REVISION
+    ):
+        status["blockers"].append("sam3_model_revision_not_approved")
     source_frame = Path(_string(request.get("source_generated_frame_path"))).expanduser()
     if not source_frame.is_file():
         status["blockers"].append("source_generated_frame_missing_for_sam3")
@@ -511,7 +527,12 @@ def _run_transformers_sam3_provider(
         status["runtime_class"] = "Sam3Model/Sam3Processor"
         image = Image.open(source_frame).convert("RGB")
         token = _hf_token_value()
-        load_kwargs = {"token": token} if token else {}
+        load_kwargs = {
+            "revision": model_revision,
+            "trust_remote_code": False,
+        }
+        if token:
+            load_kwargs["token"] = token
         model = Sam3Model.from_pretrained(model_id, **load_kwargs).to(device_name)
         processor = Sam3Processor.from_pretrained(model_id, **load_kwargs)
         objects: list[dict[str, Any]] = []
@@ -762,11 +783,16 @@ def _run_transformers_depth_provider(
     job_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     model_id = _string(os.environ.get(DEPTH_MODEL_ENV)) or DEFAULT_DEPTH_MODEL_ID
+    model_revision = (
+        _string(os.environ.get(DEPTH_MODEL_REVISION_ENV)) or DEFAULT_DEPTH_MODEL_REVISION
+    )
     status: dict[str, Any] = {
         "provider": "depth",
         "kind": "transformers_depth_anything_v2",
         "ran": False,
         "model_id": model_id,
+        "model_revision": model_revision,
+        "model_remote_code_trusted": False,
         "auto_provider_env": AUTO_DEPTH_ENV,
         "auto_provider_enabled": _truthy(os.environ.get(AUTO_DEPTH_ENV)),
         "transformers_available": _module_available("transformers"),
@@ -778,6 +804,9 @@ def _run_transformers_depth_provider(
     if not status["transformers_available"]:
         status["blockers"].append("transformers_depth_provider_package_missing")
         return {}, status
+    if model_id != DEFAULT_DEPTH_MODEL_ID or model_revision != DEFAULT_DEPTH_MODEL_REVISION:
+        status["blockers"].append("depth_model_revision_not_approved")
+        return {}, status
     source_frame, blockers = _source_frame_path(request, "depth")
     if blockers:
         status["blockers"].extend(blockers)
@@ -785,7 +814,12 @@ def _run_transformers_depth_provider(
     try:
         from transformers import pipeline
 
-        pipe = pipeline("depth-estimation", model=model_id)
+        pipe = pipeline(
+            "depth-estimation",
+            model=model_id,
+            revision=model_revision,
+            trust_remote_code=False,
+        )
         output = pipe(Image.open(source_frame).convert("RGB"))
         depth_image = output.get("depth")
         if depth_image is None:
@@ -835,6 +869,7 @@ def _run_da3_depth_provider(
     job_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     model_id = _string(os.environ.get(DA3_MODEL_ENV)) or DEFAULT_DA3_MODEL_ID
+    model_revision = _string(os.environ.get(DA3_MODEL_REVISION_ENV)) or DEFAULT_DA3_MODEL_REVISION
     process_res = max(32, _int_env(DA3_PROCESS_RES_ENV, 504))
     device_name = _select_torch_device(DA3_DEVICE_ENV)
     status: dict[str, Any] = {
@@ -842,6 +877,8 @@ def _run_da3_depth_provider(
         "kind": "depth_anything_3",
         "ran": False,
         "model_id": model_id,
+        "model_revision": model_revision,
+        "model_remote_code_trusted": False,
         "device": device_name,
         "device_env": DA3_DEVICE_ENV,
         "process_res": process_res,
@@ -859,6 +896,9 @@ def _run_da3_depth_provider(
     if not status["depth_anything_3_available"]:
         status["blockers"].append("da3_depth_provider_package_missing")
         return {}, status
+    if model_id != DEFAULT_DA3_MODEL_ID or model_revision != DEFAULT_DA3_MODEL_REVISION:
+        status["blockers"].append("da3_model_revision_not_approved")
+        return {}, status
     source_frame, blockers = _source_frame_path(request, "depth")
     if blockers:
         status["blockers"].extend(blockers)
@@ -867,9 +907,14 @@ def _run_da3_depth_provider(
         import numpy as np
         import torch
         from depth_anything_3.api import DepthAnything3
+        from huggingface_hub import snapshot_download
 
         device = torch.device(device_name)
-        model = DepthAnything3.from_pretrained(model_id).to(device=device)
+        model_path = snapshot_download(
+            repo_id=model_id,
+            revision=model_revision,
+        )
+        model = DepthAnything3.from_pretrained(model_path).to(device=device)
         prediction = model.inference([str(source_frame)], process_res=process_res)
         depth = np.asarray(prediction.depth[0], dtype=np.float32)
         finite = depth[np.isfinite(depth)]
@@ -1326,6 +1371,12 @@ def _provider_readiness_snapshot() -> dict[str, Any]:
             "transformers_provider_enabled": _truthy(os.environ.get(SAM3_TRANSFORMERS_ENV)),
             "hf_model_env": SAM3_HF_MODEL_ENV,
             "hf_model_id": _string(os.environ.get(SAM3_HF_MODEL_ENV)) or DEFAULT_SAM3_HF_MODEL_ID,
+            "hf_model_revision_env": SAM3_HF_REVISION_ENV,
+            "hf_model_revision": (
+                _string(os.environ.get(SAM3_HF_REVISION_ENV))
+                or DEFAULT_SAM3_HF_MODEL_REVISION
+            ),
+            "remote_code_trusted": False,
             "hf_token_env_presence": _redacted_env_presence(HF_TOKEN_ENVS),
             "hf_token_file_env_presence": _redacted_file_env_presence(HF_TOKEN_FILE_ENVS),
         },
@@ -1336,6 +1387,15 @@ def _provider_readiness_snapshot() -> dict[str, Any]:
             "depth_command_configured": _env_present(DEPTH_COMMAND_ENV),
             "depth_provider_kind": _string(os.environ.get(DEPTH_PROVIDER_KIND_ENV)) or None,
             "da3_auto_provider_enabled": _truthy(os.environ.get(AUTO_DA3_ENV)),
+            "depth_model_revision": (
+                _string(os.environ.get(DEPTH_MODEL_REVISION_ENV))
+                or DEFAULT_DEPTH_MODEL_REVISION
+            ),
+            "da3_model_revision": (
+                _string(os.environ.get(DA3_MODEL_REVISION_ENV))
+                or DEFAULT_DA3_MODEL_REVISION
+            ),
+            "remote_code_trusted": False,
         },
         "pose": {
             "pose_command_configured": _env_present(POSE_COMMAND_ENV),

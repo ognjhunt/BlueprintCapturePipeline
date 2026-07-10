@@ -9,7 +9,10 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .camera_geometry_validation import validate_camera_calibration
 from .common import read_json_any, utc_now_iso, write_json
+from .object_index_artifacts import resolve_current_object_index_artifacts
+from .robot_kinematics import solve_robot_forward_kinematics
 
 
 SCHEMA_VERSION = "eval_ready_task_grounding.v1"
@@ -175,21 +178,20 @@ def _read_optional_mapping(path: Path) -> dict[str, Any]:
 
 
 def _read_object_index(capture_root: Path) -> tuple[list[dict[str, Any]], Path | None]:
-    candidates = [
-        capture_root / "raw" / "object_index.json",
-        capture_root / "raw" / "arkit" / "objects" / "index.json",
-        capture_root / "object_index.json",
-    ]
-    for path in candidates:
-        if not path.is_file():
-            continue
-        payload = read_json_any(path)
-        raw_objects = payload.get("objects") if isinstance(payload, Mapping) else payload
-        if not isinstance(raw_objects, list):
-            return [], path
-        objects = [dict(item) for item in raw_objects if isinstance(item, Mapping)]
-        return objects, path
+    resolved = resolve_current_object_index_artifacts(capture_root)
+    path_text = str(resolved.get("object_index_path") or "").strip()
+    if path_text:
+        return [dict(item) for item in resolved.get("objects", [])], Path(path_text)
     return [], None
+
+
+def _current_object_index_keyframe(capture_root: Path) -> Path | None:
+    resolved = resolve_current_object_index_artifacts(capture_root)
+    artifacts_root = str(resolved.get("artifacts_root") or "").strip()
+    if not artifacts_root:
+        return None
+    candidates = sorted((Path(artifacts_root) / "keyframes").glob("frame_*.png"))
+    return candidates[0] if candidates else None
 
 
 def _object_id(entry: Mapping[str, Any]) -> str:
@@ -289,6 +291,121 @@ def _generic_default_task_from_objects(
             "default_task_replaces_legacy_template": True,
         },
     )
+
+
+TASK_CONTRACT_SCHEMA_VERSION = "blueprint.task_evaluation_contract.v1"
+
+
+def _load_task_contract(value: str | Path | Mapping[str, Any] | None) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if value is None:
+        return {}
+    return _read_optional_mapping(Path(value).expanduser().resolve())
+
+
+def _validate_task_contract(
+    payload: Mapping[str, Any],
+    *,
+    selected_target_id: str,
+) -> tuple[dict[str, Any], list[str]]:
+    blockers: list[str] = []
+    allowed = {
+        "schema_version",
+        "task_id",
+        "task_text",
+        "target",
+        "transition",
+        "evidence_requirements",
+        "metric",
+        "evaluator_mapping",
+    }
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        blockers.append("task_contract_unknown_fields:" + ",".join(unknown))
+    if payload.get("schema_version") != TASK_CONTRACT_SCHEMA_VERSION:
+        blockers.append("task_contract_schema_version_missing_or_invalid")
+    task_id = _string(payload.get("task_id"))
+    task_text = _string(payload.get("task_text"))
+    if not task_id:
+        blockers.append("task_contract_task_id_missing")
+    if not task_text:
+        blockers.append("task_contract_task_text_missing")
+    target = dict(payload.get("target")) if isinstance(payload.get("target"), Mapping) else {}
+    target_object_id = _string(target.get("object_id"))
+    target_label = _string(target.get("label"))
+    if not target_object_id or not target_label:
+        blockers.append("task_contract_target_object_id_or_label_missing")
+    if selected_target_id and target_object_id and selected_target_id != target_object_id:
+        blockers.append("task_contract_selected_target_mismatch")
+    transition = (
+        dict(payload.get("transition"))
+        if isinstance(payload.get("transition"), Mapping)
+        else {}
+    )
+    transition_type = _string(transition.get("type"))
+    source = _string(transition.get("source") or transition.get("initial_state"))
+    destination = _string(transition.get("destination") or transition.get("goal_state"))
+    if not transition_type or not source or not destination:
+        blockers.append("task_contract_transition_source_destination_missing")
+    evidence = _string_list(payload.get("evidence_requirements"))
+    if not evidence:
+        blockers.append("task_contract_evidence_requirements_missing")
+    metric = dict(payload.get("metric")) if isinstance(payload.get("metric"), Mapping) else {}
+    metric_name = _string(metric.get("name"))
+    tolerance = (
+        dict(metric.get("tolerance"))
+        if isinstance(metric.get("tolerance"), Mapping)
+        else {}
+    )
+    try:
+        tolerance_value = float(tolerance.get("value"))
+    except (TypeError, ValueError):
+        tolerance_value = float("nan")
+    tolerance_unit = _string(tolerance.get("unit"))
+    tolerance_operator = _string(tolerance.get("operator"))
+    if (
+        not metric_name
+        or not math.isfinite(tolerance_value)
+        or tolerance_value < 0.0
+        or not tolerance_unit
+        or tolerance_operator not in {"<=", "<", ">=", ">", "=="}
+    ):
+        blockers.append("task_contract_metric_tolerance_missing_or_invalid")
+    evaluator = (
+        dict(payload.get("evaluator_mapping"))
+        if isinstance(payload.get("evaluator_mapping"), Mapping)
+        else {}
+    )
+    if not _string(evaluator.get("evaluator_id")) or not _string(
+        evaluator.get("version")
+    ):
+        blockers.append("task_contract_evaluator_mapping_missing")
+    normalized = {
+        "schema_version": TASK_CONTRACT_SCHEMA_VERSION,
+        "task_id": task_id or None,
+        "task_text": task_text or None,
+        "target": {"object_id": target_object_id or None, "label": target_label or None},
+        "transition": {
+            "type": transition_type or None,
+            "source": source or None,
+            "destination": destination or None,
+        },
+        "evidence_requirements": evidence,
+        "metric": {
+            "name": metric_name or None,
+            "tolerance": {
+                "value": tolerance_value if math.isfinite(tolerance_value) else None,
+                "unit": tolerance_unit or None,
+                "operator": tolerance_operator or None,
+            },
+        },
+        "evaluator_mapping": {
+            "evaluator_id": _string(evaluator.get("evaluator_id")) or None,
+            "version": _string(evaluator.get("version")) or None,
+        },
+    }
+    return normalized, sorted(set(blockers))
 
 
 def _object_bbox(entry: Mapping[str, Any]) -> Any:
@@ -475,9 +592,9 @@ def _select_task_targets(
     return selected, candidates[:8], parent_context
 
 
-def _default_existing_path(*candidates: Path) -> Path | None:
+def _default_existing_path(*candidates: Path | None) -> Path | None:
     for path in candidates:
-        if path.is_file():
+        if path is not None and path.is_file():
             return path
     return None
 
@@ -610,81 +727,59 @@ def _camera_calibration_quality_gate(
     generated_at: str,
 ) -> dict[str, Any]:
     path = Path(_string(camera_ref.get("path"))) if camera_ref.get("path") else None
-    blockers: list[str] = []
-    warnings: list[str] = []
     payload = _read_optional_mapping(path) if path else {}
-    intrinsics = _nested_mapping(payload, "intrinsics", "camera_intrinsics") or payload
-    fx = _first_number(intrinsics, "fx", "focal_x")
-    fy = _first_number(intrinsics, "fy", "focal_y")
-    cx = _first_number(intrinsics, "cx", "principal_x")
-    cy = _first_number(intrinsics, "cy", "principal_y")
-    width = _first_number(intrinsics, "width", "image_width")
-    height = _first_number(intrinsics, "height", "image_height")
-    if not path or not path.is_file():
-        blockers.append("missing_camera_calibration")
-    if any(value is None or value <= 0 for value in (fx, fy, width, height)):
-        blockers.append("camera_intrinsics_missing_or_invalid")
-    if cx is None or cy is None:
-        warnings.append("camera_principal_point_missing")
-    if width and height and cx is not None and cy is not None:
-        if not (0 <= cx <= width and 0 <= cy <= height):
-            blockers.append("camera_principal_point_outside_image")
-    extrinsics_present = bool(
-        _matrix4(payload.get("camera_from_world"))
-        or _matrix4(payload.get("T_camera_world"))
-        or _matrix4(payload.get("world_from_camera"))
-        or _matrix4(payload.get("T_world_camera"))
-    )
-    if not extrinsics_present:
-        warnings.append("camera_extrinsics_missing_identity_projection_assumed")
-    reprojection_error = _first_number(
+    validation = validate_camera_calibration(
         payload,
-        "reprojection_error_px",
-        "mean_reprojection_error_px",
-        "alignment_error_px",
+        require_extrinsics=True,
+        require_frame_metadata=True,
+        require_translation_units=True,
+        require_reprojection_error=True,
     )
+    blockers = list(validation.get("blockers") or [])
+    warnings = list(validation.get("warnings") or [])
+    if not path or not path.is_file():
+        blockers.insert(0, "missing_camera_calibration")
+    reprojection_error = validation.get("reprojection_error_px")
     frame_alignment_confidence = _first_number(
         payload,
         "frame_alignment_confidence",
         "pose_confidence",
         "calibration_confidence",
     )
-    score_parts = [
-        0.42 if not any(value is None or value <= 0 for value in (fx, fy, width, height)) else 0.0,
-        0.18 if cx is not None and cy is not None else 0.08,
-        0.2 if extrinsics_present else 0.08,
-    ]
-    if reprojection_error is None:
-        score_parts.append(0.1)
-        warnings.append("camera_reprojection_error_missing")
-    elif reprojection_error <= 2.0:
-        score_parts.append(0.2)
-    elif reprojection_error <= 5.0:
-        score_parts.append(0.1)
-        warnings.append("camera_reprojection_error_high")
-    else:
-        score_parts.append(0.0)
-        blockers.append("camera_reprojection_error_too_high")
-    if frame_alignment_confidence is not None:
-        score_parts.append(max(0.0, min(0.2, frame_alignment_confidence * 0.2)))
-    confidence = round(min(1.0, sum(score_parts)), 6)
-    status = "blocked" if blockers else "passed" if confidence >= 0.75 else "warning"
+    reprojection_score = (
+        max(0.0, 1.0 - float(reprojection_error) / 5.0)
+        if reprojection_error is not None
+        else 0.0
+    )
+    confidence = round(
+        (0.8 * reprojection_score + 0.2 * max(0.0, min(1.0, frame_alignment_confidence)))
+        if frame_alignment_confidence is not None
+        else reprojection_score,
+        6,
+    )
+    status = "blocked" if blockers else "passed"
+    normalized_intrinsics = validation.get("intrinsics") or {}
     gate = {
         "schema_version": "camera_calibration_quality_gate.v1",
         "generated_at": generated_at,
         "status": status,
         "path": str(path) if path else None,
         "confidence": confidence,
-        "intrinsics_present": not any(value is None or value <= 0 for value in (fx, fy, width, height)),
-        "extrinsics_present": extrinsics_present,
+        "intrinsics_present": bool(normalized_intrinsics),
+        "extrinsics_present": validation.get("extrinsics_present") is True,
+        "projection_ready": validation.get("projection_ready") is True and not blockers,
         "reprojection_error_px": reprojection_error,
         "frame_alignment_confidence": frame_alignment_confidence,
-        "image_size": {"width": width, "height": height},
-        "blockers": blockers,
-        "warnings": warnings,
+        "image_size": {
+            "width": normalized_intrinsics.get("width"),
+            "height": normalized_intrinsics.get("height"),
+        },
+        "normalized_calibration": validation,
+        "blockers": list(dict.fromkeys(blockers)),
+        "warnings": list(dict.fromkeys(warnings)),
         "claim_boundary": {
             "calibration_gate_is_input_quality_check_not_success_proof": True,
-            "identity_projection_assumption_is_low_confidence": not extrinsics_present,
+            "identity_projection_assumption_is_forbidden": True,
         },
     }
     write_json(output_dir / "camera_calibration_quality_gate.json", gate)
@@ -771,27 +866,21 @@ def _collect_robot_landmarks(robot_state: Mapping[str, Any]) -> list[dict[str, A
     return deduped
 
 
-def _camera_projection_payload(camera_ref: Mapping[str, Any]) -> dict[str, Any]:
-    path = Path(_string(camera_ref.get("path"))) if camera_ref.get("path") else None
-    payload = _read_optional_mapping(path) if path else {}
-    intrinsics = _nested_mapping(payload, "intrinsics", "camera_intrinsics") or payload
-    camera_from_world = (
-        _matrix4(payload.get("camera_from_world"))
-        or _matrix4(payload.get("T_camera_world"))
-        or None
-    )
-    if camera_from_world is None and not (
-        _matrix4(payload.get("world_from_camera")) or _matrix4(payload.get("T_world_camera"))
-    ):
-        camera_from_world = None
+def _camera_projection_payload(
+    camera_ref: Mapping[str, Any],
+    calibration_gate: Mapping[str, Any],
+) -> dict[str, Any]:
+    del camera_ref
+    validation = _mapping(calibration_gate.get("normalized_calibration"))
+    intrinsics = _mapping(validation.get("intrinsics"))
     return {
-        "fx": _first_number(intrinsics, "fx", "focal_x"),
-        "fy": _first_number(intrinsics, "fy", "focal_y"),
-        "cx": _first_number(intrinsics, "cx", "principal_x") or 0.0,
-        "cy": _first_number(intrinsics, "cy", "principal_y") or 0.0,
-        "width": _first_number(intrinsics, "width", "image_width"),
-        "height": _first_number(intrinsics, "height", "image_height"),
-        "camera_from_world": camera_from_world,
+        "fx": intrinsics.get("fx"),
+        "fy": intrinsics.get("fy"),
+        "cx": intrinsics.get("cx"),
+        "cy": intrinsics.get("cy"),
+        "width": intrinsics.get("width"),
+        "height": intrinsics.get("height"),
+        "camera_from_world": validation.get("camera_from_reference"),
     }
 
 
@@ -837,70 +926,98 @@ def _build_robot_fk_projection_manifest(
 ) -> dict[str, Any]:
     state_path = Path(_string(robot_state_ref.get("path"))) if robot_state_ref.get("path") else None
     robot_state = _read_optional_mapping(state_path) if state_path else {}
-    landmarks = _collect_robot_landmarks(robot_state)
-    camera = _camera_projection_payload(camera_ref)
-    projected = [_project_landmark(row, camera) for row in landmarks]
-    projected_count = sum(1 for row in projected if row.get("projectable"))
-    in_frame_count = sum(1 for row in projected if row.get("in_frame"))
+    model_path = Path(_string(robot_model_ref.get("path"))) if robot_model_ref.get("path") else None
+    calibration = _mapping(calibration_gate.get("normalized_calibration"))
+    fk_solution = solve_robot_forward_kinematics(
+        model_path=model_path,
+        state_payload=robot_state,
+        expected_reference_frame=_string(calibration.get("reference_frame")) or None,
+    )
+    camera = _camera_projection_payload(camera_ref, calibration_gate)
+    trace_rows: list[dict[str, Any]] = []
+    for frame in fk_solution.get("frames", []) or []:
+        if not isinstance(frame, Mapping):
+            continue
+        landmarks = [
+            {"label": link_name, "xyz": xyz, "source": "urdf_or_mjcf_fk_solver"}
+            for link_name, xyz in _mapping(frame.get("link_positions")).items()
+        ]
+        projected = (
+            [_project_landmark(row, camera) for row in landmarks]
+            if calibration_gate.get("status") == "passed"
+            else []
+        )
+        trace_rows.append(
+            {
+                "frame_index": frame.get("frame_index"),
+                "timestamp": frame.get("timestamp"),
+                "projected_landmark_count": sum(1 for row in projected if row.get("projectable")),
+                "in_frame_landmark_count": sum(1 for row in projected if row.get("in_frame")),
+                "reference_max_error_m": frame.get("reference_max_error_m"),
+                "landmarks": projected,
+            }
+        )
+    projected = list(trace_rows[-1].get("landmarks") or []) if trace_rows else []
+    projected_count = sum(int(row.get("projected_landmark_count") or 0) for row in trace_rows)
+    in_frame_count = sum(int(row.get("in_frame_landmark_count") or 0) for row in trace_rows)
     trace_path = output_dir / "robot_fk_projected_skeleton_trace.jsonl"
     trace_path.write_text(
-        json.dumps(
-            {
-                "frame_index": 0,
-                "timestamp": robot_state.get("timestamp", 0.0),
-                "projected_landmark_count": projected_count,
-                "in_frame_landmark_count": in_frame_count,
-                "landmarks": projected,
-            },
-            sort_keys=True,
-        )
-        + "\n",
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in trace_rows),
         encoding="utf-8",
     )
-    blockers: list[str] = []
+    blockers: list[str] = list(fk_solution.get("blockers") or [])
     if not robot_model_ref.get("exists"):
         blockers.append("missing_robot_urdf_or_mjcf")
     if not state_path or not state_path.is_file():
         blockers.append("missing_robot_joint_or_end_effector_state")
-    if not landmarks:
-        blockers.append("robot_state_missing_cartesian_landmarks_for_fk_projection")
     if calibration_gate.get("status") == "blocked":
         blockers.append("camera_calibration_quality_gate_failed")
-    if projected_count <= 0 and landmarks:
-        blockers.append("robot_landmarks_not_projectable")
+    if fk_solution.get("solver_executed") is not True:
+        blockers.append("urdf_or_mjcf_fk_solver_not_executed")
+    if trace_rows and any(int(row.get("projected_landmark_count") or 0) <= 0 for row in trace_rows):
+        blockers.append("robot_landmarks_not_projectable_in_every_aligned_step")
+    if trace_rows and any(int(row.get("in_frame_landmark_count") or 0) <= 0 for row in trace_rows):
+        blockers.append("robot_landmarks_not_visible_in_every_aligned_step")
+    if not trace_rows:
+        blockers.append("robot_fk_trace_empty")
+    blockers = list(dict.fromkeys(blockers))
     projection_confidence = 0.0
-    if landmarks:
+    total_landmarks = sum(len(row.get("landmarks") or []) for row in trace_rows)
+    if total_landmarks:
         projection_confidence = (
             float(calibration_gate.get("confidence") or 0.0) * 0.55
-            + (projected_count / len(landmarks)) * 0.3
-            + (in_frame_count / len(landmarks)) * 0.15
+            + (projected_count / total_landmarks) * 0.3
+            + (in_frame_count / total_landmarks) * 0.15
         )
     manifest = {
         "schema_version": "robot_fk_projection_manifest.v1",
         "generated_at": generated_at,
-        "status": "completed" if not blockers else "blocked",
+        "status": "completed" if not blockers and fk_solution.get("status") == "completed" else "blocked",
         "robot_model": dict(robot_model_ref),
         "robot_state": dict(robot_state_ref),
         "camera_calibration": dict(camera_ref),
         "camera_calibration_quality_gate": str(output_dir / "camera_calibration_quality_gate.json"),
         "projection_method": (
-            "cartesian_robot_state_projection_with_optional_camera_from_world"
+            "urdf_or_mjcf_forward_kinematics_through_calibrated_camera"
         ),
-        "urdf_or_mjcf_fk_solver_executed": False,
-        "cartesian_landmark_count": len(landmarks),
+        "urdf_or_mjcf_fk_solver_executed": fk_solution.get("solver_executed") is True,
+        "fk_solver": fk_solution.get("solver_name"),
+        "fk_model_format": fk_solution.get("model_format"),
+        "aligned_step_count": len(trace_rows),
+        "cartesian_landmark_count": 0,
         "projected_landmark_count": projected_count,
         "in_frame_landmark_count": in_frame_count,
         "projection_confidence": round(projection_confidence, 6),
         "trace_path": str(trace_path),
         "projected_landmarks": projected,
+        "fk_solution": fk_solution,
         "blockers": blockers,
-        "warnings": [
-            "urdf_mjcf_kinematic_chain_solver_not_executed"
-        ] if landmarks else [],
+        "warnings": [],
         "claim_boundary": {
             "projection_is_action_conditioning_input_not_policy_success": True,
             "cartesian_state_projection_is_not_physical_contact_proof": True,
-            "urdf_or_mjcf_fk_solver_executed": False,
+            "supplied_cartesian_landmarks_are_not_fk_evidence": True,
+            "urdf_or_mjcf_fk_solver_executed": fk_solution.get("solver_executed") is True,
         },
     }
     write_json(output_dir / "robot_fk_projection_manifest.json", manifest)
@@ -1282,6 +1399,8 @@ def build_eval_ready_task_grounding(
     camera_calibration: str | Path | None = None,
     robot_model: str | Path | None = None,
     robot_state: str | Path | None = None,
+    task_contract: str | Path | Mapping[str, Any] | None = None,
+    buyer_grade: bool = False,
     output_path: str | Path | None = None,
     articulated_handle_proxy: bool = False,
     handle_axis: str | Sequence[float] | None = None,
@@ -1292,6 +1411,29 @@ def build_eval_ready_task_grounding(
     resolved_capture_root = Path(capture_root).expanduser().resolve()
     generated_at = utc_now_iso()
     object_index, object_index_path = _read_object_index(resolved_capture_root)
+    raw_task_contract = _load_task_contract(task_contract)
+    task_contract_input_conflicts: list[str] = []
+    if raw_task_contract:
+        contract_target = (
+            dict(raw_task_contract.get("target"))
+            if isinstance(raw_task_contract.get("target"), Mapping)
+            else {}
+        )
+        contract_task_id = _string(raw_task_contract.get("task_id"))
+        contract_task_text = _string(raw_task_contract.get("task_text"))
+        contract_target_label = _string(contract_target.get("label"))
+        for label, supplied, contracted in (
+            ("task_id", task_id, contract_task_id),
+            ("task_text", task_text, contract_task_text),
+            ("target_label", target_label, contract_target_label),
+        ):
+            if supplied is not None and contracted and _string(supplied) != contracted:
+                task_contract_input_conflicts.append(
+                    f"task_contract_{label}_conflicts_with_cli_argument"
+                )
+        task_id = contract_task_id or task_id
+        task_text = contract_task_text or task_text
+        target_label = contract_target_label or target_label
     default_task_metadata: dict[str, Any] = {
         "default_task_source": "explicit_task_contract",
         "default_task_replaces_legacy_template": False,
@@ -1337,6 +1479,15 @@ def build_eval_ready_task_grounding(
         target_label=target_label,
     )
     selected_target_id = _string(selected.get("object_id")) if selected else ""
+    normalized_task_contract, task_contract_blockers = _validate_task_contract(
+        raw_task_contract,
+        selected_target_id=selected_target_id,
+    )
+    if not raw_task_contract:
+        task_contract_blockers = ["task_contract_missing"]
+    task_contract_blockers = sorted(
+        set([*task_contract_blockers, *task_contract_input_conflicts])
+    )
     task_anchor = _load_task_anchor(
         resolved_capture_root,
         task_id=task_id,
@@ -1353,6 +1504,7 @@ def build_eval_ready_task_grounding(
             / "scene_wam_policy_episode_packet"
             / "rendered_observations"
             / "initial_policy_observation.jpg",
+            _current_object_index_keyframe(resolved_capture_root),
             resolved_capture_root / "raw" / "object_index_artifacts" / "keyframes" / "frame_0000.jpg",
         ),
         capture_root=resolved_capture_root,
@@ -1418,6 +1570,8 @@ def build_eval_ready_task_grounding(
 
     blockers: list[str] = []
     warnings: list[str] = []
+    if buyer_grade:
+        blockers.extend(task_contract_blockers)
     if object_index_path is None:
         blockers.append("missing_object_index")
     if selected is None:
@@ -1431,9 +1585,15 @@ def build_eval_ready_task_grounding(
         if requires_handle_target and "handle_semantics" not in reasons:
             blockers.append("missing_task_specific_handle_label_or_keypoint")
         if not selected.get("mask_or_keypoint_available"):
-            warnings.append("selected_target_missing_mask_or_keypoint")
+            if buyer_grade:
+                blockers.append("selected_target_missing_mask_or_keypoint")
+            else:
+                warnings.append("selected_target_missing_mask_or_keypoint")
         if not selected.get("all_crops"):
-            warnings.append("selected_target_missing_crop_refs")
+            if buyer_grade:
+                blockers.append("selected_target_missing_crop_refs")
+            else:
+                warnings.append("selected_target_missing_crop_refs")
     if not scene_ref["exists"] and not initial_frame_ref["exists"]:
         blockers.append("missing_3dgs_usd_or_initial_visual_scene_ref")
     if not camera_ref["exists"]:
@@ -1454,17 +1614,21 @@ def build_eval_ready_task_grounding(
     if not proxy.get("state_check_configured"):
         warnings.append("articulated_handle_proxy_not_configured")
     elif handle_proxy_state_check.get("status") == "blocked":
-        warnings.extend(
+        state_blockers = [
             f"handle_proxy_state_check:{blocker}"
             for blocker in _string_list(handle_proxy_state_check.get("blockers"))
-        )
+        ]
+        (blockers if buyer_grade else warnings).extend(state_blockers)
     if industrial_proxy.get("state_check_configured") and industrial_proxy_state_check.get("status") == "blocked":
-        warnings.extend(
+        state_blockers = [
             f"industrial_proxy_state_check:{blocker}"
             for blocker in _string_list(industrial_proxy_state_check.get("blockers"))
-        )
+        ]
+        (blockers if buyer_grade else warnings).extend(state_blockers)
 
     learned_rollout_request_ready = not blockers
+    task_contract_ready = bool(raw_task_contract) and not task_contract_blockers
+    buyer_grade_eligible = bool(buyer_grade and learned_rollout_request_ready and task_contract_ready)
     robot_projection_ready = bool(fk_projection.get("status") == "completed")
     requires_handle_target = _requires_articulated_handle_target(
         task_text=task_text,
@@ -1529,6 +1693,12 @@ def build_eval_ready_task_grounding(
             "task_text": task_text,
             "target_label": target_label,
             **default_task_metadata,
+            "task_contract": normalized_task_contract if raw_task_contract else None,
+            "task_contract_validation": {
+                "status": "passed" if task_contract_ready else "blocked",
+                "blockers": task_contract_blockers,
+            },
+            "support_level": "buyer_grade" if buyer_grade_eligible else "support_only",
             "target_prompts_for_object_index_backends": _target_prompts(
                 task_text=task_text,
                 target_label=target_label,
@@ -1587,6 +1757,9 @@ def build_eval_ready_task_grounding(
         },
         "readiness": {
             "learned_rollout_request_ready": learned_rollout_request_ready,
+            "buyer_grade_requested": buyer_grade,
+            "buyer_grade_task_contract_ready": task_contract_ready,
+            "buyer_grade_eligible": buyer_grade_eligible,
             "target_crop_available": bool(selected and selected.get("all_crops")),
             "target_mask_or_keypoint_available": bool(selected and selected.get("mask_or_keypoint_available")),
             "camera_calibration_quality_status": calibration_gate.get("status"),
@@ -1617,6 +1790,8 @@ def build_eval_ready_task_grounding(
             "simulator_physics_contact_validated": False,
             "generated_world_rank_fidelity_result_proven": False,
             "generated_world_policy_evaluation_scope_proven": False,
+            "auto_generated_task_is_support_only": not task_contract_ready,
+            "buyer_grade_task_contract_proven": buyer_grade_eligible,
         },
         "output_path": str(output),
     }
@@ -1647,6 +1822,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--camera-calibration")
     parser.add_argument("--robot-model")
     parser.add_argument("--robot-state")
+    parser.add_argument("--task-contract")
+    parser.add_argument("--buyer-grade", action="store_true")
     parser.add_argument("--output-path")
     parser.add_argument("--articulated-handle-proxy", action="store_true")
     parser.add_argument("--handle-axis")
@@ -1662,6 +1839,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         camera_calibration=args.camera_calibration,
         robot_model=args.robot_model,
         robot_state=args.robot_state,
+        task_contract=args.task_contract,
+        buyer_grade=args.buyer_grade,
         output_path=args.output_path,
         articulated_handle_proxy=args.articulated_handle_proxy,
         handle_axis=args.handle_axis,
@@ -1680,7 +1859,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             indent=2,
         )
     )
-    return 0
+    return 0 if manifest["status"] != "blocked" else 2
 
 
 if __name__ == "__main__":  # pragma: no cover

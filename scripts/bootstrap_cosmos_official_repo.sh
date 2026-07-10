@@ -14,9 +14,11 @@ fi
 
 COSMOS_OFFICIAL_REPO_URL="${COSMOS_OFFICIAL_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-predict2.git}"
 COSMOS_OFFICIAL_REPO_ROOT="${COSMOS_OFFICIAL_REPO_ROOT:-${HOME}/workspace/cosmos-predict2.5}"
-COSMOS_OFFICIAL_REPO_REF="${COSMOS_OFFICIAL_REPO_REF:-main}"
+COSMOS_OFFICIAL_REPO_REF="${COSMOS_OFFICIAL_REPO_REF:-661da4774b0ca41d082a0ecbeb47550bcf07e03f}"
+COSMOS_OFFICIAL_REPO_ALLOWED_REFS="661da4774b0ca41d082a0ecbeb47550bcf07e03f"
 COSMOS_OFFICIAL_REPO_UV_EXTRA="${COSMOS_OFFICIAL_REPO_UV_EXTRA:-cu128}"
 COSMOS_WORKER_PYTHON_BIN="${COSMOS_WORKER_PYTHON_BIN:-${COSMOS_OFFICIAL_REPO_ROOT}/.venv/bin/python}"
+COSMOS_BOOTSTRAP_UV_VERSION="${COSMOS_BOOTSTRAP_UV_VERSION:-0.10.7}"
 
 log() {
   echo "[bootstrap-cosmos-repo] $*"
@@ -33,26 +35,35 @@ clone_or_update_repo() {
   local ref="$3"
 
   mkdir -p "$(dirname "$dst")"
+  if ! printf '%s\n' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+    die "COSMOS_OFFICIAL_REPO_REF must be an immutable 40-hex commit"
+  fi
+  case " ${COSMOS_OFFICIAL_REPO_ALLOWED_REFS} " in
+    *" ${ref} "*) ;;
+    *) die "COSMOS_OFFICIAL_REPO_REF is not in the reviewed allowlist" ;;
+  esac
   if [ ! -d "$dst/.git" ]; then
-    git clone "$repo_url" "$dst"
+    git clone --filter=blob:none --no-checkout "$repo_url" "$dst"
   fi
-  git -C "$dst" fetch --tags origin
-  git -C "$dst" checkout "$ref"
-  if [ "$ref" = "main" ] || [ "$ref" = "master" ]; then
-    git -C "$dst" pull --ff-only origin "$ref"
-  fi
+  git -C "$dst" fetch --depth 1 origin "$ref"
+  git -C "$dst" checkout --detach "$ref"
+  [ "$(git -C "$dst" rev-parse HEAD)" = "$ref" ] || die "Cosmos checkout digest mismatch"
 }
 
-if ! command -v uv >/dev/null 2>&1; then
-  python3 -m pip install --no-cache-dir uv
+if [ "${COSMOS_BOOTSTRAP_UV_VERSION}" != "0.10.7" ]; then
+  die "COSMOS_BOOTSTRAP_UV_VERSION is not the reviewed version"
 fi
+if ! command -v uv >/dev/null 2>&1 || [ "$(uv --version 2>/dev/null || true)" != "uv ${COSMOS_BOOTSTRAP_UV_VERSION}" ]; then
+  python3 -m pip install --no-cache-dir "uv==${COSMOS_BOOTSTRAP_UV_VERSION}"
+fi
+[ "$(uv --version)" = "uv ${COSMOS_BOOTSTRAP_UV_VERSION}" ] || die "uv version verification failed"
 
 clone_or_update_repo "${COSMOS_OFFICIAL_REPO_URL}" "${COSMOS_OFFICIAL_REPO_ROOT}" "${COSMOS_OFFICIAL_REPO_REF}"
 
 log "Syncing ${COSMOS_OFFICIAL_REPO_ROOT} with uv extra ${COSMOS_OFFICIAL_REPO_UV_EXTRA}..."
 (
   cd "${COSMOS_OFFICIAL_REPO_ROOT}"
-  uv sync --extra "${COSMOS_OFFICIAL_REPO_UV_EXTRA}"
+  uv sync --frozen --extra "${COSMOS_OFFICIAL_REPO_UV_EXTRA}"
 )
 
 [ -x "${COSMOS_WORKER_PYTHON_BIN}" ] || die "Expected worker python at ${COSMOS_WORKER_PYTHON_BIN}"

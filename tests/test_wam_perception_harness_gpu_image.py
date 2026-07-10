@@ -53,6 +53,7 @@ def test_wam_perception_harness_gpu_image_context_writes_provider_contract(
         encoding="utf-8"
     )
     assert "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04" in dockerfile
+    assert "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356" in dockerfile
     assert "FROM --platform=linux/amd64" in dockerfile
     assert "https://download.pytorch.org/whl/cu126" in dockerfile
     assert "torch==2.7.0" in dockerfile
@@ -64,6 +65,8 @@ def test_wam_perception_harness_gpu_image_context_writes_provider_contract(
     assert "SAM3_WEIGHTS_PATH=/models/sam3/sam3.pt" in dockerfile
     assert "BLUEPRINT_WAM_POSE_MODEL_PATH=/models/yolo/yolo11n-pose.pt" in dockerfile
     assert "Depth-Anything-V2-Small-hf" in dockerfile
+    assert image_module.DEFAULT_DEPTH_MODEL_REVISION in dockerfile
+    assert '"trust_remote_code":False' in dockerfile
     assert "AutoModelForDepthEstimation.from_pretrained" in dockerfile
     assert "YOLO(\"yolo11n-pose.pt\")" in dockerfile
     assert "ByteDance-Seed/depth-anything-3" in dockerfile

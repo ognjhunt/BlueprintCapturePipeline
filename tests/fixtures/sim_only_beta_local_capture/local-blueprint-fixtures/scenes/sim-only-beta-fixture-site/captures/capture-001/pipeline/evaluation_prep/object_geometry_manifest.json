@@ -20,6 +20,8 @@
         0.0,
         0.793
       ],
+      "metric_placement_ready": true,
+      "physics_ready": true,
       "collision_hulls": [
         {
           "kind": "box",

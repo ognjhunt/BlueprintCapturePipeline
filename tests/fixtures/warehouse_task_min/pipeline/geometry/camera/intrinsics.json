@@ -1,0 +1,18 @@
+{
+  "fx": 800,
+  "fy": 800,
+  "cx": 320,
+  "cy": 240,
+  "width": 640,
+  "height": 480,
+  "camera_from_world": [
+    [1, 0, 0, 0],
+    [0, 1, 0, 0],
+    [0, 0, 1, 0],
+    [0, 0, 0, 1]
+  ],
+  "reference_frame": "world",
+  "camera_frame": "head_camera",
+  "translation_unit": "meters",
+  "reprojection_error_px": 0.5
+}

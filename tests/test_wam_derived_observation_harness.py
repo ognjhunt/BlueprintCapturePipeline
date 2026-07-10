@@ -1411,7 +1411,10 @@ def test_real_provider_backend_records_transformers_sam3_runtime(
         @classmethod
         def from_pretrained(cls, model_id: str, **kwargs: Any) -> "FakeSam3Model":
             assert model_id == "facebook/sam3"
-            assert kwargs == {}
+            assert kwargs == {
+                "revision": real_probe.DEFAULT_SAM3_HF_MODEL_REVISION,
+                "trust_remote_code": False,
+            }
             return cls()
 
         def to(self, device: str) -> "FakeSam3Model":
@@ -1426,7 +1429,10 @@ def test_real_provider_backend_records_transformers_sam3_runtime(
         @classmethod
         def from_pretrained(cls, model_id: str, **kwargs: Any) -> "FakeSam3Processor":
             assert model_id == "facebook/sam3"
-            assert kwargs == {}
+            assert kwargs == {
+                "revision": real_probe.DEFAULT_SAM3_HF_MODEL_REVISION,
+                "trust_remote_code": False,
+            }
             return cls()
 
         def __call__(self, *, images: Any, text: str, return_tensors: str) -> FakeInputs:
@@ -1512,6 +1518,30 @@ def test_real_provider_backend_records_transformers_sam3_runtime(
     assert sam3_status["ran"] is True
     assert sam3_status["blockers"] == []
     assert sam3_status["model_id"] == "facebook/sam3"
+    assert sam3_status["model_revision"] == real_probe.DEFAULT_SAM3_HF_MODEL_REVISION
+    assert sam3_status["model_remote_code_trusted"] is False
     assert sam3_status["transformers_provider_enabled"] is True
     assert payload["objects"][0]["source"] == "sam3_transformers_from_generated_pixels"
     assert Path(payload["objects"][0]["mask_path"]).is_file()
+
+
+def test_transformers_sam3_rejects_unapproved_revision_before_model_load(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    frame = _write_frame(tmp_path / "generated.jpg")
+    monkeypatch.setenv(real_probe.SAM3_TRANSFORMERS_ENV, "true")
+    monkeypatch.setenv(real_probe.SAM3_HF_REVISION_ENV, "0" * 40)
+    monkeypatch.setattr(real_probe, "_module_available", lambda name: name == "transformers")
+
+    objects, status = real_probe._run_transformers_sam3_provider(
+        {
+            "source_generated_frame_path": str(frame),
+            "target_prompts": ["object"],
+        },
+        tmp_path,
+    )
+
+    assert objects == []
+    assert status["ran"] is False
+    assert status["blockers"] == ["sam3_model_revision_not_approved"]

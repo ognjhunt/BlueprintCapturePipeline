@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +19,10 @@ from .secret_artifact_policy import (
 
 
 UNITREE_UNIFOLM_GPU_IMAGE_SCHEMA_VERSION = "unitree_unifolm_gpu_image_context.v1"
-DEFAULT_BASE_IMAGE = "nvidia/cuda:12.4.1-devel-ubuntu22.04"
+DEFAULT_BASE_IMAGE = (
+    "nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:"
+    "5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749"
+)
 DEFAULT_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu124"
 DEFAULT_TORCH_VERSION = "2.5.1"
 DEFAULT_TORCHVISION_VERSION = "0.20.1"
@@ -26,13 +30,23 @@ DEFAULT_FLASH_ATTN_VERSION = "2.5.6"
 DEFAULT_INSTALL_FLASH_ATTN = True
 DEFAULT_ATTENTION_IMPLEMENTATION = "flash_attention_2"
 DEFAULT_UNITREE_SOURCE_URL = "https://github.com/unitreerobotics/unifolm-vla.git"
-DEFAULT_UNITREE_SOURCE_REF = "main"
-DEFAULT_LEROBOT_REF = "0878c68"
+DEFAULT_UNITREE_SOURCE_REF = "ff6c39aeb0454cfb95418c66aef40ca777f935c1"
+DEFAULT_LEROBOT_REF = "0878c6880fa4fbadf0742751cf7b015f2d63a769"
+DEFAULT_UNITREE_VLA_REPO = "unitreerobotics/UnifoLM-VLA-Base"
+DEFAULT_UNITREE_VLA_REVISION = "06fee5014922ba6791cfe48d1e4aefac995dd8a2"
+DEFAULT_UNITREE_VLM_REPO = "unitreerobotics/UnifoLM-VLM-Base"
+DEFAULT_UNITREE_VLM_REVISION = "da121034eb5681c085a17001853a0267632a796f"
 DEFAULT_PLATFORM = "linux/amd64"
 DEFAULT_CONTEXT_FILENAME = "Dockerfile.unitree-unifolm-vla-gpu"
 DEFAULT_DEPENDENCY_PROFILE = "inference"
 SUPPORTED_DEPENDENCY_PROFILES = ("inference", "full")
 IMAGE_REF_ENV = "BLUEPRINT_UNITREE_UNIFOLM_GPU_IMAGE_REF"
+BUILD_TAG_ENV = "BLUEPRINT_UNITREE_UNIFOLM_GPU_BUILD_TAG"
+_IMMUTABLE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_IMAGE_DIGEST_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+_REVIEWED_BASE_IMAGES = frozenset({DEFAULT_BASE_IMAGE})
+_REVIEWED_SOURCE_REVISIONS = frozenset({DEFAULT_UNITREE_SOURCE_REF})
+_REVIEWED_LEROBOT_REVISIONS = frozenset({DEFAULT_LEROBOT_REF})
 
 
 def _timestamp() -> str:
@@ -47,11 +61,40 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _image_ref_is_versioned(image_ref: str) -> bool:
-    if not image_ref or image_ref.endswith(":latest"):
-        return False
-    last = image_ref.rsplit("/", maxsplit=1)[-1]
-    return ":" in last or "@" in last
+def _image_ref_is_digest_pinned(image_ref: str) -> bool:
+    return _IMAGE_DIGEST_PATTERN.fullmatch(_string(image_ref)) is not None
+
+
+def _require_reviewed_build_inputs(
+    *,
+    base_image: str,
+    unitree_source_url: str,
+    unitree_source_ref: str,
+    lerobot_ref: str,
+) -> None:
+    checks = (
+        (
+            base_image in _REVIEWED_BASE_IMAGES and _image_ref_is_digest_pinned(base_image),
+            "base_image_must_be_the_reviewed_amd64_digest",
+        ),
+        (
+            unitree_source_url == DEFAULT_UNITREE_SOURCE_URL,
+            "unitree_source_url_not_reviewed",
+        ),
+        (
+            _IMMUTABLE_REVISION_PATTERN.fullmatch(unitree_source_ref) is not None
+            and unitree_source_ref in _REVIEWED_SOURCE_REVISIONS,
+            "unitree_source_ref_not_reviewed_immutable_commit",
+        ),
+        (
+            _IMMUTABLE_REVISION_PATTERN.fullmatch(lerobot_ref) is not None
+            and lerobot_ref in _REVIEWED_LEROBOT_REVISIONS,
+            "lerobot_ref_not_reviewed_immutable_commit",
+        ),
+    )
+    failures = [message for passed, message in checks if not passed]
+    if failures:
+        raise ValueError(",".join(failures))
 
 
 def _secret_file_status(env_name: str, default_path: str) -> dict[str, Any]:
@@ -287,15 +330,26 @@ MODEL_CACHE_ROOT="${BLUEPRINT_UNITREE_UNIFOLM_MODEL_CACHE_ROOT:-/mnt/models}"
 ALLOW_HF_DOWNLOAD="${BLUEPRINT_UNITREE_UNIFOLM_ALLOW_HF_DOWNLOAD:-true}"
 VLA_REPO="${BLUEPRINT_UNITREE_UNIFOLM_VLA_REPO:-unitreerobotics/UnifoLM-VLA-Base}"
 VLM_REPO="${BLUEPRINT_UNITREE_UNIFOLM_VLM_REPO:-unitreerobotics/UnifoLM-VLM-Base}"
+VLA_REVISION="${BLUEPRINT_UNITREE_UNIFOLM_VLA_REVISION:-06fee5014922ba6791cfe48d1e4aefac995dd8a2}"
+VLM_REVISION="${BLUEPRINT_UNITREE_UNIFOLM_VLM_REVISION:-da121034eb5681c085a17001853a0267632a796f}"
 VLA_INPUT="${BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT:-${BLUEPRINT_UNITREE_UNIFOLM_POLICY_CHECKPOINT:-}}"
 VLM_INPUT="${BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT:-}"
 
 download_repo() {
   local repo="$1"
-  local dest="$2"
+  local revision="$2"
+  local dest="$3"
+  case "${repo}@${revision}" in
+    "unitreerobotics/UnifoLM-VLA-Base@06fee5014922ba6791cfe48d1e4aefac995dd8a2"|\
+    "unitreerobotics/UnifoLM-VLM-Base@da121034eb5681c085a17001853a0267632a796f") ;;
+    *)
+      echo "blocked_unitree_unifolm_model_repo_revision_not_reviewed:${repo}@${revision}" >&2
+      return 2
+      ;;
+  esac
   mkdir -p "$dest"
-  echo "BLUEPRINT_UNITREE_UNIFOLM_DOWNLOAD_REPO:${repo}->${dest}" >&2
-  huggingface-cli download "$repo" --local-dir "$dest" --local-dir-use-symlinks False >/tmp/blueprint_unitree_hf_download.log 2>&1 || {
+  echo "BLUEPRINT_UNITREE_UNIFOLM_DOWNLOAD_REPO:${repo}@${revision}->${dest}" >&2
+  huggingface-cli download "$repo" --revision "$revision" --local-dir "$dest" --local-dir-use-symlinks False >/tmp/blueprint_unitree_hf_download.log 2>&1 || {
     cat /tmp/blueprint_unitree_hf_download.log >&2 || true
     return 1
   }
@@ -316,12 +370,13 @@ resolve_vla_checkpoint() {
     return 2
   fi
   local repo="$VLA_REPO"
-  if [[ "$candidate" == unitreerobotics/* ]]; then
-    repo="$candidate"
+  if [ -n "$candidate" ] && [ "$candidate" != "$VLA_REPO" ]; then
+    echo "blocked_unitree_unifolm_vla_repo_not_reviewed:${candidate}" >&2
+    return 2
   fi
-  local dest="$MODEL_CACHE_ROOT/${repo##*/}"
+  local dest="$MODEL_CACHE_ROOT/${repo##*/}/${VLA_REVISION}"
   if [ ! -f "$dest/checkpoints/pytorch_model.pt" ]; then
-    download_repo "$repo" "$dest"
+    download_repo "$repo" "$VLA_REVISION" "$dest"
   fi
   printf '%s\n' "$dest/checkpoints/pytorch_model.pt"
 }
@@ -337,12 +392,13 @@ resolve_vlm_checkpoint() {
     return 2
   fi
   local repo="$VLM_REPO"
-  if [[ "$candidate" == unitreerobotics/* ]]; then
-    repo="$candidate"
+  if [ -n "$candidate" ] && [ "$candidate" != "$VLM_REPO" ]; then
+    echo "blocked_unitree_unifolm_vlm_repo_not_reviewed:${candidate}" >&2
+    return 2
   fi
-  local dest="$MODEL_CACHE_ROOT/${repo##*/}"
+  local dest="$MODEL_CACHE_ROOT/${repo##*/}/${VLM_REVISION}"
   if [ ! -f "$dest/config.json" ]; then
-    download_repo "$repo" "$dest"
+    download_repo "$repo" "$VLM_REVISION" "$dest"
   fi
   printf '%s\n' "$dest"
 }
@@ -419,6 +475,12 @@ def dockerfile_text(
     lerobot_ref: str = DEFAULT_LEROBOT_REF,
     dependency_profile: str = DEFAULT_DEPENDENCY_PROFILE,
 ) -> str:
+    _require_reviewed_build_inputs(
+        base_image=base_image,
+        unitree_source_url=unitree_source_url,
+        unitree_source_ref=unitree_source_ref,
+        lerobot_ref=lerobot_ref,
+    )
     install_flash = "true" if install_flash_attn else "false"
     return f"""# syntax=docker/dockerfile:1
 # Blueprint reusable Unitree UnifoLM VLA provider GPU image.
@@ -431,17 +493,23 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG UNITREE_UNIFOLM_SOURCE_URL={unitree_source_url}
 ARG UNITREE_UNIFOLM_SOURCE_REF={unitree_source_ref}
 ARG LEROBOT_REF={lerobot_ref}
+ARG UNITREE_UNIFOLM_VLA_REVISION={DEFAULT_UNITREE_VLA_REVISION}
+ARG UNITREE_UNIFOLM_VLM_REVISION={DEFAULT_UNITREE_VLM_REVISION}
 ARG INSTALL_FLASH_ATTN={install_flash}
 ARG UNITREE_UNIFOLM_ATTENTION_IMPLEMENTATION={attention_implementation}
 ARG BLUEPRINT_UNITREE_UNIFOLM_DEPENDENCY_PROFILE={dependency_profile}
+ARG APP_UID=10001
+ARG APP_GID=10001
 
 ENV PIP_NO_CACHE_DIR=1 \\
     PYTHONUNBUFFERED=1 \\
     BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT=/opt/unifolm-vla \\
     BLUEPRINT_UNITREE_UNIFOLM_VLA_SERVER_PORT=8777 \\
     BLUEPRINT_UNITREE_UNIFOLM_ALLOW_HF_DOWNLOAD=true \\
-    BLUEPRINT_UNITREE_UNIFOLM_VLA_REPO=unitreerobotics/UnifoLM-VLA-Base \\
-    BLUEPRINT_UNITREE_UNIFOLM_VLM_REPO=unitreerobotics/UnifoLM-VLM-Base \\
+    BLUEPRINT_UNITREE_UNIFOLM_VLA_REPO={DEFAULT_UNITREE_VLA_REPO} \\
+    BLUEPRINT_UNITREE_UNIFOLM_VLA_REVISION=${{UNITREE_UNIFOLM_VLA_REVISION}} \\
+    BLUEPRINT_UNITREE_UNIFOLM_VLM_REPO={DEFAULT_UNITREE_VLM_REPO} \\
+    BLUEPRINT_UNITREE_UNIFOLM_VLM_REVISION=${{UNITREE_UNIFOLM_VLM_REVISION}} \\
     BLUEPRINT_UNITREE_UNIFOLM_VLA_ATTENTION_IMPLEMENTATION=${{UNITREE_UNIFOLM_ATTENTION_IMPLEMENTATION}} \\
     BLUEPRINT_UNITREE_UNIFOLM_DEPENDENCY_PROFILE=${{BLUEPRINT_UNITREE_UNIFOLM_DEPENDENCY_PROFILE}} \\
     PYTHONPATH=/opt/unifolm-vla/src:/workspace/provider_runtime
@@ -479,12 +547,11 @@ RUN chmod +x /usr/local/bin/run_unitree_unifolm_vla_server \\
   && python3 -m pip install -r /opt/blueprint/requirements_blueprint_unitree_unifolm.txt
 
 RUN python3 -m pip install --no-deps "lerobot @ git+https://github.com/huggingface/lerobot.git@${{LEROBOT_REF}}" \\
-  && git clone --depth 1 "$UNITREE_UNIFOLM_SOURCE_URL" "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" \\
-  && if [[ "$UNITREE_UNIFOLM_SOURCE_REF" != "main" && "$UNITREE_UNIFOLM_SOURCE_REF" != "HEAD" ]]; then \\
-       cd "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" \\
-       && git fetch --depth 1 origin "$UNITREE_UNIFOLM_SOURCE_REF" \\
-       && git checkout FETCH_HEAD; \\
-     fi \\
+  && git init "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" \\
+  && git -C "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" remote add origin "$UNITREE_UNIFOLM_SOURCE_URL" \\
+  && git -C "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" fetch --depth 1 origin "$UNITREE_UNIFOLM_SOURCE_REF" \\
+  && git -C "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" checkout --detach FETCH_HEAD \\
+  && test "$(git -C "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" rev-parse HEAD)" = "$UNITREE_UNIFOLM_SOURCE_REF" \\
   && python3 -m pip install --no-deps -e "$BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT" \\
   && python3 /opt/blueprint/patch_unitree_unifolm_attention.py \\
   && if [[ "$INSTALL_FLASH_ATTN" == "true" ]]; then \\
@@ -495,6 +562,12 @@ RUN python3 -m pip install --no-deps "lerobot @ git+https://github.com/huggingfa
 
 RUN python3 /opt/blueprint/unitree_unifolm_image_healthcheck.py --build-time
 
+RUN groupadd --gid "${{APP_GID}}" blueprint \\
+  && useradd --uid "${{APP_UID}}" --gid "${{APP_GID}}" --create-home --shell /usr/sbin/nologin blueprint \\
+  && mkdir -p /workspace/provider_runtime /mnt/models /tmp/blueprint_pipeline \\
+  && chown -R blueprint:blueprint /workspace /mnt/models /tmp/blueprint_pipeline
+
+USER blueprint:blueprint
 WORKDIR /workspace
 CMD ["bash", "-lc", "sleep infinity"]
 """
@@ -573,13 +646,19 @@ def build_unitree_unifolm_gpu_image_context(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        f': "${{{BUILD_TAG_ENV}:?set a non-latest build tag}}"\n'
+        f'case "${{{BUILD_TAG_ENV}}}" in *@sha256:*|*:latest) '
+        'echo "build tag must be a non-latest tag, not a runtime digest" >&2; exit 2;; esac\n'
         f"docker build --platform {platform} -f \"$SCRIPT_DIR/{DEFAULT_CONTEXT_FILENAME}\" "
-        f"-t \"${{{IMAGE_REF_ENV}}}\" \"$SCRIPT_DIR\"\n"
+        f"-t \"${{{BUILD_TAG_ENV}}}\" \"$SCRIPT_DIR\"\n"
     )
     push_command = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        f"docker push \"${{{IMAGE_REF_ENV}}}\"\n"
+        f': "${{{BUILD_TAG_ENV}:?set the exact tag built above}}"\n'
+        f"docker push \"${{{BUILD_TAG_ENV}}}\"\n"
+        f'echo "Resolve the pushed tag to image@sha256 and export {IMAGE_REF_ENV}; '
+        'a tag alone cannot qualify provider execution." >&2\n'
     )
     run_healthcheck_command = (
         "#!/usr/bin/env bash\n"
@@ -596,8 +675,8 @@ def build_unitree_unifolm_gpu_image_context(
     blockers: list[str] = list(dependency_profile_blockers)
     if not configured_image_ref:
         blockers.append(f"missing_env_{IMAGE_REF_ENV}")
-    elif not _image_ref_is_versioned(configured_image_ref):
-        blockers.append("blocked_unitree_unifolm_gpu_image_ref_not_versioned")
+    elif not _image_ref_is_digest_pinned(configured_image_ref):
+        blockers.append("blocked_unitree_unifolm_gpu_image_ref_not_digest_pinned")
 
     docker_auth = {
         "docker_username_file": _secret_file_status(
@@ -615,9 +694,17 @@ def build_unitree_unifolm_gpu_image_context(
         "status": "ready_for_image_build" if not blockers else "context_written_blocked",
         "job_dir": str(output),
         "image_ref_env": IMAGE_REF_ENV,
+        "build_tag_env": BUILD_TAG_ENV,
         "configured_image_ref_present": bool(configured_image_ref),
         "configured_image_ref": configured_image_ref or None,
-        "configured_image_ref_is_versioned": _image_ref_is_versioned(configured_image_ref),
+        "configured_image_ref_is_digest_pinned": _image_ref_is_digest_pinned(
+            configured_image_ref
+        ),
+        # Compatibility field consumed by older provider planners. It now means
+        # immutable digest qualification, never tag-only versioning.
+        "configured_image_ref_is_versioned": _image_ref_is_digest_pinned(
+            configured_image_ref
+        ),
         "base_image": base_image,
         "platform": platform,
         "torch_index_url": torch_index_url,
@@ -630,6 +717,10 @@ def build_unitree_unifolm_gpu_image_context(
         "unitree_source_url": unitree_source_url,
         "unitree_source_ref": unitree_source_ref,
         "lerobot_ref": lerobot_ref,
+        "unitree_vla_repo": DEFAULT_UNITREE_VLA_REPO,
+        "unitree_vla_revision": DEFAULT_UNITREE_VLA_REVISION,
+        "unitree_vlm_repo": DEFAULT_UNITREE_VLM_REPO,
+        "unitree_vlm_revision": DEFAULT_UNITREE_VLM_REVISION,
         "dependency_profile": normalized_dependency_profile,
         "dependency_profile_supported": not dependency_profile_blockers,
         "dependency_profile_excluded_training_packages": (

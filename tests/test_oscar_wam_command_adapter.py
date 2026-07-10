@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from tests.runpy_entrypoint import run_module_as_main
 
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
@@ -1119,7 +1119,7 @@ def test_oscar_wam_run_main_and_module_guard_edges(
     monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(module_output))
     monkeypatch.setattr(sys, "argv", ["oscar_wam_command_adapter.py"])
     with pytest.raises(SystemExit) as exc:
-        runpy.run_module("blueprint_pipeline.oscar_wam_command_adapter", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.oscar_wam_command_adapter")
     assert exc.value.code == 2
     assert json.loads(module_output.read_text(encoding="utf-8"))["status"] == "blocked"
 

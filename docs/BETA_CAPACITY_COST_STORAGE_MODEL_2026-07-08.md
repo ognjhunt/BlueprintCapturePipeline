@@ -81,10 +81,19 @@ exports without changing the report schema.
 - Cohort hard-stop threshold: `$5000`.
 - `scripts/gpu_spend_guard.py` persists the rolling
   `gpu_spend_ledger.v1` and `gpu_fleet_budget_guard.v1` daily/total fleet
-  budget status used by provider prelaunch gates.
-- Terraform declares optional project-scoped billing budget
-  `google_billing_budget.gpu_fleet_beta`; set `billing_account_id` before a
-  production apply to bind the `$5000` hard-stop budget to the GCP project.
+  budget status, reconciles it against a current complete provider billing
+  export, and writes the production `blueprint.paid_spend_admission_lock.v1`
+  consumed by the shared paid-lane chokepoint. `$5000.00` is blocked, not
+  admitted.
+- Terraform's optional project-scoped
+  `google_billing_budget.gpu_fleet_beta` remains an alerting input, not an
+  admission control. Set `billing_account_id` for production, but do not call
+  the budget resource itself a hard stop.
+- The systemd guard stops new paid work, emits the page event, and records
+  controlled drain/provider-confirmed teardown state. A short-lived override
+  requires two-person approval, a durable ticket, safe file permissions, and a
+  maximum four-hour validity interval. See
+  `docs/PAID_SPEND_ADMISSION_LOCK.md`.
 
 ## Storage Lifecycle
 

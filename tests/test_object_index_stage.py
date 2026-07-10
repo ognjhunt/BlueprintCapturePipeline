@@ -13,6 +13,7 @@ from blueprint_pipeline.ios_manifest import IOSManifest
 from blueprint_pipeline.local_capture import LocalCaptureContext
 from blueprint_pipeline import object_index_stage as oi
 from blueprint_pipeline.object_index_stage import _existing_index_is_reusable
+from blueprint_pipeline.object_index_artifacts import resolve_current_object_index_artifacts
 
 
 def _descriptor(raw_prefix_uri: str = "gs://bucket/scenes/scene/captures/capture/raw") -> CaptureDescriptor:
@@ -377,18 +378,127 @@ def test_run_object_index_stage_all_backends_skipped_emits_empty_artifacts(
     result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
     build_report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
 
-    assert result["status"] == "built"
+    assert result["status"] == "blocked_zero_usable_artifacts"
     assert result["object_count"] == 0
     assert build_report["empty_index_cause"] == "backend_skipped"
     assert Path(result["manifest_path"]).is_file()
     assert Path(result["report_path"]).is_file()
-    grounding_hints = context.raw_root / "object_grounding_hints.json"
+    grounding_hints = Path(result["manifest_path"]).with_name("object_grounding_hints.json")
     assert grounding_hints.is_file()
     grounding_payload = json.loads(grounding_hints.read_text(encoding="utf-8"))
     assert grounding_payload["grounded_objects"] == []
     assert grounding_payload["manipulation_candidates"] == []
     assert grounding_payload["articulation_hints"] == []
     assert grounding_payload["tasks"] == []
+
+
+def test_object_index_runs_are_immutable_raw_preserving_and_clear_stale_current_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root, context = _capture_tree(tmp_path)
+    keyframe = _keyframe(tmp_path, 0)
+    backend_mode = {"ready": True}
+
+    monkeypatch.setattr(oi, "resolve_local_capture_context", lambda _capture_root: context)
+    monkeypatch.setattr(oi, "build_capture_enrichment_runner", lambda **_kwargs: None)
+    monkeypatch.setattr(oi, "_sample_keyframes", lambda **_kwargs: [keyframe])
+    monkeypatch.setattr(oi, "_extract_keyframe_images", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(oi, "_resolve_video_path", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(oi, "_command_from_env", lambda name: f"{name} command")
+    monkeypatch.setattr(
+        oi,
+        "_backend_preflight_status",
+        lambda backend_name, command_template: {
+            "status": "ready",
+            "support_level": "required",
+        },
+    )
+    monkeypatch.setattr(oi, "_copy_crop", lambda _frame, path, _bbox: path.write_bytes(b"crop"))
+
+    def backend(backend_name: str, **_kwargs):
+        if backend_name == "yolo_world" and backend_mode["ready"]:
+            return {
+                "status": "ok",
+                "backend": backend_name,
+                "payload": {
+                    "detections": [
+                        {
+                            "frame_index": 0,
+                            "label": "Tote",
+                            "score": 0.9,
+                            "bbox": [0, 0, 10, 10],
+                        }
+                    ]
+                },
+            }
+        return {
+            "status": "ok",
+            "backend": backend_name,
+            "payload": {"detections": []},
+        }
+
+    monkeypatch.setattr(oi, "_run_backend_command", backend)
+    raw_before = {
+        path.relative_to(context.raw_root).as_posix(): path.read_bytes()
+        for path in context.raw_root.rglob("*")
+        if path.is_file()
+    }
+
+    ready = oi.run_object_index_stage(capture_root=capture_root)
+    reused = oi.run_object_index_stage(capture_root=capture_root)
+
+    assert ready["status"] == "built"
+    assert ready["object_count"] == 1
+    assert "/pipeline/derived/object_index/runs/" in str(ready["object_index_uri"])
+    ready_payload = json.loads(Path(ready["manifest_path"]).read_text(encoding="utf-8"))
+    crop_reference = ready_payload["objects"][0]["reference_crop"]
+    assert ".staging" not in crop_reference
+    assert (capture_root / crop_reference).is_file()
+    assert reused["status"] == "reused_immutable_run"
+    assert reused["run_fingerprint"] == ready["run_fingerprint"]
+    assert len(list((context.pipeline_root / "derived" / "object_index" / "runs").iterdir())) == 1
+
+    backend_mode["ready"] = False
+    blocked = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
+
+    assert blocked["status"] == "blocked_zero_usable_artifacts"
+    assert blocked["object_index_uri"] is None
+    assert blocked["current_usable_object_count"] == 0
+    assert blocked["current_usable_artifacts"] == []
+    pointer = json.loads(
+        (context.pipeline_root / "derived" / "object_index" / "current.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert pointer["status"] == "blocked_zero_usable_artifacts"
+    assert pointer["object_index_uri"] is None
+    assert pointer["current_usable_artifacts"] == []
+    current_descriptor = json.loads(context.descriptor_path.read_text(encoding="utf-8"))
+    assert current_descriptor["object_index_uri"] is None
+    assert current_descriptor["metadata"]["object_index_run"]["current_usable_object_count"] == 0
+    assert json.loads(Path(ready["manifest_path"]).read_text(encoding="utf-8"))["objects"]
+    assert len(list((context.pipeline_root / "derived" / "object_index" / "runs").iterdir())) == 2
+    raw_after = {
+        path.relative_to(context.raw_root).as_posix(): path.read_bytes()
+        for path in context.raw_root.rglob("*")
+        if path.is_file()
+    }
+    assert raw_after == raw_before
+    assert not (context.raw_root / "object_index.json").exists()
+    assert not (context.raw_root / "object_index_artifacts").exists()
+
+    resolved_blocked = resolve_current_object_index_artifacts(capture_root)
+    assert resolved_blocked["status"] == "blocked_zero_usable_artifacts"
+    assert resolved_blocked["objects"] == []
+    oi.write_json(context.raw_root / "object_index.json", {"objects": [{"id": "stale"}]})
+    blocked_run = capture_root / pointer["run_path"]
+    (blocked_run / "unexpected_stale_member.txt").write_text("stale", encoding="utf-8")
+    invalid = resolve_current_object_index_artifacts(capture_root)
+    assert invalid["status"] == "invalid"
+    assert invalid["object_index_path"] is None
+    assert invalid["objects"] == []
+    assert "current_run_member_set_or_hash_mismatch" in invalid["blockers"]
 
 
 def test_run_object_index_stage_stamps_unrecognized_environment_default_bank(
@@ -833,6 +943,62 @@ def test_object_index_object_synthesis_llm_and_grounding_helpers(
     assert objects[0]["reference_crop"] == "existing.png"
     assert objects[0]["mean_confidence"] == 0.7
     assert objects[0]["provenance"]["privacy_penalty_applied"] is True
+    assert objects[0]["metric_placement_ready"] is False
+    assert objects[0]["physics_ready"] is False
+    assert objects[0]["bounding_box_role"] == "visualization_only_2d_proxy"
+    assert objects[0]["provenance"]["canonical_truth"] is False
+    assert objects[0]["provenance"]["presentation_only"] is True
+
+    metric_evidence = oi._validated_metric_geometry_evidence(
+        [
+            {
+                "frame_index": 0,
+                "world_center": [1.0, 2.0, 3.0],
+                "world_extents": [0.2, 0.3, 0.4],
+                "metric_geometry_evidence": {
+                    "method": "calibrated_depth_ray",
+                    "camera_calibration_ref": "camera/calibration.json",
+                    "translation_uncertainty_m": 0.02,
+                    "reprojection_error_px": 0.8,
+                },
+            }
+        ]
+    )
+    assert metric_evidence[0]["method"] == "calibrated_depth_ray"
+    mixed_metric_evidence = oi._validated_metric_geometry_evidence(
+        [
+            {
+                "frame_index": 0,
+                "world_center": [1.0, 2.0, 3.0],
+                "world_extents": [0.2, 0.3, 0.4],
+                "metric_geometry_evidence": {
+                    "method": "calibrated_depth_ray",
+                    "camera_calibration_ref": "camera/calibration.json",
+                    "translation_uncertainty_m": 0.02,
+                    "reprojection_error_px": 0.8,
+                },
+            },
+            {
+                "frame_index": 1,
+                "world_center": [100.0, 100.0, 100.0],
+                "world_extents": [50.0, 50.0, 50.0],
+            },
+        ]
+    )
+    assert oi._synthesized_bbox(
+        mixed_metric_evidence,
+        keyframes_by_index=keyframes,
+        cluster_index=1,
+        label="cabinet",
+    )["center"] == [1.0, 2.0, 3.0]
+    assert oi._validated_metric_geometry_evidence(
+        [
+            {
+                "world_center": [1.0, 2.0, 3.0],
+                "world_extents": [0.2, 0.3, 0.4],
+            }
+        ]
+    ) == []
 
     assert oi._apply_llm_task_relevance(runner=None, descriptor=descriptor, objects=objects) is None
     assert oi._apply_llm_task_relevance(runner=lambda *_args: ["bad"], descriptor=descriptor, objects=objects) is None
@@ -902,7 +1068,7 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     assert "object_index_uri" not in json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest_path.write_text('{"scene_id": "scene"}', encoding="utf-8")
     oi._write_manifest_updates(manifest_path)
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["object_index_uri"] == "object_index.json"
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == {"scene_id": "scene"}
     missing_manifest = tmp_path / "missing_manifest.json"
     oi._write_manifest_updates(missing_manifest)
     assert not missing_manifest.exists()
@@ -927,17 +1093,11 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     legacy_index.write_text('{"objects": []}', encoding="utf-8")
     canonicalized = oi._canonicalize_legacy_index(context=context, descriptor=descriptor)
     assert canonicalized is not None
-    assert canonicalized["status"] == "canonicalized_legacy"
+    assert canonicalized["status"] == "imported_legacy_capture_index"
 
     reused = oi._canonicalize_legacy_index(context=context, descriptor=descriptor)
     assert reused is not None
-    assert reused["status"] == "reused"
-    (context.raw_root / "object_index_build_report.json").write_text(
-        json.dumps({"object_count": 0, "empty_index_cause": "runtime_missing"}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(oi, "load_object_index", lambda *_args, **_kwargs: [])
-    assert oi._canonicalize_legacy_index(context=context, descriptor=descriptor) is None
+    assert reused["status"] == "reused_immutable_run"
 
     assert _existing_index_is_reusable(loaded=[{"id": "x"}], report=None) is True
     assert _existing_index_is_reusable(loaded=[], report=None) is False
@@ -1019,7 +1179,9 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
     assert report["prompt_bank"]["all"][-1] == "hinge"
     assert report["llm_enrichment"]["workflow_target_resolver"]["tasks"][0]["task_id"] == "llm-task"
-    grounding = json.loads((stage_context.raw_root / "object_grounding_hints.json").read_text(encoding="utf-8"))
+    grounding = json.loads(
+        Path(result["manifest_path"]).with_name("object_grounding_hints.json").read_text(encoding="utf-8")
+    )
     assert grounding["tasks"][0]["task_id"] == "llm-task"
 
     def existing_object_backend(backend_name: str, **_kwargs):
@@ -1052,7 +1214,9 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     monkeypatch.setattr(oi, "_run_backend_command", existing_object_backend)
     existing_result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
     assert existing_result["object_count"] == 1
-    existing_grounding = json.loads((stage_context.raw_root / "object_grounding_hints.json").read_text(encoding="utf-8"))
+    existing_grounding = json.loads(
+        Path(existing_result["manifest_path"]).with_name("object_grounding_hints.json").read_text(encoding="utf-8")
+    )
     assert existing_grounding["scene_relationship_candidates"][0]["relationship"] == "near"
 
     empty_cases = [
@@ -1228,7 +1392,7 @@ def test_run_object_index_stage_normalizes_mixed_malformed_backend_reports(
 
     result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
 
-    assert result["status"] == "built"
+    assert result["status"] == "blocked_zero_usable_artifacts"
     assert result["object_count"] == 0
     report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
     # No detections survived normalization -> empty index, valid cause recorded.
@@ -1238,7 +1402,9 @@ def test_run_object_index_stage_normalizes_mixed_malformed_backend_reports(
     assert Path(result["manifest_path"]).is_file()
     manifest_payload = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest_payload["objects"] == []
-    grounding = json.loads((stage_context.raw_root / "object_grounding_hints.json").read_text(encoding="utf-8"))
+    grounding = json.loads(
+        Path(result["manifest_path"]).with_name("object_grounding_hints.json").read_text(encoding="utf-8")
+    )
     assert grounding["grounded_objects"] == []
     assert grounding["manipulation_candidates"] == []
     assert grounding["articulation_hints"] == []

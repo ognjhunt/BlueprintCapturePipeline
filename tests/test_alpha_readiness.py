@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,25 @@ from blueprint_pipeline.alpha_readiness import (
 from blueprint_pipeline.evaluation_prep_stage import run_evaluation_prep_stage
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
+
+
+def _rehash_raw_bundle(raw_root: Path) -> None:
+    artifacts = {
+        path.relative_to(raw_root).as_posix(): sha256(path.read_bytes()).hexdigest()
+        for path in sorted(raw_root.rglob("*"))
+        if path.is_file() and path.name != "hashes.json"
+    }
+    canonical = "\n".join(f"{name}:{artifacts[name]}" for name in sorted(artifacts))
+    (raw_root / "hashes.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "bundle_sha256": sha256(canonical.encode("utf-8")).hexdigest(),
+                "artifacts": artifacts,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _successful_capture_review() -> dict[str, object]:
@@ -169,6 +189,7 @@ def _set_alpha_env(monkeypatch, tmp_path: Path, *, include_runtime: bool, includ
     }
     if include_runtime:
         values["SITE_WORLD_RUNTIME_SERVICE_URL"] = "http://runtime.test"
+        values["SITE_WORLD_RUNTIME_SERVICE_API_KEY"] = "runtime-token"
     if include_video_to_world:
         values["VIDEO_TO_WORLD_URL"] = "https://vtw.test"
         values["VIDEO_TO_WORLD_RUNNER_TOKEN"] = "vtw-token"
@@ -304,6 +325,9 @@ def _write_geometry_lane(monkeypatch) -> None:  # type: ignore[no-untyped-def]
                     "height": 12,
                     "min_depth_m": 1.5,
                     "max_depth_m": 1.5,
+                    "depth_unit": "meters",
+                    "metric_depth_truth": True,
+                    "depth_measurement_source": "provider_metric_reconstruction",
                     "confidence_range": [0.0, 1.0],
                 }
             )
@@ -463,18 +487,39 @@ def _build_capture(
     capture_root = tmp_path / bucket / "scenes" / scene_id / "captures" / capture_id
     raw_root = capture_root / "raw"
     raw_root.mkdir(parents=True)
+    arkit_enabled = include_arkit if include_arkit is not None else capture_modality == "iphone_arkit_lidar"
 
     manifest_payload = {
+        "schema_version": "v3",
+        "capture_schema_version": "3.0.0",
         "scene_id": scene_id,
         "capture_id": capture_id,
         "video_uri": "walkthrough.mov",
         "capture_source": capture_source,
+        "capture_tier_hint": "tier1_iphone" if capture_source == "iphone" else "video_only",
+        "capture_profile_id": capture_modality,
+        "capture_capabilities": {
+            "camera_pose": arkit_enabled,
+            "camera_intrinsics": arkit_enabled,
+            "depth": arkit_enabled,
+        },
+        "coordinate_frame_session_id": f"cfs-{capture_source}-fixture",
+        "capture_start_epoch_ms": 1_700_000_000_000,
+        "app_version": "1.0.0-test",
+        "app_build": "1",
+        "ios_version": "18.0-test",
+        "ios_build": "22A-test",
+        "hardware_model_identifier": f"{capture_source}-fixture-device",
+        "device_model_marketing": f"{capture_source} fixture device",
+        "depth_supported": arkit_enabled,
+        "rights_profile": "documented_permission",
         "capture_job_id": f"capture-job-{capture_source}",
         "buyer_request_id": f"buyer-request-{capture_source}",
         "site_submission_id": f"site-submission-{capture_source}",
         "width": 1920,
         "height": 1080,
-        "has_lidar": capture_source == "iphone",
+        "fps_source": 30.0,
+        "has_lidar": arkit_enabled,
         "requested_outputs": ["qualification", "preview_simulation", "deeper_evaluation"],
         "quoted_payout_cents": 6500,
         "capture_rights": {
@@ -490,8 +535,6 @@ def _build_capture(
     if site_type:
         manifest_payload["site_type"] = site_type
         manifest_payload["intended_space_type"] = site_type
-    arkit_enabled = include_arkit if include_arkit is not None else capture_modality == "iphone_arkit_lidar"
-    manifest_payload["has_lidar"] = arkit_enabled
     (raw_root / "manifest.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
     (raw_root / "intake_packet.json").write_text(
         json.dumps(
@@ -519,7 +562,16 @@ def _build_capture(
         }
     (raw_root / "capture_context.json").write_text(json.dumps(context_payload), encoding="utf-8")
     (raw_root / "capture_upload_complete.json").write_text(
-        json.dumps({"sceneId": scene_id, "captureId": capture_id}),
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "sceneId": scene_id,
+                "captureId": capture_id,
+                "raw_prefix": f"scenes/{scene_id}/captures/{capture_id}/raw",
+                "completed_at": "2026-07-09T12:00:00Z",
+                "status": "complete",
+            }
+        ),
         encoding="utf-8",
     )
     (raw_root / "walkthrough.mov").write_bytes(b"not-a-real-video")
@@ -535,6 +587,8 @@ def _build_capture(
             encoding="utf-8",
         )
         (arkit_root / "depth" / "000001.png").write_bytes(b"depth")
+
+    _rehash_raw_bundle(raw_root)
 
     materialized = materialize_capture_bundle(
         bucket=bucket,

@@ -479,7 +479,20 @@ def _ready_runpod_request(path: Path) -> Path:
 
 
 def _python_command(code: str) -> str:
-    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    ownership_prefix = (
+        "import json, os, sys; "
+        "p=os.environ['BLUEPRINT_PROVIDER_ALLOCATION_RECORD_PATH']; "
+        "t=p+'.tmp'; "
+        "r={'schema_version':'robot_eval_provider_allocation_record.v1',"
+        "'launch_attempt_id':os.environ['BLUEPRINT_PROVIDER_LAUNCH_ATTEMPT_ID'],"
+        "'provider_resource_id':'test-provider-resource',"
+        "'persisted_before_provider_side_effects':True,"
+        "'teardown_argv':[sys.executable,'-c','raise SystemExit(0)'],"
+        "'verify_absent_argv':[sys.executable,'-c','raise SystemExit(0)']}; "
+        "f=open(t,'w',encoding='utf-8'); json.dump(r,f); f.flush(); "
+        "os.fsync(f.fileno()); f.close(); os.replace(t,p); "
+    )
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(ownership_prefix + code)}"
 
 
 def test_provider_adapters_log_blocked_completed_and_redacted_failures(

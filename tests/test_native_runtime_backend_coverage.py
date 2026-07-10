@@ -61,7 +61,18 @@ def _write_site_index(path: Path) -> None:
                 "reference_id": "ref-1",
                 "frame_uri": "gs://bucket/frames/000001.jpg",
                 "T_world_camera": np.eye(4).tolist(),
-                "intrinsics": {"width": 320, "height": 240, "fx": 500.0},
+                "intrinsics": {
+                    "width": 320,
+                    "height": 240,
+                    "fx": 500.0,
+                    "fy": 500.0,
+                    "cx": 160.0,
+                    "cy": 120.0,
+                },
+                "reference_frame": "site_world",
+                "camera_frame": "head_rgb",
+                "translation_unit": "m",
+                "reprojection_error_px": 0.5,
             }
         )
         + "\n",
@@ -159,9 +170,22 @@ def test_native_runtime_low_level_helper_edges(tmp_path: Path, monkeypatch: pyte
     intrinsics, height, width = nrb._intrinsics_from_site_index(index_path)
     assert intrinsics["width"] == 320
     assert (height, width) == (240, 320)
-    default_intrinsics, default_h, default_w = nrb._intrinsics_from_site_index(tmp_path / "missing.jsonl")
-    assert default_intrinsics["cx"] == pytest.approx(480.0)
-    assert (default_h, default_w) == (540, 960)
+    with pytest.raises(RuntimeError, match="site_index_camera_calibration_unreadable"):
+        nrb._intrinsics_from_site_index(tmp_path / "missing.jsonl")
+
+    invalid_index = tmp_path / "invalid-camera-index.jsonl"
+    invalid_index.write_text(
+        json.dumps(
+            {
+                "T_world_camera": np.eye(4).tolist(),
+                "intrinsics": {"width": 320, "height": 240, "fx": 500.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="site_index_camera_calibration_blocked"):
+        nrb._intrinsics_from_site_index(invalid_index)
 
     bad_manifest = tmp_path / "bad_site_reference_manifest.json"
     bad_manifest.write_text(json.dumps({"schema_version": "bad"}), encoding="utf-8")
@@ -388,12 +412,24 @@ def test_native_runtime_generation_and_media_branches(
     store = _store(tmp_path)
     store.register_site_world_package(**_payload())
     session_id = "session-coverage"
+    index_path = (
+        tmp_path
+        / "bucket"
+        / "sites"
+        / "site-1"
+        / "reference_memory"
+        / "site_reference_index.jsonl"
+    )
+    _write_site_index(index_path)
     state = {
         "session_id": session_id,
         "site_world_id": "siteworld-1",
         "scene_id": "scene-1",
         "capture_id": "capture-1",
         "site_id": "site-1",
+        "site_index_path": str(index_path),
+        "storage_root": str(tmp_path),
+        "storage_bucket": "bucket",
         "status": "ready",
         "step_count": 0,
         "step_index": 0,

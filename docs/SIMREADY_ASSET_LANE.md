@@ -14,7 +14,7 @@ download robot assets, or claim generated-world rank fidelity.
 
 World Labs / Marble-specific SPZ, PLY, collider mesh GLB, and semantics
 metadata handoff is handled by the sibling
-[`docs/MARBLE_SIM_ASSET_HANDOFF.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/MARBLE_SIM_ASSET_HANDOFF.md)
+[`docs/MARBLE_SIM_ASSET_HANDOFF.md`]($HOME/workspace/BlueprintCapturePipeline/docs/MARBLE_SIM_ASSET_HANDOFF.md)
 lane.
 
 ## Inputs

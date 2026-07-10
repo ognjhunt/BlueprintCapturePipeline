@@ -185,6 +185,10 @@ def test_native_runtime_step_session_runs_live_synthesis_when_site_index_exists(
                     "width": 640,
                     "height": 480,
                 },
+                "reference_frame": "site_world",
+                "camera_frame": "head_rgb",
+                "translation_unit": "m",
+                "reprojection_error_px": 0.5,
             }
         ) + "\n",
         encoding="utf-8",
@@ -289,6 +293,10 @@ def test_native_runtime_session_loads_site_reference_manifest_and_adapter_readin
                     [0.0, 0.0, 0.0, 1.0],
                 ],
                 "intrinsics": {"fx": 1000.0, "fy": 1000.0, "cx": 320.0, "cy": 240.0, "width": 640, "height": 480},
+                "reference_frame": "site_world",
+                "camera_frame": "head_rgb",
+                "translation_unit": "m",
+                "reprojection_error_px": 0.5,
             }
         )
         + "\n",
@@ -984,6 +992,10 @@ def test_runtime_control_prefers_truthful_preview_even_when_generation_owner_is_
                     "width": 640,
                     "height": 480,
                 },
+                "reference_frame": "site_world",
+                "camera_frame": "head_rgb",
+                "translation_unit": "m",
+                "reprojection_error_px": 0.5,
             }
         ) + "\n",
         encoding="utf-8",
@@ -1097,6 +1109,10 @@ def test_runtime_control_runs_async_cosmos_refinement_after_preview_chunk(
                     "width": 640,
                     "height": 480,
                 },
+                "reference_frame": "site_world",
+                "camera_frame": "head_rgb",
+                "translation_unit": "m",
+                "reprojection_error_px": 0.5,
             }
         ) + "\n",
         encoding="utf-8",

@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from blueprint_pipeline.action_normalization import (  # noqa: E402
     ActionValidationConfig,
+    build_action_normalization_from_trace,
     build_action_normalization_manifest,
     compute_normalization_stats,
     normalize_actions,
@@ -24,7 +25,55 @@ from blueprint_pipeline.sc3_eval_protocol import build_sc3_eval_protocol_artifac
 
 
 def _valid_episode(steps: int = 5) -> list[list[float]]:
-    return [[0.01 * i, 0.0, 0.005, 0.0, 0.02, 0.0, 0.5] for i in range(steps)]
+    return [
+        [
+            0.01 * i,
+            -0.005 * i,
+            0.002 * i,
+            0.01 * i,
+            -0.008 * i,
+            0.006 * i,
+            -0.5 + 0.1 * i,
+        ]
+        for i in range(steps)
+    ]
+
+
+def _episode_payload(actions: list[list[float]] | None = None) -> dict:
+    rows = actions or _valid_episode()
+    timestamps = [index / 10.0 for index in range(len(rows))]
+    return {
+        "actions": rows,
+        "chunk_start_times_sec": timestamps,
+        "frame_times_sec": timestamps,
+        "control_rate_hz": 10.0,
+    }
+
+
+def _action_space() -> dict:
+    return {
+        "dim": 7,
+        "representation": "7d_delta_end_effector_pose",
+        "order": [
+            "delta_x_m",
+            "delta_y_m",
+            "delta_z_m",
+            "delta_roll_rad",
+            "delta_pitch_rad",
+            "delta_yaw_rad",
+            "gripper_normalized",
+        ],
+        "units": ["m", "m", "m", "rad", "rad", "rad", "normalized"],
+    }
+
+
+def _provenance() -> dict:
+    return {
+        "source_trace_path": "/tmp/policy_execution_trace.json",
+        "source_trace_sha256": "a" * 64,
+        "trace_schema_version": "robot_policy_execution_trace.v1",
+        "consumed_by": "unit_test_sc3_evaluator",
+    }
 
 
 def test_validate_action_stream_accepts_valid_7d_stream() -> None:
@@ -77,7 +126,7 @@ def test_stats_are_per_dimension_and_never_fabricated() -> None:
     stats = compute_normalization_stats({"ep1": _valid_episode(10)})
     assert stats is not None
     assert len(stats["per_dimension"]) == 7
-    assert stats["per_dimension"][6]["mean"] == 0.5  # constant gripper column
+    assert stats["per_dimension"][6]["std"] > 0.0
 
     assert compute_normalization_stats({}) is None
     assert compute_normalization_stats({"bad": [[1, 2]]}) is None
@@ -92,36 +141,127 @@ def test_normalize_actions_returns_copy_and_zero_centers() -> None:
     column_mean = sum(row[0] for row in normalized) / len(normalized)
     assert abs(column_mean) < 1e-6
     # Raw stream untouched.
-    assert episode[0][6] == 0.5
+    assert episode[0][6] == -0.5
 
 
-def test_manifest_validates_and_persists_stats(tmp_path: Path) -> None:
+def test_manifest_fails_closed_when_any_episode_is_rejected(tmp_path: Path) -> None:
     manifest = build_action_normalization_manifest(
         output_dir=tmp_path,
         episodes={
-            "good": {"actions": _valid_episode()},
-            "bad_dim": {"actions": [[1.0, 2.0]]},
+            "good": _episode_payload(),
+            "bad_dim": _episode_payload([[1.0, 2.0]]),
         },
-        action_space={"dim": 7},
+        action_space=_action_space(),
+        corpus_provenance=_provenance(),
     )
-    assert manifest["status"] == "validated"
+    assert manifest["status"] == "blocked"
     assert manifest["accepted_episode_count"] == 1
     assert manifest["rejected_episode_count"] == 1
     assert manifest["episode_results"]["bad_dim"]["valid"] is False
+    assert "one_or_more_action_episodes_rejected" in manifest["blockers"]
+    assert manifest["action_norm_stats_path"] is None
+
+
+def test_manifest_validates_exact_timed_trace_and_persists_hashed_outputs(
+    tmp_path: Path,
+) -> None:
+    manifest = build_action_normalization_manifest(
+        output_dir=tmp_path,
+        episodes={"good": _episode_payload()},
+        action_space=_action_space(),
+        corpus_provenance=_provenance(),
+    )
+    assert manifest["status"] == "validated"
     stats = json.loads(Path(manifest["action_norm_stats_path"]).read_text(encoding="utf-8"))
     assert len(stats["per_dimension"]) == 7
+    assert len(manifest["action_norm_stats_sha256"]) == 64
+    assert len(manifest["normalized_action_corpus_sha256"]) == 64
+    assert manifest["exact_consumed_trace_bound"] is True
+    assert manifest["all_dimensions_nonzero_variance"] is True
     assert manifest["raw_actions_untouched"] is True
 
 
 def test_manifest_blocks_when_no_valid_episode(tmp_path: Path) -> None:
     manifest = build_action_normalization_manifest(
         output_dir=tmp_path,
-        episodes={"bad": {"actions": [[1.0]]}},
-        action_space={"dim": 7},
+        episodes={"bad": _episode_payload([[1.0]])},
+        action_space=_action_space(),
+        corpus_provenance=_provenance(),
     )
     assert manifest["status"] == "blocked"
     assert manifest["action_norm_stats_path"] is None
     assert "no_valid_action_episodes" in manifest["blockers"]
+
+
+def test_manifest_blocks_missing_timing_and_zero_variance(tmp_path: Path) -> None:
+    missing_time = build_action_normalization_manifest(
+        output_dir=tmp_path / "missing-time",
+        episodes={"bad": {"actions": _valid_episode()}},
+        action_space=_action_space(),
+        corpus_provenance=_provenance(),
+    )
+    assert missing_time["status"] == "blocked"
+    assert "chunk_timestamps_missing" in missing_time["episode_results"]["bad"]["reasons"]
+    constant = [[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.5] for _ in range(5)]
+    zero_variance = build_action_normalization_manifest(
+        output_dir=tmp_path / "zero-variance",
+        episodes={"bad": _episode_payload(constant)},
+        action_space=_action_space(),
+        corpus_provenance=_provenance(),
+    )
+    assert zero_variance["status"] == "blocked"
+    assert any(
+        blocker.startswith("normalization_zero_or_invalid_variance")
+        for blocker in zero_variance["blockers"]
+    )
+
+
+def test_trace_builder_uses_only_explicit_vectors_and_exact_trace_hash(tmp_path: Path) -> None:
+    actions = _valid_episode()
+    timestamps = [index / 10.0 for index in range(len(actions))]
+    trace = {
+        "schema_version": "robot_policy_execution_trace.v1",
+        "attempts": [
+            {
+                "attempt_id": "attempt-1",
+                "actions": [
+                    {
+                        "delta_end_effector_pose_7d": vector,
+                        "timestamp_sec": timestamp,
+                    }
+                    for vector, timestamp in zip(actions, timestamps)
+                ],
+                "frame_times_sec": timestamps,
+                "control_rate_hz": 10.0,
+            }
+        ],
+    }
+    trace_path = tmp_path / "policy_execution_trace.json"
+    trace_path.write_text(json.dumps(trace), encoding="utf-8")
+    manifest = build_action_normalization_from_trace(
+        output_dir=tmp_path,
+        trace=trace,
+        source_trace_path=trace_path,
+        consumed_by="unit_test_sc3_evaluator",
+        action_space=_action_space(),
+    )
+    assert manifest["status"] == "validated"
+    assert manifest["corpus_provenance"]["source_trace_file_present"] is True
+    assert len(manifest["source_trace_sha256"]) == 64
+
+    trace["attempts"][0]["actions"] = [
+        {"action_type": "stop", "timestamp_sec": timestamp}
+        for timestamp in timestamps
+    ]
+    blocked = build_action_normalization_from_trace(
+        output_dir=tmp_path / "blocked",
+        trace=trace,
+        source_trace_path=tmp_path / "missing-trace.json",
+        consumed_by="unit_test_sc3_evaluator",
+        action_space=_action_space(),
+    )
+    assert blocked["status"] == "blocked"
+    assert "no_valid_action_episodes" in blocked["blockers"]
 
 
 def _sc3_kwargs() -> dict:
@@ -144,8 +284,9 @@ def test_sc3_action_chunks_blocked_without_normalization_manifest() -> None:
 def test_sc3_action_chunks_reviewable_with_validated_normalization(tmp_path: Path) -> None:
     norm_manifest = build_action_normalization_manifest(
         output_dir=tmp_path,
-        episodes={"good": {"actions": _valid_episode()}},
-        action_space={"dim": 7},
+        episodes={"good": _episode_payload()},
+        action_space=_action_space(),
+        corpus_provenance=_provenance(),
     )
     artifact = build_sc3_eval_protocol_artifact(
         **_sc3_kwargs(), action_normalization_manifest=norm_manifest

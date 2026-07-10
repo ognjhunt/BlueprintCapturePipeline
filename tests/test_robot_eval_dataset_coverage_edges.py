@@ -133,17 +133,31 @@ def test_object_index_and_center_helpers_cover_fallback_and_invalid_geometry() -
             "objects": [
                 "skip",
                 {"object_id": _BlankTruthy()},
-                {"id": "nested", "placement_bbox": [[0, 0, 0], [2, 4, 6]]},
-                {"id": "flat", "bbox": [0, 1, 2, 2, 3, 4]},
-                {"id": "bad", "bbox": [0, "bad", 2, 2, 3, 4]},
+                {"id": "nested", "placement_bbox": [[0, 0, 0], [2, 4, 6]], "metric_placement_ready": True},
+                {"id": "flat", "bbox": [0, 1, 2, 2, 3, 4], "metric_placement_ready": True},
+                {"id": "bad", "bbox": [0, "bad", 2, 2, 3, 4], "metric_placement_ready": True},
+                {
+                    "id": "two_d_proxy",
+                    "placement_bbox": [[0, 0, 0], [2, 4, 6]],
+                    "collision_hulls": [{"kind": "box"}],
+                    "support_surfaces": [{"kind": "plane"}],
+                    "metric_placement_ready": False,
+                    "physics_ready": False,
+                },
             ]
         }
     )
 
-    assert set(objects) == {"nested", "flat", "bad"}
+    assert set(objects) == {"nested", "flat", "bad", "two_d_proxy"}
     assert objects["nested"]["center_xyz"] == [1.0, 2.0, 3.0]
     assert objects["flat"]["center_xyz"] == [1.0, 2.0, 3.0]
     assert objects["bad"]["center_xyz"] is None
+    assert objects["two_d_proxy"]["center_xyz"] is None
+    assert objects["two_d_proxy"]["has_collision_hulls"] is False
+    assert objects["two_d_proxy"]["has_support_surfaces"] is False
+    index = red._object_index({"objects": [{"id": "two_d_proxy", "metric_placement_ready": False}]})
+    assert index["metric_placement_object_count"] == 0
+    assert index["physics_covered_object_count"] == 0
 
 
 @pytest.mark.parametrize(

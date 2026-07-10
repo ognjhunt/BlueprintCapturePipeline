@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-import threading
 import builtins
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +18,7 @@ from blueprint_pipeline.manipulation_physics_simulator_command import (
 )
 from blueprint_pipeline.lucky_g1_reference_adapter import run_lucky_g1_reference_adapter
 from blueprint_pipeline.robot_eval_execution import build_policy_execution_bundle
+import blueprint_pipeline.robot_eval_execution as robot_eval_execution
 
 
 pytestmark = pytest.mark.slow
@@ -582,79 +582,70 @@ def test_team_manipulation_policy_endpoint_runs_through_policy_execution_bundle(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("BLUEPRINT_ALLOW_POLICY_EXECUTION", "true")
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802
-            _ = self.rfile.read(int(self.headers.get("content-length", "0")))
-            payload = {
-                "attempts": [
-                    {
-                        "attempt_id": "team-manip-1",
-                        "scenario_eval_run_id": "run-tote-1",
-                        "task_id": "carry_tote_home",
-                        "policy_id": "team-vla-policy",
-                        "policy_kind": "mobile_manipulation_pick_carry_place",
-                        "status": "completed",
-                        "success": True,
-                        "actions": [
-                            {"action": "navigate_to_object", "status": "completed"},
-                            {"action": "lift", "status": "completed"},
-                            {"action": "carry_to_return_pose", "status": "completed"},
-                            {"action": "place", "status": "completed"},
-                        ],
-                        "metrics": {
-                            "grasp_physics_validated": True,
-                            "carry_physics_validated": True,
-                        },
-                    }
-                ]
-            }
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *_args: object) -> None:
-            return
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        endpoint = f"http://127.0.0.1:{server.server_port}/policy"
-        job_dir = tmp_path / "job-endpoint"
-        job_dir.mkdir()
-        result = build_policy_execution_bundle(
-            capture_root=tmp_path,
-            job_dir=job_dir,
-            job_request={
-                "schema_version": "robot_eval_job_request.v1",
-                "policy_package": {
-                    "policy_api_endpoint": {
-                        "endpoint_url": endpoint,
-                        "policy_id": "team-vla-policy",
-                    }
-                },
-            },
-            observation_manifest={
-                "schema_version": "robot_pov_observation_manifest.v1",
-                "observations": [
-                    {
-                        "observation_id": "obs-1",
-                        "scenario_id": "scenario-tote",
-                        "scenario_eval_run_id": "run-tote-1",
-                        "task_id": "carry_tote_home",
-                    }
+    monkeypatch.setenv(
+        "BLUEPRINT_POLICY_ENDPOINT_ALLOWED_ORIGINS",
+        "https://policy.example",
+    )
+    payload = {
+        "attempts": [
+            {
+                "attempt_id": "team-manip-1",
+                "scenario_eval_run_id": "run-tote-1",
+                "task_id": "carry_tote_home",
+                "policy_id": "team-vla-policy",
+                "policy_kind": "mobile_manipulation_pick_carry_place",
+                "status": "completed",
+                "success": True,
+                "actions": [
+                    {"action": "navigate_to_object", "status": "completed"},
+                    {"action": "lift", "status": "completed"},
+                    {"action": "carry_to_return_pose", "status": "completed"},
+                    {"action": "place", "status": "completed"},
                 ],
+                "metrics": {
+                    "grasp_physics_validated": True,
+                    "carry_physics_validated": True,
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        robot_eval_execution,
+        "fetch_bounded_https",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            body=json.dumps(payload).encode("utf-8"),
+            status=200,
+        ),
+    )
+
+    job_dir = tmp_path / "job-endpoint"
+    job_dir.mkdir()
+    result = build_policy_execution_bundle(
+        capture_root=tmp_path,
+        job_dir=job_dir,
+        job_request={
+            "schema_version": "robot_eval_job_request.v1",
+            "policy_package": {
+                "policy_api_endpoint": {
+                    "endpoint_url": "https://policy.example/policy",
+                    "policy_id": "team-vla-policy",
+                }
             },
-            allow_policy_execution=True,
-            generated_at="2026-06-14T00:00:00+00:00",
-        )
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
+        },
+        observation_manifest={
+            "schema_version": "robot_pov_observation_manifest.v1",
+            "observations": [
+                {
+                    "observation_id": "obs-1",
+                    "scenario_id": "scenario-tote",
+                    "scenario_eval_run_id": "run-tote-1",
+                    "task_id": "carry_tote_home",
+                }
+            ],
+        },
+        allow_policy_execution=True,
+        generated_at="2026-06-14T00:00:00+00:00",
+    )
 
     manifest = result["manifest"]
     assert manifest["robot_team_policy_execution_proven"] is True

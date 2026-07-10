@@ -57,6 +57,11 @@ from .provider_reliability_manifest import (
     TEARDOWN_STATUS_SOURCE_PROVIDER_API,
     build_teardown_proof,
 )
+from .security_controls import (
+    exact_https_origin,
+    fetch_bounded_https,
+    origins_from_env,
+)
 
 SCHEMA_VERSION = "isaac_g1_kitchen_parity_job.v1"
 JOB_MANIFEST_FILENAME = "isaac_g1_kitchen_parity_job_manifest.json"
@@ -83,6 +88,11 @@ ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV = "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_F
 COLD_RACE_CONTENDERS_ENV = "BLUEPRINT_COLD_RACE_CONTENDERS"
 DEFAULT_COLD_RACE_CONTENDERS = 2
 DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = 600
+PROVIDER_ARTIFACT_ALLOWED_ORIGINS_ENV = (
+    "BLUEPRINT_PROVIDER_ARTIFACT_ALLOWED_ORIGINS"
+)
+MAX_KITCHEN_ASSET_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_WARM_READINESS_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 ISAAC_G1_MAX_SPEND_USD_ENV = "BLUEPRINT_ISAAC_G1_MAX_SPEND_USD"
 ISAAC_G1_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND"
 UNITREE_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"
@@ -99,6 +109,7 @@ PARITY_BUNDLE_REQUIRED_FILES = (
     "isaac_g1_policy.py",
     "render_visual_qc.py",
     "warm_render_server.py",
+    "warm_render_broker.py",
     "g1_render_noise_audit.py",
     "blueprint_pipeline/__init__.py",
     "blueprint_pipeline/common.py",
@@ -218,6 +229,24 @@ def _inspect_kitchen_asset_dir_layout(path: str | Path) -> dict:
     return detail
 
 
+def _fetch_provider_artifact_bytes(
+    url: str,
+    *,
+    timeout: int,
+    max_bytes: int,
+) -> bytes:
+    allowed_origins = origins_from_env(PROVIDER_ARTIFACT_ALLOWED_ORIGINS_ENV)
+    if not allowed_origins:
+        allowed_origins = (exact_https_origin(url),)
+    return fetch_bounded_https(
+        url,
+        timeout_seconds=timeout,
+        max_bytes=max_bytes,
+        allowed_origins=allowed_origins,
+        max_redirects=0,
+    ).body
+
+
 def _inspect_kitchen_asset_url_layout(kitchen_url: str, *, timeout: int = 1800) -> dict:
     if not str(kitchen_url or "").strip():
         return {
@@ -228,7 +257,11 @@ def _inspect_kitchen_asset_url_layout(kitchen_url: str, *, timeout: int = 1800) 
             "raw_url_values_recorded": False,
         }
     try:
-        data = urllib.request.urlopen(kitchen_url, timeout=timeout).read()
+        data = _fetch_provider_artifact_bytes(
+            kitchen_url,
+            timeout=timeout,
+            max_bytes=MAX_KITCHEN_ASSET_ARCHIVE_BYTES,
+        )
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             detail = _inspect_kitchen_asset_namelist(
                 zf.namelist(),
@@ -921,9 +954,9 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     runner = _repo_root() / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
     policy = _repo_root() / "src" / "blueprint_pipeline" / "isaac_g1_policy.py"
     visual_qc = _repo_root() / "src" / "blueprint_pipeline" / "render_visual_qc.py"
-    # warm_render_server is stdlib-only (no intra-package imports), so a flat copy is importable as
-    # `import warm_render_server` on the worker — the runner's --serve path imports it with a fallback.
+    # Warm transport modules are copied flat for the worker runner's import fallback.
     warm_server = _repo_root() / "src" / "blueprint_pipeline" / "warm_render_server.py"
+    warm_broker = _repo_root() / "src" / "blueprint_pipeline" / "warm_render_broker.py"
     # g1_render_noise_audit degrades its package-relative common import to local fallbacks, so a
     # flat copy is importable as `import g1_render_noise_audit` for the --render-noise-audit mode.
     noise_audit = _repo_root() / "src" / "blueprint_pipeline" / "g1_render_noise_audit.py"
@@ -931,6 +964,7 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     (bundle / "isaac_g1_policy.py").write_bytes(policy.read_bytes())
     (bundle / "render_visual_qc.py").write_bytes(visual_qc.read_bytes())
     (bundle / "warm_render_server.py").write_bytes(warm_server.read_bytes())
+    (bundle / "warm_render_broker.py").write_bytes(warm_broker.read_bytes())
     (bundle / "g1_render_noise_audit.py").write_bytes(noise_audit.read_bytes())
     package_dst = bundle / "blueprint_pipeline"
     package_dst.mkdir(parents=True, exist_ok=True)
@@ -1023,6 +1057,8 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       groot_policy_command: str = "",
                       groot_policy_command_timeout_seconds: float = 120.0,
                       serve: bool = False, inbox_get_url: str = "",
+                      warm_broker_base_url: str = "",
+                      warm_broker_token: str = "",
                       serve_idle_timeout_s: float = 1800.0,
                       serve_max_jobs: int | None = None,
                       vast_max_hourly_rate_usd: float | None = None,
@@ -1124,7 +1160,14 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         if serve_max_jobs is not None:
             env["PARITY_SERVE_MAX_JOBS"] = str(int(serve_max_jobs))
         if inbox_get_url:
-            env["BLUEPRINT_WARM_INBOX_GET_URL"] = inbox_get_url
+            raise ValueError(
+                "single_object_warm_inbox_retired_use_durable_broker"
+            )
+        if bool(warm_broker_base_url) != bool(warm_broker_token):
+            raise ValueError("warm_render_broker_url_and_token_required_together")
+        if warm_broker_base_url:
+            env["BLUEPRINT_WARM_RENDER_BROKER_BASE_URL"] = warm_broker_base_url
+            env["BLUEPRINT_WARM_RENDER_BROKER_TOKEN"] = warm_broker_token
     return RenderLaunchSpec(
         name="blueprint-isaac-g1-kitchen-parity", image=image, env=env,
         bootstrap_argv=docker_start_cmd(image_startup_canary=image_startup_canary),
@@ -1912,7 +1955,6 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
     pod down — the warm pod must stay running for the caller's WarmPoolClient."""
     import io as _io
     import time as _time
-    import urllib.request as _url
     import zipfile as _zip
 
     get_url_file = job_dir / "provider_output_get_url.txt"
@@ -1928,7 +1970,11 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
     last_phase = None
     while _time.monotonic() - start < timeout_s:
         try:
-            data = _url.urlopen(get_url, timeout=60).read()
+            data = _fetch_provider_artifact_bytes(
+                get_url,
+                timeout=60,
+                max_bytes=MAX_WARM_READINESS_ARCHIVE_BYTES,
+            )
             with _zip.ZipFile(_io.BytesIO(data)) as z:
                 names = z.namelist()
                 bootstrap_session = ""
@@ -2252,16 +2298,24 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["blockers"].append("staging_failed")
         manifest["staging"]["stderr_tail"] = staged.get("stderr_tail")
         return manifest
-    inbox_get_url = ""
+    warm_broker_base_url = ""
+    warm_broker_token = ""
     if serve:
         from blueprint_pipeline.wam_provider_object_store import presign_warm_inbox_channel
         inbox = presign_warm_inbox_channel(job_dir, key_prefix=key_prefix)
-        manifest["warm_inbox"] = {"status": inbox.get("status"), "blockers": inbox.get("blockers"),
-                                  "inbox_key": inbox.get("inbox_key")}
+        manifest["warm_inbox"] = {
+            "status": inbox.get("status"),
+            "blockers": inbox.get("blockers"),
+            "transport": inbox.get("transport"),
+            "single_object_transport_enabled": inbox.get(
+                "single_object_transport_enabled"
+            ),
+        }
         if inbox.get("status") != "completed":
-            manifest["blockers"].append("warm_inbox_presign_failed")
+            manifest["blockers"].append("durable_warm_render_broker_not_configured")
             return manifest
-        inbox_get_url = Path(inbox["warm_inbox_get_url_file"]).read_text().strip()
+        warm_broker_base_url = Path(inbox["broker_base_url_file"]).read_text().strip()
+        warm_broker_token = Path(inbox["broker_token_file"]).read_text().strip()
     runner_timeout_seconds = 0
     if not serve and max_seconds and max_seconds > 60:
         scenario_budget = max(1, len(scenarios)) * max(1, int(per_scenario_seconds))
@@ -2273,7 +2327,9 @@ def run_isaac_g1_kitchen_parity_job(
                              steps=steps, kitchen_url=kitchen_url, width=width, height=height,
                              fps=fps,
                              container_disk_gb=container_disk_gb, volume_gb=volume_gb,
-                             serve=serve, inbox_get_url=inbox_get_url,
+                             serve=serve,
+                             warm_broker_base_url=warm_broker_base_url,
+                             warm_broker_token=warm_broker_token,
                              serve_idle_timeout_s=serve_idle_timeout_s, serve_max_jobs=serve_max_jobs,
                              warmup=warmup, per_scenario_seconds=per_scenario_seconds,
                              no_collision_probe=no_collision_probe, focus_radius=focus_radius,
@@ -2520,8 +2576,10 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["warm_serve"] = {
             "instance_id": launch["instance_id"],
             "ready": bool(ready.get("ready")),
-            "inbox_put_url_file": str(job_dir / "warm_inbox_put_url.txt"),
-            "output_get_url_file": str(job_dir / "provider_output_get_url.txt"),
+            "broker_base_url_file": str(job_dir / "warm_broker_base_url.txt"),
+            "broker_token_file": str(job_dir / "warm_broker_token.txt"),
+            "transport": "durable_warm_render_broker",
+            "single_object_transport_enabled": False,
             "ready_detail": ready,
         }
         if pending_teardown_record:

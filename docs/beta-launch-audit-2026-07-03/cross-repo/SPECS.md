@@ -1,5 +1,9 @@
 # Cross-Repo Beta Blockers — Specs
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 These blockers span two or more repos. They are the ones most likely to be missed by a single-repo review because each repo looks internally consistent — the break is at the seam. All were adversarially re-verified against real code/config.
 
 Severity legend: **hard_blocker** = cannot launch a truthful beta without it · **high** = must fix before external users · **medium/low** = fix soon / track.

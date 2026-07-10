@@ -1,5 +1,9 @@
 # BlueprintCapturePipeline Beta Blockers — Specs
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 The pipeline is the healthiest of the three repos at the unit level: `python -m blueprint_pipeline.run_e2e` runs and **fails closed** on missing raw media; all 235 modules import cleanly; 3278 tests collect with zero import errors and the 120-test critical-path subset passes; the upstream-id guard and the `proof_pack`/`proof_path` **delivery** gates are genuinely fail-closed. The blockers below are **privacy/rights fail-open projections** that could let unverified or un-redacted material be represented as ready or reach a buyer-facing artifact — which matters because doctrine makes privacy/rights/provenance authoritative. These are **new** relative to the repo's existing self-audits (`last_24h_launch_audit_2026-06-26.md`, `READINESS_MATRIX.md`, `PAID_MARKETPLACE_BETA_LAUNCH_GATE.md`), which this audit does not re-litigate. All were adversarially re-verified.
 
 > Note on the cross-repo ingest blockers: the pipeline's Pub/Sub handoff listener (`pubsub_handoff_listener.py`) and the deployed storage-trigger bridge are covered in **cross-repo** [[XR-02]], [[XR-03]], [[XR-04]] because the fix spans `functions/`, `deploy/`, and this repo.

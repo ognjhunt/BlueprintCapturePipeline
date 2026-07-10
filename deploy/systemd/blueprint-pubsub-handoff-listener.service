@@ -5,6 +5,33 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
 Type=oneshot
 Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
 Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
@@ -23,5 +50,3 @@ WorkingDirectory=/
 ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
 ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && subscription="$${BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION:-blueprint-pipeline-handoff-listener}" && storage_root="$${BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT:-/var/lib/blueprint/pubsub-handoffs}" && provider="$${BLUEPRINT_PUBSUB_HANDOFF_PROVIDER:-openai}" && max_messages="$${BLUEPRINT_PUBSUB_HANDOFF_MAX_MESSAGES:-10}" && if [ -x .venv/bin/blueprint-pubsub-handoff-listener ]; then exec .venv/bin/blueprint-pubsub-handoff-listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.pubsub_handoff_listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.pubsub_handoff_listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"'
 Nice=5
-NoNewPrivileges=true
-PrivateTmp=true

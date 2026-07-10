@@ -32,7 +32,7 @@ def _discover_adapter_checkpoint(root_dir: Path) -> Optional[Path]:
 
 
 def _expand_training_command(template: str, values: Mapping[str, Any]) -> str:
-    mapping = {key: str(value) for key, value in values.items()}
+    mapping = {key: shlex.quote(str(value)) for key, value in values.items()}
     return template.format_map(mapping)
 
 
@@ -151,10 +151,32 @@ def run_cosmos_lora_training(
     )
     expanded_command = _normalize_python_command(expanded_command)
 
+    try:
+        command_argv = shlex.split(expanded_command)
+    except ValueError:
+        command_argv = []
+    if not command_argv:
+        manifest = {
+            "schema_version": "v1",
+            "generated_at": utc_now_iso(),
+            "status": "blocked",
+            "reason": "invalid_training_command",
+            "capture_id": context.capture_id,
+            "scene_id": context.scene_id,
+            "export_manifest_path": str(export_manifest_path.resolve()),
+            "trainer_config_path": str(trainer_config_path.resolve()),
+            "checkpoint_root_dir": str(checkpoint_root_dir.resolve()),
+            "run_dir": str(run_dir.resolve()),
+            "checkpoint_path": None,
+            "blockers": ["training_command_could_not_be_parsed_as_nonempty_argv"],
+        }
+        write_json(run_manifest_path, manifest)
+        return manifest
+
     timeout = max(1, int(timeout_seconds or int(os.getenv("COSMOS_TRAINING_TIMEOUT_SECONDS", "3600"))))
     result = subprocess.run(
-        expanded_command,
-        shell=True,
+        command_argv,
+        shell=False,
         cwd=str(context.capture_root.resolve()),
         capture_output=True,
         text=True,
@@ -162,7 +184,7 @@ def run_cosmos_lora_training(
         env={**os.environ, "COSMOS_TRAINING_OUTPUT_DIR": str(run_dir.resolve())},
     )
     log_path.write_text(
-        f"$ {expanded_command}\n\n[stdout]\n{result.stdout}\n\n[stderr]\n{result.stderr}\n",
+        f"$ {shlex.join(command_argv)}\n\n[stdout]\n{result.stdout}\n\n[stderr]\n{result.stderr}\n",
         encoding="utf-8",
     )
 

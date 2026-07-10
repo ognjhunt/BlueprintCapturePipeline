@@ -1,5 +1,9 @@
 # SPEC-06: SC3 forward/inverse consistency scorer + test-time uncertainty gating
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 - Status: Proposed
 - Priority: **P1 — major** (required before selling model-backed eval; P0 if SPEC-05's real backend ships)
 - Area: `src/blueprint_pipeline/sc3_eval_protocol.py`, `wam_derived_observation_harness.py`, new scorer module

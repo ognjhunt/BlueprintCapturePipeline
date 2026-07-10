@@ -832,12 +832,16 @@ def test_retrieval_index_stage_remaining_edge_branches(
 
     class FakeAutoImageProcessor:
         @staticmethod
-        def from_pretrained(model_id):
-            return {"processor_for": model_id}
+        def from_pretrained(model_id, **kwargs):
+            return {"processor_for": model_id, "kwargs": kwargs}
 
     class FakeAutoModel:
         @staticmethod
-        def from_pretrained(_model_id):
+        def from_pretrained(_model_id, **kwargs):
+            assert kwargs == {
+                "revision": ris._DINOV3_MODEL_REVISION,
+                "trust_remote_code": False,
+            }
             return FakeLoadedModel()
 
     fake_transformers = ModuleType("transformers")
@@ -848,6 +852,10 @@ def test_retrieval_index_stage_remaining_edge_branches(
     loaded_model, loaded_processor = ris._load_dinov3()
     assert loaded_model.on_cuda is True
     assert loaded_processor["processor_for"] == ris._DINOV3_MODEL_ID
+    assert loaded_processor["kwargs"] == {
+        "revision": ris._DINOV3_MODEL_REVISION,
+        "trust_remote_code": False,
+    }
 
     def fail_torch_import(name, *args, **kwargs):
         if name == "torch":

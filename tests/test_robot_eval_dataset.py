@@ -44,9 +44,15 @@ def _write_eval_inputs(capture_root: Path) -> None:
                     "object_id": "bin_0001",
                     "label": "returns bin",
                     "task_role": "target_container",
+                    "metric_placement_ready": True,
+                    "physics_ready": True,
+                    "placement_bbox": {
+                        "center": [1.0, 0.0, 0.2],
+                        "extents": [0.5, 0.5, 0.4],
+                    },
                     "collision_hulls": [{"kind": "box"}],
                     "support_surfaces": [{"kind": "rim"}],
-                    "provenance": {"grounding_level": "observed"},
+                    "provenance": {"grounding_level": "observed", "canonical_truth": True},
                 }
             ],
         },
@@ -433,7 +439,8 @@ def test_robot_eval_dataset_grounded_capture_manifest_navigation_task(
     }
     assert site_card["site_type"] == "indoor navigation route"
     assert {"navigation_workspace", "selected_waypoint"}.issubset(object_ids)
-    assert site_card["geometry"]["object_index"]["physics_coverage_complete"] is True
+    assert site_card["geometry"]["object_index"]["physics_coverage_complete"] is False
+    assert site_card["geometry"]["object_index"]["metric_placement_complete"] is False
     assert task_cards["cards"][0]["task_statement"] == (
         "Navigate humanoid from validated start zone to selected waypoint"
     )

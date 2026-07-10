@@ -52,7 +52,7 @@ def test_detect_bundle_identity_reads_raw_bundle_metadata(tmp_path: Path) -> Non
     assert identity.capture_id == "capture-1"
 
 
-def test_stage_local_bundle_copy_strips_stale_object_index_derivatives(tmp_path: Path) -> None:
+def test_stage_local_bundle_copy_preserves_raw_bundle_byte_for_byte(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     raw_dir = source_root / "raw"
     raw_dir.mkdir(parents=True)
@@ -70,6 +70,11 @@ def test_stage_local_bundle_copy_strips_stale_object_index_derivatives(tmp_path:
     (raw_dir / "object_index_artifacts").mkdir()
     (raw_dir / "object_index_artifacts" / "stale.txt").write_text("stale", encoding="utf-8")
 
+    source_snapshot = {
+        path.relative_to(raw_dir).as_posix(): path.read_bytes()
+        for path in raw_dir.rglob("*")
+        if path.is_file()
+    }
     capture_root = stage_local_bundle(
         source_bundle=source_root,
         storage_root=tmp_path / "storage",
@@ -78,14 +83,12 @@ def test_stage_local_bundle_copy_strips_stale_object_index_derivatives(tmp_path:
     )
 
     staged_raw = capture_root / "raw"
-    assert (staged_raw / "manifest.json").is_file()
-    assert (staged_raw / "capture_context.json").is_file()
-    assert (staged_raw / "capture_upload_complete.json").is_file()
-    assert not (staged_raw / "object_index.json").exists()
-    assert not (staged_raw / "object_index_build_report.json").exists()
-    assert not (staged_raw / "object_index_keyframes.json").exists()
-    assert not (staged_raw / "object_grounding_hints.json").exists()
-    assert not (staged_raw / "object_index_artifacts").exists()
+    staged_snapshot = {
+        path.relative_to(staged_raw).as_posix(): path.read_bytes()
+        for path in staged_raw.rglob("*")
+        if path.is_file()
+    }
+    assert staged_snapshot == source_snapshot
 
 
 def test_preflight_waives_missing_intake_for_open_capture_with_accepted_hypothesis(

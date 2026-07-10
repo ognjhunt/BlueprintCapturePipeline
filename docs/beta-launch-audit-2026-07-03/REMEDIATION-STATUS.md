@@ -1,5 +1,9 @@
 # Beta-Launch Blocker Remediation — Status (2026-07-04)
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 Implementation pass against the 35 specs. **33 fixed + verified in code** (every code + artifact criterion across all 35 is done); the only steps left are three **human actions** no code can perform: run one ops command (`firebase functions:secrets:set`), obtain a legal signature on a prepared record, and run the live paid-beta flows. Runbooks/records for those are prepared under `operator-actions/`.
 
 ## Fourth-pass completions

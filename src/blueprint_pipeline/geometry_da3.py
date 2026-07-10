@@ -262,6 +262,9 @@ def _write_depth_confidence_artifacts(
                 "height": int(height),
                 "min_depth_m": round(float(np.min(depth)), 6),
                 "max_depth_m": round(float(np.max(depth)), 6),
+                "depth_unit": "meters",
+                "metric_depth_truth": False,
+                "depth_measurement_source": "monocular_depth_estimate",
                 "confidence_range": [0.0, 1.0],
             }
         )

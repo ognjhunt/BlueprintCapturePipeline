@@ -5,14 +5,20 @@ import os
 import struct
 import subprocess
 import sys
+import threading
 import zipfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import blueprint_pipeline.post_training_data_package as package_module
 from blueprint_pipeline import robot_eval_provider_input_setup as provider_input_setup
+from blueprint_pipeline import robot_eval_job_orchestrator as orchestrator_module
+from blueprint_pipeline import robot_eval_worker as robot_eval_worker_module
 from blueprint_pipeline.evaluation_prep_stage import robot_eval_job_evaluation_prep_surface
 from blueprint_pipeline.live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from blueprint_pipeline.post_training_data_package import build_post_training_data_package_export
@@ -54,6 +60,23 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _configure_ptdp_identity_signer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key_path = tmp_path / "ptdp-signing-key.pem"
+    key_path.write_bytes(
+        Ed25519PrivateKey.generate().private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    key_path.chmod(0o600)
+    monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_FILE_ENV, str(key_path))
+    monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_ID_ENV, "test-arena-ptdp-ed25519")
 
 
 def _build_capture_root(tmp_path: Path) -> Path:
@@ -1805,7 +1828,7 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert robot_pov_storyboard["local_robot_pov_render_generated"] is True
     assert robot_pov_storyboard["robot_pov_evidence_proven"] is False
     assert policy_execution["status"] == "completed"
-    assert sc3_protocol["schema_version"] == "sc3_eval_protocol.v1"
+    assert sc3_protocol["schema_version"] == "sc3_eval_protocol.v2"
     assert sc3_protocol["correlation_claim_status"] == "correlation_not_measured"
     assert sc3_protocol["claim_boundary"][
         "ninety_percent_or_better_blueprint_accuracy_claim_allowed"
@@ -1929,26 +1952,16 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     )
     for export_name in ("rlds", "lerobot", "hdf5", "parquet", "video_bundle"):
         export_entry = optional_exports["formats"][export_name]
-        assert export_entry["format_written"] is True
-        assert export_entry["path"]
-        assert (job_dir / export_entry["path"]).is_file()
-    assert optional_exports["formats"]["rlds"]["status"] == "written_jsonl"
-    assert optional_exports["formats"]["lerobot"]["status"] == "written_jsonl"
-    assert optional_exports["formats"]["hdf5"]["status"] in {
-        "written_native",
-        "written_jsonl_fallback",
-    }
-    assert optional_exports["formats"]["parquet"]["status"] in {
-        "written_native",
-        "written_jsonl_fallback",
-    }
-    assert package_index["files"]["rlds_episodes"].startswith("exports/rlds/")
-    assert package_index["files"]["lerobot_episodes"].startswith("exports/lerobot/")
-    assert package_index["files"]["video_bundle_manifest"] == (
-        "exports/video_bundle/clips_manifest.json"
-    )
-    assert checksums["files"]["rlds_episodes"]["exists"] is True
-    assert "exports/rlds/episodes.jsonl" in archive_manifest["included_files"]
+        assert export_entry["format_written"] is False
+        assert export_entry["status"] == "blocked_canonical_training_quality_pipeline"
+        assert "canonical_pipeline_manifest_not_passed" in export_entry["blockers"]
+    assert "rlds_episodes" not in package_index["files"]
+    assert "lerobot_episodes" not in package_index["files"]
+    assert "video_bundle_manifest" not in package_index["files"]
+    assert "rlds_episodes" not in checksums["files"]
+    assert archive_manifest["status"] == "blocked_identity_signing"
+    assert archive_manifest["archive"] is None
+    assert archive_manifest["identity_signature_present"] is False
 
 
 def test_robot_eval_job_blocks_unknown_requested_scenario_id(
@@ -5732,7 +5745,7 @@ def test_real_world_calibration_insufficient_anchors_block_accuracy_claim(
     assert calibration["sim_vs_real_calibration_score"] is None
     assert calibration["spearman_rank_correlation"] is None
     assert calibration["pearson_success_rate_correlation"] is None
-    assert calibration["deployment_accuracy_claim_allowed"] is False
+    assert calibration["public_rank_fidelity_claim_eligible"] is False
     assert "insufficient_anchor_count" in calibration["diagnostic_blockers"]
 
 
@@ -6036,7 +6049,11 @@ def test_real_world_calibration_accepted_multi_policy_anchors_compute_metrics(
     assert calibration["confidence_intervals"]["mean_absolute_success_rate_error"][
         "sample_count"
     ] > 0
-    assert calibration["deployment_accuracy_claim_allowed"] is True
+    assert calibration["public_rank_fidelity_claim_eligible"] is False
+    assert "independent_policy_checkpoint_count_lt_7" in calibration[
+        "rank_fidelity_claim_eligibility"
+    ]["blockers"]
+    assert calibration["deployment_accuracy_claim_supported"] is False
 
 
 def test_real_world_calibration_unmatched_stale_and_conflicting_anchors_block(
@@ -7514,6 +7531,8 @@ def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
     queue_manifest = _read_json(queue_root / "inbox_run_manifest.json")
     queued_request = _read_json(queue_root / "webapp-job-1" / "job_request.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    job_claim = _read_json(job_dir / "job_claim.json")
+    job_commit = _read_json(job_dir / "job_commit.json")
 
     assert result["schema_version"] == "robot_eval_job_request_inbox_run.v1"
     assert result["status"] == "completed"
@@ -7528,6 +7547,12 @@ def test_robot_eval_job_request_inbox_runs_webapp_job_request_automatically(
     )
     assert run_manifest["status"] == "fixture_evaluation_completed"
     assert run_manifest["public_claim_upgrade_allowed"] is False
+    assert job_claim["status"] == "claimed"
+    assert job_claim["claim_is_immutable"] is True
+    assert job_claim["server_attempt_id"] == run_manifest["server_attempt_id"]
+    assert job_commit["status"] == "committed"
+    assert job_commit["request_fingerprint"] == job_claim["request_fingerprint"]
+    assert job_commit["job_run_manifest_sha256"]
 
 
 def test_robot_eval_job_request_inbox_skips_processed_same_content_until_changed(
@@ -7578,6 +7603,7 @@ def test_robot_eval_job_request_inbox_skips_processed_same_content_until_changed
 
 def test_robot_eval_job_request_inbox_uses_request_capture_root(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     control_capture_root = _build_capture_root(tmp_path / "control")
     request_capture_root = _build_capture_root(tmp_path / "request")
@@ -7586,6 +7612,10 @@ def test_robot_eval_job_request_inbox_uses_request_capture_root(
     inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
     request = _full_job_request(request_capture_root)
     request["job_id"] = "request-root-job"
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        json.dumps({"site-1": str(request_capture_root)}),
+    )
     _write_json(inbox_dir / "request-root-job.json", request)
 
     result = run_robot_eval_job_request_inbox(
@@ -7673,6 +7703,8 @@ def test_robot_eval_job_request_inbox_quarantines_webapp_public_root_without_ove
 ) -> None:
     control_capture_root = _build_capture_root(tmp_path / "control")
     request_capture_root = _build_capture_root(tmp_path / "request")
+    _write_robot_eval_cards(request_capture_root)
+    _write_fixture_attempts(request_capture_root, success=True)
     inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
     request = _full_job_request(request_capture_root)
     request["job_id"] = "missing-public-root-override"
@@ -7693,13 +7725,30 @@ def test_robot_eval_job_request_inbox_quarantines_webapp_public_root_without_ove
         simulator="fixture",
     )
 
-    assert result["status"] == "blocked_all_requests_quarantined"
+    assert result["status"] == "fatal_infrastructure"
+    assert result["queue_disposition"] == "fatal_infrastructure"
     assert result["processed_count"] == 0
-    assert result["quarantined_request_count"] == 1
-    assert result["quarantined_requests"][0]["phase"] == "process"
-    assert result["quarantined_requests"][0]["error_message"] == (
+    assert result["quarantined_request_count"] == 0
+    assert result["fatal_infrastructure_request_count"] == 1
+    attempt = result["fatal_infrastructure_requests"][0]
+    assert attempt["processed_marker_written"] is False
+    assert attempt["attempt_history"][-1]["phase"] == "process"
+    assert attempt["attempt_history"][-1]["error_message"] == (
         "missing_pipeline_capture_root_override_for_webapp_synced_artifact"
     )
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        json.dumps({"site-one": str(request_capture_root)}),
+    )
+    restored = run_robot_eval_job_request_inbox(
+        capture_root=control_capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+    assert restored["status"] == "completed"
+    assert restored["processed_count"] == 1
     assert not (
         control_capture_root
         / "pipeline"
@@ -7710,6 +7759,7 @@ def test_robot_eval_job_request_inbox_quarantines_webapp_public_root_without_ove
 
 def test_robot_eval_job_request_inbox_processes_two_request_capture_roots_in_one_pass(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     control_capture_root = _build_capture_root(tmp_path / "control")
     first_capture_root = _build_capture_root(tmp_path / "first-request")
@@ -7754,6 +7804,15 @@ def test_robot_eval_job_request_inbox_processes_two_request_capture_roots_in_one
     }
     _write_json(inbox_dir / "first-request-root-job.json", first_request)
     _write_json(inbox_dir / "second-request-root-job.json", second_request)
+    monkeypatch.setenv(
+        "ROBOT_EVAL_JOB_REQUEST_FORWARD_CAPTURE_ROOT_BY_SITE_JSON",
+        json.dumps(
+            {
+                "site-one": str(first_capture_root),
+                "site-two": str(second_capture_root),
+            }
+        ),
+    )
 
     result = run_robot_eval_job_request_inbox(
         capture_root=control_capture_root,
@@ -7871,7 +7930,8 @@ def test_robot_eval_job_request_inbox_quarantines_bad_request_and_continues(
         simulator="fixture",
     )
 
-    assert result["status"] == "completed_with_quarantined_requests"
+    assert result["status"] == "completed_with_permanent_invalid_requests"
+    assert result["queue_disposition"] == "permanent_invalid"
     assert result["discovered_request_count"] == 2
     assert result["input_request_count"] == 1
     assert result["processed_count"] == 1
@@ -7883,7 +7943,10 @@ def test_robot_eval_job_request_inbox_quarantines_bad_request_and_continues(
     assert quarantine["dead_letter_copy_succeeded"] is True
     assert Path(quarantine["path"]).is_file()
     assert Path(quarantine["dead_letter_request_path"]).is_file()
-    assert any(marker["status"] == "quarantined" for marker in result["processed_markers"])
+    assert any(
+        marker["status"] == "permanent_invalid"
+        for marker in result["processed_markers"]
+    )
     assert second["status"] == "empty"
     assert second["skipped_processed_request_count"] == 2
 
@@ -7892,13 +7955,12 @@ def test_robot_eval_job_request_inbox_quarantines_processing_failure_and_continu
     tmp_path: Path,
 ) -> None:
     control_capture_root = _build_capture_root(tmp_path / "control")
-    good_capture_root = _build_capture_root(tmp_path / "good")
-    _write_robot_eval_cards(good_capture_root)
-    _write_fixture_attempts(good_capture_root, success=True)
+    _write_robot_eval_cards(control_capture_root)
+    _write_fixture_attempts(control_capture_root, success=True)
     inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
-    good_request = _full_job_request(good_capture_root)
+    good_request = _full_job_request(control_capture_root)
     good_request["job_id"] = "good-request-root-job"
-    bad_request = _full_job_request(good_capture_root)
+    bad_request = _full_job_request(control_capture_root)
     bad_request["job_id"] = "bad-request-root-job"
     bad_request["site_package"] = {
         **bad_request["site_package"],
@@ -7915,15 +7977,17 @@ def test_robot_eval_job_request_inbox_quarantines_processing_failure_and_continu
         simulator="fixture",
     )
 
-    assert result["status"] == "completed_with_quarantined_requests"
+    assert result["status"] == "fatal_infrastructure"
+    assert result["queue_disposition"] == "fatal_infrastructure"
     assert result["processed_count"] == 1
     assert result["jobs"][0]["job_id"] == "good-request-root-job"
-    assert result["quarantined_request_count"] == 1
-    quarantine = result["quarantined_requests"][0]
-    assert quarantine["phase"] == "process"
-    assert quarantine["job_id"] == "bad-request-root-job"
-    assert quarantine["reason"] == "robot_eval_job_request_processing_failed"
-    assert Path(quarantine["path"]).is_file()
+    assert result["quarantined_request_count"] == 0
+    assert result["fatal_infrastructure_request_count"] == 1
+    attempt = result["fatal_infrastructure_requests"][0]
+    assert attempt["job_id"] == "bad-request-root-job"
+    assert attempt["reason"] == "robot_eval_job_request_processing_failed"
+    assert attempt["processed_marker_written"] is False
+    assert Path(attempt["path"]).is_file()
     assert not (
         control_capture_root
         / "pipeline"
@@ -8001,7 +8065,190 @@ def test_robot_eval_job_request_inbox_processes_latest_webapp_identity_once(
     assert result["jobs"][0]["status"] == "fixture_evaluation_completed"
     assert result["superseded_requests"][0]["job_id"] == "old-walk-to-target-request"
     assert queue_manifest["superseded_request_count"] == 1
-    assert not (capture_root / "pipeline" / "robot_eval_jobs" / "old-walk-to-target-request").exists()
+    assert not (
+        capture_root / "pipeline" / "robot_eval_jobs" / "old-walk-to-target-request"
+    ).exists()
+
+
+def test_robot_eval_inbox_blocked_result_is_unprocessed_and_retries_after_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    inbox_dir = tmp_path / "inbox"
+    request = _full_job_request(capture_root)
+    request["job_id"] = "retry-after-restore"
+    request_path = inbox_dir / "retry-after-restore.json"
+    _write_json(request_path, request)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "retry-after-restore"
+    manifest_path = job_dir / "job_run_manifest.json"
+    calls: list[str] = []
+
+    def blocked_build(**_kwargs: object) -> dict[str, object]:
+        calls.append("blocked")
+        _write_json(
+            manifest_path,
+            {"status": "blocked", "blockers": ["provider_dependency_unavailable"]},
+        )
+        return {
+            "status": "blocked",
+            "job_dir": str(job_dir),
+            "manifest_path": str(manifest_path),
+        }
+
+    monkeypatch.setattr(orchestrator_module, "build_robot_eval_job", blocked_build)
+    first = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+    )
+
+    assert first["status"] == "retryable_blocked"
+    assert first["processed_count"] == 0
+    assert first["retryable_request_count"] == 1
+    assert first["retryable_requests"][0]["blockers"] == [
+        "provider_dependency_unavailable"
+    ]
+    assert not list((inbox_dir / ".processed").glob("*.json"))
+
+    def completed_build(**_kwargs: object) -> dict[str, object]:
+        calls.append("completed")
+        _write_json(manifest_path, {"status": "fixture_evaluation_completed"})
+        return {
+            "status": "fixture_evaluation_completed",
+            "job_dir": str(job_dir),
+            "manifest_path": str(manifest_path),
+        }
+
+    monkeypatch.setattr(orchestrator_module, "build_robot_eval_job", completed_build)
+    second = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+    )
+    assert second["status"] == "completed"
+    assert second["processed_count"] == 1
+    assert calls == ["blocked", "completed"]
+
+
+def test_robot_eval_inbox_lock_prevents_concurrent_duplicate_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    inbox_dir = tmp_path / "inbox"
+    request = _full_job_request(capture_root)
+    request["job_id"] = "single-flight"
+    _write_json(inbox_dir / "single-flight.json", request)
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "single-flight"
+    manifest_path = job_dir / "job_run_manifest.json"
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    results: list[dict[str, object]] = []
+
+    def slow_build(**_kwargs: object) -> dict[str, object]:
+        calls.append("build")
+        entered.set()
+        assert release.wait(timeout=5)
+        _write_json(manifest_path, {"status": "fixture_evaluation_completed"})
+        return {
+            "status": "fixture_evaluation_completed",
+            "job_dir": str(job_dir),
+            "manifest_path": str(manifest_path),
+        }
+
+    monkeypatch.setattr(orchestrator_module, "build_robot_eval_job", slow_build)
+
+    def consume() -> None:
+        results.append(
+            run_robot_eval_job_request_inbox(
+                capture_root=capture_root,
+                inbox_dir=inbox_dir,
+            )
+        )
+
+    first = threading.Thread(target=consume)
+    second = threading.Thread(target=consume)
+    first.start()
+    assert entered.wait(timeout=5)
+    second.start()
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert calls == ["build"]
+    assert sorted(result["status"] for result in results) == ["completed", "empty"]
+
+
+def test_robot_eval_inbox_detects_request_replaced_during_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    inbox_dir = tmp_path / "inbox"
+    request = _full_job_request(capture_root)
+    request["job_id"] = "changing-request"
+    _write_json(inbox_dir / "changing-request.json", request)
+    digests = iter(["a" * 64, "b" * 64])
+    monkeypatch.setattr(orchestrator_module, "_sha_file", lambda _path: next(digests))
+    calls: list[str] = []
+    monkeypatch.setattr(
+        orchestrator_module,
+        "build_robot_eval_job",
+        lambda **_kwargs: calls.append("build") or {},
+    )
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+    )
+    assert result["status"] == "retryable_blocked"
+    assert result["processed_count"] == 0
+    assert result["retryable_request_count"] == 1
+    assert result["retryable_requests"][0]["reason"] == (
+        "request_changed_during_snapshot"
+    )
+    assert result["retryable_requests"][0]["processed_marker_written"] is False
+    assert calls == []
+
+
+def test_robot_eval_cli_maps_blocked_and_terminal_results_to_queue_exit_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    request_path = tmp_path / "request.json"
+    _write_json(request_path, {"schema_version": "robot_eval_job_request.v1"})
+    result = {
+        "status": "blocked",
+        "manifest_path": str(tmp_path / "job_run_manifest.json"),
+    }
+    monkeypatch.setattr(
+        orchestrator_module,
+        "build_robot_eval_job",
+        lambda **_kwargs: dict(result),
+    )
+    argv = [
+        "--capture-root",
+        str(capture_root),
+        "--job-request",
+        str(request_path),
+        "--job-id",
+        "job-1",
+    ]
+    assert orchestrator_module.main(argv) == 75
+
+    result["status"] = "fixture_evaluation_completed"
+    assert orchestrator_module.main(argv) == 0
+
+    def infrastructure_failure(**_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("provider control plane unavailable")
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "build_robot_eval_job",
+        infrastructure_failure,
+    )
+    assert orchestrator_module.main(argv) == 70
 
 
 def test_robot_eval_job_policy_manifest_includes_adapter_smoke_contracts(
@@ -10056,8 +10303,7 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert worker_plan["secret_policy"]["store_provider_credentials_in_artifacts"] is False  # type: ignore[index]
     assert worker_plan["artifact_upload_contract"]["upload_before_shutdown_required"] is True  # type: ignore[index]
     assert worker_plan["artifact_upload_contract"]["manifest_input_uri_schemes"] == [  # type: ignore[index]
-        "file",
-        "http",
+        "local",
         "https",
         "gs",
         "s3",
@@ -11078,7 +11324,10 @@ def test_live_provider_launch_accepts_versioned_worker_image_ref_after_cpu_prefl
     ] >= 2
     assert provider_race_handoff["execution_contract"][
         "teardown_owned_loser_cleanup_required"
-    ] is False
+    ] is True
+    assert provider_race_handoff["execution_contract"][
+        "fresh_job_bound_terminal_artifact_required_before_winner"
+    ] is True
     assert provider_race_handoff["execution_contract"]["runtime_mode"] == (
         "serial_adapter_failover"
     )
@@ -11798,6 +12047,7 @@ def test_robot_eval_worker_runs_sim_only_command_when_full_job_scope_blocks(
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
         allow_gpu_provisioning=True,
         allow_simulator_execution=True,
     )
@@ -11925,6 +12175,7 @@ def test_robot_eval_worker_blocks_live_provider_without_artifact_output_uri(
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
     )
 
     assert runtime["status"] == "blocked"
@@ -11968,6 +12219,7 @@ def test_robot_eval_worker_blocks_live_provider_non_writable_artifact_output_uri
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
     )
 
     assert runtime["status"] == "blocked"
@@ -12016,6 +12268,7 @@ def test_robot_eval_worker_blocks_live_provider_missing_artifact_write_auth_cont
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
     )
 
     assert runtime["status"] == "blocked"
@@ -12056,6 +12309,7 @@ def test_robot_eval_worker_blocks_live_provider_without_worker_manifest_schema(
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
     )
 
     assert runtime["status"] == "blocked"
@@ -12099,6 +12353,7 @@ def test_robot_eval_worker_blocks_live_provider_without_embedded_job_request(
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
     )
 
     assert runtime["status"] == "blocked"
@@ -12133,6 +12388,7 @@ def test_robot_eval_worker_blocks_live_provider_without_runtime_preflight_contra
     runtime = run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
     )
 
     assert runtime["status"] == "blocked"
@@ -12339,6 +12595,10 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
     monkeypatch.setenv("RUNPOD_API_KEY", "runtime-preflight-secret-value")
     monkeypatch.setenv("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME", "true")
     monkeypatch.setenv(
+        "BLUEPRINT_WORKER_ALLOWED_DOWNLOAD_ORIGINS",
+        "https://storage.example",
+    )
+    monkeypatch.setenv(
         "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF",
         "registry.example/blueprint/isaac-eval-worker:2026-06-12",
     )
@@ -12381,9 +12641,24 @@ def test_robot_eval_worker_copies_runtime_preflight_logs_to_artifact_output(
         },
     )
 
+    def fetch_manifest(_url: str, *, output_path: Path, **_kwargs):  # type: ignore[no-untyped-def]
+        output_path.write_bytes(manifest_path.read_bytes())
+        return SimpleNamespace(
+            body=b"",
+            status=200,
+            content_type="application/json",
+            final_url="https://storage.example/worker_manifest.json",
+        )
+
+    monkeypatch.setattr(
+        robot_eval_worker_module,
+        "fetch_bounded_https",
+        fetch_manifest,
+    )
     runtime = run_robot_eval_worker(
-        manifest_uri=str(manifest_path),
+        manifest_uri="https://storage.example/worker_manifest.json",
         work_dir=tmp_path / "worker",
+        capture_root=capture_root,
         allow_simulator_execution=True,
     )
 
@@ -13252,9 +13527,29 @@ def test_evaluation_prep_surfaces_robot_eval_job_artifacts_without_overclaiming(
 
 
 def _write_arena_rollout_results(results_dir: Path, *, count: int = 500) -> None:
+    import cv2  # type: ignore[import-not-found]
+    import numpy as np
+
     video_dir = results_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
-    (video_dir / "episode.mp4").write_bytes(b"fake arena video bytes")
+    video_path = video_dir / "episode.mp4"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        8.0,
+        (64, 48),
+    )
+    if not writer.isOpened():
+        pytest.fail("cv2 mp4 writer is required for the Arena delivery-media contract test")
+    try:
+        for index in range(24):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[:, :, 0] = (20 + index * 7) % 255
+            frame[:, :, 1] = (80 + index * 3) % 255
+            frame[12:36, 8 + index : 24 + index, 2] = 240
+            writer.write(frame)
+    finally:
+        writer.release()
     (results_dir / "stdout.txt").write_text("arena rollout completed\n", encoding="utf-8")
     (results_dir / "stderr.txt").write_text("", encoding="utf-8")
     episodes = []
@@ -13279,6 +13574,17 @@ def _write_arena_rollout_results(results_dir: Path, *, count: int = 500) -> None
                 "video_path": "videos/episode.mp4",
                 "stdout_path": "stdout.txt",
                 "stderr_path": "stderr.txt",
+                "clip_curation": {
+                    "evidence_source": "synthetic_fixture_measured_media",
+                    "frame_count": 24,
+                    "camera_motion_m": 0.01,
+                    "action_motion_score": 0.2,
+                    "visible_skeleton_fraction": 0.9,
+                    "sharpness_score": 30.0,
+                    "semantic_dedup_key": (
+                        f"scenario_place_return_in_bin_mobile|{index + 1:04d}"
+                    ),
+                },
             }
         )
     _write_json(
@@ -13309,6 +13615,7 @@ def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("BLUEPRINT_ALLOW_FAKE_LIVE_OPERATORS", "true")
+    _configure_ptdp_identity_signer(monkeypatch, tmp_path)
     capture_root = _build_capture_root(tmp_path)
     _write_robot_eval_cards(capture_root)
     results_dir = tmp_path / "arena-results"
@@ -13365,8 +13672,9 @@ def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
     assert (job_dir / "license_manifest.json").is_file()
     assert (job_dir / "checksums.json").is_file()
     assert package["status"] == "blocked_package_quality_gates"
+    assert not any("min_frame_count_missing" in blocker for blocker in package["blockers"])
     assert (
-        "curation:clip_arena_attempt_0001:min_frame_count_missing"
+        "failure_review:failed_attempt_without_accepted_label:arena_attempt_0020"
         in package["blockers"]
     )
     assert package["archive_manifest_path"] == "archive_manifest.json"
@@ -13434,7 +13742,7 @@ def test_robot_eval_job_can_run_fixture_wam_evaluation_substrate(tmp_path: Path)
     assert eval_result["evaluation_substrate"] == "fixture_wam"
     assert rollout_manifest["status"] == "completed"
     assert labels["status"] == "completed"
-    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["status"] == "completed_inconclusive_insufficient_replicates"
     assert scorecard["top_policy_id"] is None
     assert scorecard["evaluator_top_policy_id"] == "site_finetune_policy"
     assert scorecard["single_best_policy_claimed"] is False
@@ -13531,11 +13839,9 @@ def test_robot_eval_job_candidate_selection_handoff_is_artifact_indexed(
         "candidate_selection_report.md"
     )
     assert (job_dir / "candidate_selection_report.md").is_file()
-    assert report["status"] in {
-        "clear_winner",
-        "ambiguous_candidate_shortlist",
-        "visual_review_required_candidate_shortlist",
-    }
+    assert report["status"] == (
+        "inconclusive_insufficient_replicates_candidate_shortlist"
+    )
     assert report["claim_boundary"]["do_not_use_as_rank_fidelity_result"] is True
     assert handoff["candidate_selection_report_path"] == "candidate_selection_report.json"
     assert robot_team_closure["artifact_paths"]["policy_ranking_scorecard"] == (

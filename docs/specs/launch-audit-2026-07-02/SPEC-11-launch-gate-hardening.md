@@ -1,5 +1,9 @@
 # SPEC-11: Launch-gate hardening — exit codes, skip-to-green, self-attested proofs
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 - Status: Proposed
 - Priority: **P1 — major** (P0 for item 1 if any automation gates on harness exit codes)
 - Area: `src/blueprint_pipeline/city_launch_autonomy_harness.py`, `scripts/run_external_alpha_launch_gate.py`, `scripts/run_paid_marketplace_launch_gate.py`, `scripts/run_sim_only_beta_release_gate.py`

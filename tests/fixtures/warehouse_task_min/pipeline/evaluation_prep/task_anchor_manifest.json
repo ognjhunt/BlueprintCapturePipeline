@@ -1,0 +1,16 @@
+{
+  "schema_version": "task_anchor_manifest.v1",
+  "tasks": [
+    {
+      "task_id": "fixture_warehouse_place_tote_into_bin",
+      "task_text": "place the tote into the target bin",
+      "task_category": "pick_place",
+      "target_object_ids": ["target_bin_01"],
+      "target_bin_id": "target_bin_01",
+      "destination_zone_id": "warehouse_packout_bin_zone",
+      "anchor_source": "fixture_operator_reviewed_detection",
+      "start_zone": [0.0, 0.0, 0.0],
+      "goal_zone": [1.02, 2.01, 0.55]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 import zipfile
@@ -193,6 +194,38 @@ def test_deepinfra_no_paid_launch_writes_redacted_request_and_cost_artifacts(
     assert "raw_secret_values_recorded" in persisted_text
 
 
+def test_deepinfra_is_text_to_video_preview_even_when_bundle_names_actions(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr(
+            "provider_runtime/wam_provider_runtime_manifest.json",
+            json.dumps(
+                {
+                    "prompt": "move the gripper",
+                    "observation_id": "obs-1",
+                    "source_observation_sha256": "a" * 64,
+                    "action_chunk_sha256": "b" * 64,
+                    "action_chunk": [[0.0] * 7],
+                }
+            ),
+        )
+
+    request = providers.DeepInfraCosmos3NanoProvider().build_request(
+        _spec(bundle), tmp_path / "job"
+    )
+
+    assert request["endpoint_class"] == "text_to_video_preview"
+    assert request["task_evaluation_run_eligible"] is False
+    assert request["policy_ranking_artifact_eligible"] is False
+    conditioning = request["conditioning_contract"]
+    assert conditioning["bundle_observation_identity_present_but_not_transmitted"] is True
+    assert conditioning["bundle_action_identity_present_but_not_transmitted"] is True
+    assert conditioning["observation_action_conditioning_proven"] is False
+    assert "action_chunk" not in request["request_payload"]
+
+
 def test_deepinfra_provider_downloads_video_and_writes_zip_manifests(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -326,6 +359,10 @@ def test_deepinfra_provider_downloads_video_and_writes_zip_manifests(
         "deepinfra_cosmos3_visual_quality_report.json",
     }.issubset(checksum_names)
     provider_payload = providers._read_json_file(provider_job / "wam_provider_output.json")
+    assert provider_payload["endpoint_class"] == "text_to_video_preview"
+    assert provider_payload["task_evaluation_run_eligible"] is False
+    assert provider_payload["rollouts"] == []
+    assert len(provider_payload["preview_rollouts"]) == 1
     assert provider_payload["claim_boundary"]["deepinfra_api_success_is_not_task_success"] is True
     assert (
         provider_payload["claim_boundary"]["generated_world_rank_fidelity_result_proven"]

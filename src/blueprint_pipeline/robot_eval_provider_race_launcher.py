@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import functools
+import json
 import logging
 import os
-import shlex
+import signal
 import subprocess
+import time
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .logging_utils import log_event
 
 
@@ -21,7 +26,46 @@ PROVIDER_RACE_HANDOFF_SCHEMA_VERSION = "robot_eval_gpu_provider_race_handoff.v1"
 PROVIDER_LAUNCH_REQUEST_SCHEMA_VERSION = "robot_eval_gpu_provider_launch_request.v1"
 ALLOW_PROVIDER_RACE_LAUNCH_ENV = "BLUEPRINT_ALLOW_GPU_PROVIDER_RACE_LAUNCH"
 SENSITIVE_ENV_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+PROVIDER_ADAPTER_REGISTRY: dict[str, dict[str, str]] = {
+    "runpod": {
+        "adapter_id": "runpod_provider_adapter.v1",
+        "executable": "blueprint-run-runpod-provider-adapter",
+        "operation": "enqueue_runpod_serverless_or_on_demand_worker",
+        "result_filename": "runpod_provider_adapter_result.json",
+    },
+    "vast": {
+        "adapter_id": "vast_provider_adapter.v1",
+        "executable": "blueprint-run-vast-provider-adapter",
+        "operation": "create_vast_instance_and_run_worker",
+        "result_filename": "vast_provider_adapter_result.json",
+    },
+    "lambda_cloud": {
+        "adapter_id": "lambda_provider_adapter.v1",
+        "executable": "blueprint-run-lambda-provider-adapter",
+        "operation": "launch_lambda_cloud_instance_and_run_worker",
+        "result_filename": "lambda_provider_adapter_result.json",
+    },
+}
 logger = logging.getLogger(__name__)
+
+
+def _exclusive_provider_race(function: Any) -> Any:
+    @functools.wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        request_value = kwargs.get("provider_launch_request_path")
+        if request_value is None:
+            raise ValueError("provider_launch_request_path is required")
+        request_path = Path(request_value).resolve()
+        ensure_dir(request_path.parent)
+        lock_path = request_path.parent / ".provider_race_launcher.lock"
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                return function(*args, **kwargs)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    return wrapped
 
 
 def _string(value: Any) -> str:
@@ -148,6 +192,9 @@ def _base_result(
         "schema_version": PROVIDER_RACE_LAUNCHER_RESULT_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
         "provider_launch_request_path": str(request_path),
+        "provider_launch_request_sha256": _sha_file(request_path)
+        if request_path.is_file()
+        else None,
         "provider_race_handoff_path": str(handoff_path),
         "output_path": str(output_path),
         "job_id": _string(request.get("job_id") or handoff.get("job_id")),
@@ -188,6 +235,15 @@ def _handoff_blockers(
         blockers.append("invalid_provider_race_handoff_schema")
     request_job_id = _string(request.get("job_id"))
     handoff_job_id = _string(handoff.get("job_id"))
+    if (
+        not request_job_id
+        or len(request_job_id) > 128
+        or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for char in request_job_id
+        )
+    ):
+        blockers.append("provider_race_job_id_invalid")
     if request_job_id and handoff_job_id and request_job_id != handoff_job_id:
         blockers.append("provider_race_handoff_job_id_mismatch")
     if handoff.get("provider_race_required_for_customer_path") is not True:
@@ -202,6 +258,24 @@ def _handoff_blockers(
         blockers.append("provider_race_launcher_command_not_declared")
     if not _string(handoff.get("launcher_command")):
         blockers.append("provider_race_launcher_command_missing")
+    seen_providers: set[str] = set()
+    for candidate in _runnable_candidates(handoff):
+        provider = _string(candidate.get("provider"))
+        adapter = PROVIDER_ADAPTER_REGISTRY.get(provider)
+        if adapter is None:
+            blockers.append(f"provider_race_adapter_not_registered:{provider or 'missing'}")
+            continue
+        if provider in seen_providers:
+            blockers.append(f"provider_race_duplicate_candidate:{provider}")
+        seen_providers.add(provider)
+        if _string(candidate.get("operation")) != adapter["operation"]:
+            blockers.append(f"provider_race_operation_mismatch:{provider}")
+        supplied_command = _string(candidate.get("adapter_command"))
+        if supplied_command and supplied_command != adapter["executable"]:
+            blockers.append(f"provider_race_noncanonical_adapter_command:{provider}")
+        supplied_adapter_id = _string(candidate.get("adapter_id"))
+        if supplied_adapter_id and supplied_adapter_id != adapter["adapter_id"]:
+            blockers.append(f"provider_race_adapter_id_mismatch:{provider}")
     return blockers
 
 
@@ -222,34 +296,22 @@ def _candidate_adapter_argv(
     output_path: Path,
 ) -> list[str]:
     provider = _string(candidate.get("provider"))
-    command = _string(candidate.get("adapter_command"))
-    if not command:
+    adapter = PROVIDER_ADAPTER_REGISTRY.get(provider)
+    if adapter is None:
         return []
-    argv = shlex.split(command)
-    if not argv:
-        return []
+    argv = [adapter["executable"]]
     if provider == "vast":
-        if not _has_cli_option(argv, "--job-dir"):
-            argv.extend(["--job-dir", str(request_path.parent)])
-        if not _has_cli_option(argv, "--mode"):
-            argv.extend(["--mode", "live-startup-probe"])
-        if not _has_cli_option(argv, "--allow-vast-api-call"):
-            argv.append("--allow-vast-api-call")
-        if not _has_cli_option(argv, "--allow-vast-instance-launch"):
-            argv.append("--allow-vast-instance-launch")
+        argv.extend(["--job-dir", str(output_path.parent)])
+        argv.extend(["--mode", "live-startup-probe"])
+        argv.append("--allow-vast-api-call")
+        argv.append("--allow-vast-instance-launch")
     else:
-        if not _has_cli_option(argv, "--provider-launch-request"):
-            argv.extend(["--provider-launch-request", str(request_path)])
-        if not _has_cli_option(argv, "--output-path"):
-            argv.extend(["--output-path", str(output_path)])
-        if not _has_cli_option(argv, "--mode"):
-            argv.extend(["--mode", "auto"])
-        if provider == "runpod" and not _has_cli_option(argv, "--allow-runpod-api-call"):
+        argv.extend(["--provider-launch-request", str(request_path)])
+        argv.extend(["--output-path", str(output_path)])
+        argv.extend(["--mode", "auto"])
+        if provider == "runpod":
             argv.append("--allow-runpod-api-call")
-        if (
-            provider == "lambda_cloud"
-            and not _has_cli_option(argv, "--allow-lambda-api-call")
-        ):
+        if provider == "lambda_cloud":
             argv.append("--allow-lambda-api-call")
     return argv
 
@@ -287,114 +349,165 @@ def _execute_serial_failover(
     )
     secret_values = _secret_values_from_env(env)
     attempts: list[dict[str, Any]] = []
+    job_id = _string(request.get("job_id"))
+    attempts_root = output_path.parent / "provider_race_attempts"
+    ensure_dir(attempts_root)
+
     for index, candidate in enumerate(candidates):
         provider = _string(candidate.get("provider"))
-        adapter_result_path = output_path.parent / (
-            f"{provider or f'provider_{index}'}_provider_adapter_result.json"
-        )
+        adapter = PROVIDER_ADAPTER_REGISTRY.get(provider)
+        if adapter is None:
+            attempts.append(
+                {
+                    "provider": provider or None,
+                    "status": "permanent_invalid",
+                    "reason": "provider_adapter_not_registered",
+                    "phases": [],
+                }
+            )
+            continue
+        attempt_dir = attempts_root / f"{index + 1:02d}-{provider}"
+        ensure_dir(attempt_dir)
+        if provider == "vast":
+            write_json(attempt_dir / "gpu_provider_launch_request.json", request)
+        adapter_result_path = attempt_dir / adapter["result_filename"]
+        adapter_result_path.unlink(missing_ok=True)
+        stdout_path = attempt_dir / "provider_adapter.stdout.log"
+        stderr_path = attempt_dir / "provider_adapter.stderr.log"
         argv = _candidate_adapter_argv(
             candidate,
             request_path=request_path,
             output_path=adapter_result_path,
         )
-        stdout_path = output_path.parent / (
-            f"{provider or f'provider_{index}'}_provider_adapter.stdout.log"
+        launched_at_ns = time.time_ns()
+        command_result = _run_provider_adapter(
+            argv=argv,
+            env=env,
+            timeout=timeout,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            secret_values=secret_values,
         )
-        stderr_path = output_path.parent / (
-            f"{provider or f'provider_{index}'}_provider_adapter.stderr.log"
+        adapter_result, result_blockers = _fresh_adapter_result(
+            adapter_result_path,
+            launched_at_ns=launched_at_ns,
         )
-        if not argv:
-            attempts.append(
-                {
-                    "provider": provider or None,
-                    "status": "blocked",
-                    "reason": "provider_adapter_command_missing",
-                    "exit_code": None,
-                    "adapter_result_path": str(adapter_result_path),
-                }
-            )
-            continue
-        try:
-            completed = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                env=env,
-            )
-            stdout_path.write_text(
-                _redact_text(completed.stdout, secret_values),
-                encoding="utf-8",
-            )
-            stderr_path.write_text(
-                _redact_text(completed.stderr, secret_values),
-                encoding="utf-8",
-            )
-            success = completed.returncode == 0
-            attempts.append(
-                {
-                    "provider": provider or None,
-                    "status": "completed" if success else "failed",
-                    "reason": (
-                        "provider_adapter_command_completed"
-                        if success
-                        else "provider_adapter_command_failed"
-                    ),
-                    "exit_code": completed.returncode,
-                    "adapter_result_path": str(adapter_result_path),
-                    "stdout_path": str(stdout_path),
-                    "stderr_path": str(stderr_path),
-                    "command": {
-                        "shell": False,
-                        "executable": Path(argv[0]).name,
-                        "argv_count": len(argv),
-                        "arguments_redacted": max(len(argv) - 1, 0),
-                        "raw_command_stored": False,
-                    },
-                }
-            )
-            if success:
-                return {
-                    "status": "completed",
-                    "reason": "provider_race_serial_failover_completed",
-                    "blockers": [],
-                    "attempts": attempts,
-                    "winning_provider": provider or None,
-                    "provider_adapter_commands_executed": True,
-                    "timeout_seconds": timeout,
-                }
-        except FileNotFoundError as exc:
-            attempts.append(
-                {
-                    "provider": provider or None,
-                    "status": "blocked",
-                    "reason": "provider_adapter_command_not_found",
-                    "exit_code": None,
-                    "command_error": str(exc),
-                    "adapter_result_path": str(adapter_result_path),
-                }
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout_path.write_text(
-                _redact_text(exc.stdout, secret_values),
-                encoding="utf-8",
-            )
-            stderr_path.write_text(
-                _redact_text(exc.stderr, secret_values),
-                encoding="utf-8",
-            )
-            attempts.append(
-                {
-                    "provider": provider or None,
-                    "status": "failed",
-                    "reason": "provider_adapter_command_timeout",
-                    "exit_code": None,
-                    "adapter_result_path": str(adapter_result_path),
-                    "stdout_path": str(stdout_path),
-                    "stderr_path": str(stderr_path),
-                }
-            )
+        resource_ids = _provider_resource_ids(provider, adapter_result)
+        artifact_validation = _terminal_artifact_validation(
+            adapter_result,
+            expected_job_id=job_id,
+        )
+        teardown = _ensure_attempt_teardown(
+            provider=provider,
+            adapter_result=adapter_result,
+            attempt_dir=attempt_dir,
+            request_path=request_path,
+            side_effects_possible=command_result.get("started") is True,
+        )
+        adapter_terminal = _string(adapter_result.get("status")) == "completed"
+        command_completed = (
+            command_result.get("exit_code") == 0
+            and command_result.get("timed_out") is not True
+        )
+        won = bool(
+            command_completed
+            and adapter_terminal
+            and artifact_validation.get("status") == "validated"
+            and teardown.get("teardown_verified") is True
+        )
+        phases = [
+            {
+                "phase": "launch",
+                "status": "completed"
+                if command_result.get("started") is True
+                else "blocked",
+            },
+            {
+                "phase": "resource_id",
+                "status": "observed" if resource_ids else "not_observed",
+                "resource_ids": resource_ids,
+            },
+            {
+                "phase": "startup",
+                "status": _string(
+                    adapter_result.get("startup_status")
+                    or adapter_result.get("provider_phase")
+                )
+                or "not_proven",
+            },
+            {
+                "phase": "execution",
+                "status": "completed" if adapter_terminal else "not_completed",
+            },
+            {
+                "phase": "artifact_validation",
+                "status": artifact_validation.get("status"),
+            },
+            {
+                "phase": "teardown",
+                "status": "verified"
+                if teardown.get("teardown_verified") is True
+                else "unverified",
+            },
+        ]
+        blockers = _dedupe(
+            [
+                *result_blockers,
+                *_string_list(command_result.get("blockers")),
+                *_string_list(artifact_validation.get("blockers")),
+                *_string_list(teardown.get("blockers")),
+            ]
+        )
+        attempt = {
+            "provider": provider,
+            "adapter_id": adapter["adapter_id"],
+            "status": "won" if won else "failed",
+            "reason": "fresh_terminal_artifact_and_teardown_verified"
+            if won
+            else "provider_candidate_did_not_reach_verified_terminal_state",
+            "exit_code": command_result.get("exit_code"),
+            "timed_out": command_result.get("timed_out") is True,
+            "adapter_result_path": str(adapter_result_path),
+            "adapter_result_sha256": _sha_file(adapter_result_path)
+            if adapter_result
+            else None,
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "resource_ids": resource_ids,
+            "artifact_validation": artifact_validation,
+            "teardown": teardown,
+            "phases": phases,
+            "blockers": blockers,
+            "command": {
+                "shell": False,
+                "adapter_registry_owned": True,
+                "adapter_id": adapter["adapter_id"],
+                "executable": adapter["executable"],
+                "argv_count": len(argv),
+                "raw_candidate_command_executed": False,
+            },
+        }
+        attempts.append(attempt)
+        if teardown.get("teardown_verified") is not True:
+            return {
+                "status": "failed",
+                "reason": "provider_teardown_unverified_failover_stopped",
+                "blockers": ["provider_teardown_unverified_failover_stopped", *blockers],
+                "attempts": attempts,
+                "provider_adapter_commands_executed": True,
+                "timeout_seconds": timeout,
+            }
+        if won:
+            return {
+                "status": "completed",
+                "reason": "provider_race_serial_failover_completed",
+                "blockers": [],
+                "attempts": attempts,
+                "winning_provider": provider,
+                "winning_artifact": artifact_validation.get("artifact"),
+                "provider_adapter_commands_executed": True,
+                "timeout_seconds": timeout,
+            }
     return {
         "status": "failed",
         "reason": "all_provider_failover_candidates_failed",
@@ -402,6 +515,248 @@ def _execute_serial_failover(
         "attempts": attempts,
         "provider_adapter_commands_executed": bool(attempts),
         "timeout_seconds": timeout,
+    }
+
+
+def _run_provider_adapter(
+    *,
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    timeout: int,
+    stdout_path: Path,
+    stderr_path: Path,
+    secret_values: Mapping[str, str],
+) -> dict[str, Any]:
+    if not argv:
+        return {
+            "started": False,
+            "exit_code": None,
+            "timed_out": False,
+            "blockers": ["provider_adapter_registry_argv_missing"],
+        }
+    process: subprocess.Popen[str] | None = None
+    stdout = ""
+    stderr = ""
+    timed_out = False
+    blockers: list[str] = []
+    try:
+        process = subprocess.Popen(  # noqa: S603 - argv comes only from fixed registry
+            list(argv),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=dict(env),
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            blockers.append("provider_adapter_command_timeout")
+            stdout = _redact_text(exc.stdout, secret_values)
+            stderr = _redact_text(exc.stderr, secret_values)
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=1)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=2)
+    except FileNotFoundError as exc:
+        blockers.append("provider_adapter_command_not_found")
+        stderr = str(exc)
+    finally:
+        write_text(stdout_path, _redact_text(stdout, secret_values))
+        write_text(stderr_path, _redact_text(stderr, secret_values))
+    return {
+        "started": process is not None,
+        "exit_code": process.returncode if process is not None else None,
+        "timed_out": timed_out,
+        "blockers": blockers,
+    }
+
+
+def _fresh_adapter_result(
+    path: Path,
+    *,
+    launched_at_ns: int,
+) -> tuple[dict[str, Any], list[str]]:
+    if not path.is_file():
+        return {}, ["provider_adapter_result_missing"]
+    try:
+        if path.stat().st_mtime_ns < launched_at_ns:
+            return {}, ["provider_adapter_result_stale"]
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, ["provider_adapter_result_invalid"]
+    if not isinstance(payload, Mapping):
+        return {}, ["provider_adapter_result_not_mapping"]
+    return dict(payload), []
+
+
+def _sha_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _provider_resource_ids(provider: str, result: Mapping[str, Any]) -> list[str]:
+    values: list[Any] = []
+    if provider == "runpod":
+        response = _mapping(result.get("runpod_response"))
+        values.extend(
+            [
+                result.get("pod_id"),
+                result.get("runpod_job_id"),
+                response.get("id"),
+                response.get("pod_id"),
+            ]
+        )
+    elif provider == "vast":
+        values.extend(result.get("vast_instance_ids") or [])
+    elif provider == "lambda_cloud":
+        values.extend(result.get("lambda_instance_ids") or [])
+    return _dedupe(_string(value) for value in values)
+
+
+def _terminal_artifact_validation(
+    result: Mapping[str, Any],
+    *,
+    expected_job_id: str,
+) -> dict[str, Any]:
+    artifact = _mapping(result.get("terminal_artifact"))
+    blockers: list[str] = []
+    if not artifact:
+        blockers.append("provider_terminal_artifact_missing")
+    if _string(artifact.get("status")) != "validated":
+        blockers.append("provider_terminal_artifact_not_validated")
+    if _string(artifact.get("job_id")) != expected_job_id:
+        blockers.append("provider_terminal_artifact_job_id_mismatch")
+    digest = _string(artifact.get("sha256"))
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest.lower()):
+        blockers.append("provider_terminal_artifact_digest_invalid")
+    if not _string(artifact.get("artifact_uri")):
+        blockers.append("provider_terminal_artifact_uri_missing")
+    return {
+        "status": "validated" if not blockers else "blocked",
+        "artifact": artifact or None,
+        "blockers": blockers,
+    }
+
+
+def _teardown_evidence(result: Mapping[str, Any]) -> bool:
+    teardown = _mapping(result.get("teardown"))
+    return bool(
+        result.get("provider_teardown_proven") is True
+        or (
+            result.get("continuing_spend_from_this_run") is False
+            and _string(result.get("teardown_status")) == "completed"
+        )
+        or teardown.get("provider_api_terminal_status_confirmed") is True
+        or teardown.get("teardown_verified") is True
+    )
+
+
+def _ensure_attempt_teardown(
+    *,
+    provider: str,
+    adapter_result: Mapping[str, Any],
+    attempt_dir: Path,
+    request_path: Path,
+    side_effects_possible: bool,
+) -> dict[str, Any]:
+    if _teardown_evidence(adapter_result):
+        return {
+            "status": "verified",
+            "teardown_verified": True,
+            "source": "provider_adapter_result",
+            "blockers": [],
+        }
+    resource_ids = _provider_resource_ids(provider, adapter_result)
+    side_effects_reported = any(
+        adapter_result.get(key) is True
+        for key in (
+            "api_call_performed",
+            "provider_job_submitted",
+            "runpod_side_effects_may_have_occurred",
+            "vast_side_effects_may_have_occurred",
+            "lambda_side_effects_may_have_occurred",
+        )
+    )
+    side_effect_fields = (
+        "api_call_performed",
+        "provider_job_submitted",
+        "runpod_side_effects_may_have_occurred",
+        "vast_side_effects_may_have_occurred",
+        "lambda_side_effects_may_have_occurred",
+    )
+    explicit_no_side_effects = bool(adapter_result) and any(
+        key in adapter_result for key in side_effect_fields
+    ) and all(adapter_result.get(key) is not True for key in side_effect_fields)
+    if (
+        not side_effects_reported
+        and not resource_ids
+        and (not side_effects_possible or explicit_no_side_effects)
+    ):
+        return {
+            "status": "not_required",
+            "teardown_verified": True,
+            "source": "adapter_not_started",
+            "blockers": [],
+        }
+    if provider == "runpod" and resource_ids:
+        from .runpod_wam_async_runner import _delete_pod, _read_runpod_api_key
+
+        api_key, _ = _read_runpod_api_key()
+        if api_key:
+            manifests = [
+                _delete_pod(
+                    job_dir=attempt_dir,
+                    pod_id=resource_id,
+                    api_key=api_key,
+                    generated_at=utc_now_iso(),
+                )
+                for resource_id in resource_ids
+            ]
+            verified = all(
+                manifest.get("terminal_state_api_confirmed") is True
+                for manifest in manifests
+            )
+            return {
+                "status": "verified" if verified else "blocked",
+                "teardown_verified": verified,
+                "source": "runpod_delete_and_readback",
+                "manifests": manifests,
+                "blockers": [] if verified else ["runpod_teardown_not_verified"],
+            }
+    if provider == "lambda_cloud" and resource_ids:
+        from .lambda_provider_adapter import run_lambda_provider_adapter
+
+        teardown_result = run_lambda_provider_adapter(
+            provider_launch_request_path=request_path,
+            output_path=attempt_dir / "lambda_teardown_result.json",
+            mode="terminate-instances",
+            allow_lambda_api_call=True,
+            instance_ids=resource_ids,
+        )
+        verified = teardown_result.get("provider_teardown_proven") is True
+        return {
+            "status": "verified" if verified else "blocked",
+            "teardown_verified": verified,
+            "source": "lambda_terminate_and_readback",
+            "result": teardown_result,
+            "blockers": [] if verified else ["lambda_teardown_not_verified"],
+        }
+    return {
+        "status": "blocked",
+        "teardown_verified": False,
+        "source": "no_verified_cleanup_path",
+        "resource_ids": resource_ids,
+        "blockers": ["provider_teardown_not_verified"],
     }
 
 
@@ -422,6 +777,7 @@ def _runtime_blockers(handoff: Mapping[str, Any]) -> list[str]:
     return blockers
 
 
+@_exclusive_provider_race
 def run_robot_eval_provider_race_launcher(
     *,
     provider_launch_request_path: str | Path,
@@ -440,17 +796,32 @@ def run_robot_eval_provider_race_launcher(
 
     request_path = Path(provider_launch_request_path).resolve()
     request, request_error = _read_mapping(request_path)
-    resolved_handoff_path = _resolve_handoff_path(
+    job_dir = request_path.parent.resolve()
+    requested_handoff_path = _resolve_handoff_path(
         request_path=request_path,
         request=request,
         handoff_path=handoff_path,
     )
-    resolved_output = (
+    requested_output = (
         Path(output_path).resolve()
         if output_path
         else request_path.parent / "gpu_provider_race_launcher_result.json"
     )
+    path_blockers: list[str] = []
+    try:
+        resolved_handoff_path = requested_handoff_path.resolve()
+        resolved_handoff_path.relative_to(job_dir)
+    except ValueError:
+        resolved_handoff_path = job_dir / "gpu_provider_race_handoff.json"
+        path_blockers.append("provider_race_handoff_path_outside_job_dir")
+    try:
+        resolved_output = requested_output.resolve()
+        resolved_output.relative_to(job_dir)
+    except ValueError:
+        resolved_output = job_dir / "gpu_provider_race_launcher_result.json"
+        path_blockers.append("provider_race_output_path_outside_job_dir")
     ensure_dir(resolved_output.parent)
+    previous_result, _ = _read_mapping(resolved_output)
 
     handoff, handoff_error = _read_mapping(resolved_handoff_path)
     result = _base_result(
@@ -461,7 +832,7 @@ def run_robot_eval_provider_race_launcher(
         handoff=handoff,
     )
 
-    structural_blockers: list[str] = []
+    structural_blockers: list[str] = list(path_blockers)
     if request_error:
         structural_blockers.append(f"provider_launch_request_{request_error}")
     if handoff_error:
@@ -504,6 +875,20 @@ def run_robot_eval_provider_race_launcher(
             "live_provider_race_gate_open": live_gate_open,
         }
     )
+    if (
+        ready
+        and live_gate_open
+        and previous_result.get("status") == "completed"
+        and previous_result.get("provider_race_execution_proven") is True
+        and previous_result.get("provider_launch_request_sha256")
+        == result.get("provider_launch_request_sha256")
+        and _string(previous_result.get("job_id")) == _string(result.get("job_id"))
+    ):
+        return {
+            **previous_result,
+            "idempotent_replay": True,
+            "provider_adapter_commands_executed_on_replay": False,
+        }
     if ready and live_gate_open:
         execution = _execute_serial_failover(
             request_path=request_path,
@@ -540,6 +925,7 @@ def run_robot_eval_provider_race_launcher(
                 },
             }
         )
+    result["revision"] = int(previous_result.get("revision") or 0) + 1
     write_json(resolved_output, result)
     log_event(
         logger,
@@ -554,7 +940,7 @@ def run_robot_eval_provider_race_launcher(
         status=result.get("status"),
         blocker_count=len(blockers),
         blockers=blockers,
-        live_provider_calls_performed=False,
+        live_provider_calls_performed=result.get("live_provider_calls_performed") is True,
     )
     return result
 

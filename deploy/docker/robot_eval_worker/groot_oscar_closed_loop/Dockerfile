@@ -25,10 +25,14 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG GROOT_SOURCE_URL=https://github.com/NVIDIA/Isaac-GR00T.git
 ARG GROOT_SOURCE_REF=e5749287857afd97b78f1147166137de29746392
 ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
+ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
 ARG SONIC_CHECKPOINT_REPO=LucaFrat/groot-bs16
+ARG SONIC_CHECKPOINT_REVISION=86b17337379926a8d8f1ad5c4580c7c33deeb49f
 ARG OSCAR_CHECKPOINT_REPO=zywu2115/OSCAR-2B
 ARG OSCAR_CHECKPOINT_REVISION=c9781ffa7dd8556d862d7d9f338a2ea008a58ca6
 ARG PREFETCH_CHECKPOINTS=true
+ARG APP_UID=10001
+ARG APP_GID=10001
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -69,7 +73,7 @@ RUN if [[ ! -e /opt/OSCAR ]]; then ln -s /opt/oscar-public /opt/OSCAR; fi
 
 # 3. Our package + closed-loop main-env deps. Installed WITHOUT extras so the
 #    base torch 2.10.0+cu128 is never disturbed (matches run_t4.sh's line).
-COPY pyproject.toml README.md /opt/blueprint/blueprint-capture-pipeline/
+COPY pyproject.toml README.md LICENSE /opt/blueprint/blueprint-capture-pipeline/
 COPY src /opt/blueprint/blueprint-capture-pipeline/src
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_groot_oscar_main_env.txt /opt/blueprint/requirements_groot_oscar_main_env.txt
 RUN python3 -m pip install --upgrade pip \
@@ -78,11 +82,15 @@ RUN python3 -m pip install --upgrade pip \
 
 # 4. GR00T runtime + its own Python-3.10 venv (Isaac-GR00T pins python==3.10.*).
 #    WBC is cloned for the endpoint lane; harmless for the T4 closed loop.
-RUN git clone --filter=blob:none --depth 1 "${WBC_SOURCE_URL}" /opt/wbc
+RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
+  && git -C /opt/wbc fetch --depth 1 origin "${WBC_SOURCE_REF}" \
+  && git -C /opt/wbc checkout --detach FETCH_HEAD \
+  && test "$(git -C /opt/wbc rev-parse HEAD)" = "${WBC_SOURCE_REF}"
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \
   && cd /opt/gr00t \
   && git fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
-  && git checkout FETCH_HEAD \
+  && git checkout --detach FETCH_HEAD \
+  && test "$(git rev-parse HEAD)" = "${GROOT_SOURCE_REF}" \
   && uv venv /opt/gr00t-venv --python 3.10 \
   && ln -sfn /opt/gr00t-venv /opt/gr00t/.venv \
   && VIRTUAL_ENV=/opt/gr00t-venv uv pip install -e /opt/gr00t \
@@ -108,6 +116,7 @@ sonic = Path("/opt/blueprint/ckpts/sonic")
 sonic.mkdir(parents=True, exist_ok=True)
 snapshot_download(
     repo_id=os.environ["SONIC_CHECKPOINT_REPO"],
+    revision=os.environ["SONIC_CHECKPOINT_REVISION"],
     local_dir=str(sonic),
     allow_patterns=[
         "config.json",
@@ -139,5 +148,11 @@ BASH
 # 6. Build-time healthcheck (fail-closed on the build host; no GPU required).
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
 RUN python3 /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
+
+RUN groupadd --gid "${APP_GID}" blueprint \
+  && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
+  && chown -R blueprint:blueprint /workspace /opt/blueprint/ckpts
+
+USER blueprint:blueprint
 
 CMD ["bash"]

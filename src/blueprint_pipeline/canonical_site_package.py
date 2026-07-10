@@ -342,11 +342,7 @@ def build_blueprint_canonical_site_package(
         },
         sort_keys=True,
     )
-    raw_walkthrough = _capture_grounded_ref(
-        _string(descriptor.get("raw_video_uri")),
-        source="capture_descriptor.raw_video_uri",
-        required=True,
-    )
+    raw_walkthrough_present = bool(_string(descriptor.get("raw_video_uri")))
     privacy_safe_world_model_input = _derived_ref(
         _string(worldlabs_input.get("output_video_uri")) or _string(descriptor.get("world_model_video_uri")),
         source="worldlabs_input_or_privacy_processing",
@@ -370,7 +366,11 @@ def build_blueprint_canonical_site_package(
     )
     conditioning = {
         "rgb_video": {
-            "raw_walkthrough": raw_walkthrough,
+            "restricted_raw_capture": {
+                "present": raw_walkthrough_present,
+                "exported": False,
+                "access_scope": "restricted_internal_evidence",
+            },
             "privacy_processed_video": _derived_ref(
                 _string(privacy_processing.get("privacy_processed_video_uri"))
                 or _string(descriptor.get("privacy_processed_video_uri")),
@@ -479,8 +479,6 @@ def build_blueprint_canonical_site_package(
         provenance_summary=provenance_summary,
     )
     missing_fields: list[str] = []
-    if not raw_walkthrough.get("uri"):
-        missing_fields.append("conditioning.rgb_video.raw_walkthrough.uri")
     if not privacy_safe_world_model_input.get("uri"):
         missing_fields.append("conditioning.rgb_video.privacy_safe_world_model_input.uri")
     if not conditioning["frames"]["frame_index_uri"]:

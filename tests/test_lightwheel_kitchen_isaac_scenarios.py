@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import py_compile
-import runpy
 import subprocess
 import sys
 import types
@@ -11,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from tests.runpy_entrypoint import run_module_as_main
 
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
@@ -1329,6 +1329,6 @@ def test_module_entrypoint_uses_main_guard_without_external_tools(
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("blueprint_pipeline.lightwheel_kitchen_isaac_scenarios", run_name="__main__")
+        run_module_as_main("blueprint_pipeline.lightwheel_kitchen_isaac_scenarios")
 
     assert exc_info.value.code == 2

@@ -13,6 +13,29 @@ from blueprint_pipeline.synthesis.cosmos_training_export import export_cosmos_tr
 pytestmark = pytest.mark.slow
 
 
+def test_cosmos_camera_validation_rejects_reflection_shear_and_absurd_fov() -> None:
+    calibrated = {
+        "intrinsics": {"fx": 500, "fy": 500, "cx": 320, "cy": 240, "width": 640, "height": 480},
+        "T_world_camera": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    }
+    assert export_module._normalized_intrinsics(calibrated) is not None
+    assert export_module._pose_matrix(calibrated) is not None
+
+    absurd_fov = {**calibrated, "intrinsics": {**calibrated["intrinsics"], "fx": 0.0001}}
+    reflection = {
+        **calibrated,
+        "T_world_camera": [[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    }
+    shear = {
+        **calibrated,
+        "T_world_camera": [[1, 0.2, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    }
+
+    assert export_module._normalized_intrinsics(absurd_fov) is None
+    assert export_module._pose_matrix(reflection) is None
+    assert export_module._pose_matrix(shear) is None
+
+
 def test_export_cosmos_training_substrate_writes_real_artifacts(tmp_path: Path) -> None:
     capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
     pipeline_root = capture_root / "pipeline"
@@ -104,7 +127,7 @@ def test_export_cosmos_training_substrate_bootstraps_from_capture_video(tmp_path
         encoding="utf-8",
     )
     (arkit_root / "intrinsics.json").write_text(
-        json.dumps({"fx": 500, "fy": 500, "cx": 32, "cy": 24, "width": 64, "height": 48}),
+        json.dumps({"fx": 60, "fy": 60, "cx": 32, "cy": 24, "width": 64, "height": 48}),
         encoding="utf-8",
     )
     (pipeline_root / "scene_memory" / "conditioning_bundle.json").write_text(

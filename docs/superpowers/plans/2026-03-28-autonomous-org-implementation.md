@@ -991,7 +991,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/Blueprint-WebApp
+        cwd: $HOME/workspace/Blueprint-WebApp
         model: claude-sonnet-4-6
         timeoutSec: 1800
         dangerouslySkipPermissions: true
@@ -1007,7 +1007,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/Blueprint-WebApp
+        cwd: $HOME/workspace/Blueprint-WebApp
         model: claude-sonnet-4-6
         timeoutSec: 1200
         dangerouslySkipPermissions: true
@@ -1023,7 +1023,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+        cwd: $HOME/workspace/BlueprintCapturePipeline
         model: claude-sonnet-4-6
         timeoutSec: 1200
         dangerouslySkipPermissions: true
@@ -1039,7 +1039,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/BlueprintCapture
+        cwd: $HOME/workspace/BlueprintCapture
         model: claude-sonnet-4-6
         timeoutSec: 1200
         dangerouslySkipPermissions: true
@@ -1055,7 +1055,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/Blueprint-WebApp
+        cwd: $HOME/workspace/Blueprint-WebApp
         model: claude-sonnet-4-6
         timeoutSec: 1200
         dangerouslySkipPermissions: true
@@ -1073,7 +1073,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/Blueprint-WebApp
+        cwd: $HOME/workspace/Blueprint-WebApp
         model: claude-sonnet-4-6
         timeoutSec: 1800
         dangerouslySkipPermissions: true
@@ -1091,7 +1091,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/Blueprint-WebApp
+        cwd: $HOME/workspace/Blueprint-WebApp
         model: claude-sonnet-4-6
         timeoutSec: 1800
         dangerouslySkipPermissions: true
@@ -1108,7 +1108,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/Blueprint-WebApp
+        cwd: $HOME/workspace/Blueprint-WebApp
         model: claude-sonnet-4-6
         timeoutSec: 1200
         dangerouslySkipPermissions: true
@@ -1126,7 +1126,7 @@ Append to the `agents:` section (after the existing `capture-claude` agent):
     adapter:
       type: claude_local
       config:
-        cwd: /Users/nijelhunt_1/workspace/Blueprint-WebApp
+        cwd: $HOME/workspace/Blueprint-WebApp
         model: claude-sonnet-4-6
         timeoutSec: 1800
         dangerouslySkipPermissions: true
@@ -2151,11 +2151,11 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 - [ ] **Step 1: Copy plan to BlueprintCapture and BlueprintCapturePipeline**
 
 ```bash
-mkdir -p /Users/nijelhunt_1/workspace/BlueprintCapture/docs/superpowers/plans
-cp docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md /Users/nijelhunt_1/workspace/BlueprintCapture/docs/superpowers/plans/
+mkdir -p $HOME/workspace/BlueprintCapture/docs/superpowers/plans
+cp docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md $HOME/workspace/BlueprintCapture/docs/superpowers/plans/
 
-mkdir -p /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/superpowers/plans
-cp docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/superpowers/plans/
+mkdir -p $HOME/workspace/BlueprintCapturePipeline/docs/superpowers/plans
+cp docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md $HOME/workspace/BlueprintCapturePipeline/docs/superpowers/plans/
 ```
 
 - [ ] **Step 2: Verify all 3 repos have the full autonomous org file set**
@@ -2163,9 +2163,9 @@ cp docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md /Users/nij
 ```bash
 for repo in Blueprint-WebApp BlueprintCapture BlueprintCapturePipeline; do
   echo "=== $repo ==="
-  ls -la /Users/nijelhunt_1/workspace/$repo/AUTONOMOUS_ORG.md
-  ls -la /Users/nijelhunt_1/workspace/$repo/docs/superpowers/specs/2026-03-28-autonomous-org-design.md
-  ls -la /Users/nijelhunt_1/workspace/$repo/docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md
+  ls -la $HOME/workspace/$repo/AUTONOMOUS_ORG.md
+  ls -la $HOME/workspace/$repo/docs/superpowers/specs/2026-03-28-autonomous-org-design.md
+  ls -la $HOME/workspace/$repo/docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md
 done
 ```
 

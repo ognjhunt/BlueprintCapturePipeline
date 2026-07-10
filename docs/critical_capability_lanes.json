@@ -1,0 +1,45 @@
+{
+  "schema_version": "blueprint.critical_capability_lanes.v1",
+  "lanes": {
+    "cpu_full": {
+      "required_for_scopes": ["BASE", "SIM", "PTDP", "SC3", "PAID", "LIVE"],
+      "required_check_name": "Full pytest lane on CPU runner",
+      "evidence_schema_version": "blueprint.full_pytest_lane.v1",
+      "skip_is_blocker": true,
+      "local_contract_command": "scripts/pytest_full.sh"
+    },
+    "container_production": {
+      "required_for_scopes": ["BASE", "SIM", "PTDP", "SC3", "PAID", "LIVE"],
+      "required_check_name": "Container production contract",
+      "evidence_schema_version": "blueprint.container_production_contract.v1",
+      "skip_is_blocker": true,
+      "local_contract_command": "docker build --target production ."
+    },
+    "gpu_provider_canary": {
+      "required_for_scopes": ["SC3", "PAID", "LIVE"],
+      "required_check_name": "Pinned GPU provider canary",
+      "evidence_schema_version": "blueprint.provider_canary_evidence.v1",
+      "skip_is_blocker": true,
+      "local_contract_command": "python scripts/verify_critical_capability_lanes.py --scope SC3 --evidence-dir <path> --repository-sha <sha> --expected-gpu-image-uri <approved-image@sha256:digest>"
+    },
+    "pubsub_emulator_integration": {
+      "required_for_scopes": ["PAID", "LIVE"],
+      "required_check_name": "Pub/Sub emulator integration",
+      "evidence_schema_version": "blueprint.pubsub_emulator_integration.v1",
+      "skip_is_blocker": true,
+      "local_contract_command": "python scripts/run_pubsub_emulator_integration.py --output <path>"
+    },
+    "native_lerobot_export": {
+      "required_for_scopes": ["PTDP", "SC3", "PAID", "LIVE"],
+      "required_check_name": "Native LeRobot export round trip",
+      "evidence_schema_version": "blueprint.native_lerobot_export.v1",
+      "skip_is_blocker": true,
+      "local_contract_command": "python scripts/run_native_lerobot_export_probe.py --export-dir <path> --output <path>"
+    }
+  },
+  "claim_boundary": {
+    "policy_presence_is_not_execution_proof": true,
+    "missing_or_skipped_lane_blocks_only_dependent_scopes": true,
+    "physical_robot_proof_is_not_required_for_sim_only_scope": true
+  }
+}

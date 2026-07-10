@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from defusedxml import ElementTree as DefusedET
+
 from .common import ensure_dir, utc_now_iso, write_json
 from .mujoco_g1_simulator_command import (
     DEFAULT_MENAGERIE_REF,
@@ -1858,7 +1860,7 @@ def _add_camera_to_body(root: ET.Element, body_name: str, camera: Mapping[str, s
 def _write_g1_xml_with_eval_cameras(source_xml: Path, output_xml: Path) -> dict[str, Any]:
     base_xml = output_xml.with_name("menagerie_g1_absolute_mesh_paths.xml")
     _write_g1_xml_with_absolute_meshes(source_xml, base_xml)
-    tree = ET.parse(base_xml)
+    tree = DefusedET.parse(base_xml)
     root = tree.getroot()
     added = {
         "robot_pov_head": _add_camera_to_body(

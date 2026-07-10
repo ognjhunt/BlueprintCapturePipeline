@@ -70,9 +70,25 @@ workspace/
 tmp/
 live_pipeline_setup_manifest.json
 
+# Operational city-launch evidence is security-sensitive, mutable, and expires.
+# Store it under BLUEPRINT_CITY_LAUNCH_OUTPUT_ROOT (outside the checkout).
+/ops/*
+!/ops/city-launch-runs/
+/ops/city-launch-runs/*
+!/ops/city-launch-runs/README.md
+
 # Terraform local provider/cache data
 .terraform/
 **/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 
 # Pipeline run data
 runs/
@@ -81,12 +97,13 @@ local_runs/
 pipeline/
 !tests/fixtures/sim_only_beta_local_capture/**/pipeline/
 !tests/fixtures/sim_only_beta_local_capture/**/pipeline/**
+!tests/fixtures/warehouse_task_min/pipeline/
+!tests/fixtures/warehouse_task_min/pipeline/**
 robot_eval_jobs/
 policy_endpoint_setups/
 frame_*.png
 MUJOCO_LOG.TXT
 wam_provider_output.json
-uv.lock
 
 # Splat render tool (node deps installed locally)
 tools/splat_render/node_modules/

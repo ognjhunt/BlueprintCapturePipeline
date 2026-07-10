@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -37,6 +38,44 @@ def _seed_recipe(path: Path, extra: dict[str, Any] | None = None) -> Path:
     recipe_path = path / "seed_policy_recipe.json"
     _write_json(recipe_path, payload)
     return recipe_path
+
+
+def _group_artifacts(
+    path: Path, group_values: dict[str, str]
+) -> dict[str, dict[str, str]]:
+    artifacts: dict[str, dict[str, str]] = {}
+    for field, group_id in group_values.items():
+        key = hashlib.sha256(f"{field}:{group_id}".encode()).hexdigest()[:12]
+        source = path / "group-artifacts" / f"{field}-{key}.source.json"
+        _write_json(
+            source,
+            {
+                "schema_version": "test_group_source.v1",
+                "axis": field,
+                "group_id": group_id,
+                "source_payload": f"frozen-source-for:{field}:{group_id}",
+            },
+        )
+        source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+        artifact = path / "group-artifacts" / f"{field}-{key}.manifest.json"
+        _write_json(
+            artifact,
+            {
+                "schema_version": "policy_autoresearch_group_artifact.v1",
+                "axis": field,
+                "group_id": group_id,
+                "source_content_sha256": source_sha256,
+                "source_artifact": {
+                    "path": str(source),
+                    "sha256": source_sha256,
+                },
+            },
+        )
+        artifacts[field] = {
+            "path": str(artifact),
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        }
+    return artifacts
 
 
 def _job_paths(tmp_path: Path) -> tuple[Path, Path]:
@@ -157,7 +196,7 @@ def test_policy_autoresearch_private_payload_capability_and_matrix_edges(
     assert loaded[0]["scenario_eval_run_id"] == "scenario_eval_run_0001"
     assert loaded[0]["required_policy_capabilities"] == ["clearance_aware_navigation"]
 
-    train, heldout, split_source = pa._split_runs(
+    train, dev, locked_test, split_source = pa._split_runs(
         [
             {"scenario_eval_run_id": "run-1"},
             {"scenario_eval_run_id": "run-2"},
@@ -166,14 +205,17 @@ def test_policy_autoresearch_private_payload_capability_and_matrix_edges(
         heldout_ratio=0.34,
     )
     assert [run["scenario_eval_run_id"] for run in train] == ["run-1", "run-2"]
-    assert [run["scenario_eval_run_id"] for run in heldout] == ["run-3"]
-    assert split_source == "deterministic_tail_holdout_split"
-    single_train, single_heldout, single_split = pa._split_runs(
+    assert [run["scenario_eval_run_id"] for run in dev] == ["run-3"]
+    assert locked_test == []
+    assert split_source == "deterministic_tail_dev_missing_locked_test"
+    single_train, single_dev, single_locked_test, single_split = pa._split_runs(
         [{"scenario_eval_run_id": "single"}],
         heldout_ratio=0.5,
     )
-    assert single_train == single_heldout == [{"scenario_eval_run_id": "single"}]
-    assert single_split == "single_run_reused_as_heldout"
+    assert single_train == [{"scenario_eval_run_id": "single"}]
+    assert single_dev == []
+    assert single_locked_test == []
+    assert single_split == "single_run_cannot_be_split"
 
     attempt = pa._attempt_for_run(
         recipe={"policy_id": "seed", "mutable_parameters": {}},
@@ -388,20 +430,57 @@ def test_policy_autoresearch_external_evaluator_success_and_mismatch_edges(
     job_dir = tmp_path / "job"
     matrix_path = tmp_path / "matrix.json"
     attempt_trace_path = tmp_path / "attempts.json"
+    _write_json(
+        attempt_trace_path,
+        {
+            "attempts": [
+                {"scenario_eval_run_id": "run-1", "success": True},
+                {
+                    "scenario_eval_run_id": "locked-secret",
+                    "success": True,
+                    "private_locked_outcome": "must-not-leak",
+                },
+            ]
+        },
+    )
 
     def write_success_output(*args: Any, **kwargs: Any) -> SimpleNamespace:
         env = kwargs["env"]
         assert env["BLUEPRINT_POLICY_AUTORESEARCH_CAPTURE_ROOT"] == str(capture_root)
-        assert env["BLUEPRINT_POLICY_AUTORESEARCH_JOB_DIR"] == str(job_dir)
-        assert env["BLUEPRINT_POLICY_AUTORESEARCH_SOURCE_MATRIX"] == str(matrix_path)
-        assert env["BLUEPRINT_POLICY_AUTORESEARCH_ATTEMPT_TRACE"] == str(attempt_trace_path)
+        assert "BLUEPRINT_POLICY_AUTORESEARCH_JOB_DIR" not in env
+        assert "BLUEPRINT_POLICY_AUTORESEARCH_SOURCE_MATRIX" not in env
+        filtered_trace = Path(env["BLUEPRINT_POLICY_AUTORESEARCH_ATTEMPT_TRACE"])
+        assert filtered_trace != attempt_trace_path
+        filtered_payload = json.loads(filtered_trace.read_text(encoding="utf-8"))
+        assert filtered_payload["phase"] == "heldout"
+        assert [
+            row["scenario_eval_run_id"] for row in filtered_payload["attempts"]
+        ] == ["run-1"]
+        assert "must-not-leak" not in filtered_trace.read_text(encoding="utf-8")
         output_path = Path(env["BLUEPRINT_POLICY_AUTORESEARCH_OUTPUT"])
         _write_json(
             output_path,
             {
+                "phase": "heldout",
+                "frozen_verifier_sha256": "sha",
                 "simulatorEngine": "mujoco",
                 "evaluationSubstrate": "classical_sim_mujoco",
-                "attempts": [{"scenarioEvalRunId": "run-1", "task_success": True}],
+                "attempts": [
+                    {
+                        "scenarioEvalRunId": "run-1",
+                        "policy_id": "seed",
+                        "task_success": True,
+                        "success": True,
+                        "metrics": {
+                            "simulator_execution_performed": True,
+                            "safety_event_count": 0,
+                            "contact_event_count": 0,
+                        },
+                        "claim_boundary": {
+                            "simulator_execution_performed": True
+                        },
+                    }
+                ],
             },
         )
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
@@ -425,7 +504,11 @@ def test_policy_autoresearch_external_evaluator_success_and_mismatch_edges(
     assert success["status"] == "completed"
     assert success["attempts"][0]["evaluation_substrate"] == "classical_sim_mujoco"
 
-    monkeypatch.setattr(pa, "_evaluate_recipe_with_command", lambda **kwargs: {"status": "via-command"})
+    monkeypatch.setattr(
+        pa,
+        "_evaluate_recipe_with_command",
+        lambda **kwargs: {"status": "via-command"},
+    )
     assert (
         pa._evaluate_recipe(
             recipe=recipe,
@@ -440,6 +523,46 @@ def test_policy_autoresearch_external_evaluator_success_and_mismatch_edges(
         == "via-command"
     )
 
+
+def test_external_evaluator_contract_rejects_wrong_coverage_string_boolean_and_missing_safety() -> None:
+    blockers = pa._validate_external_evaluator_payload(
+        payload={
+            "phase": "train",
+            "frozen_verifier_sha256": "verifier",
+            "attempts": [
+                {
+                    "scenario_eval_run_id": "unknown-run",
+                    "policy_id": "wrong-policy",
+                    "task_success": "false",
+                    "metrics": {"simulator_execution_performed": True},
+                    "claim_boundary": {"simulator_execution_performed": True},
+                },
+                {
+                    "scenario_eval_run_id": "unknown-run",
+                    "policy_id": "candidate",
+                    "task_success": True,
+                    "metrics": {
+                        "simulator_execution_performed": True,
+                        "safety_event_count": 0,
+                        "contact_event_count": 0,
+                    },
+                    "claim_boundary": {"simulator_execution_performed": True},
+                },
+            ],
+        },
+        recipe={"candidate_id": "candidate", "policy_id": "seed"},
+        runs=[{"scenario_eval_run_id": "expected-run"}],
+        phase="train",
+        verifier_sha256="verifier",
+    )
+
+    assert "external_evaluator_success_not_strict_boolean:0" in blockers
+    assert "external_evaluator_candidate_binding_mismatch:0" in blockers
+    assert "external_evaluator_safety_event_count_missing_or_invalid:0" in blockers
+    assert "external_evaluator_contact_event_count_missing_or_invalid:0" in blockers
+    assert "external_evaluator_attempt_count_mismatch" in blockers
+    assert "external_evaluator_run_id_duplicate" in blockers
+    assert "external_evaluator_run_coverage_mismatch" in blockers
 
 def test_policy_autoresearch_blocked_input_and_empty_engine_edges(tmp_path: Path) -> None:
     missing_output = tmp_path / "missing-output"
@@ -847,11 +970,75 @@ def test_policy_autoresearch_module_guard_runs_main(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     capture_root, job_dir = _job_paths(tmp_path)
+    train_group_artifacts = _group_artifacts(
+        tmp_path,
+        {
+            "site_id": "site-train",
+            "scene_id": "scene-train",
+            "task_id": "task-train",
+            "object_id": "object-train",
+            "source_trajectory_id": "trajectory-train",
+            "policy_lineage_id": "lineage-train",
+        },
+    )
+    dev_group_artifacts = _group_artifacts(
+        tmp_path,
+        {
+            "site_id": "site-dev",
+            "scene_id": "scene-dev",
+            "task_id": "task-dev",
+            "object_id": "object-dev",
+            "source_trajectory_id": "trajectory-dev",
+            "policy_lineage_id": "lineage-dev",
+        },
+    )
+    locked_group_artifacts = _group_artifacts(
+        tmp_path,
+        {
+            "site_id": "site-locked-test",
+            "scene_id": "scene-locked-test",
+            "task_id": "task-locked-test",
+            "object_id": "object-locked-test",
+            "source_trajectory_id": "trajectory-locked-test",
+            "policy_lineage_id": "lineage-locked-test",
+        },
+    )
     _write_matrix(
         job_dir,
         [
-            {"scenario_eval_run_id": "train", "split": "train"},
-            {"scenario_eval_run_id": "heldout", "split": "heldout"},
+            {
+                "scenario_eval_run_id": "train",
+                "split": "train",
+                "site_id": "site-train",
+                "scene_id": "scene-train",
+                "task_id": "task-train",
+                "object_id": "object-train",
+                "source_trajectory_id": "trajectory-train",
+                "policy_lineage_id": "lineage-train",
+                "group_artifacts": train_group_artifacts,
+            },
+            {
+                "scenario_eval_run_id": "dev",
+                "split": "dev",
+                "site_id": "site-dev",
+                "scene_id": "scene-dev",
+                "task_id": "task-dev",
+                "object_id": "object-dev",
+                "source_trajectory_id": "trajectory-dev",
+                "policy_lineage_id": "lineage-dev",
+                "group_artifacts": dev_group_artifacts,
+            },
+            {
+                "scenario_eval_run_id": "locked-test",
+                "split": "locked_test",
+                "site_id": "site-locked-test",
+                "scene_id": "scene-locked-test",
+                "task_id": "task-locked-test",
+                "object_id": "object-locked-test",
+                "source_trajectory_id": "trajectory-locked-test",
+                "policy_lineage_id": "lineage-locked-test",
+                "group_artifacts": locked_group_artifacts,
+            },
         ],
     )
     recipe_path = _seed_recipe(tmp_path)

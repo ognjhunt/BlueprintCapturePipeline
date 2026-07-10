@@ -49,6 +49,30 @@ def _observation() -> dict:
     }
 
 
+def _registered_bounds(chunk_length: int, *, limit: float = 10.0) -> dict:
+    return {
+        "schema_version": adapter.REGISTERED_ACTION_BOUNDS_SCHEMA_VERSION,
+        "contract_id": f"test-action-chunk-{chunk_length}-bounds.v1",
+        "action_representation": "test_action_chunk",
+        "fields": {
+            "action_chunk": {
+                "lower": [-limit] * chunk_length,
+                "upper": [limit] * chunk_length,
+            }
+        },
+    }
+
+
+def _bounds_kwargs(chunk_length: int, *, limit: float = 10.0) -> dict:
+    contract = _registered_bounds(chunk_length, limit=limit)
+    return {
+        "registered_action_bounds": contract,
+        "registered_action_bounds_sha256_value": (
+            adapter.registered_action_bounds_sha256(contract)
+        ),
+    }
+
+
 def test_noise_adapter_blocks_without_inner_command_or_amplitude() -> None:
     response, exit_code = adapter.run_noise_degraded_policy(
         payload={"observation": _observation()},
@@ -67,15 +91,16 @@ def test_noise_adapter_blocks_without_inner_command_or_amplitude() -> None:
     assert response["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
 
 
-def test_noise_adapter_blocks_negative_amplitude(tmp_path: Path) -> None:
+@pytest.mark.parametrize("amplitude", [-0.5, float("nan"), float("inf")])
+def test_noise_adapter_blocks_invalid_amplitude(tmp_path: Path, amplitude: float) -> None:
     response, exit_code = adapter.run_noise_degraded_policy(
         payload={"observation": _observation()},
         inner_command=_fake_inner_adapter(tmp_path),
-        amplitude=-0.5,
+        amplitude=amplitude,
     )
 
     assert exit_code == 2
-    assert "noise_amplitude_must_be_nonnegative" in response["blockers"]
+    assert "noise_amplitude_must_be_finite_and_nonnegative" in response["blockers"]
 
 
 def test_noise_adapter_perturbs_action_chunk_deterministically(tmp_path: Path) -> None:
@@ -87,18 +112,21 @@ def test_noise_adapter_perturbs_action_chunk_deterministically(tmp_path: Path) -
         inner_command=inner_command,
         amplitude=0.3,
         seed=7,
+        **_bounds_kwargs(8),
     )
     second, _ = adapter.run_noise_degraded_policy(
         payload={"observation": _observation()},
         inner_command=inner_command,
         amplitude=0.3,
         seed=7,
+        **_bounds_kwargs(8),
     )
     other_seed, _ = adapter.run_noise_degraded_policy(
         payload={"observation": _observation()},
         inner_command=inner_command,
         amplitude=0.3,
         seed=8,
+        **_bounds_kwargs(8),
     )
 
     assert exit_code == 0
@@ -110,6 +138,7 @@ def test_noise_adapter_perturbs_action_chunk_deterministically(tmp_path: Path) -
     assert first["action"]["noise_injected"] is True
     assert first["action"]["noise_amplitude"] == 0.3
     assert first["noise_injection"]["perturbed_value_count"] == 8
+    assert first["noise_injection"]["action_bounds_validated"] is True
     assert first["action"]["action_chunk"] == second["action"]["action_chunk"]
     assert first["action"]["action_chunk"] != other_seed["action"]["action_chunk"]
     assert first["claim_boundary"]["synthetic_noise_degradation_injected"] is True
@@ -123,6 +152,7 @@ def test_noise_adapter_zero_amplitude_is_passthrough(tmp_path: Path) -> None:
         payload={"observation": _observation()},
         inner_command=_fake_inner_adapter(tmp_path),
         amplitude=0.0,
+        **_bounds_kwargs(8),
     )
 
     assert exit_code == 0
@@ -143,12 +173,15 @@ def test_noise_adapter_higher_amplitude_deviates_more(tmp_path: Path) -> None:
             inner_command=inner_command,
             amplitude=amplitude,
             seed=7,
+            **_bounds_kwargs(64),
         )
         assert exit_code == 0
         chunk = response["action"]["action_chunk"]
         return sum(abs(value - base) for value, base in zip(chunk, original)) / len(original)
 
-    assert mean_absolute_deviation(0.1) < mean_absolute_deviation(0.6) < mean_absolute_deviation(2.0)
+    assert (
+        mean_absolute_deviation(0.1) < mean_absolute_deviation(0.6) < mean_absolute_deviation(2.0)
+    )
 
 
 def test_noise_adapter_leaves_metadata_fields_untouched(tmp_path: Path) -> None:
@@ -156,6 +189,7 @@ def test_noise_adapter_leaves_metadata_fields_untouched(tmp_path: Path) -> None:
         payload={"observation": _observation()},
         inner_command=_fake_inner_adapter(tmp_path),
         amplitude=0.5,
+        **_bounds_kwargs(8),
     )
 
     assert exit_code == 0
@@ -187,6 +221,7 @@ def test_noise_adapter_propagates_inner_blockers(tmp_path: Path) -> None:
         payload={"observation": _observation()},
         inner_command=f"{sys.executable} {runner}",
         amplitude=0.3,
+        **_bounds_kwargs(8),
     )
 
     assert exit_code == 2
@@ -196,12 +231,85 @@ def test_noise_adapter_propagates_inner_blockers(tmp_path: Path) -> None:
     assert response["noise_injection"]["action_values_perturbed"] is False
 
 
+def test_noise_adapter_blocks_unbounded_action_instead_of_emitting_unsafe_noise(
+    tmp_path: Path,
+) -> None:
+    runner = tmp_path / "unbounded_inner_adapter.py"
+    runner.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "response = {'status':'completed','policy_id':'p','model_ran':True,",
+                "            'action': {'action_chunk':[0.0, 0.1]}}",
+                "open(os.environ['BLUEPRINT_POLICY_ACTION_OUTPUT'], 'w').write(json.dumps(response))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    response, exit_code = adapter.run_noise_degraded_policy(
+        payload={"observation": _observation()},
+        inner_command=f"{sys.executable} {runner}",
+        amplitude=0.3,
+    )
+
+    assert exit_code == 2
+    assert response["status"] == "blocked"
+    assert any("registered_action_bounds" in blocker for blocker in response["blockers"])
+
+
+def test_noise_adapter_rejects_inner_reported_bounds_drift(tmp_path: Path) -> None:
+    runner = tmp_path / "drifted_bounds_inner_adapter.py"
+    runner.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "response = {'status':'completed','policy_id':'p','model_ran':True,",
+                "            'action_bounds': {'action_chunk': {'lower':[-999.0,-999.0], 'upper':[999.0,999.0]}},",
+                "            'action': {'action_chunk':[0.0, 0.1]}}",
+                "open(os.environ['BLUEPRINT_POLICY_ACTION_OUTPUT'], 'w').write(json.dumps(response))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    response, exit_code = adapter.run_noise_degraded_policy(
+        payload={"observation": _observation()},
+        inner_command=f"{sys.executable} {runner}",
+        amplitude=0.3,
+        **_bounds_kwargs(2, limit=1.0),
+    )
+
+    assert exit_code == 2
+    assert response["status"] == "blocked"
+    assert (
+        "blocked_noise_degraded_inner_action_bounds_drift_from_registered_contract"
+        in response["blockers"]
+    )
+
+
+def test_noise_adapter_rejects_oversized_registered_bounds(tmp_path: Path) -> None:
+    contract = _registered_bounds(8, limit=adapter.MAX_REGISTERED_ACTION_ABS_BOUND + 1.0)
+    response, exit_code = adapter.run_noise_degraded_policy(
+        payload={"observation": _observation()},
+        inner_command=_fake_inner_adapter(tmp_path),
+        amplitude=0.3,
+        registered_action_bounds=contract,
+        registered_action_bounds_sha256_value=(adapter.registered_action_bounds_sha256(contract)),
+    )
+
+    assert exit_code == 2
+    assert response["status"] == "blocked"
+    assert any("registered_action_bounds_oversized" in blocker for blocker in response["blockers"])
+
+
 def test_noise_adapter_explicit_policy_id_used_on_blocked_and_completed(tmp_path: Path) -> None:
     completed, _ = adapter.run_noise_degraded_policy(
         payload={"observation": _observation()},
         inner_command=_fake_inner_adapter(tmp_path),
         amplitude=0.3,
         policy_id="ladder_rung_2",
+        **_bounds_kwargs(8),
     )
     blocked, _ = adapter.run_noise_degraded_policy(
         payload={"observation": _observation()},
@@ -231,6 +339,10 @@ def test_noise_adapter_cli_runs_end_to_end(tmp_path: Path, monkeypatch) -> None:
             "0.3",
             "--seed",
             "7",
+            "--registered-action-bounds-json",
+            json.dumps(_registered_bounds(8), sort_keys=True, separators=(",", ":")),
+            "--registered-action-bounds-sha256",
+            adapter.registered_action_bounds_sha256(_registered_bounds(8)),
         ],
         capture_output=True,
         text=True,
@@ -258,6 +370,13 @@ def test_noise_adapter_manifest_declares_env_contract() -> None:
     assert adapter.INNER_COMMAND_ENV in manifest["required_env"]
     assert adapter.AMPLITUDE_ENV in manifest["required_env"]
     assert manifest["claim_boundary"]["degraded_variant_for_ranker_validation_only"] is True
+
+
+def test_environment_noise_amplitude_parser_is_finite_and_numeric() -> None:
+    assert adapter._float_or_none("0.3") == 0.3
+    assert adapter._float_or_none(0) == 0.0
+    assert adapter._float_or_none("not-a-number") is None
+    assert adapter._float_or_none("nan") is None
 
 
 def test_noise_degraded_policy_id_labels() -> None:

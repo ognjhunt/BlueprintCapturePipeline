@@ -10,7 +10,9 @@ JSON only when a generated MP4 exists.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import shlex
 import shutil
@@ -196,41 +198,45 @@ def _action_trace_rows(rollout_manifest: Mapping[str, Any]) -> list[dict[str, An
 
 
 def _action_vector(row: Mapping[str, Any]) -> list[float]:
-    action = _mapping(row.get("normalized_action"))
-    action_type = _string(action.get("action_type"))
-    vx = _number(action.get("vx_mps"))
-    vy = _number(action.get("vy_mps"))
-    yaw = _number(action.get("yaw_rate_rad_s"))
-    waypoint = action.get("target_waypoint")
-    z = 0.0
-    gripper = 1.0
-    if action_type == "manipulation_contact":
-        gripper = 0.35
-        z = 0.02
-    elif action_type == "inspect_look":
-        vx = 0.0
-        vy = 0.0
-    elif action_type == "stop":
-        vx = 0.0
-        vy = 0.0
-        yaw = 0.0
-    if (
-        isinstance(waypoint, Sequence)
-        and not isinstance(waypoint, (str, bytes))
-        and len(waypoint) >= 2
-    ):
-        vx = max(-0.05, min(0.05, _number(waypoint[0]) * 0.05))
-        vy = max(-0.05, min(0.05, _number(waypoint[1]) * 0.05))
-    return [vx, vy, z, 0.0, 0.0, yaw, gripper]
+    normalized = _mapping(row.get("normalized_action"))
+    candidates = (
+        row.get("delta_end_effector_pose_7d"),
+        row.get("sc3_7d_delta_end_effector_pose"),
+        row.get("action_vector_7d"),
+        normalized.get("delta_end_effector_pose_7d"),
+        normalized.get("sc3_7d_delta_end_effector_pose"),
+        normalized.get("action_vector_7d"),
+    )
+    vector: Sequence[Any] | None = None
+    for candidate in candidates:
+        if isinstance(candidate, Sequence) and not isinstance(
+            candidate, (str, bytes, bytearray)
+        ):
+            vector = candidate
+            break
+    if vector is None:
+        raise RuntimeError("cosmos_action_trace_missing_explicit_sc3_7d_action")
+    if len(vector) != 7:
+        raise RuntimeError("cosmos_action_trace_action_dim_must_equal_7")
+    values: list[float] = []
+    for value in vector:
+        if isinstance(value, bool):
+            raise RuntimeError("cosmos_action_trace_action_non_numeric")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("cosmos_action_trace_action_non_numeric") from exc
+        if not math.isfinite(number):
+            raise RuntimeError("cosmos_action_trace_action_non_finite")
+        values.append(number)
+    return values
 
 
 def _action_sequence(rows: Sequence[Mapping[str, Any]], *, chunk_size: int) -> list[list[float]]:
-    actions = [_action_vector(row) for row in rows[: max(chunk_size, 1)]]
-    if not actions:
-        actions = [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]
-    while len(actions) < max(chunk_size, 1):
-        actions.append(list(actions[-1]))
-    return actions[: max(chunk_size, 1)]
+    required = max(chunk_size, 1)
+    if len(rows) < required:
+        raise RuntimeError("cosmos_action_trace_has_fewer_actions_than_requested_chunk")
+    return [_action_vector(row) for row in rows[:required]]
 
 
 def _materialize_cosmos_input_package(
@@ -256,7 +262,18 @@ def _materialize_cosmos_input_package(
     if review_video.resolve() != local_video.resolve():
         shutil.copyfile(review_video, local_video)
 
-    actions = _action_sequence(_action_trace_rows(rollout_manifest), chunk_size=chunk_size)
+    source_action_rows = _action_trace_rows(rollout_manifest)
+    actions = _action_sequence(source_action_rows, chunk_size=chunk_size)
+    action_records = [
+        {
+            "action_id": f"action-{index:02d}",
+            "action_sha256": hashlib.sha256(
+                json.dumps(action, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "action_vector_7d": action,
+        }
+        for index, action in enumerate(actions)
+    ]
     annotation = {
         "schema_version": "blueprint_cosmos_action_conditioning_annotation.v1",
         "task": "blueprint_mujoco_unitree_g1_action_conditioned_rollout",
@@ -331,6 +348,9 @@ def _materialize_cosmos_input_package(
         "task_id": selected_video.get("task_id"),
         "spawn_id": selected_video.get("spawn_id"),
         "action_count": len(actions),
+        "action_records": action_records,
+        "control_rate_hz": 20.0,
+        "chunk_start_timestamp_sec": 0.0,
         "action_load_fn": inference_params["action_load_fn"],
     }
     _write_json(work_dir / "cosmos_rollout_input_package_manifest.json", manifest)

@@ -1,10 +1,8 @@
-"""Local CV episode consistency labels for WAM-generated rollout videos.
+"""Local CV visual-motion smoke checks for WAM-generated rollout videos.
 
-This command is a quota-free fallback scorer. It is deliberately weaker than a
-hosted VLM judge: it checks video decodability, nonblank structure, and visible
-temporal change, then emits the same external-scorer contract consumed by the
-WAM consistency normalizer. It does not prove task success, safety, deployment,
-or generated-world rank fidelity.
+This command checks only video decodability, nonblank structure, and visible
+temporal change. It never reads or reconstructs commanded action values and
+therefore cannot emit forward- or inverse-dynamics consistency proof.
 """
 
 from __future__ import annotations
@@ -18,9 +16,10 @@ from typing import Any, Mapping, Sequence
 from .common import ensure_dir, utc_now_iso, write_json
 
 
-GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_EPISODE_CONSISTENCY"
-DEFAULT_MODEL = "local-cv-frame-delta-v1"
-DEFAULT_OUTPUT_FILENAME = "wam_episode_consistency.command.json"
+GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_VISUAL_MOTION_SMOKE"
+LEGACY_GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_EPISODE_CONSISTENCY"
+DEFAULT_MODEL = "local-cv-visual-motion-smoke-v1"
+DEFAULT_OUTPUT_FILENAME = "wam_visual_motion_smoke.command.json"
 DEFAULT_MAX_FRAMES = 5
 MIN_FRAME_COUNT = 2
 MIN_EDGE_DENSITY = 0.001
@@ -83,11 +82,11 @@ def _score_video(video_path: Path, max_frames: int) -> tuple[dict[str, Any], lis
     try:
         import cv2  # type: ignore[import-not-found]
     except ImportError:
-        return {}, ["missing_cv2_for_local_wam_episode_consistency"]
+        return {}, ["missing_cv2_for_local_wam_visual_motion_smoke"]
 
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
-        return {}, ["generated_video_open_failed_for_local_consistency"]
+        return {}, ["generated_video_open_failed_for_visual_motion_smoke"]
     try:
         frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
@@ -108,9 +107,9 @@ def _score_video(video_path: Path, max_frames: int) -> tuple[dict[str, Any], lis
 
     blockers: list[str] = []
     if frame_count and frame_count < MIN_FRAME_COUNT:
-        blockers.append("generated_video_too_few_frames_for_local_consistency")
+        blockers.append("generated_video_too_few_frames_for_visual_motion_smoke")
     if len(frames) < MIN_FRAME_COUNT:
-        blockers.append("generated_video_sampling_too_few_frames_for_local_consistency")
+        blockers.append("generated_video_sampling_too_few_frames_for_visual_motion_smoke")
     if blockers:
         return {
             "frame_count": frame_count,
@@ -130,9 +129,9 @@ def _score_video(video_path: Path, max_frames: int) -> tuple[dict[str, Any], lis
     last_edge_density = float((last_edges > 0).mean())
     min_edge_density = min(first_edge_density, last_edge_density)
     if min_edge_density < MIN_EDGE_DENSITY:
-        blockers.append("generated_video_local_edge_density_too_low")
+        blockers.append("generated_video_visual_motion_edge_density_too_low")
     if mean_abs_diff < MIN_MEAN_ABS_DIFF:
-        blockers.append("generated_video_local_temporal_change_too_low")
+        blockers.append("generated_video_visual_motion_temporal_change_too_low")
     return {
         "frame_count": frame_count,
         "fps": fps,
@@ -148,11 +147,15 @@ def _score_video(video_path: Path, max_frames: int) -> tuple[dict[str, Any], lis
 
 def _support_claim_boundary() -> dict[str, Any]:
     return {
-        "consistency_label_is_external_to_wam_and_evaluator": True,
-        "consistency_label_is_from_generated_video_and_trace_context": True,
-        "local_cv_scorer_is_not_vlm_semantic_judge": True,
-        "consistency_label_does_not_prove_task_success": True,
-        "consistency_label_does_not_prove_generated_world_rank_fidelity": True,
+        "artifact_is_visual_motion_smoke_only": True,
+        "visual_motion_smoke_reads_action_values": False,
+        "visual_motion_smoke_is_forward_model_consistency": False,
+        "visual_motion_smoke_is_inverse_model_consistency": False,
+        "visual_motion_smoke_can_satisfy_forward_inverse_gate": False,
+        "local_cv_smoke_is_not_vlm_semantic_judge": True,
+        "visual_motion_smoke_does_not_prove_task_success": True,
+        "visual_motion_smoke_does_not_prove_generated_world_rank_fidelity": True,
+        "forward_inverse_consistency_proven": False,
         "forward_inverse_consistency_is_reliability_review_signal_only": True,
         "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking": True,
         "forward_inverse_consistency_does_not_prove_policy_success": True,
@@ -174,7 +177,7 @@ def _support_claim_boundary() -> dict[str, Any]:
     }
 
 
-def build_local_wam_episode_consistency_labels(
+def build_local_wam_visual_motion_smoke(
     *,
     input_path: str | Path,
     output_path: str | Path | None = None,
@@ -193,7 +196,7 @@ def build_local_wam_episode_consistency_labels(
     model_name = _string(model) or DEFAULT_MODEL
     blockers: list[str] = []
     checks: list[dict[str, Any]] = []
-    if not _truthy(os.getenv(GATE_ENV)):
+    if not (_truthy(os.getenv(GATE_ENV)) or _truthy(os.getenv(LEGACY_GATE_ENV))):
         blockers.append(f"missing_env_{GATE_ENV}")
     rollouts = [
         dict(item)
@@ -204,7 +207,7 @@ def build_local_wam_episode_consistency_labels(
         blockers.append("missing_generated_rollouts")
     trace_available = _trace_available(request)
     if not trace_available:
-        blockers.append("missing_trace_context_for_local_consistency")
+        blockers.append("missing_trace_context_for_visual_motion_smoke")
 
     for rollout in rollouts:
         rollout_blockers: list[str] = []
@@ -236,27 +239,32 @@ def build_local_wam_episode_consistency_labels(
                 "scenario_eval_run_id": rollout.get("scenario_eval_run_id"),
                 "policy_id": rollout.get("policy_id"),
                 "model_candidate": rollout.get("model_candidate"),
-                "forward_consistent": passed,
-                "inverse_consistent": passed,
-                "confidence": 0.72 if passed else 0.0,
+                "visual_motion_smoke_passed": passed,
+                "forward_consistent": False,
+                "inverse_consistent": False,
+                "forward_inverse_consistency_proven": False,
+                "confidence": 0.0,
+                "visual_motion_confidence": 0.72 if passed else 0.0,
                 "rationale": (
-                    "Local CV scorer found decodable, nonblank, temporally changing video "
-                    "with trace context present."
+                    "Local CV smoke found decodable, nonblank, temporally changing "
+                    "video. It did not inspect actions and cannot assess dynamics consistency."
                     if passed
-                    else "Local CV scorer could not prove decodable nonblank temporal change with trace context."
+                    else "Local CV smoke could not establish decodable nonblank temporal change."
                 ),
-                "visible_action_alignment_evidence": evidence if passed else [],
+                "visual_motion_evidence": evidence if passed else [],
+                "visible_action_alignment_evidence": [],
                 "inconsistency_evidence": rollout_blockers,
                 "evidence_refs": [str(video_path)] if video_text else [],
                 "visual_evidence_used": True,
-                "action_trace_evidence_used": trace_available,
-                "label_source": "local_cv_wam_episode_consistency_judge",
+                "action_trace_evidence_used": False,
+                "trace_context_declared_but_action_values_not_read": trace_available,
+                "label_source": "local_cv_visual_motion_smoke",
                 "model": model_name,
                 "task_prompt": _task_prompt(request, rollout),
                 "local_cv_metrics": metrics,
-                "local_cv_scorer_is_not_vlm_semantic_judge": True,
-                "consistency_label_does_not_prove_task_success": True,
-                "consistency_label_does_not_prove_generated_world_rank_fidelity": True,
+                "local_cv_smoke_is_not_vlm_semantic_judge": True,
+                "visual_motion_smoke_does_not_prove_task_success": True,
+                "visual_motion_smoke_does_not_prove_generated_world_rank_fidelity": True,
                 "task_success_proven": False,
                 "policy_success_proven": False,
                 "rank_fidelity_result_proven": False,
@@ -268,20 +276,30 @@ def build_local_wam_episode_consistency_labels(
         )
 
     manifest = {
-        "schema_version": "wam_episode_consistency.command.v1",
+        "schema_version": "wam_visual_motion_smoke.command.v1",
         "generated_at": utc_now_iso(),
         "status": "completed" if checks and not blockers else "blocked",
-        "provider": "local_cv_wam_episode_consistency_judge",
+        "provider": "local_cv_visual_motion_smoke",
         "model": model_name,
         "blockers": sorted(set(blockers)),
         "rollout_check_count": len(checks),
         "rollout_checks": checks,
+        "visual_motion_smoke_passed": bool(checks and not blockers),
+        "forward_inverse_consistency_proven": False,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
         "claim_boundary": _support_claim_boundary(),
     }
     write_json(resolved_output, manifest)
     return manifest
+
+
+def build_local_wam_episode_consistency_labels(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Deprecated compatibility wrapper; output is visual-motion smoke only."""
+
+    return build_local_wam_visual_motion_smoke(**kwargs)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -297,7 +315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-rollouts", type=int, default=5)
     parser.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES)
     args = parser.parse_args(argv)
-    result = build_local_wam_episode_consistency_labels(
+    result = build_local_wam_visual_motion_smoke(
         input_path=args.input,
         output_path=args.output,
         model=args.model,

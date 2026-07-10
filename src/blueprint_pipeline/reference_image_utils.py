@@ -21,6 +21,8 @@ _TOGETHER_ALLOWED_IMAGE_HOST_SUFFIXES = (
     "together.xyz",
     "together.ai",
 )
+_QWEN_IMAGE_EDIT_MODEL_ID = "Qwen/Qwen-Image-Edit-2511"
+_QWEN_IMAGE_EDIT_MODEL_REVISION = "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9"
 
 
 def load_reference_image_base64(image_path: str) -> Optional[str]:
@@ -227,11 +229,29 @@ def _cleanup_with_qwen_image_edit(image_path: Path, output_path: Path) -> Option
             from diffusers import QwenImageEditPlusPipeline  # type: ignore
 
             model_path = (
-                os.getenv("QWEN_IMAGE_EDIT_MODEL_PATH") or "Qwen/Qwen-Image-Edit-2511"
+                os.getenv("QWEN_IMAGE_EDIT_MODEL_PATH") or _QWEN_IMAGE_EDIT_MODEL_ID
             ).strip()
+            model_revision = (
+                os.getenv("QWEN_IMAGE_EDIT_MODEL_REVISION")
+                or _QWEN_IMAGE_EDIT_MODEL_REVISION
+            ).strip()
+            local_model = Path(model_path).expanduser()
+            if not local_model.exists() and (
+                model_path != _QWEN_IMAGE_EDIT_MODEL_ID
+                or model_revision != _QWEN_IMAGE_EDIT_MODEL_REVISION
+            ):
+                _disable_qwen_for_run("unapproved remote model revision")
+                return image_path
             logger.info("Loading Qwen-Image-Edit from %s ...", model_path)
+            load_kwargs = {
+                "torch_dtype": torch.bfloat16,
+                "trust_remote_code": False,
+            }
+            if not local_model.exists():
+                load_kwargs["revision"] = model_revision
             _QWEN_EDIT_PIPELINE = QwenImageEditPlusPipeline.from_pretrained(
-                model_path, torch_dtype=torch.bfloat16
+                model_path,
+                **load_kwargs,
             )
             _QWEN_EDIT_PIPELINE.enable_model_cpu_offload()
             logger.info("Qwen-Image-Edit loaded with CPU offload")

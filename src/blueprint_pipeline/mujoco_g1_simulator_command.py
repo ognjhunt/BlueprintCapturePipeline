@@ -11,11 +11,12 @@ import platform
 import shutil
 import struct
 import subprocess
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .object_index_artifacts import resolve_current_object_index_artifacts
 
 
 MUJOCO_G1_SIMULATOR_COMMAND_OUTPUT_SCHEMA_VERSION = "mujoco_g1_simulator_command_output.v1"
@@ -3067,10 +3068,14 @@ def _missing_semantic_object_records(
 
 
 def _capture_object_semantics_summary(capture_root: Path) -> dict[str, Any]:
-    object_index_path = capture_root / "raw" / "object_index.json"
+    resolved_object_index = resolve_current_object_index_artifacts(capture_root)
+    object_index_path_text = str(resolved_object_index.get("object_index_path") or "").strip()
+    object_index_path = Path(object_index_path_text) if object_index_path_text else None
     task_targets_path = capture_root / "pipeline" / "task_targets.json"
     object_index = (
-        _mapping(read_json_any(object_index_path)) if object_index_path.is_file() else {}
+        _mapping(read_json_any(object_index_path))
+        if object_index_path is not None and object_index_path.is_file()
+        else {}
     )
     task_targets = (
         _mapping(read_json_any(task_targets_path)) if task_targets_path.is_file() else {}
@@ -3096,7 +3101,7 @@ def _capture_object_semantics_summary(capture_root: Path) -> dict[str, Any]:
 
     return {
         "status": "available" if objects or target_entries else "not_available",
-        "object_index_path": str(object_index_path) if object_index_path.is_file() else None,
+        "object_index_path": str(object_index_path) if object_index_path is not None else None,
         "task_targets_path": str(task_targets_path) if task_targets_path.is_file() else None,
         "capture_object_count": len(objects),
         "task_target_object_entry_count": len(target_entries),

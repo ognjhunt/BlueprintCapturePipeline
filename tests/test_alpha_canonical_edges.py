@@ -141,7 +141,11 @@ def test_canonical_site_package_defensive_inputs_and_missing_fields(tmp_path: Pa
     assert package["semantic_task_context"]["target_objects"] == [
         {"label": "tote", "source": "task_targets", "raw": {"object_label": "tote"}}
     ]
-    assert "conditioning.rgb_video.raw_walkthrough.uri" in package["missing_fields"]
+    assert package["conditioning"]["rgb_video"]["restricted_raw_capture"] == {
+        "present": False,
+        "exported": False,
+        "access_scope": "restricted_internal_evidence",
+    }
     assert "conditioning.frames.frame_index_uri" in package["missing_fields"]
     assert "conditioning.camera.poses_uri" in package["missing_fields"]
     assert "conditioning.camera.intrinsics_uri" in package["missing_fields"]

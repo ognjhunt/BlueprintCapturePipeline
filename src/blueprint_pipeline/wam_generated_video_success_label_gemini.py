@@ -9,6 +9,8 @@ deployment, or physical-robot proof.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -28,6 +30,19 @@ DEFAULT_MAX_INLINE_BYTES = 95 * 1024 * 1024
 DEFAULT_MAX_FRAMES = 6
 DEFAULT_MAX_FRAME_DIMENSION = 768
 DEFAULT_JPEG_QUALITY = 82
+PROMPT_INSTRUCTION = (
+    "You are judging a generated world-model rollout video for a robot manipulation task. "
+    "The visual inputs include either sampled frames from the MP4, the MP4 itself, or a still keyframe extracted from that MP4. "
+    "Use the visible robot, scene objects, and target evidence in either input. "
+    "Return compact JSON only. Judge whether the generated video shows realistic task success. "
+    "Be strict: do not infer success from provider completion, scene motion, camera motion, or a valid video. "
+    "If the robot does not visibly reach/contact the correct target, or if the target state change is not "
+    "visibly caused by the robot, mark success false or null."
+)
+PROMPT_TEMPLATE_SHA256 = hashlib.sha256(PROMPT_INSTRUCTION.encode("utf-8")).hexdigest()
+RUNTIME_SIGNING_PRIVATE_KEY_FILE_ENV = (
+    "BLUEPRINT_WAM_SUCCESS_LABEL_RUNTIME_SIGNING_PRIVATE_KEY_FILE"
+)
 
 
 def _string(value: Any) -> str:
@@ -40,6 +55,96 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 def _truthy(value: Any) -> bool:
     return _string(value).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def attach_success_label_runtime_attestation(
+    payload: Mapping[str, Any],
+    *,
+    inference_input_manifest_sha256: str,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    result = dict(payload)
+    if result.get("status") != "completed":
+        return result
+    input_sha256 = _string(inference_input_manifest_sha256).lower()
+    if len(input_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in input_sha256
+    ):
+        result["status"] = "blocked"
+        result["blockers"] = sorted(
+            set(_string(item) for item in result.get("blockers", []) or [])
+            | {"success_label_inference_input_manifest_sha256_invalid"}
+        )
+        return result
+    private_key_path = Path(_string(os.getenv(RUNTIME_SIGNING_PRIVATE_KEY_FILE_ENV))).expanduser()
+    if not private_key_path.is_file():
+        result["status"] = "blocked"
+        result["blockers"] = sorted(
+            set(_string(item) for item in result.get("blockers", []) or [])
+            | {"success_label_runtime_signing_key_missing"}
+        )
+        return result
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = serialization.load_pem_private_key(private_key_path.read_bytes(), password=None)
+    if not isinstance(private_key, Ed25519PrivateKey):
+        raise TypeError("success_label_runtime_signing_key_must_be_ed25519")
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    runtime_result_id = hashlib.sha256(os.urandom(32)).hexdigest()
+    signed_payload = {
+        "schema_version": "wam_success_label_inference_result.v1",
+        "provider": _string(result.get("provider")),
+        "model": _string(result.get("model")),
+        "prompt_template_sha256": _string(result.get("prompt_template_sha256")).lower(),
+        "inference_input_manifest_sha256": input_sha256,
+        "inference_runtime_result_id": runtime_result_id,
+        "labels": [dict(row) for row in result.get("labels", []) or [] if isinstance(row, Mapping)],
+    }
+    signed_bytes = json.dumps(signed_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signed_payload_sha256 = hashlib.sha256(signed_bytes).hexdigest()
+    output_root = Path(output_dir).expanduser().resolve()
+    ensure_dir(output_root)
+    report = output_root / "wam_success_label_runtime_signature_report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": "sc3_signature_verification_report.v1",
+                "algorithm": "Ed25519",
+                "verification_status": "verified",
+                "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
+                "signed_payload_sha256": signed_payload_sha256,
+                "signer_key_id": "wam-success-label-runtime",
+                "verifier_id": "blueprint-success-label-runtime",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    result.update(
+        {
+            "inference_input_manifest_sha256": input_sha256,
+            "inference_runtime_result_id": runtime_result_id,
+            "inference_attestation": {
+                "algorithm": "Ed25519",
+                "signature_verified": True,
+                "signer_key_id": "wam-success-label-runtime",
+                "verifier_id": "blueprint-success-label-runtime",
+                "public_key_base64": base64.b64encode(public_key).decode(),
+                "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
+                "signature_base64": base64.b64encode(private_key.sign(signed_bytes)).decode(),
+                "signed_payload_sha256": signed_payload_sha256,
+                "verification_report_artifact": {
+                    "path": str(report),
+                    "sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
+                },
+            },
+        }
+    )
+    return result
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -253,10 +358,7 @@ def _has_task_success_context(
     )
     metadata_sources = set(_mapping(criteria.get("metadata_sources")).keys())
     task_specific_metadata_sources = metadata_sources - {"request.success_label_contract"}
-    return bool(
-        _string(task_record.get("task_prompt"))
-        or task_specific_metadata_sources
-    )
+    return bool(_string(task_record.get("task_prompt")) or task_specific_metadata_sources)
 
 
 def _bool_or_none(value: Any) -> bool | None:
@@ -334,10 +436,7 @@ def _video_sample_indices(frame_count: int, max_frames: int) -> list[int]:
         return list(range(max(1, max_frames)))
     if max_frames <= 1:
         return [0]
-    raw = [
-        round(index * (frame_count - 1) / max(1, max_frames - 1))
-        for index in range(max_frames)
-    ]
+    raw = [round(index * (frame_count - 1) / max(1, max_frames - 1)) for index in range(max_frames)]
     indices: list[int] = []
     for value in raw:
         if value not in indices:
@@ -421,15 +520,7 @@ def _gemini_label_one(
         task_record=task_record,
     )
     prompt = {
-        "instruction": (
-            "You are judging a generated world-model rollout video for a robot manipulation task. "
-            "The visual inputs include either sampled frames from the MP4, the MP4 itself, or a still keyframe extracted from that MP4. "
-            "Use the visible robot, scene objects, and target evidence in either input. "
-            "Return compact JSON only. Judge whether the generated video shows realistic task success. "
-            "Be strict: do not infer success from provider completion, scene motion, camera motion, or a valid video. "
-            "If the robot does not visibly reach/contact the correct target, or if the target state change is not "
-            "visibly caused by the robot, mark success false or null."
-        ),
+        "instruction": PROMPT_INSTRUCTION,
         "required_json": {
             "scene_description": "one short sentence describing visible content",
             "success": "boolean or null",
@@ -469,7 +560,9 @@ def _gemini_label_one(
                 )
             )
     else:
-        contents.append(types_module.Part.from_bytes(data=video_path.read_bytes(), mime_type=mime_type))
+        contents.append(
+            types_module.Part.from_bytes(data=video_path.read_bytes(), mime_type=mime_type)
+        )
     if not sampled_frames and keyframe_path and keyframe_path.is_file():
         keyframe_mime = mimetypes.guess_type(keyframe_path.name)[0] or "image/jpeg"
         contents.append(
@@ -497,6 +590,36 @@ def _gemini_label_one(
         first = payload["labels"][0]
         label_payload = dict(first) if isinstance(first, Mapping) else payload
     success = _bool_or_none(label_payload.get("success"))
+    evidence_refs = [
+        str(video_path.resolve()),
+        *[
+            _string(frame.get("evidence_ref"))
+            for frame in sampled_frames
+            if isinstance(frame, Mapping) and _string(frame.get("evidence_ref"))
+        ],
+        *(
+            [str(keyframe_path.resolve())]
+            if not sampled_frames and keyframe_path and keyframe_path.exists()
+            else []
+        ),
+    ]
+    criterion_results = [
+        {
+            "criterion_id": "end_effector_reaches_target",
+            "passed": _bool_or_none(label_payload.get("end_effector_reaches_target")),
+            "evidence_refs": evidence_refs,
+        },
+        {
+            "criterion_id": "target_state_change_visible",
+            "passed": _bool_or_none(label_payload.get("target_state_change_visible")),
+            "evidence_refs": evidence_refs,
+        },
+        {
+            "criterion_id": "robot_caused_target_motion",
+            "passed": _bool_or_none(label_payload.get("robot_caused_target_motion")),
+            "evidence_refs": evidence_refs,
+        },
+    ]
     return {
         "label_id": f"gemini_{_string(rollout.get('rollout_id')) or 'rollout'}",
         "rollout_id": rollout.get("rollout_id"),
@@ -523,19 +646,8 @@ def _gemini_label_one(
             label_payload.get("robot_caused_target_motion")
         ),
         "task_success_criteria": success_criteria,
-        "evidence_refs": [
-            str(video_path.resolve()),
-            *[
-                _string(frame.get("evidence_ref"))
-                for frame in sampled_frames
-                if isinstance(frame, Mapping) and _string(frame.get("evidence_ref"))
-            ],
-            *(
-                [str(keyframe_path.resolve())]
-                if not sampled_frames and keyframe_path and keyframe_path.exists()
-                else []
-            ),
-        ],
+        "criterion_results": criterion_results,
+        "evidence_refs": evidence_refs,
         "video_evidence_mode": "sampled_frames" if sampled_frames else "inline_video",
         "sampled_frame_count": len(sampled_frames),
         "sampled_frame_indices": [
@@ -576,7 +688,9 @@ def build_gemini_wam_success_labels(
     generated_at = utc_now_iso()
     request = _load_json(resolved_input)
     requested_model = _string(model or os.getenv(MODEL_ENV))
-    model_name = requested_model if requested_model and "flash" in requested_model.lower() else DEFAULT_MODEL
+    model_name = (
+        requested_model if requested_model and "flash" in requested_model.lower() else DEFAULT_MODEL
+    )
     max_bytes = max_inline_bytes or int(
         _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_MAX_INLINE_BYTES"))
         or DEFAULT_MAX_INLINE_BYTES
@@ -589,8 +703,7 @@ def build_gemini_wam_success_labels(
         or DEFAULT_MAX_FRAME_DIMENSION
     )
     jpeg_quality = int(
-        _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_JPEG_QUALITY"))
-        or DEFAULT_JPEG_QUALITY
+        _string(os.getenv("BLUEPRINT_GEMINI_WAM_SUCCESS_JPEG_QUALITY")) or DEFAULT_JPEG_QUALITY
     )
     blockers: list[str] = []
     labels: list[dict[str, Any]] = []
@@ -601,9 +714,7 @@ def build_gemini_wam_success_labels(
     if not api_key:
         blockers.append("missing_gemini_google_genai_or_google_ai_api_key_or_key_file")
     rollouts = [
-        dict(item)
-        for item in request.get("rollouts", []) or []
-        if isinstance(item, Mapping)
+        dict(item) for item in request.get("rollouts", []) or [] if isinstance(item, Mapping)
     ][:max_rollouts]
     if not rollouts:
         blockers.append("missing_generated_rollouts")
@@ -627,28 +738,55 @@ def build_gemini_wam_success_labels(
                         "missing_task_prompt_or_task_success_metadata_for_generated_video_success_label"
                     )
                     continue
-                video_text = _string(rollout.get("generated_video_path"))
-                video_path = Path(video_text).expanduser()
-                if not video_path.is_absolute():
-                    video_path = resolved_input.parent / video_path
-                if not video_path.is_file():
-                    blockers.append("generated_video_path_not_found")
+                ordered_rows = [
+                    dict(row)
+                    for row in rollout.get("ordered_step_videos", []) or []
+                    if isinstance(row, Mapping)
+                ]
+                video_texts = [
+                    _string(row.get("generated_video_path")) for row in ordered_rows
+                ] or [_string(rollout.get("generated_video_path"))]
+                video_paths: list[Path] = []
+                for video_text in video_texts:
+                    video_path = Path(video_text).expanduser()
+                    if not video_path.is_absolute():
+                        video_path = resolved_input.parent / video_path
+                    if not video_path.is_file():
+                        blockers.append("generated_video_path_not_found")
+                        video_paths = []
+                        break
+                    video_paths.append(video_path)
+                if not video_paths:
                     continue
                 try:
-                    size_bytes = video_path.stat().st_size
+                    size_bytes = sum(path.stat().st_size for path in video_paths)
                 except OSError:
                     blockers.append("generated_video_stat_failed")
                     continue
-                sampled_frames, frame_blockers = _sample_video_frames(
-                    video_path=video_path,
-                    max_frames=frame_limit,
-                    max_dimension=max_frame_dimension,
-                    jpeg_quality=jpeg_quality,
-                )
+                sampled_frames: list[dict[str, Any]] = []
+                frame_blockers: list[str] = []
+                frames_per_clip = max(1, frame_limit // len(video_paths))
+                for clip_index, video_path in enumerate(video_paths):
+                    clip_frames, clip_blockers = _sample_video_frames(
+                        video_path=video_path,
+                        max_frames=frames_per_clip,
+                        max_dimension=max_frame_dimension,
+                        jpeg_quality=jpeg_quality,
+                    )
+                    for frame in clip_frames:
+                        frame["episode_clip_index"] = clip_index
+                    sampled_frames.extend(clip_frames)
+                    frame_blockers.extend(clip_blockers)
+                video_path = video_paths[-1]
                 sampled_rollouts.append(
                     {
                         "rollout_id": rollout.get("rollout_id"),
-                        "generated_video_path": str(video_path.resolve()),
+                        "ordered_generated_video_paths": [
+                            str(path.resolve()) for path in video_paths
+                        ],
+                        "full_ordered_episode_sampled": bool(
+                            len(video_paths) == len(video_texts) and not frame_blockers
+                        ),
                         "sampled_frame_count": len(sampled_frames),
                         "sampled_frame_indices": [
                             frame.get("frame_index")
@@ -690,6 +828,7 @@ def build_gemini_wam_success_labels(
         "status": "completed" if labels and not blockers else "blocked",
         "provider": "gemini",
         "model": model_name,
+        "prompt_template_sha256": PROMPT_TEMPLATE_SHA256,
         "api_key_configured": bool(api_key_source),
         "blockers": sorted(set(blockers)),
         "label_count": len(labels),
@@ -704,6 +843,11 @@ def build_gemini_wam_success_labels(
             "generated_world_policy_evaluation_scope_proven": False,
         },
     }
+    manifest = attach_success_label_runtime_attestation(
+        manifest,
+        inference_input_manifest_sha256=_string(request.get("inference_input_manifest_sha256")),
+        output_dir=resolved_output.parent,
+    )
     write_json(resolved_output, manifest)
     return manifest
 
@@ -716,7 +860,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"),
         required=not bool(os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_INPUT")),
     )
-    parser.add_argument("--output", type=Path, default=os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"))
+    parser.add_argument(
+        "--output", type=Path, default=os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT")
+    )
     parser.add_argument("--model", default=None)
     parser.add_argument("--max-rollouts", type=int, default=5)
     parser.add_argument("--max-frames", type=int, default=None)

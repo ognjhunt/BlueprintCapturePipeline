@@ -833,9 +833,17 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
     pipeline_root = capture_root / "pipeline"
-    raw_root = capture_root / "raw"
     eval_root = pipeline_root / "evaluation_prep"
-    build_report = json.loads((raw_root / "object_index_build_report.json").read_text(encoding="utf-8"))
+    object_index_pointer = json.loads(
+        (pipeline_root / "derived" / "object_index" / "current.json").read_text(encoding="utf-8")
+    )
+    build_report = json.loads(
+        (
+            capture_root
+            / object_index_pointer["run_path"]
+            / "object_index_build_report.json"
+        ).read_text(encoding="utf-8")
+    )
     geometry = json.loads((eval_root / "object_geometry_manifest.json").read_text(encoding="utf-8"))
     health = json.loads((eval_root / "site_world_health.json").read_text(encoding="utf-8"))
     manifest = json.loads((eval_root / "evaluation_prep_manifest.json").read_text(encoding="utf-8"))

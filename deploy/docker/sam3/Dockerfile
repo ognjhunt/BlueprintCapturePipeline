@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356
+
+ARG APP_UID=10001
+ARG APP_GID=10001
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -28,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
-COPY pyproject.toml ./
+COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 
 RUN python -m pip install \
@@ -52,8 +55,13 @@ RUN python -m pip install \
 
 RUN python -m pip install ".[cloud,runtime,validation]"
 
-RUN mkdir -p /models/hf /models/sam3
+RUN groupadd --gid "${APP_GID}" blueprint \
+    && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
+    && mkdir -p /models/hf /models/sam3 \
+    && chown -R blueprint:blueprint /app /models/hf /models/sam3
 
 ENV PYTHONPATH="/app/src:${PYTHONPATH}"
+
+USER blueprint:blueprint
 
 CMD ["python", "-m", "blueprint_pipeline.privacy_runner_service"]

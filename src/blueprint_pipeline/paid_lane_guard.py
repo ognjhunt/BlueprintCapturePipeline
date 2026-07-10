@@ -23,7 +23,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -33,6 +35,7 @@ from .provider_reliability_manifest import (
     build_pre_spend_preflight,
     build_teardown_proof,
 )
+from .spend_admission_lock import validate_spend_admission_lock
 
 PENDING_TEARDOWN_SCHEMA_VERSION = "pending_teardown.v1"
 ORPHAN_REAP_REPORT_SCHEMA_VERSION = "orphan_reap_report.v1"
@@ -41,10 +44,33 @@ PENDING_TEARDOWN_DIR_ENV = "BLUEPRINT_PENDING_TEARDOWN_DIR"
 DEFAULT_PENDING_TEARDOWN_DIR = Path.home() / ".blueprint-pending-teardowns"
 # An open allocation with no collect for this long is an orphan, not patience.
 DEFAULT_PENDING_TEARDOWN_MAX_AGE_SECONDS = 7200
+SPEND_ADMISSION_LOCK_PATH_ENV = "BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH"
+REQUIRE_SPEND_ADMISSION_LOCK_ENV = "BLUEPRINT_REQUIRE_PAID_SPEND_ADMISSION_LOCK"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_spend_admission_lock(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        return {"_load_blocker": "spend_admission_lock_missing_or_symlink"}
+    try:
+        metadata = path.stat()
+        if metadata.st_size > 1024 * 1024:
+            return {"_load_blocker": "spend_admission_lock_too_large"}
+        if stat.S_IMODE(metadata.st_mode) & (stat.S_IWGRP | stat.S_IWOTH):
+            return {"_load_blocker": "spend_admission_lock_permission_unsafe"}
+        if metadata.st_uid not in {0, os.geteuid()}:
+            return {"_load_blocker": "spend_admission_lock_owner_untrusted"}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"_load_blocker": "spend_admission_lock_unreadable"}
+    return _mapping(payload)
 
 
 def _registry_dir(registry_dir: str | Path | None) -> Path:
@@ -81,6 +107,7 @@ def require_pre_spend_preflight(
     spend_gate_open: Any = None,
     record_dir: str | Path | None = None,
     hardware_contract: Mapping[str, Any] | None = None,
+    spend_admission_lock: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The single fail-closed gate every paid launch must pass through.
 
@@ -109,6 +136,62 @@ def require_pre_spend_preflight(
     if not lane_name:
         preflight["blockers"] = sorted(
             {*preflight.get("blockers", []), "pre_spend_chokepoint_lane_missing"}
+        )
+        preflight["status"] = "FAIL"
+        preflight["spend_allowed"] = False
+    configured_lock_path = str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
+    admission_evidence = _mapping(spend_admission_lock)
+    if not admission_evidence and configured_lock_path:
+        admission_evidence = _load_spend_admission_lock(
+            Path(configured_lock_path).expanduser()
+        )
+    production_mode = (
+        str(os.getenv("BLUEPRINT_LAUNCH_PROOF_MODE") or "").strip().lower()
+        == "production"
+    )
+    admission_required = bool(
+        production_mode
+        or _env_truthy(REQUIRE_SPEND_ADMISSION_LOCK_ENV)
+        or configured_lock_path
+        or spend_admission_lock is not None
+    )
+    admission_blockers = (
+        validate_spend_admission_lock(
+            admission_evidence,
+            now=datetime.now(timezone.utc),
+        )
+        if admission_required
+        else []
+    )
+    load_blocker = str(admission_evidence.get("_load_blocker") or "").strip()
+    if load_blocker:
+        admission_blockers = sorted({*admission_blockers, load_blocker})
+    preflight["spend_admission_lock"] = {
+        "required": admission_required,
+        "configured_path_present": bool(configured_lock_path),
+        "schema_version": admission_evidence.get("schema_version"),
+        "status": admission_evidence.get("status")
+        if admission_evidence
+        else "not_required_nonproduction",
+        "generated_at": admission_evidence.get("generated_at"),
+        "hard_stop_usd": admission_evidence.get("hard_stop_usd"),
+        "effective_spend_usd": admission_evidence.get("effective_spend_usd"),
+        "threshold_crossed": admission_evidence.get("threshold_crossed"),
+        "override_id": _mapping(admission_evidence.get("override")).get(
+            "override_id"
+        ),
+        "blockers": admission_blockers,
+        "claim_boundary": {
+            "nonproduction_omission_is_not_live_admission_proof": True,
+            "current_billing_reconciliation_required_in_production": True,
+        },
+    }
+    if admission_blockers:
+        preflight["blockers"] = sorted(
+            {
+                *preflight.get("blockers", []),
+                *(f"spend_admission:{item}" for item in admission_blockers),
+            }
         )
         preflight["status"] = "FAIL"
         preflight["spend_allowed"] = False

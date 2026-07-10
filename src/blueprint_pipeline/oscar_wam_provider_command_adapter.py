@@ -920,6 +920,35 @@ def run_compute_provider(
         mode=f"{compute_result.provider}_provider",
         source_provider_job_dir=provider_job_dir,
     )
+    if compute_result.provider == "deepinfra":
+        preview_rollouts = [
+            dict(row)
+            for row in payload.get("rollouts", []) or []
+            if isinstance(row, Mapping)
+        ]
+        payload = {
+            **payload,
+            "status": "completed_preview_only",
+            "endpoint_class": "text_to_video_preview",
+            "rollouts": [],
+            "preview_rollouts": preview_rollouts,
+            "policy_eval_rollout_count": 0,
+            "task_evaluation_run_eligible": False,
+            "policy_ranking_artifact_eligible": False,
+            "learned_wam_model_ran": False,
+            "text_to_video_model_ran": bool(preview_rollouts),
+            "blockers": sorted(
+                {
+                    *[str(item) for item in payload.get("blockers", []) or []],
+                    "deepinfra_unconditioned_text_to_video_excluded_from_policy_evaluation",
+                }
+            ),
+            "claim_boundary": {
+                **_mapping(payload.get("claim_boundary")),
+                "deepinfra_preview_cannot_populate_task_evaluation_artifacts": True,
+                "deepinfra_preview_cannot_populate_policy_ranking_artifacts": True,
+            },
+        }
     payload["details"] = {
         "bundle_manifest_path": str(bundle_job_dir / "oscar_wam_provider_bundle_manifest.json"),
         "wam_compute_provider": compute_result.provider,

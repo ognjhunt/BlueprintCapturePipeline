@@ -11571,14 +11571,31 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
         if serve:
             try:  # worker: flat module in the bundle dir (sys.path has it); repo/tests: package
                 from warm_render_server import (  # type: ignore
-                    FileJobSource, SignedUrlJobSource, serve_render_loop)
+                    DurableBrokerJobSource, FileJobSource, serve_render_loop)
             except ImportError:
                 from blueprint_pipeline.warm_render_server import (  # type: ignore
-                    FileJobSource, SignedUrlJobSource, serve_render_loop)
-            inbox_get_url = os.environ.get("BLUEPRINT_WARM_INBOX_GET_URL", "").strip()
-            if inbox_get_url:
-                warm_source = SignedUrlJobSource(inbox_get_url, out_dir)
-                source_label = "signed_url_inbox"
+                    DurableBrokerJobSource, FileJobSource, serve_render_loop)
+            broker_base_url = os.environ.get(
+                "BLUEPRINT_WARM_RENDER_BROKER_BASE_URL", ""
+            ).strip()
+            broker_token = os.environ.get(
+                "BLUEPRINT_WARM_RENDER_BROKER_TOKEN", ""
+            ).strip()
+            retired_inbox_url = os.environ.get(
+                "BLUEPRINT_WARM_INBOX_GET_URL", ""
+            ).strip()
+            if retired_inbox_url:
+                raise RuntimeError(
+                    "single_object_warm_inbox_retired_use_durable_broker"
+                )
+            if bool(broker_base_url) != bool(broker_token):
+                raise RuntimeError("warm_render_broker_url_and_token_required_together")
+            if broker_base_url:
+                warm_source = DurableBrokerJobSource(
+                    broker_base_url,
+                    broker_token,
+                )
+                source_label = "durable_warm_render_broker"
             else:
                 serve_root = Path(serve_dir) if serve_dir is not None else (out_dir / "warm_jobs")
                 warm_source = FileJobSource(serve_root)

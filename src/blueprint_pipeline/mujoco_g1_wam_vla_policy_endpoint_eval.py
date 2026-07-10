@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from defusedxml import ElementTree as DefusedET
+
 from .common import ensure_dir, utc_now_iso, write_json
 from .g1_controlled_proof_setup import OFFICIAL_UNITREE_G1_POLICY_SOURCES
 from .mujoco_g1_simulator_command import (
@@ -5928,7 +5930,7 @@ def _add_g1_fixed_egocentric_cameras(g1_xml: Path) -> dict[str, Any]:
         },
     ]
     try:
-        tree = ET.parse(g1_xml)
+        tree = DefusedET.parse(g1_xml)
         root = tree.getroot()
     except Exception as exc:
         return {

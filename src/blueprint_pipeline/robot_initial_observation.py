@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, write_json
 from .launch_proof_policy import production_launch_mode
+from .object_index_artifacts import resolve_current_object_index_artifacts
 from .synthesis.depth_splat import depth_splat, load_depth_png
 
 
@@ -2317,9 +2318,26 @@ def _object_records_from_payload(payload: Any) -> list[dict[str, Any]]:
 
 
 def _load_object_grounding(capture_root: Path) -> dict[str, Any]:
+    resolved_object_index = resolve_current_object_index_artifacts(capture_root)
+    immutable_sources = [
+        Path(path_text)
+        for path_text in (
+            resolved_object_index.get("grounding_hints_path"),
+            resolved_object_index.get("object_index_path"),
+        )
+        if str(path_text or "").strip()
+    ]
+    legacy_sources = (
+        []
+        if resolved_object_index.get("source") == "immutable_derived_run"
+        else [
+            capture_root / "raw" / "object_grounding_hints.json",
+            capture_root / "raw" / "object_index.json",
+        ]
+    )
     sources = [
-        capture_root / "raw" / "object_grounding_hints.json",
-        capture_root / "raw" / "object_index.json",
+        *immutable_sources,
+        *legacy_sources,
         capture_root / "pipeline" / "robot_eval_dataset" / "site_card.json",
         capture_root / "pipeline" / "object_geometry" / "object_geometry_manifest.json",
     ]

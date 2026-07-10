@@ -7,7 +7,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GROOT_SOURCE_URL=https://github.com/NVIDIA/Isaac-GR00T.git
 ARG GROOT_SOURCE_REF=e5749287857afd97b78f1147166137de29746392
 ARG GROOT_CHECKPOINT_REPO=LucaFrat/groot-bs16
+ARG GROOT_CHECKPOINT_REVISION=86b17337379926a8d8f1ad5c4580c7c33deeb49f
 ARG PREFETCH_GROOT_CHECKPOINT=true
+ARG APP_UID=10001
+ARG APP_GID=10001
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -50,7 +53,8 @@ RUN mkdir -p /opt/blueprint/groot_runtime/model_snapshots /opt/blueprint/hf_home
   && git clone --filter=blob:none --sparse "${GROOT_SOURCE_URL}" "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT}" \
   && cd "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT}" \
   && git fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
-  && git checkout FETCH_HEAD \
+  && git checkout --detach FETCH_HEAD \
+  && test "$(git rev-parse HEAD)" = "${GROOT_SOURCE_REF}" \
   && git sparse-checkout set gr00t \
   && test -f "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT}/gr00t/eval/run_gr00t_server.py"
 
@@ -71,6 +75,7 @@ if secret_path.is_file():
     token = secret_path.read_text(encoding="utf-8").strip()
 snapshot_path = Path(snapshot_download(
     repo_id=repo_id,
+    revision=os.environ["GROOT_CHECKPOINT_REVISION"],
     local_dir=str(target),
     allow_patterns=[
         "config.json",
@@ -91,5 +96,11 @@ BASH
 RUN python3 /opt/blueprint/unitree_groot_sonic_wam_image_healthcheck.py --build-time
 
 ENV PYTHONPATH="/opt/blueprint/groot_runtime/Isaac-GR00T"
+
+RUN groupadd --gid "${APP_GID}" blueprint \
+  && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
+  && chown -R blueprint:blueprint /workspace /opt/blueprint/groot_runtime/model_snapshots
+
+USER blueprint:blueprint
 
 CMD ["bash"]

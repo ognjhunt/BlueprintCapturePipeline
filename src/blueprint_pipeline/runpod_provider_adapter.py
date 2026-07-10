@@ -8,12 +8,16 @@ import logging
 import os
 import re
 import shlex
-import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
+    import tomli as tomllib
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event

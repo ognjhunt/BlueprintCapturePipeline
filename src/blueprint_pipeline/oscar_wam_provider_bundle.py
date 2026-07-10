@@ -2642,8 +2642,8 @@ REMOTE_RUNNER = r'''#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
+import hashlib
 import os
-import pickle
 import signal
 import textwrap
 import shutil
@@ -4715,15 +4715,40 @@ def main() -> int:
                     if not ok or frame is None:
                         raise RuntimeError("official_case_rgb_frame_decode_failed")
                     cv2.imwrite(str(official_first_frame), frame)
-                    caption_path = asset_dir / "caption.pickle"
-                    with caption_path.open("rb") as handle:
-                        caption = pickle.load(handle)
-                    if isinstance(caption, str):
-                        prompt = caption
-                    elif isinstance(caption, Mapping) and "caption" in caption:
-                        prompt = str(caption["caption"])
+                    caption_json_path = asset_dir / "caption.json"
+                    caption_text_path = asset_dir / "caption.txt"
+                    if caption_json_path.is_file():
+                        caption_path = caption_json_path
+                        if caption_path.stat().st_size > 64 * 1024:
+                            raise RuntimeError("official_case_caption_too_large")
+                        caption_payload = json.loads(caption_path.read_text(encoding="utf-8"))
+                        if not isinstance(caption_payload, Mapping) or set(caption_payload) != {"caption"}:
+                            raise RuntimeError("official_case_caption_schema_invalid")
+                        prompt = str(caption_payload["caption"]).strip()
+                    elif caption_text_path.is_file():
+                        caption_path = caption_text_path
+                        if caption_path.stat().st_size > 64 * 1024:
+                            raise RuntimeError("official_case_caption_too_large")
+                        prompt = caption_path.read_text(encoding="utf-8").strip()
                     else:
-                        prompt = str(caption)
+                        raise RuntimeError("official_case_safe_caption_missing")
+                    if not prompt or len(prompt) > 2_000:
+                        raise RuntimeError("official_case_caption_content_invalid")
+                    expected_asset_digests = _mapping(case_detail.get("asset_sha256"))
+                    for asset_path in (
+                        asset_dir / "rgb.mp4",
+                        asset_dir / "gripper_scenario.mp4",
+                        caption_path,
+                    ):
+                        expected_digest = str(expected_asset_digests.get(asset_path.name) or "").strip().lower()
+                        if len(expected_digest) != 64 or any(ch not in "0123456789abcdef" for ch in expected_digest):
+                            raise RuntimeError(f"official_case_asset_digest_missing:{asset_path.name}")
+                        digest = hashlib.sha256()
+                        with asset_path.open("rb") as handle:
+                            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                                digest.update(chunk)
+                        if digest.hexdigest() != expected_digest:
+                            raise RuntimeError(f"official_case_asset_digest_mismatch:{asset_path.name}")
                     first_frame = official_first_frame
                     skeleton_video = asset_dir / "gripper_scenario.mp4"
                     rgb_video = asset_dir / "rgb.mp4"

@@ -1,5 +1,76 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-09
+
+### User-Facing
+
+- Published fail-closed beta controls for data residency/transfer, retention,
+  secret-artifact disclosure, output retention, operator incident response, and
+  capture-root site coverage (`docs/BETA_DATA_RESIDENCY_TRANSFER_POLICY_2026-07-09.md`,
+  `docs/BETA_DATA_RETENTION_POLICY_2026-07-09.md`,
+  `docs/SECRET_ARTIFACT_DISCLOSURE_POLICY.md`,
+  `docs/runbooks/output-artifact-retention.md`,
+  `docs/runbooks/beta-ops-incident-response.md`,
+  `scripts/validate_capture_root_by_site_coverage.py`). These are policy and
+  validation contracts, not proof that production retention, residency,
+  incident response, or site coverage has been exercised live.
+- Published stricter buyer/readiness boundaries across buyer package readouts,
+  Arena result ingestion, external/paid launch gates, and launch-readiness
+  packets (`src/blueprint_pipeline/buyer_package_readout.py`,
+  `src/blueprint_pipeline/arena_result_ingest.py`,
+  `scripts/run_external_alpha_launch_gate.py`,
+  `scripts/run_paid_marketplace_launch_gate.py`,
+  `scripts/build_launch_readiness_packet.py`). Prepared packages and passing
+  local checks remain separate from live provider execution, semantic task
+  success, public readiness, and deployment approval.
+
+### Employee-Facing
+
+- Published provider/runtime hardening for model-access secrets, object-store
+  handoff, Vast/RunPod staging, worker-image startup, and Unitree/WAM readiness
+  (`src/blueprint_pipeline/secret_artifact_policy.py`,
+  `src/blueprint_pipeline/model_access_env.py`,
+  `src/blueprint_pipeline/wam_provider_object_store.py`,
+  `src/blueprint_pipeline/vast_bundle_staging.py`,
+  `src/blueprint_pipeline/runpod_wam_async_runner.py`,
+  `src/blueprint_pipeline/wam_model_runtime_bootstrap.py`). These changes make
+  execution fail closed and improve artifact handling; they do not establish a
+  successful paid run, useful generated output, or physical-robot result.
+- Added CI Python-interpreter contract checks, expanded full/sim-only lanes,
+  beta capacity/backup validation, and deploy/Terraform updates
+  (`docs/CI_PYTHON_INTERPRETER_MATRIX.md`,
+  `scripts/validate_python_interpreter_matrix.py`,
+  `.github/workflows/full-test-lane.yml`,
+  `.github/workflows/sim-only-local-gate.yml`,
+  `scripts/validate_beta_capacity_storage.py`,
+  `scripts/validate_capture_truth_backup_policy.py`,
+  `deploy/terraform/main.tf`). Repository wiring and validation artifacts are
+  not evidence that current CI, infrastructure, backups, or deployment are
+  healthy in production.
+- **Uncommitted local changes:** Late-July-9 work added release-evidence,
+  supply-chain/security, paid-spend admission, transactional output, warm-render
+  brokering, public scientific-claim linting, and PTDP scalability surfaces
+  (`scripts/build_release_evidence_bundle.py`,
+  `scripts/build_supply_chain_evidence.py`,
+  `src/blueprint_pipeline/spend_admission_lock.py`,
+  `src/blueprint_pipeline/output_run_transaction.py`,
+  `src/blueprint_pipeline/warm_render_broker.py`,
+  `scripts/lint_public_scientific_claims.py`,
+  `scripts/benchmark_ptdp_scalability.py`). This is a file-mtime-bounded local
+  snapshot and remains unmerged; related post-midnight July 10 edits are not
+  included in this dated entry.
+
+### Future-Agent-Facing
+
+- The committed evidence window contains `cfe742adc` and `7a462e070` on July 9
+  America/Chicago. The first commit publishes the July 8 remediation snapshot;
+  the second adds the July 9 beta-hardening contracts and focused regressions.
+- Keep raw capture/provenance and rights/privacy evidence authoritative. Policy
+  documents, readiness packets, CI matrices, generated summaries, provider
+  manifests, and release-evidence graphs are downstream support artifacts and
+  must not be promoted into simulator fidelity, live provider/runtime success,
+  public launch readiness, deployment approval, or robot task-success proof.
+
 ## 2026-07-08
 
 ### User-Facing
@@ -46,9 +117,11 @@
 - **Uncommitted local changes:** Hardened provider reliability and spend-control
   surfaces: provider-reliability manifests now name ordered phases and first
   failing phase, Lambda termination verifies terminal state through the
-  provider API, provider-race launch can perform live-gated serial failover,
-  render pods carry hard/idle TTLs, and `scripts/gpu_spend_guard.py` can persist
-  spend-ledger and fleet-budget reports
+  provider API, provider-race launch uses a fixed adapter registry and only
+  selects a winner after a fresh job-bound terminal artifact plus verified
+  teardown, render pods carry hard/idle ownership leases, and
+  `scripts/gpu_spend_guard.py` fails closed on provider-inventory uncertainty
+  while persisting atomic spend-ledger and fleet-budget reports
   (`docs/PROVIDER_RELIABILITY_MANIFEST.md`,
   `src/blueprint_pipeline/lambda_provider_adapter.py`,
   `src/blueprint_pipeline/robot_eval_provider_race_launcher.py`,

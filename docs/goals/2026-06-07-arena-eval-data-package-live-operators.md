@@ -1,6 +1,6 @@
 # Goal: Fully Automated Arena Eval + Post-Training Data Package Pipeline
 
-Repo: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline
+Repo: $HOME/workspace/BlueprintCapturePipeline
 
 Read first:
 - AGENTS.md

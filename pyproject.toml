@@ -4,7 +4,8 @@ version = "2.0.0"
 description = "Robot-eval package, World Labs preview, and simulation preflight pipeline for Blueprint captures"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "Blueprint Team"}]
 keywords = [
     "capture",
@@ -15,7 +16,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -32,8 +32,11 @@ dependencies = [
     "Pillow>=10.0.0",
     "fastapi>=0.115.0",
     "json-numpy>=2.1.0",
+    "tomli>=2.0.0; python_version < '3.11'",
     "google-auth>=2.0.0",
     "google-cloud-storage>=2.10.0",
+    "cryptography>=46.0.5",
+    "defusedxml>=0.7.1",
     "uvicorn>=0.30.0",
     "websockets>=12.0",
 ]
@@ -84,7 +87,10 @@ validation = [
     "jsonschema>=4.23.0",
 ]
 dev = [
+    "bandit==1.8.6",
     "httpx>=0.28.0",
+    "mypy==1.19.1",
+    "pip-audit==2.10.1",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "jsonschema>=4.23.0",
@@ -112,7 +118,10 @@ dev = [
 # docs/cpu-work-audit-2026-06-29.md). Mirrors the [project.optional-dependencies] `dev`
 # extra so `pip install -e '.[dev]'` stays equivalent for non-uv workflows.
 dev = [
+    "bandit==1.8.6",
     "httpx>=0.28.0",
+    "mypy==1.19.1",
+    "pip-audit==2.10.1",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "jsonschema>=4.23.0",
@@ -132,6 +141,7 @@ blueprint-render-splat-scene = "blueprint_pipeline.splat_scene_render:main"
 blueprint-render-splat-isaac = "blueprint_pipeline.isaac_particlefield_render_job:main"
 blueprint-isaac-g1-kitchen-parity = "blueprint_pipeline.isaac_g1_kitchen_parity_job:main"
 blueprint-submit-warm-render-batch = "blueprint_pipeline.warm_render_server:main"
+blueprint-run-warm-render-broker = "blueprint_pipeline.warm_render_broker:main"
 blueprint-preflight-capture = "blueprint_pipeline.preflight_capture:main"
 blueprint-check-cpu-env = "blueprint_pipeline.cpu_env_doctor:main"
 blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
@@ -218,6 +228,10 @@ blueprint-label-wam-generated-video-gemini = "blueprint_pipeline.wam_generated_v
 blueprint-label-wam-generated-video-openai = "blueprint_pipeline.wam_generated_video_success_label_openai:main"
 blueprint-label-wam-episode-consistency-gemini = "blueprint_pipeline.wam_episode_consistency_label_gemini:main"
 blueprint-label-wam-episode-consistency-openai = "blueprint_pipeline.wam_episode_consistency_label_openai:main"
+# Primary honest name. The legacy local consistency entry point remains as a
+# compatibility alias, but emits the same visual-motion-only artifact and can
+# never satisfy a forward/inverse consistency gate.
+blueprint-run-wam-visual-motion-smoke = "blueprint_pipeline.wam_episode_consistency_label_local:main"
 blueprint-label-wam-episode-consistency-local = "blueprint_pipeline.wam_episode_consistency_label_local:main"
 blueprint-bootstrap-wam-model-runtime = "blueprint_pipeline.wam_model_runtime_bootstrap:main"
 blueprint-run-g1-site-3dgs-mujoco-preview = "blueprint_pipeline.g1_site_3dgs_mujoco_preview:main"
@@ -274,11 +288,16 @@ blueprint-stage-first-gpu-sample-video = "blueprint_pipeline.first_gpu_sample_vi
 blueprint-audit-first-gpu-cross-repo-readiness = "blueprint_pipeline.cross_repo_first_gpu_readiness:main"
 
 [project.urls]
+Homepage = "https://tryblueprint.io"
 Repository = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"
 Issues = "https://github.com/ognjhunt/BlueprintCapturePipeline/issues"
+Support = "https://github.com/ognjhunt/BlueprintCapturePipeline/issues"
+Documentation = "https://github.com/ognjhunt/BlueprintCapturePipeline/blob/main/README.md"
+Security = "https://github.com/ognjhunt/BlueprintCapturePipeline/security/policy"
+Changelog = "https://github.com/ognjhunt/BlueprintCapturePipeline/blob/main/docs/CHANGELOG.md"
 
 [build-system]
-requires = ["setuptools>=67", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -298,6 +317,9 @@ line-length = 100
 "tests/test_unitree_groot_n17_sonic_vast_persistent_session.py" = ["E402"]
 "tests/test_wam_derived_observation_harness.py" = ["E402"]
 "tests/test_wam_generated_video_review.py" = ["E402"]
+
+[tool.uv]
+required-version = "==0.10.7"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .lucky_g1_reference_adapter import run_lucky_g1_reference_adapter
+from .object_index_artifacts import resolve_current_object_index_artifacts
 from .manipulation_physics_simulator_command import (
     run_mujoco_manipulation_physics,
     write_mujoco_tote_asset,
@@ -91,19 +92,8 @@ def _load_optional_json(path: str | Path | None) -> dict[str, Any]:
 
 
 def _site_object_index_entries(capture_root: Path) -> list[dict[str, Any]]:
-    for path in (
-        capture_root / "raw" / "object_index.json",
-        capture_root / "raw" / "objects" / "index.json",
-        capture_root / "raw" / "arkit" / "objects" / "index.json",
-        capture_root / "object_index.json",
-    ):
-        if not path.is_file():
-            continue
-        payload = read_json_any(path)
-        raw_objects = payload.get("objects") if isinstance(payload, Mapping) else payload
-        if isinstance(raw_objects, Sequence) and not isinstance(raw_objects, (str, bytes)):
-            return [dict(item) for item in raw_objects if isinstance(item, Mapping)]
-    return []
+    resolved = resolve_current_object_index_artifacts(capture_root)
+    return [dict(item) for item in resolved.get("objects", []) if isinstance(item, Mapping)]
 
 
 def _site_index_supports_object_class(

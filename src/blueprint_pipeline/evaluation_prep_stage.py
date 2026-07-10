@@ -1609,16 +1609,11 @@ def _primary_runtime_render_descriptor(
             "fallback_mode": str(canonical_world_model.get("fallback_mode") or "none"),
         }
 
-    # PIPE-01: NEVER fall back to the raw un-redacted walkthrough as a runtime render
-    # source. Only privacy-safe world-model / privacy-processed URIs (or the local
-    # privacy-processed video path) are acceptable. conditioning_bundle.raw_video_uri is
-    # accepted only because the scene-memory conditioning writer upstream already gates
-    # it behind privacy_world_model_ready (qualification.py); local_paths never carries
-    # a raw_video_path anymore (see _conditioning_local_paths).
-    raw_video_ref = str(
+    # Never retain or fall back to the raw, unredacted walkthrough in derived runtime
+    # artifacts. The scene-memory writer emits only privacy-processed references.
+    privacy_video_ref = str(
         conditioning_bundle.get("world_model_video_uri")
         or conditioning_bundle.get("privacy_processed_video_uri")
-        or conditioning_bundle.get("raw_video_uri")
         or local_paths.get("world_model_video_path")
         or ""
     ).strip()
@@ -1626,7 +1621,7 @@ def _primary_runtime_render_descriptor(
     geometry = dict(conditioning_bundle.get("geometry") or {}) if isinstance(conditioning_bundle.get("geometry"), Mapping) else {}
     poses_ref = str(arkit.get("poses_uri") or local_paths.get("arkit_poses_path") or "").strip()
     intrinsics_ref = str(arkit.get("intrinsics_uri") or local_paths.get("arkit_intrinsics_path") or "").strip()
-    if raw_video_ref and poses_ref and intrinsics_ref:
+    if privacy_video_ref and poses_ref and intrinsics_ref:
         return {
             "world_model_backend": "site_world_runtime",
             "scene_representation": "site_world_runtime_video_world_model_v1",
@@ -1640,7 +1635,7 @@ def _primary_runtime_render_descriptor(
     geometry_depth_ref = str(
         geometry.get("depth_manifest_uri") or local_paths.get("geometry_depth_manifest_path") or ""
     ).strip()
-    if raw_video_ref and geometry_poses_ref and geometry_intrinsics_ref and geometry_depth_ref:
+    if privacy_video_ref and geometry_poses_ref and geometry_intrinsics_ref and geometry_depth_ref:
         return {
             "world_model_backend": "site_world_runtime",
             "scene_representation": "geometry_conditioned_capture_v1",
@@ -2318,7 +2313,10 @@ def _build_site_world_spec(
             "scene_memory_manifest_path": str((context.pipeline_root / "scene_memory" / "scene_memory_manifest.json").resolve()),
             "conditioning_bundle_path": str((context.pipeline_root / "scene_memory" / "conditioning_bundle.json").resolve()),
             "capture_orientation": capture_orientation,
-            "raw_video_uri": conditioning_map.get("raw_video_uri"),
+            "privacy_processed_video_uri": (
+                conditioning_map.get("world_model_video_uri")
+                or conditioning_map.get("privacy_processed_video_uri")
+            ),
             "keyframe_uri": conditioning_map.get("keyframe_uri"),
             "arkit_poses_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("poses_uri"),
             "arkit_intrinsics_uri": ((conditioning_map.get("arkit") or {}) if isinstance(conditioning_map.get("arkit"), Mapping) else {}).get("intrinsics_uri"),

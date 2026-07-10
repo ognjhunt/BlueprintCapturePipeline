@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import base64
 import json
+import os
 import sys
+import tarfile
 import types
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from tests.video_codec import require_video_codec_or_skip
 
 import blueprint_pipeline.post_training_data_package as package_module
 from blueprint_pipeline.scaniverse_asset_import import build_scaniverse_asset_import
+from blueprint_pipeline.canonical_training_quality_pipeline import (
+    CANONICAL_PIPELINE_SIGNATURE_DOMAIN,
+)
 from blueprint_pipeline.post_training_data_package import (
     _artifact,
     _read_optional_mapping,
@@ -20,6 +28,22 @@ from blueprint_pipeline.post_training_data_package import (
     build_post_training_data_package_export,
     main,
 )
+from blueprint_pipeline.output_run_transaction import verify_output_run_commit
+
+
+@pytest.fixture(autouse=True)
+def _configure_ptdp_identity_signer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "ptdp-signing-key.pem"
+    key_path.write_bytes(
+        Ed25519PrivateKey.generate().private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    key_path.chmod(0o600)
+    monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_FILE_ENV, str(key_path))
+    monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_ID_ENV, "test-ptdp-ed25519")
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -82,6 +106,179 @@ def _capture_root(tmp_path: Path) -> Path:
     return capture_root
 
 
+def test_failure_evidence_review_excludes_pending_labels_and_requires_coverage() -> None:
+    review = package_module._build_failure_evidence_review(
+        trace={
+            "attempts": [
+                {"attempt_id": "attempt-failed", "success": False, "status": "failed"}
+            ]
+        },
+        raw_labels={
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label-1",
+                    "attempt_id": "attempt-failed",
+                    "label": "collision",
+                }
+            ],
+        },
+        accepted_manifest={
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label-1",
+                    "attempt_id": "attempt-failed",
+                    "review_status": "pending",
+                }
+            ],
+        },
+        review_ledger={
+            "entries": [
+                {
+                    "label_id": "label-1",
+                    "decision": "pending",
+                    "reviewer": "reviewer-a",
+                    "evidence_uri": "review://clip/1",
+                }
+            ]
+        },
+        generated_at="2026-07-09T00:00:00Z",
+    )
+
+    assert review["status"] == "blocked"
+    assert review["accepted_training_label_count"] == 0
+    assert review["accepted_training_labels"] == []
+    assert "accepted_label:label-1:review_status_not_accepted" in review["blockers"]
+    assert "failed_attempt_without_accepted_label:attempt-failed" in review["blockers"]
+
+
+def test_failure_evidence_review_accepts_only_provenanced_human_review() -> None:
+    review = package_module._build_failure_evidence_review(
+        trace={
+            "attempts": [
+                {"attempt_id": "attempt-failed", "success": False, "status": "failed"}
+            ]
+        },
+        raw_labels={
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label-1",
+                    "attempt_id": "attempt-failed",
+                    "label": "collision",
+                }
+            ],
+        },
+        accepted_manifest={
+            "label_count": 1,
+            "labels": [
+                {
+                    "label_id": "label-1",
+                    "attempt_id": "attempt-failed",
+                    "review_status": "accepted",
+                    "reviewer": "reviewer-a",
+                }
+            ],
+        },
+        review_ledger={
+            "entries": [
+                {
+                    "label_id": "label-1",
+                    "decision": "accepted",
+                    "reviewer": "reviewer-a",
+                    "evidence_uri": "review://clip/1",
+                }
+            ]
+        },
+        generated_at="2026-07-09T00:00:00Z",
+    )
+
+    assert review["status"] == "passed"
+    assert review["blockers"] == []
+    assert review["covered_failed_attempt_ids"] == ["attempt-failed"]
+    accepted = review["accepted_training_labels"][0]
+    assert accepted["training_eligible"] is True
+    assert accepted["review_evidence_uri"] == "review://clip/1"
+    assert len(accepted["source_hypothesis_sha256"]) == 64
+
+
+def test_failure_evidence_review_requires_matching_reviewed_zero_attestation() -> None:
+    missing = package_module._build_failure_evidence_review(
+        trace={"attempts": [{"attempt_id": "attempt-ok", "success": True}]},
+        raw_labels={"label_count": 0, "labels": []},
+        accepted_manifest={"label_count": 0, "labels": []},
+        review_ledger={"entries": []},
+        generated_at="2026-07-09T00:00:00Z",
+    )
+    assert missing["status"] == "blocked"
+    assert missing["zero_failures_reviewed"] is False
+
+    attestation = {
+        "status": "accepted",
+        "failed_attempt_count": 0,
+        "reviewer": "reviewer-a",
+        "evidence_uri": "review://trace/zero",
+    }
+    passed = package_module._build_failure_evidence_review(
+        trace={"attempts": [{"attempt_id": "attempt-ok", "success": True}]},
+        raw_labels={"label_count": 0, "labels": []},
+        accepted_manifest={
+            "label_count": 0,
+            "labels": [],
+            "reviewed_zero_failures_attestation": attestation,
+        },
+        review_ledger={
+            "entries": [],
+            "reviewed_zero_failures_attestation": attestation,
+        },
+        generated_at="2026-07-09T00:00:00Z",
+    )
+    assert passed["status"] == "passed"
+    assert passed["zero_failures_reviewed"] is True
+
+
+def test_archive_signing_preflight_fails_closed_for_missing_or_unsafe_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv(package_module.PTDP_SIGNING_KEY_FILE_ENV)
+    missing = package_module._archive_signing_preflight()
+    assert missing["status"] == "blocked"
+    assert missing["blockers"] == ["signing_key_file_not_configured"]
+
+    unsafe_key = tmp_path / "unsafe-signing-key.pem"
+    unsafe_key.write_bytes(
+        Ed25519PrivateKey.generate().private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    unsafe_key.chmod(0o644)
+    monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_FILE_ENV, str(unsafe_key))
+    unsafe = package_module._archive_signing_preflight()
+    assert unsafe["status"] == "blocked"
+    assert unsafe["blockers"] == ["signing_key_file_permissions_too_broad"]
+
+
+def test_archive_cancellation_never_publishes_partial_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "package"
+    output_dir.mkdir()
+    (output_dir / "payload.jsonl").write_text('{"row": 1}\n', encoding="utf-8")
+    monkeypatch.setattr(package_module, "_ptdp_cancellation_requested", lambda: True)
+
+    with pytest.raises(RuntimeError, match="package_archive_cancelled"):
+        package_module._write_archive(output_dir, "2026-07-09T00:00:00Z")
+
+    archive_dir = output_dir / "archives"
+    assert not (archive_dir / "post_training_data_package.tar.gz").exists()
+    assert list(archive_dir.glob(".post_training_data_package.tar.gz.*.tmp")) == []
+
+
 def _seed_required_pipeline_artifacts(capture_root: Path) -> None:
     dataset_root = capture_root / "pipeline" / "robot_eval_dataset"
     for name in (
@@ -92,6 +289,28 @@ def _seed_required_pipeline_artifacts(capture_root: Path) -> None:
         "proof_boundaries.json",
     ):
         _write_json(dataset_root / name, {"name": name})
+    _write_json(
+        dataset_root / "rights_packet.json",
+        {
+            "status": "review_required",
+            "record_count": 1,
+            "records": [
+                {
+                    "rights_scope": ["robot_evaluation", "model_training"],
+                    "evidence_uri": "s3://blueprint-consent/default-fixture.pdf",
+                }
+            ],
+        },
+    )
+    _write_json(
+        capture_root / "raw" / "rights_consent.json",
+        {
+            "consent_status": "documented",
+            "consent_scope": ["robot_evaluation", "model_training"],
+            "consent_no_expiration": True,
+            "permission_document_uri": "s3://blueprint-consent/default-fixture.pdf",
+        },
+    )
 
 
 def _seed_ready_job(job_dir: Path) -> None:
@@ -118,13 +337,15 @@ def _seed_ready_job(job_dir: Path) -> None:
                                 0.0,
                                 0.02,
                                 1.0,
-                            ]
+                            ],
+                            "timestamp_s": 0.0,
                         }
                     ],
                     "observation_refs": [
                         {
                             "frame": "000001",
                             "state": [0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                            "timestamp_s": 0.0,
                         }
                     ],
                 }
@@ -134,7 +355,7 @@ def _seed_ready_job(job_dir: Path) -> None:
     _write_json(
         job_dir / "failure_labels.json",
         {
-            "label_count": 1,
+            "label_count": 2,
             "labels": [
                 {"attempt_id": "attempt-1", "label": "nominal"},
                 {"scenario_id": "scenario-1", "label": "scenario-only"},
@@ -213,6 +434,222 @@ def _seed_ready_job(job_dir: Path) -> None:
             },
         },
     )
+    reviewed_zero_attestation = {
+        "status": "accepted",
+        "failed_attempt_count": 0,
+        "reviewer": "qa-reviewer",
+        "evidence_uri": "review://attempt-trace/zero-failures",
+    }
+    _write_json(
+        job_dir / "accepted_failure_labels.json",
+        {
+            "schema_version": "arena_accepted_failure_labels.v1",
+            "status": "reviewed_zero_failures",
+            "label_count": 0,
+            "labels": [],
+            "reviewed_zero_failures_attestation": reviewed_zero_attestation,
+        },
+    )
+    _write_json(
+        job_dir / "review_resolution_ledger.json",
+        {
+            "schema_version": "arena_review_resolution_ledger.v1",
+            "status": "reviewed_zero_failures",
+            "entry_count": 0,
+            "entries": [],
+            "reviewed_zero_failures_attestation": reviewed_zero_attestation,
+        },
+    )
+
+
+def _seed_valid_canonical_quality_chain(
+    job_dir: Path, *, accepted_clip_ids_override: list[str] | None = None
+) -> None:
+    """Bind a test-only signed canonical chain to the final job fixtures."""
+
+    clips_manifest_path = job_dir / "clips_manifest.json"
+    trace_path = job_dir / "normalized_attempt_trace.json"
+    clips_manifest = json.loads(clips_manifest_path.read_text(encoding="utf-8"))
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    clip_rows = [dict(item) for item in clips_manifest.get("clips") or []]
+    declared_clip_ids = sorted(
+        str(item.get("clip_id") or item.get("id") or f"clip_{index:06d}")
+        for index, item in enumerate(clip_rows)
+    )
+    accepted_clip_ids = sorted(
+        set(accepted_clip_ids_override)
+        if accepted_clip_ids_override is not None
+        else set(declared_clip_ids)
+    )
+    assert set(accepted_clip_ids).issubset(declared_clip_ids)
+    accepted_attempt_ids = sorted(
+        {
+            str(item.get("attempt_id"))
+            for item in clip_rows
+            if str(item.get("clip_id") or item.get("id") or "")
+            in set(accepted_clip_ids)
+            if str(item.get("attempt_id") or "").strip()
+        }
+    )
+    trace_attempt_ids = {
+        str(item.get("attempt_id") or "").strip()
+        for item in trace.get("attempts") or []
+        if str(item.get("attempt_id") or "").strip()
+    }
+    assert accepted_clip_ids
+    assert set(accepted_attempt_ids).issubset(trace_attempt_ids)
+
+    curation_path = (
+        job_dir / "derived" / "clip_curation" / "clip_curation_manifest.json"
+    )
+    dedup_path = (
+        job_dir / "derived" / "semantic_dedup" / "semantic_dedup_manifest.json"
+    )
+    caption_path = (
+        job_dir
+        / "derived"
+        / "grounded_clip_captions"
+        / "grounded_clip_caption_manifest.json"
+    )
+    action_path = job_dir / "action_validation_manifest.json"
+    _write_json(
+        curation_path,
+        {
+            "schema_version": "clip_curation_manifest.v1",
+            "accepted_clip_ids": accepted_clip_ids,
+            "rejected_clip_count": 0,
+        },
+    )
+    _write_json(
+        dedup_path,
+        {
+            "schema_version": "semantic_dedup_manifest.v2",
+            "production_status": "passed",
+            "production_accepted_clip_ids": accepted_clip_ids,
+            "clips": [
+                {"clip_id": clip_id, "kept": True}
+                for clip_id in accepted_clip_ids
+            ],
+        },
+    )
+    _write_json(
+        caption_path,
+        {
+            "schema_version": "blueprint.grounded_clip_caption_manifest.v1",
+            "status": "passed",
+            "accepted_clip_ids": accepted_clip_ids,
+            "blockers": [],
+        },
+    )
+    trace_sha256 = package_module._sha_file(trace_path)
+    _write_json(
+        action_path,
+        {
+            "schema_version": "action_normalization.v2",
+            "status": "validated",
+            "source_trace_sha256": trace_sha256,
+            "episode_results": {
+                attempt_id: {"valid": True, "reasons": []}
+                for attempt_id in accepted_attempt_ids
+            },
+            "blockers": [],
+        },
+    )
+    stage_paths = {
+        "clip_curation": curation_path,
+        "semantic_dedup": dedup_path,
+        "grounded_clip_caption": caption_path,
+        "action_normalization": action_path,
+    }
+    chain_content = {
+        "schema_version": "blueprint.canonical_training_quality_pipeline.v1",
+        "clip_manifest_sha256": package_module._sha_file(clips_manifest_path),
+        "action_trace_sha256": trace_sha256,
+        "stage_artifact_sha256": {
+            name: package_module._sha_file(path) for name, path in stage_paths.items()
+        },
+        "accepted_clip_ids": accepted_clip_ids,
+        "accepted_attempt_ids": accepted_attempt_ids,
+    }
+    chain_digest = package_module.sha256(
+        json.dumps(chain_content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    key_path = Path(os.environ[package_module.PTDP_SIGNING_KEY_FILE_ENV])
+    private_key = serialization.load_pem_private_key(
+        key_path.read_bytes(), password=None
+    )
+    assert isinstance(private_key, Ed25519PrivateKey)
+    signature = private_key.sign(
+        CANONICAL_PIPELINE_SIGNATURE_DOMAIN + bytes.fromhex(chain_digest)
+    )
+    public_raw = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    _write_json(
+        job_dir
+        / "derived"
+        / "canonical_training_quality"
+        / "canonical_training_quality_pipeline.json",
+        {
+            "schema_version": "blueprint.canonical_training_quality_pipeline.v1",
+            "status": "passed",
+            "chain_content": chain_content,
+            "chain_digest_sha256": chain_digest,
+            "chain_signature": {
+                "algorithm": "Ed25519",
+                "domain": "blueprint.canonical-training-quality.v1",
+                "public_key": base64.b64encode(public_raw).decode("ascii"),
+                "public_key_sha256": package_module.sha256(public_raw).hexdigest(),
+                "signature": base64.b64encode(signature).decode("ascii"),
+            },
+            "accepted_clip_ids": accepted_clip_ids,
+            "accepted_attempt_ids": accepted_attempt_ids,
+            "blockers": [],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_overrides", "expected_blocker"),
+    [
+        ({"consent_status": None}, "consent_status_missing"),
+        ({"consent_status": "unknown"}, "consent_status_unknown:unknown"),
+        ({"consent_scope": ["robot_evaluation"]}, "consent_scope_mismatch:model_training"),
+        (
+            {"consent_no_expiration": False, "consent_expires_at": "2025-01-01T00:00:00Z"},
+            "consent_expired",
+        ),
+        ({"consent_no_expiration": "true"}, "consent_expiration_missing"),
+        ({"consent_revoked": "true"}, "consent_revoked_takedown_required"),
+    ],
+)
+def test_consent_evidence_fail_closed_reasons_are_typed(
+    tmp_path: Path,
+    source_overrides: dict[str, object],
+    expected_blocker: str,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    source: dict[str, object] = {
+        "consent_status": "documented",
+        "consent_scope": ["robot_evaluation", "model_training"],
+        "consent_no_expiration": True,
+        "permission_document_uri": "s3://blueprint-consent/site-a.pdf",
+    }
+    source.update(source_overrides)
+    _write_json(capture_root / "raw" / "rights_consent.json", source)
+
+    record = package_module._build_consent_evidence_record(
+        capture_root=capture_root,
+        output_dir=tmp_path / "consent-output",
+        rights_packet={},
+        scene_id="scene-1",
+        capture_id="capture-1",
+        generated_at="2026-07-09T12:00:00+00:00",
+    )
+
+    assert record["consent_evidence_present"] is False
+    assert expected_blocker in record["blockers"]
 
 
 def test_post_training_data_package_blocks_with_manifest_only_defaults(tmp_path: Path) -> None:
@@ -234,6 +671,45 @@ def test_post_training_data_package_blocks_with_manifest_only_defaults(tmp_path:
     assert manifest["claim_boundary"]["deployment_approval_proven"] is False
     assert manifest["claim_boundary"]["package_delivery_is_deployment_approval"] is False
     assert manifest["claim_boundary"]["post_training_package_export_ready"] is False
+    assert manifest["output_transaction"]["final_commit_required"] is True
+    assert manifest["output_run_commit"]["status"] == "committed"
+    assert verify_output_run_commit(output_dir)["status"] == "passed"
+
+
+def test_missing_canonical_quality_chain_blocks_premium_and_native_exports(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4")
+
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=tmp_path / "package",
+    )
+
+    assert manifest["status"] == "blocked_package_quality_gates"
+    assert manifest["quality_tier"] == "support_only"
+    assert manifest["premium_quality_eligible"] is False
+    assert manifest["native_training_export_eligible"] is False
+    assert manifest["export_policy"][
+        "canonical_training_quality_pipeline_passed"
+    ] is False
+    assert manifest["export_policy"]["rejected_clips_exported"] is False
+    optional = manifest["optional_exports"]
+    assert optional["status"] == "blocked_canonical_training_quality_pipeline"
+    assert optional["files"] == {}
+    assert all(
+        entry["format_written"] is False
+        for entry in optional["formats"].values()
+    )
+    assert any(
+        blocker.startswith("canonical_training_quality:")
+        for blocker in manifest["blockers"]
+    )
 
 
 def test_post_training_data_package_exports_ready_package_with_policy_flags(
@@ -257,7 +733,7 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
         }
     )
     _write_json(clips_manifest_path, clips_manifest)
-    (job_dir / "clip-1.mp4").write_bytes(b"fake-mp4")
+    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4")
     output_dir = tmp_path / "package"
 
     def _write_fake_hdf5(path: Path, _rows_arg: object) -> bool:
@@ -273,6 +749,7 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     monkeypatch.setattr(package_module, "_write_native_hdf5", _write_fake_hdf5)
     monkeypatch.setattr(package_module, "_write_native_parquet", _write_fake_parquet)
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -282,7 +759,9 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     assert manifest["status"] == "blocked_buyer_readout_incomplete_package"
     assert any(blocker.startswith("buyer_readout:") for blocker in manifest["blockers"])
     assert manifest["manifest_counts"]["attempt_count"] == 1
-    assert manifest["manifest_counts"]["failure_label_count"] == 1
+    assert manifest["manifest_counts"]["failure_label_count"] == 0
+    assert manifest["manifest_counts"]["raw_failure_hypothesis_count"] == 2
+    assert manifest["manifest_counts"]["zero_failures_reviewed"] is True
     assert manifest["manifest_counts"]["clip_count"] == 1
     assert manifest["manifest_counts"]["curated_clip_count"] == 1
     assert manifest["manifest_counts"]["rejected_clip_count"] == 0
@@ -367,6 +846,50 @@ def test_post_training_data_package_exports_ready_package_with_policy_flags(
     assert "curation_report.json" in archive_members["included_files"]
     assert "semantic_dedup_report.json" in archive_members["included_files"]
     assert "sc3_action_normalization_report.json" in archive_members["included_files"]
+    assert "post_training_data_package_export_manifest.json" in archive_members["included_files"]
+    assert "buyer_package_readout.json" in archive_members["included_files"]
+    assert "buyer_package_summary.md" in archive_members["included_files"]
+    assert "delivery_manifest.json" in archive_members["included_files"]
+    assert "signed_access_manifest.json" in archive_members["included_files"]
+    assert "package_root_signature.json" in archive_members["included_files"]
+    assert archive_members["status"] == "created_and_verified"
+    assert archive_members["identity_signature_present"] is True
+    assert archive_members["identity_signature_verified"] is True
+    assert archive_members["signature_algorithm"] == "Ed25519"
+    assert archive_members["signing_key_id"] == "test-ptdp-ed25519"
+    assert archive_members["independent_extraction_verification"] == {
+        "status": "passed",
+        "blockers": [],
+        "expected_member_count": len(archive_members["included_files"]),
+        "actual_member_count": len(archive_members["included_files"]),
+    }
+    with tarfile.open(output_dir / archive_members["archive"]["path"], "r:gz") as archive:
+        assert sorted(member.name for member in archive.getmembers()) == sorted(
+            archive_members["included_files"]
+        )
+    checksums = json.loads((output_dir / "checksums.json").read_text(encoding="utf-8"))
+    checksum_paths = {artifact["path"] for artifact in checksums["files"].values()}
+    assert set(archive_members["included_files"]) - checksum_paths == {
+        "checksums.json",
+        "package_root_signature.json",
+    }
+    root_signature = json.loads(
+        (output_dir / "package_root_signature.json").read_text(encoding="utf-8")
+    )
+    assert root_signature["signed_content"]["checksums_sha256"]
+    assert root_signature["self_excluded_from_checksums"] is True
+    assert root_signature["status"] == "identity_signed_and_verified"
+    assert root_signature["identity_signature_present"] is True
+    assert root_signature["identity_signature_verified"] is True
+    assert root_signature["signature_algorithm"] == "Ed25519"
+    private_key = serialization.load_pem_private_key(
+        (tmp_path / "ptdp-signing-key.pem").read_bytes(), password=None
+    )
+    private_key.public_key().verify(
+        base64.b64decode(root_signature["signature"]),
+        package_module.PTDP_SIGNATURE_DOMAIN
+        + bytes.fromhex(root_signature["root_digest"]),
+    )
 
 
 def test_post_training_data_package_materializes_lerobot_v3_and_gr00t_exports(
@@ -410,6 +933,7 @@ def test_post_training_data_package_materializes_lerobot_v3_and_gr00t_exports(
         _write_fake_structured_parquet,
     )
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -428,7 +952,8 @@ def test_post_training_data_package_materializes_lerobot_v3_and_gr00t_exports(
         )
     )
     clip_row = video_bundle_manifest["clips"][0]
-    assert clip_row["metadata_sidecar_path"].endswith(".mp4.metadata.json")
+    assert clip_row["metadata_sidecar_path"].endswith(".metadata.json")
+    assert clip_row["content_addressed_object"] is True
     assert clip_row["metadata_sidecar_schema_version"] == (
         "post_training_clip_metadata_sidecar.v1"
     )
@@ -517,7 +1042,10 @@ def test_post_training_data_package_materializes_lerobot_v3_and_gr00t_exports(
 
     package_index = json.loads((output_dir / "package_index.json").read_text(encoding="utf-8"))
     indexed_paths = set(package_index["files"].values())
-    assert any(path.startswith("exports/video_bundle/clips/") for path in indexed_paths)
+    assert any(
+        path.startswith("exports/video_bundle/objects/sha256/")
+        for path in indexed_paths
+    )
     assert clip_row["metadata_sidecar_path"] in indexed_paths
     assert "exports/gr00t_lerobot/meta/modality.json" in indexed_paths
     archive_members = json.loads((output_dir / "archive_manifest.json").read_text(encoding="utf-8"))
@@ -544,11 +1072,77 @@ def test_post_training_data_package_materializes_lerobot_v3_and_gr00t_exports(
     assert pov["measured_state_fractions"]["gr00t_lerobot"] == 1.0
 
 
+def test_canonical_rejected_clip_and_attempt_never_enter_training_exports(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _seed_required_pipeline_artifacts(capture_root)
+    job_dir = tmp_path / "job"
+    _seed_ready_job(job_dir)
+    trace_path = job_dir / "normalized_attempt_trace.json"
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["attempts"].append(
+        {
+            **dict(trace["attempts"][0]),
+            "attempt_id": "attempt-rejected",
+            "scenario_id": "scenario-rejected",
+        }
+    )
+    trace["attempt_count"] = 2
+    _write_json(trace_path, trace)
+    clips_path = job_dir / "clips_manifest.json"
+    clips = json.loads(clips_path.read_text(encoding="utf-8"))
+    clips["clips"].append(
+        {
+            **dict(clips["clips"][0]),
+            "clip_id": "clip-rejected",
+            "clip_path": "clip-rejected.mp4",
+            "attempt_id": "attempt-rejected",
+            "semantic_dedup_key": "rejected-unique-key",
+        }
+    )
+    clips["clip_count"] = 2
+    _write_json(clips_path, clips)
+    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4")
+    _write_valid_mp4_or_placeholder(job_dir / "clip-rejected.mp4")
+    _seed_valid_canonical_quality_chain(
+        job_dir, accepted_clip_ids_override=["clip-1"]
+    )
+
+    output_dir = tmp_path / "package"
+    manifest = build_post_training_data_package_export(
+        capture_root=capture_root,
+        job_dir=job_dir,
+        output_dir=output_dir,
+    )
+
+    optional = manifest["optional_exports"]
+    assert optional["accepted_clip_ids"] == ["clip-1"]
+    assert optional["accepted_attempt_ids"] == ["attempt-1"]
+    video_manifest = json.loads(
+        (output_dir / optional["files"]["video_bundle_manifest"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [item["clip_id"] for item in video_manifest["clips"]] == ["clip-1"]
+    rlds_rows = [
+        json.loads(line)
+        for line in (
+            output_dir / optional["files"]["rlds_episodes"]
+        ).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["episode_id"] for row in rlds_rows] == ["attempt-1"]
+    assert "clip-rejected" not in json.dumps(optional, sort_keys=True)
+    assert "attempt-rejected" not in json.dumps(rlds_rows, sort_keys=True)
+    assert manifest["export_policy"]["rejected_clips_exported"] is False
+
+
 def test_video_bundle_sidecar_does_not_truthify_string_false_metadata(
     tmp_path: Path,
 ) -> None:
     source_video = tmp_path / "source.mp4"
-    source_video.write_bytes(b"video-bytes")
+    _write_valid_mp4_or_placeholder(source_video)
     output_dir = tmp_path / "package"
 
     result = package_module._materialize_video_bundle(
@@ -587,14 +1181,131 @@ def test_video_bundle_sidecar_does_not_truthify_string_false_metadata(
     assert sidecar["manual_rights_review_recommended"] is False
 
 
+def test_video_bundle_content_deduplicates_and_resumes_from_cache(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "sources" / "shared.mp4"
+    _write_valid_mp4_or_placeholder(source, frame_count=2)
+    clips = {
+        "clips": [
+            {"clip_id": "clip-a", "attempt_id": "attempt-a", "path": str(source)},
+            {"clip_id": "clip-b", "attempt_id": "attempt-b", "path": str(source)},
+        ]
+    }
+
+    first = package_module._materialize_video_bundle(
+        output_dir=tmp_path / "package-one",
+        clips=clips,
+        generated_at="2026-07-09T00:00:00Z",
+        source_roots=[tmp_path / "sources"],
+    )["manifest"]
+    second = package_module._materialize_video_bundle(
+        output_dir=tmp_path / "package-two",
+        clips={"clips": [clips["clips"][0]]},
+        generated_at="2026-07-09T00:00:01Z",
+        source_roots=[tmp_path / "sources"],
+    )["manifest"]
+
+    assert first["materialized_clip_count"] == 2
+    assert first["unique_content_object_count"] == 1
+    assert first["deduplicated_clip_reference_count"] == 1
+    assert first["logical_video_bytes"] == 2 * first["physical_unique_video_bytes"]
+    assert first["claim_boundary"]["duplicate_video_bytes_written"] is False
+    assert second["resumed_content_object_count"] == 1
+    resume = json.loads(
+        (tmp_path / ".package-two.ptdp-resume.json").read_text(encoding="utf-8")
+    )
+    assert resume["status"] == "completed"
+
+
+def test_ptdp_resource_preflight_enforces_quota_and_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(package_module.PTDP_MAX_CLIP_COUNT_ENV, "1")
+    monkeypatch.setenv(package_module.PTDP_MIN_FREE_HEADROOM_BYTES_ENV, "1")
+    output = tmp_path / "package"
+    output.mkdir()
+    preflight = package_module._build_ptdp_resource_preflight(
+        output_dir=output,
+        clips={"clips": [{"clip_id": "one"}, {"clip_id": "two"}]},
+        source_roots=[tmp_path],
+        generated_at="2026-07-09T00:00:00Z",
+    )
+    assert preflight["status"] == "blocked"
+    assert "ptdp_clip_count_limit_exceeded" in preflight["blockers"]
+    assert preflight["backpressure_required"] is True
+
+    cancel = tmp_path / "cancel"
+    cancel.touch()
+    monkeypatch.setenv(package_module.PTDP_CANCEL_FILE_ENV, str(cancel))
+    cancelled = package_module._build_ptdp_resource_preflight(
+        output_dir=output,
+        clips={"clips": []},
+        source_roots=[tmp_path],
+        generated_at="2026-07-09T00:00:01Z",
+    )
+    assert cancelled["status"] == "blocked"
+    assert "ptdp_cancellation_requested" in cancelled["blockers"]
+
+
+def test_clip_materialization_rejects_escape_symlink_corrupt_and_oversized_media(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "canonical"
+    root.mkdir()
+    outside = tmp_path / "outside.mp4"
+    _write_valid_mp4_or_placeholder(outside)
+    symlink = root / "linked.mp4"
+    symlink.symlink_to(outside)
+    corrupt = root / "corrupt.mp4"
+    corrupt.write_text("not a video", encoding="utf-8")
+    wrong_type = root / "renamed.txt"
+    wrong_type.write_text("not a video", encoding="utf-8")
+    valid = root / "valid.mp4"
+    _write_valid_mp4_or_placeholder(valid)
+
+    cases = [
+        ("/etc/passwd", "clip_source_outside_canonical_roots"),
+        ("../outside.mp4", "clip_source_outside_canonical_roots"),
+        ("linked.mp4", "clip_source_symlink_forbidden"),
+        ("corrupt.mp4", "clip_media_decode_failed"),
+        ("renamed.txt", "clip_media_extension_not_allowed"),
+    ]
+    for reference, expected_reason in cases:
+        path, returned_reference, reason = package_module._resolve_clip_source_path(
+            {"clip_path": reference},
+            [root],
+        )
+        assert path is None
+        assert returned_reference == reference
+        assert reason == expected_reason
+
+    monkeypatch.setenv("BLUEPRINT_PTDP_MAX_CLIP_BYTES", "1")
+    path, _, reason = package_module._resolve_clip_source_path(
+        {"clip_path": "valid.mp4"},
+        [root],
+    )
+    assert path is None
+    assert reason == "clip_media_size_limit_exceeded"
+
+
 def test_training_export_rows_preserve_rights_claim_boundary_metadata() -> None:
     frame_rows, episodes, _tasks, shape = package_module._training_export_rows(
         rows=[
             {
                 "attempt_id": "attempt-1",
                 "task_id": "task-1",
-                "actions": [[0.05, 0.0, 0.01, 0.0, 0.0, 0.1, 0.0]],
-                "observation.state": [0.0, 0.0, 0.79],
+                "actions": [
+                    {
+                        "sc3_7d_delta_ee_pose": [0.05, 0.0, 0.01, 0.0, 0.0, 0.1, 0.0],
+                        "timestamp_s": 0.25,
+                    }
+                ],
+                "observations": [
+                    {"state": [0.0, 0.0, 0.79], "timestamp_s": 0.25}
+                ],
                 "success": True,
             }
         ],
@@ -638,27 +1349,47 @@ def test_training_export_rows_report_state_action_provenance() -> None:
             {
                 "attempt_id": "attempt-measured",
                 "task_id": "task-1",
-                "actions": [[0.05, 0.0, 0.01], [0.02, 0.0, 0.0]],
-                "observation.state": [0.1, 0.2, 0.3],
+                "actions": [
+                    {
+                        "sc3_7d_delta_ee_pose": [0.05, 0.0, 0.01, 0.0, 0.0, 0.1, 0.0],
+                        "timestamp_s": 0.0,
+                    },
+                    {
+                        "sc3_7d_delta_ee_pose": [0.02, 0.0, 0.0, 0.0, 0.0, -0.1, 1.0],
+                        "timestamp_s": 0.2,
+                    },
+                ],
+                "observations": [
+                    {"state": [0.1, 0.2, 0.3], "timestamp_s": 0.0},
+                    {"state": [0.4, 0.5, 0.6], "timestamp_s": 0.2},
+                ],
                 "success": True,
             },
             {
-                # No actions and no measured state: the export synthesizes a
-                # fallback action row and a zero-filled state vector.
+                # No actions or measured state: this episode is retained only
+                # as an ineligible audit row and produces no training frames.
                 "attempt_id": "attempt-synthesized",
                 "task_id": "task-1",
                 "success": False,
             },
         ],
-        materialized_clips=[],
+        materialized_clips=[
+            {
+                "attempt_id": "attempt-measured",
+                "clip_id": "clip-measured",
+                "materialized": True,
+                "materialized_path": "exports/video_bundle/clips/measured.mp4",
+            }
+        ],
     )
 
     assert shape["measured_state_rows"] == 2
-    assert shape["synthesized_state_rows"] == 1
+    assert shape["synthesized_state_rows"] == 0
     assert shape["measured_action_rows"] == 2
-    assert shape["synthesized_action_rows"] == 1
-    assert shape["real_state_fraction"] == pytest.approx(2 / 3)
-    assert shape["real_action_fraction"] == pytest.approx(2 / 3)
+    assert shape["synthesized_action_rows"] == 0
+    assert shape["real_state_fraction"] == 1.0
+    assert shape["real_action_fraction"] == 1.0
+    assert shape["invalid_episode_count"] == 1
 
     measured = episodes[0]["state_action_provenance"]
     assert measured["measured_state_rows"] == 2
@@ -668,13 +1399,86 @@ def test_training_export_rows_report_state_action_provenance() -> None:
 
     synthesized = episodes[1]["state_action_provenance"]
     assert synthesized["measured_state_rows"] == 0
-    assert synthesized["synthesized_state_rows"] == 1
+    assert synthesized["synthesized_state_rows"] == 0
     assert synthesized["measured_action_rows"] == 0
-    assert synthesized["synthesized_action_rows"] == 1
+    assert synthesized["synthesized_action_rows"] == 0
+    assert synthesized["training_eligible"] is False
+    assert "native_action_rows_missing" in synthesized["blockers"]
 
     assert frame_rows[0]["action_synthesized_fallback"] is False
-    assert frame_rows[2]["action_synthesized_fallback"] is True
-    assert frame_rows[2]["state_synthesized_zero_fill"] is True
+    assert frame_rows[0]["observation.state"] == [0.1, 0.2, 0.3]
+    assert frame_rows[1]["observation.state"] == [0.4, 0.5, 0.6]
+    assert [frame["timestamp"] for frame in frame_rows] == [0.0, 0.2]
+
+
+@pytest.mark.parametrize(
+    ("row", "expected_blocker"),
+    [
+        (
+            {
+                "actions": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
+                "observations": [{"state": [0.0, 0.1, 0.2]}],
+            },
+            "native_action_timestamp_missing",
+        ),
+        (
+            {
+                "actions": [
+                    {"sc3_7d_delta_ee_pose": [0.0] * 6, "timestamp_s": 0.0}
+                ],
+                "observations": [{"state": [0.0, 0.1, 0.2], "timestamp_s": 0.0}],
+            },
+            "native_action_invalid",
+        ),
+        (
+            {
+                "actions": [
+                    {"sc3_7d_delta_ee_pose": [0.0] * 7, "timestamp_s": 0.0},
+                    {"sc3_7d_delta_ee_pose": [0.1] * 7, "timestamp_s": 0.2},
+                ],
+                "observation.state": [0.0, 0.1, 0.2],
+                "timestamp_s": 0.0,
+            },
+            "native_state_action_count_mismatch",
+        ),
+        (
+            {
+                "actions": [
+                    {"sc3_7d_delta_ee_pose": [0.0] * 7, "timestamp_s": 0.2}
+                ],
+                "observations": [{"state": [0.0, 0.1, 0.2], "timestamp_s": 0.0}],
+            },
+            "native_state_action_timestamp_mismatch",
+        ),
+    ],
+)
+def test_native_training_rows_fail_closed_without_exact_state_action_time_join(
+    row: dict[str, object],
+    expected_blocker: str,
+) -> None:
+    row = {"attempt_id": "attempt-invalid", "task_id": "task-1", **row}
+    frame_rows, episodes, _tasks, shape = package_module._training_export_rows(
+        rows=[row],
+        materialized_clips=[
+            {
+                "attempt_id": "attempt-invalid",
+                "clip_id": "clip-invalid",
+                "materialized": True,
+                "materialized_path": "exports/video_bundle/clips/invalid.mp4",
+            }
+        ],
+    )
+
+    assert frame_rows == []
+    assert shape["measured_state_rows"] == 0
+    assert shape["measured_action_rows"] == 0
+    assert shape["synthesized_state_rows"] == 0
+    assert shape["synthesized_action_rows"] == 0
+    assert episodes[0]["state_action_provenance"]["training_eligible"] is False
+    assert any(
+        expected_blocker in blocker
+        for blocker in episodes[0]["state_action_provenance"]["blockers"]
+    )
 
 
 def test_mostly_synthesized_state_package_is_downgraded_with_fraction_surfaced(
@@ -712,6 +1516,7 @@ def test_mostly_synthesized_state_package_is_downgraded_with_fraction_surfaced(
         _write_fake_structured_parquet,
     )
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -724,9 +1529,10 @@ def test_mostly_synthesized_state_package_is_downgraded_with_fraction_surfaced(
         assert "insufficient_measured_state_fraction" in entry["blockers"]
         provenance = entry["state_action_provenance"]
         assert provenance["real_state_fraction"] == 0.0
-        assert provenance["real_action_fraction"] == 1.0
-        assert provenance["measured_state_fraction_floor"] == pytest.approx(0.5)
+        assert provenance["real_action_fraction"] == 0.0
+        assert provenance["measured_state_fraction_floor"] == 1.0
         assert provenance["measured_state_fraction_floor_passed"] is False
+        assert any("native_state_invalid" in blocker for blocker in entry["blockers"])
 
     export_manifest = json.loads(
         (
@@ -737,7 +1543,8 @@ def test_mostly_synthesized_state_package_is_downgraded_with_fraction_surfaced(
     per_episode = export_manifest["state_action_provenance"]["per_episode"]
     assert per_episode[0]["attempt_id"] == "attempt-1"
     assert per_episode[0]["measured_state_rows"] == 0
-    assert per_episode[0]["synthesized_state_rows"] == 1
+    assert per_episode[0]["synthesized_state_rows"] == 0
+    assert per_episode[0]["training_eligible"] is False
 
     assert manifest["export_policy"]["lerobot_real_state_fraction"] == 0.0
     assert manifest["export_policy"]["measured_state_fraction_floor_passed"] is False
@@ -754,7 +1561,7 @@ def test_mostly_synthesized_state_package_is_downgraded_with_fraction_surfaced(
     assert pov["measured_state_fractions"]["lerobot_v3"] == 0.0
 
 
-def test_measured_state_fraction_floor_is_env_configurable(
+def test_measured_state_fraction_floor_cannot_be_lowered_for_native_exports(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -769,8 +1576,9 @@ def test_measured_state_fraction_floor_is_env_configurable(
         for ref in attempt["observation_refs"]:
             ref.pop("state", None)
     _write_json(trace_path, trace)
-    (job_dir / "clip-1.mp4").write_bytes(b"fake-mp4")
+    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4")
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -779,10 +1587,10 @@ def test_measured_state_fraction_floor_is_env_configurable(
 
     lerobot_v3 = manifest["optional_exports"]["formats"]["lerobot_v3"]
     provenance = lerobot_v3["state_action_provenance"]
-    assert provenance["measured_state_fraction_floor"] == 0.0
+    assert provenance["measured_state_fraction_floor"] == 1.0
     assert provenance["real_state_fraction"] == 0.0
-    assert provenance["measured_state_fraction_floor_passed"] is True
-    assert "insufficient_measured_state_fraction" not in lerobot_v3["blockers"]
+    assert provenance["measured_state_fraction_floor_passed"] is False
+    assert "insufficient_measured_state_fraction" in lerobot_v3["blockers"]
 
 
 def test_measured_state_fraction_floor_cannot_be_lowered_in_production(
@@ -803,7 +1611,7 @@ def test_measured_state_fraction_floor_cannot_be_lowered_in_production(
         [],
     )
 
-    assert gate["measured_state_fraction_floor"] == pytest.approx(0.5)
+    assert gate["measured_state_fraction_floor"] == 1.0
     assert gate["measured_state_fraction_floor_passed"] is False
     assert "insufficient_measured_state_fraction" in gate["blockers"]
 
@@ -892,6 +1700,7 @@ def test_lerobot_and_gr00t_exports_require_video_for_every_episode(
         _write_fake_structured_parquet,
     )
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -936,9 +1745,27 @@ def test_post_training_package_runs_lerobot_round_trip_validation(
     _seed_required_pipeline_artifacts(capture_root)
     job_dir = tmp_path / "job"
     _seed_ready_job(job_dir)
-    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4")
+    trace_path = job_dir / "normalized_attempt_trace.json"
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    attempt = trace["attempts"][0]
+    attempt["action_trace"].append(
+        {
+            "sc3_7d_delta_ee_pose": [0.01, 0.0, 0.0, 0.0, 0.0, -0.01, 0.0],
+            "timestamp_s": 0.2,
+        }
+    )
+    attempt["observation_refs"].append(
+        {
+            "frame": "000002",
+            "state": [0.2, 0.3, 0.4, 0.0, 0.0, 0.0, 1.0],
+            "timestamp_s": 0.2,
+        }
+    )
+    _write_json(trace_path, trace)
+    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4", frame_count=2)
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -992,7 +1819,7 @@ def test_misaligned_lerobot_export_downgrades_buyer_readout(
     _seed_required_pipeline_artifacts(capture_root)
     job_dir = tmp_path / "job"
     _seed_ready_job(job_dir)
-    (job_dir / "clip-1.mp4").write_bytes(b"fake-mp4")
+    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4")
     output_dir = tmp_path / "package"
 
     original_write_jsonl = package_module._write_jsonl
@@ -1009,6 +1836,7 @@ def test_misaligned_lerobot_export_downgrades_buyer_readout(
 
     monkeypatch.setattr(package_module, "_write_jsonl", _corrupt_lerobot_v3_episodes)
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1051,6 +1879,7 @@ def test_lerobot_v3_export_loads_with_installed_lerobot(tmp_path: Path) -> None:
     writer.release()
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1119,6 +1948,7 @@ def test_post_training_data_package_blocks_invalid_sc3_actions_and_source_filter
         },
     )
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1163,6 +1993,7 @@ def test_post_training_data_package_rejects_boolean_only_curation_pass(
     )
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1220,6 +2051,7 @@ def test_post_training_data_package_blocks_semantic_duplicate_clips(
         },
     )
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1286,6 +2118,7 @@ def test_post_training_data_package_writes_blocked_customer_handoff_manifests(
     monkeypatch.setattr(package_module, "_write_native_hdf5", lambda path, rows: False)
     monkeypatch.setattr(package_module, "_write_native_parquet", lambda path, rows: False)
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1406,6 +2239,7 @@ def test_post_training_data_package_includes_visual_augmentation_support_packet(
     monkeypatch.setattr(package_module, "_write_native_hdf5", lambda path, rows: False)
     monkeypatch.setattr(package_module, "_write_native_parquet", lambda path, rows: False)
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1493,6 +2327,7 @@ def test_post_training_data_package_labels_scaniverse_assets_as_support_only(
     monkeypatch.setattr(package_module, "_write_native_hdf5", lambda path, rows: False)
     monkeypatch.setattr(package_module, "_write_native_parquet", lambda path, rows: False)
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1554,6 +2389,7 @@ def test_post_training_data_package_main_returns_status_codes(
     monkeypatch.setattr(package_module, "_write_native_hdf5", lambda path, rows: False)
     monkeypatch.setattr(package_module, "_write_native_parquet", lambda path, rows: False)
 
+    _seed_valid_canonical_quality_chain(job_dir)
     assert (
         main(
             [
@@ -1686,6 +2522,7 @@ def test_post_training_data_package_writes_buyer_readout_and_replay_instructions
     _seed_ready_job(job_dir)
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1734,6 +2571,7 @@ def test_post_training_data_package_wires_consent_handoff_and_success_ledger(
         {
             "consent_status": "documented",
             "consent_revoked": "false",
+            "consent_no_expiration": True,
             "consent_scope": ["robot_evaluation", "model_training"],
             "permission_document_uri": "s3://blueprint-consent/site-a.pdf",
         },
@@ -1776,6 +2614,7 @@ def test_post_training_data_package_wires_consent_handoff_and_success_ledger(
     )
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1829,6 +2668,7 @@ def test_post_training_data_package_string_true_consent_revocation_blocks(
         {
             "consent_status": "documented",
             "consent_revoked": "true",
+            "consent_no_expiration": True,
             "consent_scope": ["robot_evaluation", "model_training"],
             "permission_document_uri": "s3://blueprint-consent/site-a.pdf",
         },
@@ -1851,6 +2691,7 @@ def test_post_training_data_package_string_true_consent_revocation_blocks(
     _seed_ready_job(job_dir)
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -1886,6 +2727,7 @@ def test_post_training_data_package_propagates_revenue_terms_without_payout_clai
         capture_root / "raw" / "rights_consent.json",
         {
             "consent_status": "documented",
+            "consent_no_expiration": True,
             "consent_scope": ["robot_evaluation", "model_training"],
             "permission_document_uri": "s3://blueprint-consent/site-a.pdf",
         },
@@ -1958,6 +2800,7 @@ def test_post_training_data_package_propagates_revenue_terms_without_payout_clai
     _seed_ready_job(job_dir)
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -2058,6 +2901,7 @@ def test_post_training_data_package_blocks_revoked_consent_and_writes_revenue_re
         capture_root / "raw" / "rights_consent.json",
         {
             "consent_status": "revoked",
+            "consent_no_expiration": True,
             "consent_revoked_at": "2026-07-04T12:00:00Z",
             "consent_scope": ["robot_evaluation", "model_training"],
             "permission_document_uri": "s3://blueprint-consent/site-a.pdf",
@@ -2082,6 +2926,7 @@ def test_post_training_data_package_blocks_revoked_consent_and_writes_revenue_re
     _seed_ready_job(job_dir)
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -2328,6 +3173,7 @@ def test_export_policy_rl_flags_track_actual_handoff_content(
         lambda **_kwargs: {},
     )
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,
@@ -2347,6 +3193,10 @@ def test_export_policy_rl_flags_track_actual_handoff_content(
 def test_lerobot_episode_export_wired_into_package_export(tmp_path: Path) -> None:
     capture_root = _capture_root(tmp_path)
     _seed_required_pipeline_artifacts(capture_root)
+    # This case intentionally exercises the quarantined/missing-consent export
+    # metadata rather than the default rights-cleared fixture.
+    (capture_root / "raw" / "rights_consent.json").unlink()
+    (capture_root / "pipeline" / "robot_eval_dataset" / "rights_packet.json").unlink()
     job_dir = tmp_path / "job"
     _seed_ready_job(job_dir)
     control_rows = [
@@ -2383,9 +3233,10 @@ def test_lerobot_episode_export_wired_into_package_export(tmp_path: Path) -> Non
         + "\n",
         encoding="utf-8",
     )
-    (job_dir / "clip-1.mp4").write_bytes(b"fake-mp4")
+    _write_valid_mp4_or_placeholder(job_dir / "clip-1.mp4")
     output_dir = tmp_path / "package"
 
+    _seed_valid_canonical_quality_chain(job_dir)
     manifest = build_post_training_data_package_export(
         capture_root=capture_root,
         job_dir=job_dir,

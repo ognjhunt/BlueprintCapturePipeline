@@ -1,0 +1,39 @@
+# Default ownership for this repository.
+* @ognjhunt
+
+# Release, security, and package-policy changes require explicit owner review.
+/.github/ @ognjhunt
+/SECURITY.md @ognjhunt
+/LICENSE @ognjhunt
+/pyproject.toml @ognjhunt
+/uv.lock @ognjhunt
+/requirements.txt @ognjhunt
+/requirements-geometry.txt @ognjhunt
+/Dockerfile @ognjhunt
+/docker-compose.yml @ognjhunt
+/docs/bandit_triage.json @ognjhunt
+/docs/critical_capability_lanes.json @ognjhunt
+/docs/release_evidence_requirements.json @ognjhunt
+/docs/release_evidence_retention_policy.json @ognjhunt
+/docs/runtime_dependency_license_policy.json @ognjhunt
+/docs/source_governance_policy.json @ognjhunt
+/docs/PAID_SPEND_ADMISSION_LOCK.md @ognjhunt
+/scripts/archive_release_evidence.py @ognjhunt
+/scripts/build_release_evidence_bundle.py @ognjhunt
+/scripts/build_supply_chain_evidence.py @ognjhunt
+/scripts/lint_public_scientific_claims.py @ognjhunt
+/scripts/validate_release_signature_evidence.py @ognjhunt
+/scripts/verify_bandit_policy.py @ognjhunt
+/scripts/verify_critical_capability_lanes.py @ognjhunt
+/scripts/verify_source_governance.py @ognjhunt
+/scripts/gpu_spend_guard.py @ognjhunt
+/deploy/ @ognjhunt
+/src/blueprint_pipeline/security_controls.py @ognjhunt
+/src/blueprint_pipeline/post_training_data_package.py @ognjhunt
+/src/blueprint_pipeline/sc3_eval_protocol.py @ognjhunt
+/src/blueprint_pipeline/robot_eval_execution.py @ognjhunt
+/src/blueprint_pipeline/action_normalization.py @ognjhunt
+/src/blueprint_pipeline/ios_manifest.py @ognjhunt
+/src/blueprint_pipeline/materialization.py @ognjhunt
+/src/blueprint_pipeline/spend_admission_lock.py @ognjhunt
+/src/blueprint_pipeline/paid_lane_guard.py @ognjhunt

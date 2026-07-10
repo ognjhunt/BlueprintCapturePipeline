@@ -462,8 +462,17 @@ def test_2d_only_object_index_entries_use_bbox_proxy_meshes(
     assert {item["object_id"] for item in manifest["objects"]} == {"fridge-door", "fridge-handle"}
     for item in manifest["objects"]:
         assert item["mesh_source"] == "bbox_proxy_mesh"
-        assert item["grounding_level"] == "inferred"
-        assert item["provenance"]["grounding_level"] == "inferred"
+        assert item["grounding_level"] == "observed_2d_proxy"
+        assert item["provenance"]["grounding_level"] == "observed_2d_proxy"
+        assert item["provenance"]["canonical_truth"] is False
+        assert item["metric_placement_ready"] is False
+        assert item["physics_ready"] is False
+        assert item["placement_bbox"] is None
+        assert item["visualization_proxy_bbox"]
+        assert item["collision_hulls"] == []
+        assert item["support_surfaces"] == []
+    assert manifest["metric_geometry_object_count"] == 0
+    assert manifest["physics_ready_object_count"] == 0
 
 
 def test_object_geometry_surfaces_views_support_and_run_edges(

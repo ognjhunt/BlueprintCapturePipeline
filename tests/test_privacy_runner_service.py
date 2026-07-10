@@ -399,7 +399,7 @@ def test_http_unknown_get_path_returns_404(_no_token) -> None:
     assert payload["reason"] == "not_found"
 
 
-def test_http_post_without_token_dispatches(_no_token, monkeypatch) -> None:
+def test_http_post_without_token_is_denied(_no_token, monkeypatch) -> None:
     calls: list[tuple[str, dict]] = []
     _stub_dispatch(monkeypatch, calls, {"status": "succeeded", "people_detected": True})
     body = json.dumps({"input_video_uri": "gs://bucket/in.mov"}).encode("utf-8")
@@ -411,9 +411,9 @@ def test_http_post_without_token_dispatches(_no_token, monkeypatch) -> None:
             body=body,
             headers={"Content-Type": "application/json"},
         )
-    assert status == int(HTTPStatus.OK)
-    assert payload["status"] == "succeeded"
-    assert calls and calls[0][1] == {"input_video_uri": "gs://bucket/in.mov"}
+    assert status == int(HTTPStatus.UNAUTHORIZED)
+    assert payload["reason"] == "unauthorized"
+    assert calls == []
 
 
 def test_http_post_unknown_path_returns_404(_no_token, monkeypatch) -> None:
@@ -481,19 +481,27 @@ def test_http_post_valid_bearer_token_dispatches(monkeypatch) -> None:
     assert calls
 
 
-def test_http_post_invalid_json_returns_400(_no_token, monkeypatch) -> None:
+def test_http_post_invalid_json_returns_400(monkeypatch) -> None:
+    monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "secret-token")
     monkeypatch.setattr(
         service,
         "execute_privacy_service_request",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("dispatch must not run for invalid JSON")),
     )
     with _running_service() as port:
-        status, payload = _request(port, "POST", "/run", body=b"{not-json")
+        status, payload = _request(
+            port,
+            "POST",
+            "/run",
+            body=b"{not-json",
+            headers={"Authorization": "Bearer secret-token"},
+        )
     assert status == int(HTTPStatus.BAD_REQUEST)
     assert payload["reason"] == "invalid_json"
 
 
-def test_http_post_non_dict_body_returns_400(_no_token, monkeypatch) -> None:
+def test_http_post_non_dict_body_returns_400(monkeypatch) -> None:
+    monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "secret-token")
     monkeypatch.setattr(
         service,
         "execute_privacy_service_request",
@@ -501,12 +509,19 @@ def test_http_post_non_dict_body_returns_400(_no_token, monkeypatch) -> None:
     )
     body = json.dumps([1, 2, 3]).encode("utf-8")
     with _running_service() as port:
-        status, payload = _request(port, "POST", "/run", body=body)
+        status, payload = _request(
+            port,
+            "POST",
+            "/run",
+            body=body,
+            headers={"Authorization": "Bearer secret-token"},
+        )
     assert status == int(HTTPStatus.BAD_REQUEST)
     assert payload["reason"] == "invalid_payload"
 
 
-def test_http_post_backend_non_succeeded_returns_502(_no_token, monkeypatch) -> None:
+def test_http_post_backend_non_succeeded_returns_502(monkeypatch) -> None:
+    monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "secret-token")
     calls: list[tuple[str, dict]] = []
     _stub_dispatch(
         monkeypatch,
@@ -515,7 +530,13 @@ def test_http_post_backend_non_succeeded_returns_502(_no_token, monkeypatch) -> 
     )
     body = json.dumps({"input_video_uri": "gs://bucket/in.mov"}).encode("utf-8")
     with _running_service() as port:
-        status, payload = _request(port, "POST", "/run", body=body)
+        status, payload = _request(
+            port,
+            "POST",
+            "/run",
+            body=body,
+            headers={"Authorization": "Bearer secret-token"},
+        )
     assert status == int(HTTPStatus.BAD_GATEWAY)
     assert payload["status"] == "failed"
     assert payload["reason"] == "sam3_runner_not_configured"

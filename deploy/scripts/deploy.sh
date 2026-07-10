@@ -36,7 +36,7 @@ set -euo pipefail
 # Default values (override with environment variables)
 PROJECT_ID="${PROJECT_ID:-blueprint-8c1ca}"
 PRIMARY_REGION="${PRIMARY_REGION:-us-central1}"
-SECONDARY_REGIONS="${SECONDARY_REGIONS:-us-east1,europe-west1}"
+SECONDARY_REGIONS="${SECONDARY_REGIONS:-us-east1}"
 STORAGE_BUCKET="${STORAGE_BUCKET:-${PROJECT_ID}.appspot.com}"
 IMAGE_NAME="${IMAGE_NAME:-blueprint-pipeline}"
 IMAGE_TAG="${IMAGE_TAG:-}"
@@ -61,24 +61,29 @@ VIP_MODEL_PATH="${VIP_MODEL_PATH:-}"
 DEEPPRIVACY2_MODEL_PATH="${DEEPPRIVACY2_MODEL_PATH:-}"
 DEPTH_ANYTHING_MODEL_PATH="${DEPTH_ANYTHING_MODEL_PATH:-}"
 HUGGINGFACE_TOKEN_SECRET_NAME="${HUGGINGFACE_TOKEN_SECRET_NAME:-}"
-PRIVACY_RUNNER_TOKEN="${PRIVACY_RUNNER_TOKEN:-}"
+PRIVACY_RUNNER_TOKEN_SECRET_NAME="${PRIVACY_RUNNER_TOKEN_SECRET_NAME:-}"
 VIDEO_TO_WORLD_URL="${VIDEO_TO_WORLD_URL:-}"
-VIDEO_TO_WORLD_RUNNER_TOKEN="${VIDEO_TO_WORLD_RUNNER_TOKEN:-$PRIVACY_RUNNER_TOKEN}"
+VIDEO_TO_WORLD_RUNNER_TOKEN_SECRET_NAME="${VIDEO_TO_WORLD_RUNNER_TOKEN_SECRET_NAME:-$PRIVACY_RUNNER_TOKEN_SECRET_NAME}"
 VIDEO_TO_WORLD_PIPELINE_PRESET="${VIDEO_TO_WORLD_PIPELINE_PRESET:-preprocess_plus_alignment}"
 VIDEO_TO_WORLD_COMMAND_TEMPLATE="${VIDEO_TO_WORLD_COMMAND_TEMPLATE:-}"
 PIPELINE_SYNC_WEBAPP_URL="${PIPELINE_SYNC_WEBAPP_URL:-}"
-PIPELINE_SYNC_TOKEN="${PIPELINE_SYNC_TOKEN:-}"
-WORLDLABS_API_KEY="${WORLDLABS_API_KEY:-}"
+PIPELINE_SYNC_TOKEN_SECRET_NAME="${PIPELINE_SYNC_TOKEN_SECRET_NAME:-}"
+WORLDLABS_API_KEY_SECRET_NAME="${WORLDLABS_API_KEY_SECRET_NAME:-}"
+TERRAFORM_STATE_BUCKET="${TERRAFORM_STATE_BUCKET:-}"
+TERRAFORM_STATE_PREFIX="${TERRAFORM_STATE_PREFIX:-capture-pipeline}"
+TERRAFORM_STATE_KMS_KEY="${TERRAFORM_STATE_KMS_KEY:-}"
 ROLLBACK_IMAGE_TAG="${ROLLBACK_IMAGE_TAG:-}"
 ROLLBACK_VERIFY_COMMAND="${ROLLBACK_VERIFY_COMMAND:-python -m pytest tests/test_deploy_systemd_contract.py tests/test_launch_readiness_packet.py}"
 ROLLBACK_HEALTH_CHECK="${ROLLBACK_HEALTH_CHECK:-true}"
 FULL_TEST_LANE_REQUIRED="${FULL_TEST_LANE_REQUIRED:-true}"
 FULL_TEST_LANE_COMMIT="${FULL_TEST_LANE_COMMIT:-}"
 FULL_TEST_LANE_EVIDENCE_URI="${FULL_TEST_LANE_EVIDENCE_URI:-}"
-FULL_TEST_LANE_BYPASS_REASON="${FULL_TEST_LANE_BYPASS_REASON:-}"
+FULL_TEST_LANE_PROVENANCE_PATH="${FULL_TEST_LANE_PROVENANCE_PATH:-}"
 GIT_SHA="${GIT_SHA:-}"
 RELEASE_ID="${RELEASE_ID:-}"
 DEPLOYMENT_MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-}"
+TOPOLOGY_EVIDENCE_PATH="${TOPOLOGY_EVIDENCE_PATH:-}"
+DEPLOYMENT_CANARY_PATH="${DEPLOYMENT_CANARY_PATH:-}"
 IMAGE_DIGEST_URI="${IMAGE_DIGEST_URI:-}"
 SAM3_IMAGE_DIGEST_URI="${SAM3_IMAGE_DIGEST_URI:-}"
 VIP_IMAGE_DIGEST_URI="${VIP_IMAGE_DIGEST_URI:-}"
@@ -102,6 +107,9 @@ if [[ -z "$IMAGE_TAG" ]]; then
 fi
 RELEASE_ID="${RELEASE_ID:-$IMAGE_TAG}"
 DEPLOYMENT_MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-$PROJECT_ROOT/output/deployments/pipeline-deployment-manifest.json}"
+TOPOLOGY_EVIDENCE_PATH="${TOPOLOGY_EVIDENCE_PATH:-$PROJECT_ROOT/output/deployments/terraform-topology-evidence.json}"
+DEPLOYMENT_CANARY_PATH="${DEPLOYMENT_CANARY_PATH:-$PROJECT_ROOT/output/deployments/deployment-service-canaries.json}"
+FULL_TEST_LANE_PROVENANCE_PATH="${FULL_TEST_LANE_PROVENANCE_PATH:-$PROJECT_ROOT/output/deployments/full-test-lane-provenance.json}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -167,6 +175,46 @@ validate_release_image_tag() {
     esac
 }
 
+validate_secret_name() {
+    local variable_name="$1"
+    local secret_name="$2"
+    if [[ -z "$secret_name" || ! "$secret_name" =~ ^[A-Za-z0-9_-]{1,255}$ ]]; then
+        log_error "${variable_name} must name an existing Secret Manager secret."
+        exit 2
+    fi
+}
+
+validate_runtime_secret_references() {
+    validate_secret_name "PRIVACY_RUNNER_TOKEN_SECRET_NAME" "$PRIVACY_RUNNER_TOKEN_SECRET_NAME"
+    validate_secret_name "VIDEO_TO_WORLD_RUNNER_TOKEN_SECRET_NAME" "$VIDEO_TO_WORLD_RUNNER_TOKEN_SECRET_NAME"
+    validate_secret_name "PIPELINE_SYNC_TOKEN_SECRET_NAME" "$PIPELINE_SYNC_TOKEN_SECRET_NAME"
+    validate_secret_name "WORLDLABS_API_KEY_SECRET_NAME" "$WORLDLABS_API_KEY_SECRET_NAME"
+    if [[ "$PIPELINE_SYNC_WEBAPP_URL" != https://* ]]; then
+        log_error "PIPELINE_SYNC_WEBAPP_URL is required and must use https://."
+        exit 2
+    fi
+    if [[ -n "$HUGGINGFACE_TOKEN_SECRET_NAME" && ! "$HUGGINGFACE_TOKEN_SECRET_NAME" =~ ^[A-Za-z0-9_-]{1,255}$ ]]; then
+        log_error "HUGGINGFACE_TOKEN_SECRET_NAME must be empty or name an existing Secret Manager secret."
+        exit 2
+    fi
+}
+
+validate_beta_data_residency() {
+    if [[ "$PRIMARY_REGION" != us-* ]]; then
+        log_error "US-only beta policy forbids primary region ${PRIMARY_REGION}."
+        exit 2
+    fi
+    local region
+    local -a configured_secondary_regions
+    IFS=',' read -r -a configured_secondary_regions <<< "$SECONDARY_REGIONS"
+    for region in "${configured_secondary_regions[@]}"; do
+        if [[ -n "$region" && "$region" != us-* ]]; then
+            log_error "US-only beta policy forbids secondary region ${region}."
+            exit 2
+        fi
+    done
+}
+
 resolve_image_digest_uri() {
     local tagged_uri="$1"
     local repo="${tagged_uri%:*}"
@@ -190,29 +238,96 @@ resolve_image_digest_uri() {
     return 1
 }
 
+set_release_image_uris() {
+    IMAGE_URI="gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
+    SAM3_IMAGE_URI="gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
+    VIP_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
+    DEEPPRIVACY2_IMAGE_URI="gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
+    VIDEO_TO_WORLD_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}"
+}
+
+require_resolved_image_matches() {
+    local image_name="$1"
+    local expected_digest_uri="$2"
+    local resolved_digest_uri="$3"
+    if [[ ! "$resolved_digest_uri" =~ @sha256:[0-9a-f]{64}$ ]]; then
+        log_error "${image_name} did not resolve to an immutable sha256 image digest."
+        exit 2
+    fi
+    if [[ -n "$expected_digest_uri" && "$expected_digest_uri" != "$resolved_digest_uri" ]]; then
+        log_error "${image_name} tag/digest mismatch: expected ${expected_digest_uri}, registry returned ${resolved_digest_uri}."
+        exit 2
+    fi
+}
+
 pin_pushed_image_digests() {
     log_info "Resolving immutable image digests for release ${IMAGE_TAG}..."
 
-    IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$IMAGE_URI")" || {
+    local expected_pipeline="$IMAGE_DIGEST_URI"
+    local expected_sam3="$SAM3_IMAGE_DIGEST_URI"
+    local expected_vip="$VIP_IMAGE_DIGEST_URI"
+    local expected_deepprivacy2="$DEEPPRIVACY2_IMAGE_DIGEST_URI"
+    local expected_video_to_world="$VIDEO_TO_WORLD_IMAGE_DIGEST_URI"
+    local resolved_pipeline
+    local resolved_sam3
+    local resolved_vip
+    local resolved_deepprivacy2
+    local resolved_video_to_world
+
+    resolved_pipeline="$(resolve_image_digest_uri "$IMAGE_URI")" || {
         log_error "Could not resolve digest for $IMAGE_URI"
         exit 1
     }
-    SAM3_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$SAM3_IMAGE_URI")" || {
+    resolved_sam3="$(resolve_image_digest_uri "$SAM3_IMAGE_URI")" || {
         log_error "Could not resolve digest for $SAM3_IMAGE_URI"
         exit 1
     }
-    VIP_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$VIP_IMAGE_URI")" || {
+    resolved_vip="$(resolve_image_digest_uri "$VIP_IMAGE_URI")" || {
         log_error "Could not resolve digest for $VIP_IMAGE_URI"
         exit 1
     }
-    DEEPPRIVACY2_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$DEEPPRIVACY2_IMAGE_URI")" || {
+    resolved_deepprivacy2="$(resolve_image_digest_uri "$DEEPPRIVACY2_IMAGE_URI")" || {
         log_error "Could not resolve digest for $DEEPPRIVACY2_IMAGE_URI"
         exit 1
     }
-    VIDEO_TO_WORLD_IMAGE_DIGEST_URI="$(resolve_image_digest_uri "$VIDEO_TO_WORLD_IMAGE_URI")" || {
+    resolved_video_to_world="$(resolve_image_digest_uri "$VIDEO_TO_WORLD_IMAGE_URI")" || {
         log_error "Could not resolve digest for $VIDEO_TO_WORLD_IMAGE_URI"
         exit 1
     }
+    require_resolved_image_matches "pipeline image" "$expected_pipeline" "$resolved_pipeline"
+    require_resolved_image_matches "SAM3 image" "$expected_sam3" "$resolved_sam3"
+    require_resolved_image_matches "VIP image" "$expected_vip" "$resolved_vip"
+    require_resolved_image_matches "DeepPrivacy2 image" "$expected_deepprivacy2" "$resolved_deepprivacy2"
+    require_resolved_image_matches "video-to-world image" "$expected_video_to_world" "$resolved_video_to_world"
+    IMAGE_DIGEST_URI="$resolved_pipeline"
+    SAM3_IMAGE_DIGEST_URI="$resolved_sam3"
+    VIP_IMAGE_DIGEST_URI="$resolved_vip"
+    DEEPPRIVACY2_IMAGE_DIGEST_URI="$resolved_deepprivacy2"
+    VIDEO_TO_WORLD_IMAGE_DIGEST_URI="$resolved_video_to_world"
+}
+
+validate_terraform_state_backend() {
+    if [[ -z "$TERRAFORM_STATE_BUCKET" || ! "$TERRAFORM_STATE_BUCKET" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        log_error "TERRAFORM_STATE_BUCKET must name the approved remote GCS state bucket."
+        exit 2
+    fi
+    if [[ -z "$TERRAFORM_STATE_PREFIX" || "$TERRAFORM_STATE_PREFIX" == /* || "$TERRAFORM_STATE_PREFIX" == *..* ]]; then
+        log_error "TERRAFORM_STATE_PREFIX must be a contained nonempty GCS prefix."
+        exit 2
+    fi
+    if [[ ! "$TERRAFORM_STATE_KMS_KEY" =~ ^projects/[^/]+/locations/us[^/]*/keyRings/[^/]+/cryptoKeys/[^/]+$ ]]; then
+        log_error "TERRAFORM_STATE_KMS_KEY must name an approved US Cloud KMS key."
+        exit 2
+    fi
+    local bucket_metadata
+    bucket_metadata="$(gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --format=json)" || {
+        log_error "Unable to read the configured Terraform state bucket."
+        exit 2
+    }
+    uv run --frozen python "$PROJECT_ROOT/scripts/validate_terraform_state_backend.py" \
+        --expected-bucket "$TERRAFORM_STATE_BUCKET" \
+        --expected-kms-key "$TERRAFORM_STATE_KMS_KEY" \
+        <<< "$bucket_metadata"
 }
 
 check_full_test_lane_deploy_gate() {
@@ -225,19 +340,15 @@ check_full_test_lane_deploy_gate() {
     fi
 
     if [[ "$FULL_TEST_LANE_REQUIRED" != "true" ]]; then
-        if [[ -z "$FULL_TEST_LANE_BYPASS_REASON" ]]; then
-            log_error "FULL_TEST_LANE_REQUIRED=false requires FULL_TEST_LANE_BYPASS_REASON."
-            exit 2
-        fi
-        log_warning "Full Test Lane deploy gate bypassed: ${FULL_TEST_LANE_BYPASS_REASON}"
-        return
+        log_error "FULL_TEST_LANE_REQUIRED must remain true; this deploy path has no text-only CI bypass."
+        exit 2
     fi
 
     if [[ -z "$current_sha" ]]; then
         log_error "Could not determine the current git SHA; refusing deploy without Full Test Lane commit evidence."
         exit 2
     fi
-    if [[ "$FULL_TEST_LANE_COMMIT" != "$current_sha" ]]; then
+    if [[ -n "$FULL_TEST_LANE_COMMIT" && "$FULL_TEST_LANE_COMMIT" != "$current_sha" ]]; then
         log_error "Full Test Lane deploy gate failed. Set FULL_TEST_LANE_COMMIT=${current_sha} only after Full Test Lane / Full pytest lane on CPU runner passed for this exact commit."
         exit 2
     fi
@@ -246,7 +357,46 @@ check_full_test_lane_deploy_gate() {
         exit 2
     fi
 
-    log_success "Full Test Lane deploy gate satisfied for ${current_sha}: ${FULL_TEST_LANE_EVIDENCE_URI}"
+    uv run --frozen python "$PROJECT_ROOT/scripts/verify_deploy_release_provenance.py" \
+        --root "$PROJECT_ROOT" \
+        --expected-sha "$current_sha" \
+        --run-url "$FULL_TEST_LANE_EVIDENCE_URI" \
+        --output "$FULL_TEST_LANE_PROVENANCE_PATH"
+    FULL_TEST_LANE_COMMIT="$current_sha"
+    log_success "Canonical Full Test Lane provenance verified for ${current_sha}: ${FULL_TEST_LANE_EVIDENCE_URI}"
+}
+
+verify_clean_release_source() {
+    local current_sha
+    local origin_main_sha
+    local source_status
+    current_sha="$(current_git_sha)"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY-RUN] Would require a clean main checkout at origin/main before deployment"
+        return
+    fi
+    if [[ -z "$current_sha" || ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
+        log_error "Current source SHA is unavailable or malformed."
+        exit 2
+    fi
+    if [[ -n "$GIT_SHA" && "$GIT_SHA" != "$current_sha" ]]; then
+        log_error "GIT_SHA (${GIT_SHA}) does not match checked-out source (${current_sha})."
+        exit 2
+    fi
+    source_status="$(git -C "$PROJECT_ROOT" status --porcelain=v1 --untracked-files=all)"
+    if [[ -n "$source_status" ]]; then
+        log_error "Deployment requires a clean checkout; tracked or untracked source changes are present."
+        exit 2
+    fi
+    git -C "$PROJECT_ROOT" fetch --quiet origin main
+    origin_main_sha="$(git -C "$PROJECT_ROOT" rev-parse refs/remotes/origin/main)"
+    if [[ "$current_sha" != "$origin_main_sha" ]]; then
+        log_error "Checked-out source ${current_sha} is not in exact parity with origin/main ${origin_main_sha}."
+        exit 2
+    fi
+    GIT_SHA="$current_sha"
+    log_success "Clean source and origin/main parity verified at ${current_sha}"
 }
 
 # =============================================================================
@@ -261,10 +411,15 @@ check_prerequisites() {
     check_command terraform
     check_command jq
     check_command python3
+    check_command gh
+    check_command uv
 
     python3 "$PROJECT_ROOT/scripts/validate_pubsub_handoff_infra.py"
+    verify_clean_release_source
     check_full_test_lane_deploy_gate
     validate_release_image_tag
+    validate_runtime_secret_references
+    validate_beta_data_residency
 
     # Check gcloud authentication
     if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | head -n1 > /dev/null 2>&1; then
@@ -383,11 +538,7 @@ build_docker_image() {
 
     cd "$PROJECT_ROOT"
 
-    IMAGE_URI="gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
-    SAM3_IMAGE_URI="gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
-    VIP_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
-    DEEPPRIVACY2_IMAGE_URI="gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
-    VIDEO_TO_WORLD_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}"
+    set_release_image_uris
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would build: $IMAGE_URI"
@@ -430,11 +581,7 @@ build_docker_image() {
 push_docker_image() {
     log_info "Pushing Docker images to GCR..."
 
-    IMAGE_URI="gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}"
-    SAM3_IMAGE_URI="gcr.io/${PROJECT_ID}/${SAM3_IMAGE_NAME}:${IMAGE_TAG}"
-    VIP_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIP_IMAGE_NAME}:${IMAGE_TAG}"
-    DEEPPRIVACY2_IMAGE_URI="gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}"
-    VIDEO_TO_WORLD_IMAGE_URI="gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}"
+    set_release_image_uris
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would push: $IMAGE_URI"
@@ -469,42 +616,63 @@ apply_terraform() {
     local deepprivacy2_image="${DEEPPRIVACY2_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${DEEPPRIVACY2_IMAGE_NAME}:${IMAGE_TAG}}"
     local video_to_world_image_ref="${VIDEO_TO_WORLD_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}}"
 
-    # Create terraform.tfvars if it doesn't exist
-    if [[ ! -f "terraform.tfvars" ]]; then
-        log_info "Creating terraform.tfvars from example..."
-        cat > terraform.tfvars << EOF
-project_id         = "${PROJECT_ID}"
-primary_region     = "${PRIMARY_REGION}"
-secondary_regions  = [$(echo "$SECONDARY_REGIONS" | tr ',' '\n' | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')]
-storage_bucket     = "${STORAGE_BUCKET}"
-docker_image       = "${pipeline_image}"
-privacy_sam3_image = "${sam3_image}"
-privacy_vip_image  = "${vip_image}"
-privacy_deepprivacy2_image = "${deepprivacy2_image}"
-video_to_world_image = "${video_to_world_image_ref}"
-privacy_runner_token = "${PRIVACY_RUNNER_TOKEN}"
-video_to_world_runner_token = "${VIDEO_TO_WORLD_RUNNER_TOKEN}"
-video_to_world_pipeline_preset = "${VIDEO_TO_WORLD_PIPELINE_PRESET}"
-video_to_world_command_template = "${VIDEO_TO_WORLD_COMMAND_TEMPLATE}"
-sam3_weights_path = "${SAM3_WEIGHTS_PATH}"
-vip_model_path = "${VIP_MODEL_PATH}"
-deepprivacy2_model_path = "${DEEPPRIVACY2_MODEL_PATH}"
-depth_anything_model_path = "${DEPTH_ANYTHING_MODEL_PATH}"
-huggingface_token_secret_name = "${HUGGINGFACE_TOKEN_SECRET_NAME}"
-pipeline_sync_webapp_url = "${PIPELINE_SYNC_WEBAPP_URL}"
-pipeline_sync_token = "${PIPELINE_SYNC_TOKEN}"
-EOF
+    if [[ "$DRY_RUN" != "true" ]]; then
+        require_resolved_image_matches "pipeline image" "$pipeline_image" "$pipeline_image"
+        require_resolved_image_matches "SAM3 image" "$sam3_image" "$sam3_image"
+        require_resolved_image_matches "VIP image" "$vip_image" "$vip_image"
+        require_resolved_image_matches "DeepPrivacy2 image" "$deepprivacy2_image" "$deepprivacy2_image"
+        require_resolved_image_matches "video-to-world image" "$video_to_world_image_ref" "$video_to_world_image_ref"
     fi
+
+    # Terraform receives only non-secret configuration and Secret Manager
+    # resource names. Secret payloads never enter tfvars, argv, environment, or
+    # state. Existing secrets are resolved by Terraform data sources.
+    export TF_VAR_project_id="$PROJECT_ID"
+    export TF_VAR_primary_region="$PRIMARY_REGION"
+    export TF_VAR_secondary_regions
+    TF_VAR_secondary_regions="$(jq -cn --arg regions "$SECONDARY_REGIONS" '$regions | split(",") | map(select(length > 0))')"
+    export TF_VAR_storage_bucket="$STORAGE_BUCKET"
+    export TF_VAR_docker_image="$pipeline_image"
+    export TF_VAR_privacy_sam3_image="$sam3_image"
+    export TF_VAR_privacy_vip_image="$vip_image"
+    export TF_VAR_privacy_deepprivacy2_image="$deepprivacy2_image"
+    export TF_VAR_video_to_world_image="$video_to_world_image_ref"
+    export TF_VAR_privacy_runner_token_secret_name="$PRIVACY_RUNNER_TOKEN_SECRET_NAME"
+    export TF_VAR_video_to_world_runner_token_secret_name="$VIDEO_TO_WORLD_RUNNER_TOKEN_SECRET_NAME"
+    export TF_VAR_worldlabs_api_key_secret_name="$WORLDLABS_API_KEY_SECRET_NAME"
+    export TF_VAR_pipeline_sync_token_secret_name="$PIPELINE_SYNC_TOKEN_SECRET_NAME"
+    export TF_VAR_pipeline_sync_webapp_url="$PIPELINE_SYNC_WEBAPP_URL"
+    export TF_VAR_huggingface_token_secret_name="$HUGGINGFACE_TOKEN_SECRET_NAME"
+    export TF_VAR_video_to_world_pipeline_preset="$VIDEO_TO_WORLD_PIPELINE_PRESET"
+    export TF_VAR_video_to_world_command_template="$VIDEO_TO_WORLD_COMMAND_TEMPLATE"
+    export TF_VAR_sam3_weights_path="$SAM3_WEIGHTS_PATH"
+    export TF_VAR_vip_model_path="$VIP_MODEL_PATH"
+    export TF_VAR_deepprivacy2_model_path="$DEEPPRIVACY2_MODEL_PATH"
+    export TF_VAR_depth_anything_model_path="$DEPTH_ANYTHING_MODEL_PATH"
+    export TF_VAR_blueprint_preview_provider="$BLUEPRINT_PREVIEW_PROVIDER"
+    export TF_VAR_worldlabs_default_model="$WORLDLABS_DEFAULT_MODEL"
+    export TF_VAR_privacy_pipeline_enabled="$PRIVACY_PIPELINE_ENABLED"
+    export TF_VAR_privacy_fail_closed="$PRIVACY_FAIL_CLOSED"
+
+    validate_terraform_state_backend
+    local -a terraform_init_args=(
+        init
+        -input=false
+        -reconfigure
+        "-backend-config=bucket=${TERRAFORM_STATE_BUCKET}"
+        "-backend-config=prefix=${TERRAFORM_STATE_PREFIX}"
+        "-backend-config=kms_encryption_key=${TERRAFORM_STATE_KMS_KEY}"
+    )
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would run: terraform init && terraform plan"
-        terraform init -input=false
+        terraform "${terraform_init_args[@]}"
         terraform plan -input=false
         return
     fi
 
     # Initialize Terraform
-    terraform init -input=false
+    terraform "${terraform_init_args[@]}"
 
     # Plan and apply
     terraform plan -input=false -out=tfplan
@@ -512,6 +680,59 @@ EOF
     if confirm "Apply Terraform changes?"; then
         terraform apply -input=false tfplan
         rm -f tfplan
+    else
+        log_error "Terraform apply was not approved; no deployment was completed."
+        exit 2
+    fi
+
+    # Terraform is the sole declared topology owner. Refreshing and requiring a
+    # zero-change plan makes provider-read drift a hard deployment failure.
+    set +e
+    terraform plan -input=false -detailed-exitcode -out=postapply-drift-check.tfplan
+    local drift_exit=$?
+    set -e
+    rm -f postapply-drift-check.tfplan
+    if [[ $drift_exit -eq 2 ]]; then
+        log_error "Post-apply Terraform drift detected; refusing launch evidence."
+        exit 2
+    fi
+    if [[ $drift_exit -ne 0 ]]; then
+        log_error "Post-apply Terraform drift check failed."
+        exit 2
+    fi
+
+    mkdir -p "$(dirname "$TOPOLOGY_EVIDENCE_PATH")"
+    local terraform_outputs
+    terraform_outputs="$(terraform output -json)"
+    jq -n \
+        --arg schema_version "blueprint.terraform_topology_evidence.v1" \
+        --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg release_id "$RELEASE_ID" \
+        --arg git_sha "${GIT_SHA:-}" \
+        --arg terraform_workspace "$(terraform workspace show)" \
+        --argjson terraform_outputs "$terraform_outputs" \
+        '{
+          schema_version: $schema_version,
+          generated_at: $generated_at,
+          release_id: $release_id,
+          git_sha: $git_sha,
+          topology_owner: "terraform",
+          provider_refresh_zero_drift: true,
+          terraform_workspace: $terraform_workspace,
+          terraform_outputs: $terraform_outputs,
+          blockers: [],
+          claim_boundary: "Provider-refreshed Terraform state; separate service canaries are still required for live behavior proof."
+        }' > "$TOPOLOGY_EVIDENCE_PATH"
+
+    uv run --frozen python "$PROJECT_ROOT/scripts/run_deployment_service_canaries.py" \
+        --topology-evidence "$TOPOLOGY_EVIDENCE_PATH" \
+        --project-id "$PROJECT_ID" \
+        --privacy-secret-name "$PRIVACY_RUNNER_TOKEN_SECRET_NAME" \
+        --video-secret-name "$VIDEO_TO_WORLD_RUNNER_TOKEN_SECRET_NAME" \
+        --output "$DEPLOYMENT_CANARY_PATH"
+    if [[ "$(jq -r '.status // ""' "$DEPLOYMENT_CANARY_PATH")" != "passed" ]]; then
+        log_error "Authenticated deployment service canaries did not pass."
+        exit 2
     fi
 
     log_success "Terraform applied"
@@ -556,56 +777,8 @@ deploy_cloud_function() {
 }
 
 create_cloud_run_jobs() {
-    log_info "Creating Cloud Run Jobs..."
-
-    IMAGE_URI="${IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${IMAGE_NAME}:${IMAGE_TAG}}"
-
-    # Split regions
-    IFS=',' read -ra REGIONS <<< "${PRIMARY_REGION},${SECONDARY_REGIONS}"
-
-    for region in "${REGIONS[@]}"; do
-        log_info "Creating Cloud Run Job in $region..."
-
-        if [[ "$DRY_RUN" == "true" ]]; then
-            log_info "[DRY-RUN] Would create job: blueprint-pipeline in $region"
-            continue
-        fi
-
-        # Check if job exists
-        if gcloud run jobs describe blueprint-pipeline --region "$region" &>/dev/null; then
-            log_info "Job exists in $region, updating..."
-            gcloud run jobs update blueprint-pipeline \
-                --image "$IMAGE_URI" \
-                --region "$region" \
-                --cpu 4 \
-                --memory 16Gi \
-                --max-retries 3 \
-                --task-timeout 3600s \
-                --command python \
-                --args "-m,blueprint_pipeline.capture_orchestrator" \
-                --add-volume name=capture-storage,type=cloud-storage,bucket=${STORAGE_BUCKET} \
-                --add-volume-mount volume=capture-storage,mount-path=/mnt/gcs \
-                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_API_KEY=${WORLDLABS_API_KEY},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},BLUEPRINT_LAUNCH_PROOF_MODE=${BLUEPRINT_LAUNCH_PROOF_MODE},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_URL=${PRIVACY_SAM3_URL},PRIVACY_VIP_URL=${PRIVACY_VIP_URL},PRIVACY_DEEPPRIVACY2_URL=${PRIVACY_DEEPPRIVACY2_URL},PRIVACY_RUNNER_TOKEN=${PRIVACY_RUNNER_TOKEN},VIDEO_TO_WORLD_URL=${VIDEO_TO_WORLD_URL},VIDEO_TO_WORLD_RUNNER_TOKEN=${VIDEO_TO_WORLD_RUNNER_TOKEN},RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true,PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN},PIPELINE_SYNC_REQUIRED=true,PIPELINE_SYNC_MAX_ATTEMPTS=5,PIPELINE_SYNC_RETRY_DELAY_MS=1000" \
-                --quiet
-        else
-            log_info "Creating new job in $region..."
-            gcloud run jobs create blueprint-pipeline \
-                --image "$IMAGE_URI" \
-                --region "$region" \
-                --cpu 4 \
-                --memory 16Gi \
-                --max-retries 3 \
-                --task-timeout 3600s \
-                --command python \
-                --args "-m,blueprint_pipeline.capture_orchestrator" \
-                --add-volume name=capture-storage,type=cloud-storage,bucket=${STORAGE_BUCKET} \
-                --add-volume-mount volume=capture-storage,mount-path=/mnt/gcs \
-                --set-env-vars "PIPELINE_PROJECT_ID=${PROJECT_ID},PIPELINE_REGION=${region},PIPELINE_BUCKET=${STORAGE_BUCKET},GCS_ROOT=/mnt/gcs,BLUEPRINT_PREVIEW_PROVIDER=${BLUEPRINT_PREVIEW_PROVIDER},WORLDLABS_API_KEY=${WORLDLABS_API_KEY},WORLDLABS_DEFAULT_MODEL=${WORLDLABS_DEFAULT_MODEL},BLUEPRINT_LAUNCH_PROOF_MODE=${BLUEPRINT_LAUNCH_PROOF_MODE},PRIVACY_PIPELINE_ENABLED=${PRIVACY_PIPELINE_ENABLED},PRIVACY_FAIL_CLOSED=${PRIVACY_FAIL_CLOSED},PRIVACY_SAM3_URL=${PRIVACY_SAM3_URL},PRIVACY_VIP_URL=${PRIVACY_VIP_URL},PRIVACY_DEEPPRIVACY2_URL=${PRIVACY_DEEPPRIVACY2_URL},PRIVACY_RUNNER_TOKEN=${PRIVACY_RUNNER_TOKEN},VIDEO_TO_WORLD_URL=${VIDEO_TO_WORLD_URL},VIDEO_TO_WORLD_RUNNER_TOKEN=${VIDEO_TO_WORLD_RUNNER_TOKEN},RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true,PIPELINE_SYNC_WEBAPP_URL=${PIPELINE_SYNC_WEBAPP_URL},PIPELINE_SYNC_TOKEN=${PIPELINE_SYNC_TOKEN},PIPELINE_SYNC_REQUIRED=true,PIPELINE_SYNC_MAX_ATTEMPTS=5,PIPELINE_SYNC_RETRY_DELAY_MS=1000" \
-                --quiet
-        fi
-    done
-
-    log_success "Cloud Run Jobs created"
+    log_error "Manual Cloud Run mutation is disabled; Terraform is the sole topology and Secret Manager reference owner."
+    return 2
 }
 
 create_cloud_tasks_queues() {
@@ -806,6 +979,9 @@ write_deployment_manifest() {
         --arg video_to_world_image "${VIDEO_TO_WORLD_IMAGE_DIGEST_URI:-gcr.io/${PROJECT_ID}/${VIDEO_TO_WORLD_IMAGE_NAME}:${IMAGE_TAG}}" \
         --arg full_test_lane_commit "$FULL_TEST_LANE_COMMIT" \
         --arg full_test_lane_evidence_uri "$FULL_TEST_LANE_EVIDENCE_URI" \
+        --arg full_test_lane_provenance_path "$FULL_TEST_LANE_PROVENANCE_PATH" \
+        --arg topology_evidence_path "$TOPOLOGY_EVIDENCE_PATH" \
+        --arg deployment_canary_path "$DEPLOYMENT_CANARY_PATH" \
         --argjson full_test_lane_required "$([[ "$FULL_TEST_LANE_REQUIRED" == "true" ]] && echo true || echo false)" \
         '{
           schema_version: $schema_version,
@@ -823,13 +999,23 @@ write_deployment_manifest() {
           full_test_lane: {
             required: $full_test_lane_required,
             commit: $full_test_lane_commit,
-            evidence_uri: $full_test_lane_evidence_uri
+            evidence_uri: $full_test_lane_evidence_uri,
+            verified_provenance_path: $full_test_lane_provenance_path
           },
           rollback: {
             command_template: "deploy/scripts/deploy.sh --rollback --rollback-image-tag " + $image_tag,
             rollback_image_tag: $image_tag
           },
-          claim_boundary: "Local deployment manifest from deploy script; verify Cloud Run/GCP live state before claiming production parity."
+          topology: {
+            owner: "terraform",
+            evidence_path: $topology_evidence_path,
+            provider_refresh_zero_drift_required: true
+          },
+          authenticated_service_canaries: {
+            required: true,
+            evidence_path: $deployment_canary_path
+          },
+          claim_boundary: "Provider-refreshed Terraform topology plus authenticated no-op service canaries; provider/model task success remains separately required."
         }' > "$DEPLOYMENT_MANIFEST_PATH"
     log_success "Deployment manifest written: ${DEPLOYMENT_MANIFEST_PATH}"
 }
@@ -841,7 +1027,6 @@ write_deployment_manifest() {
 main() {
     local DOCKER_ONLY=false
     local TERRAFORM_ONLY=false
-    local FUNCTION_ONLY=false
     local DRY_RUN=false
     local SKIP_DOCKER=false
     local ROLLBACK=false
@@ -858,8 +1043,8 @@ main() {
                 shift
                 ;;
             --function-only)
-                FUNCTION_ONLY=true
-                shift
+                log_error "--function-only was removed: Terraform is the sole deployment topology owner."
+                exit 2
                 ;;
             --rollback)
                 ROLLBACK=true
@@ -903,7 +1088,7 @@ main() {
                 echo "Options:"
                 echo "  --docker-only     Only build and push Docker image"
                 echo "  --terraform-only  Only apply Terraform configuration"
-                echo "  --function-only   Only deploy Cloud Function"
+                echo "  --function-only   Removed; Terraform owns Cloud Function topology"
                 echo "  --skip-docker     Skip Docker build (use existing image)"
                 echo "  --rollback        Roll Cloud Run jobs back to --rollback-image-tag"
                 echo "  --rollback-image-tag <tag>"
@@ -947,32 +1132,27 @@ main() {
     fi
 
     if [[ "$TERRAFORM_ONLY" == "true" ]]; then
+        set_release_image_uris
+        if [[ "$DRY_RUN" != "true" ]]; then
+            pin_pushed_image_digests
+        fi
         apply_terraform
-        exit 0
-    fi
-
-    if [[ "$FUNCTION_ONLY" == "true" ]]; then
-        deploy_cloud_function
+        write_deployment_manifest
         exit 0
     fi
 
     # Full deployment
-    enable_apis
-
     if [[ "$SKIP_DOCKER" != "true" ]]; then
         build_docker_image
         push_docker_image
+    elif [[ "$DRY_RUN" != "true" ]]; then
+        set_release_image_uris
+        pin_pushed_image_digests
     fi
 
-    setup_iam
-    create_pubsub_topics
-    create_cloud_tasks_queues
-    create_cloud_run_jobs
-    deploy_cloud_function
+    apply_terraform
 
     write_deployment_manifest
-    # Optionally apply Terraform (alternative to manual resource creation)
-    # apply_terraform
 
     print_summary
 

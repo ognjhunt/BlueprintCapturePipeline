@@ -38,11 +38,15 @@ For RunPod, point the provider adapter command at
 `--allow-runpod-api-call` before it can submit a serverless `/run` job or create
 an on-demand Pod.
 
-Worker manifest input supports local paths, `file://`, `http://`, `https://`,
-`gs://`, `s3://`, and `r2://`. Live RunPod/Vast/GCP workers require a remote
-manifest URI in `BLUEPRINT_EVAL_MANIFEST_URI`; a local path is accepted only for
-local fixture/development workers because provider workers cannot fetch files
-from the orchestrator host. Artifact output supports local paths, `file://`,
+Worker manifest input supports local paths for fixture/development workers and
+`https://`, `gs://`, `s3://`, and `r2://` remote sources. `file://` and plaintext
+`http://` input are rejected. Live RunPod/Vast/GCP workers require a remote
+manifest URI in `BLUEPRINT_EVAL_MANIFEST_URI`; a local path is rejected because
+provider workers cannot fetch files from the orchestrator host. HTTPS manifest
+and capture-bundle downloads additionally require an exact origin allowlist in
+`BLUEPRINT_WORKER_ALLOWED_DOWNLOAD_ORIGINS` (comma-separated HTTPS origins).
+Every redirect is revalidated and response/archive byte, member, expansion,
+compression-ratio, and link-type limits fail closed. Artifact output supports local paths, `file://`,
 `gs://`, `s3://`, and `r2://`. S3-compatible storage uses `boto3`; R2 requires
 `BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL` or `R2_ENDPOINT_URL`. Do not place access
 keys in manifests or artifacts; use provider-native environment/secret injection.

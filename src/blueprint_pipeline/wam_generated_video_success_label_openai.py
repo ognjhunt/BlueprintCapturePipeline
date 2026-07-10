@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from .wam_generated_video_success_label_gemini import (
     _rollout_task_prompt_record,
     _string,
     _task_success_criteria,
+    attach_success_label_runtime_attestation,
 )
 
 
@@ -35,6 +37,15 @@ DEFAULT_OUTPUT_FILENAME = "wam_success_labels.command.json"
 DEFAULT_MAX_FRAMES = 5
 DEFAULT_MAX_FRAME_DIMENSION = 768
 DEFAULT_JPEG_QUALITY = 86
+PROMPT_INSTRUCTION = (
+    "You are judging sampled frames from a generated world-model rollout video for a "
+    "robot manipulation task. Return compact JSON only. Judge whether the frames show "
+    "realistic task success. Be strict: do not infer success from provider completion, "
+    "scene motion, camera motion, or a valid video. If the robot does not visibly "
+    "reach/contact the correct target, or if the target state change is not visibly "
+    "caused by the robot, mark success false or null."
+)
+PROMPT_TEMPLATE_SHA256 = hashlib.sha256(PROMPT_INSTRUCTION.encode("utf-8")).hexdigest()
 
 
 def _truthy(value: Any) -> bool:
@@ -103,10 +114,7 @@ def _video_sample_indices(frame_count: int, max_frames: int) -> list[int]:
         return list(range(max(1, max_frames)))
     if max_frames <= 1:
         return [0]
-    raw = [
-        round(index * (frame_count - 1) / max(1, max_frames - 1))
-        for index in range(max_frames)
-    ]
+    raw = [round(index * (frame_count - 1) / max(1, max_frames - 1)) for index in range(max_frames)]
     indices: list[int] = []
     for value in raw:
         if value not in indices:
@@ -192,14 +200,7 @@ def _openai_label_one(
         task_record=task_record,
     )
     prompt = {
-        "instruction": (
-            "You are judging sampled frames from a generated world-model rollout video for a "
-            "robot manipulation task. Return compact JSON only. Judge whether the frames show "
-            "realistic task success. Be strict: do not infer success from provider completion, "
-            "scene motion, camera motion, or a valid video. If the robot does not visibly "
-            "reach/contact the correct target, or if the target state change is not visibly "
-            "caused by the robot, mark success false or null."
-        ),
+        "instruction": PROMPT_INSTRUCTION,
         "required_json": {
             "scene_description": "one short sentence describing visible content",
             "success": "boolean or null",
@@ -242,6 +243,26 @@ def _openai_label_one(
         first = payload["labels"][0]
         payload = dict(first) if isinstance(first, Mapping) else payload
     success = _bool_or_none(payload.get("success"))
+    evidence_refs = [str(video_path.resolve())] + [
+        str(frame.get("evidence_ref")) for frame in frames if frame.get("evidence_ref")
+    ]
+    criterion_results = [
+        {
+            "criterion_id": "end_effector_reaches_target",
+            "passed": _bool_or_none(payload.get("end_effector_reaches_target")),
+            "evidence_refs": evidence_refs,
+        },
+        {
+            "criterion_id": "target_state_change_visible",
+            "passed": _bool_or_none(payload.get("target_state_change_visible")),
+            "evidence_refs": evidence_refs,
+        },
+        {
+            "criterion_id": "robot_caused_target_motion",
+            "passed": _bool_or_none(payload.get("robot_caused_target_motion")),
+            "evidence_refs": evidence_refs,
+        },
+    ]
     return {
         "label_id": f"openai_{_string(rollout.get('rollout_id')) or 'rollout'}",
         "rollout_id": rollout.get("rollout_id"),
@@ -262,8 +283,8 @@ def _openai_label_one(
         "target_state_change_visible": _bool_or_none(payload.get("target_state_change_visible")),
         "robot_caused_target_motion": _bool_or_none(payload.get("robot_caused_target_motion")),
         "task_success_criteria": success_criteria,
-        "evidence_refs": [str(video_path.resolve())]
-        + [str(frame.get("evidence_ref")) for frame in frames if frame.get("evidence_ref")],
+        "criterion_results": criterion_results,
+        "evidence_refs": evidence_refs,
         "label_source": "openai_generated_video_frame_judge",
         "model": model,
         "visual_evidence_used": bool(frames),
@@ -298,8 +319,7 @@ def build_openai_wam_success_labels(
     request = _load_json(resolved_input)
     model_name = _string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL
     frame_limit = max_frames or int(
-        _string(os.getenv("BLUEPRINT_OPENAI_WAM_SUCCESS_MAX_FRAMES"))
-        or DEFAULT_MAX_FRAMES
+        _string(os.getenv("BLUEPRINT_OPENAI_WAM_SUCCESS_MAX_FRAMES")) or DEFAULT_MAX_FRAMES
     )
     frame_dimension = max_frame_dimension or int(
         _string(os.getenv("BLUEPRINT_OPENAI_WAM_SUCCESS_MAX_FRAME_DIMENSION"))
@@ -314,9 +334,7 @@ def build_openai_wam_success_labels(
     if not api_key:
         blockers.append("missing_openai_api_key_or_key_file")
     rollouts = [
-        dict(item)
-        for item in request.get("rollouts", []) or []
-        if isinstance(item, Mapping)
+        dict(item) for item in request.get("rollouts", []) or [] if isinstance(item, Mapping)
     ][:max_rollouts]
     if not rollouts:
         blockers.append("missing_generated_rollouts")
@@ -333,23 +351,48 @@ def build_openai_wam_success_labels(
                     "missing_task_prompt_or_task_success_metadata_for_generated_video_success_label"
                 )
                 continue
-            video_text = _string(rollout.get("generated_video_path"))
-            video_path = Path(video_text).expanduser()
-            if not video_path.is_absolute():
-                video_path = resolved_input.parent / video_path
-            if not video_path.is_file():
-                blockers.append("generated_video_path_not_found")
+            ordered_rows = [
+                dict(row)
+                for row in rollout.get("ordered_step_videos", []) or []
+                if isinstance(row, Mapping)
+            ]
+            video_texts = [_string(row.get("generated_video_path")) for row in ordered_rows] or [
+                _string(rollout.get("generated_video_path"))
+            ]
+            video_paths: list[Path] = []
+            for video_text in video_texts:
+                video_path = Path(video_text).expanduser()
+                if not video_path.is_absolute():
+                    video_path = resolved_input.parent / video_path
+                if not video_path.is_file():
+                    blockers.append("generated_video_path_not_found")
+                    video_paths = []
+                    break
+                video_paths.append(video_path)
+            if not video_paths:
                 continue
-            frames, frame_blockers = _sample_video_frames(
-                video_path=video_path,
-                max_frames=max(1, frame_limit),
-                max_dimension=max(1, frame_dimension),
-                jpeg_quality=DEFAULT_JPEG_QUALITY,
-            )
+            frames: list[dict[str, Any]] = []
+            frame_blockers: list[str] = []
+            frames_per_clip = max(1, frame_limit // len(video_paths))
+            for clip_index, video_path in enumerate(video_paths):
+                clip_frames, clip_blockers = _sample_video_frames(
+                    video_path=video_path,
+                    max_frames=frames_per_clip,
+                    max_dimension=max(1, frame_dimension),
+                    jpeg_quality=DEFAULT_JPEG_QUALITY,
+                )
+                for frame in clip_frames:
+                    frame["episode_clip_index"] = clip_index
+                frames.extend(clip_frames)
+                frame_blockers.extend(clip_blockers)
+            video_path = video_paths[-1]
             sampled_rollouts.append(
                 {
                     "rollout_id": rollout.get("rollout_id"),
-                    "generated_video_path": str(video_path),
+                    "ordered_generated_video_paths": [str(path) for path in video_paths],
+                    "full_ordered_episode_sampled": bool(
+                        len(video_paths) == len(video_texts) and not frame_blockers
+                    ),
                     "sampled_frame_count": len(frames),
                     "frame_blockers": frame_blockers,
                 }
@@ -378,6 +421,7 @@ def build_openai_wam_success_labels(
         "status": "completed" if labels and not blockers else "blocked",
         "provider": "openai",
         "model": model_name,
+        "prompt_template_sha256": PROMPT_TEMPLATE_SHA256,
         "api_key_configured": bool(api_key_source),
         "blockers": sorted(set(blockers)),
         "label_count": len(labels),
@@ -392,6 +436,11 @@ def build_openai_wam_success_labels(
             "generated_world_policy_evaluation_scope_proven": False,
         },
     }
+    manifest = attach_success_label_runtime_attestation(
+        manifest,
+        inference_input_manifest_sha256=_string(request.get("inference_input_manifest_sha256")),
+        output_dir=resolved_output.parent,
+    )
     write_json(resolved_output, manifest)
     return manifest
 
@@ -404,7 +453,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_INPUT"),
         required=not bool(os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_INPUT")),
     )
-    parser.add_argument("--output", type=Path, default=os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT"))
+    parser.add_argument(
+        "--output", type=Path, default=os.getenv("BLUEPRINT_WAM_SUCCESS_LABEL_OUTPUT")
+    )
     parser.add_argument("--model", default=None)
     parser.add_argument("--max-rollouts", type=int, default=5)
     parser.add_argument("--max-frames", type=int, default=None)

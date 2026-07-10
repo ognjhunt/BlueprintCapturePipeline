@@ -1139,8 +1139,9 @@ run gates are configured. This is not a permanent company dependency and not
 proof of universal grading. `oscar_wam` remains the OSCAR baseline/compatibility
 lane: OSCAR fine-tunes `Cosmos-Predict2.5-2B` on 180,657 filtered episodes
 (94,830 robot and 85,827 human egocentric) and reports skeleton-conditioned
-RoboArena policy-eval MMRV 0.571, Spearman 0.750, Pearson 0.852, and SISR delta
-1.73pp. Its GPT-5 success scorer matched 78/100 human labels, had specificity
+RoboArena policy-eval MMRV 0.571, Spearman 0.750, Pearson 0.852, and OSCAR
+`success_rate_difference_pp` 1.73. Its GPT-5 success scorer matched 78/100
+human labels, had specificity
 0.90, and missed about one third of real successes. `cosmos_wam` remains a
 legacy/advisory Cosmos-Predict2.5 baseline; NVIDIA's Cosmos-Predict2.5 repo says
 future releases, docs, and community support are focused on Cosmos 3.
@@ -1165,6 +1166,8 @@ Cosmos-Predict2.5 at 0.897 / 0.090; on the out-of-distribution online split,
 Pearson is 0.870 versus 0.871 while MMRV is better at 0.171 versus 0.195. Its
 published scope is 381 hours in one table-bussing scene, 12 object categories,
 three camera views, seven policy checkpoints, and at most 20-second rollouts.
+These are SC3-Eval paper results, not Blueprint measurements; Blueprint has not
+measured equivalent rank fidelity.
 Blueprint writes `sc3_eval_protocol.json` to keep those requirements, accepted
 anchor joins, correlation metrics, and robot/policy adapter contracts explicit.
 See

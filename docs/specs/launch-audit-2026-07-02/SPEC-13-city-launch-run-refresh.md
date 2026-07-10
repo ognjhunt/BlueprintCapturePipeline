@@ -1,5 +1,9 @@
 # SPEC-13: Re-run city-launch evidence; fix Austin backend quota; unblock the evidence trail
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 - Status: Proposed
 - Priority: **P1 — major** (operational; blocks any evidence-based launch decision)
 - Area: `ops/city-launch-runs/`, city-launch harness runs, WebApp city-status backend (cross-repo)
@@ -42,8 +46,10 @@ work queue we should be burning down.
    endpoint) so the city-status route can actually answer.
 2. **Re-run the city-launch harness (`--execute-local` where applicable) weekly** for
    each candidate city during the launch push; wire it to the SPEC-11 exit-code contract
-   so CI surfaces blocked-external distinctly. Keep artifacts under
-   `ops/city-launch-runs/` with a `latest` symlink/manifest per city.
+   so CI surfaces blocked-external distinctly. Keep artifacts in the private external
+   root selected by `BLUEPRINT_CITY_LAUNCH_OUTPUT_ROOT`. Do not use source-tree snapshots
+   or mutable `latest` symlinks as current proof; select a run by immutable run ID and
+   validate its exact inventory and freshness.
 3. **Triage the blocker lists** from the newest Austin/Durham runs into an ordered
    burn-down (each blocker mapped to an owner and, where code-level, to one of
    SPEC-01…12). The harness blocker taxonomy already names the gaps — treat it as the

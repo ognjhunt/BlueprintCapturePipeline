@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import itertools
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -72,13 +73,23 @@ def test_small_normalizers_and_fault_tolerant_readers(tmp_path: Path, monkeypatc
 
 def test_pose_alignment_and_manifest_normalization_edges(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
-    _write_jsonl(raw / "arkit" / "poses.jsonl", [{"t_device_sec": None}, {"timestamp": 1.0, "frame_id": 0}])
-    _write_jsonl(raw / "arkit" / "frames.jsonl", [{}, {"timestamp": 1.05, "frame_id": 0}])
+    _write_jsonl(
+        raw / "arkit" / "poses.jsonl",
+        [{"t_device_sec": None}, {"timestamp_sec": 1.0, "frame_id": 0}],
+    )
+    _write_jsonl(
+        raw / "arkit" / "frames.jsonl",
+        [{}, {"timestamp_sec": 1.05, "frame_id": 0}],
+    )
 
     alignment = m._inspect_pose_alignment(raw)
 
     assert alignment["matched_pose_count"] == 1.0
-    assert alignment["frame_count"] == 2.0
+    assert alignment["frame_count"] == 1.0
+    assert alignment["temporal_alignment_status"] == "blocked"
+    assert "frames:row_0:timestamp_missing_or_ambiguous" in alignment[
+        "temporal_alignment_blockers"
+    ]
     identity = m._normalized_site_identity(
         {
             "site_identity": {
@@ -113,6 +124,7 @@ def test_world_model_downgrade_and_lane_edges(monkeypatch: pytest.MonkeyPatch) -
         capture_source="iphone",
         pose_match_rate=1.0,
         p95_pose_delta_sec=0.01,
+        pose_alignment_valid=True,
         geometry_ready=False,
     ) == "missing_arkit_intrinsics"
     assert m._world_model_candidate_downgrade_reason(
@@ -124,6 +136,7 @@ def test_world_model_downgrade_and_lane_edges(monkeypatch: pytest.MonkeyPatch) -
         capture_source="iphone",
         pose_match_rate=1.0,
         p95_pose_delta_sec=0.01,
+        pose_alignment_valid=True,
         geometry_ready=False,
     ) == "missing_lidar_depth"
     assert m._world_model_candidate_downgrade_reason(
@@ -135,6 +148,7 @@ def test_world_model_downgrade_and_lane_edges(monkeypatch: pytest.MonkeyPatch) -
         capture_source="iphone",
         pose_match_rate=1.0,
         p95_pose_delta_sec=0.01,
+        pose_alignment_valid=True,
         geometry_ready=False,
     ) == "missing_complete_intake"
     assert m._world_model_candidate_downgrade_reason(
@@ -146,6 +160,7 @@ def test_world_model_downgrade_and_lane_edges(monkeypatch: pytest.MonkeyPatch) -
         capture_source="iphone",
         pose_match_rate=1.0,
         p95_pose_delta_sec=0.01,
+        pose_alignment_valid=True,
         geometry_ready=False,
     ) == "derived_scene_generation_not_allowed"
     assert m._world_model_candidate_downgrade_reason(
@@ -157,6 +172,7 @@ def test_world_model_downgrade_and_lane_edges(monkeypatch: pytest.MonkeyPatch) -
         capture_source="android",
         pose_match_rate=None,
         p95_pose_delta_sec=None,
+        pose_alignment_valid=None,
         geometry_ready=True,
     ) == "site_world_candidate_gates_not_met"
 
@@ -265,7 +281,10 @@ def test_readiness_invalid_manifest_and_optional_descriptor_uris(tmp_path: Path)
         scene_id="scene-missing-manifest",
         capture_id="capture-missing-manifest",
         gcs_root=tmp_path,
-    )["issues"] == ["missing_manifest"]
+    )["issues"] == [
+        "missing_manifest",
+        "raw_bundle_quarantined:missing_required_file:manifest.json",
+    ]
 
     missing_video_raw = _raw_root(tmp_path, scene_id="scene-missing-video-ready", capture_id="capture-missing-video-ready")
     _write_json(missing_video_raw / "manifest.json", {"scene_id": "scene-missing-video-ready"})
@@ -292,7 +311,10 @@ def test_readiness_invalid_manifest_and_optional_descriptor_uris(tmp_path: Path)
         capture_id="capture-1",
         gcs_root=tmp_path,
     )
-    assert readiness["issues"] == ["invalid_manifest"]
+    assert readiness["issues"] == [
+        "invalid_manifest",
+        "raw_bundle_quarantined:invalid_json:manifest.json:JSONDecodeError",
+    ]
 
     raw = _minimal_ready_capture(tmp_path, scene_id="scene-2", capture_id="capture-2")
     for path in (
@@ -370,9 +392,9 @@ def test_discover_raw_sidecars_arkit_geometry_ready(tmp_path: Path) -> None:
     raw.mkdir()
     raw_prefix = "gs://bucket/scenes/sc/captures/cap/raw"
     # A full ARKit metric bundle: poses + intrinsics + depth dir => geometry ready.
-    _write_jsonl(raw / "arkit" / "poses.jsonl", [{"timestamp": 1.0, "frame_id": 0}, {"timestamp": 2.0, "frame_id": 1}])
+    _write_jsonl(raw / "arkit" / "poses.jsonl", [{"timestamp_sec": 1.0, "frame_id": 0}, {"timestamp_sec": 2.0, "frame_id": 1}])
     _write_json(raw / "arkit" / "intrinsics.json", {"fx": 1.0})
-    _write_jsonl(raw / "arkit" / "frames.jsonl", [{"timestamp": 1.05, "frame_id": 0}, {"timestamp": 2.05, "frame_id": 1}])
+    _write_jsonl(raw / "arkit" / "frames.jsonl", [{"timestamp_sec": 1.05, "frame_id": 0}, {"timestamp_sec": 2.05, "frame_id": 1}])
     (raw / "arkit" / "depth").mkdir(parents=True)
     (raw / "arkit" / "confidence").mkdir(parents=True)
     (raw / "object_index.json").write_text("{}", encoding="utf-8")
@@ -458,6 +480,7 @@ def test_resolve_world_model_candidacy_bundles_policy_outputs() -> None:
         "world_model_candidate_reasoning",
         "capture_mode",
         "readiness_world_model_candidate",
+        "decision",
     }
     # The bundle must equal the underlying helpers called with the same inputs,
     # proving the extraction is a pure projection (no behavior change).
@@ -494,7 +517,55 @@ def test_resolve_world_model_candidacy_bundles_policy_outputs() -> None:
         arkit_depth_prefix_uri=sidecars["arkit_depth_prefix_uri"],
         intake_complete=True,
         evidence_tier="qualified_metric_capture",
+        capture_source="iphone",
+        pose_match_rate=0.95,
+        p95_pose_delta_sec=0.02,
+        geometry_ready=True,
+        geometry_source="arkit",
     )
+    assert candidacy["world_model_candidate"] == candidacy["readiness_world_model_candidate"]
+    assert candidacy["decision"]["candidate"] == candidacy["world_model_candidate"]
+
+
+def test_canonical_candidacy_projection_agrees_across_source_and_gate_combinations() -> None:
+    for source, site_present, requested, rights, intake, geometry_ready, alignment_ok in itertools.product(
+        ("iphone", "android", "glasses"),
+        (False, True),
+        ("qualification_only", "site_world_candidate"),
+        (False, True),
+        (False, True),
+        (False, True),
+        (False, True),
+    ):
+        manifest = {
+            "site_identity": {"site_id": "site-1"} if site_present else {},
+            "capture_mode": {
+                "requested_mode": requested,
+                "resolved_mode": requested,
+            },
+            "capture_rights": {"derived_scene_generation_allowed": rights},
+        }
+        sidecars = {
+            "arkit_poses_uri": "gs://bucket/poses" if geometry_ready else None,
+            "arkit_intrinsics_uri": "gs://bucket/intrinsics" if geometry_ready else None,
+            "arkit_depth_prefix_uri": "gs://bucket/depth" if geometry_ready else None,
+            "arkit_geometry_ready": geometry_ready,
+            "geometry_source": "arkit" if geometry_ready else None,
+            "pose_match_rate": 1.0 if alignment_ok else 0.0,
+            "p95_pose_delta_sec": 0.0 if alignment_ok else 1.0,
+        }
+
+        projection = m._resolve_world_model_candidacy(
+            manifest=manifest,
+            sidecars=sidecars,
+            intake_complete=intake,
+            evidence_tier="qualified_metric_capture",
+            source=source,
+        )
+
+        assert projection["world_model_candidate"] == projection["readiness_world_model_candidate"]
+        assert projection["decision"]["candidate"] == projection["world_model_candidate"]
+        assert projection["decision"]["capture_mode"] == projection["capture_mode"]
 
 
 def test_build_records_reuses_candidacy_consistently(tmp_path: Path) -> None:

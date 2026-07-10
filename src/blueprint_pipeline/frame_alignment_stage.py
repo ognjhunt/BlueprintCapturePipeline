@@ -25,6 +25,7 @@ Algorithm:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -33,11 +34,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .camera_geometry_validation import validate_se3_matrix
 from .common import (
     PipelineError,
     read_json,
     utc_now_iso,
     write_json,
+    write_text,
 )
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .retrieval_index_stage import (
@@ -309,6 +312,7 @@ def _align_session(
     )
     anchor_xform = np.array(anchor_transform or _identity_4x4(), dtype=np.float64)
     T_site_from_session = anchor_xform @ T_anchor_from_session
+    transform_fingerprint = _transform_fingerprint(T_site_from_session)
 
     residuals = _candidate_residuals(T_anchor_from_session=T_anchor_from_session, candidates=candidates)
     return {
@@ -316,6 +320,7 @@ def _align_session(
         "status": "aligned",
         "reference_session": anchor_session_id,
         "site_frame_transform": T_site_from_session.tolist(),
+        "site_frame_transform_sha256": transform_fingerprint,
         "candidate_count": len(candidates),
         "inlier_count": inlier_count,
         "inlier_fraction": round(inlier_fraction, 3),
@@ -434,10 +439,12 @@ def _candidate_pair_score(
 
 
 def _has_valid_pose(rec: Dict[str, Any]) -> bool:
-    T = rec.get("T_world_camera")
-    if not isinstance(T, list) or len(T) < 4:
-        return False
-    return True
+    return bool(
+        validate_se3_matrix(
+            rec.get("T_world_camera"),
+            field="T_world_camera",
+        )["valid"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -464,16 +471,33 @@ def _ransac_se3(
     If RANSAC fails, returns (None, 0, 0.0).
     """
     n = len(candidates)
+    if n == 0:
+        return None, 0, 0.0
     best_inliers = 0
     best_T: Optional[np.ndarray] = None
+    best_support = -1.0
+    best_residual = float("inf")
+    best_fingerprint = ""
     cos_thresh = math.cos(math.radians(rotation_threshold_deg))
 
     # Pre-compute poses
     q_poses: List[np.ndarray] = [_pose_matrix(c[0]) for c in candidates]
     r_poses: List[np.ndarray] = [_pose_matrix(c[1]) for c in candidates]
 
-    for _ in range(n_iters):
-        idx = random.randint(0, n - 1)
+    # Derive sampling solely from the canonical input digest. Repeated draws of
+    # one-point hypotheses add no information, so each candidate is evaluated
+    # at most once in a deterministic digest-shuffled order.
+    seed = _ransac_seed(
+        candidates=candidates,
+        n_iters=n_iters,
+        translation_threshold_m=translation_threshold_m,
+        rotation_threshold_deg=rotation_threshold_deg,
+    )
+    sample_order = list(range(n))
+    random.Random(seed).shuffle(sample_order)
+    sample_order = sample_order[: min(max(n_iters, 0), n)]
+
+    for idx in sample_order:
         T_q = q_poses[idx]   # session frame pose
         T_r = r_poses[idx]   # reference (site) frame pose
 
@@ -486,7 +510,8 @@ def _ransac_se3(
         T_candidate = T_r @ T_q_inv
 
         # Count inliers
-        inliers = 0
+        inlier_indices: List[int] = []
+        residual_sum = 0.0
         for j in range(n):
             # Apply candidate transform to session pose; compare to ref pose
             T_q_j = q_poses[j]
@@ -507,10 +532,21 @@ def _ransac_se3(
             if cos_angle < cos_thresh:
                 continue
 
-            inliers += 1
+            inlier_indices.append(j)
+            residual_sum += float(dt) + math.degrees(math.acos(cos_angle)) / 180.0
 
-        if inliers > best_inliers:
+        inliers = len(inlier_indices)
+        support = sum(float(candidates[j][2]) for j in inlier_indices)
+        fingerprint = _transform_fingerprint(T_candidate)
+        rank = (inliers, round(support, 12), -round(residual_sum, 12))
+        best_rank = (best_inliers, round(best_support, 12), -round(best_residual, 12))
+        if rank > best_rank or (
+            rank == best_rank and (not best_fingerprint or fingerprint < best_fingerprint)
+        ):
             best_inliers = inliers
+            best_support = support
+            best_residual = residual_sum
+            best_fingerprint = fingerprint
             best_T = T_candidate.copy()
 
     if best_T is None or best_inliers == 0:
@@ -610,7 +646,7 @@ def _patch_site_index(
             patched += 1
         out_lines.append(json.dumps(rec, separators=(",", ":")))
 
-    site_index_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    write_text(site_index_path, "\n".join(out_lines) + "\n")
     return patched
 
 
@@ -630,6 +666,11 @@ def _write_site_transforms_manifest(
                 "session_id": session_id,
                 "status": "aligned" if transform is not None else str(result.get("status") or "failed"),
                 "site_frame_transform": transform,
+                "site_frame_transform_sha256": (
+                    _transform_fingerprint(np.asarray(transform, dtype=np.float64))
+                    if transform is not None
+                    else None
+                ),
                 "reference_session": result.get("reference_session"),
                 "candidate_count": result.get("candidate_count"),
                 "inlier_count": result.get("inlier_count"),
@@ -825,11 +866,72 @@ def _pose_matrix(rec: Dict[str, Any]) -> np.ndarray:
     """Extract 4x4 SE(3) pose matrix from a site index record."""
     T = rec.get("T_world_camera")
     if T is None:
-        raise ValueError(f"Record has no T_world_camera: {rec.get('frame_id')}")
-    arr = np.array(T, dtype=np.float64)
-    if arr.shape != (4, 4):
-        raise ValueError(f"T_world_camera is not 4x4: shape {arr.shape}")
-    return arr
+        raise ValueError(
+            f"Record has no T_world_camera: {rec.get('frame_id') or rec.get('reference_id')}"
+        )
+    try:
+        raw_shape = np.asarray(T).shape
+    except ValueError:
+        raw_shape = ()
+    if raw_shape != (4, 4):
+        raise ValueError(f"T_world_camera is not 4x4: shape {raw_shape}")
+    validation = validate_se3_matrix(T, field="T_world_camera")
+    if not validation["valid"]:
+        raise ValueError(
+            f"Record has invalid T_world_camera ({','.join(validation['blockers'])}): "
+            f"{rec.get('frame_id') or rec.get('reference_id')}"
+        )
+    return np.asarray(validation["matrix"], dtype=np.float64)
+
+
+def _transform_fingerprint(transform: np.ndarray) -> str:
+    validation = validate_se3_matrix(transform, field="site_frame_transform")
+    if not validation["valid"]:
+        raise ValueError(
+            "Cannot fingerprint invalid site-frame transform: "
+            + ",".join(validation["blockers"])
+        )
+    canonical = json.dumps(
+        validation["matrix"],
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _ransac_seed(
+    *,
+    candidates: List[Tuple[Dict[str, Any], Dict[str, Any], float]],
+    n_iters: int,
+    translation_threshold_m: float,
+    rotation_threshold_deg: float,
+) -> int:
+    canonical_candidates: List[Dict[str, Any]] = []
+    for query, reference, score in candidates:
+        canonical_candidates.append(
+            {
+                "query_id": str(query.get("frame_id") or query.get("reference_id") or ""),
+                "reference_id": str(
+                    reference.get("frame_id") or reference.get("reference_id") or ""
+                ),
+                "query_pose": _pose_matrix(query).tolist(),
+                "reference_pose": _pose_matrix(reference).tolist(),
+                "pair_score": float(score),
+            }
+        )
+    payload = {
+        "schema_version": "blueprint.se3-ransac-seed.v1",
+        "candidates": canonical_candidates,
+        "n_iters": int(n_iters),
+        "translation_threshold_m": float(translation_threshold_m),
+        "rotation_threshold_deg": float(rotation_threshold_deg),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).digest()
+    return int.from_bytes(digest[:8], "big", signed=False)
 
 
 def _mat_inv(T: np.ndarray) -> np.ndarray:

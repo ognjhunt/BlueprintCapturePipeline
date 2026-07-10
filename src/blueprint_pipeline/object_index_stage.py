@@ -12,15 +12,30 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+from hashlib import sha256
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .capture_enrichment_llm import build_capture_enrichment_runner
 from .capture_bridge import CaptureDescriptor
-from .common import join_gs_uri, read_json_any, resolve_gs_uri_to_path, utc_now_iso, write_json
+from .common import (
+    PipelineError,
+    join_gs_uri,
+    read_json_any,
+    resolve_gs_uri_to_path,
+    utc_now_iso,
+    write_json,
+    write_text,
+)
 from .eval_ready_task_grounding import derive_task_aware_detection_prompts
-from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest
+from .ios_manifest import (
+    IOSManifest,
+    load_object_index,
+    load_raw_manifest,
+    verify_canonical_raw_bundle_path,
+)
 from .local_capture import resolve_local_capture_context
 from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
 
@@ -32,6 +47,8 @@ _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO0p2x0AAAAASUVORK5CYII="
 )
 _STRUCTURAL_LABELS = {"wall", "floor", "ceiling", "window", "stairs"}
+_OBJECT_INDEX_RUN_SCHEMA = "object_index_derived_run.v1"
+_OBJECT_INDEX_OUTPUT_SCHEMA = "object_index.v2"
 _PROMPT_BANKS: Dict[str, List[str]] = {
     "default": [
         "door",
@@ -1132,6 +1149,61 @@ def _synthesized_bbox(
     }
 
 
+def _validated_metric_geometry_evidence(cluster: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Return only explicitly calibrated metric observations from a 2D cluster."""
+
+    allowed_methods = {
+        "calibrated_depth_ray",
+        "multiview_triangulation",
+        "validated_provider_metric_reconstruction",
+    }
+    evidence: List[Dict[str, Any]] = []
+    for item in cluster:
+        center = item.get("world_center")
+        extents = item.get("world_extents")
+        details = item.get("metric_geometry_evidence")
+        if not (
+            isinstance(center, list)
+            and len(center) == 3
+            and isinstance(extents, list)
+            and len(extents) == 3
+            and isinstance(details, Mapping)
+        ):
+            continue
+        try:
+            center_values = [float(value) for value in center]
+            extent_values = [float(value) for value in extents]
+            uncertainty_m = float(details.get("translation_uncertainty_m"))
+            reprojection_error_px = float(details.get("reprojection_error_px"))
+        except (TypeError, ValueError):
+            continue
+        method = str(details.get("method") or "").strip().lower()
+        calibration_ref = str(details.get("camera_calibration_ref") or "").strip()
+        if (
+            method not in allowed_methods
+            or not calibration_ref
+            or not all(math.isfinite(value) for value in [*center_values, *extent_values, uncertainty_m, reprojection_error_px])
+            or any(value <= 0.0 for value in extent_values)
+            or uncertainty_m < 0.0
+            or uncertainty_m > 0.25
+            or reprojection_error_px < 0.0
+            or reprojection_error_px > 5.0
+        ):
+            continue
+        evidence.append(
+            {
+                "method": method,
+                "camera_calibration_ref": calibration_ref,
+                "translation_uncertainty_m": uncertainty_m,
+                "reprojection_error_px": reprojection_error_px,
+                "frame_index": _safe_int(item.get("frame_index"), -1),
+                "world_center": center_values,
+                "world_extents": extent_values,
+            }
+        )
+    return evidence
+
+
 def _build_objects(
     *,
     clusters: Sequence[Sequence[Mapping[str, Any]]],
@@ -1175,7 +1247,14 @@ def _build_objects(
             _copy_crop(keyframe.image_path, crop_file, observation["bbox_xyxy"])
             crop_paths.append(crop_file.relative_to(raw_root).as_posix())
         mean_area = sum(areas) / float(len(areas)) if areas else 0.0
-        bbox = _synthesized_bbox(cluster, keyframes_by_index=keyframes_by_index, cluster_index=cluster_index, label=label)
+        metric_evidence = _validated_metric_geometry_evidence(cluster)
+        metric_placement_ready = bool(metric_evidence)
+        bbox = _synthesized_bbox(
+            metric_evidence if metric_placement_ready else cluster,
+            keyframes_by_index=keyframes_by_index,
+            cluster_index=cluster_index,
+            label=label,
+        )
         relevance = _task_relevance(label, prompts, descriptor)
         articulation = _articulation_hints(label)
         objects.append(
@@ -1185,6 +1264,19 @@ def _build_objects(
                 "label": label,
                 "name": label,
                 "boundingBox": bbox,
+                "bounding_box_role": (
+                    "canonical_metric_placement"
+                    if metric_placement_ready
+                    else "visualization_only_2d_proxy"
+                ),
+                "metric_placement_ready": metric_placement_ready,
+                "physics_ready": False,
+                "geometry_source_class": (
+                    "metric_observation"
+                    if metric_placement_ready
+                    else "two_dimensional_observation_proxy"
+                ),
+                "metric_geometry_evidence": metric_evidence,
                 "mean_confidence": round(max(0.0, (sum(scores) / float(len(scores) or 1)) - privacy_penalty), 4),
                 "confidence": round(max(0.0, (max(scores) if scores else 0.0) - privacy_penalty), 4),
                 "n_total_detections": len(cluster),
@@ -1202,7 +1294,7 @@ def _build_objects(
                 },
                 "merged_object_ids": [],
                 "provenance": build_provenance_record(
-                    grounding_level="observed",
+                    grounding_level="observed" if metric_placement_ready else "observed_2d",
                     evidence_sources=[
                         *crop_paths,
                         *[str(keyframes_by_index.get(frame_index).image_path) for frame_index in evidence_frames if keyframes_by_index.get(frame_index) is not None],
@@ -1212,13 +1304,15 @@ def _build_objects(
                         "n_frame_detections": len(set(evidence_frames)),
                     },
                     confidence=round(max(0.0, (sum(scores) / float(len(scores) or 1)) - privacy_penalty), 4),
-                    canonical_truth=True,
-                    presentation_only=False,
+                    canonical_truth=metric_placement_ready,
+                    presentation_only=not metric_placement_ready,
                     extra={
                         "stage": "object_index_stage",
                         "sources": sorted({str(item.get("source") or "unknown") for item in cluster}),
                         "capture_id": descriptor.capture_id,
                         "privacy_penalty_applied": privacy_penalty > 0.0,
+                        "metric_placement_ready": metric_placement_ready,
+                        "two_dimensional_detection_is_not_metric_geometry": not metric_placement_ready,
                     },
                 ),
             }
@@ -1415,68 +1509,355 @@ def _grounding_payload_from_objects(objects: Sequence[Mapping[str, Any]], descri
     }
 
 
-def _write_descriptor_updates(descriptor_path: Path, descriptor: CaptureDescriptor, object_index_uri: str) -> None:
+def _canonical_payload_sha(payload: Mapping[str, Any]) -> str:
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _run_member_hashes(run_root: Path) -> Dict[str, str]:
+    return {
+        path.relative_to(run_root).as_posix(): _sha256_file(path)
+        for path in sorted(run_root.rglob("*"))
+        if path.is_file() and path.name != "run_manifest.json"
+    }
+
+
+def _rewrite_run_reference_value(
+    value: Any,
+    *,
+    capture_root: Path,
+    staging_root: Path,
+    published_root: Path,
+) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _rewrite_run_reference_value(
+                item,
+                capture_root=capture_root,
+                staging_root=staging_root,
+                published_root=published_root,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _rewrite_run_reference_value(
+                item,
+                capture_root=capture_root,
+                staging_root=staging_root,
+                published_root=published_root,
+            )
+            for item in value
+        ]
+    if not isinstance(value, str):
+        return value
+    staging_absolute = str(staging_root)
+    published_absolute = str(published_root)
+    staging_relative = staging_root.relative_to(capture_root).as_posix()
+    published_relative = published_root.relative_to(capture_root).as_posix()
+    return value.replace(staging_absolute, published_absolute).replace(
+        staging_relative,
+        published_relative,
+    )
+
+
+def _rewrite_staged_json_references(
+    *,
+    capture_root: Path,
+    staging_root: Path,
+    published_root: Path,
+) -> None:
+    for path in sorted(staging_root.rglob("*.json")):
+        try:
+            payload = read_json_any(path)
+        except Exception:
+            continue
+        rewritten = _rewrite_run_reference_value(
+            payload,
+            capture_root=capture_root,
+            staging_root=staging_root,
+            published_root=published_root,
+        )
+        if isinstance(rewritten, Mapping):
+            write_json(path, rewritten)
+        else:
+            write_text(path, json.dumps(rewritten, sort_keys=True, indent=2) + "\n")
+
+
+def _object_index_uri(context, relative_path: Path) -> str:
+    relative = relative_path.relative_to(context.capture_root).as_posix()
+    return f"gs://{context.bucket}/{context.capture_prefix}/{relative}"
+
+
+def _write_descriptor_updates(
+    descriptor_path: Path,
+    descriptor: CaptureDescriptor,
+    object_index_uri: Optional[str],
+    *,
+    run_fingerprint: Optional[str] = None,
+    current_usable_object_count: Optional[int] = None,
+) -> None:
     payload = descriptor.to_dict()
     payload["object_index_uri"] = object_index_uri
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+    payload["metadata"] = {
+        **dict(metadata),
+        "object_index_run": {
+            "run_fingerprint": run_fingerprint,
+            "current_usable_object_count": current_usable_object_count,
+            "current_object_index_uri": object_index_uri,
+            "status": "ready" if object_index_uri and (current_usable_object_count or 0) > 0 else "blocked_zero_usable",
+        },
+    }
     write_json(descriptor_path, payload)
 
 
-def _write_manifest_updates(manifest_path: Path) -> None:
-    payload = _optional_json(manifest_path)
-    if not payload:
-        return
-    payload["object_index_uri"] = "object_index.json"
-    write_json(manifest_path, payload)
+def _write_manifest_updates(_manifest_path: Path) -> None:
+    """Raw manifests are immutable; retained as a compatibility no-op."""
 
 
-def _canonicalize_legacy_index(*, context, descriptor: CaptureDescriptor) -> Optional[Dict[str, Any]]:
+def _write_object_index_current_pointer(
+    *,
+    context,
+    status: str,
+    run_fingerprint: str,
+    run_root: Path,
+    object_index_uri: Optional[str],
+    current_usable_object_count: int,
+    raw_intake_digest: Optional[str],
+) -> Path:
+    pointer_path = context.pipeline_root / "derived" / "object_index" / "current.json"
+    write_json(
+        pointer_path,
+        {
+            "schema_version": "object_index_current_pointer.v1",
+            "status": status,
+            "run_fingerprint": run_fingerprint,
+            "run_path": run_root.relative_to(context.capture_root).as_posix(),
+            "object_index_uri": object_index_uri,
+            "raw_intake_digest": raw_intake_digest,
+            "current_usable_object_count": current_usable_object_count,
+            "current_usable_artifacts": [object_index_uri] if object_index_uri else [],
+            "updated_at": utc_now_iso(),
+        },
+    )
+    return pointer_path
+
+
+def _published_run_result(
+    *,
+    context,
+    run_root: Path,
+    descriptor: CaptureDescriptor,
+    expected_raw_intake_digest: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    if run_root.is_symlink() or any(path.is_symlink() for path in run_root.rglob("*")):
+        return None
+    run_manifest = _optional_json(run_root / "run_manifest.json")
+    if (
+        run_manifest.get("schema_version") != _OBJECT_INDEX_RUN_SCHEMA
+        or run_manifest.get("run_fingerprint") != run_root.name
+        or (
+            expected_raw_intake_digest is not None
+            and run_manifest.get("raw_intake_digest") != expected_raw_intake_digest
+        )
+    ):
+        return None
+    expected_member_hashes = run_manifest.get("member_sha256")
+    if not isinstance(expected_member_hashes, Mapping):
+        return None
+    actual_member_hashes = _run_member_hashes(run_root)
+    if dict(expected_member_hashes) != actual_member_hashes:
+        return None
+    object_count = _safe_int(run_manifest.get("current_usable_object_count"), 0)
+    object_index_path = run_root / "object_index.json"
+    report_path = run_root / "object_index_build_report.json"
+    grounding_path = run_root / "object_grounding_hints.json"
+    if not object_index_path.is_file() or not report_path.is_file() or not grounding_path.is_file():
+        return None
+    object_index_payload = _optional_json(object_index_path)
+    report_payload = _optional_json(report_path)
+    if (
+        object_index_payload.get("schema_version") != _OBJECT_INDEX_OUTPUT_SCHEMA
+        or report_payload.get("schema_version") != "object_index_build_report.v2"
+    ):
+        return None
+    objects = object_index_payload.get("objects")
+    if not isinstance(objects, list) or len(objects) != object_count:
+        return None
+    expected_status = "ready" if object_count > 0 else "blocked_zero_usable_artifacts"
+    if run_manifest.get("status") != expected_status:
+        return None
+    object_index_uri = _object_index_uri(context, object_index_path) if object_count > 0 else None
+    _write_object_index_current_pointer(
+        context=context,
+        status="ready" if object_count > 0 else "blocked_zero_usable_artifacts",
+        run_fingerprint=run_root.name,
+        run_root=run_root,
+        object_index_uri=object_index_uri,
+        current_usable_object_count=object_count,
+        raw_intake_digest=str(run_manifest.get("raw_intake_digest") or "") or None,
+    )
+    _write_descriptor_updates(
+        context.descriptor_path,
+        descriptor,
+        object_index_uri,
+        run_fingerprint=run_root.name,
+        current_usable_object_count=object_count,
+    )
+    grounding_payload = _optional_json(grounding_path)
+    return {
+        "schema_version": "v2",
+        "status": "reused_immutable_run" if object_count > 0 else "blocked_zero_usable_artifacts",
+        "capture_root": str(context.capture_root),
+        "run_fingerprint": run_root.name,
+        "run_manifest_path": str(run_root / "run_manifest.json"),
+        "object_index_uri": object_index_uri,
+        "manifest_path": str(object_index_path),
+        "report_path": str(report_path),
+        "object_count": object_count,
+        "current_usable_object_count": object_count,
+        "current_usable_artifacts": [object_index_uri] if object_index_uri else [],
+        "grounding_payload": grounding_payload,
+    }
+
+
+def _canonicalize_legacy_index(
+    *,
+    context,
+    descriptor: CaptureDescriptor,
+    expected_raw_intake_digest: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     legacy_path = context.raw_root / "arkit" / "objects" / "index.json"
-    target_path = context.raw_root / "object_index.json"
-    if target_path.is_file():
+    raw_index_path = context.raw_root / "object_index.json"
+    if raw_index_path.is_file():
         loaded = load_object_index(join_gs_uri(context.raw_prefix_uri, "object_index.json"), gcs_root=context.storage_root)
-        report = _optional_json(context.raw_root / "object_index_build_report.json")
-        if not _existing_index_is_reusable(loaded=loaded, report=report):
+        if not loaded:
             return None
         object_index_uri = join_gs_uri(context.raw_prefix_uri, "object_index.json")
-        _write_descriptor_updates(context.descriptor_path, descriptor, object_index_uri)
-        _write_manifest_updates(context.raw_root / "manifest.json")
+        raw_intake = verify_canonical_raw_bundle_path(
+            context.raw_root,
+            expected_bucket=context.bucket,
+            expected_scene_id=context.scene_id,
+            expected_capture_id=context.capture_id,
+        )
+        if (
+            expected_raw_intake_digest is not None
+            and raw_intake.get("intake_digest") != expected_raw_intake_digest
+        ):
+            raise PipelineError("raw_bundle_quarantined:raw_bundle_changed_during_object_index")
+        fingerprint = str(raw_intake.get("intake_digest") or _canonical_payload_sha({"objects": loaded}))
+        _write_descriptor_updates(
+            context.descriptor_path,
+            descriptor,
+            object_index_uri,
+            run_fingerprint=f"capture_raw:{fingerprint}",
+            current_usable_object_count=len(loaded),
+        )
         return {
-            "schema_version": "v1",
-            "status": "reused",
+            "schema_version": "v2",
+            "status": "reused_capture_raw",
             "object_index_uri": object_index_uri,
-            "manifest_path": str(target_path),
-            "report_path": str(context.raw_root / "object_index_build_report.json"),
+            "manifest_path": str(raw_index_path),
+            "report_path": None,
             "object_count": len(loaded),
+            "current_usable_object_count": len(loaded),
+            "current_usable_artifacts": [object_index_uri],
             "grounding_payload": _grounding_payload_from_objects(loaded, descriptor, {"status": "reused"}),
         }
     if not legacy_path.is_file():
         return None
     loaded = load_object_index(join_gs_uri(context.raw_prefix_uri, "arkit/objects/index.json"), gcs_root=context.storage_root)
-    write_json(target_path, {"objects": [dict(item) for item in loaded]})
-    report_path = context.raw_root / "object_index_build_report.json"
+    canonical_payload = {"schema_version": _OBJECT_INDEX_OUTPUT_SCHEMA, "objects": [dict(item) for item in loaded]}
+    fingerprint = _canonical_payload_sha(
+        {
+            "schema_version": _OBJECT_INDEX_RUN_SCHEMA,
+            "source": "raw/arkit/objects/index.json",
+            "payload": canonical_payload,
+        }
+    )
+    run_root = context.pipeline_root / "derived" / "object_index" / "runs" / fingerprint
+    existing = _published_run_result(context=context, run_root=run_root, descriptor=descriptor)
+    if existing is not None:
+        return existing
+    if run_root.exists():
+        raise PipelineError(f"object_index_immutable_run_conflict:{run_root}")
+    staging_root = (
+        context.pipeline_root
+        / "derived"
+        / "object_index"
+        / ".staging"
+        / f"{fingerprint}-{os.getpid()}-{time.time_ns()}"
+    )
+    staging_root.mkdir(parents=True, exist_ok=False)
+    target_path = staging_root / "object_index.json"
+    report_path = staging_root / "object_index_build_report.json"
+    grounding_path = staging_root / "object_grounding_hints.json"
+    write_json(target_path, canonical_payload)
     write_json(
         report_path,
         {
-            "schema_version": "v1",
+            "schema_version": "object_index_build_report.v2",
             "generated_at": utc_now_iso(),
-            "status": "canonicalized_legacy",
+            "status": "imported_legacy_capture_index",
             "legacy_path": str(legacy_path),
-            "target_path": str(target_path),
+            "target_path": str(run_root / "object_index.json"),
             "object_count": len(loaded),
         },
     )
-    object_index_uri = join_gs_uri(context.raw_prefix_uri, "object_index.json")
-    _write_descriptor_updates(context.descriptor_path, descriptor, object_index_uri)
-    _write_manifest_updates(context.raw_root / "manifest.json")
-    return {
-        "schema_version": "v1",
-        "status": "canonicalized_legacy",
-        "object_index_uri": object_index_uri,
-        "manifest_path": str(target_path),
-        "report_path": str(report_path),
-        "object_count": len(loaded),
-        "grounding_payload": _grounding_payload_from_objects(loaded, descriptor, {"status": "canonicalized_legacy"}),
-    }
+    grounding_payload = _grounding_payload_from_objects(
+        loaded,
+        descriptor,
+        {"status": "imported_legacy_capture_index"},
+    )
+    write_json(grounding_path, grounding_payload)
+    _rewrite_staged_json_references(
+        capture_root=context.capture_root,
+        staging_root=staging_root,
+        published_root=run_root,
+    )
+    raw_intake = verify_canonical_raw_bundle_path(
+        context.raw_root,
+        expected_bucket=context.bucket,
+        expected_scene_id=context.scene_id,
+        expected_capture_id=context.capture_id,
+    )
+    if (
+        expected_raw_intake_digest is not None
+        and raw_intake.get("intake_digest") != expected_raw_intake_digest
+    ):
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise PipelineError("raw_bundle_quarantined:raw_bundle_changed_during_object_index")
+    write_json(
+        staging_root / "run_manifest.json",
+        {
+            "schema_version": _OBJECT_INDEX_RUN_SCHEMA,
+            "run_fingerprint": fingerprint,
+            "status": "ready" if loaded else "blocked_zero_usable_artifacts",
+            "source": "raw/arkit/objects/index.json",
+            "raw_intake_digest": raw_intake.get("intake_digest"),
+            "current_usable_object_count": len(loaded),
+            "current_usable_artifacts": ["object_index.json"] if loaded else [],
+            "member_sha256": _run_member_hashes(staging_root),
+        },
+    )
+    run_root.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(staging_root, run_root)
+    result = _published_run_result(context=context, run_root=run_root, descriptor=descriptor)
+    if result is not None:
+        result["status"] = (
+            "imported_legacy_capture_index" if loaded else "blocked_zero_usable_artifacts"
+        )
+    return result
 
 
 def _existing_index_is_reusable(
@@ -1521,19 +1902,85 @@ def run_object_index_stage(
 ) -> Dict[str, Any]:
     policy = WorldModelPolicy.from_env()
     context = resolve_local_capture_context(capture_root)
+    raw_intake = verify_canonical_raw_bundle_path(
+        context.raw_root,
+        expected_bucket=context.bucket,
+        expected_scene_id=context.scene_id,
+        expected_capture_id=context.capture_id,
+    )
+    if raw_intake.get("valid_for_derivation") is not True:
+        reasons = ",".join(str(item) for item in raw_intake.get("quarantine_reasons", []))
+        raise PipelineError(f"raw_bundle_quarantined:{reasons or 'verification_failed'}")
+    raw_intake_digest = str(raw_intake.get("intake_digest") or "").strip()
+    if not raw_intake_digest:
+        raise PipelineError("raw_bundle_quarantined:missing_intake_digest")
+    persisted_intake = _optional_json(context.pipeline_root / "intake" / "current.json")
+    persisted_digest = str(persisted_intake.get("intake_digest") or "").strip()
+    if persisted_digest and persisted_digest != raw_intake_digest:
+        raise PipelineError("raw_bundle_quarantined:immutable_intake_digest_changed")
+
     manifest = load_raw_manifest(context.raw_prefix_uri, gcs_root=context.storage_root)
     descriptor = CaptureDescriptor.from_file(context.descriptor_path)
 
     if not force_rebuild:
-        existing = _canonicalize_legacy_index(context=context, descriptor=descriptor)
+        existing = _canonicalize_legacy_index(
+            context=context,
+            descriptor=descriptor,
+            expected_raw_intake_digest=raw_intake_digest,
+        )
         if existing is not None:
             return existing
 
     raw_manifest_payload = _optional_json(context.raw_root / "manifest.json")
     intake_payload = _optional_json(context.raw_root / "intake_packet.json")
     capture_context_payload = _optional_json(context.raw_root / "capture_context.json")
+    backend_commands = {
+        "yolo_world": _command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND"),
+        "grounding_dino": _command_from_env("OBJECT_INDEX_GROUNDING_DINO_COMMAND"),
+        "sam3": _command_from_env("OBJECT_INDEX_SAM3_COMMAND"),
+        "splat_analyzer": _command_from_env("OBJECT_INDEX_SPLAT_ANALYZER_COMMAND"),
+    }
+    keyframe_max_count = max(
+        1,
+        _safe_int(os.getenv("OBJECT_INDEX_KEYFRAME_MAX_COUNT"), _DEFAULT_KEYFRAME_COUNT),
+    )
+    descriptor_fingerprint_payload = descriptor.to_dict()
+    descriptor_fingerprint_payload["object_index_uri"] = None
+    descriptor_metadata = descriptor_fingerprint_payload.get("metadata")
+    if isinstance(descriptor_metadata, Mapping):
+        descriptor_fingerprint_payload["metadata"] = {
+            key: value for key, value in descriptor_metadata.items() if key != "object_index_run"
+        }
+    fingerprint_payload: Dict[str, Any] = {
+        "schema_version": _OBJECT_INDEX_RUN_SCHEMA,
+        "output_schema_version": _OBJECT_INDEX_OUTPUT_SCHEMA,
+        "raw_intake_digest": raw_intake_digest,
+        "descriptor": descriptor_fingerprint_payload,
+        "backend_commands": backend_commands,
+        "keyframe_max_count": keyframe_max_count,
+        "world_model_policy": policy.to_dict(),
+    }
+    if force_rebuild:
+        fingerprint_payload["explicit_rebuild_request_ns"] = time.time_ns()
+    run_fingerprint = _canonical_payload_sha(fingerprint_payload)
+    run_base = context.pipeline_root / "derived" / "object_index"
+    run_root = run_base / "runs" / run_fingerprint
+    if not force_rebuild:
+        published = _published_run_result(
+            context=context,
+            run_root=run_root,
+            descriptor=descriptor,
+            expected_raw_intake_digest=raw_intake_digest,
+        )
+        if published is not None:
+            return published
+    if run_root.exists():
+        raise PipelineError(f"object_index_immutable_run_conflict:{run_root}")
+    staging_root = run_base / ".staging" / f"{run_fingerprint}-{os.getpid()}-{time.time_ns()}"
+    staging_root.mkdir(parents=True, exist_ok=False)
+
     enrichment_runner = build_capture_enrichment_runner(repo_root=Path(__file__).resolve().parents[2])
-    artifact_root = context.raw_root / "object_index_artifacts"
+    artifact_root = staging_root / "artifacts"
     keyframes_dir = artifact_root / "keyframes"
     crops_dir = artifact_root / "crops"
     masks_dir = artifact_root / "masks"
@@ -1554,7 +2001,7 @@ def run_object_index_stage(
     )
     keyframes = _sample_keyframes(
         context=context,
-        max_keyframes=max(1, _safe_int(os.getenv("OBJECT_INDEX_KEYFRAME_MAX_COUNT"), _DEFAULT_KEYFRAME_COUNT)),
+        max_keyframes=keyframe_max_count,
         artifact_dir=keyframes_dir,
     )
     video_path = _resolve_video_path(context, manifest)
@@ -1572,7 +2019,7 @@ def run_object_index_stage(
         }
         for item in keyframes
     ]
-    write_json(context.raw_root / "object_index_keyframes.json", {"keyframes": keyframe_payload})
+    write_json(staging_root / "object_index_keyframes.json", {"keyframes": keyframe_payload})
 
     input_payload = {
         "schema_version": "v1",
@@ -1589,12 +2036,6 @@ def run_object_index_stage(
         "descriptor": descriptor.to_dict(),
     }
 
-    backend_commands = {
-        "yolo_world": _command_from_env("OBJECT_INDEX_YOLO_WORLD_COMMAND"),
-        "grounding_dino": _command_from_env("OBJECT_INDEX_GROUNDING_DINO_COMMAND"),
-        "sam3": _command_from_env("OBJECT_INDEX_SAM3_COMMAND"),
-        "splat_analyzer": _command_from_env("OBJECT_INDEX_SPLAT_ANALYZER_COMMAND"),
-    }
     runtime_preflight = {
         "dependencies": {
             "torch": {"available": _module_available("torch")},
@@ -1680,7 +2121,7 @@ def run_object_index_stage(
             clusters=merged_clusters,
             keyframes_by_index=keyframes_by_index,
             descriptor=descriptor,
-            raw_root=context.raw_root,
+            raw_root=context.capture_root,
             crops_dir=crops_dir,
         )
     llm_task_relevance = _apply_llm_task_relevance(
@@ -1752,16 +2193,18 @@ def run_object_index_stage(
         if isinstance(llm_target_resolution.get("tasks"), list) and llm_target_resolution.get("tasks"):
             grounding_payload["tasks"] = [dict(item) for item in llm_target_resolution.get("tasks", []) if isinstance(item, Mapping)]
 
-    object_index_uri = join_gs_uri(context.raw_prefix_uri, "object_index.json")
-    object_index_path = context.raw_root / "object_index.json"
+    published_object_index_path = run_root / "object_index.json"
+    canonical_object_index_uri = _object_index_uri(context, published_object_index_path)
+    object_index_path = staging_root / "object_index.json"
     write_json(
         object_index_path,
         {
+            "schema_version": _OBJECT_INDEX_OUTPUT_SCHEMA,
             "objects": objects,
             "world_model_policy": policy.to_dict(),
             "canonical_output": build_output_linkage(
                 policy=policy,
-                canonical_artifact_uri=object_index_uri,
+                canonical_artifact_uri=canonical_object_index_uri,
                 presentation_artifact_uri=None,
                 authoritative_record=True,
             ),
@@ -1799,13 +2242,15 @@ def run_object_index_stage(
         else:
             empty_index_cause = "all_filtered"
 
-    report_path = context.raw_root / "object_index_build_report.json"
+    report_path = staging_root / "object_index_build_report.json"
     write_json(
         report_path,
         {
-            "schema_version": "v1",
+            "schema_version": "object_index_build_report.v2",
             "generated_at": utc_now_iso(),
-            "status": "built",
+            "status": "built" if objects else "blocked_zero_usable_artifacts",
+            "run_fingerprint": run_fingerprint,
+            "raw_intake_digest": raw_intake_digest,
             "capture_root": str(context.capture_root),
             "video_path": str(video_path) if video_path is not None else "",
             "environment": environment,
@@ -1829,19 +2274,68 @@ def run_object_index_stage(
             },
         },
     )
-    write_json(context.raw_root / "object_grounding_hints.json", grounding_payload)
-    _write_descriptor_updates(context.descriptor_path, descriptor, object_index_uri)
-    _write_manifest_updates(context.raw_root / "manifest.json")
-    return {
-        "schema_version": "v1",
-        "status": "built",
-        "capture_root": str(context.capture_root),
-        "object_index_uri": object_index_uri,
-        "manifest_path": str(object_index_path),
-        "report_path": str(report_path),
-        "object_count": len(objects),
-        "grounding_payload": grounding_payload,
-    }
+    write_json(staging_root / "object_grounding_hints.json", grounding_payload)
+    _rewrite_staged_json_references(
+        capture_root=context.capture_root,
+        staging_root=staging_root,
+        published_root=run_root,
+    )
+
+    final_raw_intake = verify_canonical_raw_bundle_path(
+        context.raw_root,
+        expected_bucket=context.bucket,
+        expected_scene_id=context.scene_id,
+        expected_capture_id=context.capture_id,
+    )
+    if (
+        final_raw_intake.get("valid_for_derivation") is not True
+        or final_raw_intake.get("intake_digest") != raw_intake_digest
+    ):
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise PipelineError("raw_bundle_quarantined:raw_bundle_changed_during_object_index")
+
+    current_usable_object_count = len(objects)
+    current_usable_artifacts = ["object_index.json"] if objects else []
+    write_json(
+        staging_root / "run_manifest.json",
+        {
+            "schema_version": _OBJECT_INDEX_RUN_SCHEMA,
+            "run_fingerprint": run_fingerprint,
+            "input_fingerprint_payload": fingerprint_payload,
+            "raw_intake_digest": raw_intake_digest,
+            "status": "ready" if objects else "blocked_zero_usable_artifacts",
+            "current_usable_object_count": current_usable_object_count,
+            "current_usable_artifacts": current_usable_artifacts,
+            "blockers": [] if objects else [f"object_index_{empty_index_cause or 'empty'}"],
+            "member_sha256": _run_member_hashes(staging_root),
+            "claim_boundary": "derived_object_index_does_not_mutate_or_upgrade_raw_capture_truth",
+        },
+    )
+    run_root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(staging_root, run_root)
+    except OSError:
+        existing = _published_run_result(
+            context=context,
+            run_root=run_root,
+            descriptor=descriptor,
+            expected_raw_intake_digest=raw_intake_digest,
+        )
+        shutil.rmtree(staging_root, ignore_errors=True)
+        if existing is None:
+            raise PipelineError(f"object_index_immutable_run_conflict:{run_root}")
+        return existing
+
+    published = _published_run_result(
+        context=context,
+        run_root=run_root,
+        descriptor=descriptor,
+        expected_raw_intake_digest=raw_intake_digest,
+    )
+    if published is None:  # pragma: no cover - the just-written manifest is verified above.
+        raise PipelineError(f"object_index_published_run_verification_failed:{run_root}")
+    published["status"] = "built" if objects else "blocked_zero_usable_artifacts"
+    return published
 
 
 def ensure_object_index_stage(

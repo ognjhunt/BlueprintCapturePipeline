@@ -648,6 +648,13 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     )
     assert "official_oscar_case_assets_missing" in runner_text
     assert "gripper_scenario.mp4" in runner_text
+    assert "caption.pickle" not in runner_text
+    assert "pickle.load" not in runner_text
+    assert "caption.json" in runner_text
+    assert "caption.txt" in runner_text
+    assert "official_case_caption_schema_invalid" in runner_text
+    assert "official_case_asset_digest_missing" in runner_text
+    assert "official_case_asset_digest_mismatch" in runner_text
     assert "rgb_context.mp4" in runner_text
     assert "official_case_rgb_video" in runner_text
     assert "official_case_use_script" in runner_text

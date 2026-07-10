@@ -13,9 +13,11 @@ decoder and fine-tuned checkpoint are configured and verified.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -32,10 +34,176 @@ SUPPORTED_ACTION_TYPES = (
     "manipulation_contact",
 )
 OPENVLA_EMPTY_TOKEN_ID = 29871
+OPENVLA_CHECKPOINT_APPROVAL_FILENAME = "blueprint_checkpoint_approval.json"
+OPENVLA_APPROVED_DIGEST_ENV = "BLUEPRINT_OPENVLA_APPROVED_CHECKPOINT_DIGEST"
+OPENVLA_APPROVAL_PUBLIC_KEY_ENV = "BLUEPRINT_OPENVLA_APPROVAL_PUBLIC_KEY_FILE"
+OPENVLA_APPROVAL_SIGNATURE_DOMAIN = b"blueprint.openvla.checkpoint.v1\x00"
+MAX_OPENVLA_CHECKPOINT_FILES = 20_000
+MAX_OPENVLA_CHECKPOINT_BYTES = 100 * 1024 * 1024 * 1024
 
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _sha_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_checkpoint_approval(checkpoint: Path) -> tuple[dict[str, Any], list[str]]:
+    """Verify a signed, immutable, license-approved local checkpoint inventory."""
+
+    from binascii import Error as BinasciiError
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    blockers: list[str] = []
+    resolved_checkpoint = checkpoint.resolve()
+    if checkpoint.is_symlink() or not resolved_checkpoint.is_dir():
+        return {}, ["blocked_openvla_checkpoint_must_be_nonsymlink_directory"]
+    manifest_path = resolved_checkpoint / OPENVLA_CHECKPOINT_APPROVAL_FILENAME
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        return {}, ["blocked_openvla_checkpoint_approval_manifest_missing"]
+    try:
+        loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, ["blocked_openvla_checkpoint_approval_manifest_malformed"]
+    manifest = _mapping(loaded)
+    if manifest.get("schema_version") != "blueprint_openvla_checkpoint_approval.v1":
+        blockers.append("blocked_openvla_checkpoint_approval_schema_invalid")
+    revision = str(manifest.get("model_revision") or "").strip().lower()
+    if len(revision) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in revision
+    ):
+        blockers.append("blocked_openvla_checkpoint_revision_not_immutable")
+    license_record = _mapping(manifest.get("license"))
+    if (
+        license_record.get("review_status") != "approved"
+        or not str(license_record.get("spdx_id") or "").strip()
+        or not str(license_record.get("approved_by") or "").strip()
+    ):
+        blockers.append("blocked_openvla_checkpoint_license_not_approved")
+    if manifest.get("remote_code_required") is not False:
+        blockers.append("blocked_openvla_checkpoint_remote_code_required")
+
+    raw_files = manifest.get("files")
+    files = raw_files if isinstance(raw_files, list) else []
+    if not files or len(files) > MAX_OPENVLA_CHECKPOINT_FILES:
+        blockers.append("blocked_openvla_checkpoint_file_inventory_invalid")
+    declared_paths: set[str] = set()
+    declared_total = 0
+    for index, raw_entry in enumerate(files):
+        entry = _mapping(raw_entry)
+        relative = str(entry.get("path") or "").strip()
+        expected_digest = str(entry.get("sha256") or "").strip().lower()
+        expected_size = entry.get("size_bytes")
+        entry_ref = relative or f"row_{index}"
+        relative_path = Path(relative)
+        if (
+            not relative
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or relative == OPENVLA_CHECKPOINT_APPROVAL_FILENAME
+            or relative in declared_paths
+        ):
+            blockers.append(f"blocked_openvla_checkpoint_inventory_path_invalid:{entry_ref}")
+            continue
+        declared_paths.add(relative)
+        candidate = resolved_checkpoint / relative_path
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+            resolved_candidate.relative_to(resolved_checkpoint)
+        except (OSError, ValueError):
+            blockers.append(f"blocked_openvla_checkpoint_inventory_escape:{entry_ref}")
+            continue
+        if candidate.is_symlink() or not resolved_candidate.is_file():
+            blockers.append(f"blocked_openvla_checkpoint_inventory_file_invalid:{entry_ref}")
+            continue
+        actual_size = resolved_candidate.stat().st_size
+        if (
+            not isinstance(expected_size, int)
+            or isinstance(expected_size, bool)
+            or expected_size < 0
+            or actual_size != expected_size
+        ):
+            blockers.append(f"blocked_openvla_checkpoint_size_mismatch:{entry_ref}")
+        declared_total += actual_size
+        if len(expected_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_digest
+        ):
+            blockers.append(f"blocked_openvla_checkpoint_digest_invalid:{entry_ref}")
+        elif _sha_file(resolved_candidate) != expected_digest:
+            blockers.append(f"blocked_openvla_checkpoint_digest_mismatch:{entry_ref}")
+    if declared_total > MAX_OPENVLA_CHECKPOINT_BYTES:
+        blockers.append("blocked_openvla_checkpoint_total_size_exceeded")
+    actual_paths = {
+        path.relative_to(resolved_checkpoint).as_posix()
+        for path in resolved_checkpoint.rglob("*")
+        if path.is_file() and path != manifest_path
+    }
+    if actual_paths != declared_paths:
+        blockers.append("blocked_openvla_checkpoint_inventory_not_exhaustive")
+
+    signature_record = _mapping(manifest.get("approval_signature"))
+    unsigned_manifest = dict(manifest)
+    unsigned_manifest.pop("approval_signature", None)
+    canonical_manifest = json.dumps(
+        unsigned_manifest, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    approval_digest = sha256(canonical_manifest).hexdigest()
+    configured_digest = str(os.environ.get(OPENVLA_APPROVED_DIGEST_ENV) or "").strip().lower()
+    if configured_digest != approval_digest:
+        blockers.append("blocked_openvla_checkpoint_not_in_digest_allowlist")
+    public_key_path_value = str(
+        os.environ.get(OPENVLA_APPROVAL_PUBLIC_KEY_ENV) or ""
+    ).strip()
+    if not public_key_path_value:
+        blockers.append("blocked_openvla_checkpoint_approval_public_key_missing")
+    else:
+        public_key_path = Path(public_key_path_value).expanduser()
+        try:
+            public_key_payload = public_key_path.read_bytes()
+            public_key = serialization.load_pem_public_key(public_key_payload)
+            signature = base64.b64decode(
+                str(signature_record.get("signature") or ""), validate=True
+            )
+            if not isinstance(public_key, Ed25519PublicKey):
+                raise TypeError("approval key is not Ed25519")
+            if signature_record.get("algorithm") != "Ed25519":
+                raise ValueError("approval signature algorithm mismatch")
+            public_key.verify(
+                signature,
+                OPENVLA_APPROVAL_SIGNATURE_DOMAIN + canonical_manifest,
+            )
+        except (
+            BinasciiError,
+            InvalidSignature,
+            OSError,
+            TypeError,
+            ValueError,
+        ):
+            blockers.append("blocked_openvla_checkpoint_approval_signature_invalid")
+    blockers = list(dict.fromkeys(blockers))
+    return (
+        {
+            "status": "approved" if not blockers else "blocked",
+            "model_revision": revision or None,
+            "checkpoint_approval_digest": approval_digest,
+            "approved_file_count": len(declared_paths),
+            "approved_total_bytes": declared_total,
+            "license": license_record,
+            "remote_code_allowed": False,
+            "network_model_download_allowed": False,
+            "blockers": blockers,
+        },
+        blockers,
+    )
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -264,6 +432,9 @@ def _claim_boundary(
         "unitree_g1_dexterous_manipulation_proven": False,
         "generated_world_rank_fidelity_result_proven": False,
         "generated_world_policy_evaluation_scope_proven": False,
+        "remote_checkpoint_code_execution_allowed": False,
+        "checkpoint_digest_and_signature_required": True,
+        "checkpoint_license_approval_required": True,
     }
 
 
@@ -386,15 +557,18 @@ def run_openvla_policy(
             provider_output=provider_output,
         )
     blockers: list[str] = []
+    checkpoint_approval: dict[str, Any] = {}
     if source_root is not None:
-        if source_root.exists():
-            sys.path.insert(0, str(source_root))
-        else:
-            blockers.append("blocked_openvla_source_root_missing")
+        blockers.append("blocked_openvla_external_source_root_forbidden")
     if checkpoint is None:
         blockers.append("blocked_missing_openvla_policy_checkpoint")
     elif not checkpoint.exists():
         blockers.append("blocked_openvla_policy_checkpoint_missing")
+    else:
+        checkpoint_approval, approval_blockers = _validate_checkpoint_approval(
+            checkpoint
+        )
+        blockers.extend(approval_blockers)
     frame_path = _camera_frame_path(observation)
     if frame_path is None:
         blockers.append("blocked_missing_policy_visual_observation_frame")
@@ -405,7 +579,8 @@ def run_openvla_policy(
                 observation=observation,
                 checkpoint=str(checkpoint) if checkpoint else None,
                 source_root=str(source_root) if source_root else None,
-            ),
+            )
+            | {"checkpoint_approval": checkpoint_approval},
             2,
         )
 
@@ -439,11 +614,16 @@ def run_openvla_policy(
     prompt = f"In: What action should the robot take to {_task_prompt(observation)}?\nOut:"
     try:
         image = Image.open(frame_path).convert("RGB")
-        processor = AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(
+            str(checkpoint),
+            trust_remote_code=False,
+            local_files_only=True,
+        )
         model_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
             "low_cpu_mem_usage": True,
-            "trust_remote_code": True,
+            "trust_remote_code": False,
+            "local_files_only": True,
         }
         attn = os.getenv("BLUEPRINT_OPENVLA_ATTN_IMPLEMENTATION", "").strip()
         if attn:
@@ -488,6 +668,7 @@ def run_openvla_policy(
             "prompt": prompt,
             "camera_frame_path": str(frame_path),
             "checkpoint_path": str(checkpoint),
+            "checkpoint_approval": checkpoint_approval,
             "source_root_path": str(source_root) if source_root else None,
             "device": selected_device,
             "unnorm_key": unnorm_key,
@@ -498,6 +679,8 @@ def run_openvla_policy(
                 "adapter_family": "openvla_policy",
                 "supported_action_types": list(SUPPORTED_ACTION_TYPES),
                 "raw_token_values_returned": False,
+                "trust_remote_code": False,
+                "network_model_download_allowed": False,
             },
             "raw_credentials_written_to_artifacts": False,
             "secret_hashes_written_to_artifacts": False,

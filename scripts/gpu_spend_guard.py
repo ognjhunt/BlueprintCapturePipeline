@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""GPU spend guard — report live RunPod/Vast GPU pods and reap orphaned duds.
+"""GPU spend guard — report RunPod/Vast/DigitalOcean GPU spend and reap orphans.
 
 A standalone cost watchdog. It reads file-based credentials from
-``~/.blueprint-secrets`` (``runpod_api_key``, ``vast_api_key``), lists every live
+``~/.blueprint-secrets`` (``runpod_api_key``, ``vast_api_key``, and
+``digitalocean_api_token``), lists every live
 pod/instance with its id, name, age, runtime/boot state and ``$/hr`` (plus a total
 burn estimate), and — only with ``--reap`` — terminates pods that are clearly
 orphaned: allocated but never booted (``runtime`` absent) past
 ``--max-boot-seconds`` (default 480s), the classic "stuck dud that keeps billing",
 or booted allocations with no live owner past ``--max-booted-orphan-seconds``.
+Configured inventory is fail-closed: missing credentials, API errors, and
+unverified deletion are blockers rather than green empty fleets.
 
 Safety rails (the whole point of the tool is to never kill live work):
 
@@ -31,8 +34,11 @@ those jobs write.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -43,14 +49,26 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+from blueprint_pipeline.common import write_json
+from blueprint_pipeline.spend_admission_lock import build_spend_admission_lock
 
 SCHEMA_VERSION = "gpu_spend_guard.v1"
 SPEND_LEDGER_SCHEMA_VERSION = "gpu_spend_ledger.v1"
+BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
+BILLING_EXPORT_SCOPE = "blueprint_beta_100_user_cohort"
 SECRETS_DIR = Path.home() / ".blueprint-secrets"
 RUNPOD_API = "https://rest.runpod.io/v1"
 VAST_API = "https://console.vast.ai/api/v0"
 DEFAULT_MAX_BOOT_SECONDS = 480
 DEFAULT_MAX_BOOTED_ORPHAN_SECONDS = 4 * 60 * 60
+DEFAULT_WARM_LEASE_SECONDS = 15 * 60
+PROVIDERS = ("runpod", "vast", "digitalocean")
+MAX_BILLING_EXPORT_BYTES = 1024 * 1024
+ALLOWED_PROVIDER_API_HOSTS = frozenset(
+    {"rest.runpod.io", "console.vast.ai", "api.digitalocean.com"}
+)
 
 # Vast statuses that mean the instance is no longer billing compute.
 VAST_TERMINAL_STATUSES = frozenset(
@@ -242,7 +260,8 @@ DO_TERMINAL_STATUSES = {"archive"}
 
 def _parse_do_droplet(droplet: Mapping[str, Any], *, now: float) -> GpuInstance:
     """GPU droplets bill until DESTROYED — powered-off ("off") is still live spend."""
-    size = droplet.get("size") if isinstance(droplet.get("size"), Mapping) else {}
+    raw_size = droplet.get("size")
+    size = dict(raw_size) if isinstance(raw_size, Mapping) else {}
     status = str(droplet.get("status") or "").lower()
     started = _iso_to_epoch(droplet.get("created_at"))
     return GpuInstance(
@@ -285,9 +304,17 @@ def total_burn_per_hour(instances: Iterable[GpuInstance]) -> float:
 def _load_json_mapping(path: Path) -> dict[str, Any]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _utc_day_bounds(now: float) -> tuple[str, float]:
@@ -310,10 +337,25 @@ def update_spend_ledger(
     billing exports.
     """
     observed_at = _now() if now is None else float(now)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = ledger_path.with_name(f".{ledger_path.name}.lock")
+    lock_file = lock_path.open("a+b")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
     previous = _load_json_mapping(ledger_path) if ledger_path.is_file() else {}
+    if ledger_path.is_file() and not previous:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+        return {
+            "schema_version": SPEND_LEDGER_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["spend_ledger_existing_state_invalid"],
+            "ledger_path": str(ledger_path),
+            "prior_state_preserved": True,
+        }
+    raw_previous_instances = previous.get("instances")
     previous_instances = (
-        dict(previous.get("instances"))
-        if isinstance(previous.get("instances"), Mapping)
+        dict(raw_previous_instances)
+        if isinstance(raw_previous_instances, Mapping)
         else {}
     )
     day, day_start = _utc_day_bounds(observed_at)
@@ -329,11 +371,8 @@ def update_spend_ledger(
         if not inst.live:
             continue
         key = f"{inst.provider}:{inst.id}"
-        prior = (
-            dict(previous_instances.get(key))
-            if isinstance(previous_instances.get(key), Mapping)
-            else {}
-        )
+        raw_prior = previous_instances.get(key)
+        prior = dict(raw_prior) if isinstance(raw_prior, Mapping) else {}
         last_seen = _coerce_float(prior.get("last_seen_epoch"))
         inferred_start = (
             max(0.0, observed_at - float(inst.age_seconds))
@@ -358,6 +397,7 @@ def update_spend_ledger(
         }
     ledger = {
         "schema_version": SPEND_LEDGER_SCHEMA_VERSION,
+        "revision": int(previous.get("revision") or 0) + 1,
         "status": "updated",
         "generated_at": datetime.fromtimestamp(observed_at, timezone.utc).isoformat(),
         "daily_budget_day": day,
@@ -373,11 +413,13 @@ def update_spend_ledger(
         ),
     }
     try:
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        ledger_path.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+        write_json(ledger_path, ledger)
     except OSError as exc:
         ledger["status"] = "blocked"
         ledger["blockers"] = [f"spend_ledger_write_failed:{type(exc).__name__}"]
+    finally:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
     return ledger
 
 
@@ -444,6 +486,30 @@ def build_fleet_budget_guard(
 # ----------------------------- HTTP -----------------------------
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _validated_provider_api_url(value: str) -> str:
+    url = str(value or "").strip()
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("provider API URL is malformed") from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in ALLOWED_PROVIDER_API_HOSTS
+        or port not in {None, 443}
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        raise ValueError("provider API URL is outside the pinned HTTPS origins")
+    return url
+
+
 def _http_request(
     method: str,
     url: str,
@@ -461,9 +527,19 @@ def _http_request(
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        validated_url = _validated_provider_api_url(url)
+    except ValueError as exc:
+        return 0, {"error": str(exc)}
+    request = urllib.request.Request(
+        validated_url,
+        data=data,
+        method=method,
+        headers=headers,
+    )
+    try:
+        opener = urllib.request.build_opener(_RejectRedirects)
+        with opener.open(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
             status = int(getattr(response, "status", 200))
             return status, (json.loads(raw) if raw.strip() else {})
@@ -490,11 +566,18 @@ def _rows_from_payload(payload: Any, *list_keys: str) -> list[dict[str, Any]]:
     return []
 
 
+class ProviderInventoryError(RuntimeError):
+    def __init__(self, provider: str, status: int) -> None:
+        super().__init__(f"{provider}_inventory_query_failed:http_{status}")
+        self.provider = provider
+        self.status = status
+
+
 def fetch_runpod_pods(key: str, *, timeout: int = 30) -> list[dict[str, Any]]:
     status, payload = _http_request("GET", f"{RUNPOD_API}/pods", key=key, timeout=timeout)
     if status not in (200, 201):
         _warn(f"runpod pod query failed (http={status})")
-        return []
+        raise ProviderInventoryError("runpod", status)
     return _rows_from_payload(payload, "pods", "data", "items")
 
 
@@ -502,7 +585,7 @@ def fetch_vast_instances(key: str, *, timeout: int = 30) -> list[dict[str, Any]]
     status, payload = _http_request("GET", f"{VAST_API}/instances/", key=key, timeout=timeout)
     if status not in (200, 201):
         _warn(f"vast instance query failed (http={status})")
-        return []
+        raise ProviderInventoryError("vast", status)
     return _rows_from_payload(payload, "instances", "results", "data")
 
 
@@ -513,12 +596,149 @@ def fetch_do_droplets(token: str, *, timeout: int = 30) -> list[dict[str, Any]]:
     )
     if status not in (200, 201):
         _warn(f"digitalocean droplet query failed (http={status})")
-        return []
+        raise ProviderInventoryError("digitalocean", status)
     rows = _rows_from_payload(payload, "droplets", "data")
     return [
         r for r in rows
         if str((r.get("size") or {}).get("slug") or r.get("size_slug") or "").startswith("gpu-")
     ]
+
+
+def _inventory_query(
+    *,
+    provider: str,
+    credential: str | None,
+    fetch: Any,
+    timeout: int,
+    required: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not credential:
+        return [], {
+            "provider": provider,
+            "status": "blocked_missing_credential" if required else "not_configured",
+            "required": required,
+            "credential_present": False,
+            "row_count": 0,
+            "blockers": [f"{provider}_inventory_credential_missing"] if required else [],
+        }
+    try:
+        rows = fetch(credential, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - inventory uncertainty must fail closed
+        return [], {
+            "provider": provider,
+            "status": "failed",
+            "required": required,
+            "credential_present": True,
+            "row_count": 0,
+            "error_type": type(exc).__name__,
+            "blockers": [f"{provider}_inventory_query_failed"],
+        }
+    return rows, {
+        "provider": provider,
+        "status": "succeeded",
+        "required": required,
+        "credential_present": True,
+        "row_count": len(rows),
+        "blockers": [],
+    }
+
+
+def reconcile_billing_export(
+    *,
+    billing_export_path: Path | None,
+    instances: Sequence[GpuInstance],
+    now: float,
+    required: bool,
+    max_age_seconds: int = 24 * 60 * 60,
+) -> dict[str, Any]:
+    if billing_export_path is None:
+        return {
+            "status": "blocked" if required else "not_configured",
+            "required": required,
+            "blockers": ["provider_billing_export_missing"] if required else [],
+        }
+    blockers: list[str] = []
+    billing_path_valid = False
+    source_mode: int | None = None
+    billing_export_digest: str | None = None
+    if billing_export_path.is_symlink():
+        blockers.append("provider_billing_export_symlink")
+    else:
+        try:
+            metadata = billing_export_path.stat()
+        except FileNotFoundError:
+            blockers.append("provider_billing_export_missing")
+        except OSError:
+            blockers.append("provider_billing_export_unreadable")
+        else:
+            source_mode = stat.S_IMODE(metadata.st_mode)
+            if not stat.S_ISREG(metadata.st_mode):
+                blockers.append("provider_billing_export_not_regular_file")
+            elif metadata.st_size > MAX_BILLING_EXPORT_BYTES:
+                blockers.append("provider_billing_export_too_large")
+            else:
+                billing_path_valid = True
+                if source_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    blockers.append(
+                        "provider_billing_export_writable_by_group_or_world"
+                    )
+                if metadata.st_uid not in {0, os.geteuid()}:
+                    blockers.append("provider_billing_export_owner_untrusted")
+
+    payload = _load_json_mapping(billing_export_path) if billing_path_valid else {}
+    if billing_path_valid:
+        try:
+            billing_export_digest = _sha256_file(billing_export_path)
+        except OSError:
+            blockers.append("provider_billing_export_unreadable")
+    generated = _iso_to_epoch(payload.get("generated_at"))
+    totals = payload.get("provider_totals_usd")
+    live_providers = {instance.provider for instance in instances if instance.live}
+    if not payload:
+        blockers.append("provider_billing_export_invalid")
+    if payload.get("schema_version") != BILLING_EXPORT_SCHEMA_VERSION:
+        blockers.append("provider_billing_export_schema_invalid")
+    if payload.get("currency") != "USD":
+        blockers.append("provider_billing_export_currency_invalid")
+    if payload.get("scope") != BILLING_EXPORT_SCOPE:
+        blockers.append("provider_billing_export_scope_invalid")
+    if generated is None or now - generated > max_age_seconds or generated > now + 300:
+        blockers.append("provider_billing_export_stale_or_invalid_time")
+    if not isinstance(totals, Mapping):
+        blockers.append("provider_billing_export_totals_missing")
+        totals = {}
+    required_providers = set(PROVIDERS) if required else live_providers
+    missing = sorted(provider for provider in required_providers if provider not in totals)
+    if missing:
+        blockers.extend(f"provider_billing_export_missing:{provider}" for provider in missing)
+    if required:
+        unexpected = sorted(provider for provider in totals if provider not in PROVIDERS)
+        if unexpected:
+            blockers.extend(
+                f"provider_billing_export_unexpected:{provider}"
+                for provider in unexpected
+            )
+    for provider, value in totals.items():
+        amount = _coerce_float(value)
+        if amount is None or amount < 0:
+            blockers.append(f"provider_billing_export_invalid_total:{provider}")
+    return {
+        "status": "reconciled" if not blockers else "blocked",
+        "required": required,
+        "billing_export_artifact_name": billing_export_path.name,
+        "billing_export_sha256": billing_export_digest,
+        "billing_export_mode_octal": f"{source_mode:04o}"
+        if source_mode is not None
+        else None,
+        "currency": payload.get("currency"),
+        "scope": payload.get("scope"),
+        "billing_export_schema_version": payload.get("schema_version"),
+        "generated_at": payload.get("generated_at"),
+        "provider_totals_usd": dict(totals),
+        "live_providers": sorted(live_providers),
+        "blockers": blockers,
+        "claim_boundary": "Billing export reconciliation is spend evidence, not task success.",
+    }
 
 
 def _warn(message: str) -> None:
@@ -570,8 +790,15 @@ def iter_started_pod_id_files(output_roots: Iterable[Path | str]) -> list[tuple[
 WARM_SERVE_MARKER_FILENAME = "warm_serve_pod.json"
 
 
-def find_expected_serve_pod_ids(output_roots: Iterable[Path | str]) -> set[str]:
-    """Pod ids recorded as live warm serve workers (marker status == 'serving')."""
+def find_expected_serve_pod_ids(
+    output_roots: Iterable[Path | str],
+    *,
+    now: float | None = None,
+    max_lease_seconds: int = DEFAULT_WARM_LEASE_SECONDS,
+) -> set[str]:
+    """Return only warm workers whose owner lease is still fresh."""
+
+    observed_at = _now() if now is None else float(now)
     expected: set[str] = set()
     for root in output_roots:
         base = Path(root).expanduser()
@@ -585,7 +812,18 @@ def find_expected_serve_pod_ids(output_roots: Iterable[Path | str]) -> set[str]:
             if not isinstance(payload, Mapping):
                 continue
             pod_id = str(payload.get("pod_id") or "").strip()
-            if pod_id and payload.get("status") == "serving":
+            expires_at = _iso_to_epoch(payload.get("lease_expires_at"))
+            heartbeat_at = _iso_to_epoch(
+                payload.get("heartbeat_at") or payload.get("generated_at")
+            )
+            lease_fresh = bool(
+                (expires_at is not None and expires_at > observed_at)
+                or (
+                    heartbeat_at is not None
+                    and 0 <= observed_at - heartbeat_at <= max(1, max_lease_seconds)
+                )
+            )
+            if pod_id and payload.get("status") == "serving" and lease_fresh:
                 expected.add(pod_id)
     return expected
 
@@ -709,6 +947,9 @@ def terminate_instance(
     *,
     runpod_key: str | None,
     vast_key: str | None,
+    do_token: str | None = None,
+    verification_attempts: int = 3,
+    verification_delay_seconds: float = 0.5,
 ) -> dict[str, Any]:
     """Permanently delete an orphaned instance (releases its disk too)."""
     if inst.provider == "runpod":
@@ -725,6 +966,43 @@ def terminate_instance(
         )
         ok = status in (200, 201, 204)
         return {"status": "terminated" if ok else "terminate_failed", "http": status}
+    if inst.provider == "digitalocean":
+        if not do_token:
+            return {"status": "blocked", "reason": "digitalocean_api_token_missing"}
+        status, _ = _http_request(
+            "DELETE",
+            f"{DO_API}/droplets/{inst.id}",
+            key=do_token,
+        )
+        if status not in (200, 202, 204, 404):
+            return {
+                "status": "terminate_failed",
+                "http": status,
+                "absence_verified": False,
+            }
+        verification_http: int | None = None
+        for attempt in range(max(1, verification_attempts)):
+            verification_http, _ = _http_request(
+                "GET",
+                f"{DO_API}/droplets/{inst.id}",
+                key=do_token,
+            )
+            if verification_http in (404, 410):
+                return {
+                    "status": "terminated",
+                    "http": status,
+                    "verification_http": verification_http,
+                    "absence_verified": True,
+                }
+            if attempt + 1 < max(1, verification_attempts):
+                time.sleep(max(0.0, verification_delay_seconds))
+        return {
+            "status": "terminate_unverified",
+            "http": status,
+            "verification_http": verification_http,
+            "absence_verified": False,
+            "reason": "digitalocean_droplet_absence_not_verified",
+        }
     return {"status": "blocked", "reason": "unknown_provider"}
 
 
@@ -828,6 +1106,9 @@ def build_json_report(
     spend_ledger: Mapping[str, Any] | None = None,
     reap_mode: bool = False,
     reap_results: Sequence[Mapping[str, Any]] = (),
+    inventory_results: Sequence[Mapping[str, Any]] = (),
+    billing_reconciliation: Mapping[str, Any] | None = None,
+    spend_admission_lock: Mapping[str, Any] | None = None,
 ) -> dict:
     """Machine-readable spend snapshot so ops never re-derives state from stdout.
 
@@ -847,9 +1128,42 @@ def build_json_report(
         )
     ]
     candidate_ids = {i.id for i in candidates}
+    inventory_blockers = [
+        str(blocker)
+        for result in inventory_results
+        for blocker in result.get("blockers") or []
+    ]
+    billing_blockers = (
+        [str(item) for item in billing_reconciliation.get("blockers") or []]
+        if isinstance(billing_reconciliation, Mapping)
+        else []
+    )
+    reap_blockers = [
+        f"reap_failed:{row.get('provider')}:{row.get('id')}:{row.get('status')}"
+        for row in reap_results
+        if row.get("status") != "terminated"
+    ]
+    blockers = [*inventory_blockers, *billing_blockers, *reap_blockers]
+    admission = (
+        dict(spend_admission_lock)
+        if isinstance(spend_admission_lock, Mapping)
+        else None
+    )
+    if admission is not None and admission.get("admission_allowed") is not True:
+        blockers.extend(
+            f"spend_admission:{item}"
+            for item in admission.get("blockers") or ["paid_work_admission_locked"]
+        )
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "passed" if not blockers else "blocked",
+        "blockers": blockers,
+        "inventory_results": [dict(result) for result in inventory_results],
+        "billing_reconciliation": dict(billing_reconciliation)
+        if isinstance(billing_reconciliation, Mapping)
+        else None,
+        "spend_admission_lock": admission,
         "live_instance_count": len(live),
         "total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
         "max_boot_seconds": int(max_boot_seconds),
@@ -907,7 +1221,7 @@ def default_output_roots() -> list[Path]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Report live RunPod/Vast GPU pods with a burn estimate, and optionally "
+            "Report live RunPod/Vast/DigitalOcean GPU allocations with a burn estimate, and optionally "
             "reap orphaned not-booted duds (never owned, never healthy pods)."
         )
     )
@@ -946,6 +1260,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--timeout", type=int, default=30, help="per-request timeout seconds")
+    parser.add_argument(
+        "--require-provider",
+        action="append",
+        choices=PROVIDERS,
+        default=[],
+        help="Provider inventory that must be credentialed and query successfully; repeatable.",
+    )
+    parser.add_argument(
+        "--warm-lease-seconds",
+        type=int,
+        default=DEFAULT_WARM_LEASE_SECONDS,
+        help="Maximum age of a warm-worker heartbeat without an explicit lease expiry.",
+    )
+    parser.add_argument(
+        "--billing-export",
+        default=os.getenv("BLUEPRINT_GPU_BILLING_EXPORT"),
+        help="Current provider billing export JSON for reconciliation.",
+    )
+    parser.add_argument(
+        "--require-billing-reconciliation",
+        action="store_true",
+        help="Fail closed unless a current billing export covers every live provider.",
+    )
+    parser.add_argument(
+        "--admission-lock-report",
+        default=os.getenv("BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH"),
+        help=(
+            "Write the current $5,000 paid-work admission lock. Supplying this "
+            "enables fail-closed billing reconciliation and exit status."
+        ),
+    )
+    parser.add_argument(
+        "--admission-override",
+        default=os.getenv("BLUEPRINT_PAID_SPEND_OVERRIDE_PATH"),
+        help="Optional short-lived audited override JSON; absence is normal.",
+    )
     parser.add_argument(
         "--max-live-instances",
         type=int,
@@ -990,22 +1340,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    runpod_key = _read_secret("runpod_api_key")
-    vast_key = _read_secret("vast_api_key")
-    do_token = _read_secret("digitalocean_api_token")
-    if not runpod_key and not vast_key and not do_token:
-        print(
-            "No file-based GPU credentials found in ~/.blueprint-secrets "
-            "(runpod_api_key, vast_api_key); nothing to check."
-        )
-        return 0
-
+    secrets_dir = Path(
+        str(os.getenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR") or SECRETS_DIR)
+    ).expanduser()
+    runpod_key = _read_secret("runpod_api_key", secrets_dir=secrets_dir)
+    vast_key = _read_secret("vast_api_key", secrets_dir=secrets_dir)
+    do_token = _read_secret("digitalocean_api_token", secrets_dir=secrets_dir)
     now = _now()
-    runpod_pods = fetch_runpod_pods(runpod_key, timeout=args.timeout) if runpod_key else []
-    vast_instances = (
-        fetch_vast_instances(vast_key, timeout=args.timeout) if vast_key else []
+    credentials = {
+        "runpod": runpod_key,
+        "vast": vast_key,
+        "digitalocean": do_token,
+    }
+    configured = {provider for provider, value in credentials.items() if value}
+    required_providers = (
+        set(PROVIDERS)
+        if args.admission_lock_report
+        else (set(args.require_provider) or configured)
     )
-    do_droplets = fetch_do_droplets(do_token, timeout=args.timeout) if do_token else []
+    if not configured and not required_providers:
+        required_providers = set(PROVIDERS)
+    runpod_pods, runpod_inventory = _inventory_query(
+        provider="runpod",
+        credential=runpod_key,
+        fetch=fetch_runpod_pods,
+        timeout=args.timeout,
+        required="runpod" in required_providers,
+    )
+    vast_instances, vast_inventory = _inventory_query(
+        provider="vast",
+        credential=vast_key,
+        fetch=fetch_vast_instances,
+        timeout=args.timeout,
+        required="vast" in required_providers,
+    )
+    do_droplets, do_inventory = _inventory_query(
+        provider="digitalocean",
+        credential=do_token,
+        fetch=fetch_do_droplets,
+        timeout=args.timeout,
+        required="digitalocean" in required_providers,
+    )
+    inventory_results = [runpod_inventory, vast_inventory, do_inventory]
+    inventory_blocked = any(result.get("blockers") for result in inventory_results)
+    if not configured:
+        print(
+            "No file-based GPU credentials found; provider inventory is unknown and blocked.",
+            file=sys.stderr,
+        )
     instances = collect_instances(
         now=now, runpod_pods=runpod_pods, vast_instances=vast_instances,
         do_droplets=do_droplets,
@@ -1013,7 +1395,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     roots = [Path(p) for p in (args.output_root or default_output_roots())]
     protected = find_protected_pod_ids(roots, process_cmdlines=list_process_cmdlines())
-    serve_pods = find_expected_serve_pod_ids(roots)
+    serve_pods = find_expected_serve_pod_ids(
+        roots,
+        now=now,
+        max_lease_seconds=max(1, args.warm_lease_seconds),
+    )
     protected = protected | serve_pods
     spend_ledger = (
         update_spend_ledger(instances, ledger_path=Path(args.spend_ledger), now=now)
@@ -1028,6 +1414,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_daily_spend_usd=args.max_daily_spend_usd,
         max_total_spend_usd=args.max_total_spend_usd,
     )
+    billing_reconciliation = reconcile_billing_export(
+        billing_export_path=Path(args.billing_export) if args.billing_export else None,
+        instances=instances,
+        now=now,
+        required=bool(args.require_billing_reconciliation or args.admission_lock_report),
+    )
+    billing_blocked = bool(billing_reconciliation.get("blockers"))
 
     print(
         build_report(
@@ -1052,9 +1445,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ]
     reap_results: list[dict] = []
 
-    def _write_json_report() -> None:
-        if not args.json_report:
-            return
+    def _write_outputs() -> dict[str, Any] | None:
+        admission_lock: dict[str, Any] | None = None
         report = build_json_report(
             instances,
             protected_ids=protected,
@@ -1064,26 +1456,90 @@ def main(argv: Sequence[str] | None = None) -> int:
             spend_ledger=spend_ledger,
             reap_mode=bool(args.reap),
             reap_results=reap_results,
+            inventory_results=inventory_results,
+            billing_reconciliation=billing_reconciliation,
         )
-        path = Path(args.json_report)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        print(f"JSON snapshot written: {path}")
+        if args.admission_lock_report:
+            admission_lock = build_spend_admission_lock(
+                fleet_budget=fleet_budget,
+                billing_reconciliation=billing_reconciliation,
+                instances=report["instances"],
+                reap_results=reap_results,
+                inventory_results=inventory_results,
+                override_path=Path(args.admission_override)
+                if args.admission_override
+                else None,
+                now=datetime.fromtimestamp(now, timezone.utc),
+            )
+            admission_path = Path(args.admission_lock_report)
+            admission_path.parent.mkdir(parents=True, exist_ok=True)
+            write_json(admission_path, admission_lock)
+            print(f"Paid-work admission lock written: {admission_path}")
+            report = build_json_report(
+                instances,
+                protected_ids=protected,
+                max_boot_seconds=args.max_boot_seconds,
+                max_booted_orphan_seconds=args.max_booted_orphan_seconds,
+                fleet_budget=fleet_budget,
+                spend_ledger=spend_ledger,
+                reap_mode=bool(args.reap),
+                reap_results=reap_results,
+                inventory_results=inventory_results,
+                billing_reconciliation=billing_reconciliation,
+                spend_admission_lock=admission_lock,
+            )
+        if args.json_report:
+            path = Path(args.json_report)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_json(path, report)
+            print(f"JSON snapshot written: {path}")
+        return admission_lock
+
+    def _fleet_blocks_exit(admission_lock: Mapping[str, Any] | None) -> bool:
+        if fleet_budget.get("status") != "blocked":
+            return False
+        return not (
+            isinstance(admission_lock, Mapping)
+            and admission_lock.get("status") == "override_open"
+            and set(fleet_budget.get("blockers") or [])
+            == {"fleet_total_spend_limit_exceeded"}
+        )
 
     if not candidates:
-        _write_json_report()
-        return 2 if fleet_budget.get("status") == "blocked" else 0
+        admission_lock = _write_outputs()
+        return 2 if (
+            _fleet_blocks_exit(admission_lock)
+            or inventory_blocked
+            or billing_blocked
+            or (
+                admission_lock is not None
+                and admission_lock.get("admission_allowed") is not True
+            )
+        ) else 0
     if not args.reap:
         print(
             f"\n(dry-run) {len(candidates)} orphan(s) would be reaped. "
             "Re-run with --reap to terminate."
         )
-        _write_json_report()
-        return 2 if fleet_budget.get("status") == "blocked" else 0
+        admission_lock = _write_outputs()
+        return 2 if (
+            _fleet_blocks_exit(admission_lock)
+            or inventory_blocked
+            or billing_blocked
+            or (
+                admission_lock is not None
+                and admission_lock.get("admission_allowed") is not True
+            )
+        ) else 0
 
     print(f"\nReaping {len(candidates)} orphan(s)...")
     for inst in candidates:
-        result = terminate_instance(inst, runpod_key=runpod_key, vast_key=vast_key)
+        result = terminate_instance(
+            inst,
+            runpod_key=runpod_key,
+            vast_key=vast_key,
+            do_token=do_token,
+        )
         reap_results.append(
             {"provider": inst.provider, "id": inst.id, **{k: result.get(k) for k in ("status", "http")}}
         )
@@ -1091,8 +1547,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"  reap {inst.provider} {inst.id}: "
             f"{result.get('status')} (http={result.get('http')})"
         )
-    _write_json_report()
-    return 2 if fleet_budget.get("status") == "blocked" else 0
+    admission_lock = _write_outputs()
+    reap_failed = any(result.get("status") != "terminated" for result in reap_results)
+    return 2 if (
+        _fleet_blocks_exit(admission_lock)
+        or inventory_blocked
+        or billing_blocked
+        or reap_failed
+        or (
+            admission_lock is not None
+            and admission_lock.get("admission_allowed") is not True
+        )
+    ) else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

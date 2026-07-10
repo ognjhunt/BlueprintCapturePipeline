@@ -1,0 +1,203 @@
+{
+  "baseline_date": "2026-07-09",
+  "characterization_tests": {
+    "src/blueprint_pipeline/alpha_readiness.py": [
+      "tests/test_alpha_readiness.py"
+    ],
+    "src/blueprint_pipeline/arena_result_ingest.py": [
+      "tests/test_arena_result_ingest.py"
+    ],
+    "src/blueprint_pipeline/capture_orchestrator.py": [
+      "tests/test_capture_orchestrator.py"
+    ],
+    "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": [
+      "tests/test_cross_repo_first_gpu_readiness.py"
+    ],
+    "src/blueprint_pipeline/evaluation_prep_stage.py": [
+      "tests/test_evaluation_prep_stage_coverage_edges.py"
+    ],
+    "src/blueprint_pipeline/first_gpu_run_packet.py": [
+      "tests/test_first_gpu_run_packet.py"
+    ],
+    "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": [
+      "tests/test_g1_site_3dgs_mujoco_preview.py"
+    ],
+    "src/blueprint_pipeline/geometry_stage.py": [
+      "tests/test_geometry_stage.py"
+    ],
+    "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": [
+      "tests/test_groot_oscar_digitalocean_closed_loop_job.py"
+    ],
+    "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": [
+      "tests/test_isaac_g1_kitchen_parity_job.py"
+    ],
+    "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": [
+      "tests/test_isaac_g1_site_3dgs_realistic_eval.py"
+    ],
+    "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": [
+      "tests/test_lightwheel_kitchen_isaac_scenarios.py"
+    ],
+    "src/blueprint_pipeline/live_pipeline_control_plane.py": [
+      "tests/test_live_pipeline_control_plane.py"
+    ],
+    "src/blueprint_pipeline/live_robot_eval_closure.py": [
+      "tests/test_live_robot_eval_closure_coverage_edges.py"
+    ],
+    "src/blueprint_pipeline/materialization.py": [
+      "tests/test_materialization_edges.py"
+    ],
+    "src/blueprint_pipeline/mujoco_g1_simulator_command.py": [
+      "tests/test_mujoco_g1_simulator_command.py"
+    ],
+    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": [
+      "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py"
+    ],
+    "src/blueprint_pipeline/native_runtime_backend.py": [
+      "tests/test_native_runtime_backend_coverage.py"
+    ],
+    "src/blueprint_pipeline/object_index_stage.py": [
+      "tests/test_object_index_stage.py"
+    ],
+    "src/blueprint_pipeline/official_g1_policy_handoff.py": [
+      "tests/test_official_g1_policy_handoff.py"
+    ],
+    "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": [
+      "tests/test_oscar_cosmos_wam_evaluator.py"
+    ],
+    "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": [
+      "tests/test_oscar_isaac_closed_loop_eval.py"
+    ],
+    "src/blueprint_pipeline/oscar_wam_command_adapter.py": [
+      "tests/test_oscar_wam_command_adapter.py"
+    ],
+    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": [
+      "tests/test_oscar_wam_provider_bundle.py"
+    ],
+    "src/blueprint_pipeline/policy_autoresearch.py": [
+      "tests/test_policy_autoresearch.py"
+    ],
+    "src/blueprint_pipeline/post_training_data_package.py": [
+      "tests/test_post_training_data_package.py"
+    ],
+    "src/blueprint_pipeline/qualification.py": [
+      "tests/test_qualification_alpha.py"
+    ],
+    "src/blueprint_pipeline/retrieval_index_stage.py": [
+      "tests/test_retrieval_index_stage_coverage.py"
+    ],
+    "src/blueprint_pipeline/robot_eval_dataset.py": [
+      "tests/test_robot_eval_dataset.py"
+    ],
+    "src/blueprint_pipeline/robot_eval_execution.py": [
+      "tests/test_robot_eval_execution_coverage_edges.py"
+    ],
+    "src/blueprint_pipeline/robot_eval_job_orchestrator.py": [
+      "tests/test_robot_eval_job_orchestrator.py"
+    ],
+    "src/blueprint_pipeline/robot_eval_worker.py": [
+      "tests/test_robot_eval_worker_coverage_edges.py"
+    ],
+    "src/blueprint_pipeline/robot_initial_observation.py": [
+      "tests/test_robot_initial_observation.py"
+    ],
+    "src/blueprint_pipeline/runpod_wam_async_runner.py": [
+      "tests/test_runpod_wam_async_runner.py"
+    ],
+    "src/blueprint_pipeline/sc3_fidelity_contracts.py": [
+      "tests/test_sc3_fidelity_contracts.py"
+    ],
+    "src/blueprint_pipeline/scene_asset_preflight.py": [
+      "tests/test_scene_asset_preflight_coverage.py"
+    ],
+    "src/blueprint_pipeline/scene_wam_policy_episode_packet.py": [
+      "tests/test_scene_wam_policy_episode_packet.py"
+    ],
+    "src/blueprint_pipeline/simulation_automation.py": [
+      "tests/test_simulation_automation.py"
+    ],
+    "src/blueprint_pipeline/site_eval_director.py": [
+      "tests/test_site_eval_director.py"
+    ],
+    "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": [
+      "tests/test_unitree_groot_n17_sonic_vast_persistent_session.py"
+    ],
+    "src/blueprint_pipeline/vast_provider_adapter.py": [
+      "tests/test_vast_provider_adapter.py"
+    ],
+    "src/blueprint_pipeline/wam_derived_observation_harness.py": [
+      "tests/test_wam_derived_observation_harness.py"
+    ],
+    "src/blueprint_pipeline/wam_fixture_evaluator.py": [
+      "tests/test_wam_fixture_evaluator.py"
+    ],
+    "src/blueprint_pipeline/wam_generated_video_review.py": [
+      "tests/test_wam_generated_video_review.py"
+    ]
+  },
+  "claim_boundary": {
+    "budgets_prevent_growth_but_do_not_complete_refactoring": true,
+    "large_module_decomposition_remains_required": true,
+    "new_claim_contract_literals_require_centralization_or_policy_review": true
+  },
+  "claim_literal_maximums": {
+    "generated_world_rank_fidelity": 258,
+    "public_claim_upgrade_allowed": 285,
+    "rank_fidelity_result_proven": 521,
+    "success_rate_difference_pp": 4,
+    "task_success_proven": 50
+  },
+  "default_max_python_module_lines": 2000,
+  "forbidden_personal_path_patterns": [
+    "(?<![A-Za-z0-9._~:/-])/(?:Users|home)/[A-Za-z0-9._-]+/"
+  ],
+  "grandfathered_module_line_limits": {
+    "src/blueprint_pipeline/alpha_readiness.py": 2160,
+    "src/blueprint_pipeline/arena_result_ingest.py": 2383,
+    "src/blueprint_pipeline/capture_orchestrator.py": 2002,
+    "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": 2686,
+    "src/blueprint_pipeline/evaluation_prep_stage.py": 5141,
+    "src/blueprint_pipeline/first_gpu_run_packet.py": 5015,
+    "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
+    "src/blueprint_pipeline/geometry_stage.py": 2218,
+    "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": 2509,
+    "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": 3012,
+    "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
+    "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3212,
+    "src/blueprint_pipeline/live_pipeline_control_plane.py": 2313,
+    "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
+    "src/blueprint_pipeline/materialization.py": 2198,
+    "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6059,
+    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12297,
+    "src/blueprint_pipeline/native_runtime_backend.py": 2970,
+    "src/blueprint_pipeline/object_index_stage.py": 2369,
+    "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
+    "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": 6607,
+    "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 5296,
+    "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
+    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5550,
+    "src/blueprint_pipeline/policy_autoresearch.py": 2563,
+    "src/blueprint_pipeline/post_training_data_package.py": 6646,
+    "src/blueprint_pipeline/qualification.py": 5552,
+    "src/blueprint_pipeline/retrieval_index_stage.py": 2215,
+    "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
+    "src/blueprint_pipeline/robot_eval_execution.py": 6252,
+    "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,
+    "src/blueprint_pipeline/robot_eval_worker.py": 2356,
+    "src/blueprint_pipeline/robot_initial_observation.py": 2909,
+    "src/blueprint_pipeline/runpod_wam_async_runner.py": 3725,
+    "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
+    "src/blueprint_pipeline/scene_asset_preflight.py": 2051,
+    "src/blueprint_pipeline/scene_wam_policy_episode_packet.py": 3682,
+    "src/blueprint_pipeline/simulation_automation.py": 3740,
+    "src/blueprint_pipeline/site_eval_director.py": 2145,
+    "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
+    "src/blueprint_pipeline/vast_provider_adapter.py": 6645,
+    "src/blueprint_pipeline/wam_derived_observation_harness.py": 2753,
+    "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
+    "src/blueprint_pipeline/wam_generated_video_review.py": 2412
+  },
+  "max_project_scripts": 147,
+  "policy_owner": "@ognjhunt",
+  "review_by": "2026-08-08",
+  "schema_version": "blueprint.source_governance_policy.v1"
+}

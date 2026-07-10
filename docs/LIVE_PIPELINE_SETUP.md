@@ -92,8 +92,12 @@ The timer runs `scripts/gpu_spend_guard.py --reap` every few minutes and writes:
 ```
 
 That `gpu_spend_guard.v1` snapshot is spend/allocation evidence only. It records
-live provider allocations, reap candidates, reap results, and the aggregate
-`gpu_fleet_budget_guard.v1` ceiling. Launch gates should pass that file as both
+typed provider-inventory outcomes, live allocations, expiring warm-worker
+ownership leases, reap candidates, verified reap results, optional current
+billing-export reconciliation, and the aggregate `gpu_fleet_budget_guard.v1`
+ceiling. Missing credentials, inventory API failures, unverified DigitalOcean
+deletion, stale warm markers, and failed reap attempts keep the command red.
+Launch gates should pass that file as both
 `--spend-guard-pre-snapshot` and `--spend-guard-post-snapshot` around paid
 canaries, or use two copied snapshots if preserving before/after state:
 
@@ -372,10 +376,13 @@ BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true
 BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true
 ```
 
-With those flags, the listener downloads the completed capture bundle, enriches
+With those flags, the listener claims a revisioned owner/token lease, extends
+the Pub/Sub ack deadline while work is active, downloads the completed capture bundle, enriches
 the handoff from staged raw sidecars, writes a `robot_eval_job_request.v1`
 envelope into `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`, and records the staged
-request path in `pipeline_job_ledger.json`. It does not execute simulator or
+request path in `pipeline_job_ledger.json`. Terminal output is committed through
+`pipeline_job_output_commit.json`; retryable/blocked outcomes are nacked and
+permanent-invalid inputs are acknowledged with typed failure evidence. It does not execute simulator or
 provider work; the next control-plane pass consumes the inbox and resolves
 `site_package.capture_root` per request.
 

@@ -5,12 +5,31 @@ import sys
 import types
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from blueprint_pipeline import wam_generated_video_success_label_gemini as gemini_labeler
 
 
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _configure_runtime_signing(tmp_path: Path, monkeypatch) -> None:
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    private_key_path = tmp_path / "wam-success-label-runtime.pem"
+    private_key_path.write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    monkeypatch.setenv(
+        gemini_labeler.RUNTIME_SIGNING_PRIVATE_KEY_FILE_ENV,
+        str(private_key_path),
+    )
 
 
 def _request(tmp_path: Path) -> Path:
@@ -21,6 +40,7 @@ def _request(tmp_path: Path) -> Path:
         request,
         {
             "schema_version": "wam_success_label_request.v1",
+            "inference_input_manifest_sha256": "a" * 64,
             "rollouts": [
                 {
                     "rollout_id": "rollout_1",
@@ -99,9 +119,7 @@ def test_gemini_task_success_context_requires_prompt_or_metadata(tmp_path: Path)
     )
 
     request["success_label_contract"] = {
-        "strict_task_success_requirements": [
-            "visible_robot_end_effector_reaches_task_target"
-        ]
+        "strict_task_success_requirements": ["visible_robot_end_effector_reaches_task_target"]
     }
     assert (
         gemini_labeler._has_task_success_context(
@@ -134,12 +152,40 @@ def test_gemini_provider_error_maps_invalid_api_key() -> None:
     assert blocker == "gemini_authentication_failed"
 
 
+def test_runtime_attestation_requires_digest_and_signing_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(
+        gemini_labeler.RUNTIME_SIGNING_PRIVATE_KEY_FILE_ENV,
+        raising=False,
+    )
+    completed = {"status": "completed", "labels": []}
+
+    invalid_digest = gemini_labeler.attach_success_label_runtime_attestation(
+        completed,
+        inference_input_manifest_sha256="z" * 64,
+        output_dir=tmp_path,
+    )
+    missing_key = gemini_labeler.attach_success_label_runtime_attestation(
+        completed,
+        inference_input_manifest_sha256="a" * 64,
+        output_dir=tmp_path,
+    )
+
+    assert invalid_digest["status"] == "blocked"
+    assert "success_label_inference_input_manifest_sha256_invalid" in invalid_digest["blockers"]
+    assert missing_key["status"] == "blocked"
+    assert "success_label_runtime_signing_key_missing" in missing_key["blockers"]
+
+
 def test_gemini_wam_success_labeler_uses_sdk_without_writing_secret(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     monkeypatch.setenv(gemini_labeler.GATE_ENV, "true")
     monkeypatch.setenv("GEMINI_API_KEY", "secret-gemini-key")
+    _configure_runtime_signing(tmp_path, monkeypatch)
 
     google_module = types.ModuleType("google")
     genai_module = types.ModuleType("google.genai")
@@ -218,11 +264,10 @@ def test_gemini_wam_success_labeler_uses_sdk_without_writing_secret(
         result["labels"][0]["task_success_criteria"]["task_specific_rules_source"]
         == "request_or_rollout_metadata"
     )
-    assert (
-        result["labels"][0]["task_success_criteria"]["hardcoded_task_family_rules_used"]
-        is False
-    )
+    assert result["labels"][0]["task_success_criteria"]["hardcoded_task_family_rules_used"] is False
     assert result["labels"][0]["public_claim_upgrade_allowed"] is False
+    assert result["inference_input_manifest_sha256"] == "a" * 64
+    assert result["inference_attestation"]["signature_verified"] is True
     assert output.is_file()
     serialized = output.read_text(encoding="utf-8")
     assert "secret-gemini-key" not in serialized
@@ -234,6 +279,7 @@ def test_gemini_wam_success_labeler_prefers_sampled_video_frames(
 ) -> None:
     monkeypatch.setenv(gemini_labeler.GATE_ENV, "true")
     monkeypatch.setenv("GEMINI_API_KEY", "secret-gemini-key")
+    _configure_runtime_signing(tmp_path, monkeypatch)
     monkeypatch.setattr(
         gemini_labeler,
         "_sample_video_frames",

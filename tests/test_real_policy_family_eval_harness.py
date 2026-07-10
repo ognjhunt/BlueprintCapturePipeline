@@ -46,13 +46,7 @@ def _real_job_dir(tmp_path: Path) -> Path:
         {
             "policy_in_the_loop": True,
             "substrate": "classical_sim_mujoco",
-            "attempts": [
-                {
-                    "task_outcome": {
-                        "success_criteria_source": "measured_simulator_state"
-                    }
-                }
-            ],
+            "attempts": [{"task_outcome": {"success_criteria_source": "measured_simulator_state"}}],
         },
     )
     _write_json(
@@ -183,12 +177,17 @@ def test_ladder_registration_is_validation_only_and_never_production(
     assert registry["claim_boundary"]["public_claim_upgrade_allowed"] is False
 
     ladder = json.loads(
-        (tmp_path / "real_policy_family_ranking_ladder.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "real_policy_family_ranking_ladder.json").read_text(encoding="utf-8")
     )
     assert ladder["expected_ranking"][0] == SCRIPTED_PICK_PLACE_FAMILY_ID
     assert ladder["inner_command_configured"] is True
+    assert ladder["inner_checkpoint_sha256"] == "a" * 64
+    assert ladder["registered_action_bounds_sha256"]
+    assert all(
+        candidate["policy_checkpoint_sha256"] == "a" * 64
+        for candidate in ladder["policy_candidates"]
+        if candidate.get("expected_ordering_provable") is True
+    )
 
     # The production registry itself must remain untouched by registration.
     from blueprint_pipeline.unitree_lerobot_policy_runtime import (
@@ -231,9 +230,7 @@ def test_full_real_policy_family_eval_end_to_end(
     family = default_family_config(
         family_id=SCRIPTED_PICK_PLACE_FAMILY_ID, checkpoint_dir=str(checkpoint)
     )
-    capture_root = (
-        tmp_path / "scenes" / "demo-scene-1" / "captures" / "demo-capture-1"
-    )
+    capture_root = tmp_path / "scenes" / "demo-scene-1" / "captures" / "demo-capture-1"
     manifest = run_real_policy_family_eval(
         capture_root=capture_root,
         job_id="job-e2e",
@@ -250,12 +247,8 @@ def test_full_real_policy_family_eval_end_to_end(
     assert verification["scorecard_trials"] > 0
 
     job_dir = Path(manifest["job_dir"])
-    report = json.loads(
-        (job_dir / "task_eval_run_report.json").read_text(encoding="utf-8")
-    )
-    assert report["provider_execution"]["evaluation_substrate"] == (
-        "classical_sim_mujoco"
-    )
+    report = json.loads((job_dir / "task_eval_run_report.json").read_text(encoding="utf-8"))
+    assert report["provider_execution"]["evaluation_substrate"] == ("classical_sim_mujoco")
     assert report["provider_execution"]["simulator_framework"] == "mujoco"
     conditions = report["scorecard"]["conditions"]
     assert conditions and conditions[0]["trials"] > 0

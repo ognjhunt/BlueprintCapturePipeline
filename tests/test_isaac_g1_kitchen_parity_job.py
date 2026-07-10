@@ -283,10 +283,6 @@ def test_reused_kitchen_url_layout_updates_worker_request_without_gpu_spend(
     kitchen_bytes = kitchen_buf.getvalue()
     captured: dict = {}
 
-    class _R:
-        def read(self) -> bytes:
-            return kitchen_bytes
-
     def _fake_stage(bundle_zip, job_dir, *, key_prefix):
         with zipfile.ZipFile(bundle_zip) as zf:
             captured["request"] = json.loads(zf.read("request.json"))
@@ -295,7 +291,11 @@ def test_reused_kitchen_url_layout_updates_worker_request_without_gpu_spend(
         (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/out.zip?sig=B")
         return {"status": "completed", "manifest": {}}
 
-    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=1800: _R())
+    monkeypatch.setattr(
+        J,
+        "_fetch_provider_artifact_bytes",
+        lambda _url, **_kwargs: kitchen_bytes,
+    )
     monkeypatch.setattr(J, "stage_bundle", _fake_stage)
 
     m = J.run_isaac_g1_kitchen_parity_job(
@@ -321,11 +321,11 @@ def test_reused_kitchen_url_layout_failure_blocks_before_staging(
         zf.writestr("Sink054/Sink054.usd", "#usda sink")
     kitchen_bytes = kitchen_buf.getvalue()
 
-    class _R:
-        def read(self) -> bytes:
-            return kitchen_bytes
-
-    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=1800: _R())
+    monkeypatch.setattr(
+        J,
+        "_fetch_provider_artifact_bytes",
+        lambda _url, **_kwargs: kitchen_bytes,
+    )
     monkeypatch.setattr(
         J,
         "stage_bundle",
@@ -342,6 +342,20 @@ def test_reused_kitchen_url_layout_failure_blocks_before_staging(
     assert m["status"] == "blocked"
     assert "kitchen_asset_layout_validation_failed" in m["blockers"]
     assert "kitchen_main_usd_missing" in m["kitchen_layout_validation"]["blockers"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "file:///etc/passwd",
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1/private.zip",
+        "gopher://example.com/archive.zip",
+    ),
+)
+def test_provider_artifact_fetch_rejects_non_https_urls(url: str) -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        J._fetch_provider_artifact_bytes(url, timeout=1, max_bytes=1024)
 
 
 def test_marker_timeout_default_covers_large_image_pull() -> None:
@@ -2442,14 +2456,17 @@ def _install_fake_warm_serve_stack(monkeypatch, tmp_path: Path, *, ready: bool):
 
     def _fake_inbox(job_dir, *, key_prefix):
         job_dir = Path(job_dir)
-        (job_dir / "warm_inbox_get_url.txt").write_text("https://spaces.example/inbox-get?sig=G")
-        (job_dir / "warm_inbox_put_url.txt").write_text("https://spaces.example/inbox-put?sig=P")
+        (job_dir / "warm_broker_base_url.txt").write_text(
+            "https://warm-broker.example"
+        )
+        (job_dir / "warm_broker_token.txt").write_text("t" * 64)
         return {
             "status": "completed",
             "blockers": [],
-            "inbox_key": "blueprint/test/warm_inbox.json",
-            "warm_inbox_get_url_file": str(job_dir / "warm_inbox_get_url.txt"),
-            "warm_inbox_put_url_file": str(job_dir / "warm_inbox_put_url.txt"),
+            "transport": "durable_warm_render_broker",
+            "single_object_transport_enabled": False,
+            "broker_base_url_file": str(job_dir / "warm_broker_base_url.txt"),
+            "broker_token_file": str(job_dir / "warm_broker_token.txt"),
         }
 
     import blueprint_pipeline.wam_provider_object_store as object_store
@@ -2546,14 +2563,14 @@ def test_await_warm_serve_ready_requires_matching_launch_session(
         }))
     data = buf.getvalue()
 
-    class _R:
-        def read(self) -> bytes:
-            return data
-
     clock = {"t": 0.0}
     monkeypatch.setattr(J.time, "monotonic", lambda: clock["t"])
     monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
-    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=60: _R())
+    monkeypatch.setattr(
+        J,
+        "_fetch_provider_artifact_bytes",
+        lambda _url, **_kwargs: data,
+    )
 
     res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=2, poll_interval_s=1)
 
@@ -2584,13 +2601,13 @@ def test_await_warm_serve_ready_accepts_matching_launch_session(
         }))
     data = buf.getvalue()
 
-    class _R:
-        def read(self) -> bytes:
-            return data
-
     monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(J.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=60: _R())
+    monkeypatch.setattr(
+        J,
+        "_fetch_provider_artifact_bytes",
+        lambda _url, **_kwargs: data,
+    )
 
     res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=2, poll_interval_s=1)
 
@@ -2621,14 +2638,14 @@ def test_await_warm_serve_ready_fails_fast_when_runner_done_without_ready(
         }))
     data = buf.getvalue()
 
-    class _R:
-        def read(self) -> bytes:
-            return data
-
     slept = {"called": False}
     monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(J.time, "sleep", lambda _s: slept.__setitem__("called", True))
-    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=60: _R())
+    monkeypatch.setattr(
+        J,
+        "_fetch_provider_artifact_bytes",
+        lambda _url, **_kwargs: data,
+    )
 
     res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=120, poll_interval_s=30)
 
@@ -2660,14 +2677,14 @@ def test_await_warm_serve_ready_fails_fast_when_runner_timeout_without_ready(
         z.writestr("runner_console.log", "SimulationApp boot did not finish\n")
     data = buf.getvalue()
 
-    class _R:
-        def read(self) -> bytes:
-            return data
-
     slept = {"called": False}
     monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(J.time, "sleep", lambda _s: slept.__setitem__("called", True))
-    monkeypatch.setattr(J.urllib.request, "urlopen", lambda _url, timeout=60: _R())
+    monkeypatch.setattr(
+        J,
+        "_fetch_provider_artifact_bytes",
+        lambda _url, **_kwargs: data,
+    )
 
     res = J._await_warm_serve_ready(jd, instance_id="pod1", timeout_s=120, poll_interval_s=30)
 
@@ -2688,9 +2705,9 @@ def test_await_warm_serve_ready_surfaces_expired_output_url(
 
     monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(
-        J.urllib.request,
-        "urlopen",
-        lambda url, timeout=60: (_ for _ in ()).throw(
+        J,
+        "_fetch_provider_artifact_bytes",
+        lambda url, **_kwargs: (_ for _ in ()).throw(
             urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
         ),
     )

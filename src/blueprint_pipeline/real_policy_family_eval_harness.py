@@ -40,6 +40,9 @@ from .lerobot_torch_policy_adapter import (
     build_gpu_runtime_contract,
 )
 from .robot_eval_job_request_contract import ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
+from .noise_degraded_policy_command_adapter import (
+    canonical_delta_ee_action_bounds_contract,
+)
 from .policy_ranking_ladder import build_known_ordering_policy_ladder
 
 HARNESS_MANIFEST_SCHEMA_VERSION = "real_policy_family_eval_harness_manifest.v1"
@@ -505,9 +508,7 @@ def verify_real_substrate_task_eval_report(job_dir: str | Path) -> dict[str, Any
     blockers: list[str] = []
 
     trace = _read_json(resolved / "normalized_attempt_trace.json")
-    attempts = [
-        _mapping(row) for row in trace.get("attempts") or [] if isinstance(row, Mapping)
-    ]
+    attempts = [_mapping(row) for row in trace.get("attempts") or [] if isinstance(row, Mapping)]
     if not attempts:
         blockers.append("normalized_attempt_trace_empty")
     runners = sorted({_string(row.get("runner")) for row in attempts})
@@ -546,9 +547,7 @@ def verify_real_substrate_task_eval_report(job_dir: str | Path) -> dict[str, Any
         blockers.append("task_eval_run_report_missing")
     scorecard = _mapping(report.get("scorecard"))
     conditions = [
-        _mapping(row)
-        for row in scorecard.get("conditions") or []
-        if isinstance(row, Mapping)
+        _mapping(row) for row in scorecard.get("conditions") or [] if isinstance(row, Mapping)
     ]
     trials = sum(int(row.get("trials") or 0) for row in conditions)
     if trials <= 0:
@@ -581,12 +580,13 @@ def register_family_in_validation_ladder(
 ) -> dict[str, Any]:
     """Validation-ladder-only registration; production stays blocked."""
     family_id = _string(family.get("family_id"))
-    adapter_command = family_adapter_command(
-        family=family, python_executable=python_executable
-    )
+    adapter_command = family_adapter_command(family=family, python_executable=python_executable)
     ladder = build_known_ordering_policy_ladder(
         inner_policy_id=family_id,
         inner_command=adapter_command,
+        inner_checkpoint_sha256=checkpoint_sha256,
+        registered_action_bounds=_mapping(family.get("ranking_ladder_action_bounds_contract"))
+        or canonical_delta_ee_action_bounds_contract(),
         generated_at=generated_at,
     )
     write_json(job_dir / "real_policy_family_ranking_ladder.json", ladder)
@@ -601,9 +601,7 @@ def register_family_in_validation_ladder(
         "integration_proof_scope": family.get("integration_proof_scope"),
         "source_policy": _mapping(family.get("source_policy")),
         "gpu_runtime": _mapping(family.get("gpu_runtime")),
-        "meaningful_manipulator_scoring": _mapping(
-            family.get("meaningful_manipulator_scoring")
-        ),
+        "meaningful_manipulator_scoring": _mapping(family.get("meaningful_manipulator_scoring")),
         "production_candidate_registration": {
             "registered": False,
             "registry": "UNITREE_ACTION_COMMAND_CANDIDATES",
@@ -680,9 +678,7 @@ def run_real_policy_family_eval(
     )
     policy_execution_command = _string(family.get("policy_execution_command"))
     policy_execution_commands = (
-        {"sim_controller_plugin": policy_execution_command}
-        if policy_execution_command
-        else None
+        {"sim_controller_plugin": policy_execution_command} if policy_execution_command else None
     )
     env_overrides = {
         "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": "true",
@@ -744,9 +740,7 @@ def run_real_policy_family_eval(
         "integration_proof_scope": family.get("integration_proof_scope"),
         "source_policy": _mapping(family.get("source_policy")),
         "gpu_runtime": _mapping(family.get("gpu_runtime")),
-        "meaningful_manipulator_scoring": _mapping(
-            family.get("meaningful_manipulator_scoring")
-        ),
+        "meaningful_manipulator_scoring": _mapping(family.get("meaningful_manipulator_scoring")),
         "checkpoint_manifest": loaded.manifest(),
         "job_id": job_id,
         "job_dir": str(job_dir),
@@ -763,9 +757,7 @@ def run_real_policy_family_eval(
             "task_eval_run_report": str(job_dir / "task_eval_run_report.json"),
             "sc3_eval_protocol": str(job_dir / "sc3_eval_protocol.json"),
             "normalized_attempt_trace": str(job_dir / "normalized_attempt_trace.json"),
-            "real_policy_family_registry": str(
-                job_dir / "real_policy_family_registry.json"
-            ),
+            "real_policy_family_registry": str(job_dir / "real_policy_family_registry.json"),
             "real_policy_family_ranking_ladder": str(
                 job_dir / "real_policy_family_ranking_ladder.json"
             ),
@@ -785,9 +777,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--job-id", required=True)
-    parser.add_argument(
-        "--family-config", default=None, help="Policy family config JSON path"
-    )
+    parser.add_argument("--family-config", default=None, help="Policy family config JSON path")
     parser.add_argument(
         "--scripted-baseline-checkpoint",
         default=None,
@@ -813,13 +803,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.family_config:
-        family = _mapping(
-            json.loads(Path(args.family_config).read_text(encoding="utf-8"))
-        )
+        family = _mapping(json.loads(Path(args.family_config).read_text(encoding="utf-8")))
     elif args.scripted_baseline_checkpoint:
-        checkpoint = create_scripted_baseline_checkpoint(
-            args.scripted_baseline_checkpoint
-        )
+        checkpoint = create_scripted_baseline_checkpoint(args.scripted_baseline_checkpoint)
         family = default_family_config(
             family_id="blueprint_scripted_pick_place_v1",
             checkpoint_dir=str(checkpoint),

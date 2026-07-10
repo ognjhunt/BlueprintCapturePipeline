@@ -18,6 +18,10 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from blueprint_pipeline.common import write_json, write_text  # noqa: E402
+from blueprint_pipeline.release_evidence_graph import (  # noqa: E402
+    evaluate_release_evidence_graph,
+)
 from blueprint_pipeline.safe_env import contract_test_env, load_env_files  # noqa: E402
 from blueprint_pipeline.source_metadata import git_source_metadata  # noqa: E402
 
@@ -795,6 +799,22 @@ def evidence_boundary(results: Sequence[CommandResult]) -> dict[str, object]:
     }
 
 
+def launch_status_and_exit_code(
+    results: Sequence[CommandResult],
+    release_evidence_graph: dict[str, object],
+) -> tuple[str, int]:
+    """Return a failing status whenever contracts or release evidence are blocked."""
+
+    blocking_failed = [
+        result for result in results if result.blocking and result.status == "failed"
+    ]
+    if blocking_failed:
+        return "automation_failed", 1
+    if release_evidence_graph.get("exit_code") != 0:
+        return "release_evidence_blocked", 1
+    return "automated_contracts_passed_manual_ops_required", 0
+
+
 def closeout_summary(report: dict) -> dict[str, object]:
     automated_passed = [
         result["label"]
@@ -827,6 +847,12 @@ def closeout_summary(report: dict) -> dict[str, object]:
             "Automated repository contracts did not pass. This is a failing "
             "launch-gate closeout, not manual-ops-ready proof."
         )
+    elif report.get("overall_status") == "release_evidence_blocked":
+        readout = (
+            "Repository contract slices passed, but the release-bound evidence graph "
+            "is blocked. Missing, stale, malformed, wrong-release, or failed evidence "
+            "cannot be overridden by manual closeout language."
+        )
     elif operator_toolchain_required:
         readout = (
             "Blocking automated failures are absent, but one or more operator-toolchain "
@@ -841,6 +867,9 @@ def closeout_summary(report: dict) -> dict[str, object]:
     return {
         "operator_readout": readout,
         "automated_contracts_failed": automated_failed,
+        "release_evidence_blockers": list(
+            (report.get("release_evidence_graph") or {}).get("blockers") or []
+        ),
         "automated_contracts_prove": automated_passed,
         "automated_contracts_do_not_prove": [
             "live Stripe buyer payment completion",
@@ -881,6 +910,11 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- {label}: `{item.get('status')}`")
             if item.get("skip_reason"):
                 lines.append(f"  Reason: {item['skip_reason']}")
+        lines.append("")
+    if closeout.get("release_evidence_blockers"):
+        lines.append("Release evidence blockers:")
+        for item in closeout["release_evidence_blockers"]:
+            lines.append(f"- `{item}`")
         lines.append("")
     if closeout.get("automated_contracts_do_not_prove"):
         lines.append("Automated contracts do not prove:")
@@ -945,6 +979,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--webapp-repo")
     parser.add_argument("--json-out")
     parser.add_argument("--markdown-out")
+    parser.add_argument(
+        "--release-evidence-dir",
+        help="Directory containing release-bound evidence envelopes named <evidence_id>.json.",
+    )
+    parser.add_argument(
+        "--release-image-digest",
+        default=os.getenv("BLUEPRINT_RELEASE_IMAGE_DIGEST", ""),
+        help="Immutable sha256 image digest shared by every release evidence envelope.",
+    )
     parser.add_argument("--run-ios-tests", action="store_true")
     parser.add_argument("--ios-simulator-udid", default=os.getenv("BLUEPRINT_IOS_SIMULATOR_UDID"))
     parser.add_argument(
@@ -991,13 +1034,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         reason = should_skip(spec)
         results.append(skipped_result(spec, reason) if reason else run_command(spec))
 
+    pipeline_source = git_source_metadata(
+        pipeline_repo,
+        repo_name="BlueprintCapturePipeline",
+    )
+    release_evidence_dir = (
+        Path(args.release_evidence_dir).expanduser()
+        if args.release_evidence_dir
+        else pipeline_repo / "output" / "release_evidence"
+    )
+    release_evidence_graph = evaluate_release_evidence_graph(
+        scope="PAID",
+        repository_sha=str(pipeline_source.get("head") or ""),
+        image_digest=args.release_image_digest,
+        evidence_dir=release_evidence_dir,
+        requirements_path=pipeline_repo / "docs" / "release_evidence_requirements.json",
+    )
+
     report = {
-        "schema_version": "v1",
+        "schema_version": "blueprint.paid_marketplace_launch_gate.v2",
         "generated_at": utc_now_iso(),
-        "pipeline_source": git_source_metadata(
-            pipeline_repo,
-            repo_name="BlueprintCapturePipeline",
-        ),
+        "pipeline_source": pipeline_source,
         "repos": {
           "BlueprintCapture": str(capture_repo),
           "BlueprintCapturePipeline": str(pipeline_repo),
@@ -1008,16 +1065,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         "source_status": summarize_sources(results),
         "manual_checks": manual_checks(),
         "launch_claims": build_claims(results),
+        "release_evidence_graph": release_evidence_graph,
     }
 
-    blocking_failed = [
-        result for result in results if result.blocking and result.status == "failed"
-    ]
-    report["overall_status"] = (
-        "automation_failed"
-        if blocking_failed
-        else "automated_contracts_passed_manual_ops_required"
-    )
+    overall_status, exit_code = launch_status_and_exit_code(results, release_evidence_graph)
+    report["overall_status"] = overall_status
     report["closeout_summary"] = closeout_summary(report)
 
     json_out = Path(args.json_out).expanduser() if args.json_out else pipeline_repo / "output" / "paid_marketplace_launch_gate.json"
@@ -1025,14 +1077,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     json_out.parent.mkdir(parents=True, exist_ok=True)
     markdown_out.parent.mkdir(parents=True, exist_ok=True)
 
-    json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    markdown_out.write_text(render_markdown(report), encoding="utf-8")
+    write_json(json_out, report)
+    write_text(markdown_out, render_markdown(report))
 
     print(f"[launch-gate] overall_status={report['overall_status']}")
     print(f"[launch-gate] json={json_out}")
     print(f"[launch-gate] markdown={markdown_out}")
 
-    return 1 if blocking_failed else 0
+    return exit_code
 
 
 if __name__ == "__main__":

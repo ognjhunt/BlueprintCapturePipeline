@@ -11,6 +11,94 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_projection_ready_inputs(
+    *,
+    camera: Path,
+    robot_model: Path,
+    robot_state: Path,
+    state_extras: dict[str, object] | None = None,
+) -> None:
+    _write_json(
+        camera,
+        {
+            "fx": 800,
+            "fy": 800,
+            "cx": 320,
+            "cy": 240,
+            "width": 640,
+            "height": 480,
+            "camera_from_world": [
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ],
+            "reference_frame": "world",
+            "camera_frame": "head_camera",
+            "translation_unit": "meters",
+            "reprojection_error_px": 0.5,
+        },
+    )
+    robot_model.write_text(
+        """<robot name="test_robot">
+  <link name="base_link"/>
+  <link name="right_end_effector"/>
+  <joint name="right_ee_slide" type="prismatic">
+    <parent link="base_link"/>
+    <child link="right_end_effector"/>
+    <origin xyz="0 -0.13 2" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.5" upper="0.5" effort="1" velocity="1"/>
+  </joint>
+</robot>
+""",
+        encoding="utf-8",
+    )
+    payload: dict[str, object] = {
+        "angle_unit": "radians",
+        "linear_unit": "meters",
+        "timestamp_unit": "seconds",
+        "reference_frame": "world",
+        "base_frame": "base_link",
+        "reference_tolerance_m": 1e-6,
+        "max_link_step_m": 0.1,
+        "joint_state_frames": [
+            {
+                "timestamp": 0.0,
+                "joint_names": ["right_ee_slide"],
+                "joint_positions": [0.005],
+                "world_from_robot_base": [
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1],
+                ],
+                "expected_link_positions": {
+                    "base_link": [0, 0, 0],
+                    "right_end_effector": [0.005, -0.13, 2.0],
+                },
+            },
+            {
+                "timestamp": 0.1,
+                "joint_names": ["right_ee_slide"],
+                "joint_positions": [0.006],
+                "world_from_robot_base": [
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1],
+                ],
+                "expected_link_positions": {
+                    "base_link": [0, 0, 0],
+                    "right_end_effector": [0.006, -0.13, 2.0],
+                },
+            },
+        ],
+    }
+    payload.update(state_extras or {})
+    _write_json(robot_state, payload)
+
+
 def test_eval_ready_task_grounding_builds_ready_sink_handle_contract(tmp_path: Path) -> None:
     capture_root = tmp_path / "capture"
     raw_root = capture_root / "raw"
@@ -52,22 +140,17 @@ def test_eval_ready_task_grounding_builds_ready_sink_handle_contract(tmp_path: P
         },
     )
     camera = capture_root / "pipeline" / "geometry" / "camera" / "intrinsics.json"
-    _write_json(camera, {"fx": 800, "fy": 800, "cx": 320, "cy": 240, "width": 640, "height": 480})
     scene = tmp_path / "kitchen.splat"
     scene.write_text("static 3dgs placeholder", encoding="utf-8")
     initial_frame = tmp_path / "initial.png"
     initial_frame.write_bytes(b"png")
     robot_model = tmp_path / "unitree_g1.xml"
-    robot_model.write_text("<mujoco/>", encoding="utf-8")
     robot_state = tmp_path / "robot_state.json"
-    _write_json(
-        robot_state,
-        {
-            "right_arm": [0.0] * 7,
-            "right_hand": [0.0] * 7,
-            "right_end_effector_xyz": [0.005, -0.13, 2.0],
-            "right_wrist_rotation_delta_deg": 22.0,
-        },
+    _write_projection_ready_inputs(
+        camera=camera,
+        robot_model=robot_model,
+        robot_state=robot_state,
+        state_extras={"right_wrist_rotation_delta_deg": 22.0},
     )
 
     manifest = grounding.build_eval_ready_task_grounding(
@@ -89,12 +172,80 @@ def test_eval_ready_task_grounding_builds_ready_sink_handle_contract(tmp_path: P
     assert manifest["readiness"]["learned_rollout_request_ready"] is True
     assert manifest["readiness"]["robot_projection_ready"] is True
     assert manifest["robot_fk_projection"]["status"] == "completed"
+    assert manifest["robot_fk_projection"]["urdf_or_mjcf_fk_solver_executed"] is True
+    assert manifest["robot_fk_projection"]["aligned_step_count"] == 2
     assert manifest["handle_proxy_state_check"]["handle_proxy_state"] == "on_candidate"
     assert manifest["readiness"]["exact_task_success_proven"] is False
     assert manifest["readiness"]["physical_contact_validated"] is False
     assert manifest["articulated_state_proxy"]["axis"] == [0.0, 1.0, 0.0]
     assert manifest["articulated_state_proxy"]["state_success_proven"] is False
+    assert manifest["task"]["support_level"] == "support_only"
+    assert manifest["readiness"]["buyer_grade_eligible"] is False
     assert Path(manifest["output_path"]).is_file()
+
+    missing_contract = grounding.build_eval_ready_task_grounding(
+        capture_root=capture_root,
+        task_id="turn_on_sink_handle",
+        task_text="turn on the sink right handle",
+        target_label="right sink handle",
+        scene_asset=scene,
+        initial_frame=initial_frame,
+        camera_calibration=camera,
+        robot_model=robot_model,
+        robot_state=robot_state,
+        articulated_handle_proxy=True,
+        handle_axis="0,1,0",
+        buyer_grade=True,
+    )
+    assert missing_contract["status"] == "blocked"
+    assert "task_contract_missing" in missing_contract["readiness"]["blockers"]
+
+    buyer_contract = {
+        "schema_version": grounding.TASK_CONTRACT_SCHEMA_VERSION,
+        "task_id": "turn_on_sink_handle",
+        "task_text": "turn on the sink right handle",
+        "target": {
+            "object_id": "right_sink_handle_01",
+            "label": "right sink handle",
+        },
+        "transition": {
+            "type": "articulation_state_change",
+            "source": "off",
+            "destination": "on",
+        },
+        "evidence_requirements": [
+            "reviewed target crop",
+            "target keypoint",
+            "measured joint state",
+        ],
+        "metric": {
+            "name": "handle_joint_angle_error",
+            "tolerance": {"value": 5.0, "unit": "degrees", "operator": "<="},
+        },
+        "evaluator_mapping": {
+            "evaluator_id": "sink_handle_state_evaluator",
+            "version": "1.0",
+        },
+    }
+    buyer_manifest = grounding.build_eval_ready_task_grounding(
+        capture_root=capture_root,
+        task_id="turn_on_sink_handle",
+        task_text="turn on the sink right handle",
+        target_label="right sink handle",
+        task_contract=buyer_contract,
+        buyer_grade=True,
+        scene_asset=scene,
+        initial_frame=initial_frame,
+        camera_calibration=camera,
+        robot_model=robot_model,
+        robot_state=robot_state,
+        articulated_handle_proxy=True,
+        handle_axis="0,1,0",
+    )
+    assert buyer_manifest["status"] == "ready_for_learned_wam_rollout_request"
+    assert buyer_manifest["task"]["support_level"] == "buyer_grade"
+    assert buyer_manifest["readiness"]["buyer_grade_eligible"] is True
+    assert buyer_manifest["task"]["task_contract_validation"]["status"] == "passed"
 
 
 def test_eval_ready_task_grounding_blocks_parent_sink_without_handle(tmp_path: Path) -> None:
@@ -130,6 +281,60 @@ def test_eval_ready_task_grounding_blocks_parent_sink_without_handle(tmp_path: P
     assert "missing_camera_calibration" in manifest["readiness"]["blockers"]
     assert manifest["readiness"]["learned_rollout_request_ready"] is False
     assert manifest["claim_boundary"]["learned_wam_rollout_is_not_physical_success_proof"] is True
+
+
+def test_eval_ready_grounding_rejects_cartesian_landmark_copy_and_reflected_camera(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    _write_json(
+        capture_root / "raw" / "object_index.json",
+        {
+            "objects": [
+                {
+                    "object_id": "target_handle",
+                    "label": "right sink handle",
+                    "keypoints": {"center": [320, 240]},
+                    "all_crops": ["crop.png"],
+                }
+            ]
+        },
+    )
+    camera = capture_root / "raw" / "camera_calibration.json"
+    model = tmp_path / "robot.urdf"
+    state = tmp_path / "robot_state.json"
+    _write_projection_ready_inputs(camera=camera, robot_model=model, robot_state=state)
+    calibration = json.loads(camera.read_text(encoding="utf-8"))
+    calibration["camera_from_world"][0][0] = -1.0
+    _write_json(camera, calibration)
+    _write_json(
+        state,
+        {
+            "right_end_effector_xyz": [0.0, 0.0, 2.0],
+            "fk_landmarks": {"right_end_effector": [0.0, 0.0, 2.0]},
+        },
+    )
+    scene = tmp_path / "scene.splat"
+    scene.write_text("scene", encoding="utf-8")
+
+    manifest = grounding.build_eval_ready_task_grounding(
+        capture_root=capture_root,
+        task_id="turn_handle",
+        task_text="turn the right sink handle",
+        target_label="right sink handle",
+        scene_asset=scene,
+        camera_calibration=camera,
+        robot_model=model,
+        robot_state=state,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["camera_calibration_quality_gate"]["projection_ready"] is False
+    assert "camera_from_reference_rotation_not_right_handed" in manifest[
+        "camera_calibration_quality_gate"
+    ]["blockers"]
+    assert manifest["robot_fk_projection"]["urdf_or_mjcf_fk_solver_executed"] is False
+    assert "robot_joint_state_sequence_missing" in manifest["robot_fk_projection"]["blockers"]
 
 
 def test_eval_ready_task_grounding_default_does_not_emit_sink_task_for_sinkless_site(
@@ -287,20 +492,17 @@ def test_eval_ready_task_grounding_builds_industrial_containment_proxy(
         },
     )
     camera = capture_root / "pipeline" / "geometry" / "camera" / "intrinsics.json"
-    _write_json(camera, {"fx": 800, "fy": 800, "cx": 320, "cy": 240, "width": 640, "height": 480})
     scene = tmp_path / "warehouse.splat"
     scene.write_text("static warehouse 3dgs placeholder", encoding="utf-8")
     initial_frame = tmp_path / "initial.png"
     initial_frame.write_bytes(b"png")
     robot_model = tmp_path / "unitree_g1.xml"
-    robot_model.write_text("<mujoco/>", encoding="utf-8")
     robot_state = tmp_path / "robot_state.json"
-    _write_json(
-        robot_state,
-        {
-            "right_arm": [0.0] * 7,
-            "right_hand": [0.0] * 7,
-            "right_end_effector_xyz": [0.2, -0.1, 2.0],
+    _write_projection_ready_inputs(
+        camera=camera,
+        robot_model=robot_model,
+        robot_state=robot_state,
+        state_extras={
             "payload_center_xyz": [1.0, 2.0, 0.55],
             "target_zone_center_xyz": [1.02, 2.01, 0.55],
             "target_zone_aabb": {
@@ -367,7 +569,7 @@ def test_eval_ready_task_grounding_cli_writes_summary(tmp_path: Path, capsys) ->
     (capture_root / "raw").mkdir(parents=True)
     _write_json(capture_root / "raw" / "object_index.json", {"objects": []})
 
-    assert grounding.main(["--capture-root", str(capture_root)]) == 0
+    assert grounding.main(["--capture-root", str(capture_root)]) == 2
     out = json.loads(capsys.readouterr().out)
 
     assert out["status"] == "blocked"
@@ -405,22 +607,17 @@ def _build_ready_manifest(tmp_path: Path) -> dict:
         },
     )
     camera = capture_root / "pipeline" / "geometry" / "camera" / "intrinsics.json"
-    _write_json(camera, {"fx": 800, "fy": 800, "cx": 320, "cy": 240, "width": 640, "height": 480})
     scene = tmp_path / "kitchen.splat"
     scene.write_text("static 3dgs placeholder", encoding="utf-8")
     initial_frame = tmp_path / "initial.png"
     initial_frame.write_bytes(b"png")
     robot_model = tmp_path / "unitree_g1.xml"
-    robot_model.write_text("<mujoco/>", encoding="utf-8")
     robot_state = tmp_path / "robot_state.json"
-    _write_json(
-        robot_state,
-        {
-            "right_arm": [0.0] * 7,
-            "right_hand": [0.0] * 7,
-            "right_end_effector_xyz": [0.005, -0.13, 2.0],
-            "right_wrist_rotation_delta_deg": 22.0,
-        },
+    _write_projection_ready_inputs(
+        camera=camera,
+        robot_model=robot_model,
+        robot_state=robot_state,
+        state_extras={"right_wrist_rotation_delta_deg": 22.0},
     )
     return grounding.build_eval_ready_task_grounding(
         capture_root=capture_root,

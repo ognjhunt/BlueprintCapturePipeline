@@ -71,10 +71,10 @@ def test_video_to_world_runtime_env_templates_and_file_helpers(
 
     calls: dict[str, object] = {}
 
-    def fake_run(rendered, **kwargs):  # type: ignore[no-untyped-def]
-        calls["rendered"] = rendered
+    def fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        calls["argv"] = argv
         calls["kwargs"] = kwargs
-        return subprocess.CompletedProcess(rendered, 0, "out", "err")
+        return subprocess.CompletedProcess(argv, 0, "out", "err")
 
     monkeypatch.setattr(runtime.subprocess, "run", fake_run)
     completed = runtime._run_template(
@@ -83,8 +83,13 @@ def test_video_to_world_runtime_env_templates_and_file_helpers(
         12,
     )
     assert completed.stdout == "out"
-    assert calls["rendered"] == "echo in.mp4 scene"
-    assert calls["kwargs"]["timeout"] == 12
+    assert calls["argv"] == ["echo", "in.mp4", "scene"]
+    assert 0 < calls["kwargs"]["timeout"] <= 12
+    assert calls["kwargs"]["shell"] is False
+
+    invalid_command = runtime._run_template('"unterminated', {}, 12)
+    assert invalid_command.returncode == 64
+    assert invalid_command.stderr == "video_to_world_command_template_invalid_or_empty"
 
     npy_path = Path(runtime._write_npy(tmp_path / "arrays" / "value.npy", np.asarray([1, 2])))
     assert np.load(npy_path).tolist() == [1, 2]

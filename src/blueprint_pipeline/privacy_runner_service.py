@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from .privacy_service_runtime import execute_privacy_service_request
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024
 
 
 def _service_kind() -> str:
@@ -22,6 +24,21 @@ def _service_kind() -> str:
 
 def _auth_token() -> str:
     return str(os.getenv("PRIVACY_RUNNER_TOKEN") or "").strip()
+
+
+def _require_auth_token() -> str:
+    token = _auth_token()
+    if not token:
+        raise RuntimeError("PRIVACY_RUNNER_TOKEN must be nonempty")
+    return token
+
+
+def _max_request_bytes() -> int:
+    try:
+        value = int(str(os.getenv("PRIVACY_RUNNER_MAX_REQUEST_BYTES") or DEFAULT_MAX_REQUEST_BYTES))
+    except ValueError:
+        value = DEFAULT_MAX_REQUEST_BYTES
+    return max(1, min(value, 64 * 1024 * 1024))
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -38,9 +55,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         token = _auth_token()
         if not token:
-            return True
+            return False
         header = str(self.headers.get("Authorization") or "").strip()
-        return header == f"Bearer {token}"
+        return hmac.compare_digest(
+            header.encode("utf-8"),
+            f"Bearer {token}".encode("utf-8"),
+        )
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path in {"/", "/healthz"}:
@@ -69,7 +89,7 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/", "/run"}:
+        if self.path not in {"/", "/run", "/canary"}:
             self._send_json(HTTPStatus.NOT_FOUND, {"status": "failed", "reason": "not_found"})
             log_event(
                 logger,
@@ -94,10 +114,52 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/canary":
+            if str(self.headers.get("Content-Length") or "0").strip() not in {"", "0"}:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"status": "failed", "reason": "canary_body_forbidden"},
+                )
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "status": "ok",
+                    "authentication": "verified",
+                    "runner_kind": _service_kind(),
+                    "model_execution_performed": False,
+                },
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "privacy_runner.auth_canary_passed",
+                runner_kind=_service_kind(),
+                model_execution_performed=False,
+            )
+            return
+
+        content_length = str(self.headers.get("Content-Length") or "").strip()
         try:
-            length = int(self.headers.get("Content-Length") or "0")
+            length = int(content_length or "0")
         except ValueError:
-            length = 0
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"status": "failed", "reason": "invalid_content_length"},
+            )
+            return
+        if length < 0:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"status": "failed", "reason": "invalid_content_length"},
+            )
+            return
+        if length > _max_request_bytes():
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"status": "failed", "reason": "request_too_large"},
+            )
+            return
         raw = self.rfile.read(length) if length > 0 else b"{}"
         try:
             body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -142,17 +204,22 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    _require_auth_token()
     port_raw = str(os.getenv("PORT") or "8080").strip()
     try:
         port = int(port_raw)
     except ValueError:
         port = 8080
-    server = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
+    host = str(
+        os.getenv("PRIVACY_RUNNER_HOST")
+        or ("0.0.0.0" if os.getenv("K_SERVICE") else "127.0.0.1")
+    ).strip()
+    server = ThreadingHTTPServer((host, port), _Handler)
     log_event(
         logger,
         logging.INFO,
         "privacy_runner.service_started",
-        host="0.0.0.0",
+        host=host,
         port=port,
         runner_kind=_service_kind(),
     )

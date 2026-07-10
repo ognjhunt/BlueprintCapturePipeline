@@ -113,6 +113,10 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
     doc_path = repo_root / "docs" / "BETA_CAPACITY_COST_STORAGE_MODEL_2026-07-08.md"
     terraform_path = repo_root / "deploy" / "terraform" / "main.tf"
     terraform_vars_example_path = repo_root / "deploy" / "terraform" / "terraform.tfvars.example"
+    spend_admission_doc_path = repo_root / "docs" / "PAID_SPEND_ADMISSION_LOCK.md"
+    spend_guard_service_path = (
+        repo_root / "deploy" / "systemd" / "blueprint-gpu-spend-guard.service"
+    )
 
     model = _load_json(model_path)
     retention_policy = _load_json(retention_policy_path)
@@ -138,6 +142,20 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
     budget_guardrails = model.get("budget_guardrails", {})
     if budget_guardrails.get("cohort_hard_stop_threshold_usd") != EXPECTED_COHORT_HARD_STOP_USD:
         raise AssertionError("capacity model must pin the cohort provider spend hard-stop threshold")
+    if budget_guardrails.get("requires_paid_spend_admission_lock") is not True:
+        raise AssertionError("capacity model must require the paid spend admission lock")
+    if budget_guardrails.get("paid_spend_admission_lock_schema") != (
+        "blueprint.paid_spend_admission_lock.v1"
+    ):
+        raise AssertionError("capacity model must pin the admission lock schema")
+    if budget_guardrails.get("threshold_equality_blocks_new_paid_work") is not True:
+        raise AssertionError("capacity model must block admission at exactly $5000")
+    if budget_guardrails.get("requires_current_provider_billing_reconciliation") is not True:
+        raise AssertionError("capacity model must require current billing reconciliation")
+    if budget_guardrails.get("requires_page_event_and_controlled_drain") is not True:
+        raise AssertionError("capacity model must require page and controlled drain evidence")
+    if budget_guardrails.get("maximum_override_duration_seconds") != 14400:
+        raise AssertionError("capacity model must cap paid spend overrides at four hours")
     if budget_guardrails.get("requires_gcp_billing_budget") is not True:
         raise AssertionError("capacity model must require a GCP billing budget")
     if budget_guardrails.get("gcp_billing_budget_resource") != "google_billing_budget.gpu_fleet_beta":
@@ -349,6 +367,7 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
             "blueprint.beta_cost_per_capture_model.v1",
             "p50 planning estimate",
             "gpu_fleet_budget_guard.v1",
+            "blueprint.paid_spend_admission_lock.v1",
             "google_billing_budget.gpu_fleet_beta",
             "billing_account_id",
             "Per-data-class policy",
@@ -366,6 +385,27 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
             "scripts/run_beta_intake_soak_test.py --dry-run",
             "--duration-seconds 900",
             "--concurrency 25",
+        ],
+    )
+
+    _require_text(
+        spend_admission_doc_path,
+        [
+            "`$5,000`",
+            "`$5,000.00` stops new paid work",
+            "blueprint.provider_billing_export.v1",
+            "maximum override validity interval is four hours",
+            "page_event.delivery_status",
+            "API-confirmed teardown proof",
+        ],
+    )
+    _require_text(
+        spend_guard_service_path,
+        [
+            "BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD=5000.0",
+            "--require-billing-reconciliation",
+            "--admission-lock-report",
+            "blueprint_pipeline.live_pipeline_manifest_alert",
         ],
     )
 

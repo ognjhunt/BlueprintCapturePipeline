@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -141,17 +142,57 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def write_json(path: Path, payload: Mapping[str, Any]) -> None:
+def _fsync_directory(path: Path) -> None:
+    """Best-effort durability barrier for a directory entry update."""
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        directory_fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        # Some filesystems/platforms do not support fsync on directories. The
+        # file itself has already been flushed before replace in that case.
+        pass
+    finally:
+        os.close(directory_fd)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Commit UTF-8 text without ever exposing a partially truncated target."""
+
     ensure_dir(path.parent)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def write_json(path: Path, payload: Mapping[str, Any]) -> None:
     content = json.dumps(dict(payload), indent=2)
     content = content.replace("<redacted:secret-field>", "REDACTED_SECRET_FIELD")
     content = content.replace("<redacted:secret>", "REDACTED_SECRET")
-    path.write_text(content, encoding="utf-8")
+    _atomic_write_text(path, content)
 
 
 def write_text(path: Path, content: str) -> None:
-    ensure_dir(path.parent)
-    path.write_text(content, encoding="utf-8")
+    _atomic_write_text(path, content)
 
 
 def read_json(path: Path) -> dict[str, Any]:

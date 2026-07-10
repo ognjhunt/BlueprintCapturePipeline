@@ -24,14 +24,6 @@ class BundleIdentity:
     capture_id: str
 
 
-_STALE_RAW_DERIVATIVES = (
-    "object_index.json",
-    "object_index_build_report.json",
-    "object_index_keyframes.json",
-    "object_grounding_hints.json",
-    "object_index_artifacts",
-)
-
 _LOCAL_WORKFLOW_PIPELINE_LANES = {
     "current",
     "qualification",
@@ -138,20 +130,9 @@ def stage_local_bundle(
     capture_root.mkdir(parents=True, exist_ok=True)
     if mode == "copy":
         shutil.copytree(raw_source, target_raw)
-        _remove_stale_raw_derivatives(target_raw)
     else:
         os.symlink(raw_source, target_raw, target_is_directory=True)
     return capture_root
-
-
-def _remove_stale_raw_derivatives(raw_root: Path) -> None:
-    for relative in _STALE_RAW_DERIVATIVES:
-        candidate = raw_root / relative
-        if candidate.is_symlink() or candidate.is_file():
-            candidate.unlink()
-            continue
-        if candidate.is_dir():
-            shutil.rmtree(candidate)
 
 
 def build_local_commands(*, capture_root: str | Path, storage_root: str | Path) -> Dict[str, str]:

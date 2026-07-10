@@ -23,11 +23,11 @@ terraform {
     }
   }
 
-  # Optional: Use GCS backend for state storage
-  # backend "gcs" {
-  #   bucket = "blueprint-terraform-state"
-  #   prefix = "capture-pipeline"
-  # }
+  # Required partial backend configuration. deploy/scripts/deploy.sh supplies
+  # the approved US bucket, prefix, and CMEK key after validating bucket
+  # retention/versioning/public-access controls. The GCS backend provides
+  # remote state locking; local state is not an allowed production path.
+  backend "gcs" {}
 }
 
 # =============================================================================
@@ -41,15 +41,27 @@ variable "project_id" {
 }
 
 variable "primary_region" {
-  description = "Primary deployment region"
+  description = "US-only beta primary deployment region"
   type        = string
   default     = "us-central1"
+
+  validation {
+    condition     = startswith(var.primary_region, "us-")
+    error_message = "The beta data-residency policy requires a US GCP primary_region."
+  }
 }
 
 variable "secondary_regions" {
-  description = "Secondary regions for overflow and geographic distribution"
+  description = "US-only beta secondary regions for overflow"
   type        = list(string)
-  default     = ["us-east1", "europe-west1"]
+  default     = ["us-east1"]
+
+  validation {
+    condition = alltrue([
+      for region in var.secondary_regions : startswith(region, "us-")
+    ])
+    error_message = "The beta data-residency policy forbids non-US secondary regions."
+  }
 }
 
 variable "storage_bucket" {
@@ -59,57 +71,57 @@ variable "storage_bucket" {
 }
 
 variable "docker_image" {
-  description = "Versioned or digest-pinned Docker image for the pipeline. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
+  description = "Immutable digest-pinned Docker image for the pipeline."
   type        = string
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.docker_image)) && !can(regex(":(latest|dev|test|local)$", var.docker_image))
-    error_message = "docker_image must be pinned to an immutable digest or a non-latest versioned release tag."
+    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.docker_image))
+    error_message = "docker_image must be pinned to an immutable sha256 digest."
   }
 }
 
 variable "privacy_sam3_image" {
-  description = "Versioned or digest-pinned Docker image for the SAM3 privacy service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
+  description = "Immutable digest-pinned Docker image for the SAM3 privacy service."
   type        = string
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.privacy_sam3_image)) && !can(regex(":(latest|dev|test|local)$", var.privacy_sam3_image))
-    error_message = "privacy_sam3_image must be pinned to an immutable digest or a non-latest versioned release tag."
+    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_sam3_image))
+    error_message = "privacy_sam3_image must be pinned to an immutable sha256 digest."
   }
 }
 
 variable "privacy_vip_image" {
-  description = "Versioned or digest-pinned Docker image for the VIP privacy service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
+  description = "Immutable digest-pinned Docker image for the VIP privacy service."
   type        = string
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.privacy_vip_image)) && !can(regex(":(latest|dev|test|local)$", var.privacy_vip_image))
-    error_message = "privacy_vip_image must be pinned to an immutable digest or a non-latest versioned release tag."
+    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_vip_image))
+    error_message = "privacy_vip_image must be pinned to an immutable sha256 digest."
   }
 }
 
 variable "privacy_deepprivacy2_image" {
-  description = "Versioned or digest-pinned Docker image for the DeepPrivacy2 service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
+  description = "Immutable digest-pinned Docker image for the DeepPrivacy2 service."
   type        = string
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.privacy_deepprivacy2_image)) && !can(regex(":(latest|dev|test|local)$", var.privacy_deepprivacy2_image))
-    error_message = "privacy_deepprivacy2_image must be pinned to an immutable digest or a non-latest versioned release tag."
+    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_deepprivacy2_image))
+    error_message = "privacy_deepprivacy2_image must be pinned to an immutable sha256 digest."
   }
 }
 
 variable "video_to_world_image" {
-  description = "Versioned or digest-pinned Docker image for the video_to_world geometry service. Use the git-SHA tag produced by deploy/scripts/deploy.sh or an @sha256 digest; never use latest."
+  description = "Immutable digest-pinned Docker image for the video_to_world geometry service."
   type        = string
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_.-]+)$", var.video_to_world_image)) && !can(regex(":(latest|dev|test|local)$", var.video_to_world_image))
-    error_message = "video_to_world_image must be pinned to an immutable digest or a non-latest versioned release tag."
+    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.video_to_world_image))
+    error_message = "video_to_world_image must be pinned to an immutable sha256 digest."
   }
 }
 
@@ -219,6 +231,16 @@ variable "worldlabs_default_model" {
   default     = "Marble 0.1-mini"
 }
 
+variable "worldlabs_api_key_secret_name" {
+  description = "Existing Secret Manager secret containing WORLDLABS_API_KEY"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.worldlabs_api_key_secret_name))
+    error_message = "worldlabs_api_key_secret_name must name an existing Secret Manager secret."
+  }
+}
+
 variable "privacy_pipeline_enabled" {
   description = "Enable privacy-safe walkthrough post-processing in the production runtime"
   type        = bool
@@ -264,14 +286,21 @@ variable "huggingface_token_secret_name" {
 variable "pipeline_sync_webapp_url" {
   description = "Blueprint-WebApp pipeline sync endpoint"
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^https://", var.pipeline_sync_webapp_url))
+    error_message = "pipeline_sync_webapp_url is required and must use HTTPS."
+  }
 }
 
-variable "pipeline_sync_token" {
-  description = "Shared auth token for Blueprint-WebApp pipeline sync"
+variable "pipeline_sync_token_secret_name" {
+  description = "Existing Secret Manager secret containing PIPELINE_SYNC_TOKEN"
   type        = string
-  default     = ""
-  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.pipeline_sync_token_secret_name))
+    error_message = "pipeline_sync_token_secret_name must name an existing Secret Manager secret."
+  }
 }
 
 variable "capture_extract_frames_service_account_email" {
@@ -311,11 +340,14 @@ variable "gpu_fleet_billing_budget_thresholds" {
   }
 }
 
-variable "privacy_runner_token" {
-  description = "Shared auth token for privacy runner HTTP services"
+variable "privacy_runner_token_secret_name" {
+  description = "Existing Secret Manager secret containing PRIVACY_RUNNER_TOKEN"
   type        = string
-  default     = ""
-  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.privacy_runner_token_secret_name))
+    error_message = "privacy_runner_token_secret_name must name an existing Secret Manager secret."
+  }
 }
 
 variable "additional_privacy_runner_invoker_members" {
@@ -332,11 +364,18 @@ variable "additional_privacy_runner_invoker_members" {
   }
 }
 
-variable "video_to_world_runner_token" {
-  description = "Auth token for the video_to_world HTTP service; falls back to privacy_runner_token when empty"
+variable "video_to_world_runner_token_secret_name" {
+  description = "Optional distinct Secret Manager secret for VIDEO_TO_WORLD_RUNNER_TOKEN; defaults to privacy_runner_token_secret_name"
   type        = string
   default     = ""
-  sensitive   = true
+
+  validation {
+    condition = (
+      var.video_to_world_runner_token_secret_name == "" ||
+      can(regex("^[A-Za-z0-9_-]{1,255}$", var.video_to_world_runner_token_secret_name))
+    )
+    error_message = "video_to_world_runner_token_secret_name must be empty to inherit the privacy token secret or name an existing secret."
+  }
 }
 
 variable "video_to_world_pipeline_preset" {
@@ -386,8 +425,8 @@ provider "google-beta" {
 # =============================================================================
 
 locals {
-  all_regions                 = concat([var.primary_region], var.secondary_regions)
-  video_to_world_runner_token = var.video_to_world_runner_token != "" ? var.video_to_world_runner_token : var.privacy_runner_token
+  all_regions                             = concat([var.primary_region], var.secondary_regions)
+  video_to_world_runner_token_secret_name = var.video_to_world_runner_token_secret_name != "" ? var.video_to_world_runner_token_secret_name : var.privacy_runner_token_secret_name
   privacy_runner_service_names = {
     sam3           = google_cloud_run_v2_service.privacy_sam3.name
     vip            = google_cloud_run_v2_service.privacy_vip.name
@@ -500,6 +539,92 @@ resource "google_service_account" "video_to_world_service" {
   account_id   = "video-to-world-service"
   display_name = "Blueprint Video To World Service"
   description  = "Service account for the video-to-world geometry HTTP service"
+}
+
+# Existing secret payloads are never accepted as Terraform variables. Terraform
+# stores only Secret Manager resource references in state and Cloud Run specs.
+data "google_secret_manager_secret" "privacy_runner_token" {
+  project   = var.project_id
+  secret_id = var.privacy_runner_token_secret_name
+
+  depends_on = [google_project_service.required_apis]
+}
+
+data "google_secret_manager_secret" "video_to_world_runner_token" {
+  project   = var.project_id
+  secret_id = local.video_to_world_runner_token_secret_name
+
+  depends_on = [google_project_service.required_apis]
+}
+
+data "google_secret_manager_secret" "pipeline_sync_token" {
+  project   = var.project_id
+  secret_id = var.pipeline_sync_token_secret_name
+
+  depends_on = [google_project_service.required_apis]
+}
+
+data "google_secret_manager_secret" "worldlabs_api_key" {
+  project   = var.project_id
+  secret_id = var.worldlabs_api_key_secret_name
+
+  depends_on = [google_project_service.required_apis]
+}
+
+data "google_secret_manager_secret" "huggingface_token" {
+  count = var.huggingface_token_secret_name != "" ? 1 : 0
+
+  project   = var.project_id
+  secret_id = var.huggingface_token_secret_name
+
+  depends_on = [google_project_service.required_apis]
+}
+
+resource "google_secret_manager_secret_iam_member" "pipeline_runner_secrets" {
+  for_each = toset([
+    data.google_secret_manager_secret.privacy_runner_token.secret_id,
+    data.google_secret_manager_secret.video_to_world_runner_token.secret_id,
+    data.google_secret_manager_secret.pipeline_sync_token.secret_id,
+    data.google_secret_manager_secret.worldlabs_api_key.secret_id,
+  ])
+
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.pipeline_runner.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "privacy_service_runner_token" {
+  for_each = {
+    sam3         = google_service_account.privacy_sam3_service.email
+    vip          = google_service_account.privacy_vip_service.email
+    deepprivacy2 = google_service_account.privacy_deepprivacy2_service.email
+  }
+
+  project   = var.project_id
+  secret_id = data.google_secret_manager_secret.privacy_runner_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${each.value}"
+}
+
+resource "google_secret_manager_secret_iam_member" "video_to_world_runner_token" {
+  project   = var.project_id
+  secret_id = data.google_secret_manager_secret.video_to_world_runner_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.video_to_world_service.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "privacy_service_huggingface" {
+  for_each = var.huggingface_token_secret_name != "" ? {
+    sam3         = google_service_account.privacy_sam3_service.email
+    vip          = google_service_account.privacy_vip_service.email
+    deepprivacy2 = google_service_account.privacy_deepprivacy2_service.email
+  } : {}
+
+  project   = var.project_id
+  secret_id = data.google_secret_manager_secret.huggingface_token[0].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${each.value}"
 }
 
 # =============================================================================
@@ -852,6 +977,17 @@ resource "google_cloud_run_v2_job" "pipeline" {
         }
 
         env {
+          name = "WORLDLABS_API_KEY"
+
+          value_source {
+            secret_key_ref {
+              secret  = data.google_secret_manager_secret.worldlabs_api_key.secret_id
+              version = "latest"
+            }
+          }
+        }
+
+        env {
           name  = "PRIVACY_PIPELINE_ENABLED"
           value = var.privacy_pipeline_enabled ? "true" : "false"
         }
@@ -882,8 +1018,14 @@ resource "google_cloud_run_v2_job" "pipeline" {
         }
 
         env {
-          name  = "PRIVACY_RUNNER_TOKEN"
-          value = var.privacy_runner_token
+          name = "PRIVACY_RUNNER_TOKEN"
+
+          value_source {
+            secret_key_ref {
+              secret  = data.google_secret_manager_secret.privacy_runner_token.secret_id
+              version = "latest"
+            }
+          }
         }
 
         env {
@@ -892,8 +1034,14 @@ resource "google_cloud_run_v2_job" "pipeline" {
         }
 
         env {
-          name  = "VIDEO_TO_WORLD_RUNNER_TOKEN"
-          value = local.video_to_world_runner_token
+          name = "VIDEO_TO_WORLD_RUNNER_TOKEN"
+
+          value_source {
+            secret_key_ref {
+              secret  = data.google_secret_manager_secret.video_to_world_runner_token.secret_id
+              version = "latest"
+            }
+          }
         }
 
         env {
@@ -907,8 +1055,14 @@ resource "google_cloud_run_v2_job" "pipeline" {
         }
 
         env {
-          name  = "PIPELINE_SYNC_TOKEN"
-          value = var.pipeline_sync_token
+          name = "PIPELINE_SYNC_TOKEN"
+
+          value_source {
+            secret_key_ref {
+              secret  = data.google_secret_manager_secret.pipeline_sync_token.secret_id
+              version = "latest"
+            }
+          }
         }
 
         env {
@@ -992,8 +1146,14 @@ resource "google_cloud_run_v2_service" "privacy_sam3" {
       }
 
       env {
-        name  = "PRIVACY_RUNNER_TOKEN"
-        value = var.privacy_runner_token
+        name = "PRIVACY_RUNNER_TOKEN"
+
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.privacy_runner_token.secret_id
+            version = "latest"
+          }
+        }
       }
 
       env {
@@ -1012,7 +1172,7 @@ resource "google_cloud_run_v2_service" "privacy_sam3" {
 
           value_source {
             secret_key_ref {
-              secret  = var.huggingface_token_secret_name
+              secret  = data.google_secret_manager_secret.huggingface_token[0].secret_id
               version = "latest"
             }
           }
@@ -1076,8 +1236,14 @@ resource "google_cloud_run_v2_service" "privacy_vip" {
       }
 
       env {
-        name  = "PRIVACY_RUNNER_TOKEN"
-        value = var.privacy_runner_token
+        name = "PRIVACY_RUNNER_TOKEN"
+
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.privacy_runner_token.secret_id
+            version = "latest"
+          }
+        }
       }
 
       env {
@@ -1101,7 +1267,7 @@ resource "google_cloud_run_v2_service" "privacy_vip" {
 
           value_source {
             secret_key_ref {
-              secret  = var.huggingface_token_secret_name
+              secret  = data.google_secret_manager_secret.huggingface_token[0].secret_id
               version = "latest"
             }
           }
@@ -1165,8 +1331,14 @@ resource "google_cloud_run_v2_service" "privacy_deepprivacy2" {
       }
 
       env {
-        name  = "PRIVACY_RUNNER_TOKEN"
-        value = var.privacy_runner_token
+        name = "PRIVACY_RUNNER_TOKEN"
+
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.privacy_runner_token.secret_id
+            version = "latest"
+          }
+        }
       }
 
       env {
@@ -1185,7 +1357,7 @@ resource "google_cloud_run_v2_service" "privacy_deepprivacy2" {
 
           value_source {
             secret_key_ref {
-              secret  = var.huggingface_token_secret_name
+              secret  = data.google_secret_manager_secret.huggingface_token[0].secret_id
               version = "latest"
             }
           }
@@ -1244,8 +1416,14 @@ resource "google_cloud_run_v2_service" "video_to_world" {
       }
 
       env {
-        name  = "VIDEO_TO_WORLD_RUNNER_TOKEN"
-        value = local.video_to_world_runner_token
+        name = "VIDEO_TO_WORLD_RUNNER_TOKEN"
+
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.video_to_world_runner_token.secret_id
+            version = "latest"
+          }
+        }
       }
 
       env {
@@ -1543,13 +1721,14 @@ resource "google_monitoring_alert_policy" "pipeline_failures" {
 
     condition_threshold {
       filter          = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\""
-      duration        = "300s"
+      duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 5
 
       aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_RATE"
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
       }
     }
   }
@@ -1749,6 +1928,17 @@ output "privacy_runner_services" {
     vip            = google_cloud_run_v2_service.privacy_vip.uri
     deepprivacy2   = google_cloud_run_v2_service.privacy_deepprivacy2.uri
     video_to_world = google_cloud_run_v2_service.video_to_world.uri
+  }
+}
+
+output "deployed_image_digests" {
+  description = "Immutable image digests bound into the refreshed deployment topology"
+  value = {
+    pipeline             = var.docker_image
+    privacy_sam3         = var.privacy_sam3_image
+    privacy_vip          = var.privacy_vip_image
+    privacy_deepprivacy2 = var.privacy_deepprivacy2_image
+    video_to_world       = var.video_to_world_image
   }
 }
 

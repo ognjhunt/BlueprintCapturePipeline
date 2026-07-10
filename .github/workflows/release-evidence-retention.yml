@@ -1,0 +1,247 @@
+name: Release Evidence Retention
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_sha:
+        description: "Exact 40-character release commit SHA."
+        required: true
+        type: string
+      image_digest:
+        description: "Exact deployed candidate digest (sha256:...)."
+        required: true
+        type: string
+      ci_run_id:
+        description: "Successful CI run id for repository_sha."
+        required: true
+        type: string
+      full_test_run_id:
+        description: "Successful Full Test Lane run id for repository_sha."
+        required: true
+        type: string
+      codeql_run_id:
+        description: "Successful CodeQL run id for repository_sha."
+        required: true
+        type: string
+      signature_run_id:
+        description: "Successful external release-signature verification run id."
+        required: true
+        type: string
+      signature_artifact_name:
+        description: "Artifact containing artifact_signature.json for repository_sha/image_digest."
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  security-events: read
+
+jobs:
+  archive-base-release-evidence:
+    name: Immutable BASE release evidence archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_SHA: ${{ inputs.repository_sha }}
+      RELEASE_IMAGE_DIGEST: ${{ inputs.image_digest }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      FULL_TEST_RUN_ID: ${{ inputs.full_test_run_id }}
+      CODEQL_RUN_ID: ${{ inputs.codeql_run_id }}
+      SIGNATURE_RUN_ID: ${{ inputs.signature_run_id }}
+    steps:
+      - name: Checkout exact release SHA
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.repository_sha }}
+          fetch-depth: 0
+
+      - name: Verify release binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"
+          [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${RELEASE_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          git merge-base --is-ancestor "${RELEASE_SHA}" origin/main
+
+      - name: Download SHA-bound CI artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.ci_run_id }}
+          pattern: "*-${{ inputs.repository_sha }}"
+          path: output/retention/ci-artifacts
+
+      - name: Download exact full-test artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.full_test_run_id }}
+          name: full-test-lane-${{ inputs.full_test_run_id }}
+          path: output/retention/full-test
+
+      - name: Download exact external signature evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.signature_run_id }}
+          name: ${{ inputs.signature_artifact_name }}
+          path: output/retention/signature-evidence
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen archive runtime
+        run: |
+          uv lock --check
+          uv sync --frozen --extra cloud
+
+      - name: Freeze exact release source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/retention/source
+          source_archive="output/retention/source/BlueprintCapturePipeline-${RELEASE_SHA}.tar.gz"
+          git archive \
+            --format=tar.gz \
+            --prefix="BlueprintCapturePipeline-${RELEASE_SHA}/" \
+            "${RELEASE_SHA}" \
+            > "${source_archive}"
+          sha256sum "${source_archive}" \
+            > output/retention/source/SHA256SUMS
+
+      - name: Collect run metadata and verify conclusions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p output/retention/run-evidence
+          uv run python scripts/collect_github_actions_evidence.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --run-id "${CI_RUN_ID}" \
+            --evidence-id pipeline_ci \
+            --output output/retention/run-evidence/ci.json
+          uv run python scripts/collect_github_actions_evidence.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --run-id "${FULL_TEST_RUN_ID}" \
+            --evidence-id full_test_lane_ci \
+            --junit output/retention/full-test/full-test-lane-junit.xml \
+            --output output/retention/run-evidence/full-test.json
+          uv run python scripts/collect_github_actions_evidence.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --run-id "${CODEQL_RUN_ID}" \
+            --evidence-id codeql_analysis \
+            --output output/retention/codeql-evidence/run.json
+          uv run python scripts/collect_github_actions_evidence.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --run-id "${SIGNATURE_RUN_ID}" \
+            --evidence-id artifact_signature \
+            --output output/retention/signature-evidence/run.json
+          uv run python - <<'PY'
+          import json, os
+          from pathlib import Path
+          run_paths = {
+              "ci": Path("output/retention/run-evidence/ci.json"),
+              "full-test": Path("output/retention/run-evidence/full-test.json"),
+              "codeql": Path("output/retention/codeql-evidence/run.json"),
+              "signature": Path("output/retention/signature-evidence/run.json"),
+          }
+          for name, path in run_paths.items():
+              payload = json.loads(path.read_text())
+              if payload.get("conclusion") != "success":
+                  raise SystemExit(f"{name} run did not succeed")
+              if payload.get("head_sha") != os.environ["RELEASE_SHA"]:
+                  raise SystemExit(f"{name} run belongs to a different SHA")
+          expected_workflows = {
+              "ci": "CI",
+              "full-test": "Full Test Lane",
+              "codeql": "CodeQL",
+              "signature": "Release Signature Verification",
+          }
+          for name, workflow_name in expected_workflows.items():
+              payload = json.loads(run_paths[name].read_text())
+              if payload.get("workflow_name") != workflow_name:
+                  raise SystemExit(f"{name} evidence came from the wrong workflow")
+          PY
+
+      - name: Validate release-bound signature proof
+        run: |
+          uv run python scripts/validate_release_signature_evidence.py \
+            --evidence-dir output/retention/signature-evidence \
+            --repository-sha "${RELEASE_SHA}" \
+            --image-digest "${RELEASE_IMAGE_DIGEST}" \
+            --output output/retention/signature-evidence/gate.json
+
+      - name: Download exact-commit CodeQL SARIF
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t analysis_ids < <(
+            gh api --paginate --slurp \
+              "/repos/${GITHUB_REPOSITORY}/code-scanning/analyses?per_page=100" \
+              | jq -r --arg sha "${RELEASE_SHA}" \
+                '.[][] | select(.commit_sha == $sha and .tool.name == "CodeQL") | .id'
+          )
+          test "${#analysis_ids[@]}" -gt 0
+          for analysis_id in "${analysis_ids[@]}"; do
+            [[ "${analysis_id}" =~ ^[0-9]+$ ]]
+            output="output/retention/codeql-evidence/analysis-${analysis_id}.sarif"
+            gh api \
+              -H "Accept: application/sarif+json" \
+              "/repos/${GITHUB_REPOSITORY}/code-scanning/analyses/${analysis_id}" \
+              > "${output}"
+            python -m json.tool "${output}" >/dev/null
+          done
+
+      - name: Assemble deterministic BASE evidence bundle
+        run: |
+          uv run python scripts/build_release_evidence_bundle.py \
+            --scope BASE \
+            --repository-sha "${RELEASE_SHA}" \
+            --image-digest "${RELEASE_IMAGE_DIGEST}" \
+            --evidence source=output/retention/source \
+            --evidence ci=output/retention/run-evidence/ci.json \
+            --evidence full_test=output/retention/full-test \
+            --evidence dependency=output/retention/ci-artifacts/dependency-security-${RELEASE_SHA} \
+            --evidence sast=output/retention/ci-artifacts/sast-${RELEASE_SHA} \
+            --evidence coverage=output/retention/ci-artifacts/ci-test-${RELEASE_SHA} \
+            --evidence supply_chain=output/retention/ci-artifacts/supply-chain-${RELEASE_SHA} \
+            --evidence codeql=output/retention/codeql-evidence \
+            --evidence signature=output/retention/signature-evidence \
+            --output output/retention/release-evidence.tar.gz \
+            --manifest output/retention/release-evidence-manifest.json
+
+      - name: Archive with Object Lock COMPLIANCE and verify readback
+        env:
+          BLUEPRINT_RELEASE_EVIDENCE_S3_URI: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_REGION }}
+        run: |
+          test -n "${BLUEPRINT_RELEASE_EVIDENCE_S3_URI}"
+          uv run python scripts/archive_release_evidence.py \
+            --bundle output/retention/release-evidence.tar.gz \
+            --bundle-manifest output/retention/release-evidence-manifest.json \
+            --archive-uri "${BLUEPRINT_RELEASE_EVIDENCE_S3_URI}" \
+            --output output/retention/immutable-archive-receipt.json \
+            --envelope-output output/retention/immutable_retention.json
+
+      - name: Upload retention receipt as transport copy
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: immutable-release-evidence-receipt-${{ inputs.repository_sha }}
+          path: |
+            output/retention/release-evidence-manifest.json
+            output/retention/immutable-archive-receipt.json
+            output/retention/immutable_retention.json
+          if-no-files-found: error
+          retention-days: 90

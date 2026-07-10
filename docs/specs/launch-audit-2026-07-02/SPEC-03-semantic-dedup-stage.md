@@ -1,5 +1,9 @@
 # SPEC-03: Semantic deduplication stage (embedding clustering + trajectory RMS)
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 - Status: Proposed
 - Priority: **P0 — launch blocker** (for Post-Training Data Package quality)
 - Area: new stage; touches `retrieval_index_stage.py`, `synthesis/reference_selection.py`

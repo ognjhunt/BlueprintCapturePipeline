@@ -24,7 +24,7 @@ import argparse
 import json
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -38,6 +38,7 @@ from blueprint_pipeline.isaac_g1_kitchen_parity_job import (  # noqa: E402
     JOB_MANIFEST_FILENAME,
     run_isaac_g1_kitchen_parity_job,
 )
+from blueprint_pipeline.common import write_json  # noqa: E402
 from blueprint_pipeline.warm_render_server import submit_warm_render_batch  # noqa: E402
 
 WARM_SERVE_MARKER_FILENAME = "warm_serve_pod.json"
@@ -65,8 +66,28 @@ def read_marker(out_dir: str | Path) -> dict[str, Any]:
 def write_marker(out_dir: str | Path, payload: dict[str, Any]) -> Path:
     path = _marker_path(out_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    write_json(path, payload)
     return path
+
+
+def _lease_fields(ttl_seconds: float) -> dict[str, str]:
+    now = datetime.now(timezone.utc)
+    return {
+        "heartbeat_at": now.isoformat(),
+        "lease_expires_at": (
+            now + timedelta(seconds=max(60.0, float(ttl_seconds)))
+        ).isoformat(),
+    }
+
+
+def _refresh_marker_lease(out_dir: str | Path) -> dict[str, Any]:
+    marker = read_marker(out_dir)
+    if marker.get("status") == "serving":
+        marker.update(
+            _lease_fields(float(marker.get("serve_idle_timeout_s") or 900.0) + 300.0)
+        )
+        write_marker(out_dir, marker)
+    return marker
 
 
 def start_warm_worker(
@@ -103,7 +124,7 @@ def start_warm_worker(
         serve_ready_timeout=serve_ready_timeout,
     )
     manifest_path = out_path / JOB_MANIFEST_FILENAME
-    manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    write_json(manifest_path, manifest)
     result: dict[str, Any] = {
         "status": manifest.get("status"),
         "blockers": manifest.get("blockers") or [],
@@ -117,9 +138,12 @@ def start_warm_worker(
             "provider": provider,
             "pod_id": warm_serve["instance_id"],
             "started_at": _utc_now_iso(),
+            **_lease_fields(float(serve_idle_timeout_s) + 300.0),
             "manifest_path": str(manifest_path),
-            "inbox_put_url_file": warm_serve.get("inbox_put_url_file"),
-            "output_get_url_file": warm_serve.get("output_get_url_file"),
+            "broker_base_url_file": warm_serve.get("broker_base_url_file"),
+            "broker_token_file": warm_serve.get("broker_token_file"),
+            "transport": "durable_warm_render_broker",
+            "single_object_transport_enabled": False,
             "serve_idle_timeout_s": serve_idle_timeout_s,
             "note": (
                 "Expected persistent warm render worker — gpu_spend_guard tags this pod "
@@ -143,7 +167,7 @@ def submit_tasks(
     submit_fn: Callable[..., dict] = submit_warm_render_batch,
 ) -> dict[str, Any]:
     """Submit one or more task scenarios to the serving pod and collect results."""
-    marker = read_marker(out_dir)
+    marker = _refresh_marker_lease(out_dir)
     if marker.get("status") != "serving":
         raise RuntimeError(f"warm worker status is {marker.get('status')!r}, not 'serving'")
     if scenarios_json:
@@ -165,7 +189,7 @@ def submit_tasks(
         with tmp:
             json.dump({"scenarios": scenarios}, tmp)
         scenarios_path = Path(tmp.name)
-    return submit_fn(
+    result = submit_fn(
         manifest_path=marker["manifest_path"],
         scenarios_path=scenarios_path,
         out_dir=Path(out_dir) / "warm_results",
@@ -173,6 +197,9 @@ def submit_tasks(
         interval_s=interval_s,
         stop_after=stop_after,
     )
+    if not stop_after:
+        _refresh_marker_lease(out_dir)
+    return result
 
 
 def stop_warm_worker(
@@ -197,6 +224,8 @@ def stop_warm_worker(
     teardown = provider.terminate(pod_id)
     marker["status"] = "terminated"
     marker["terminated_at"] = _utc_now_iso()
+    marker["heartbeat_at"] = marker["terminated_at"]
+    marker["lease_expires_at"] = marker["terminated_at"]
     marker["teardown"] = teardown
     write_marker(out_dir, marker)
     return {"status": "terminated", "pod_id": pod_id, "teardown": teardown}
@@ -218,6 +247,7 @@ def worker_status(
             status["provider_view"] = provider_factory(
                 str(marker.get("provider") or "runpod")
             ).inspect(pod_id)
+            status["marker"] = _refresh_marker_lease(out_dir)
         except Exception as exc:  # noqa: BLE001 - status must not crash on a dead pod
             status["provider_view"] = {"status": "inspect_failed", "error": repr(exc)[:200]}
     return status

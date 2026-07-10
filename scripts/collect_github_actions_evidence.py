@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -106,7 +106,9 @@ def collect_evidence(
         "jobs": _job_summaries(payload),
     }
     if junit is not None:
-        evidence["junit_path"] = str(junit)
+        # Durable evidence records the artifact-local name, never the runner's
+        # absolute workspace path.
+        evidence["junit_artifact_name"] = junit.name
         evidence["test_counts"] = _junit_counts(junit)
     return evidence
 

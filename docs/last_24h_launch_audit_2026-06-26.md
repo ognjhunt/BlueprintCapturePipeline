@@ -19,7 +19,7 @@ For the sim-only policy-comparison product, the current evidence shows strong pr
 
 Repository:
 
-- `cwd`: `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline`
+- `cwd`: `$HOME/workspace/BlueprintCapturePipeline`
 - `HEAD`: `aa37e89ef1798260c3c6bf9c35bf83b72a545022`
 - `origin/main`: `aa37e89ef1798260c3c6bf9c35bf83b72a545022`
 - current worktree after the stabilization pass: 96 dirty status entries, including broad changes across docs, scripts, live pipeline, G1 controlled-run evidence, WAM/perception harnesses, OSCAR visual augmentation, live-pipeline forwarding setup, and tests
@@ -30,7 +30,7 @@ Repository:
 Primary capture root:
 
 ```text
-/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611
+$HOME/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611
 ```
 
 Primary sim-only local-gate job:
@@ -207,14 +207,14 @@ Each loop below is deliberately scoped so the next session can work for a long t
 ### Loop 1 - Worktree Stabilization And Current Evidence Refresh
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, deeply stabilize the current dirty worktree and refresh the launch-readiness evidence without changing scope or overclaiming.
+/goal In $HOME/workspace/BlueprintCapturePipeline, deeply stabilize the current dirty worktree and refresh the launch-readiness evidence without changing scope or overclaiming.
 
 Read first:
-- /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md
-- /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md
-- /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md
-- /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml
-- /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/last_24h_launch_audit_2026-06-26.md
+- $HOME/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md
+- $HOME/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md
+- $HOME/workspace/BlueprintCapturePipeline/README.md
+- $HOME/workspace/BlueprintCapturePipeline/pyproject.toml
+- $HOME/workspace/BlueprintCapturePipeline/docs/last_24h_launch_audit_2026-06-26.md
 
 Current facts to verify, not assume:
 - HEAD and origin/main are aa37e89ef1798260c3c6bf9c35bf83b72a545022 at the time this prompt was written.
@@ -251,10 +251,10 @@ Stop only when:
 ### Loop 2 - Close The Sim-Only Beta Core Blockers
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, close the current sim-only beta core blockers for the first-gpu walkthrough capture root. Do not expand this into physical robot readiness or production deployment.
+/goal In $HOME/workspace/BlueprintCapturePipeline, close the current sim-only beta core blockers for the first-gpu walkthrough capture root. Do not expand this into physical robot readiness or production deployment.
 
 Use this capture root:
-/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611
+$HOME/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611
 
 Use this job id:
 robot-eval-sim-only-beta-local-gate-capture-intent-first-gpu-humanoid-navigation-smoke-61099fcc72
@@ -303,7 +303,7 @@ Stop only when:
 ### Loop 3 - Production Forwarding, Token, Intake Health, And Deployment Parity
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, close the production WebApp-to-Pipeline forwarding and deployment parity blockers for the sim-only beta gate without printing secrets or making physical-readiness claims.
+/goal In $HOME/workspace/BlueprintCapturePipeline, close the production WebApp-to-Pipeline forwarding and deployment parity blockers for the sim-only beta gate without printing secrets or making physical-readiness claims.
 
 Read first:
 - docs/last_24h_launch_audit_2026-06-26.md
@@ -334,7 +334,7 @@ Commands to adapt:
 - `python -m blueprint_pipeline.live_pipeline_forwarding_secret_setup --env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env" --forward-url "https://paperclip.tryblueprint.io/api/live-pipeline/job-requests" --capture-root "$CAPTURE_ROOT" --site-slug "$WEBAPP_SITE_SLUG"`
 - `set -a; source "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"; set +a`
 - `blueprint-live-pipeline-intake-service --host 127.0.0.1 --port 8765`
-- From `/Users/nijelhunt_1/workspace/Blueprint-WebApp`: `npm run pipeline:forwarding:preflight -- --require-forwarding --probe-intake-audit --forwarding-env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"`
+- From `$HOME/workspace/Blueprint-WebApp`: `npm run pipeline:forwarding:preflight -- --require-forwarding --probe-intake-audit --forwarding-env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"`
 - `python scripts/run_sim_only_beta_deployment_parity_proof.py --capture-root "$CAPTURE_ROOT" --route-forwarding-proof "$ROUTE_PROOF" --webapp-url https://www.tryblueprint.io --pipeline-intake-url https://paperclip.tryblueprint.io/api/live-pipeline/job-requests --forwarding-env-file "$HOME/.blueprint-secrets/live_pipeline_forwarding.env"`
 
 Claim boundaries:
@@ -356,10 +356,10 @@ Stop only when:
 ### Loop 4 - Digital Twin Fidelity, Object Semantics, And Collision Coverage
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, close the robot-team-grade digital-twin fidelity blockers for the first-gpu walkthrough MuJoCo G1 sim path while preserving the boundary that this remains simulator/support evidence.
+/goal In $HOME/workspace/BlueprintCapturePipeline, close the robot-team-grade digital-twin fidelity blockers for the first-gpu walkthrough MuJoCo G1 sim path while preserving the boundary that this remains simulator/support evidence.
 
 Use this capture root:
-/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611
+$HOME/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611
 
 Read first:
 - docs/last_24h_launch_audit_2026-06-26.md
@@ -401,7 +401,7 @@ Stop only when:
 ### Loop 5 - Remote/Cloud Provider Execution Closure With Spend Controls
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, prepare and prove the remote/cloud provider execution path for robot-team-grade closure only after local sim-only evidence is clean. Keep provider spend bounded and separate from launch approval.
+/goal In $HOME/workspace/BlueprintCapturePipeline, prepare and prove the remote/cloud provider execution path for robot-team-grade closure only after local sim-only evidence is clean. Keep provider spend bounded and separate from launch approval.
 
 Read first:
 - docs/last_24h_launch_audit_2026-06-26.md
@@ -452,7 +452,7 @@ Stop only when:
 ### Loop 6 - Optional Physical Unitree G1 Controlled-Run Evidence Kit
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, turn the current G1 controlled-run templates into a real evidence collection path for a physical Unitree G1 controlled test, but do not claim physical readiness until owner evidence is actually supplied and accepted.
+/goal In $HOME/workspace/BlueprintCapturePipeline, turn the current G1 controlled-run templates into a real evidence collection path for a physical Unitree G1 controlled test, but do not claim physical readiness until owner evidence is actually supplied and accepted.
 
 Read first:
 - docs/last_24h_launch_audit_2026-06-26.md
@@ -498,7 +498,7 @@ Stop only when:
 ### Loop 7 - Owner Robot Camera Calibration For Physical G1 Launch
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, close the owner robot camera calibration gap for physical Unitree G1 testing while preserving sim-only defaults as support-only.
+/goal In $HOME/workspace/BlueprintCapturePipeline, close the owner robot camera calibration gap for physical Unitree G1 testing while preserving sim-only defaults as support-only.
 
 Use this current request artifact:
 output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611/pipeline/robot_eval_jobs/robot-eval-sim-only-beta-local-gate-capture-intent-first-gpu-humanoid-navigation-smoke-61099fcc72/owner_robot_camera_calibration_request.json
@@ -539,7 +539,7 @@ Stop only when:
 ### Loop 8 - Real-World Anchors And Sim-Vs-Real Calibration
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, implement and verify the optional real-world anchor ingestion/calibration path for the current policy-eval job. Do not treat this as required for the sim-only policy-comparison launch, and do not compute or claim SRCC/MMRV/Pearson until exact accepted anchors exist.
+/goal In $HOME/workspace/BlueprintCapturePipeline, implement and verify the optional real-world anchor ingestion/calibration path for the current policy-eval job. Do not treat this as required for the sim-only policy-comparison launch, and do not compute or claim SRCC/MMRV/Pearson until exact accepted anchors exist.
 
 Read first:
 - docs/last_24h_launch_audit_2026-06-26.md
@@ -578,7 +578,7 @@ Stop only when:
 ### Loop 9 - WAM/Perception Harness Review-Quality And Candidate Selection
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, audit and harden the WAM/perception harness and candidate-selection path so generated WAM artifacts can support review without becoming unsupported winner, physical-readiness, or rank-fidelity claims.
+/goal In $HOME/workspace/BlueprintCapturePipeline, audit and harden the WAM/perception harness and candidate-selection path so generated WAM artifacts can support review without becoming unsupported winner, physical-readiness, or rank-fidelity claims.
 
 Read first:
 - docs/last_24h_launch_audit_2026-06-26.md
@@ -620,7 +620,7 @@ Stop only when:
 ### Loop 10 - Package Delivery, Review Acceptance, And Customer Handoff
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, close the package delivery, review acceptance, rights/privacy, and customer-handoff gaps for the sim-only beta and robot-team-grade paths without treating delivery as deployment approval.
+/goal In $HOME/workspace/BlueprintCapturePipeline, close the package delivery, review acceptance, rights/privacy, and customer-handoff gaps for the sim-only beta and robot-team-grade paths without treating delivery as deployment approval.
 
 Read first:
 - docs/last_24h_launch_audit_2026-06-26.md

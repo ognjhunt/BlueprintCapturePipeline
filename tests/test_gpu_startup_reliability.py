@@ -270,6 +270,8 @@ def test_start_warm_worker_writes_expected_serve_marker(tmp_path: Path) -> None:
     assert marker["status"] == "serving"
     assert marker["pod_id"] == "pod-serve"
     assert marker["manifest_path"].endswith(J.JOB_MANIFEST_FILENAME)
+    assert marker["heartbeat_at"]
+    assert marker["lease_expires_at"] > marker["heartbeat_at"]
     # the manifest itself is persisted for submit's URL-file lookup
     assert (tmp_path / J.JOB_MANIFEST_FILENAME).is_file()
 
@@ -375,7 +377,14 @@ def test_spend_guard_tags_expected_serve_pods_and_protects_them(tmp_path: Path) 
     serve_dir = tmp_path / "output" / "warm_worker_kitchen"
     serve_dir.mkdir(parents=True)
     (serve_dir / guard.WARM_SERVE_MARKER_FILENAME).write_text(
-        json.dumps({"status": "serving", "pod_id": "pod-serve", "provider": "runpod"})
+        json.dumps(
+            {
+                "status": "serving",
+                "pod_id": "pod-serve",
+                "provider": "runpod",
+                "lease_expires_at": "2027-02-01T00:00:00Z",
+            }
+        )
     )
     stale_dir = tmp_path / "output" / "old_worker"
     stale_dir.mkdir(parents=True)
@@ -383,7 +392,10 @@ def test_spend_guard_tags_expected_serve_pods_and_protects_them(tmp_path: Path) 
         json.dumps({"status": "terminated", "pod_id": "pod-old", "provider": "runpod"})
     )
 
-    serve_ids = guard.find_expected_serve_pod_ids([tmp_path / "output"])
+    serve_ids = guard.find_expected_serve_pod_ids(
+        [tmp_path / "output"],
+        now=1_800_000_000.0,
+    )
     assert serve_ids == {"pod-serve"}
 
     instances = [

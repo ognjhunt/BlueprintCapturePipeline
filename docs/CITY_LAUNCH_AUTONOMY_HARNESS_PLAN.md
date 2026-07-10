@@ -13,12 +13,12 @@ The target launch claim is:
 ## Current Hard Stops
 
 1. Fix the iOS compile failure before any city launch run can be considered shippable.
-   - Source: `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/ViewModels/NearbyTargetsViewModel.swift`
+   - Source: `$HOME/workspace/BlueprintCapture/BlueprintCapture/ViewModels/NearbyTargetsViewModel.swift`
    - Current issue: `Task { [weak self] @MainActor in` is invalid Swift syntax.
    - Acceptance: the targeted launch test and a broader app test lane pass on a simulator, then the real-device smoke lane runs.
 
 2. Replace contract-only launch proof with a real city proof artifact.
-   - Source gate: `/Users/nijelhunt_1/workspace/BlueprintCapture/scripts/validate_launch_readiness.py`
+   - Source gate: `$HOME/workspace/BlueprintCapture/scripts/validate_launch_readiness.py`
    - Current limitation: `contract_only` proof cannot be used for a real launch.
    - Acceptance: `ops/launch-readiness/<city-slug>.launch-proof.json` is generated from live checks and passes the validator without `--contract-only`.
 
@@ -57,7 +57,7 @@ Create a city-launch harness with four durable layers:
 
 ## Workstream 1: iOS Compile And Real-Device Launch Lane
 
-Owner scope: `/Users/nijelhunt_1/workspace/BlueprintCapture`
+Owner scope: `$HOME/workspace/BlueprintCapture`
 
 Tasks:
 
@@ -84,8 +84,8 @@ Acceptance:
 
 Owner scope:
 
-- `/Users/nijelhunt_1/workspace/BlueprintCapture`
-- `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline`
+- `$HOME/workspace/BlueprintCapture`
+- `$HOME/workspace/BlueprintCapturePipeline`
 
 Tasks:
 
@@ -113,7 +113,7 @@ Acceptance:
 
 ## Workstream 3: Readiness Contract Correction
 
-Owner scope: `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline`
+Owner scope: `$HOME/workspace/BlueprintCapturePipeline`
 
 Tasks:
 
@@ -135,7 +135,7 @@ Acceptance:
 
 ## Workstream 4: Privacy-Safe Provider Proof
 
-Owner scope: `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline`
+Owner scope: `$HOME/workspace/BlueprintCapturePipeline`
 
 Tasks:
 
@@ -159,8 +159,8 @@ Acceptance:
 
 Owner scope:
 
-- `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline`
-- `/Users/nijelhunt_1/workspace/Blueprint-WebApp`
+- `$HOME/workspace/BlueprintCapturePipeline`
+- `$HOME/workspace/Blueprint-WebApp`
 
 Tasks:
 
@@ -190,8 +190,8 @@ Acceptance:
 
 Owner scope:
 
-- `/Users/nijelhunt_1/workspace/Blueprint-WebApp`
-- `/Users/nijelhunt_1/workspace/BlueprintCapture`
+- `$HOME/workspace/Blueprint-WebApp`
+- `$HOME/workspace/BlueprintCapture`
 
 Tasks:
 
@@ -230,11 +230,15 @@ Tasks:
   - `python scripts/run_autonomous_city_launch_harness.py --city-slug <city> --budget-cents <budget> --capture-path iphone --capture-path meta_glasses`
 - Add a resume command:
   - `python scripts/resume_autonomous_city_launch_harness.py --run-id <run-id>`
-- Add append-only run state:
-  - `ops/city-launch-runs/<city-slug>/<run-id>/manifest.json`
-  - `ops/city-launch-runs/<city-slug>/<run-id>/work-packets/*.json`
-  - `ops/city-launch-runs/<city-slug>/<run-id>/proof.launch-proof.json`
-  - `ops/city-launch-runs/<city-slug>/<run-id>/blockers.jsonl`
+- Add append-only run state under the private external root selected by
+  `BLUEPRINT_CITY_LAUNCH_OUTPUT_ROOT` (never under the source checkout):
+  - `<evidence-root>/<city-slug>/<run-id>/manifest.json`
+  - `<evidence-root>/<city-slug>/<run-id>/work-packets/*.json`
+  - `<evidence-root>/<city-slug>/<run-id>/proof.launch-proof.json`
+  - `<evidence-root>/<city-slug>/<run-id>/blockers.jsonl`
+- Require the `city-launch-harness-run.v2` manifest, exact SHA-256/size inventory,
+  private-root access mode, seven-day freshness check, 365-day retention date, and an
+  explicit external-disclosure approval check.
 - Each delegated lane must write either proof or a blocker. Silent completion is failure.
 - Add a synthesizer that merges lane results into the launch proof and calls the validator.
 
@@ -248,9 +252,9 @@ Acceptance:
 
 Owner scope:
 
-- `/Users/nijelhunt_1/workspace/BlueprintCapture`
-- `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline`
-- `/Users/nijelhunt_1/workspace/Blueprint-WebApp`
+- `$HOME/workspace/BlueprintCapture`
+- `$HOME/workspace/BlueprintCapturePipeline`
+- `$HOME/workspace/Blueprint-WebApp`
 
 Tasks:
 
@@ -327,14 +331,14 @@ pytest tests/test_alpha_readiness.py tests/test_run_e2e.py tests/test_webapp_syn
 Capture bridge verification:
 
 ```bash
-cd /Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames
+cd $HOME/workspace/BlueprintCapture/cloud/extract-frames
 npm test
 ```
 
 iOS targeted verification:
 
 ```bash
-cd /Users/nijelhunt_1/workspace/BlueprintCapture
+cd $HOME/workspace/BlueprintCapture
 xcodebuild test \
   -project BlueprintCapture.xcodeproj \
   -scheme BlueprintCapture \
@@ -347,7 +351,7 @@ xcodebuild test \
 Real launch proof validation:
 
 ```bash
-cd /Users/nijelhunt_1/workspace/BlueprintCapture
+cd $HOME/workspace/BlueprintCapture
 python3 scripts/validate_launch_readiness.py \
   --proof ops/launch-readiness/<city-slug>.launch-proof.json \
   --city-slug <city-slug> \

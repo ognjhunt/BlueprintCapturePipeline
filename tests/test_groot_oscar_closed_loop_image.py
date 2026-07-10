@@ -18,6 +18,7 @@ from blueprint_pipeline.oscar_official_release import OFFICIAL_OSCAR_HF_REVISION
 
 VERSIONED_REF = "docker.io/nijelhunt/blueprint-groot-oscar-eval:20260706-cu128-amd64"
 DIGEST_REF = "docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:" + "a" * 64
+REAL_CONSISTENCY_COMMAND = "python -m owner_runtime.shared_model_inverse_scorer"
 
 
 # --------------------------------------------------------------------------- #
@@ -163,6 +164,7 @@ def test_launch_plan_blocked_when_not_sealed(tmp_path):
         steps=3,
         task_prompt="open the fridge",
         output_dir="/w/out",
+        wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
     assert plan["sealed_active"] is False
     assert plan["groot_server_command"] == []
@@ -179,6 +181,7 @@ def test_launch_plan_groot_server_command_uses_baked_venv_and_checkpoint():
         task_prompt="open the fridge",
         output_dir="/w/out",
         device="cpu",
+        wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
     assert plan["sealed_active"] is True
     cmd = plan["groot_server_command"]
@@ -201,6 +204,7 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
         output_dir="/w/out",
         oscar_height=256,
         oscar_width=384,
+        wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
     cmd = plan["closed_loop_command"]
     assert cmd[:3] == ["python", "-m", "blueprint_pipeline.oscar_isaac_closed_loop_eval"]
@@ -221,7 +225,7 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert "--allow-wam-consistency-scoring" in cmd
     assert "--require-forward-inverse-consistency" in cmd
     assert cmd[cmd.index("--wam-consistency-command") + 1] == (
-        gocl.DEFAULT_WAM_CONSISTENCY_COMMAND
+        REAL_CONSISTENCY_COMMAND
     )
     assert cmd[cmd.index("--wam-consistency-timeout-seconds") + 1] == "300.0"
     assert "--require-generated-video-success-label" not in cmd
@@ -237,7 +241,7 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert plan["quality_gate_contract"] == {
         "min_coherent_horizon_frames": 2,
         "forward_inverse_consistency_required": True,
-        "forward_inverse_consistency_command": gocl.DEFAULT_WAM_CONSISTENCY_COMMAND,
+        "forward_inverse_consistency_command": REAL_CONSISTENCY_COMMAND,
         "forward_inverse_consistency_allow_scoring": True,
         "generated_video_success_label_required": False,
         "generated_video_success_label_command": None,
@@ -258,6 +262,7 @@ def test_launch_plan_env_bakes_runtime_toggles():
         steps=3,
         task_prompt="open the fridge",
         output_dir="/w/out",
+        wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
     plan_env = plan["env"]
     assert plan_env["MUJOCO_GL"] == "osmesa"
@@ -266,9 +271,8 @@ def test_launch_plan_env_bakes_runtime_toggles():
     assert plan_env["BLUEPRINT_OSCAR_WAM_HF_REVISION"] == OFFICIAL_OSCAR_HF_REVISION
     assert plan["claim_boundary"]
     assert plan_env["BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING"] == "true"
-    assert plan_env["BLUEPRINT_ALLOW_LOCAL_WAM_EPISODE_CONSISTENCY"] == "true"
     assert plan_env["BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND"] == (
-        gocl.DEFAULT_WAM_CONSISTENCY_COMMAND
+        REAL_CONSISTENCY_COMMAND
     )
 
 
@@ -284,6 +288,7 @@ def test_launch_plan_can_make_generated_video_success_label_strict():
         require_generated_video_success_label=True,
         wam_success_label_command=command,
         allow_wam_success_labeling=True,
+        wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
     cmd = plan["closed_loop_command"]
     assert "--require-generated-video-success-label" in cmd
@@ -303,10 +308,40 @@ def test_launch_plan_blocks_strict_generated_video_success_without_labeler():
         task_prompt="open the fridge",
         output_dir="/w/out",
         require_generated_video_success_label=True,
+        wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
     assert plan["sealed_active"] is False
     assert "wam_success_label_command_required" in plan["blockers"]
     assert plan["closed_loop_command"] == []
+
+
+def test_launch_plan_requires_real_forward_inverse_scorer_by_default():
+    plan = gocl.build_sealed_launch_plan(
+        env=_active_env(),
+        start_frame="/w/frame.png",
+        route_file="/w/route.json",
+        steps=3,
+        task_prompt="open the fridge",
+        output_dir="/w/out",
+    )
+    assert plan["sealed_active"] is False
+    assert "wam_consistency_command_required" in plan["blockers"]
+
+
+def test_launch_plan_rejects_visual_motion_smoke_as_consistency_scorer():
+    plan = gocl.build_sealed_launch_plan(
+        env=_active_env(),
+        start_frame="/w/frame.png",
+        route_file="/w/route.json",
+        steps=3,
+        task_prompt="open the fridge",
+        output_dir="/w/out",
+        wam_consistency_command=gocl.DEFAULT_VISUAL_MOTION_SMOKE_COMMAND,
+    )
+    assert plan["sealed_active"] is False
+    assert "visual_motion_smoke_cannot_satisfy_forward_inverse_consistency" in plan[
+        "blockers"
+    ]
 
 
 # --------------------------------------------------------------------------- #

@@ -62,15 +62,11 @@ def _terraform_variable_body(text: str, name: str) -> str:
 
 
 def test_active_launch_docs_and_generated_commands_do_not_embed_laptop_paths():
-    forbidden = (
-        "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
-        "/Users/nijelhunt_1/workspace/Blueprint-WebApp",
-        "/Users/nijelhunt_1/workspace/BlueprintCapture",
-    )
     for path in ACTIVE_LAUNCH_DOCS_AND_COMMAND_SOURCES:
         text = path.read_text(encoding="utf-8")
-        for needle in forbidden:
-            assert needle not in text, f"{needle} leaked into {path.relative_to(REPO_ROOT)}"
+        assert re.search(r"/Users/[^/]+/", text) is None, (
+            f"personal absolute path leaked into {path.relative_to(REPO_ROOT)}"
+        )
 
 
 def test_production_systemd_units_set_fail_closed_runtime_posture():
@@ -81,7 +77,7 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
     ):
         text = _read(unit)
 
-        assert "/Users/nijelhunt_1/" not in text
+        assert re.search(r"/Users/[^/]+/", text) is None
         assert "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline" in text
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
@@ -91,6 +87,48 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
         assert "blueprint_pipeline.production_runtime_env_guard" in text
         if unit == "blueprint-pipeline-control-plane.service":
             assert "BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true" in text
+
+
+def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -> None:
+    required_controls = (
+        "User=blueprint",
+        "Group=blueprint",
+        "UMask=0077",
+        "NoNewPrivileges=true",
+        "PrivateTmp=true",
+        "PrivateDevices=true",
+        "ProtectSystem=strict",
+        "ProtectHome=true",
+        "ProtectKernelTunables=true",
+        "ProtectKernelModules=true",
+        "ProtectKernelLogs=true",
+        "ProtectControlGroups=true",
+        "RestrictSUIDSGID=true",
+        "CapabilityBoundingSet=",
+        "AmbientCapabilities=",
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+        "SystemCallFilter=@system-service",
+        "ReadWritePaths=/var/lib/blueprint",
+        "TasksMax=512",
+        "MemoryMax=8G",
+        "CPUQuota=200%",
+    )
+    for unit in SYSTEMD_DIR.glob("*.service"):
+        text = unit.read_text(encoding="utf-8")
+        for control in required_controls:
+            assert control in text, (unit.name, control)
+
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+    assert 'SERVICE_USER="${SERVICE_USER:-blueprint}"' in installer
+    assert 'SERVICE_GROUP="${SERVICE_GROUP:-blueprint}"' in installer
+    assert '"${HANDOFF_DIR}"' in installer
+    assert '-m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}"' in installer
+    assert 'install -o root -g "${SERVICE_GROUP}" -m 0640' in installer
+    assert 'install -d -m 0755 "${SYSTEMD_DIR}" "${ENV_DIR}" "${HANDOFF_DIR}"' not in installer
+
+    baseline = (REPO_ROOT / "docs" / "SYSTEMD_SECURITY_BASELINE.md").read_text(encoding="utf-8")
+    assert "systemd-analyze security" in baseline
+    assert "threshold=4.0" in baseline
 
 
 def test_pubsub_handoff_listener_has_repeated_deployed_runner():
@@ -103,7 +141,9 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert "--subscription" in service
     assert "BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true" in service
     assert "BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true" in service
-    assert "BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener" in env_example
+    assert (
+        "BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener" in env_example
+    )
     assert "BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true" in env_example
     assert "BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true" in env_example
     assert (
@@ -141,9 +181,12 @@ def test_terraform_alert_policies_require_notification_channels_or_explicit_waiv
 
     assert 'variable "allow_empty_monitoring_notification_channels"' in text
     assert "notification_channels = var.monitoring_notification_channels" in text
-    assert text.count(
-        "var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0"
-    ) >= 4
+    assert (
+        text.count(
+            "var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0"
+        )
+        >= 4
+    )
     assert "Set allow_empty_monitoring_notification_channels=true only for dry-run plans." in text
 
 
@@ -158,7 +201,7 @@ def test_terraform_queue_depth_alert_uses_beta_backpressure_thresholds():
     assert "duration        = var.pipeline_queue_depth_alert_duration" in body
     assert "threshold_value = var.pipeline_queue_depth_alert_threshold" in body
     assert "threshold_value = 100" not in body
-    assert "duration        = \"600s\"" not in body
+    assert 'duration        = "600s"' not in body
     assert "per-user intake pressure" in body
 
 
@@ -182,13 +225,17 @@ def test_terraform_declares_firestore_created_at_hotspot_scaleup_path():
 
     assert 'resource "google_firestore_index" "captures_status"' in text
     assert 'resource "google_firestore_index" "captures_user"' in text
-    assert status_shard.index('field_path = "status"') < status_shard.index(
-        'field_path = "createdAtShard"'
-    ) < status_shard.index('field_path = "createdAt"')
+    assert (
+        status_shard.index('field_path = "status"')
+        < status_shard.index('field_path = "createdAtShard"')
+        < status_shard.index('field_path = "createdAt"')
+    )
     assert 'order      = "ASCENDING"' in status_shard
-    assert user_shard.index('field_path = "creatorId"') < user_shard.index(
-        'field_path = "createdAtShard"'
-    ) < user_shard.index('field_path = "createdAt"')
+    assert (
+        user_shard.index('field_path = "creatorId"')
+        < user_shard.index('field_path = "createdAtShard"')
+        < user_shard.index('field_path = "createdAt"')
+    )
     assert 'order      = "DESCENDING"' in user_shard
     assert "serviceruntime.googleapis.com/api/request_latencies" in latency_alert
     assert "resource.service == 'firestore.googleapis.com'" in latency_alert
@@ -207,6 +254,116 @@ def test_terraform_privacy_runners_are_private_and_invoked_by_named_principals()
     assert 'variable "additional_privacy_runner_invoker_members"' in text
     assert 'name  = "BLUEPRINT_CLOUD_RUN_IAM_AUTH_ENABLED"' in text
     assert 'value = "true"' in text
+
+
+def test_privacy_runner_auth_tokens_fail_closed_before_deploy() -> None:
+    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
+    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    privacy_secret = _terraform_variable_body(terraform, "privacy_runner_token_secret_name")
+    video_secret = _terraform_variable_body(terraform, "video_to_world_runner_token_secret_name")
+
+    assert 'default     = ""' not in privacy_secret
+    assert "^[A-Za-z0-9_-]{1,255}$" in privacy_secret
+    assert "video_to_world_runner_token_secret_name" in video_secret
+    assert 'variable "privacy_runner_token"' not in terraform
+    assert 'variable "pipeline_sync_token"' not in terraform
+    assert "value = var.privacy_runner_token" not in terraform
+    assert "value = var.pipeline_sync_token" not in terraform
+    assert "value = local.video_to_world_runner_token" not in terraform
+    assert 'name = "WORLDLABS_API_KEY"' in terraform
+    assert "data.google_secret_manager_secret.worldlabs_api_key.secret_id" in terraform
+    assert "validate_runtime_secret_references" in deploy_script
+    assert "PRIVACY_RUNNER_TOKEN_SECRET_NAME" in deploy_script
+    assert "VIDEO_TO_WORLD_RUNNER_TOKEN_SECRET_NAME" in deploy_script
+    assert "PIPELINE_SYNC_TOKEN_SECRET_NAME" in deploy_script
+    assert "WORLDLABS_API_KEY_SECRET_NAME" in deploy_script
+    assert "TF_VAR_privacy_runner_token_secret_name" in deploy_script
+    assert "TF_VAR_pipeline_sync_token_secret_name" in deploy_script
+    assert "PRIVACY_RUNNER_TOKEN=" not in deploy_script
+    assert "PIPELINE_SYNC_TOKEN=" not in deploy_script
+    assert "WORLDLABS_API_KEY=" not in deploy_script
+    assert "Creating terraform.tfvars" not in deploy_script
+
+
+def test_terraform_state_is_remote_locked_retained_and_cmek_validated() -> None:
+    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
+    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert 'backend "gcs" {}' in terraform
+    assert "validate_terraform_state_backend.py" in deploy_script
+    assert "TERRAFORM_STATE_BUCKET" in deploy_script
+    assert "TERRAFORM_STATE_PREFIX" in deploy_script
+    assert "TERRAFORM_STATE_KMS_KEY" in deploy_script
+    assert "-backend-config=kms_encryption_key=" in deploy_script
+    assert "-reconfigure" in deploy_script
+    assert "*.tfstate" in gitignore
+    assert "*.tfstate.*" in gitignore
+    assert "*.tfvars" in gitignore
+    assert "*.tfplan" in gitignore
+
+
+def test_full_deploy_requires_authenticated_readback_service_canaries() -> None:
+    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
+    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'output "deployed_image_digests"' in terraform
+    assert "run_deployment_service_canaries.py" in deploy_script
+    assert "--topology-evidence" in deploy_script
+    assert "--privacy-secret-name" in deploy_script
+    assert "--video-secret-name" in deploy_script
+    assert "Authenticated deployment service canaries did not pass" in deploy_script
+    assert "authenticated_service_canaries" in deploy_script
+    assert "model task success remains separately required" in deploy_script
+
+
+def test_pipeline_failure_alert_counts_failures_over_five_minutes() -> None:
+    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
+    body = _terraform_resource_body(
+        terraform, "google_monitoring_alert_policy", "pipeline_failures"
+    )
+
+    assert 'alignment_period     = "300s"' in body
+    assert 'per_series_aligner   = "ALIGN_SUM"' in body
+    assert 'cross_series_reducer = "REDUCE_SUM"' in body
+    assert "threshold_value = 5" in body
+    assert 'comparison      = "COMPARISON_GT"' in body
+    assert 'duration        = "0s"' in body
+    assert "ALIGN_RATE" not in body
+
+
+def test_us_only_beta_residency_is_enforced_as_code() -> None:
+    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
+    tfvars_example = TERRAFORM_TFVARS_EXAMPLE.read_text(encoding="utf-8")
+    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    primary = _terraform_variable_body(terraform, "primary_region")
+    secondary = _terraform_variable_body(terraform, "secondary_regions")
+
+    assert 'startswith(var.primary_region, "us-")' in primary
+    assert 'startswith(region, "us-")' in secondary
+    assert "europe-west1" not in secondary
+    assert "europe-west1" not in tfvars_example
+    assert "europe-west1" not in deploy_script
+    assert "validate_beta_data_residency" in deploy_script
+    assert '"$PRIMARY_REGION" != us-*' in deploy_script
+
+
+def test_terraform_is_the_single_deployment_topology_owner() -> None:
+    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    full_deploy = deploy_script[deploy_script.index("    # Full deployment") :]
+
+    assert 'topology_owner: "terraform"' in deploy_script
+    assert "terraform plan -input=false -detailed-exitcode" in deploy_script
+    assert "Post-apply Terraform drift detected" in deploy_script
+    assert "terraform output -json" in deploy_script
+    assert "blueprint.terraform_topology_evidence.v1" in deploy_script
+    assert "--function-only was removed" in deploy_script
+    assert "    apply_terraform" in full_deploy
+    assert "    setup_iam" not in full_deploy
+    assert "    create_pubsub_topics" not in full_deploy
+    assert "    create_cloud_tasks_queues" not in full_deploy
+    assert "    create_cloud_run_jobs" not in full_deploy
+    assert "    deploy_cloud_function" not in full_deploy
 
 
 def test_terraform_privacy_runners_have_per_service_gpu_caps_and_spend_alert():
@@ -272,6 +429,29 @@ def test_terraform_declares_optional_gcp_billing_budget_for_gpu_fleet():
     assert 'output "gpu_fleet_billing_budget"' in text
 
 
+def test_systemd_spend_guard_enforces_5000_admission_lock_and_page_path():
+    service = _read("blueprint-gpu-spend-guard.service")
+    env_example = _read("pipeline-control-plane.env.example")
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert "BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD=5000.0" in service
+    assert "BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD=500.0" not in service
+    assert "--require-billing-reconciliation" in service
+    assert "--admission-lock-report" in service
+    assert "--admission-override" in service
+    assert "ExecStopPost=" in service
+    assert "blueprint_pipeline.live_pipeline_manifest_alert" in service
+    assert "BLUEPRINT_GPU_SPEND_GUARD_PAGE_AUDIT" in service
+    assert "BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets" in service
+    assert "BLUEPRINT_REQUIRE_PAID_SPEND_ADMISSION_LOCK=true" in env_example
+    assert "BLUEPRINT_GPU_BILLING_EXPORT=" in env_example
+    assert "blueprint-gpu-spend-guard.service" in installer
+    assert "blueprint-gpu-spend-guard.timer" in installer
+    assert "systemctl enable --now blueprint-gpu-spend-guard.timer" in installer
+    assert '"${STATE_DIR}/gpu_spend_guard"' in installer
+    assert '"${PROVIDER_SECRETS_DIR}"' in installer
+
+
 def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():
     text = ROOT_DOCKERFILE.read_text(encoding="utf-8")
 
@@ -311,7 +491,17 @@ def test_full_test_lane_gates_pull_requests_and_deploy_contract():
     assert "check_full_test_lane_deploy_gate" in deploy_script
     assert "FULL_TEST_LANE_COMMIT" in deploy_script
     assert "FULL_TEST_LANE_EVIDENCE_URI" in deploy_script
-    assert "Full Test Lane / Full pytest lane on CPU runner passed for this exact commit" in deploy_script
+    assert "verify_deploy_release_provenance.py" in deploy_script
+    assert "verify_clean_release_source" in deploy_script
+    assert "status --porcelain=v1 --untracked-files=all" in deploy_script
+    assert "fetch --quiet origin main" in deploy_script
+    assert "refs/remotes/origin/main" in deploy_script
+    assert "FULL_TEST_LANE_BYPASS_REASON" not in deploy_script
+    assert "this deploy path has no text-only CI bypass" in deploy_script
+    assert (
+        "Full Test Lane / Full pytest lane on CPU runner passed for this exact commit"
+        in deploy_script
+    )
     assert "Full Test Lane / Full pytest lane on CPU runner" in required_doc
     assert "passed for that exact commit SHA" in required_doc
     assert "deploy/scripts/deploy.sh" in required_doc
@@ -343,15 +533,14 @@ def test_release_images_are_versioned_manifested_and_rejected_if_latest():
         body = _terraform_variable_body(terraform, variable)
         assert "default" not in body
         assert "nullable    = false" in body
-        assert "@sha256:[0-9a-f]{64}" in body
-        assert "latest|dev|test|local" in body
-        assert "non-latest versioned release tag" in body
+        assert "^.+@sha256:[0-9a-f]{64}$" in body
+        assert "non-latest versioned release tag" not in body
         assert f"var.{variable}" in body
 
     for image_name in image_names:
         assert f"{image_name}:latest" not in terraform
         assert f"{image_name}:latest" not in tfvars_example
-        assert f"{image_name}:0123456789ab" in tfvars_example
+        assert f"{image_name}@sha256:" in tfvars_example
 
     assert 'IMAGE_TAG="${IMAGE_TAG:-}"' in deploy_script
     assert 'IMAGE_TAG="${GIT_SHA:0:12}"' in deploy_script
@@ -359,12 +548,15 @@ def test_release_images_are_versioned_manifested_and_rejected_if_latest():
     assert "pin_pushed_image_digests" in deploy_script
     assert "gcloud container images describe" in deploy_script
     assert "image_summary.fully_qualified_digest" in deploy_script
+    assert "require_resolved_image_matches" in deploy_script
+    assert "tag/digest mismatch" in deploy_script
+    assert "pin_pushed_image_digests" in deploy_script
     assert "DEPLOYMENT_MANIFEST_PATH" in deploy_script
     assert "blueprint.pipeline_deployment_manifest.v1" in deploy_script
     assert "deploy/scripts/deploy.sh --rollback --rollback-image-tag " in deploy_script
     assert "latest`/`dev`/`test`" in required_doc
     assert "pipeline-deployment-manifest.json" in required_doc
-    assert "Terraform image variables are required inputs and reject `:latest`" in required_doc
+    assert "Terraform image variables require immutable `@sha256` digests" in required_doc
 
 
 def test_sim_only_gate_uses_explicit_webapp_ref_with_launch_fixes():

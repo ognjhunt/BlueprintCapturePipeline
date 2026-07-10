@@ -33,13 +33,18 @@ SKIP_PREWARM=false
 HF_CACHE_DIR="${HF_HOME:-/opt/hf}"
 SAM3_DIR="${SAM3_DIR:-/opt/sam3}"
 SAM3_WEIGHTS_PATH="${SAM3_WEIGHTS_PATH:-/opt/sam3_weights/sam3.pt}"
+SAM3_REPO_REF="${SAM3_REPO_REF:-5dd401d1c5c1d5c3eedff06d41b77af824517619}"
 DA3_DIR="${DA3_DIR:-/opt/da3}"
 DA3_WEIGHTS_DIR="${DA3_MODEL_PATH:-/opt/da3/weights/metric_large}"
 DA3_MODEL_ID="${DA3_MODEL_ID:-depth-anything/DA3Metric-Large}"
 DA3_MODEL_NAME="${DA3_MODEL_NAME:-da3metric-large}"
+DA3_REPO_REF="${DA3_REPO_REF:-41736238f5bced4debf3f2a12375d2466874866d}"
+DA3_MODEL_REVISION="${DA3_MODEL_REVISION:-f4a6c9b3c95e41c82048423d3493a81ec3fa810e}"
 QWEN_EDIT_DIR="${QWEN_IMAGE_EDIT_MODEL_PATH:-/opt/qwen-image-edit}"
+QWEN_IMAGE_EDIT_MODEL_REVISION="${QWEN_IMAGE_EDIT_MODEL_REVISION:-6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9}"
 DEEPPRIVACY2_DIR="${DEEPPRIVACY2_DIR:-/opt/deepprivacy2}"
 DEEPPRIVACY2_MODEL_PATH="${DEEPPRIVACY2_MODEL_PATH:-/opt/deepprivacy2/weights}"
+DEEPPRIVACY2_REPO_REF="${DEEPPRIVACY2_REPO_REF:-f4d8f09d1eb8f758c89cf1795ae41f20533942d3}"
 NVIDIA_PYPI_INDEX="${NVIDIA_PYPI_INDEX:-https://pypi.nvidia.com}"
 TORCH_VERSION="${TORCH_VERSION:-2.6.0}"
 TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.21.0}"
@@ -47,12 +52,13 @@ DIFFUSERS_VERSION="${DIFFUSERS_VERSION:-0.37.0}"
 PEFT_VERSION_SPEC="${PEFT_VERSION_SPEC:-peft>=0.17.0,<0.19}"
 YOLO_WORLD_MODEL="${YOLO_WORLD_MODEL:-yolov8s-worldv2.pt}"
 COSMOS_PREDICT_PACKAGE="${COSMOS_PREDICT_PACKAGE:-cosmos-predict2-5}"
-COSMOS_PREDICT_VERSION="${COSMOS_PREDICT_VERSION:-}"
+COSMOS_PREDICT_VERSION="${COSMOS_PREDICT_VERSION:-1.0.9}"
 COSMOS_MODEL_ID="${COSMOS_MODEL_ID:-nvidia/Cosmos-Predict2.5-2B}"
+COSMOS_MODEL_REVISION="${COSMOS_MODEL_REVISION:-0d37c7498f54cee3c599d438d895a0a4a8608064}"
 COSMOS_PREWARM_MODEL="${COSMOS_PREWARM_MODEL:-false}"
 COSMOS_OFFICIAL_REPO_URL="${COSMOS_OFFICIAL_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-predict2.git}"
 COSMOS_OFFICIAL_REPO_ROOT="${COSMOS_OFFICIAL_REPO_ROOT:-${HOME}/workspace/cosmos-predict2.5}"
-COSMOS_OFFICIAL_REPO_REF="${COSMOS_OFFICIAL_REPO_REF:-main}"
+COSMOS_OFFICIAL_REPO_REF="${COSMOS_OFFICIAL_REPO_REF:-661da4774b0ca41d082a0ecbeb47550bcf07e03f}"
 COSMOS_OFFICIAL_REPO_UV_EXTRA="${COSMOS_OFFICIAL_REPO_UV_EXTRA:-cu128}"
 COSMOS_WORKER_PYTHON_BIN="${COSMOS_WORKER_PYTHON_BIN:-${COSMOS_OFFICIAL_REPO_ROOT}/.venv/bin/python}"
 COSMOS_CHUNK_SIZE="${COSMOS_CHUNK_SIZE:-33}"
@@ -141,16 +147,32 @@ clone_or_update_repo() {
   local dst="$2"
   local ref="$3"
 
+  if ! printf '%s\n' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+    die "Repository ref for ${repo_url} must be an immutable 40-hex commit"
+  fi
   mkdir -p "$(dirname "$dst")"
   if [ ! -d "$dst/.git" ]; then
-    git clone "$repo_url" "$dst"
+    git clone --filter=blob:none --no-checkout "$repo_url" "$dst"
   fi
-  git -C "$dst" fetch --tags origin
-  git -C "$dst" checkout "$ref"
-  if [ "$ref" = "main" ] || [ "$ref" = "master" ]; then
-    git -C "$dst" pull --ff-only origin "$ref"
-  fi
+  git -C "$dst" fetch --depth 1 origin "$ref"
+  git -C "$dst" checkout --detach "$ref"
+  [ "$(git -C "$dst" rev-parse HEAD)" = "$ref" ] || die "Repository checkout digest mismatch: ${repo_url}"
 }
+
+require_reviewed_pin() {
+  local name="$1"
+  local value="$2"
+  local expected="$3"
+  [ "$value" = "$expected" ] || die "${name} is not a reviewed source pin"
+}
+
+require_reviewed_pin "COSMOS_OFFICIAL_REPO_REF" "${COSMOS_OFFICIAL_REPO_REF}" "661da4774b0ca41d082a0ecbeb47550bcf07e03f"
+require_reviewed_pin "COSMOS_MODEL_REVISION" "${COSMOS_MODEL_REVISION}" "0d37c7498f54cee3c599d438d895a0a4a8608064"
+require_reviewed_pin "SAM3_REPO_REF" "${SAM3_REPO_REF}" "5dd401d1c5c1d5c3eedff06d41b77af824517619"
+require_reviewed_pin "DA3_REPO_REF" "${DA3_REPO_REF}" "41736238f5bced4debf3f2a12375d2466874866d"
+require_reviewed_pin "DA3_MODEL_REVISION" "${DA3_MODEL_REVISION}" "f4a6c9b3c95e41c82048423d3493a81ec3fa810e"
+require_reviewed_pin "QWEN_IMAGE_EDIT_MODEL_REVISION" "${QWEN_IMAGE_EDIT_MODEL_REVISION}" "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9"
+require_reviewed_pin "DEEPPRIVACY2_REPO_REF" "${DEEPPRIVACY2_REPO_REF}" "f4d8f09d1eb8f758c89cf1795ae41f20533942d3"
 
 ensure_repo_root() {
   [ -f "${REPO_ROOT}/pyproject.toml" ] || die "Missing pyproject.toml at ${REPO_ROOT}"
@@ -241,7 +263,7 @@ PY
 
 install_sam3() {
   log "Installing optional SAM3 runtime..."
-  clone_or_update_repo "https://github.com/facebookresearch/sam3.git" "${SAM3_DIR}" "main"
+  clone_or_update_repo "https://github.com/facebookresearch/sam3.git" "${SAM3_DIR}" "${SAM3_REPO_REF}"
   python3 -m pip install --no-cache-dir -e "${SAM3_DIR}"
 
   if [ -f "${SAM3_WEIGHTS_PATH}" ]; then
@@ -254,11 +276,12 @@ install_sam3() {
 
 install_da3() {
   log "Installing optional Depth Anything 3 runtime..."
-  clone_or_update_repo "https://github.com/ByteDance-Seed/Depth-Anything-3.git" "${DA3_DIR}" "main"
+  clone_or_update_repo "https://github.com/ByteDance-Seed/Depth-Anything-3.git" "${DA3_DIR}" "${DA3_REPO_REF}"
   python3 -m pip install --no-cache-dir -e "${DA3_DIR}"
   mkdir -p "${DA3_WEIGHTS_DIR}"
   if [ ! -f "${DA3_WEIGHTS_DIR}/config.json" ]; then
-    HF_HOME="${HF_CACHE_DIR}" huggingface-cli download "${DA3_MODEL_ID}" --local-dir "${DA3_WEIGHTS_DIR}"
+    HF_HOME="${HF_CACHE_DIR}" huggingface-cli download "${DA3_MODEL_ID}" \
+      --revision "${DA3_MODEL_REVISION}" --local-dir "${DA3_WEIGHTS_DIR}"
   fi
 }
 
@@ -267,13 +290,14 @@ install_local_qwen() {
   python3 -m pip install --no-cache-dir diffusers accelerate sentencepiece protobuf transformers
   mkdir -p "${QWEN_EDIT_DIR}"
   if [ ! -f "${QWEN_EDIT_DIR}/model_index.json" ]; then
-    HF_HOME="${HF_CACHE_DIR}" huggingface-cli download Qwen/Qwen-Image-Edit-2511 --local-dir "${QWEN_EDIT_DIR}"
+    HF_HOME="${HF_CACHE_DIR}" huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
+      --revision "${QWEN_IMAGE_EDIT_MODEL_REVISION}" --local-dir "${QWEN_EDIT_DIR}"
   fi
 }
 
 install_deepprivacy2() {
   log "Installing optional DeepPrivacy2 runtime..."
-  clone_or_update_repo "https://github.com/hukkelas/deep_privacy2.git" "${DEEPPRIVACY2_DIR}" "main"
+  clone_or_update_repo "https://github.com/hukkelas/deep_privacy2.git" "${DEEPPRIVACY2_DIR}" "${DEEPPRIVACY2_REPO_REF}"
   python3 -m pip install --no-cache-dir -e "${DEEPPRIVACY2_DIR}"
   mkdir -p "${DEEPPRIVACY2_MODEL_PATH}"
   if [ -z "${DEEPPRIVACY2_COMMAND:-}" ]; then
@@ -284,7 +308,7 @@ install_deepprivacy2() {
 prewarm_optional_models() {
   if [ "${WITH_COSMOS}" = true ]; then
     log "Validating Cosmos runtime install..."
-    HF_HOME="${HF_CACHE_DIR}" COSMOS_MODEL_ID="${COSMOS_MODEL_ID}" python3 - <<'PY'
+    HF_HOME="${HF_CACHE_DIR}" COSMOS_MODEL_ID="${COSMOS_MODEL_ID}" COSMOS_MODEL_REVISION="${COSMOS_MODEL_REVISION}" python3 - <<'PY'
 import importlib.util
 import os
 
@@ -301,7 +325,7 @@ PY
 
     if [ "${COSMOS_PREWARM_MODEL}" = "true" ]; then
       log "Attempting Cosmos model prewarm..."
-      HF_HOME="${HF_CACHE_DIR}" COSMOS_MODEL_ID="${COSMOS_MODEL_ID}" python3 - <<'PY'
+      HF_HOME="${HF_CACHE_DIR}" COSMOS_MODEL_ID="${COSMOS_MODEL_ID}" COSMOS_MODEL_REVISION="${COSMOS_MODEL_REVISION}" python3 - <<'PY'
 from blueprint_pipeline.synthesis.cosmos_inference import load_cosmos_model
 
 model = load_cosmos_model()
@@ -359,7 +383,9 @@ export QWEN_IMAGE_EDIT_MODEL_PATH=${QWEN_EDIT_DIR}
 export DEEPPRIVACY2_DIR=${DEEPPRIVACY2_DIR}
 export DEEPPRIVACY2_MODEL_PATH=${DEEPPRIVACY2_MODEL_PATH}
 export COSMOS_MODEL_ID=${COSMOS_MODEL_ID}
+export COSMOS_MODEL_REVISION=${COSMOS_MODEL_REVISION}
 export COSMOS_OFFICIAL_REPO_ROOT=${COSMOS_OFFICIAL_REPO_ROOT}
+export COSMOS_OFFICIAL_REPO_REF=${COSMOS_OFFICIAL_REPO_REF}
 export COSMOS_WORKER_PYTHON_BIN=${COSMOS_WORKER_PYTHON_BIN}
 export COSMOS_CHUNK_SIZE=${COSMOS_CHUNK_SIZE}
 export COSMOS_CHUNK_OVERLAP=${COSMOS_CHUNK_OVERLAP}

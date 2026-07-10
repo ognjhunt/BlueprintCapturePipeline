@@ -814,7 +814,12 @@ def test_provider_command_adapter_launches_and_imports_deepinfra_provider_result
         ]
     )
 
-    assert payload["status"] == "completed"
+    assert payload["status"] == "completed_preview_only"
+    assert payload["endpoint_class"] == "text_to_video_preview"
+    assert payload["rollouts"] == []
+    assert len(payload["preview_rollouts"]) == 1
+    assert payload["task_evaluation_run_eligible"] is False
+    assert payload["policy_ranking_artifact_eligible"] is False
     assert payload["mode"] == "deepinfra_provider"
     assert payload["provider_output_zip_imported"] is True
     assert payload["provider_output_imported_from_current_provider_run"] is True

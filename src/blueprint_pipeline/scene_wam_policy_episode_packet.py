@@ -22,9 +22,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from defusedxml import ElementTree as DefusedET
+
 from .common import ensure_dir, read_json, utc_now_iso, write_json
 from .episode_spec import build_episode_specs
 from .local_capture import resolve_local_capture_context
+from .object_index_artifacts import resolve_current_object_index_artifacts
 from .scene_asset_preflight import build_scene_asset_preflight
 
 
@@ -1152,7 +1155,7 @@ def _is_mjcf_asset(path: Path) -> bool:
 
 def _mjcf_contains_unitree_g1(path: Path) -> bool:
     try:
-        root = ET.parse(path).getroot()
+        root = DefusedET.parse(path).getroot()
     except Exception:
         return False
     if root.find(".//freejoint[@name='floating_base_joint']") is not None:
@@ -2114,7 +2117,7 @@ def _write_unitree_g1_mjcf_for_composition(
     output_mjcf: Path,
     robot_pose: Mapping[str, Any],
 ) -> dict[str, Any]:
-    tree = ET.parse(source_mjcf)
+    tree = DefusedET.parse(source_mjcf)
     root = tree.getroot()
     assets_dir = _mjcf_compiler_dir(root, source_mjcf, attr_name="meshdir")
     compiler = root.find("compiler")
@@ -2283,7 +2286,7 @@ def _compose_scene_with_unitree_g1_mjcf(
         write_json(manifest_path, manifest)
         return manifest
     try:
-        scene_tree = ET.parse(scene_mjcf_path)
+        scene_tree = DefusedET.parse(scene_mjcf_path)
         scene_root = scene_tree.getroot()
         generated_g1_mjcf = composition_dir / "unitree_g1_absolute_meshes_placed.xml"
         g1_info = _write_unitree_g1_mjcf_for_composition(
@@ -3363,11 +3366,9 @@ def build_scene_wam_policy_episode_packet(
     synthetic_frame_text = _string(robot_pov_synthesis.get("selected_frame_path"))
     synthetic_frame_path = synthetic_frame_text if Path(synthetic_frame_text).is_file() else None
     frame_path = synthetic_frame_path or rendered_frame_path
-    object_index_path = _first_existing_path(
-        context.capture_root / "raw" / "object_index.json",
-        context.capture_root / "raw" / "arkit" / "objects" / "index.json",
-        context.capture_root / "object_index.json",
-    )
+    resolved_object_index = resolve_current_object_index_artifacts(context.capture_root)
+    resolved_object_index_path = str(resolved_object_index.get("object_index_path") or "").strip()
+    object_index_path = Path(resolved_object_index_path) if resolved_object_index_path else None
     eval_ready_task_grounding_path = _first_existing_path(
         context.capture_root / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
         context.capture_root / "simulation_automation" / "eval_ready_task_grounding.json",

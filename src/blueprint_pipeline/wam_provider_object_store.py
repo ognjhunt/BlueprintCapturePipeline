@@ -467,87 +467,84 @@ def presign_warm_inbox_channel(
     key_prefix: str = "blueprint/isaac-g1-parity",
     expiration_seconds: int = 12 * 60 * 60,
 ) -> dict[str, Any]:
-    """Presign a single 'warm inbox' object-store key for the persistent --serve worker job channel.
+    """Configure the durable warm-render broker; never mint a mutable inbox key.
 
-    The control plane holds the presigned PUT (writes the next job); the warm pod polls the presigned
-    GET (claims jobs by monotonic seq). Results ride the EXISTING worker output channel, so only this
-    one extra key is needed. Reuses the same file-based secrets as :func:`stage_wam_provider_bundle_
-    object_store` and writes the URLs as sensitive files in ``job_dir``. Returns a status dict with
-    redacted URLs (raw URLs only ever touch the sensitive files)."""
+    The historical function name remains for call-site compatibility. Live
+    execution now requires file-backed broker URL and bearer-token inputs. The
+    single overwriteable object-store channel is intentionally unavailable.
+    """
+    del key_prefix, expiration_seconds
     resolved_job_dir = Path(job_dir)
     resolved_job_dir.mkdir(parents=True, exist_ok=True)
     generated = utc_now_iso()
-    expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
-    access_key, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
-                                     default_paths=DEFAULT_ACCESS_KEY_FILES, label="object_store_access_key_id")
-    secret_key, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
-                                     default_paths=DEFAULT_SECRET_KEY_FILES, label="object_store_secret_access_key")
-    endpoint, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
-                                   default_paths=DEFAULT_ENDPOINT_FILES, label="object_store_endpoint_url",
-                                   allow_env_value=True)
-    bucket_value, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
-                                       default_paths=DEFAULT_BUCKET_FILES, label="object_store_bucket")
-    region_value, _ = _read_first_file(explicit_path=None, env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
-                                       default_paths=DEFAULT_REGION_FILES, label="object_store_region",
-                                       allow_env_value=True)
-    region_value = region_value or "us-east-1"
+    broker_url_source_text = os.getenv(
+        "BLUEPRINT_WARM_RENDER_BROKER_BASE_URL_FILE", ""
+    ).strip()
+    broker_token_source_text = os.getenv(
+        "BLUEPRINT_WARM_RENDER_BROKER_TOKEN_FILE", ""
+    ).strip()
+    broker_url_source = Path(broker_url_source_text).expanduser()
+    broker_token_source = Path(broker_token_source_text).expanduser()
     blockers: list[str] = []
-    if not access_key:
-        blockers.append("missing_object_store_access_key_id_file")
-    if not secret_key:
-        blockers.append("missing_object_store_secret_access_key_file")
-    if not bucket_value:
-        blockers.append("missing_object_store_bucket_or_network_volume_id_file")
-    inbox_get_url = ""
-    inbox_put_url = ""
-    inbox_key = ""
-    if not blockers:
-        try:
-            import boto3  # type: ignore[import-not-found]
-            from botocore.client import Config  # type: ignore[import-not-found]
-        except Exception as exc:  # pragma: no cover - environment dependent
-            blockers.append(f"boto3_or_botocore_unavailable:{type(exc).__name__}")
-    if not blockers:
-        safe_prefix = key_prefix.strip("/ ") or "blueprint/isaac-g1-parity"
-        inbox_key = f"{safe_prefix}/{_job_key_component(resolved_job_dir)}/warm_inbox.json"
-        client_kwargs: dict[str, Any] = {
-            "aws_access_key_id": access_key, "aws_secret_access_key": secret_key,
-            "region_name": region_value, "config": Config(signature_version="s3v4"),
-        }
-        if endpoint:
-            client_kwargs["endpoint_url"] = endpoint
-        try:
-            client = boto3.client("s3", **client_kwargs)
-            client.put_object(Bucket=bucket_value, Key=inbox_key,
-                              Body=json.dumps({"seq": 0}).encode(), ContentType="application/json")
-            inbox_get_url = client.generate_presigned_url(
-                "get_object", Params={"Bucket": bucket_value, "Key": inbox_key},
-                ExpiresIn=int(expiration_seconds), HttpMethod="GET")
-            inbox_put_url = client.generate_presigned_url(
-                "put_object", Params={"Bucket": bucket_value, "Key": inbox_key,
-                                      "ContentType": "application/json"},
-                ExpiresIn=int(expiration_seconds), HttpMethod="PUT")
-        except Exception as exc:
-            blockers.append(f"warm_inbox_presign_failed:{type(exc).__name__}")
-    get_file = resolved_job_dir / "warm_inbox_get_url.txt"
-    put_file = resolved_job_dir / "warm_inbox_put_url.txt"
-    if inbox_get_url:
-        _write_sensitive_file(get_file, inbox_get_url, label="warm_inbox_get_url")
-    if inbox_put_url:
-        _write_sensitive_file(put_file, inbox_put_url, label="warm_inbox_put_url")
+    broker_base_url = ""
+    broker_token = ""
+    if not broker_url_source_text:
+        blockers.append("missing_warm_render_broker_base_url_file")
+    elif not broker_url_source.is_file() or broker_url_source.is_symlink():
+        blockers.append("warm_render_broker_base_url_file_invalid")
+    else:
+        broker_base_url = broker_url_source.read_text(encoding="utf-8").strip()
+        parsed = urlparse(broker_base_url)
+        local_host = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        allowed_schemes = {"http", "https"} if local_host else {"https"}
+        if (
+            parsed.scheme not in allowed_schemes
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            blockers.append("warm_render_broker_base_url_invalid")
+    if not broker_token_source_text:
+        blockers.append("missing_warm_render_broker_token_file")
+    elif not broker_token_source.is_file() or broker_token_source.is_symlink():
+        blockers.append("warm_render_broker_token_file_invalid")
+    else:
+        if broker_token_source.stat().st_mode & 0o077:
+            blockers.append("warm_render_broker_token_file_permissions_too_open")
+        broker_token = broker_token_source.read_text(encoding="utf-8").strip()
+        if len(broker_token.encode("utf-8")) < 32:
+            blockers.append("warm_render_broker_token_too_short")
+    broker_url_file = resolved_job_dir / "warm_broker_base_url.txt"
+    broker_token_file = resolved_job_dir / "warm_broker_token.txt"
+    if broker_base_url and not blockers:
+        _write_sensitive_file(
+            broker_url_file,
+            broker_base_url,
+            label="warm_render_broker_base_url",
+        )
+        _write_sensitive_file(
+            broker_token_file,
+            broker_token,
+            label="warm_render_broker_token",
+        )
     return {
-        "status": "completed" if (inbox_get_url and inbox_put_url and not blockers) else "blocked",
+        "status": "completed" if not blockers else "blocked",
         "blockers": blockers,
         "generated_at": generated,
-        "presigned_url_expiry": expiry_metadata,
-        "inbox_key": inbox_key,
-        "expiration_seconds": int(expiration_seconds),
-        "expires_at": expiry_metadata["expires_at"],
-        "expiry_warning": expiry_metadata["expiry_warning"],
-        "warm_inbox_get_url_file": str(get_file) if inbox_get_url else None,
-        "warm_inbox_put_url_file": str(put_file) if inbox_put_url else None,
-        "warm_inbox_get_url_redacted": _redact_url(inbox_get_url) if inbox_get_url else None,
-        "warm_inbox_put_url_redacted": _redact_url(inbox_put_url) if inbox_put_url else None,
+        "transport": "durable_warm_render_broker",
+        "single_object_transport_enabled": False,
+        "object_per_job_durable_queue_required": True,
+        "server_canonical_job_ids_required": True,
+        "server_idempotency_required": True,
+        "broker_base_url_file": str(broker_url_file) if not blockers else None,
+        "broker_token_file": str(broker_token_file) if not blockers else None,
+        "raw_secret_values_recorded": False,
+        "raw_url_values_recorded": False,
+        "inbox_key": None,
+        "warm_inbox_get_url_file": None,
+        "warm_inbox_put_url_file": None,
     }
 
 

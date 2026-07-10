@@ -87,6 +87,9 @@ def build_fixture_vision_success_labels(
                 "rollout_id": rollout.get("rollout_id"),
                 "attempt_id": rollout.get("attempt_id"),
                 "scenario_eval_run_id": rollout.get("scenario_eval_run_id"),
+                "condition_id": rollout.get("condition_id"),
+                "replicate_id": rollout.get("replicate_id"),
+                "replicate_seed": rollout.get("replicate_seed"),
                 "scenario_variation_instance_id": rollout.get(
                     "scenario_variation_instance_id"
                 ),
@@ -100,6 +103,13 @@ def build_fixture_vision_success_labels(
                 "uncertainty_score": uncertainty,
                 "failure_mode_ids": failure_modes,
                 "ood_flags": ood_flags,
+                "ood_registration_blockers": rollout.get(
+                    "ood_registration_blockers", []
+                ),
+                "registered_ood_axes_complete": rollout.get(
+                    "registered_ood_axes_complete"
+                )
+                is True,
                 "labeler": "fixture_vision_success_judge",
                 "status": "labeled",
                 "human_review_required": bool(ood_flags or uncertainty >= 0.5),

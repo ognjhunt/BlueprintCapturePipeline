@@ -1,5 +1,9 @@
 # Blueprint-WebApp Beta Blockers — Specs
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 The WebApp **builds clean** (`npm run build` + full `tsc` both exit 0) and its money core is notably solid (server-side price re-computation, raw-body webhook signature verification, idempotent webhook processing, entitlement grants only from the verified webhook, payout execution double-gated, default-deny Firestore rules, no committed live secrets). The blockers below are real code-level gaps around that core. All hard/high findings were adversarially re-verified.
 
 ---

@@ -14,18 +14,29 @@ generates. Each step:
 The WAM generation and the harness backend are both injected, so the loop structure can be
 validated end-to-end with zero GPU spend and the same code path then runs the real backends.
 """
+
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
+import math
 import os
 import shlex
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .sc3_fidelity_contracts import (
+    SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256_ENV,
+    validate_checkpoint_attestation,
+    validate_synchronized_multiview,
+    validate_trusted_ed25519_attestation,
+)
 from .isaac_g1_policy import (
     DeterministicWalkToTargetPolicy,
     StepContext,
@@ -53,6 +64,7 @@ from .oscar_cosmos_wam_evaluator import (
     _run_wam_success_label_command,
     _unscored_wam_episode_consistency,
     _wam_consistency_blockers,
+    success_label_inference_input_sha256,
 )
 from .wam_backend_strategy import get_wam_backend_strategy
 from .wam_derived_observation_harness import run_wam_derived_observation_harness_step
@@ -63,7 +75,7 @@ LOOP_SCHEMA_VERSION = "oscar_isaac_closed_loop_eval.v1"
 NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION = "oscar_next_observation_selection.v1"
 CLOSED_LOOP_WAM_BACKEND_READINESS_SCHEMA_VERSION = "closed_loop_wam_backend_readiness.v1"
 SUPPORTED_CLOSED_LOOP_WAM_BACKENDS = ("oscar_wam", "cosmos3_wam")
-BUILT_IN_CLOSED_LOOP_WAM_BACKENDS = frozenset({"oscar_wam"})
+BUILT_IN_CLOSED_LOOP_WAM_BACKENDS = frozenset({"oscar_wam", "cosmos3_wam"})
 VAST_API_GATE_ENV = "BLUEPRINT_ALLOW_VAST_API_CALLS"
 VAST_INSTANCE_LAUNCH_GATE_ENV = "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
 VAST_PAID_WAM_GATE_ENV = "BLUEPRINT_ALLOW_PAID_VAST_WAM_PROVIDER_LAUNCH"
@@ -75,6 +87,15 @@ PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_ENV = (
     "BLUEPRINT_PERSISTENT_WAM_CLEAN_FRAME_REANCHOR_INTERVAL_STEPS"
 )
 ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV = "BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION"
+SC3_LEARNED_POLICY_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
+    "BLUEPRINT_SC3_LEARNED_POLICY_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256"
+)
+SC3_FK_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
+    "BLUEPRINT_SC3_FK_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256"
+)
+SC3_COSMOS3_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
+    "BLUEPRINT_SC3_COSMOS3_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256"
+)
 UNITREE_G1_SONIC_STATE_DIMS = {
     "left_leg": 6,
     "right_leg": 6,
@@ -95,9 +116,8 @@ WamGenerateNext = Callable[
 
 # A learned policy endpoint: given the harness-adapted WAM-generated observation,
 # prior action history, and step index, return the next action dict.
-PolicyEndpoint = Callable[
-    [Mapping[str, Any], Sequence[Mapping[str, Any]], int], Mapping[str, Any]
-]
+PolicyEndpoint = Callable[[Mapping[str, Any], Sequence[Mapping[str, Any]], int], Mapping[str, Any]]
+TaskCompletionEvaluator = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 def _string(value: Any) -> str:
@@ -114,6 +134,547 @@ def _string_list(value: Any) -> list[str]:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_sc3_runtime_attestation(
+    signed_payload: Mapping[str, Any],
+    *,
+    private_key_file: str | Path,
+    report_path: str | Path,
+    signer_key_id: str,
+    verifier_id: str,
+) -> dict[str, Any]:
+    """Sign a typed runtime result for a separately trusted process boundary."""
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = serialization.load_pem_private_key(
+        Path(private_key_file).expanduser().read_bytes(), password=None
+    )
+    if not isinstance(private_key, Ed25519PrivateKey):
+        raise TypeError("sc3_runtime_signing_key_must_be_ed25519")
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    signed_bytes = json.dumps(dict(signed_payload), sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    signed_payload_sha256 = hashlib.sha256(signed_bytes).hexdigest()
+    report = Path(report_path).expanduser()
+    ensure_dir(report.parent)
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": "sc3_signature_verification_report.v1",
+                "algorithm": "Ed25519",
+                "verification_status": "verified",
+                "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
+                "signed_payload_sha256": signed_payload_sha256,
+                "signer_key_id": signer_key_id,
+                "verifier_id": verifier_id,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "algorithm": "Ed25519",
+        "signature_verified": True,
+        "signer_key_id": signer_key_id,
+        "verifier_id": verifier_id,
+        "public_key_base64": base64.b64encode(public_key).decode("ascii"),
+        "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
+        "signature_base64": base64.b64encode(private_key.sign(signed_bytes)).decode("ascii"),
+        "signed_payload_sha256": signed_payload_sha256,
+        "verification_report_artifact": {
+            "path": str(report.resolve()),
+            "sha256": _file_sha256(report),
+        },
+    }
+
+
+def _is_sha256(value: Any) -> bool:
+    text = _string(value).strip().lower()
+    return len(text) == 64 and all(character in "0123456789abcdef" for character in text)
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _finite_numeric_sequence(value: Any, *, minimum_length: int = 1) -> bool:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return False
+    numbers = [_finite_float(item) for item in value]
+    return len(numbers) >= minimum_length and all(item is not None for item in numbers)
+
+
+def _landmark_has_numeric_evidence(landmark: Mapping[str, Any]) -> bool:
+    for key in ("world_xyz", "camera_xyz", "position_xyz", "xyz", "position"):
+        if _finite_numeric_sequence(landmark.get(key), minimum_length=3):
+            return True
+    if (
+        _finite_float(landmark.get("x")) is not None
+        and _finite_float(landmark.get("y")) is not None
+    ):
+        return True
+    projection = _mapping(landmark.get("image_projection"))
+    return bool(
+        projection.get("available") is True
+        and _finite_float(projection.get("u_px")) is not None
+        and _finite_float(projection.get("v_px")) is not None
+    )
+
+
+def _landmark_evidence_blockers(landmarks: Sequence[Mapping[str, Any]]) -> list[str]:
+    blockers: list[str] = []
+    if not landmarks:
+        return ["fresh_action_projected_skeleton_missing"]
+    for index, landmark in enumerate(landmarks):
+        landmark_id = _string(
+            landmark.get("landmark_id") or landmark.get("name") or landmark.get("label")
+        ).strip()
+        if not landmark_id:
+            blockers.append(f"fresh_action_skeleton_landmark_id_missing:{index}")
+        if not _landmark_has_numeric_evidence(landmark):
+            blockers.append(f"fresh_action_skeleton_landmark_numeric_evidence_missing:{index}")
+    return blockers
+
+
+def _numeric_state_values(value: Any) -> tuple[list[float], bool]:
+    if isinstance(value, bool) or value is None:
+        return [], False
+    if isinstance(value, (int, float)):
+        number = _finite_float(value)
+        return ([number] if number is not None else []), number is None
+    if isinstance(value, Mapping):
+        values: list[float] = []
+        invalid = False
+        for child in value.values():
+            child_values, child_invalid = _numeric_state_values(child)
+            values.extend(child_values)
+            invalid = invalid or child_invalid
+        return values, invalid
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        values: list[float] = []
+        invalid = False
+        for child in value:
+            child_values, child_invalid = _numeric_state_values(child)
+            values.extend(child_values)
+            invalid = invalid or child_invalid
+        return values, invalid
+    return [], True
+
+
+def _generated_state_evidence_blockers(generated_state: Mapping[str, Any]) -> list[str]:
+    state_fields = (
+        "joint_positions",
+        "joint_velocities",
+        "joint_state",
+        "proprioception",
+        "state_vector",
+        "robot_state_vector",
+        "unitree_g1_sonic_state",
+    )
+    evidence_present = False
+    blockers: list[str] = []
+    for field in state_fields:
+        if field not in generated_state:
+            continue
+        values, invalid = _numeric_state_values(generated_state.get(field))
+        if invalid or not values:
+            blockers.append(f"generated_robot_state_{field}_nonfinite_or_empty")
+        else:
+            evidence_present = True
+    if not evidence_present:
+        blockers.append("generated_robot_state_numeric_evidence_missing")
+    state_payload = {key: value for key, value in generated_state.items() if key != "state_sha256"}
+    state_sha256 = _string(generated_state.get("state_sha256")).strip().lower()
+    if not _is_sha256(state_sha256):
+        blockers.append("generated_robot_state_sha256_missing_or_invalid")
+    elif state_sha256 != _canonical_sha256(state_payload):
+        blockers.append("generated_robot_state_sha256_mismatch")
+    return blockers
+
+
+def _with_action_conditioning_digests(projection: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(projection)
+    landmarks = [
+        dict(row) for row in normalized.get("landmarks", []) or [] if isinstance(row, Mapping)
+    ]
+    normalized["landmarks"] = landmarks
+    normalized["landmarks_sha256"] = _canonical_sha256(landmarks)
+    generated_state = _mapping(normalized.get("generated_robot_state"))
+    if generated_state:
+        generated_state = {
+            key: value for key, value in generated_state.items() if key != "state_sha256"
+        }
+        generated_state["state_sha256"] = _canonical_sha256(generated_state)
+        normalized["generated_robot_state"] = generated_state
+    normalized["action_conditioning_sha256"] = _canonical_sha256(
+        {
+            "source_action_sha256": normalized.get("source_action_sha256"),
+            "landmarks_sha256": normalized.get("landmarks_sha256"),
+            "generated_state_sha256": generated_state.get("state_sha256")
+            if generated_state
+            else None,
+        }
+    )
+    return normalized
+
+
+def _conditioning_evidence_sha256(wam_output: Mapping[str, Any]) -> str:
+    conditioning = _mapping(wam_output.get("skeleton_conditioning"))
+    state = _mapping(wam_output.get("generated_robot_state"))
+    evidence_state = {
+        key: value
+        for key, value in state.items()
+        if key not in {"source_action_sha256", "state_sha256"}
+    }
+    return _canonical_sha256(
+        {
+            "landmarks": conditioning.get("landmarks"),
+            "generated_robot_state": evidence_state,
+        }
+    )
+
+
+def _action_conditioning_blockers(
+    *,
+    action: Mapping[str, Any],
+    wam_output: Mapping[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    if action.get("not_a_learned_robot_policy_action") is True:
+        blockers.append("not_a_learned_robot_policy_action")
+    if action.get("out_of_distribution_action_projection") is True:
+        blockers.append("surrogate_policy_action_projection_not_allowed")
+    action_sha256 = _canonical_sha256(action)
+    conditioning = _mapping(wam_output.get("skeleton_conditioning"))
+    landmarks = [
+        dict(row) for row in conditioning.get("landmarks", []) or [] if isinstance(row, Mapping)
+    ]
+    blockers.extend(_landmark_evidence_blockers(landmarks))
+    landmarks_sha256 = _string(conditioning.get("landmarks_sha256")).strip().lower()
+    if not _is_sha256(landmarks_sha256):
+        blockers.append("fresh_action_skeleton_landmarks_sha256_missing_or_invalid")
+    elif landmarks_sha256 != _canonical_sha256(landmarks):
+        blockers.append("fresh_action_skeleton_landmarks_sha256_mismatch")
+    if conditioning.get("derived_via_controller_fk") is not True:
+        blockers.append("fresh_action_skeleton_not_derived_via_controller_fk")
+    if _string(conditioning.get("source_action_sha256")).strip() != action_sha256:
+        blockers.append("fresh_action_skeleton_identity_mismatch")
+    for required_key in ("controller_id", "controller_sha256", "robot_model_sha256"):
+        value = _string(conditioning.get(required_key)).strip().lower()
+        if not value:
+            blockers.append(f"fresh_action_skeleton_{required_key}_missing")
+        elif required_key.endswith("sha256") and not _is_sha256(value):
+            blockers.append(f"fresh_action_skeleton_{required_key}_invalid")
+    generated_state = _mapping(wam_output.get("generated_robot_state"))
+    if not generated_state:
+        blockers.append("generated_robot_state_missing")
+    elif _string(generated_state.get("source_action_sha256")).strip() != action_sha256:
+        blockers.append("generated_robot_state_action_identity_mismatch")
+    elif generated_state.get("proxy_or_surrogate") is not False:
+        blockers.append("generated_robot_state_proxy_not_allowed")
+    else:
+        blockers.extend(_generated_state_evidence_blockers(generated_state))
+    expected_conditioning_sha256 = _canonical_sha256(
+        {
+            "source_action_sha256": action_sha256,
+            "landmarks_sha256": landmarks_sha256,
+            "generated_state_sha256": generated_state.get("state_sha256"),
+        }
+    )
+    if _string(conditioning.get("action_conditioning_sha256")).strip().lower() != (
+        expected_conditioning_sha256
+    ):
+        blockers.append("fresh_action_conditioning_digest_mismatch")
+    return blockers
+
+
+def _registered_task_criteria(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
+    for key in ("registered_criteria", "success_criteria", "criteria"):
+        value = contract.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [dict(row) for row in value if isinstance(row, Mapping)]
+    return [dict(contract)] if _string(contract.get("criterion_id")).strip() else []
+
+
+def _validate_hashed_evidence_artifacts(value: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    rows = (
+        [dict(row) for row in value if isinstance(row, Mapping)]
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+        else []
+    )
+    blockers: list[str] = []
+    if not rows:
+        return [], ["task_transition_hashed_evidence_artifacts_missing"]
+    validated: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        path_text = _string(row.get("path")).strip()
+        digest = _string(row.get("sha256")).strip().lower()
+        if not path_text:
+            blockers.append(f"task_transition_evidence_path_missing:{index}")
+            continue
+        path = Path(path_text).expanduser()
+        if not path.is_file():
+            blockers.append(f"task_transition_evidence_file_missing:{index}")
+            continue
+        if not _is_sha256(digest):
+            blockers.append(f"task_transition_evidence_sha256_invalid:{index}")
+            continue
+        if _file_sha256(path) != digest:
+            blockers.append(f"task_transition_evidence_sha256_mismatch:{index}")
+            continue
+        validated.append({**row, "path": str(path.resolve()), "sha256": digest})
+    return validated, blockers
+
+
+TASK_TRANSITION_MEASUREMENT_SCHEMA_VERSION = "task_transition_measurement.v1"
+
+
+def _validate_transition_measurement_artifacts(
+    value: Any,
+    *,
+    criterion_id: str,
+    observable_transition: str,
+    before_value: float | None,
+    after_value: float | None,
+    unit: str,
+    source_step_index: int | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Validate that hashed evidence contains the exact measured transition.
+
+    File presence and a matching digest prove only artifact integrity.  Task
+    completion additionally requires a typed JSON measurement whose identity,
+    values, unit, and source loop step exactly match the evaluator result.
+    """
+
+    artifacts, blockers = _validate_hashed_evidence_artifacts(value)
+    bound: list[dict[str, Any]] = []
+    for index, artifact in enumerate(artifacts):
+        path = Path(_string(artifact.get("path"))).expanduser()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            blockers.append(f"task_transition_measurement_json_invalid:{index}")
+            continue
+        if not isinstance(payload, Mapping):
+            blockers.append(f"task_transition_measurement_not_object:{index}")
+            continue
+        measurement = dict(payload)
+        if measurement.get("schema_version") != TASK_TRANSITION_MEASUREMENT_SCHEMA_VERSION:
+            blockers.append(f"task_transition_measurement_schema_invalid:{index}")
+        expected_strings = {
+            "criterion_id": criterion_id,
+            "observable_transition": observable_transition,
+            "unit": unit,
+        }
+        for field, expected in expected_strings.items():
+            if not expected or _string(measurement.get(field)).strip() != expected:
+                blockers.append(f"task_transition_measurement_binding_mismatch:{field}:{index}")
+        for field, expected in (
+            ("before_value", before_value),
+            ("after_value", after_value),
+        ):
+            observed = _finite_float(measurement.get(field))
+            if expected is None or observed is None or abs(observed - expected) > 1e-12:
+                blockers.append(f"task_transition_measurement_binding_mismatch:{field}:{index}")
+        observed_step = measurement.get("source_step_index")
+        if (
+            source_step_index is None
+            or isinstance(observed_step, bool)
+            or not isinstance(observed_step, int)
+            or observed_step != source_step_index
+        ):
+            blockers.append(
+                f"task_transition_measurement_binding_mismatch:source_step_index:{index}"
+            )
+        artifact_blockers = [blocker for blocker in blockers if blocker.endswith(f":{index}")]
+        if not artifact_blockers:
+            bound.append({**artifact, "measurement": measurement})
+    if artifacts and not bound:
+        blockers.append("task_transition_measurement_artifact_not_bound")
+    return bound, sorted(set(blockers))
+
+
+def _computed_transition_passed(
+    *,
+    comparison: str,
+    before_value: float,
+    after_value: float,
+    tolerance: float,
+    target_value: float | None,
+) -> bool | None:
+    if comparison == "increase_at_least":
+        return after_value - before_value >= tolerance
+    if comparison == "decrease_at_least":
+        return before_value - after_value >= tolerance
+    if comparison == "absolute_change_at_least":
+        return abs(after_value - before_value) >= tolerance
+    if comparison == "within_tolerance":
+        return bool(target_value is not None and abs(after_value - target_value) <= tolerance)
+    if comparison == "at_or_above":
+        return bool(target_value is not None and after_value >= target_value - tolerance)
+    if comparison == "at_or_below":
+        return bool(target_value is not None and after_value <= target_value + tolerance)
+    return None
+
+
+def _validate_task_completion_transition(
+    *,
+    completion_result: Mapping[str, Any],
+    task_success_contract: Mapping[str, Any],
+    expected_source_step_index: int | None = None,
+) -> dict[str, Any]:
+    result = dict(completion_result)
+    blockers: list[str] = []
+    evaluator_attestation_validation = validate_trusted_ed25519_attestation(
+        _mapping(result.get("evaluator_attestation")),
+        signed_payload={
+            key: value for key, value in result.items() if key != "evaluator_attestation"
+        },
+        prefix="task_transition_evaluator_attestation",
+        trusted_public_key_sha256_env=(SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256_ENV),
+    )
+    blockers.extend(_string_list(evaluator_attestation_validation.get("blockers")))
+    criterion_id = _string(result.get("criterion_id")).strip()
+    registered = {
+        _string(row.get("criterion_id")).strip(): dict(row)
+        for row in _registered_task_criteria(task_success_contract)
+        if _string(row.get("criterion_id")).strip()
+    }
+    criterion = _mapping(registered.get(criterion_id))
+    if not criterion_id or not criterion:
+        blockers.append("task_transition_criterion_not_registered")
+    observable_transition = _string(result.get("observable_transition")).strip()
+    registered_transition = _string(criterion.get("observable_transition")).strip()
+    if not registered_transition or observable_transition != registered_transition:
+        blockers.append("task_transition_observable_transition_not_registered")
+    comparison = _string(criterion.get("comparison")).strip()
+    if comparison not in {
+        "increase_at_least",
+        "decrease_at_least",
+        "absolute_change_at_least",
+        "within_tolerance",
+        "at_or_above",
+        "at_or_below",
+    }:
+        blockers.append("task_transition_comparison_missing_or_unsupported")
+    tolerance = _finite_float(result.get("tolerance"))
+    registered_tolerance = _finite_float(criterion.get("tolerance"))
+    if (
+        tolerance is None
+        or registered_tolerance is None
+        or tolerance < 0.0
+        or abs(tolerance - registered_tolerance) > 1e-12
+    ):
+        blockers.append("task_transition_tolerance_missing_nonfinite_or_unregistered")
+    if comparison in {
+        "increase_at_least",
+        "decrease_at_least",
+        "absolute_change_at_least",
+    } and (tolerance is None or tolerance <= 0.0):
+        blockers.append("task_transition_change_tolerance_must_be_positive")
+    before_value = _finite_float(result.get("before_value"))
+    after_value = _finite_float(result.get("after_value"))
+    if before_value is None or after_value is None:
+        blockers.append("task_transition_before_after_values_missing_or_nonfinite")
+    unit = _string(result.get("unit")).strip()
+    registered_unit = _string(criterion.get("unit")).strip()
+    if not unit or not registered_unit or unit != registered_unit:
+        blockers.append("task_transition_unit_missing_or_unregistered")
+    source_step_value = result.get("source_step_index")
+    source_step_index = (
+        source_step_value
+        if isinstance(source_step_value, int) and not isinstance(source_step_value, bool)
+        else None
+    )
+    if source_step_index is None:
+        blockers.append("task_transition_source_step_index_missing_or_invalid")
+    elif expected_source_step_index is not None and source_step_index != expected_source_step_index:
+        blockers.append("task_transition_source_step_index_mismatch")
+    target_value = _finite_float(
+        result.get("target_value")
+        if result.get("target_value") is not None
+        else criterion.get("target_value")
+    )
+    evidence_artifacts, evidence_blockers = _validate_transition_measurement_artifacts(
+        result.get("evidence_artifacts") or result.get("evidence_refs"),
+        criterion_id=criterion_id,
+        observable_transition=observable_transition,
+        before_value=before_value,
+        after_value=after_value,
+        unit=unit,
+        source_step_index=source_step_index,
+    )
+    blockers.extend(evidence_blockers)
+    computed_passed = (
+        _computed_transition_passed(
+            comparison=comparison,
+            before_value=before_value,
+            after_value=after_value,
+            tolerance=tolerance,
+            target_value=target_value,
+        )
+        if comparison
+        and before_value is not None
+        and after_value is not None
+        and tolerance is not None
+        else None
+    )
+    reported_passed = result.get("passed")
+    if not isinstance(reported_passed, bool):
+        blockers.append("task_transition_passed_not_strict_boolean")
+    elif computed_passed is None or reported_passed is not computed_passed:
+        blockers.append("task_transition_reported_verdict_mismatch")
+    if result.get("status") != "completed":
+        blockers.append("task_transition_evaluator_not_completed")
+    blockers = sorted(set(blockers))
+    return {
+        **result,
+        "registered_criterion": criterion or None,
+        "comparison": comparison or None,
+        "before_value": before_value,
+        "after_value": after_value,
+        "target_value": target_value,
+        "tolerance": tolerance,
+        "unit": unit or None,
+        "source_step_index": source_step_index,
+        "computed_transition_passed": computed_passed,
+        "reported_transition_passed": reported_passed
+        if isinstance(reported_passed, bool)
+        else None,
+        "validated_evidence_artifacts": evidence_artifacts,
+        "evaluator_attestation_validation": evaluator_attestation_validation,
+        "registered_transition_passed": bool(
+            not blockers and computed_passed is True and reported_passed is True
+        ),
+        "validation_blockers": blockers,
+    }
 
 
 def _callable_label(value: Any) -> str:
@@ -143,6 +704,9 @@ def _endpoint_action_signature(action: Mapping[str, Any]) -> str:
         "root_yaw_radians": yaw,
         "policy_action": _string(action.get("policy_action") or action.get("motion_token")),
         "joint_targets": action.get("joint_targets"),
+        "action_chunk": action.get("action_chunk"),
+        "sonic_action_chunk": action.get("sonic_action_chunk"),
+        "controller_action": action.get("controller_action"),
     }
     return json.dumps(signature, sort_keys=True, default=str)
 
@@ -173,22 +737,230 @@ def _action_record_from_policy_endpoint(
     )
     if "joint_targets" in endpoint_action:
         action["joint_targets"] = endpoint_action.get("joint_targets")
+    for key in (
+        "action_chunk",
+        "sonic_action_chunk",
+        "controller_action",
+        "not_a_learned_robot_policy_action",
+        "out_of_distribution_action_projection",
+    ):
+        if key in endpoint_action:
+            action[key] = endpoint_action.get(key)
+    action["learned_policy_endpoint_action"] = dict(endpoint_action)
     action["policy_requeried_on_generated_observation"] = True
     action["policy_requery_source_step_index"] = int(requery_source_step_index)
     action["policy_action_source"] = "policy_endpoint_requery_on_wam_generated_observation"
     return action
 
 
+def make_learned_policy_command_endpoint(
+    *,
+    command: str,
+    work_dir: str | Path,
+    timeout_seconds: float = 120.0,
+) -> PolicyEndpoint:
+    """Expose a real learned-policy process boundary to the strict CLI lane."""
+
+    argv = shlex.split(_string(command).strip())
+    if not argv:
+        raise ValueError("learned_policy_command_missing")
+    root = Path(work_dir).expanduser().resolve()
+    ensure_dir(root)
+    seen_runtime_result_ids: set[str] = set()
+
+    def endpoint(
+        observation: Mapping[str, Any],
+        action_history: Sequence[Mapping[str, Any]],
+        step_index: int,
+    ) -> Mapping[str, Any]:
+        step_dir = root / f"step_{int(step_index):04d}"
+        ensure_dir(step_dir)
+        request_path = step_dir / "learned_policy_request.json"
+        output_path = step_dir / "learned_policy_output.json"
+        if output_path.exists():
+            output_path.unlink()
+        request = {
+            "schema_version": "oscar_learned_policy_endpoint_request.v1",
+            "step_index": int(step_index),
+            "observation": dict(observation),
+            "action_history": [dict(row) for row in action_history],
+        }
+        write_json(request_path, request)
+        request_sha256 = _canonical_sha256(request)
+        completed = subprocess.run(
+            argv,
+            input=json.dumps(request, sort_keys=True),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(1.0, float(timeout_seconds)),
+            cwd=str(step_dir),
+            env={
+                **os.environ,
+                "BLUEPRINT_LEARNED_POLICY_INPUT": str(request_path),
+                "BLUEPRINT_LEARNED_POLICY_OUTPUT": str(output_path),
+                "BLUEPRINT_LEARNED_POLICY_STEP_INDEX": str(int(step_index)),
+            },
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"learned_policy_command_returncode_{completed.returncode}")
+        payload: Any = None
+        if output_path.is_file():
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        elif completed.stdout.strip():
+            payload = json.loads(completed.stdout)
+        response = _mapping(payload)
+        if response.get("status") != "completed":
+            raise RuntimeError("learned_policy_command_status_not_completed")
+        if response.get("learned_policy_action_proven") is not True:
+            raise RuntimeError("learned_policy_command_action_not_proven")
+        action = _mapping(response.get("action") or response.get("policy_action"))
+        if not action:
+            raise RuntimeError("learned_policy_command_action_missing")
+        if action.get("not_a_learned_robot_policy_action") is not False:
+            raise RuntimeError("learned_policy_command_proxy_action_rejected")
+        if action.get("out_of_distribution_action_projection") is not False:
+            raise RuntimeError("learned_policy_command_surrogate_projection_rejected")
+        if not _is_sha256(response.get("checkpoint_sha256")):
+            raise RuntimeError("learned_policy_command_checkpoint_sha256_invalid")
+        if not _is_sha256(response.get("model_code_sha256")):
+            raise RuntimeError("learned_policy_command_model_code_sha256_invalid")
+        action_chunk = action.get("action_chunk")
+        if not (
+            isinstance(action_chunk, Sequence)
+            and not isinstance(action_chunk, (str, bytes, bytearray))
+            and len(action_chunk) == 7
+            and all(_finite_float(value) is not None for value in action_chunk)
+        ):
+            raise RuntimeError("learned_policy_command_action_chunk_not_finite_7d")
+        runtime_result_id = _string(response.get("runtime_result_id")).strip()
+        if not runtime_result_id or runtime_result_id in seen_runtime_result_ids:
+            raise RuntimeError("learned_policy_command_runtime_result_id_missing_or_replayed")
+        endpoint_id = _string(response.get("policy_endpoint_id")).strip()
+        if not endpoint_id:
+            raise RuntimeError("learned_policy_command_endpoint_id_missing")
+        checkpoint_ref = _mapping(response.get("checkpoint_artifact"))
+        model_code_ref = _mapping(response.get("model_code_artifact"))
+        _, checkpoint_blockers = _validate_hashed_evidence_artifacts([checkpoint_ref])
+        _, model_code_blockers = _validate_hashed_evidence_artifacts([model_code_ref])
+        if (
+            checkpoint_blockers
+            or _string(checkpoint_ref.get("sha256")).lower()
+            != _string(response.get("checkpoint_sha256")).lower()
+        ):
+            raise RuntimeError("learned_policy_command_checkpoint_artifact_invalid")
+        if (
+            model_code_blockers
+            or _string(model_code_ref.get("sha256")).lower()
+            != _string(response.get("model_code_sha256")).lower()
+        ):
+            raise RuntimeError("learned_policy_command_model_code_artifact_invalid")
+        signed_result = {
+            "schema_version": "sc3_learned_policy_runtime_result.v1",
+            "request_sha256": request_sha256,
+            "step_index": int(step_index),
+            "policy_endpoint_id": endpoint_id,
+            "runtime_result_id": runtime_result_id,
+            "checkpoint_sha256": _string(response.get("checkpoint_sha256")).lower(),
+            "model_code_sha256": _string(response.get("model_code_sha256")).lower(),
+            "checkpoint_artifact": checkpoint_ref,
+            "model_code_artifact": model_code_ref,
+            "action": action,
+        }
+        attestation = validate_trusted_ed25519_attestation(
+            _mapping(response.get("runtime_attestation")),
+            signed_payload=signed_result,
+            prefix="learned_policy_runtime_attestation",
+            trusted_public_key_sha256_env=(
+                SC3_LEARNED_POLICY_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV
+            ),
+        )
+        if attestation.get("status") != "validated":
+            raise RuntimeError(
+                "learned_policy_command_runtime_attestation_invalid:"
+                + ",".join(_string_list(attestation.get("blockers")))
+            )
+        seen_runtime_result_ids.add(runtime_result_id)
+        return {
+            **action,
+            "learned_policy_endpoint_id": endpoint_id,
+            "learned_policy_runtime_result_id": runtime_result_id,
+            "learned_policy_request_sha256": request_sha256,
+            "learned_policy_checkpoint_sha256": _string(response.get("checkpoint_sha256")),
+            "learned_policy_model_code_sha256": _string(response.get("model_code_sha256")),
+        }
+
+    return endpoint
+
+
+def make_task_completion_command_evaluator(
+    *,
+    command: str,
+    work_dir: str | Path,
+    timeout_seconds: float = 120.0,
+) -> TaskCompletionEvaluator:
+    """Expose a per-step task-transition measurement process to the CLI lane."""
+
+    argv = shlex.split(_string(command).strip())
+    if not argv:
+        raise ValueError("task_completion_command_missing")
+    root = Path(work_dir).expanduser().resolve()
+    ensure_dir(root)
+
+    def evaluator(context: Mapping[str, Any]) -> Mapping[str, Any]:
+        step_value = context.get("step_index")
+        if isinstance(step_value, bool) or not isinstance(step_value, int):
+            raise ValueError("task_completion_step_index_missing_or_invalid")
+        step_dir = root / f"step_{step_value:04d}"
+        ensure_dir(step_dir)
+        request_path = step_dir / "task_completion_request.json"
+        output_path = step_dir / "task_completion_output.json"
+        if output_path.exists():
+            output_path.unlink()
+        request = {
+            "schema_version": "oscar_task_completion_evaluator_request.v1",
+            **dict(context),
+        }
+        write_json(request_path, request)
+        completed = subprocess.run(
+            argv,
+            input=json.dumps(request, sort_keys=True),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(1.0, float(timeout_seconds)),
+            cwd=str(step_dir),
+            env={
+                **os.environ,
+                "BLUEPRINT_TASK_COMPLETION_INPUT": str(request_path),
+                "BLUEPRINT_TASK_COMPLETION_OUTPUT": str(output_path),
+                "BLUEPRINT_TASK_COMPLETION_STEP_INDEX": str(step_value),
+            },
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"task_completion_command_returncode_{completed.returncode}")
+        payload: Any = None
+        if output_path.is_file():
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        elif completed.stdout.strip():
+            payload = json.loads(completed.stdout)
+        response = _mapping(payload)
+        if not response:
+            raise RuntimeError("task_completion_command_output_missing_or_invalid")
+        return response
+
+    return evaluator
+
+
 def _neutral_unitree_g1_sonic_state() -> dict[str, list[float]]:
-    state = {
-        key: [0.0] * int(dim)
-        for key, dim in UNITREE_G1_SONIC_STATE_DIMS.items()
-    }
+    state = {key: [0.0] * int(dim) for key, dim in UNITREE_G1_SONIC_STATE_DIMS.items()}
     state["projected_gravity"] = [0.0, 0.0, -1.0]
     return state
 
 
-def _policy_observation(frame_path: str, target: Sequence[float], step_index: int) -> dict[str, Any]:
+def _policy_observation(
+    frame_path: str, target: Sequence[float], step_index: int
+) -> dict[str, Any]:
     """The policy observation handed to the harness for this step (evaluator-controlled state
     kept separate from the WAM's pixel-inferred fields)."""
     return {
@@ -507,8 +1279,7 @@ def _vast_paid_provider_preflight(
                         pass
                     try:
                         prior_live_seconds += float(
-                            row.get("actual_live_runtime_seconds_observed_by_adapter")
-                            or 0.0
+                            row.get("actual_live_runtime_seconds_observed_by_adapter") or 0.0
                         )
                     except (TypeError, ValueError):
                         pass
@@ -517,10 +1288,7 @@ def _vast_paid_provider_preflight(
             blockers.append("vast_session_budget_ledger_parse_failed")
     projected_incremental_cost = max_hourly_rate_usd * (max_live_minutes / 60.0)
     prior_live_minutes = prior_live_seconds / 60.0
-    if (
-        session_max_live_minutes >= 0
-        and prior_live_minutes >= float(session_max_live_minutes)
-    ):
+    if session_max_live_minutes >= 0 and prior_live_minutes >= float(session_max_live_minutes):
         blockers.append("session_live_runtime_limit_exhausted")
     if prior_cost + projected_incremental_cost > hard_cap_usd:
         blockers.append("session_estimated_spend_hard_cap_exhausted")
@@ -589,9 +1357,7 @@ def _runpod_paid_provider_preflight(
         blockers.append("missing_file_based_secret_RUNPOD_API_KEY_FILE")
     projected_incremental_cost = float(max_hourly_rate_usd) * (float(max_live_minutes) / 60.0)
     if projected_incremental_cost > float(hard_cap_usd):
-        blockers.append(
-            "closed_loop_runpod_projected_cost_exceeds_hard_cap_usd"
-        )
+        blockers.append("closed_loop_runpod_projected_cost_exceeds_hard_cap_usd")
     return {
         "schema_version": "closed_loop_paid_provider_preflight.v1",
         "status": "ready" if not blockers else "blocked",
@@ -628,18 +1394,14 @@ def _closed_loop_paid_provider_preflight(
             allow_paid_provider_launch=allow_paid_provider_launch,
             max_hourly_rate_usd=_float_env("BLUEPRINT_VAST_WAM_MAX_HOURLY_RATE", 0.35),
             max_live_minutes=_int_env("BLUEPRINT_VAST_WAM_MAX_LIVE_MINUTES", 30),
-            session_max_live_minutes=_int_env(
-                "BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", 35
-            ),
+            session_max_live_minutes=_int_env("BLUEPRINT_VAST_WAM_SESSION_MAX_LIVE_MINUTES", 35),
             hard_cap_usd=_float_env("BLUEPRINT_VAST_WAM_HARD_CAP_USD", 3.0),
         )
     return {
         "schema_version": "closed_loop_paid_provider_preflight.v1",
         "status": "blocked",
         "provider": provider_id or provider,
-        "blockers": [
-            f"closed_loop_paid_provider_{provider_id or 'unknown'}_disabled_use_vast"
-        ],
+        "blockers": [f"closed_loop_paid_provider_{provider_id or 'unknown'}_disabled_use_vast"],
         "claim_boundary": {
             "preflight_is_no_spend": True,
             "paid_closed_loop_provider_default_is_vast": True,
@@ -658,22 +1420,17 @@ def build_closed_loop_wam_backend_readiness(
 ) -> dict[str, Any]:
     """Describe which WAM backend the closed-loop runner can actually execute.
 
-    The strategy catalog can prefer Cosmos3 for new learned-WAM work, but this
-    runner still has only OSCAR-specific local/provider execution paths. This
-    manifest is a no-spend guardrail so a paid run cannot be mistaken for a
-    Cosmos3 run unless a real Cosmos3 adapter has been wired through the loop.
+    Cosmos3 is executable only through its explicit per-step command contract;
+    no configured command means no Cosmos3 runtime claim.
     """
 
     backend = _string(selected_backend).strip() or "oscar_wam"
     command_env_var = WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE.get(backend)
-    backend_command = (
-        _string(os.environ.get(command_env_var or ""))
-        or _string(os.environ.get("BLUEPRINT_WAM_PROVIDER_COMMAND"))
+    backend_command = _string(os.environ.get(command_env_var or "")) or _string(
+        os.environ.get("BLUEPRINT_WAM_PROVIDER_COMMAND")
     )
     local_oscar_configured = bool(_string(oscar_repo) and _string(checkpoint))
-    built_in_oscar_provider_configured = bool(
-        backend == "oscar_wam" and use_provider_command
-    )
+    built_in_oscar_provider_configured = bool(backend == "oscar_wam" and use_provider_command)
     local_official_release = (
         official_release_contract(
             source_url=(
@@ -694,9 +1451,7 @@ def build_closed_loop_wam_backend_readiness(
         if local_oscar_configured
         else None
     )
-    experimental_oscar_version_allowed = _env_truthy(
-        ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV
-    )
+    experimental_oscar_version_allowed = _env_truthy(ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV)
     paid_provider_preflight = (
         _closed_loop_paid_provider_preflight(
             provider=oscar_provider,
@@ -728,7 +1483,6 @@ def build_closed_loop_wam_backend_readiness(
             blockers.extend(official_release_blockers(local_official_release))
         blockers.extend(str(item) for item in paid_provider_preflight.get("blockers") or [])
     elif backend == "cosmos3_wam":
-        blockers.append("blocked_cosmos3_wam_not_wired_into_isaac_closed_loop_runner")
         if not explicit_provider_command_configured:
             blockers.append("blocked_cosmos3_wam_requires_explicit_provider_command")
     elif backend in SUPPORTED_CLOSED_LOOP_WAM_BACKENDS:
@@ -764,7 +1518,10 @@ def build_closed_loop_wam_backend_readiness(
         "claim_boundary": {
             "readiness_manifest_is_no_spend": True,
             "readiness_manifest_is_not_model_execution_proof": True,
-            "cosmos3_strategy_preference_does_not_imply_runtime_wired": True,
+            "cosmos3_strategy_preference_does_not_imply_runtime_execution": True,
+            "cosmos3_per_step_command_contract_wired": bool(
+                backend == "cosmos3_wam" and explicit_provider_command_configured
+            ),
             "oscar_provider_path_is_not_cosmos3_runtime": backend == "oscar_wam",
             "official_oscar_source_and_checkpoint_pinned": bool(
                 local_official_release
@@ -789,9 +1546,7 @@ def build_closed_loop_seed_conditioning_preflight(
     backend = _string(selected_backend).strip() or "oscar_wam"
     blockers: list[str] = []
     trace_path = (
-        Path(projected_skeleton_trace_path).expanduser()
-        if projected_skeleton_trace_path
-        else None
+        Path(projected_skeleton_trace_path).expanduser() if projected_skeleton_trace_path else None
     )
     required = bool(
         backend == "oscar_wam"
@@ -958,9 +1713,7 @@ def build_closed_loop_short_rollout_sanity_gate(
 
     backend = _string(selected_backend).strip() or "oscar_wam"
     risk_recommends_short_sanity = bool(
-        provider_input_contract_preflight.get(
-            "short_rollout_sanity_recommended_before_scale_up"
-        )
+        provider_input_contract_preflight.get("short_rollout_sanity_recommended_before_scale_up")
     )
     required = bool(
         backend == "oscar_wam"
@@ -1046,9 +1799,7 @@ def build_closed_loop_short_visual_sanity_launch_plan(
 
     backend = _string(selected_backend).strip() or "oscar_wam"
     risk_recommends_short_sanity = bool(
-        provider_input_contract_preflight.get(
-            "short_rollout_sanity_recommended_before_scale_up"
-        )
+        provider_input_contract_preflight.get("short_rollout_sanity_recommended_before_scale_up")
     )
     required = bool(
         backend == "oscar_wam"
@@ -1099,9 +1850,7 @@ def build_closed_loop_short_visual_sanity_launch_plan(
         provider=short_provider,
         allow_paid_provider_launch=allow_paid_provider_launch,
     )
-    provider_launch_blockers = [
-        str(item) for item in paid_provider_preflight.get("blockers") or []
-    ]
+    provider_launch_blockers = [str(item) for item in paid_provider_preflight.get("blockers") or []]
     command_argv = [
         sys.executable,
         "-m",
@@ -1135,9 +1884,7 @@ def build_closed_loop_short_visual_sanity_launch_plan(
         "steps": int(steps),
         "risk_recommends_short_sanity": risk_recommends_short_sanity,
         "source_step_input_path": str(step_input_path),
-        "policy_observation_path": str(policy_observation_path)
-        if policy_observation
-        else None,
+        "policy_observation_path": str(policy_observation_path) if policy_observation else None,
         "policy_observation_materialized": bool(policy_observation),
         "command_materialized": command_materialized,
         "job_dir": str(job_dir),
@@ -1180,7 +1927,9 @@ def make_oscar_provider_command_wam_backend(
     provider: str = "vast",
     allow_paid_provider_launch: bool = False,
     timeout_seconds: float = 3600.0,
-    adapter_run: Callable[[Sequence[str] | None], Mapping[str, Any]] = run_oscar_wam_provider_adapter,
+    adapter_run: Callable[
+        [Sequence[str] | None], Mapping[str, Any]
+    ] = run_oscar_wam_provider_adapter,
     extract_next_frame: Callable[[str | Path, str | Path], Path | None] | None = None,
     projected_skeleton_trace_path: str | Path | None = None,
 ) -> WamGenerateNext:
@@ -1309,7 +2058,7 @@ def make_oscar_per_step_wam_backend(
     work_dir: str | Path,
     task_prompt: str,
     num_frames: int = DEFAULT_OSCAR_NUM_FRAMES,
-    skeleton_for_action: Callable[[Mapping[str, Any], int], Sequence[Mapping[str, Any]]] | None = None,
+    skeleton_for_action: Callable[[Mapping[str, Any], int], Any] | None = None,
     seed: int = 42,
 ) -> WamGenerateNext:
     """A ``wam_generate_next`` backend that drives real per-step OSCAR-2B generation.
@@ -1328,7 +2077,19 @@ def make_oscar_per_step_wam_backend(
         step_index: int,
         history: Sequence[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        skeleton = list(skeleton_for_action(action, step_index)) if skeleton_for_action else []
+        projection = skeleton_for_action(action, step_index) if skeleton_for_action else None
+        if isinstance(projection, Mapping):
+            skeleton = [
+                dict(row)
+                for row in projection.get("landmarks", []) or []
+                if isinstance(row, Mapping)
+            ]
+            projection_metadata = _with_action_conditioning_digests(
+                {**dict(projection), "landmarks": skeleton}
+            )
+        else:
+            skeleton = list(projection or [])
+            projection_metadata = {}
         request = build_oscar_per_step_request(
             current_frame_path=current_frame,
             action=action,
@@ -1344,13 +2105,353 @@ def make_oscar_per_step_wam_backend(
         return {
             "generated_frame_path": generated_frame,
             "generated_video_path": result.get("generated_video_path"),
-            "skeleton_conditioning": {"landmarks": skeleton} if skeleton else None,
+            "skeleton_conditioning": {
+                **projection_metadata,
+                "landmarks": skeleton,
+            }
+            if skeleton
+            else None,
+            "generated_robot_state": projection_metadata.get("generated_robot_state"),
             "wam_backend": "oscar_2b_per_step",
             "wam_generation_status": result.get("status"),
             "wam_generation_blockers": list(result.get("blockers") or []),
         }
 
     return _generate_next
+
+
+def make_cosmos3_per_step_command_wam_backend(
+    *,
+    command: str | Sequence[str],
+    work_dir: str | Path,
+    task_prompt: str,
+    skeleton_for_action: Callable[[Mapping[str, Any], int], Any],
+    timeout_seconds: float = 3600.0,
+) -> WamGenerateNext:
+    """Drive a configured Cosmos3 forward/inverse/cross-view model each loop step."""
+
+    argv = shlex.split(command) if isinstance(command, str) else [str(item) for item in command]
+    if not argv:
+        raise ValueError("cosmos3_per_step_command_missing")
+    resolved_work = Path(work_dir).expanduser().resolve()
+    ensure_dir(resolved_work)
+    runtime_session_id = (
+        "cosmos3-runtime-" + hashlib.sha256(str(resolved_work).encode("utf-8")).hexdigest()[:24]
+    )
+    seen_runtime_result_ids: set[str] = set()
+
+    def _generate_next(
+        current_frame: str,
+        action: Mapping[str, Any],
+        step_index: int,
+        history: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        step_dir = resolved_work / f"step_{step_index:04d}"
+        ensure_dir(step_dir)
+        projection = skeleton_for_action(action, step_index)
+        if not isinstance(projection, Mapping):
+            return {
+                "status": "blocked",
+                "wam_generation_status": "blocked",
+                "blockers": ["cosmos3_controller_fk_projection_missing"],
+            }
+        projection_metadata = _with_action_conditioning_digests(dict(projection))
+        projection_blockers = _action_conditioning_blockers(
+            action=action,
+            wam_output={
+                "skeleton_conditioning": projection_metadata,
+                "generated_robot_state": projection_metadata.get("generated_robot_state"),
+            },
+        )
+        if projection_blockers:
+            return {
+                "status": "blocked",
+                "wam_generation_status": "blocked",
+                "blockers": [
+                    f"cosmos3_controller_fk_projection_invalid:{blocker}"
+                    for blocker in projection_blockers
+                ],
+            }
+        source_frame = Path(current_frame).expanduser().resolve()
+        action_sha256 = _canonical_sha256(action)
+        source_observation_sha256 = (
+            hashlib.sha256(source_frame.read_bytes()).hexdigest() if source_frame.is_file() else ""
+        )
+        request_path = step_dir / "cosmos3_closed_loop_request.json"
+        output_path = step_dir / "cosmos3_closed_loop_output.json"
+        request = {
+            "schema_version": "cosmos3_closed_loop_step_request.v1",
+            "runtime_session_id": runtime_session_id,
+            "step_index": step_index,
+            "task_prompt": task_prompt,
+            "source_observation_artifact": {
+                "path": str(source_frame),
+                "sha256": source_observation_sha256,
+            },
+            "action": dict(action),
+            "action_sha256": action_sha256,
+            "action_history": [dict(row) for row in history],
+            "skeleton_conditioning": projection_metadata,
+            "required_mode_outputs": [
+                "forward_dynamics",
+                "inverse_dynamics",
+                "cross_view",
+            ],
+        }
+        write_json(request_path, request)
+        request_sha256 = _canonical_sha256(request)
+        if output_path.exists():
+            output_path.unlink()
+        completed = subprocess.run(
+            argv,
+            input=json.dumps(request, sort_keys=True),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(1.0, float(timeout_seconds)),
+            cwd=str(step_dir),
+            env={
+                **os.environ,
+                "BLUEPRINT_COSMOS3_CLOSED_LOOP_INPUT": str(request_path),
+                "BLUEPRINT_COSMOS3_CLOSED_LOOP_OUTPUT": str(output_path),
+                "BLUEPRINT_COSMOS3_CLOSED_LOOP_STEP_INDEX": str(step_index),
+            },
+        )
+        payload: dict[str, Any] = {}
+        if output_path.is_file():
+            payload = _mapping(json.loads(output_path.read_text(encoding="utf-8")))
+        elif completed.stdout.strip():
+            payload = _mapping(json.loads(completed.stdout))
+        blockers: list[str] = []
+        runtime_result_id = _string(payload.get("runtime_result_id")).strip()
+        if completed.returncode != 0:
+            blockers.append(f"cosmos3_closed_loop_command_returncode_{completed.returncode}")
+        if not (
+            payload.get("schema_version") == "cosmos3_closed_loop_step_output.v1"
+            and payload.get("status") == "completed"
+            and payload.get("fresh_model_command_executed_this_invocation") is True
+            and payload.get("learned_wam_model_ran") is True
+            and payload.get("consumed_action_sha256") == action_sha256
+            and payload.get("source_observation_sha256") == source_observation_sha256
+            and payload.get("runtime_session_id") == runtime_session_id
+            and payload.get("request_sha256") == request_sha256
+            and runtime_result_id
+            and runtime_result_id not in seen_runtime_result_ids
+        ):
+            blockers.append("cosmos3_closed_loop_output_contract_invalid")
+        checkpoint_validation = validate_checkpoint_attestation(
+            _mapping(payload.get("sc3_checkpoint_attestation"))
+        )
+        if checkpoint_validation.get("status") != "validated":
+            blockers.append("cosmos3_sc3_checkpoint_attestation_not_validated")
+        checkpoint_sha256 = _string(
+            _mapping(payload.get("sc3_checkpoint_attestation")).get("checkpoint_sha256")
+        ).lower()
+        mode_outputs = _mapping(payload.get("mode_outputs"))
+        mode_artifact_sha256s: set[str] = set()
+        for mode in ("forward_dynamics", "inverse_dynamics", "cross_view"):
+            mode_output = _mapping(mode_outputs.get(mode))
+            _, evidence_blockers = _validate_hashed_evidence_artifacts(
+                [mode_output.get("artifact")]
+            )
+            artifact_ref = _mapping(mode_output.get("artifact"))
+            artifact_sha256 = _string(artifact_ref.get("sha256")).lower()
+            artifact_path = Path(_string(artifact_ref.get("path"))).expanduser()
+            artifact_payload: dict[str, Any] = {}
+            if artifact_path.is_file():
+                try:
+                    artifact_payload = _mapping(
+                        json.loads(artifact_path.read_text(encoding="utf-8"))
+                    )
+                except (OSError, json.JSONDecodeError):
+                    pass
+            if (
+                mode_output.get("status") != "completed"
+                or mode_output.get("fresh_mode_execution_proven") is not True
+                or evidence_blockers
+                or not artifact_sha256
+                or artifact_sha256 in mode_artifact_sha256s
+                or artifact_payload.get("schema_version") != "cosmos3_sc3_mode_output.v1"
+                or artifact_payload.get("status") != "completed"
+                or artifact_payload.get("mode") != mode
+                or artifact_payload.get("runtime_session_id") != runtime_session_id
+                or artifact_payload.get("runtime_result_id") != runtime_result_id
+                or artifact_payload.get("request_sha256") != request_sha256
+                or artifact_payload.get("action_sha256") != action_sha256
+                or artifact_payload.get("source_observation_sha256") != source_observation_sha256
+                or artifact_payload.get("checkpoint_sha256") != checkpoint_sha256
+            ):
+                blockers.append(f"cosmos3_{mode}_output_not_proven")
+            mode_artifact_sha256s.add(artifact_sha256)
+        generated_frame = Path(_string(payload.get("generated_frame_path"))).expanduser()
+        generated_frame_ref = _mapping(payload.get("generated_frame_artifact"))
+        _, generated_frame_blockers = _validate_hashed_evidence_artifacts([generated_frame_ref])
+        if (
+            not generated_frame.is_file()
+            or generated_frame_blockers
+            or Path(_string(generated_frame_ref.get("path"))).expanduser().resolve()
+            != generated_frame.resolve()
+        ):
+            blockers.append("cosmos3_generated_frame_missing")
+        signed_result = {
+            "schema_version": "sc3_cosmos3_runtime_result.v1",
+            "runtime_session_id": runtime_session_id,
+            "runtime_result_id": runtime_result_id,
+            "request_sha256": request_sha256,
+            "checkpoint_sha256": checkpoint_sha256,
+            "source_observation_sha256": source_observation_sha256,
+            "action_sha256": action_sha256,
+            "generated_frame_artifact": generated_frame_ref,
+            "mode_outputs": mode_outputs,
+        }
+        runtime_attestation = validate_trusted_ed25519_attestation(
+            _mapping(payload.get("runtime_attestation")),
+            signed_payload=signed_result,
+            prefix="cosmos3_runtime_attestation",
+            trusted_public_key_sha256_env=(SC3_COSMOS3_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV),
+        )
+        blockers.extend(_string_list(runtime_attestation.get("blockers")))
+        blockers = sorted(set(blockers))
+        if not blockers:
+            seen_runtime_result_ids.add(runtime_result_id)
+        return {
+            "status": "completed" if not blockers else "blocked",
+            "generated_frame_path": str(generated_frame) if not blockers else None,
+            "generated_video_path": payload.get("generated_video_path"),
+            "skeleton_conditioning": projection_metadata,
+            "generated_robot_state": projection_metadata.get("generated_robot_state"),
+            "wam_backend": "cosmos3_nano_per_step",
+            "wam_generation_status": "completed" if not blockers else "blocked",
+            "wam_generation_blockers": blockers,
+            "sc3_checkpoint_attestation_validation": checkpoint_validation,
+            "sc3_mode_outputs": mode_outputs,
+            "cosmos3_command_output_path": str(output_path),
+        }
+
+    return _generate_next
+
+
+def make_controller_fk_skeleton_projector(
+    *,
+    command: str | Sequence[str],
+    work_dir: str | Path,
+    timeout_seconds: float = 120.0,
+) -> Callable[[Mapping[str, Any], int], Mapping[str, Any]]:
+    """Wrap a real controller/FK converter behind a strict JSON contract."""
+
+    import subprocess
+
+    argv = shlex.split(command) if isinstance(command, str) else [str(item) for item in command]
+    if not argv:
+        raise ValueError("controller_fk_skeleton_command_missing")
+    resolved_work = Path(work_dir).expanduser().resolve()
+    ensure_dir(resolved_work)
+    seen_runtime_result_ids: set[str] = set()
+
+    def _project(action: Mapping[str, Any], step_index: int) -> Mapping[str, Any]:
+        step_dir = resolved_work / f"step_{step_index:04d}"
+        ensure_dir(step_dir)
+        action_sha256 = _canonical_sha256(action)
+        input_path = step_dir / "controller_fk_input.json"
+        output_path = step_dir / "controller_fk_output.json"
+        request = {
+            "schema_version": "controller_fk_skeleton_request.v1",
+            "step_index": int(step_index),
+            "source_action_sha256": action_sha256,
+            "action": dict(action),
+        }
+        write_json(input_path, request)
+        request_sha256 = _canonical_sha256(request)
+        result = subprocess.run(
+            argv,
+            cwd=str(step_dir),
+            env={
+                **os.environ,
+                "BLUEPRINT_CONTROLLER_FK_INPUT": str(input_path),
+                "BLUEPRINT_CONTROLLER_FK_OUTPUT": str(output_path),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=float(timeout_seconds),
+        )
+        if result.returncode != 0:
+            raise RuntimeError("controller_fk_skeleton_command_nonzero")
+        if output_path.is_file():
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        else:
+            payload = json.loads(result.stdout or "{}")
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("controller_fk_skeleton_output_not_object")
+        projection = dict(payload)
+        if projection.get("status") != "completed":
+            raise RuntimeError("controller_fk_skeleton_output_not_completed")
+        if _string(projection.get("source_action_sha256")).strip() != action_sha256:
+            raise RuntimeError("controller_fk_skeleton_action_identity_mismatch")
+        runtime_result_id = _string(projection.get("runtime_result_id")).strip()
+        if not runtime_result_id or runtime_result_id in seen_runtime_result_ids:
+            raise RuntimeError("controller_fk_skeleton_runtime_result_id_missing_or_replayed")
+        controller_code_ref = _mapping(projection.get("controller_code_artifact"))
+        robot_model_ref = _mapping(projection.get("robot_model_artifact"))
+        _, controller_code_blockers = _validate_hashed_evidence_artifacts([controller_code_ref])
+        _, robot_model_blockers = _validate_hashed_evidence_artifacts([robot_model_ref])
+        if (
+            controller_code_blockers
+            or _string(controller_code_ref.get("sha256")).lower()
+            != _string(projection.get("controller_sha256")).lower()
+        ):
+            raise RuntimeError("controller_fk_skeleton_controller_code_invalid")
+        if (
+            robot_model_blockers
+            or _string(robot_model_ref.get("sha256")).lower()
+            != _string(projection.get("robot_model_sha256")).lower()
+        ):
+            raise RuntimeError("controller_fk_skeleton_robot_model_invalid")
+        signed_result = {
+            "schema_version": "sc3_controller_fk_runtime_result.v1",
+            "request_sha256": request_sha256,
+            "step_index": int(step_index),
+            "source_action_sha256": action_sha256,
+            "runtime_result_id": runtime_result_id,
+            "controller_id": projection.get("controller_id"),
+            "controller_sha256": projection.get("controller_sha256"),
+            "robot_model_sha256": projection.get("robot_model_sha256"),
+            "controller_code_artifact": controller_code_ref,
+            "robot_model_artifact": robot_model_ref,
+            "derived_via_controller_fk": projection.get("derived_via_controller_fk"),
+            "landmarks": projection.get("landmarks"),
+            "generated_robot_state": projection.get("generated_robot_state"),
+        }
+        attestation = validate_trusted_ed25519_attestation(
+            _mapping(projection.get("executor_attestation")),
+            signed_payload=signed_result,
+            prefix="controller_fk_executor_attestation",
+            trusted_public_key_sha256_env=(SC3_FK_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV),
+        )
+        if attestation.get("status") != "validated":
+            raise RuntimeError(
+                "controller_fk_skeleton_executor_attestation_invalid:"
+                + ",".join(_string_list(attestation.get("blockers")))
+            )
+        projection["derived_via_controller_fk"] = (
+            projection.get("derived_via_controller_fk") is True
+        )
+        normalized_projection = _with_action_conditioning_digests(projection)
+        evidence_blockers = _action_conditioning_blockers(
+            action=action,
+            wam_output={
+                "skeleton_conditioning": normalized_projection,
+                "generated_robot_state": normalized_projection.get("generated_robot_state"),
+            },
+        )
+        if evidence_blockers:
+            raise RuntimeError(
+                "controller_fk_skeleton_evidence_invalid:" + ",".join(evidence_blockers)
+            )
+        seen_runtime_result_ids.add(runtime_result_id)
+        return normalized_projection
+
+    return _project
 
 
 def _provider_completed(provider_statuses: Sequence[Any], provider: str) -> bool:
@@ -1381,8 +2482,12 @@ def _da3_completed(provider_statuses: Sequence[Any]) -> bool:
 def _step_backend_status(step_record: Mapping[str, Any]) -> dict[str, Any]:
     backend = step_record.get("harness_backend")
     if not isinstance(backend, Mapping):
-        backend = step_record.get("backend") if isinstance(step_record.get("backend"), Mapping) else {}
-    provider_statuses = list(backend.get("provider_statuses") or []) if isinstance(backend, Mapping) else []
+        backend = (
+            step_record.get("backend") if isinstance(step_record.get("backend"), Mapping) else {}
+        )
+    provider_statuses = (
+        list(backend.get("provider_statuses") or []) if isinstance(backend, Mapping) else []
+    )
     return {
         "backend_status": backend.get("status") if isinstance(backend, Mapping) else None,
         "real_model_ran": bool(
@@ -1461,7 +2566,9 @@ def _write_selection_manifest(
     )
 
 
-def extract_next_observation_frame_from_video(video_path: str | Path, out_dir: str | Path) -> Path | None:
+def extract_next_observation_frame_from_video(
+    video_path: str | Path, out_dir: str | Path
+) -> Path | None:
     """Default ``extract_next_frame`` for OSCAR clips.
 
     The first video frame is treated as the seed/current observation. The next observation is the
@@ -1724,8 +2831,14 @@ def materialize_projected_skeleton_trace_from_seed_geometry(
             target_width, target_height = image.size
     except Exception:
         return None
-    seed_quality = row.get("seed_frame_quality") if isinstance(row.get("seed_frame_quality"), Mapping) else {}
-    image_size = seed_quality.get("image_size_px") if isinstance(seed_quality.get("image_size_px"), Sequence) else []
+    seed_quality = (
+        row.get("seed_frame_quality") if isinstance(row.get("seed_frame_quality"), Mapping) else {}
+    )
+    image_size = (
+        seed_quality.get("image_size_px")
+        if isinstance(seed_quality.get("image_size_px"), Sequence)
+        else []
+    )
     source_width = float(image_size[0]) if len(image_size) >= 2 else float(target_width)
     source_height = float(image_size[1]) if len(image_size) >= 2 else float(target_height)
     if source_width <= 0.0 or source_height <= 0.0:
@@ -1901,9 +3014,7 @@ def make_local_oscar_subprocess_generate(
         out_dir.mkdir(parents=True, exist_ok=True)
         output_video = out_dir / "oscar_next_observation.mp4"
         landmarks = request.get("skeleton_landmarks") or []
-        skeleton_video = (
-            build_skeleton_video(landmarks, out_dir) if build_skeleton_video else None
-        )
+        skeleton_video = build_skeleton_video(landmarks, out_dir) if build_skeleton_video else None
         argv = build_oscar_inference_argv(
             python=python,
             oscar_repo=repo,
@@ -1989,14 +3100,41 @@ def evaluate_isaac_manipulation_success(
     fresh_oscar_provider_steps = _count(proof.get("fresh_oscar_provider_model_run_steps"))
     real_perception_steps = _count(proof.get("real_perception_backend_steps"))
     structural_loop_completed = status == "completed"
-    success_signal = _string(proof.get("manipulation_success_signal")).lower()
-    success_proven = bool(
-        learned_policy_requery_steps > 0
-        and action_conditioned_steps > 0
-        and success_signal == "success"
+    registered_transition = _mapping(proof.get("registered_task_completion_transition"))
+    transition_evidence, transition_evidence_blockers = _validate_transition_measurement_artifacts(
+        registered_transition.get("validated_evidence_artifacts"),
+        criterion_id=_string(registered_transition.get("criterion_id")).strip(),
+        observable_transition=_string(registered_transition.get("observable_transition")).strip(),
+        before_value=_finite_float(registered_transition.get("before_value")),
+        after_value=_finite_float(registered_transition.get("after_value")),
+        unit=_string(registered_transition.get("unit")).strip(),
+        source_step_index=(
+            registered_transition.get("source_step_index")
+            if isinstance(registered_transition.get("source_step_index"), int)
+            and not isinstance(registered_transition.get("source_step_index"), bool)
+            else None
+        ),
     )
+    registered_transition_proven = bool(
+        registered_transition.get("registered_transition_passed") is True
+        and registered_transition.get("computed_transition_passed") is True
+        and _mapping(registered_transition.get("registered_criterion"))
+        and _finite_float(registered_transition.get("before_value")) is not None
+        and _finite_float(registered_transition.get("after_value")) is not None
+        and _finite_float(registered_transition.get("tolerance")) is not None
+        and _string(registered_transition.get("unit")).strip()
+        and isinstance(registered_transition.get("source_step_index"), int)
+        and not isinstance(registered_transition.get("source_step_index"), bool)
+        and not _string_list(registered_transition.get("validation_blockers"))
+        and transition_evidence
+        and not transition_evidence_blockers
+    )
+    success_proven = bool(structural_loop_completed and registered_transition_proven)
     if success_proven:
-        reason = "A live in-process learned-policy evaluator proved the manipulation target state transition."
+        reason = (
+            "A registered task criterion with finite before/after measurements and "
+            "hash-verified evidence proved the simulated manipulation transition."
+        )
     elif learned_policy_requery_steps > 0 or action_conditioned_steps > 0:
         reason = (
             "Loop ran with live learned-policy requeries on WAM-generated observations, "
@@ -2008,9 +3146,7 @@ def evaluate_isaac_manipulation_success(
             "no manipulation success proven."
         )
     else:
-        reason = (
-            "Loop did not complete a learned-policy requery or produce a manipulation-success signal."
-        )
+        reason = "Loop did not complete a learned-policy requery or produce a manipulation-success signal."
     prompt = next((str(item) for item in perception_target_prompts if str(item).strip()), "")
     return {
         "schema_version": "isaac_manipulation_success_evaluator_results.v1",
@@ -2029,6 +3165,10 @@ def evaluate_isaac_manipulation_success(
         "action_conditioned_steps": action_conditioned_steps,
         "fresh_oscar_provider_model_run_steps": fresh_oscar_provider_steps,
         "real_perception_backend_steps": real_perception_steps,
+        "registered_task_completion_transition": registered_transition or None,
+        "registered_task_completion_transition_proven": registered_transition_proven,
+        "registered_task_completion_evidence": transition_evidence,
+        "registered_task_completion_evidence_blockers": transition_evidence_blockers,
         "reason": reason,
         "raw_secret_values_recorded": False,
     }
@@ -2061,16 +3201,22 @@ def _closed_loop_generated_episode_artifacts(
     target: Sequence[float],
 ) -> dict[str, Any]:
     step_videos: list[dict[str, Any]] = []
-    for row in trace_rows:
+    blockers: list[str] = []
+    for trace_position, row in enumerate(trace_rows, start=1):
         video_path = _string(row.get("wam_generated_video"))
+        resolved_video = Path(video_path).expanduser() if video_path else None
+        video_present = bool(resolved_video and resolved_video.is_file())
+        video_sha256 = _file_sha256(resolved_video) if video_present and resolved_video else None
         if not video_path:
-            continue
-        resolved_video = Path(video_path).expanduser()
+            blockers.append(f"closed_loop_step_video_path_missing:{trace_position}")
+        elif not video_present:
+            blockers.append(f"closed_loop_step_video_file_missing:{trace_position}")
         step_videos.append(
             {
                 "step_index": row.get("step_index"),
                 "generated_video_path": video_path,
-                "generated_video_present": resolved_video.is_file(),
+                "generated_video_present": video_present,
+                "generated_video_sha256": video_sha256,
                 "generated_frame_path": row.get("wam_generated_frame"),
                 "source_observation_frame_path": row.get("source_observation_frame"),
                 "policy_action": row.get("policy_action"),
@@ -2079,9 +3225,26 @@ def _closed_loop_generated_episode_artifacts(
             }
         )
     present_videos = [row for row in step_videos if row.get("generated_video_present")]
-    selected = present_videos[-1] if present_videos else {}
+    ordered_step_videos = sorted(
+        present_videos,
+        key=lambda row: int(row.get("step_index") or 0),
+    )
+    ordered_step_indices = [int(row.get("step_index") or 0) for row in ordered_step_videos]
+    expected_step_indices = list(range(1, len(trace_rows) + 1))
+    episode_order_verified = bool(
+        ordered_step_videos
+        and len(step_videos) == len(trace_rows)
+        and len(ordered_step_videos) == len(step_videos)
+        and ordered_step_indices == expected_step_indices
+        and all(_is_sha256(row.get("generated_video_sha256")) for row in ordered_step_videos)
+    )
+    selected = ordered_step_videos[-1] if episode_order_verified else {}
     selected_video = _string(selected.get("generated_video_path"))
-    blockers = [] if selected_video else ["missing_generated_video_for_closed_loop_success_review"]
+    if not selected_video:
+        blockers.append("missing_generated_video_for_closed_loop_success_review")
+    if trace_rows and not episode_order_verified:
+        blockers.append("closed_loop_episode_order_not_verified")
+    blockers = sorted(set(blockers))
     rollouts = (
         [
             {
@@ -2095,20 +3258,29 @@ def _closed_loop_generated_episode_artifacts(
                 "final_generated_frame_path": selected.get("generated_frame_path"),
                 "selected_review_video_step_index": selected.get("step_index"),
                 "step_video_count": len(present_videos),
+                "ordered_step_videos": ordered_step_videos,
+                "ordered_step_indices": ordered_step_indices,
+                "episode_order_verified": episode_order_verified,
+                "review_media_scope": "full_ordered_episode",
                 "task_target_position_xyz": [round(float(c), 6) for c in target],
                 "task_prompt": next((prompt for prompt in task_prompts if prompt), ""),
                 "generated_step_videos": step_videos,
             }
         ]
-        if selected_video
+        if selected_video and episode_order_verified
         else []
     )
     manifest = {
         "schema_version": "closed_loop_generated_episode_manifest.v1",
         "generated_at": generated_at,
-        "status": "completed" if selected_video else "blocked",
+        "status": "completed" if selected_video and episode_order_verified else "blocked",
         "source_initial_site_capture_frame_path": initial_frame_path,
         "step_video_count": len(present_videos),
+        "ordered_step_videos": ordered_step_videos,
+        "ordered_step_indices": ordered_step_indices,
+        "expected_step_indices": expected_step_indices,
+        "episode_order_verified": episode_order_verified,
+        "review_media_scope": "full_ordered_episode",
         "selected_review_video_path": selected_video or None,
         "selected_review_video_step_index": selected.get("step_index"),
         "generated_step_videos": step_videos,
@@ -2198,6 +3370,14 @@ def _score_closed_loop_generated_video_success(
         "generated_rollout_visual_smoke_status": _string(visual_smoke.get("status")),
         "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
         "rollouts": rollouts,
+        "inference_input_manifest_sha256": success_label_inference_input_sha256(
+            rollouts,
+            criterion_ids=(
+                "end_effector_reaches_target",
+                "target_state_change_visible",
+                "robot_caused_target_motion",
+            ),
+        ),
         "task_prompts": [
             {
                 "scenario_eval_run_id": "isaac_closed_loop_episode",
@@ -2208,7 +3388,15 @@ def _score_closed_loop_generated_video_success(
         "success_label_contract": {
             "expected_output_path": str(output_path),
             "required_top_level_keys": ["labels"],
-            "label_required_keys": ["rollout_id", "success", "confidence", "rationale"],
+            "label_required_keys": [
+                "rollout_id",
+                "success",
+                "confidence",
+                "rationale",
+                "criterion_results",
+            ],
+            "minimum_calibrated_confidence": 0.8,
+            "full_ordered_episode_required": True,
             "success_requires": [
                 "The visible robot end effector reaches the task-relevant target.",
                 "The target object or control visibly changes into the requested state.",
@@ -2300,9 +3488,7 @@ def _score_closed_loop_generated_video_success(
     if command_result is not None:
         success_labels["command_result"] = command_result
     labels = [
-        dict(item)
-        for item in success_labels.get("labels", []) or []
-        if isinstance(item, Mapping)
+        dict(item) for item in success_labels.get("labels", []) or [] if isinstance(item, Mapping)
     ]
     generated_video_success_label_passed = bool(
         success_labels.get("status") == "completed"
@@ -2385,9 +3571,7 @@ def generated_clip_coherence(
                 seed = gray - gray.mean()
                 continue
             centered = gray - gray.mean()
-            denominator = float(
-                np.sqrt((centered * centered).sum() * (seed * seed).sum())
-            )
+            denominator = float(np.sqrt((centered * centered).sum() * (seed * seed).sum()))
             correlations.append(
                 float((centered * seed).sum() / denominator) if denominator else 0.0
             )
@@ -2621,9 +3805,7 @@ def _score_closed_loop_step_episode_consistency(
         "external_episode_consistency_scorer_ran": bool(
             consistency.get("external_episode_consistency_scorer_ran")
         ),
-        "early_termination_recommended": bool(
-            consistency.get("early_termination_recommended")
-        ),
+        "early_termination_recommended": bool(consistency.get("early_termination_recommended")),
         "blockers": _wam_consistency_blockers(consistency),
     }
 
@@ -2650,12 +3832,14 @@ def run_oscar_isaac_closed_loop(
     wam_backend_id: str = "oscar_wam",
     wam_backend_readiness: Mapping[str, Any] | None = None,
     require_fresh_learned_policy_requery: bool = False,
+    require_action_derived_skeleton_conditioning: bool = False,
     clean_frame_reanchor_interval: int = 0,
     policy_endpoint: PolicyEndpoint | None = None,
     wam_consistency_command: str | None = None,
     allow_wam_consistency_scoring: bool = False,
     wam_consistency_timeout_seconds: float | None = None,
     require_forward_inverse_consistency: bool = False,
+    require_synchronized_calibrated_multiview: bool = False,
     wam_success_label_command: str | None = None,
     allow_wam_success_labeling: bool = False,
     require_generated_video_success_label: bool = False,
@@ -2663,6 +3847,8 @@ def run_oscar_isaac_closed_loop(
     min_coherent_horizon_frames: int = 0,
     stop_on_task_completion: bool = False,
     min_steps: int = 1,
+    task_success_contract: Mapping[str, Any] | None = None,
+    task_completion_evaluator: TaskCompletionEvaluator | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -2680,6 +3866,20 @@ def run_oscar_isaac_closed_loop(
     cleaned_target_prompts = [
         prompt for prompt in (_string(item) for item in (perception_target_prompts or [])) if prompt
     ]
+    completion_contract = _mapping(task_success_contract)
+    learned_endpoint_configured = policy_endpoint is not None
+    strict_fresh_learned_policy_requery = bool(
+        require_fresh_learned_policy_requery or learned_endpoint_configured
+    )
+    strict_action_derived_skeleton_conditioning = bool(
+        require_action_derived_skeleton_conditioning or learned_endpoint_configured
+    )
+    task_kind = _string(completion_contract.get("task_kind")).strip().lower() or (
+        "manipulation" if cleaned_target_prompts else "navigation_smoke"
+    )
+    manipulation_task = task_kind not in {"navigation", "navigation_smoke"}
+    task_completion_results: list[dict[str, Any]] = []
+    proven_task_completion_transition: dict[str, Any] = {}
     bounded_steps = max(1, int(steps))
 
     policy = DeterministicWalkToTargetPolicy()
@@ -2712,6 +3912,10 @@ def run_oscar_isaac_closed_loop(
     previous_endpoint_action_signature: str | None = None
     learned_policy_requery_count = 0
     policy_action_changed_count = 0
+    action_derived_skeleton_conditioned_steps = 0
+    conditioning_action_by_evidence_sha256: dict[str, str] = {}
+    action_conditioning_evidence_rows: list[dict[str, Any]] = []
+    current_generated_robot_state: dict[str, Any] = {}
     consistency_results: list[dict[str, Any]] = []
     consistency_requested = _wam_episode_consistency_requested(
         explicit_command=wam_consistency_command,
@@ -2739,7 +3943,9 @@ def run_oscar_isaac_closed_loop(
             pending_policy_endpoint_source_step = None
         else:
             action.setdefault("policy_requeried_on_generated_observation", False)
-            action.setdefault("policy_action_source", "isaac_g1_policy.DeterministicWalkToTargetPolicy")
+            action.setdefault(
+                "policy_action_source", "isaac_g1_policy.DeterministicWalkToTargetPolicy"
+            )
         policy_requeried_fresh = bool(action.get("policy_requeried_on_generated_observation"))
         action_history.append(action)
 
@@ -2747,6 +3953,61 @@ def run_oscar_isaac_closed_loop(
         wam_output = dict(
             wam_generate_next(current_frame, action, step_index, list(action_history)) or {}
         )
+        multiview_validation = validate_synchronized_multiview(
+            _mapping(wam_output.get("synchronized_multiview"))
+        )
+        if (
+            require_synchronized_calibrated_multiview
+            and multiview_validation.get("status") != "validated"
+        ):
+            blockers.extend(
+                f"multiview_step_{step_index}:{blocker}"
+                for blocker in _string_list(multiview_validation.get("blockers"))
+            )
+            break
+        action_conditioning_blockers: list[str] = []
+        if strict_action_derived_skeleton_conditioning and policy_action_from_wam_requery:
+            action_conditioning_blockers = _action_conditioning_blockers(
+                action=action,
+                wam_output=wam_output,
+            )
+            if action_conditioning_blockers:
+                blockers.extend(
+                    f"action_conditioning_step_{step_index}:{blocker}"
+                    for blocker in action_conditioning_blockers
+                )
+                break
+            learned_action_signature = _endpoint_action_signature(
+                _mapping(action.get("learned_policy_endpoint_action")) or action
+            )
+            conditioning_evidence_sha256 = _conditioning_evidence_sha256(wam_output)
+            prior_action_signature = conditioning_action_by_evidence_sha256.get(
+                conditioning_evidence_sha256
+            )
+            if (
+                prior_action_signature is not None
+                and prior_action_signature != learned_action_signature
+            ):
+                blockers.append(
+                    f"action_conditioning_step_{step_index}:"
+                    "fresh_action_conditioning_not_action_differentiated"
+                )
+                break
+            conditioning_action_by_evidence_sha256[conditioning_evidence_sha256] = (
+                learned_action_signature
+            )
+            action_conditioning_evidence_rows.append(
+                {
+                    "step_index": step_index,
+                    "source_action_sha256": _canonical_sha256(action),
+                    "learned_action_signature_sha256": hashlib.sha256(
+                        learned_action_signature.encode("utf-8")
+                    ).hexdigest(),
+                    "conditioning_evidence_sha256": conditioning_evidence_sha256,
+                }
+            )
+            action_derived_skeleton_conditioned_steps += 1
+            current_generated_robot_state = _mapping(wam_output.get("generated_robot_state"))
         wam_status = _string(wam_output.get("status"))
         if wam_status and wam_status != "completed":
             step_blockers = _string_list(wam_output.get("blockers")) or [
@@ -2761,12 +4022,8 @@ def run_oscar_isaac_closed_loop(
         if not generated_frame or not Path(generated_frame).is_file():
             blockers.append(f"blocked_wam_generation_missing_frame_at_step_{step_index}")
             break
-        clip_coherence = generated_clip_coherence(
-            wam_output.get("generated_video_path")
-        )
-        clip_coherence_rows.append(
-            {"step_index": step_index, **clip_coherence}
-        )
+        clip_coherence = generated_clip_coherence(wam_output.get("generated_video_path"))
+        clip_coherence_rows.append({"step_index": step_index, **clip_coherence})
         if (
             int(min_coherent_horizon_frames or 0) > 0
             and clip_coherence.get("status") == "measured"
@@ -2888,6 +4145,9 @@ def run_oscar_isaac_closed_loop(
         adapter_reports.append(adapter_report)
 
         adapted_observation = _mapping(result.get("adapted_policy_observation"))
+        if current_generated_robot_state:
+            adapted_observation["generated_robot_state"] = dict(current_generated_robot_state)
+            adapted_observation["generated_robot_state_carried_forward"] = True
         adapter_safe_for_policy_requery = bool(adapter_report.get("safe_for_policy_requery"))
         safe_for_policy_requery = bool(
             adapter_safe_for_policy_requery and not consistency_early_termination
@@ -2899,8 +4159,7 @@ def run_oscar_isaac_closed_loop(
             if safe_for_policy_requery:
                 try:
                     learned_action = dict(
-                        policy_endpoint(adapted_observation, list(action_history), step_index)
-                        or {}
+                        policy_endpoint(adapted_observation, list(action_history), step_index) or {}
                     )
                     learned_policy_requery_count += 1
                     signature = _endpoint_action_signature(learned_action)
@@ -2934,7 +4193,8 @@ def run_oscar_isaac_closed_loop(
             "wam_generated_frame": generated_frame,
             "wam_generated_video": wam_output.get("generated_video_path"),
             "wam_backend": wam_output.get("wam_backend"),
-            "wam_generation_status": wam_output.get("status") or wam_output.get("wam_generation_status"),
+            "wam_generation_status": wam_output.get("status")
+            or wam_output.get("wam_generation_status"),
             "fresh_oscar_provider_model_run_claimed": fresh_oscar_provider,
             "provider_output_path": wam_output.get("provider_output_path"),
             "harness_step_status": step_record.get("status"),
@@ -2960,9 +4220,14 @@ def run_oscar_isaac_closed_loop(
             "wam_episode_consistency_early_termination_recommended": (
                 consistency_early_termination
             ),
-            "wam_episode_consistency_blockers": _string_list(
-                consistency_result.get("blockers")
+            "wam_episode_consistency_blockers": _string_list(consistency_result.get("blockers")),
+            "action_conditioning_blockers": action_conditioning_blockers,
+            "action_derived_skeleton_conditioning_proven": bool(
+                policy_action_from_wam_requery
+                and not action_conditioning_blockers
+                and strict_action_derived_skeleton_conditioning
             ),
+            "synchronized_multiview_validation": multiview_validation,
         }
         trace_rows.append(trace_row)
         proof_rows.append(
@@ -3001,8 +4266,7 @@ def run_oscar_isaac_closed_loop(
                 "wam_episode_consistency_not_proven"
             ]
             blockers.extend(
-                f"wam_episode_consistency_step_{step_index}:{blocker}"
-                for blocker in step_blockers
+                f"wam_episode_consistency_step_{step_index}:{blocker}" for blocker in step_blockers
             )
             episode_termination_reason = (
                 f"wam_episode_consistency_early_termination_at_step_{step_index}"
@@ -3016,20 +4280,47 @@ def run_oscar_isaac_closed_loop(
         step_root_position = trace_row.get("root_position") or []
         target_reached_now = bool(
             len(step_root_position) >= len(target)
-            and sum(
-                (float(a) - float(b)) ** 2
-                for a, b in zip(step_root_position, target)
-            )
-            ** 0.5
+            and sum((float(a) - float(b)) ** 2 for a, b in zip(step_root_position, target)) ** 0.5
             < 0.25
         )
-        if (
-            stop_on_task_completion
-            and target_reached_now
-            and step_index >= max(1, int(min_steps))
-        ):
+        completion_result: dict[str, Any] = {}
+        if task_completion_evaluator is not None:
+            completion_result = dict(
+                task_completion_evaluator(
+                    {
+                        "step_index": step_index,
+                        "action": action,
+                        "wam_output": wam_output,
+                        "harness_step_record": step_record,
+                        "adapted_observation": adapted_observation,
+                        "task_success_contract": completion_contract,
+                    }
+                )
+                or {}
+            )
+        if completion_result:
+            completion_result = _validate_task_completion_transition(
+                completion_result=completion_result,
+                task_success_contract=completion_contract,
+                expected_source_step_index=step_index,
+            )
+            task_completion_results.append(completion_result)
+        transition_passed = bool(
+            completion_result.get("registered_transition_passed") is True
+            and _string(completion_result.get("criterion_id")).strip()
+            not in {"root_proximity", "robot_root_proximity"}
+        )
+        if transition_passed:
+            proven_task_completion_transition = dict(completion_result)
+        completion_now = bool(
+            transition_passed if manipulation_task else transition_passed or target_reached_now
+        )
+        if stop_on_task_completion and completion_now and step_index >= max(1, int(min_steps)):
+            criterion_id = (
+                _string(completion_result.get("criterion_id")).strip() or "navigation_goal"
+            )
             episode_termination_reason = (
-                f"task_target_reached_at_step_{step_index}"
+                f"task_criterion_{criterion_id}_passed_at_step_{step_index}"
             )
             task_completed_early = True
             # 4. feed forward still records the generated frame as consumed.
@@ -3108,8 +4399,28 @@ def run_oscar_isaac_closed_loop(
     )
     if policy_endpoint is not None and not policy_endpoint_requery_contract_proven:
         blockers.append("blocked_learned_policy_requery_not_proven")
-    if require_fresh_learned_policy_requery and fresh_learned_policy_requery_steps < 1:
+    if strict_fresh_learned_policy_requery and fresh_learned_policy_requery_steps < 1:
         blockers.append("fresh_learned_policy_requery_not_proven")
+    if strict_action_derived_skeleton_conditioning and (
+        fresh_learned_policy_requery_steps < 1
+        or action_derived_skeleton_conditioned_steps != fresh_learned_policy_requery_steps
+    ):
+        blockers.append("fresh_learned_actions_not_all_controller_fk_conditioned")
+    unique_conditioned_action_count = len(
+        {row["learned_action_signature_sha256"] for row in action_conditioning_evidence_rows}
+    )
+    unique_conditioning_evidence_count = len(
+        {row["conditioning_evidence_sha256"] for row in action_conditioning_evidence_rows}
+    )
+    action_conditioning_differentiation_proven = bool(
+        unique_conditioned_action_count >= 2
+        and unique_conditioning_evidence_count == unique_conditioned_action_count
+    )
+    if (
+        strict_action_derived_skeleton_conditioning
+        and not action_conditioning_differentiation_proven
+    ):
+        blockers.append("fresh_action_conditioning_differentiation_not_proven")
     if require_forward_inverse_consistency and (
         not consistency_results
         or consistency_scorer_ran_steps < len(proof_rows)
@@ -3125,7 +4436,8 @@ def run_oscar_isaac_closed_loop(
         )
     status = "completed" if trace_rows and not blockers else "blocked"
     feed_forward_verified = all(
-        trace_rows[index]["source_observation_frame"] == trace_rows[index - 1]["wam_generated_frame"]
+        trace_rows[index]["source_observation_frame"]
+        == trace_rows[index - 1]["wam_generated_frame"]
         or (
             bool(trace_rows[index - 1].get("clean_frame_reanchor_applied"))
             and trace_rows[index]["source_observation_frame"] == initial_clean_frame
@@ -3144,6 +4456,19 @@ def run_oscar_isaac_closed_loop(
         "learned_policy_requery_count": learned_policy_requery_count,
         "fresh_learned_policy_requery_steps": fresh_learned_policy_requery_steps,
         "policy_action_changed_count": policy_action_changed_count,
+        "action_derived_skeleton_conditioned_steps": (action_derived_skeleton_conditioned_steps),
+        "fresh_actions_all_controller_fk_conditioned": bool(
+            fresh_learned_policy_requery_steps > 0
+            and action_derived_skeleton_conditioned_steps == fresh_learned_policy_requery_steps
+        ),
+        "fresh_action_conditioning_differentiation_proven": bool(
+            action_conditioning_differentiation_proven
+        ),
+        "action_conditioning_evidence": action_conditioning_evidence_rows,
+        "registered_task_completion_transition": (proven_task_completion_transition or None),
+        "manipulation_success_signal": (
+            "success" if manipulation_task and proven_task_completion_transition else "not_proven"
+        ),
         "generated_observation_count": generated_observation_count,
         "policy_observes_wam_generated_next_observation": (
             policy_observes_wam_generated_next_observation
@@ -3174,7 +4499,9 @@ def run_oscar_isaac_closed_loop(
             consistency_early_termination_recommended
         ),
         "wam_episode_consistency_request_paths": [
-            str(item.get("request_path")) for item in consistency_results if item.get("request_path")
+            str(item.get("request_path"))
+            for item in consistency_results
+            if item.get("request_path")
         ],
         "wam_consistency_checks_paths": [
             str(item.get("checks_path")) for item in consistency_results if item.get("checks_path")
@@ -3187,12 +4514,8 @@ def run_oscar_isaac_closed_loop(
                 if str(blocker)
             }
         ),
-        "closed_loop_generated_episode_manifest_path": generated_episode_artifacts[
-            "manifest_path"
-        ],
-        "closed_loop_generated_episode_results_path": generated_episode_artifacts[
-            "results_path"
-        ],
+        "closed_loop_generated_episode_manifest_path": generated_episode_artifacts["manifest_path"],
+        "closed_loop_generated_episode_results_path": generated_episode_artifacts["results_path"],
         "generated_video_success_label_requested": bool(
             require_generated_video_success_label
             or allow_wam_success_labeling
@@ -3212,13 +4535,15 @@ def run_oscar_isaac_closed_loop(
             "real_perception_backend_required": bool(require_real_perception_backend),
             "sam3_completed_required": bool(require_sam3_completed),
             "da3_completed_required": bool(require_da3_completed),
-            "fresh_learned_policy_requery_required": bool(require_fresh_learned_policy_requery),
-            "forward_inverse_consistency_required": bool(
-                require_forward_inverse_consistency
+            "fresh_learned_policy_requery_required": strict_fresh_learned_policy_requery,
+            "action_derived_skeleton_conditioning_required": bool(
+                strict_action_derived_skeleton_conditioning
             ),
-            "generated_video_success_label_required": bool(
-                require_generated_video_success_label
+            "forward_inverse_consistency_required": bool(require_forward_inverse_consistency),
+            "synchronized_calibrated_multiview_required": bool(
+                require_synchronized_calibrated_multiview
             ),
+            "generated_video_success_label_required": bool(require_generated_video_success_label),
         },
         "per_step": proof_rows,
     }
@@ -3265,18 +4590,31 @@ def run_oscar_isaac_closed_loop(
             "stop_on_task_completion": bool(stop_on_task_completion),
             "min_steps": max(1, int(min_steps)),
             "task_completed_early": bool(task_completed_early),
+            "task_kind": task_kind,
+            "manipulation_requires_registered_observable_transition": True,
+            "registered_task_completion_evaluator_configured": bool(
+                task_completion_evaluator is not None
+            ),
+            "task_completion_results": task_completion_results,
+            "task_completion_evidence_status": (
+                "passed"
+                if task_completed_early
+                else "blocked_missing_registered_task_completion_evaluator"
+                if stop_on_task_completion
+                and manipulation_task
+                and task_completion_evaluator is None
+                else "not_satisfied"
+            ),
             "claim_boundary": (
-                "Early termination on target-reached is a route-geometry "
-                "criterion, not manipulation task-success proof; the "
-                "manipulation success evaluator remains the judge."
+                "Navigation smoke may terminate on a root goal. Manipulation "
+                "requires a registered task-specific observable transition; "
+                "robot-root proximity never proves manipulation success."
             ),
         },
         "generated_clip_coherence": {
             "per_step": clip_coherence_rows,
             "seed_correlation_floor": GENERATED_CLIP_SEED_CORRELATION_FLOOR,
-            "min_coherent_horizon_frames_required": int(
-                min_coherent_horizon_frames or 0
-            ),
+            "min_coherent_horizon_frames_required": int(min_coherent_horizon_frames or 0),
             "min_measured_coherent_horizon_frames": min(
                 (
                     int(row.get("coherent_horizon_frames") or 0)
@@ -3297,19 +4635,11 @@ def run_oscar_isaac_closed_loop(
         "manipulation_success_proven": bool(
             manipulation_success_judge.get("manipulation_success_proven")
         ),
-        "closed_loop_generated_episode_manifest_path": generated_episode_artifacts[
-            "manifest_path"
-        ],
-        "closed_loop_generated_episode_results_path": generated_episode_artifacts[
-            "results_path"
-        ],
+        "closed_loop_generated_episode_manifest_path": generated_episode_artifacts["manifest_path"],
+        "closed_loop_generated_episode_results_path": generated_episode_artifacts["results_path"],
         "generated_video_success": generated_video_success,
-        "generated_video_success_label_request_path": generated_video_success[
-            "request_path"
-        ],
-        "generated_video_success_labels_path": generated_video_success[
-            "success_labels_path"
-        ],
+        "generated_video_success_label_request_path": generated_video_success["request_path"],
+        "generated_video_success_labels_path": generated_video_success["success_labels_path"],
         "generated_video_success_label_passed": generated_video_success_label_passed,
         "simulated_manipulation_success_shown": simulated_manipulation_success_shown,
         "real_world_task_success_proven": False,
@@ -3330,9 +4660,7 @@ def run_oscar_isaac_closed_loop(
             ),
             "answer": manipulation_success_judge.get("answer"),
         },
-        "forward_inverse_consistency_proven": bool(
-            proof["forward_inverse_consistency_proven"]
-        ),
+        "forward_inverse_consistency_proven": bool(proof["forward_inverse_consistency_proven"]),
         "external_episode_consistency_scorer_ran": bool(consistency_scorer_ran_steps),
         "wam_episode_consistency_early_termination_recommended": bool(
             consistency_early_termination_recommended
@@ -3422,6 +4750,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Minimum steps before task-completion early termination may fire.",
     )
     parser.add_argument(
+        "--task-success-contract",
+        default=None,
+        help=(
+            "JSON contract registering manipulation criteria, observable transitions, "
+            "comparisons, tolerances, and units. Required with a manipulation "
+            "--task-completion-command."
+        ),
+    )
+    parser.add_argument(
+        "--task-completion-command",
+        default=None,
+        help=(
+            "Per-step evaluator command. Receives BLUEPRINT_TASK_COMPLETION_INPUT "
+            "and must write BLUEPRINT_TASK_COMPLETION_OUTPUT with a typed, hashed "
+            "task-transition measurement."
+        ),
+    )
+    parser.add_argument(
         "--min-coherent-horizon-frames",
         type=int,
         default=2,
@@ -3436,9 +4782,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=SUPPORTED_CLOSED_LOOP_WAM_BACKENDS,
         default="oscar_wam",
         help=(
-            "WAM backend requested for the closed-loop. This runner currently "
-            "has built-in execution only for oscar_wam; cosmos3_wam is a "
-            "blocked readiness check until an explicit Cosmos3 adapter is wired."
+            "WAM backend requested for the closed-loop. cosmos3_wam requires an "
+            "explicit per-step command and controller/FK action conditioning."
         ),
     )
     parser.add_argument("--oscar-repo")
@@ -3457,6 +4802,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--require-da3-completed", action="store_true")
     parser.add_argument("--require-fresh-learned-policy-requery", action="store_true")
     parser.add_argument(
+        "--learned-policy-command",
+        default=None,
+        help=(
+            "Command endpoint for a real learned policy. Receives a phase-local JSON "
+            "request via stdin and BLUEPRINT_LEARNED_POLICY_INPUT, and must write "
+            "BLUEPRINT_LEARNED_POLICY_OUTPUT with strict action/checkpoint proof."
+        ),
+    )
+    parser.add_argument(
         "--groot-sonic-policy-server-url",
         default=None,
         help=(
@@ -3466,6 +4820,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--groot-root", default=None)
+    parser.add_argument(
+        "--action-skeleton-command",
+        default=None,
+        help=(
+            "Controller/FK command that converts each exact learned action into "
+            "per-frame skeleton landmarks and the generated robot state. Required "
+            "for strict learned-policy evaluation."
+        ),
+    )
     parser.add_argument("--clean-frame-reanchor-interval", type=int, default=0)
     parser.add_argument("--wam-consistency-command")
     parser.add_argument("--allow-wam-consistency-scoring", action="store_true")
@@ -3490,6 +4853,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     ensure_dir(out_dir)
     route_payload = json.loads(Path(args.route_file).read_text(encoding="utf-8"))
     route = list(route_payload.get("route_points") or [])
+    task_success_contract: dict[str, Any] = {}
+    task_success_contract_load_blocker: str | None = None
+    if args.task_success_contract:
+        try:
+            loaded_contract = json.loads(
+                Path(args.task_success_contract).expanduser().read_text(encoding="utf-8")
+            )
+            task_success_contract = _mapping(loaded_contract)
+            if not task_success_contract:
+                task_success_contract_load_blocker = (
+                    "blocked_task_success_contract_not_a_json_object"
+                )
+        except (OSError, json.JSONDecodeError):
+            task_success_contract_load_blocker = (
+                "blocked_task_success_contract_missing_or_invalid_json"
+            )
     projected_skeleton_trace_path = materialize_projected_skeleton_trace_from_seed_geometry(
         route_payload=route_payload,
         start_frame_path=args.start_frame,
@@ -3533,13 +4912,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         fps=float(args.oscar_fps),
         projected_skeleton_trace_path=projected_skeleton_trace_path,
     )
-    wam_backend_readiness["provider_input_contract_preflight"] = (
-        provider_input_contract_preflight
-    )
+    wam_backend_readiness["provider_input_contract_preflight"] = provider_input_contract_preflight
     if provider_input_contract_preflight.get("blockers"):
-        wam_backend_readiness["blockers"] = list(
-            wam_backend_readiness.get("blockers") or []
-        ) + [
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
             str(item) for item in provider_input_contract_preflight.get("blockers") or []
         ]
         wam_backend_readiness["status"] = "blocked"
@@ -3554,9 +4929,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         task_prompt=args.task_prompt,
         timeout_seconds=float(args.provider_timeout_seconds),
     )
-    wam_backend_readiness["short_visual_sanity_launch_plan"] = (
-        short_visual_sanity_launch_plan
-    )
+    wam_backend_readiness["short_visual_sanity_launch_plan"] = short_visual_sanity_launch_plan
     short_rollout_sanity_gate = build_closed_loop_short_rollout_sanity_gate(
         selected_backend=args.wam_backend,
         use_provider_command=bool(args.use_provider_command),
@@ -3570,31 +4943,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     wam_backend_readiness["short_rollout_sanity_gate"] = short_rollout_sanity_gate
     if short_visual_sanity_launch_plan.get("blockers"):
-        wam_backend_readiness["blockers"] = list(
-            wam_backend_readiness.get("blockers") or []
-        ) + [
-            str(item)
-            for item in short_visual_sanity_launch_plan.get("blockers") or []
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
+            str(item) for item in short_visual_sanity_launch_plan.get("blockers") or []
         ]
         wam_backend_readiness["status"] = "blocked"
     if short_rollout_sanity_gate.get("blockers"):
-        wam_backend_readiness["blockers"] = list(
-            wam_backend_readiness.get("blockers") or []
-        ) + [str(item) for item in short_rollout_sanity_gate.get("blockers") or []]
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
+            str(item) for item in short_rollout_sanity_gate.get("blockers") or []
+        ]
         wam_backend_readiness["status"] = "blocked"
     if seed_conditioning_preflight.get("blockers"):
         wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
-        wam_backend_readiness["blockers"] = list(
-            wam_backend_readiness.get("blockers") or []
-        ) + [
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
             str(item) for item in seed_conditioning_preflight.get("blockers") or []
         ]
         wam_backend_readiness["status"] = "blocked"
     else:
         wam_backend_readiness["seed_conditioning_preflight"] = seed_conditioning_preflight
-    native_resolution = (
-        int(args.oscar_height) == 480 and int(args.oscar_width) == 640
-    )
+    native_resolution = int(args.oscar_height) == 480 and int(args.oscar_width) == 640
     wam_backend_readiness["oscar_generation_resolution_contract"] = {
         "requested_height": int(args.oscar_height),
         "requested_width": int(args.oscar_width),
@@ -3604,9 +4970,59 @@ def main(argv: Sequence[str] | None = None) -> int:
         "override_used": bool(args.allow_non_native_oscar_resolution),
     }
     if not native_resolution and not args.allow_non_native_oscar_resolution:
-        wam_backend_readiness["blockers"] = list(
-            wam_backend_readiness.get("blockers") or []
-        ) + ["blocked_non_native_oscar_resolution_requires_explicit_override"]
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
+            "blocked_non_native_oscar_resolution_requires_explicit_override"
+        ]
+        wam_backend_readiness["status"] = "blocked"
+    learned_policy_endpoint_configured = bool(
+        args.learned_policy_command or args.groot_sonic_policy_server_url
+    )
+    strict_learned_policy_requested = bool(
+        args.require_fresh_learned_policy_requery or learned_policy_endpoint_configured
+    )
+    strict_action_conditioning_requested = bool(
+        strict_learned_policy_requested or args.wam_backend == "cosmos3_wam"
+    )
+    if strict_action_conditioning_requested and not _string(args.action_skeleton_command).strip():
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
+            "blocked_strict_evaluation_requires_action_skeleton_controller_fk_command"
+        ]
+        wam_backend_readiness["status"] = "blocked"
+    if strict_learned_policy_requested and args.use_provider_command:
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
+            "blocked_provider_command_backend_lacks_fresh_action_controller_fk_hook"
+        ]
+        wam_backend_readiness["status"] = "blocked"
+    task_kind = _string(task_success_contract.get("task_kind")).strip().lower() or (
+        "manipulation" if list(args.perception_target_prompt or []) else "navigation_smoke"
+    )
+    manipulation_completion_requested = bool(
+        args.stop_on_task_completion and task_kind not in {"navigation", "navigation_smoke"}
+    )
+    completion_contract_blockers: list[str] = []
+    if task_success_contract_load_blocker:
+        completion_contract_blockers.append(task_success_contract_load_blocker)
+    if bool(args.task_success_contract) != bool(args.task_completion_command):
+        completion_contract_blockers.append(
+            "blocked_task_success_contract_and_completion_command_must_be_configured_together"
+        )
+    if args.task_completion_command and not _registered_task_criteria(task_success_contract):
+        completion_contract_blockers.append(
+            "blocked_task_success_contract_has_no_registered_criteria"
+        )
+    if manipulation_completion_requested:
+        if not args.task_success_contract:
+            completion_contract_blockers.append(
+                "blocked_manipulation_completion_requires_task_success_contract"
+            )
+        if not args.task_completion_command:
+            completion_contract_blockers.append(
+                "blocked_manipulation_completion_requires_task_completion_command"
+            )
+    if completion_contract_blockers:
+        wam_backend_readiness["blockers"] = (
+            list(wam_backend_readiness.get("blockers") or []) + completion_contract_blockers
+        )
         wam_backend_readiness["status"] = "blocked"
     wam_backend_readiness["blockers"] = list(
         dict.fromkeys(str(item) for item in wam_backend_readiness.get("blockers") or [])
@@ -3658,25 +5074,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "real_perception_backend_required": bool(args.require_real_perception_backend),
                 "sam3_completed_required": bool(args.require_sam3_completed),
                 "da3_completed_required": bool(args.require_da3_completed),
-                "fresh_learned_policy_requery_required": bool(
-                    args.require_fresh_learned_policy_requery
+                "fresh_learned_policy_requery_required": bool(strict_learned_policy_requested),
+                "fresh_action_controller_fk_conditioning_required": bool(
+                    strict_action_conditioning_requested
                 ),
+                "action_skeleton_controller_fk_command_configured": bool(
+                    _string(args.action_skeleton_command).strip()
+                ),
+                "task_success_contract_configured": bool(task_success_contract),
+                "task_completion_command_configured": bool(args.task_completion_command),
+                "manipulation_completion_requested": manipulation_completion_requested,
                 "clean_frame_reanchor_interval": int(args.clean_frame_reanchor_interval),
                 "wam_episode_consistency_scoring_configured": bool(
                     args.allow_wam_consistency_scoring or args.wam_consistency_command
                 ),
-                "wam_episode_consistency_command_configured": bool(
-                    args.wam_consistency_command
-                ),
+                "wam_episode_consistency_command_configured": bool(args.wam_consistency_command),
                 "forward_inverse_consistency_required": bool(
+                    args.require_forward_inverse_consistency
+                ),
+                "synchronized_calibrated_multiview_required": bool(
                     args.require_forward_inverse_consistency
                 ),
                 "wam_success_labeling_configured": bool(
                     args.allow_wam_success_labeling or args.wam_success_label_command
                 ),
-                "wam_success_label_command_configured": bool(
-                    args.wam_success_label_command
-                ),
+                "wam_success_label_command_configured": bool(args.wam_success_label_command),
                 "generated_video_success_label_required": bool(
                     args.require_generated_video_success_label
                 ),
@@ -3687,7 +5109,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"status": plan["status"], "mode": plan["mode"]}, sort_keys=True))
         return 0 if plan["status"] in {"prepared"} else 2
 
-    if args.use_provider_command:
+    skeleton_projector = (
+        make_controller_fk_skeleton_projector(
+            command=args.action_skeleton_command,
+            work_dir=out_dir / "controller_fk_skeleton",
+            timeout_seconds=float(args.provider_timeout_seconds),
+        )
+        if _string(args.action_skeleton_command).strip()
+        else None
+    )
+    if args.wam_backend == "cosmos3_wam":
+        cosmos3_command_env = WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE.get("cosmos3_wam")
+        cosmos3_command = _string(
+            os.environ.get(cosmos3_command_env or "")
+            or os.environ.get("BLUEPRINT_WAM_PROVIDER_COMMAND")
+        ).strip()
+        if skeleton_projector is None:
+            raise RuntimeError("cosmos3_closed_loop_requires_controller_fk_projector")
+        backend = make_cosmos3_per_step_command_wam_backend(
+            command=cosmos3_command,
+            work_dir=out_dir / "cosmos3_generation",
+            task_prompt=args.task_prompt,
+            skeleton_for_action=skeleton_projector,
+            timeout_seconds=float(args.provider_timeout_seconds),
+        )
+    elif args.use_provider_command:
         backend = make_oscar_provider_command_wam_backend(
             work_dir=out_dir / "oscar_generation",
             task_prompt=args.task_prompt,
@@ -3772,16 +5218,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             work_dir=out_dir / "oscar_generation",
             task_prompt=args.task_prompt,
             num_frames=int(args.num_frames),
+            skeleton_for_action=skeleton_projector,
             seed=int(args.oscar_seed),
         )
     policy_endpoint = None
-    if args.groot_sonic_policy_server_url:
+    if args.learned_policy_command and args.groot_sonic_policy_server_url:
+        parser.error(
+            "choose exactly one of --learned-policy-command or --groot-sonic-policy-server-url"
+        )
+    if args.learned_policy_command:
+        policy_endpoint = make_learned_policy_command_endpoint(
+            command=args.learned_policy_command,
+            work_dir=out_dir / "learned_policy_endpoint",
+            timeout_seconds=float(args.provider_timeout_seconds),
+        )
+    elif args.groot_sonic_policy_server_url:
         from .groot_sonic_policy_endpoint import make_groot_sonic_zmq_policy_endpoint
 
         policy_endpoint = make_groot_sonic_zmq_policy_endpoint(
             policy_server_url=args.groot_sonic_policy_server_url,
             groot_root=args.groot_root,
         )
+    task_completion_evaluator = (
+        make_task_completion_command_evaluator(
+            command=args.task_completion_command,
+            work_dir=out_dir / "task_completion_evaluator",
+            timeout_seconds=float(args.provider_timeout_seconds),
+        )
+        if args.task_completion_command
+        else None
+    )
     manifest = run_oscar_isaac_closed_loop(
         output_dir=out_dir,
         start_frame_path=args.start_frame,
@@ -3796,7 +5262,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_real_perception_backend=bool(args.require_real_perception_backend),
         require_sam3_completed=bool(args.require_sam3_completed),
         require_da3_completed=bool(args.require_da3_completed),
-        require_fresh_learned_policy_requery=bool(args.require_fresh_learned_policy_requery),
+        require_fresh_learned_policy_requery=strict_learned_policy_requested,
+        require_action_derived_skeleton_conditioning=(strict_action_conditioning_requested),
         clean_frame_reanchor_interval=int(args.clean_frame_reanchor_interval),
         perception_target_prompts=list(args.perception_target_prompt or []),
         wam_backend_id=args.wam_backend,
@@ -3805,17 +5272,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_wam_consistency_scoring=bool(args.allow_wam_consistency_scoring),
         wam_consistency_timeout_seconds=args.wam_consistency_timeout_seconds,
         require_forward_inverse_consistency=bool(args.require_forward_inverse_consistency),
+        require_synchronized_calibrated_multiview=bool(args.require_forward_inverse_consistency),
         wam_success_label_command=args.wam_success_label_command,
         allow_wam_success_labeling=bool(args.allow_wam_success_labeling),
-        require_generated_video_success_label=bool(
-            args.require_generated_video_success_label
-        ),
+        require_generated_video_success_label=bool(args.require_generated_video_success_label),
         wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
         min_coherent_horizon_frames=int(args.min_coherent_horizon_frames),
         stop_on_task_completion=bool(args.stop_on_task_completion),
         min_steps=int(args.min_steps),
+        task_success_contract=task_success_contract,
+        task_completion_evaluator=task_completion_evaluator,
     )
-    print(json.dumps({"status": manifest["status"], "steps_executed": manifest.get("steps_executed")}, sort_keys=True))
+    print(
+        json.dumps(
+            {"status": manifest["status"], "steps_executed": manifest.get("steps_executed")},
+            sort_keys=True,
+        )
+    )
     return 0 if manifest["status"] == "completed" else 2
 
 

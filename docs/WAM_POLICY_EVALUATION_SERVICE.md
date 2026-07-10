@@ -91,8 +91,9 @@ The repo keeps the older lanes for baseline and compatibility:
 - `oscar_wam`: OSCAR fine-tunes `Cosmos-Predict2.5-2B` on 180,657 filtered
   episodes: 94,830 robot episodes and 85,827 human egocentric episodes. Its
   skeleton-conditioned RoboArena policy-eval result is MMRV 0.571, Spearman
-  0.750, Pearson 0.852, and SISR delta 1.73pp. Its GPT-5 generated-video
-  success scorer matched 78/100 human labels, had specificity 0.90, and missed
+  0.750, Pearson 0.852, and OSCAR `success_rate_difference_pp` 1.73. Its GPT-5
+  generated-video success scorer matched 78/100 human labels, had specificity
+  0.90, and missed
   about one third of real successes, so Blueprint keeps generated-video success
   labels separate from consistency and rank-fidelity calibration. Learned
   `oscar_wam` runs use `https://github.com/wuzy2115/oscar-public.git` pinned to
@@ -111,7 +112,9 @@ The repo keeps the older lanes for baseline and compatibility:
   split is Pearson 0.984 / MMRV 0.022 versus Cosmos-Predict2.5 at 0.897 / 0.090.
   On the out-of-distribution online split, SC3-Eval's Pearson is 0.870 versus
   Cosmos-Predict2.5 at 0.871, while MMRV is better at 0.171 versus 0.195. That
-  supports a rank-fidelity preference, not universal grading.
+  supports a rank-fidelity preference, not universal grading. These are
+  SC3-Eval paper results across seven policy checkpoints, not Blueprint
+  measurements; Blueprint has not measured equivalent rank fidelity.
   The API-first hosted path is `deepinfra` through
   `DeepInfraCosmos3NanoProvider`, using `nvidia/Cosmos3-Nano` behind the same
   `WamComputeProvider` interface as RunPod and Vast. It writes
@@ -177,7 +180,7 @@ For local Unitree G1 locomotion/control proof on this machine, source
 `.env.unitree.local`. It sets the verified `BLUEPRINT_UNITREE_G1_POLICY_ROOT`,
 `BLUEPRINT_UNITREE_G1_POLICY_SOURCE_ROOT`, `BLUEPRINT_UNITREE_RL_GYM_ROOT`, and
 `BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT` values. The Unitree lane is documented in
-[`UNITREE_G1_POLICY_ENDPOINT_LANE.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md).
+[`UNITREE_G1_POLICY_ENDPOINT_LANE.md`]($HOME/workspace/BlueprintCapturePipeline/docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md).
 
 When this service consumes a MuJoCo endpoint job that already used a fresh
 Unitree hand/action endpoint, `wam_manipulation_loop_readiness_manifest.json`
@@ -724,7 +727,7 @@ execution and from the evaluator. The evaluator can prepare
 into `wam_consistency_checks.json`, but it must not mark
 `forward_inverse_consistency_proven=true` from generated rollout existence alone.
 The external scorer contract is documented in
-[`WAM_EPISODE_CONSISTENCY_SCORER.md`](/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/WAM_EPISODE_CONSISTENCY_SCORER.md).
+[`WAM_EPISODE_CONSISTENCY_SCORER.md`]($HOME/workspace/BlueprintCapturePipeline/docs/WAM_EPISODE_CONSISTENCY_SCORER.md).
 
 ## Policy Autoresearch
 

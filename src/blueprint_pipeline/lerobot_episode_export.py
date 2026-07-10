@@ -720,6 +720,7 @@ def build_lerobot_episode_export(
     robot_id: str | None = None,
     robot_profile: RobotProfile | None = None,
     materialized_video_by_attempt: Mapping[str, Any] | None = None,
+    accepted_attempt_ids: Sequence[str] | None = None,
     generated_at: str | None = None,
 ) -> Dict[str, Any]:
     """Map simulator batch streams into per-episode LeRobot-style rows.
@@ -765,6 +766,11 @@ def build_lerobot_episode_export(
         for attempt_id, value in _mapping(materialized_video_by_attempt).items()
         if _string(attempt_id)
     }
+    canonical_attempt_filter = (
+        {_string(item) for item in accepted_attempt_ids if _string(item)}
+        if accepted_attempt_ids is not None
+        else None
+    )
 
     manifest: Dict[str, Any] = {
         "schema_version": LEROBOT_EPISODE_EXPORT_SCHEMA_VERSION,
@@ -775,6 +781,8 @@ def build_lerobot_episode_export(
         "action_layout_id": _layout_id(selected_action_layout),
         "action_dim": action_dim,
         "action_layout": _manifest_action_layout(selected_action_layout),
+        "canonical_attempt_filter_applied": canonical_attempt_filter is not None,
+        "canonical_accepted_attempt_ids": sorted(canonical_attempt_filter or []),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     if blockers:
@@ -796,7 +804,9 @@ def build_lerobot_episode_export(
         if row.get("stream_type") != "control_action":
             continue
         attempt_id = _string(row.get("attempt_id"))
-        if attempt_id:
+        if attempt_id and (
+            canonical_attempt_filter is None or attempt_id in canonical_attempt_filter
+        ):
             actions_by_attempt.setdefault(attempt_id, []).append(row)
 
     data_dir = export_root / "data"
@@ -819,6 +829,17 @@ def build_lerobot_episode_export(
 
     for attempt in attempts:
         attempt_id = _string(attempt.get("attempt_id"))
+        if (
+            canonical_attempt_filter is not None
+            and attempt_id not in canonical_attempt_filter
+        ):
+            excluded.append(
+                {
+                    "attempt_id": attempt_id or None,
+                    "blockers": ["excluded_by_canonical_training_quality_pipeline"],
+                }
+            )
+            continue
         episode_blockers: List[str] = []
         control = sorted(
             actions_by_attempt.get(attempt_id, []),

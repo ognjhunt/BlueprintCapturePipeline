@@ -67,13 +67,13 @@ def test_ios_manifest_parses_defaults_and_resolves_uris(tmp_path: Path) -> None:
     }
     manifest = ios_manifest.IOSManifest.from_json(json.dumps(raw_manifest))
 
-    assert manifest.device_model == "iPhone"
+    assert manifest.device_model == "unknown"
     assert manifest.os_version == "unknown"
     assert manifest.fps_source == 30.0
     assert manifest.width == 1920
     assert manifest.height == 1080
     assert manifest.capture_start_epoch_ms == 0
-    assert manifest.scale_hint_m_per_unit == 1.0
+    assert manifest.scale_hint_m_per_unit == 0.0
     assert manifest.intended_space_type == "unknown"
     assert manifest.exposure_samples == [{"iso": 100}]
     assert manifest.object_index_uri == "objects/index.json"
@@ -159,9 +159,47 @@ def test_load_raw_manifest_and_object_index_payload_shapes(tmp_path: Path) -> No
 def test_v3_raw_manifest_verifies_hashes_and_fails_mismatch(tmp_path: Path) -> None:
     gcs_root = tmp_path / "gcs"
     raw = gcs_root / "bucket" / "raw"
-    _write_json(raw / "manifest.json", {"schema_version": "v3", "scene_id": "site"})
+    _write_json(
+        raw / "manifest.json",
+        {
+            "schema_version": "v3",
+            "capture_schema_version": "3.0.0",
+            "scene_id": "site",
+            "capture_id": "capture",
+            "video_uri": "walkthrough.mov",
+            "capture_source": "fixture",
+            "capture_tier_hint": "test_fixture",
+            "capture_profile_id": "fixture_video_only",
+            "capture_capabilities": {},
+            "coordinate_frame_session_id": "cfs-fixture-1",
+            "capture_start_epoch_ms": 1_700_000_000_000,
+            "app_version": "1.0.0",
+            "app_build": "1",
+            "ios_version": "18.0",
+            "ios_build": "22A",
+            "hardware_model_identifier": "FixtureDevice1,1",
+            "device_model_marketing": "Fixture Device",
+            "has_lidar": False,
+            "depth_supported": False,
+            "fps_source": 30.0,
+            "width": 1920,
+            "height": 1080,
+            "rights_profile": "test_fixture",
+            "requested_outputs": ["qualification"],
+        },
+    )
     (raw / "walkthrough.mov").write_bytes(b"video")
-    _write_json(raw / "capture_upload_complete.json", {"status": "complete"})
+    _write_json(
+        raw / "capture_upload_complete.json",
+        {
+            "schema_version": "v1",
+            "scene_id": "site",
+            "capture_id": "capture",
+            "raw_prefix": "raw",
+            "completed_at": "2026-07-09T12:00:00Z",
+            "status": "complete",
+        },
+    )
     artifacts = {
         "capture_upload_complete.json": _sha_file(raw / "capture_upload_complete.json"),
         "manifest.json": _sha_file(raw / "manifest.json"),
@@ -179,7 +217,7 @@ def test_v3_raw_manifest_verifies_hashes_and_fails_mismatch(tmp_path: Path) -> N
     report = ios_manifest.verify_raw_bundle_hashes("gs://bucket/raw", gcs_root=gcs_root)
     assert report["valid"] is True
     assert report["bundle_sha256_matches"] is True
-    assert ios_manifest.load_raw_manifest("gs://bucket/raw", gcs_root=gcs_root).capture_schema_version == "v3"
+    assert ios_manifest.load_raw_manifest("gs://bucket/raw", gcs_root=gcs_root).capture_schema_version == "3.0.0"
 
     (raw / "walkthrough.mov").write_bytes(b"corrupted")
     mismatch = ios_manifest.verify_raw_bundle_hashes_path(raw)

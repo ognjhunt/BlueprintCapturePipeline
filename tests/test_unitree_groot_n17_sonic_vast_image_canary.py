@@ -90,8 +90,20 @@ def test_run_canary_requires_vast_markers_and_min_gpu(tmp_path: Path, monkeypatc
             },
             "vast_offer_selection_manifest.json": {
                 "status": "selected",
-                "selected_offer": {"machine_id": 123, "gpu_ram_mb": 49140},
+                "selected_offer": {
+                    "machine_id": 123,
+                    "gpu_ram_mb": 49140,
+                    "hourly_rate_usd": 0.2,
+                },
                 "min_gpu_ram_mb": 48000,
+            },
+            "vast_budget_ledger.json": {
+                "status": "completed",
+                "selected_hourly_rate_usd": 0.2,
+                "actual_live_runtime_seconds_observed_by_adapter": 30.0,
+                "estimated_cost_usd": 0.002,
+                "estimated_spend_under_hard_cap": True,
+                "continuing_spend_from_this_run": False,
             },
         }.items():
             (run_dir / name).write_text(json.dumps(payload), encoding="utf-8")
@@ -117,6 +129,8 @@ def test_run_canary_requires_vast_markers_and_min_gpu(tmp_path: Path, monkeypatc
     assert result["gpu_sanity_completed"] is True
     assert result["provider_output_upload_ok"] is True
     assert result["canary_marker_observed"] is True
+    assert result["selected_hourly_rate_usd"] == 0.2
+    assert result["actual_live_runtime_seconds"] == 30.0
     assert result["claim_boundary"]["canary_is_not_policy_inference"] is True
     assert captured["min_gpu_ram_mb"] == 48000
     assert captured["provider_bundle_kind"] == "unitree_groot_n17_sonic"

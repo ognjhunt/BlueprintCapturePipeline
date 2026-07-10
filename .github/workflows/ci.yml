@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: ["**"]
@@ -15,7 +18,7 @@ jobs:
       CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Checkout BlueprintContracts
         shell: bash
@@ -34,13 +37,30 @@ jobs:
           git checkout --detach FETCH_HEAD
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
+          version: "0.10.7"
           python-version: "3.12"
+
+      - name: Verify committed inputs survive a clean archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_root="$(mktemp -d)"
+          git archive HEAD | tar -x -C "${archive_root}"
+          python3 "${archive_root}/scripts/verify_clean_checkout_inputs.py" \
+            --root "${archive_root}"
+
+      - name: Verify frozen dependency exports
+        run: python3 scripts/verify_dependency_exports.py
+
+      - name: Lint public scientific claims
+        run: python3 scripts/lint_public_scientific_claims.py
 
       - name: Install dependencies
         run: |
-          uv sync --extra dev
+          uv lock --check
+          uv sync --frozen --extra dev
           uv pip install -e BlueprintContracts
 
       - name: Validate Python interpreter matrix
@@ -51,5 +71,373 @@ jobs:
           uv run python scripts/verify_robot_eval_job_request_contract.py \
             --contracts-repo BlueprintContracts
 
+      - name: Build and verify distributions
+        run: |
+          uv build --out-dir output/ci/dist
+          uv run python scripts/verify_distribution_metadata.py \
+            --dist-dir output/ci/dist
+
       - name: Run tests
-        run: uv run pytest -q
+        run: |
+          uv run pytest -q \
+            --cov=blueprint_pipeline \
+            --cov-report=term:skip-covered \
+            --cov-report=json:output/ci/coverage.json \
+            --cov-fail-under=69.5
+
+      - name: Upload test and coverage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-test-${{ github.sha }}
+          path: output/ci/coverage.json
+          if-no-files-found: error
+          retention-days: 90
+
+  lint:
+    name: Ruff and claim lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen lint tools
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      - name: Enforce Ruff and public-claim policy
+        run: |
+          uv run ruff check src/blueprint_pipeline scripts tests
+          uv run python scripts/lint_public_scientific_claims.py
+
+  typecheck:
+    name: Typed release contract core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen type checker
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      - name: Type-check the release validation core
+        run: |
+          uv run mypy \
+            --follow-imports=skip \
+            --ignore-missing-imports \
+            --show-error-codes \
+            --no-error-summary \
+            src/blueprint_pipeline/release_evidence_graph.py \
+            src/blueprint_pipeline/spend_admission_lock.py \
+            src/blueprint_pipeline/live_pipeline_manifest_alert.py \
+            scripts/archive_release_evidence.py \
+            scripts/build_container_production_evidence.py \
+            scripts/build_cpu_full_lane_evidence.py \
+            scripts/build_gpu_provider_canary_evidence.py \
+            scripts/build_release_evidence_graph.py \
+            scripts/build_release_evidence_bundle.py \
+            scripts/build_supply_chain_evidence.py \
+            scripts/gpu_spend_guard.py \
+            scripts/run_native_lerobot_export_probe.py \
+            scripts/run_pubsub_emulator_integration.py \
+            scripts/run_deployment_service_canaries.py \
+            scripts/validate_terraform_state_backend.py \
+            scripts/validate_release_signature_evidence.py \
+            scripts/verify_bandit_policy.py \
+            scripts/verify_clean_checkout_inputs.py \
+            scripts/verify_critical_capability_lanes.py \
+            scripts/verify_dependency_exports.py \
+            scripts/verify_distribution_metadata.py \
+            scripts/verify_deploy_release_provenance.py \
+            scripts/verify_full_lane_collection.py \
+            scripts/verify_source_governance.py
+
+  sast:
+    name: Bandit high and reviewed-medium gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen SAST tools
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      - name: Scan and enforce expiring triage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/ci
+          scan_status=0
+          uv run bandit -r src/blueprint_pipeline scripts \
+            --format json \
+            --output output/ci/bandit.json \
+            --quiet || scan_status=$?
+          test "${scan_status}" -le 1
+          uv run python scripts/verify_bandit_policy.py \
+            --bandit-report output/ci/bandit.json \
+            --output output/ci/bandit-policy-gate.json
+
+      - name: Upload SAST evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sast-${{ github.sha }}
+          path: |
+            output/ci/bandit.json
+            output/ci/bandit-policy-gate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  source-governance:
+    name: Module and critical-lane governance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install pinned policy runtime
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Enforce source and capability policy
+        run: |
+          uv run --no-project --python 3.12 python scripts/verify_source_governance.py \
+            --output output/ci/source-governance.json
+          uv run --no-project --python 3.12 python scripts/verify_critical_capability_lanes.py \
+            --policy-only \
+            --output output/ci/critical-capability-policy.json
+
+  supply-chain:
+    name: SBOM, license, and provenance contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Verify lock and build distributions
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+          uv build --out-dir output/ci/dist
+
+      - name: Generate CycloneDX, SPDX, license, and unsigned provenance evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv export \
+            --preview-features sbom-export \
+            --frozen \
+            --no-dev \
+            --format cyclonedx1.5 \
+            --output-file output/ci/runtime.cyclonedx.input.json
+          mapfile -t artifacts < <(
+            find output/ci/dist -maxdepth 1 -type f \
+              \( -name '*.whl' -o -name '*.tar.gz' \) -print | sort
+          )
+          artifact_args=()
+          for artifact in "${artifacts[@]}"; do
+            artifact_args+=(--artifact "${artifact}")
+          done
+          uv run python scripts/build_supply_chain_evidence.py \
+            --cyclonedx output/ci/runtime.cyclonedx.input.json \
+            --output-dir output/ci/supply-chain \
+            "${artifact_args[@]}"
+
+      - name: Keyless attest distribution provenance on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: attest-provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-path: |
+            output/ci/dist/*.whl
+            output/ci/dist/*.tar.gz
+
+      - name: Keyless attest distribution SBOM on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: attest-sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-path: |
+            output/ci/dist/*.whl
+            output/ci/dist/*.tar.gz
+          sbom-path: output/ci/supply-chain/runtime.spdx.json
+
+      - name: Preserve keyless attestation bundles
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          PROVENANCE_BUNDLE_PATH: ${{ steps.attest-provenance.outputs.bundle-path }}
+          SBOM_BUNDLE_PATH: ${{ steps.attest-sbom.outputs.bundle-path }}
+        run: |
+          cp "${PROVENANCE_BUNDLE_PATH}" \
+            output/ci/supply-chain/distribution-provenance.sigstore.json
+          cp "${SBOM_BUNDLE_PATH}" \
+            output/ci/supply-chain/distribution-sbom.sigstore.json
+
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supply-chain-${{ github.sha }}
+          path: |
+            output/ci/dist/*
+            output/ci/supply-chain/*.json
+          if-no-files-found: error
+          retention-days: 90
+
+  dependency-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Audit frozen runtime dependencies
+        run: |
+          python scripts/run_dependency_security_gate.py \
+            --output output/ci/dependency-security-gate.json
+
+      - name: Upload dependency evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dependency-security-${{ github.sha }}
+          path: output/ci/dependency-security-gate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  container-contract:
+    name: Container production contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Enforce systemd security baseline
+        run: |
+          set -euo pipefail
+          mkdir -p output/ci/container-production/container-production-sources
+          {
+            systemd-analyze verify deploy/systemd/blueprint-*.service
+            for unit in deploy/systemd/blueprint-*.service; do
+              systemd-analyze security --offline=yes --no-pager \
+                --threshold=4.0 "${unit}"
+            done
+          } > output/ci/container-production/container-production-sources/systemd-security.log 2>&1
+          printf '%s\n' 'systemd-security-ok' \
+            > output/ci/container-production/container-production-sources/systemd-security.ok
+
+      - name: Validate Compose contract
+        run: |
+          set -euo pipefail
+          mkdir -p output/ci/container-production/container-production-sources
+          docker compose config --quiet
+          docker compose config --no-interpolate \
+            > output/ci/container-production/container-production-sources/compose-config.yml
+          printf '%s\n' 'compose-config-ok' \
+            > output/ci/container-production/container-production-sources/compose-config.ok
+
+      - name: Build production and development targets
+        run: |
+          set -euo pipefail
+          docker build --target production \
+            --tag "blueprint-capture-pipeline:${GITHUB_SHA}" .
+          docker build --target development \
+            --tag "blueprint-capture-pipeline-dev:${GITHUB_SHA}" .
+          docker image inspect --format '{{.Id}}' \
+            "blueprint-capture-pipeline:${GITHUB_SHA}" \
+            > output/ci/container-production/container-production-sources/production_image_id.txt
+          docker image inspect --format '{{.Id}}' \
+            "blueprint-capture-pipeline-dev:${GITHUB_SHA}" \
+            > output/ci/container-production/container-production-sources/development_image_id.txt
+
+      - name: Enforce nonroot, read-only, no-network smoke
+        run: |
+          set -euo pipefail
+          production_image="blueprint-capture-pipeline:${GITHUB_SHA}"
+          development_image="blueprint-capture-pipeline-dev:${GITHUB_SHA}"
+          docker image inspect --format '{{.Config.User}}' "${production_image}" \
+            > output/ci/container-production/container-production-sources/production_user.txt
+          docker image inspect --format '{{.Config.User}}' "${development_image}" \
+            > output/ci/container-production/container-production-sources/development_user.txt
+          test "$(cat output/ci/container-production/container-production-sources/production_user.txt)" = \
+            "blueprint:blueprint"
+          test "$(cat output/ci/container-production/container-production-sources/development_user.txt)" = \
+            "blueprint:blueprint"
+          docker run --rm \
+            --read-only \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:size=64m,mode=1777 \
+            --entrypoint python \
+            "${production_image}" \
+            -c "import blueprint_pipeline; print('container-smoke-ok')" \
+            > output/ci/container-production/container-production-sources/production-runtime-smoke.log
+          docker run --rm \
+            --read-only \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:size=64m,mode=1777 \
+            --entrypoint python \
+            "${development_image}" \
+            -c "import blueprint_pipeline; print('container-smoke-ok')" \
+            > output/ci/container-production/container-production-sources/development-runtime-smoke.log
+
+      - name: Build strict container-production evidence
+        if: always()
+        run: |
+          python scripts/build_container_production_evidence.py \
+            --source-dir output/ci/container-production/container-production-sources \
+            --repository-sha '${{ github.sha }}' \
+            --output output/ci/container-production/container_production.json
+
+      - name: Upload container-production evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-production-${{ github.sha }}
+          path: output/ci/container-production
+          if-no-files-found: error
+          retention-days: 90

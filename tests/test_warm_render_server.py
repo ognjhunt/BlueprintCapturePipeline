@@ -10,10 +10,18 @@ from __future__ import annotations
 import io
 import json
 import urllib.error
+import urllib.parse
 import zipfile
 from collections import deque
+from pathlib import Path
 
+import pytest
+from fastapi.testclient import TestClient
+
+from blueprint_pipeline import warm_render_server as warm_server
 from blueprint_pipeline.warm_render_server import (
+    DurableBrokerJobSource,
+    DurableWarmPoolClient,
     FileJobSource,
     PresignedUrlAccessError,
     SignedUrlJobSource,
@@ -22,6 +30,7 @@ from blueprint_pipeline.warm_render_server import (
     serve_render_loop,
     submit_warm_render_batch,
 )
+from blueprint_pipeline.warm_render_broker import create_warm_render_broker_app
 
 
 class _FakeSource:
@@ -122,15 +131,23 @@ def test_file_job_source_round_trips_job_and_result(tmp_path) -> None:
     src = FileJobSource(root)
     assert src.poll() is None  # empty queue
 
-    src.submit("req-1", {"scenario_id": "open_fridge", "description": "open the refrigerator"})
+    canonical_id = src.submit(
+        "req-1",
+        {"scenario_id": "open_fridge", "description": "open the refrigerator"},
+    )
     job = src.poll()
     assert job is not None
-    assert job.request_id == "req-1"
+    assert job.request_id == canonical_id
+    assert job.client_request_label == "req-1"
     assert job.scenario["description"] == "open the refrigerator"
     assert src.poll() is None  # claimed, not re-served
 
-    src.publish_result("req-1", {"status": "ok", "pose": [-1.04, 0.66, 0.84]})
-    result = json.loads((root / "results" / "req-1.json").read_text())
+    src.publish_result(
+        canonical_id,
+        {"status": "ok", "pose": [-1.04, 0.66, 0.84]},
+    )
+    result = src.collect_result(canonical_id)
+    assert result is not None
     assert result["status"] == "ok"
 
 
@@ -139,6 +156,118 @@ def test_file_job_source_reads_stop_sentinel(tmp_path) -> None:
     src.submit_stop()
     job = src.poll()
     assert job is not None and job.stop is True
+
+
+def test_single_object_transport_is_fail_closed_by_default(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="single_object_warm_inbox_retired"):
+        SignedUrlJobSource("http://inbox", tmp_path / "out")
+    with pytest.raises(RuntimeError, match="single_object_warm_inbox_retired"):
+        WarmPoolClient("http://inbox/put", "http://out/get")
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "file:///etc/passwd",
+        "gopher://example.com/inbox.json",
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1/private",
+    ),
+)
+def test_default_signed_url_transport_rejects_non_https_urls(url: str) -> None:
+    with pytest.raises(ValueError):
+        warm_server._http_get_bytes(url, timeout=1)
+
+
+def test_durable_broker_rejects_nonloopback_plain_http() -> None:
+    with pytest.raises(ValueError, match="https"):
+        DurableWarmPoolClient(
+            "http://10.0.0.2",
+            "b" * 64,
+        )
+
+
+def test_durable_broker_client_worker_round_trip_uses_canonical_id(
+    tmp_path: Path,
+) -> None:
+    token = "b" * 64
+    api = TestClient(
+        create_warm_render_broker_app(
+            database_path=tmp_path / "warm-render.sqlite3",
+            auth_token=token,
+        )
+    )
+
+    def broker_request(method, url, payload, bearer_token, extra_headers):
+        path = urllib.parse.urlsplit(url).path
+        response = api.request(
+            method,
+            path,
+            json=dict(payload) if payload is not None else None,
+            headers={
+                "Authorization": f"Bearer {bearer_token}",
+                **dict(extra_headers or {}),
+            },
+        )
+        if response.status_code == 204:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    client = DurableWarmPoolClient(
+        "http://localhost",
+        token,
+        http_request=broker_request,
+        session_nonce="broker-session",
+    )
+    worker = DurableBrokerJobSource(
+        "http://localhost",
+        token,
+        worker_id="worker-test",
+        http_request=broker_request,
+    )
+    canonical_id = client.submit(
+        {"description": "open the refrigerator"},
+        request_id="../../crafted-client-label",
+    )
+
+    summary = serve_render_loop(
+        render_one=lambda scenario: {
+            "status": "completed",
+            "description": scenario["description"],
+        },
+        job_source=worker,
+        max_jobs=1,
+        sleep=lambda _seconds: None,
+    )
+    result = client.poll_result(
+        canonical_id,
+        timeout_s=1,
+        interval_s=0,
+        sleep=lambda _seconds: None,
+    )
+
+    assert summary == {"jobs_served": 1, "exit_reason": "max_jobs"}
+    assert canonical_id.startswith("wrj_")
+    assert result is not None
+    assert result["canonical_job_id"] == canonical_id
+    assert result["client_request_label"] == "../../crafted-client-label"
+    assert not (tmp_path / "crafted-client-label").exists()
+
+    stop_id = client.submit_stop()
+    stopped = serve_render_loop(
+        render_one=lambda _scenario: {"status": "must-not-render"},
+        job_source=worker,
+        sleep=lambda _seconds: None,
+    )
+    stop_result = client.poll_result(
+        stop_id,
+        timeout_s=1,
+        interval_s=0,
+        sleep=lambda _seconds: None,
+    )
+    assert stopped == {"jobs_served": 0, "exit_reason": "stop_requested"}
+    assert stop_result is not None and stop_result["stop_acknowledged"] is True
 
 
 # --- signed-URL transport (the real remote pod <-> control plane channel) ---
@@ -153,7 +282,12 @@ def test_signed_url_job_source_polls_dedups_and_reads_stop(tmp_path) -> None:
             raise FileNotFoundError("404")
         return json.dumps(state["payload"]).encode()
 
-    src = SignedUrlJobSource("http://inbox", tmp_path / "out", http_get=http_get)
+    src = SignedUrlJobSource(
+        "http://inbox",
+        tmp_path / "out",
+        http_get=http_get,
+        allow_unsafe_single_object=True,
+    )
     assert src.poll() is None
     state["payload"] = {"seq": 1, "request_id": "r1", "scenario": {"description": "open the refrigerator"}}
     job = src.poll()
@@ -169,7 +303,12 @@ def test_signed_url_job_source_treats_404_as_empty_inbox(tmp_path) -> None:
     def http_get(url):
         raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
 
-    src = SignedUrlJobSource("http://inbox", tmp_path / "out", http_get=http_get)
+    src = SignedUrlJobSource(
+        "http://inbox",
+        tmp_path / "out",
+        http_get=http_get,
+        allow_unsafe_single_object=True,
+    )
 
     assert src.poll() is None
     assert src.consecutive_failures == 0
@@ -180,7 +319,12 @@ def test_signed_url_job_source_surfaces_forbidden_inbox(tmp_path) -> None:
     def http_get(url):
         raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
 
-    src = SignedUrlJobSource("http://inbox", tmp_path / "out", http_get=http_get)
+    src = SignedUrlJobSource(
+        "http://inbox",
+        tmp_path / "out",
+        http_get=http_get,
+        allow_unsafe_single_object=True,
+    )
 
     try:
         src.poll()
@@ -200,6 +344,7 @@ def test_serve_loop_exits_on_unrecoverable_inbox(tmp_path) -> None:
         tmp_path / "out",
         http_get=lambda _url: b"{not json",
         max_consecutive_failures=2,
+        allow_unsafe_single_object=True,
     )
     logs: list[str] = []
 
@@ -221,7 +366,12 @@ def test_serve_loop_exits_on_unrecoverable_inbox(tmp_path) -> None:
 def test_signed_url_job_source_publishes_result_into_out_dir(tmp_path) -> None:
     # Results ride the EXISTING output channel: the pod writes them into its out dir, which the
     # worker's heartbeat already uploads. No second presigned channel needed.
-    src = SignedUrlJobSource("http://inbox", tmp_path / "out", http_get=lambda u: b"")
+    src = SignedUrlJobSource(
+        "http://inbox",
+        tmp_path / "out",
+        http_get=lambda u: b"",
+        allow_unsafe_single_object=True,
+    )
     src.publish_result("r1", {"status": "ok", "pose": [-1.04, 0.66, 0.84]})
     p = tmp_path / "out" / "warm_results" / "r1.json"
     assert json.loads(p.read_text())["status"] == "ok"
@@ -231,7 +381,8 @@ def test_warm_pool_client_submit_puts_incrementing_seq() -> None:
     puts = []
     cli = WarmPoolClient("http://inbox/put", "http://out/get",
                          http_put=lambda u, d: puts.append((u, json.loads(d))),
-                         http_get=lambda u: b"")
+                         http_get=lambda u: b"",
+                         allow_unsafe_single_object=True)
     rid = cli.submit({"description": "open the refrigerator"}, request_id="r1")
     assert rid == "r1"
     cli.submit({"description": "open the microwave"})
@@ -253,7 +404,8 @@ def test_warm_pool_client_poll_result_reads_from_output_zip() -> None:
     data = buf.getvalue()
     cli = WarmPoolClient("http://inbox/put", "http://out/get",
                          http_put=lambda u, d: None, http_get=lambda u: data,
-                         session_nonce=session_nonce)
+                         session_nonce=session_nonce,
+                         allow_unsafe_single_object=True)
     res = cli.poll_result("r1", timeout_s=5.0, interval_s=0.0,
                           clock=_advancing_clock(1.0), sleep=lambda s: None)
     assert res is not None and res["status"] == "ok"
@@ -274,6 +426,7 @@ def test_warm_pool_client_poll_result_rejects_stale_session_result() -> None:
         http_put=lambda u, d: None,
         http_get=lambda u: data,
         session_nonce="new-session",
+        allow_unsafe_single_object=True,
     )
 
     res = cli.poll_result(
@@ -297,6 +450,7 @@ def test_warm_pool_client_poll_result_surfaces_expired_output_url() -> None:
         http_put=lambda u, d: None,
         http_get=http_get,
         session_nonce="fresh-session",
+        allow_unsafe_single_object=True,
     )
 
     try:
@@ -320,24 +474,26 @@ def test_warm_pool_client_poll_result_times_out_when_absent() -> None:
         z.writestr("other.json", "{}")
     data = buf.getvalue()
     cli = WarmPoolClient("http://inbox/put", "http://out/get",
-                         http_put=lambda u, d: None, http_get=lambda u: data)
+                         http_put=lambda u, d: None, http_get=lambda u: data,
+                         allow_unsafe_single_object=True)
     res = cli.poll_result("missing", timeout_s=3.0, interval_s=0.0,
                           clock=_advancing_clock(1.0), sleep=lambda s: None)
     assert res is None
 
 
-def test_submit_warm_render_batch_keeps_one_monotonic_client_session(tmp_path) -> None:
-    inbox_put_file = tmp_path / "warm_inbox_put_url.txt"
-    output_get_file = tmp_path / "provider_output_get_url.txt"
-    inbox_put_file.write_text("http://inbox/put", encoding="utf-8")
-    output_get_file.write_text("http://out/get", encoding="utf-8")
+def test_submit_warm_render_batch_uses_durable_broker_ids(tmp_path) -> None:
+    broker_url_file = tmp_path / "warm_broker_base_url.txt"
+    broker_token_file = tmp_path / "warm_broker_token.txt"
+    broker_url_file.write_text("http://localhost:8787", encoding="utf-8")
+    broker_token_file.write_text("x" * 64, encoding="utf-8")
+    broker_token_file.chmod(0o600)
     manifest_path = tmp_path / "isaac_g1_kitchen_parity_job_manifest.json"
     manifest_path.write_text(
         json.dumps({
             "status": "serving",
             "warm_serve": {
-                "inbox_put_url_file": str(inbox_put_file),
-                "output_get_url_file": str(output_get_file),
+                "broker_base_url_file": str(broker_url_file),
+                "broker_token_file": str(broker_token_file),
             },
         }),
         encoding="utf-8",
@@ -353,25 +509,31 @@ def test_submit_warm_render_batch_keeps_one_monotonic_client_session(tmp_path) -
         encoding="utf-8",
     )
     puts: list[dict] = []
+    submitted: dict[str, dict] = {}
 
     def http_put(url, data):
-        assert url == "http://inbox/put"
-        puts.append(json.loads(data))
+        assert url == "http://localhost:8787/v1/warm-render/jobs"
+        payload = json.loads(data)
+        puts.append(payload)
+        canonical_id = f"wrj_{len(puts):032x}"
+        submitted[canonical_id] = payload
+        return json.dumps({"canonical_job_id": canonical_id}).encode()
 
     def http_get(url):
-        assert url == "http://out/get"
-        payload = puts[-1]
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as z:
-            z.writestr(
-                f"warm_results/{payload['request_id']}.json",
-                json.dumps({
+        canonical_id = url.split("/")[-2]
+        payload = submitted[canonical_id]
+        return json.dumps(
+            {
+                "canonical_job_id": canonical_id,
+                "status": "completed",
+                "result": {
                     "status": "completed",
-                    "request_id": payload["request_id"],
-                    "warm_session_nonce": payload["warm_session_nonce"],
-                }),
-            )
-        return buf.getvalue()
+                    "canonical_job_id": canonical_id,
+                    "client_request_label": payload["client_request_label"],
+                    "warm_session_nonce": payload["session_nonce"],
+                },
+            }
+        ).encode()
 
     summary = submit_warm_render_batch(
         manifest_path=manifest_path,
@@ -389,8 +551,12 @@ def test_submit_warm_render_batch_keeps_one_monotonic_client_session(tmp_path) -
 
     assert summary["status"] == "completed"
     assert summary["results_collected"] == 2
-    assert [payload["seq"] for payload in puts] == [1, 2, 3]
-    assert [payload.get("request_id") for payload in puts[:2]] == ["sink_faucet", "stovetop_knob"]
+    assert [payload.get("client_request_label") for payload in puts[:2]] == [
+        "sink_faucet",
+        "stovetop_knob",
+    ]
     assert puts[-1]["stop"] is True
-    assert (tmp_path / "results" / "sink_faucet.json").is_file()
+    assert (tmp_path / "results" / f"wrj_{1:032x}.json").is_file()
+    assert summary["durable_broker_used"] is True
+    assert summary["single_object_transport_used"] is False
     assert (tmp_path / "results" / "warm_render_batch_results.json").is_file()

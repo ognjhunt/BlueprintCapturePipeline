@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -109,14 +111,56 @@ def _copy_to_uri(source: Path, destination: str) -> str:
 def _run_template(template: str, substitutions: Mapping[str, str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
     rendered = template
     for key, value in substitutions.items():
-        rendered = rendered.replace("{" + key + "}", value)
-    return subprocess.run(
+        rendered = rendered.replace("{" + key + "}", shlex.quote(value))
+    deadline = time.monotonic() + timeout_seconds
+    cwd: str | None = None
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    last_returncode = 0
+    try:
+        segments = [shlex.split(segment) for segment in rendered.split("&&")]
+    except ValueError:
+        segments = []
+    if not segments or any(not segment for segment in segments):
+        return subprocess.CompletedProcess(
+            rendered,
+            64,
+            "",
+            "video_to_world_command_template_invalid_or_empty",
+        )
+    for argv in segments:
+        if argv[0] == "cd":
+            if len(argv) != 2 or not Path(argv[1]).is_dir():
+                return subprocess.CompletedProcess(
+                    rendered,
+                    64,
+                    "".join(stdout_parts),
+                    "".join(stderr_parts) + "video_to_world_command_workdir_invalid",
+                )
+            cwd = argv[1]
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(argv, timeout_seconds)
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=remaining,
+            check=False,
+        )
+        stdout_parts.append(completed.stdout)
+        stderr_parts.append(completed.stderr)
+        last_returncode = completed.returncode
+        if last_returncode != 0:
+            break
+    return subprocess.CompletedProcess(
         rendered,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
+        last_returncode,
+        "".join(stdout_parts),
+        "".join(stderr_parts),
     )
 
 

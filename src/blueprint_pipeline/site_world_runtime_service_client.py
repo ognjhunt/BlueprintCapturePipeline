@@ -131,6 +131,7 @@ class SiteWorldRuntimeServiceClient:
         presentation_model: str | None = None,
         debug_mode: bool | None = None,
     ) -> Mapping[str, Any]:
+        del debug_mode  # Debug/unsafe runtime controls are intentionally not caller-settable.
         return self._request_json(
             method="POST",
             path=f"/v1/site-worlds/{urllib_parse.quote(site_world_id)}/sessions",
@@ -145,7 +146,6 @@ class SiteWorldRuntimeServiceClient:
                 "prompt": prompt,
                 "trajectory": dict(trajectory or {}) if trajectory is not None else None,
                 "presentation_model": presentation_model,
-                "debug_mode": debug_mode,
             },
         )
 

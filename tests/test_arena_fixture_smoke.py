@@ -35,6 +35,7 @@ def test_arena_fixture_smoke_surfaces_buyer_readout_blockers(tmp_path: Path, mon
     policy = _read_json(package_dir / "policy_adapter_manifest.json")
     operators = _read_json(package_dir / "live_operator_ledger.json")
     audit = _read_json(package_dir / "arena_package_proof_boundary_audit.json")
+    archive = _read_json(package_dir / "archive_manifest.json")
 
     assert result["status"] == "blocked"
     assert result["ingest_exit_code"] == 0
@@ -56,7 +57,10 @@ def test_arena_fixture_smoke_surfaces_buyer_readout_blockers(tmp_path: Path, mon
     assert result["proof_boundary"]["simulator_execution_proven"] is False
     assert result["proof_boundary"]["owner_system_arena_execution_proven"] is False
     assert result["proof_boundary"]["webapp_upstream_truth_proven"] is False
-    assert (package_dir / "archives" / "post_training_data_package.tar.gz").is_file()
+    assert archive["status"] == "blocked_identity_signing"
+    assert archive["archive"] is None
+    assert "archive_signing:signing_key_file_not_configured" in archive["blockers"]
+    assert not (package_dir / "archives" / "post_training_data_package.tar.gz").exists()
     assert (Path(str(result["output_dir"])) / "arena_fixture_smoke_manifest.json").is_file()
     assert os.environ["BLUEPRINT_ALLOW_PACKAGE_DELIVERY_UPLOAD"] == "preexisting"
 

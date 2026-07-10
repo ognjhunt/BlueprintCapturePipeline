@@ -6,8 +6,8 @@ This document explains, in one place, what Blueprint is building, how the curren
 
 This is written as a handoff document for a new agent or engineer. It assumes no prior context beyond access to:
 
-- `/Users/nijelhunt_1/workspace/BlueprintCapture`
-- `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline`
+- `$HOME/workspace/BlueprintCapture`
+- `$HOME/workspace/BlueprintCapturePipeline`
 
 The emphasis is iOS only for now.
 
@@ -95,11 +95,11 @@ The iPhone app currently records:
 
 Important code references:
 
-- ARSession recorder is used to capture video plus poses, depth, and intrinsics in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift`
-- ARKit artifact directories are created in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:744`
-- per-frame ARKit logging is written in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:960`
-- pose rows include `frame_id`, `t_device_sec`, and `T_world_camera` in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:1034`
-- motion logging is written in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:923`
+- ARSession recorder is used to capture video plus poses, depth, and intrinsics in `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift`
+- ARKit artifact directories are created in `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:744`
+- per-frame ARKit logging is written in `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:960`
+- pose rows include `frame_id`, `t_device_sec`, and `T_world_camera` in `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:1034`
+- motion logging is written in `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:923`
 
 ### Finalized Raw Bundle Today
 
@@ -113,9 +113,9 @@ The finalizer patches and emits:
 
 Important code references:
 
-- evidence inspection and sensor availability are computed in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:222`
-- world-model-related manifest fields are written in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:580`
-- final raw metadata and context files are written in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:689`
+- evidence inspection and sensor availability are computed in `$HOME/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:222`
+- world-model-related manifest fields are written in `$HOME/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:580`
+- final raw metadata and context files are written in `$HOME/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:689`
 
 ### Cloud Bridge Today
 
@@ -130,10 +130,10 @@ The bridge:
 
 Important code references:
 
-- normalized scene-memory fields are read from raw manifest in `/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:468`
-- actual sensor availability is computed in `/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:667`
-- frame-to-pose alignment is performed in `/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:732`
-- iPhone quality gating uses pose match rate and p95 pose delta in `/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src/bridge.ts:241`
+- normalized scene-memory fields are read from raw manifest in `$HOME/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:468`
+- actual sensor availability is computed in `$HOME/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:667`
+- frame-to-pose alignment is performed in `$HOME/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:732`
+- iPhone quality gating uses pose match rate and p95 pose delta in `$HOME/workspace/BlueprintCapture/cloud/extract-frames/src/bridge.ts:241`
 
 ### Pipeline Today
 
@@ -150,10 +150,10 @@ The pipeline preserves:
 
 Important code references:
 
-- raw bundle materialization into descriptor in `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:660`
-- current local scene-memory candidate inference in `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:767`
-- scene-memory readiness logic in `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/qualification.py:831`
-- evaluation-prep canonical `site_world_spec.json` generation in `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/evaluation_prep_stage.py`
+- raw bundle materialization into descriptor in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:660`
+- current local scene-memory candidate inference in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:767`
+- scene-memory readiness logic in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/qualification.py:831`
+- evaluation-prep canonical `site_world_spec.json` generation in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/evaluation_prep_stage.py`
 
 ## Why This Is Already Close To An SWM-Like Setup
 
@@ -181,8 +181,8 @@ What is missing is the structure that turns those signals into a reusable site-m
 
 Problem:
 
-- if there is no target or reservation, `jobId` falls back to a new UUID in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/CaptureFlowViewModel.swift:441`
-- scene identity is then derived from target, reservation, or jobId in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:267`
+- if there is no target or reservation, `jobId` falls back to a new UUID in `$HOME/workspace/BlueprintCapture/BlueprintCapture/CaptureFlowViewModel.swift:441`
+- scene identity is then derived from target, reservation, or jobId in `$HOME/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:267`
 
 Why this matters:
 
@@ -200,7 +200,7 @@ Minimum change:
 Problem:
 
 - the app has no explicit raw-bundle fields for structured `place_id`, address components, lat/lng, floor, room, or local coordinate origin
-- `captureContextHint` is only free text in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureUploadService.swift:201`
+- `captureContextHint` is only free text in `$HOME/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureUploadService.swift:201`
 
 Why this matters:
 
@@ -217,9 +217,9 @@ Minimum change:
 
 Problem:
 
-- iOS capture metadata initializes `continuityScore` as `nil` in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/CaptureFlowViewModel.swift:486`
-- `world_model_candidate` is only true if continuity score exists and is `>= 0.5` in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:317`
-- the cloud bridge trusts the raw manifest field and blocks runtime build eligibility when it is false in `/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:918`
+- iOS capture metadata initializes `continuityScore` as `nil` in `$HOME/workspace/BlueprintCapture/BlueprintCapture/CaptureFlowViewModel.swift:486`
+- `world_model_candidate` is only true if continuity score exists and is `>= 0.5` in `$HOME/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureBundleSupport.swift:317`
+- the cloud bridge trusts the raw manifest field and blocks runtime build eligibility when it is false in `$HOME/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:918`
 
 Why this matters:
 
@@ -235,8 +235,8 @@ Minimum change:
 
 Problem:
 
-- local materialization infers `world_model_candidate` from evidence tier in `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:767`
-- production cloud bridge trusts raw manifest `scene_memory_capture.world_model_candidate` in `/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:468`
+- local materialization infers `world_model_candidate` from evidence tier in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:767`
+- production cloud bridge trusts raw manifest `scene_memory_capture.world_model_candidate` in `$HOME/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:468`
 
 Why this matters:
 
@@ -251,7 +251,7 @@ Minimum change:
 
 Problem:
 
-- the app can disable ARKit on the next recording after a camera conflict in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:315` and `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:640`
+- the app can disable ARKit on the next recording after a camera conflict in `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:315` and `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:640`
 
 Why this matters:
 
@@ -268,7 +268,7 @@ Minimum change:
 
 Problem:
 
-- the current coverage estimate is only a rough mesh-anchor heuristic in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureQualityMonitor.swift:204`
+- the current coverage estimate is only a rough mesh-anchor heuristic in `$HOME/workspace/BlueprintCapture/BlueprintCapture/Services/CaptureQualityMonitor.swift:204`
 
 Why this matters:
 
@@ -283,7 +283,7 @@ Minimum change:
 
 Problem:
 
-- iPhone uploads include a text `coveragePlan`, but no `pass_id`, revisit anchors, loop closures, or completed checkpoints by default in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/CaptureFlowViewModel.swift:471`
+- iPhone uploads include a text `coveragePlan`, but no `pass_id`, revisit anchors, loop closures, or completed checkpoints by default in `$HOME/workspace/BlueprintCapture/BlueprintCapture/CaptureFlowViewModel.swift:471`
 
 Why this matters:
 
@@ -298,7 +298,7 @@ Minimum change:
 
 Problem:
 
-- the bridge extracts frames at only 5 fps in `/Users/nijelhunt_1/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:682`
+- the bridge extracts frames at only 5 fps in `$HOME/workspace/BlueprintCapture/cloud/extract-frames/src/index.ts:682`
 
 Why this matters:
 
@@ -313,7 +313,7 @@ Minimum change:
 
 Problem:
 
-- current AR frame rows contain transform, intrinsics, resolution, and paths for depth/confidence in `/Users/nijelhunt_1/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:1012`
+- current AR frame rows contain transform, intrinsics, resolution, and paths for depth/confidence in `$HOME/workspace/BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:1012`
 - they do not appear to persist:
   - tracking state
   - relocalization / limited tracking reasons

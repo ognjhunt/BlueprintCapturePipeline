@@ -88,6 +88,12 @@ The stack supports three policy tiers:
 - `lucky_g1_reference_adapter`: public Lucky Robots G1 manipulation challenge adapter. It can fetch or use a local checkout, load `scene.xml`, `g1.xml`, mesh assets, `walker.onnx`, and `right_reacher.onnx`, then run a headless walk/reach/grip/release loop through MuJoCo and ONNX Runtime.
 - `policy_api_endpoint`: robot-team endpoint mode. Teams must return normalized attempts, phase traces, action traces, metrics, and artifact paths.
 
+Policy API execution accepts HTTPS only. Operators must approve the endpoint's
+exact origin through `BLUEPRINT_POLICY_ENDPOINT_ALLOWED_ORIGINS`; loopback,
+private, link-local, metadata, mixed public/private DNS, unapproved redirects,
+wrong content types, oversized responses, and excessive JSON depth/items are
+rejected before the result can enter evaluation.
+
 For Unitree G1 hand or gripper claims, use a Unitree-specific policy endpoint,
 not a generic VLA endpoint. The currently modeled G1 candidates are
 `unitree_groot_n17_sonic_policy`, `unitree_lerobot_policy`,

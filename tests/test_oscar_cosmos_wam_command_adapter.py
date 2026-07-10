@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from tests.runpy_entrypoint import run_module_as_main
 
 from blueprint_pipeline import oscar_cosmos_wam_command_adapter as adapter
 
@@ -57,18 +57,16 @@ def _rollout_manifest_path(tmp_path: Path) -> Path:
         [
             {
                 "normalized_action": {
-                    "action_type": "waypoint",
-                    "target_waypoint": [2.0, -2.0],
+                    "delta_end_effector_pose_7d": [0.01, 0.0, 0.0, 0.0, 0.0, 0.01, 0.2],
                 }
             },
             {
                 "normalized_action": {
-                    "action_type": "manipulation_contact",
-                    "vx_mps": 0.1,
-                    "vy_mps": 0.2,
-                    "yaw_rate_rad_s": 0.3,
+                    "delta_end_effector_pose_7d": [0.02, 0.0, 0.0, 0.0, 0.01, 0.0, 0.3],
                 }
             },
+            {"action_vector_7d": [0.0, 0.01, 0.0, 0.01, 0.0, 0.0, 0.4]},
+            {"sc3_7d_delta_end_effector_pose": [0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.5]},
         ],
     )
     manifest_path = tmp_path / "wam_rollout_input_manifest.json"
@@ -157,25 +155,22 @@ def test_oscar_cosmos_helpers_materialize_action_conditioning_package(
         "Predict the next robot-scene frames from Blueprint action conditioning."
     )
     assert adapter._task_prompt(rollout_manifest) == "Predict the tote transfer."
-    assert len(adapter._action_trace_rows(rollout_manifest)) == 2
-    assert adapter._action_vector({"normalized_action": {"action_type": "inspect_look", "vx_mps": 1}})[
-        :2
-    ] == [0.0, 0.0]
+    assert len(adapter._action_trace_rows(rollout_manifest)) == 4
     assert adapter._action_vector(
-        {"normalized_action": {"action_type": "stop", "vx_mps": 1, "yaw_rate_rad_s": 1}}
-    ) == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-    assert adapter._action_vector(
-        {"normalized_action": {"action_type": "manipulation_contact"}}
-    )[2:] == [0.02, 0.0, 0.0, 0.0, 0.35]
-    waypoint = adapter._action_vector(
-        {"normalized_action": {"target_waypoint": [2.0, -2.0]}}
-    )
-    assert waypoint[:2] == [0.05, -0.05]
-    assert adapter._action_sequence([], chunk_size=3) == [
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-    ]
+        {"normalized_action": {"delta_end_effector_pose_7d": [1, 2, 3, 4, 5, 6, 7]}}
+    ) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    with pytest.raises(
+        RuntimeError,
+        match="cosmos_action_trace_missing_explicit_sc3_7d_action",
+    ):
+        adapter._action_vector(
+            {"normalized_action": {"action_type": "stop", "vx_mps": 1}}
+        )
+    with pytest.raises(
+        RuntimeError,
+        match="cosmos_action_trace_has_fewer_actions_than_requested_chunk",
+    ):
+        adapter._action_sequence([], chunk_size=3)
 
     package = adapter._materialize_cosmos_input_package(
         rollout_manifest=rollout_manifest,
@@ -494,6 +489,8 @@ def test_oscar_cosmos_run_blocks_probes_and_materializes_rollouts(
             sys.executable,
             "--work-dir",
             str(tmp_path / "blocked-full-work"),
+            "--chunk-size",
+            "2",
         ]
     )
     assert blocked_full["status"] == "blocked"
@@ -576,9 +573,6 @@ def test_oscar_cosmos_rollout_payload_main_and_module_guard(
     monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", str(module_output))
     monkeypatch.setattr(sys, "argv", ["oscar_cosmos_wam_command_adapter.py"])
     with pytest.raises(SystemExit) as exc:
-        runpy.run_module(
-            "blueprint_pipeline.oscar_cosmos_wam_command_adapter",
-            run_name="__main__",
-        )
+        run_module_as_main("blueprint_pipeline.oscar_cosmos_wam_command_adapter")
     assert exc.value.code == 2
     assert json.loads(module_output.read_text(encoding="utf-8"))["status"] == "blocked"

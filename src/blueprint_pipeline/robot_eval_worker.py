@@ -14,13 +14,14 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tarfile
 import time
 import urllib.parse
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from .common import (
@@ -41,6 +42,11 @@ from .robot_eval_job_orchestrator import (
     _run_command_simulator,
     build_robot_eval_job,
 )
+from .security_controls import (
+    fetch_bounded_https,
+    origins_from_env,
+    prove_path_contained,
+)
 from .wam_provider_runtime import parse_wam_provider_commands
 
 
@@ -56,6 +62,12 @@ SIGNED_URL_QUERY_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 REMOTE_ARTIFACT_OUTPUT_URI_SCHEMES = {"gs", "s3", "r2"}
+WORKER_MANIFEST_MAX_BYTES = 8 * 1024 * 1024
+CAPTURE_ARCHIVE_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024 * 1024
+CAPTURE_ARCHIVE_MAX_MEMBERS = 50_000
+CAPTURE_ARCHIVE_MAX_EXPANDED_BYTES = 32 * 1024 * 1024 * 1024
+CAPTURE_ARCHIVE_MAX_MEMBER_BYTES = 8 * 1024 * 1024 * 1024
+CAPTURE_ARCHIVE_MAX_COMPRESSION_RATIO = 200.0
 
 
 def _string(value: Any) -> str:
@@ -511,42 +523,131 @@ def _s3_compatible_client(uri: str) -> Any:
     return boto3.client("s3", **kwargs)
 
 
-def _download_s3_compatible_uri(uri: str, target: Path) -> Path:
+def _download_s3_compatible_uri(
+    uri: str,
+    target: Path,
+    *,
+    max_bytes: int = CAPTURE_ARCHIVE_MAX_DOWNLOAD_BYTES,
+) -> Path:
     _, bucket, key = _parse_s3_compatible_uri(uri)
     ensure_dir(target.parent)
     client = _s3_compatible_client(uri)
+    head_object = getattr(client, "head_object", None)
+    if callable(head_object):
+        content_length = int((head_object(Bucket=bucket, Key=key) or {}).get("ContentLength") or 0)
+        if content_length < 0 or content_length > max_bytes:
+            raise ValueError("remote object exceeds download byte limit")
     client.download_file(bucket, key, str(target))
+    if target.stat().st_size > max_bytes:
+        target.unlink(missing_ok=True)
+        raise ValueError("remote object exceeds download byte limit")
+    return target
+
+
+def _provider_runtime() -> bool:
+    return _env_truthy("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME")
+
+
+def _worker_download_origins(uri: str) -> tuple[str, ...]:
+    configured = origins_from_env("BLUEPRINT_WORKER_ALLOWED_DOWNLOAD_ORIGINS")
+    if configured:
+        return configured
+    if _provider_runtime():
+        raise ValueError("BLUEPRINT_WORKER_ALLOWED_DOWNLOAD_ORIGINS is required in provider runtime")
+    parsed = urllib.parse.urlsplit(uri)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return ()
+    port = parsed.port
+    return (
+        f"https://{parsed.hostname.lower()}" + (f":{port}" if port and port != 443 else ""),
+    )
+
+
+def _download_https(
+    uri: str,
+    target: Path,
+    *,
+    max_bytes: int,
+    allowed_content_types: Sequence[str],
+    timeout_seconds: int = 60,
+) -> Path:
+    ensure_dir(target.parent)
+    fetch_bounded_https(
+        uri,
+        timeout_seconds=timeout_seconds,
+        max_bytes=max_bytes,
+        allowed_origins=_worker_download_origins(uri),
+        allowed_content_types=allowed_content_types,
+        max_redirects=2,
+        output_path=target,
+    )
     return target
 
 
 def _uri_to_local_path(uri: str, work_dir: Path) -> Path:
     parsed = urllib.parse.urlparse(uri)
-    if parsed.scheme in {"", "file"}:
-        return Path(urllib.request.url2pathname(parsed.path if parsed.scheme else uri))
-    if parsed.scheme in {"http", "https"}:
+    if parsed.scheme == "file":
+        raise ValueError("file:// worker manifest sources are disabled")
+    if parsed.scheme == "":
+        if _provider_runtime():
+            raise ValueError("local worker manifest sources are disabled in provider runtime")
+        return Path(uri)
+    if parsed.scheme == "http":
+        raise ValueError("worker manifest URL must use HTTPS")
+    if parsed.scheme == "https":
         target = work_dir / "downloads" / "worker_manifest.json"
-        ensure_dir(target.parent)
-        with urllib.request.urlopen(uri, timeout=30) as response:
-            target.write_bytes(response.read())
-        return target
+        return _download_https(
+            uri,
+            target,
+            max_bytes=WORKER_MANIFEST_MAX_BYTES,
+            allowed_content_types=("application/json", "application/octet-stream"),
+        )
     if parsed.scheme == "gs":
         gcs_root = Path(os.getenv("BLUEPRINT_GCS_MOUNT_ROOT") or "/mnt/gcs")
         return ensure_local_uri_path(uri, gcs_root=gcs_root, scratch_dir=work_dir / "downloads")
     if parsed.scheme in {"s3", "r2"}:
-        return _download_s3_compatible_uri(uri, work_dir / "downloads" / "worker_manifest.json")
+        return _download_s3_compatible_uri(
+            uri,
+            work_dir / "downloads" / "worker_manifest.json",
+            max_bytes=WORKER_MANIFEST_MAX_BYTES,
+        )
     raise ValueError(f"Unsupported worker manifest URI scheme: {parsed.scheme}")
 
 
 def _uri_to_local_file(uri: str, work_dir: Path, *, filename: str) -> Path:
     parsed = urllib.parse.urlparse(uri)
-    if parsed.scheme in {"", "file"}:
-        return Path(urllib.request.url2pathname(parsed.path if parsed.scheme else uri))
+    if parsed.scheme == "file":
+        raise ValueError("file:// capture bundle sources are disabled")
+    if parsed.scheme == "":
+        if _provider_runtime():
+            raise ValueError("local capture bundle sources are disabled in provider runtime")
+        return Path(uri)
+    if (
+        not filename
+        or Path(filename).name != filename
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", filename)
+    ):
+        raise ValueError("capture bundle download filename is unsafe")
     target = work_dir / "downloads" / filename
     ensure_dir(target.parent)
-    if parsed.scheme in {"http", "https"}:
-        with urllib.request.urlopen(uri, timeout=120) as response:
-            target.write_bytes(response.read())
-        return target
+    if parsed.scheme == "http":
+        raise ValueError("capture bundle URL must use HTTPS")
+    if parsed.scheme == "https":
+        return _download_https(
+            uri,
+            target,
+            max_bytes=CAPTURE_ARCHIVE_MAX_DOWNLOAD_BYTES,
+            allowed_content_types=(
+                "application/zip",
+                "application/x-zip-compressed",
+                "application/x-tar",
+                "application/x-gtar",
+                "application/gzip",
+                "application/x-gzip",
+                "application/octet-stream",
+            ),
+            timeout_seconds=300,
+        )
     if parsed.scheme == "gs":
         gcs_root = Path(os.getenv("BLUEPRINT_GCS_MOUNT_ROOT") or "/mnt/gcs")
         return ensure_local_uri_path(uri, gcs_root=gcs_root, scratch_dir=target.parent)
@@ -556,8 +657,66 @@ def _uri_to_local_file(uri: str, work_dir: Path, *, filename: str) -> Path:
 
 
 def _safe_archive_member(name: str) -> bool:
-    path = Path(name)
-    return not path.is_absolute() and ".." not in path.parts
+    path = PurePosixPath(str(name or ""))
+    return bool(
+        name
+        and not path.is_absolute()
+        and all(part not in {"", ".", ".."} for part in path.parts)
+        and "\\" not in name
+        and "\x00" not in name
+    )
+
+
+def _archive_member_target(extract_dir: Path, name: str) -> Path:
+    if not _safe_archive_member(name):
+        raise ValueError("capture root bundle contains unsafe archive paths")
+    target = (extract_dir / PurePosixPath(name)).resolve(strict=False)
+    root = extract_dir.resolve()
+    if target == root or not target.is_relative_to(root):
+        raise ValueError("capture root bundle member escapes extraction root")
+    return target
+
+
+def _copy_archive_member(source: Any, target: Path, *, expected_size: int) -> None:
+    ensure_dir(target.parent)
+    written = 0
+    try:
+        with target.open("xb") as output:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > expected_size or written > CAPTURE_ARCHIVE_MAX_MEMBER_BYTES:
+                    raise ValueError("capture root bundle member exceeded declared size")
+                output.write(chunk)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    if written != expected_size:
+        target.unlink(missing_ok=True)
+        raise ValueError("capture root bundle member size did not match archive metadata")
+
+
+def _validate_archive_limits(rows: Sequence[tuple[str, int, int]]) -> None:
+    if len(rows) > CAPTURE_ARCHIVE_MAX_MEMBERS:
+        raise ValueError("capture root bundle exceeds member count limit")
+    total = 0
+    seen: set[str] = set()
+    for name, expanded_size, compressed_size in rows:
+        normalized = PurePosixPath(name).as_posix()
+        if normalized in seen:
+            raise ValueError("capture root bundle contains duplicate member paths")
+        seen.add(normalized)
+        if expanded_size < 0 or expanded_size > CAPTURE_ARCHIVE_MAX_MEMBER_BYTES:
+            raise ValueError("capture root bundle member exceeds size limit")
+        total += expanded_size
+        if total > CAPTURE_ARCHIVE_MAX_EXPANDED_BYTES:
+            raise ValueError("capture root bundle exceeds expanded size limit")
+        if expanded_size > 1024 * 1024:
+            ratio = expanded_size / max(1, compressed_size)
+            if ratio > CAPTURE_ARCHIVE_MAX_COMPRESSION_RATIO:
+                raise ValueError("capture root bundle exceeds compression ratio limit")
 
 
 def _find_extracted_capture_root(extract_dir: Path) -> Path | None:
@@ -575,23 +734,66 @@ def _find_extracted_capture_root(extract_dir: Path) -> Path | None:
 def _extract_capture_root_bundle(uri: str, work_dir: Path) -> Dict[str, Any]:
     archive_name = Path(urllib.parse.urlparse(uri).path).name or "capture-root-bundle.zip"
     archive_path = _uri_to_local_file(uri, work_dir, filename=archive_name)
+    if not archive_path.is_file():
+        raise ValueError("capture root bundle source is not a regular file")
+    if archive_path.stat().st_size > CAPTURE_ARCHIVE_MAX_DOWNLOAD_BYTES:
+        raise ValueError("capture root bundle exceeds archive byte limit")
     extract_dir = work_dir / "capture_root_bundle"
     if extract_dir.exists():
         shutil.rmtree(extract_dir)
     ensure_dir(extract_dir)
     if zipfile.is_zipfile(archive_path):
         with zipfile.ZipFile(archive_path) as archive:
-            unsafe = [name for name in archive.namelist() if not _safe_archive_member(name)]
+            infos = archive.infolist()
+            unsafe = [info.filename for info in infos if not _safe_archive_member(info.filename)]
             if unsafe:
                 raise ValueError("capture root bundle contains unsafe zip paths")
-            archive.extractall(extract_dir)
+            rows: list[tuple[str, int, int]] = []
+            for info in infos:
+                mode = (info.external_attr >> 16) & 0xFFFF
+                kind = stat.S_IFMT(mode)
+                if info.flag_bits & 0x1:
+                    raise ValueError("capture root bundle contains encrypted zip entries")
+                if not info.is_dir() and kind not in {0, stat.S_IFREG}:
+                    raise ValueError("capture root bundle contains zip links or special entries")
+                rows.append((info.filename, int(info.file_size), int(info.compress_size)))
+            _validate_archive_limits(rows)
+            for info in infos:
+                target = _archive_member_target(extract_dir, info.filename)
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                with archive.open(info, "r") as source:
+                    _copy_archive_member(source, target, expected_size=int(info.file_size))
     elif tarfile.is_tarfile(archive_path):
         with tarfile.open(archive_path) as archive:
             members = archive.getmembers()
             unsafe = [member.name for member in members if not _safe_archive_member(member.name)]
             if unsafe:
                 raise ValueError("capture root bundle contains unsafe tar paths")
-            archive.extractall(extract_dir)
+            for member in members:
+                if not (member.isdir() or member.isreg()) or member.issparse():
+                    raise ValueError("capture root bundle contains tar links or special entries")
+            _validate_archive_limits(
+                [(member.name, int(member.size), int(member.size)) for member in members]
+            )
+            expanded_total = sum(int(member.size) for member in members)
+            if (
+                expanded_total > 1024 * 1024
+                and expanded_total / max(1, archive_path.stat().st_size)
+                > CAPTURE_ARCHIVE_MAX_COMPRESSION_RATIO
+            ):
+                raise ValueError("capture root bundle exceeds compression ratio limit")
+            for member in members:
+                target = _archive_member_target(extract_dir, member.name)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                source = archive.extractfile(member)
+                if source is None:
+                    raise ValueError("capture root bundle tar member could not be read")
+                with source:
+                    _copy_archive_member(source, target, expected_size=int(member.size))
     else:
         raise ValueError("capture root bundle must be a .zip or .tar archive")
     capture_root = _find_extracted_capture_root(extract_dir)
@@ -1299,7 +1501,15 @@ def _resolve_capture_root_relative_path(
     if not text:
         return None
     path = Path(text)
-    return path if path.is_absolute() else capture_root / path
+    candidate = path if path.is_absolute() else capture_root / path
+    try:
+        return prove_path_contained(
+            capture_root,
+            candidate,
+            field="scenario eval matrix path",
+        )
+    except ValueError:
+        return None
 
 
 def _blocked_runtime_manifest(
@@ -1469,6 +1679,20 @@ def run_robot_eval_worker(
         or None
     )
     live_provider_manifest_required = selected_provisioner != "fixture_local"
+    if live_provider_manifest_required and not capture_root and not bundle_capture_root:
+        return _blocked_runtime_manifest(
+            work_dir=worker_dir,
+            manifest_uri=manifest_uri,
+            blockers=["provider_runtime_capture_root_bundle_required"],
+            generated_at=generated_at,
+            context={
+                "job_id": selected_job_id,
+                "capture_root": None,
+                "capture_root_bundle_uri": capture_root_bundle_uri or None,
+                "provisioner": selected_provisioner,
+                "simulator": selected_simulator,
+            },
+        )
     payload_schema = _string(payload.get("schema_version"))
     if live_provider_manifest_required and payload_schema != WORKER_INPUT_MANIFEST_SCHEMA_VERSION:
         return _blocked_runtime_manifest(

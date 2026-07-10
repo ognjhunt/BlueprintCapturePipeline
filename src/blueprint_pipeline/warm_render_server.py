@@ -11,14 +11,30 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import time
 import urllib.error
-import urllib.request
+import urllib.parse
 import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
+
+from .security_controls import (
+    exact_https_origin,
+    fetch_bounded_https,
+    fetch_bounded_service_url,
+    origins_from_env,
+)
+
+
+WARM_SIGNED_URL_ALLOWED_ORIGINS_ENV = (
+    "BLUEPRINT_WARM_SIGNED_URL_ALLOWED_ORIGINS"
+)
+WARM_BROKER_ALLOWED_ORIGINS_ENV = "BLUEPRINT_WARM_BROKER_ALLOWED_ORIGINS"
+WARM_SINGLE_OBJECT_MAX_BYTES = 16 * 1024 * 1024
+WARM_BROKER_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class PresignedUrlAccessError(RuntimeError):
@@ -43,6 +59,10 @@ class WarmInboxUnrecoverable(RuntimeError):
         self.failures = int(failures)
 
 
+class WarmBrokerContractError(RuntimeError):
+    """The durable broker returned a malformed or unauthorized response."""
+
+
 def _http_error_classification(code: int) -> str:
     if int(code) in (401, 403):
         return "presigned_url_expired_or_forbidden"
@@ -57,6 +77,8 @@ class WarmJob:
     scenario: dict[str, Any] = field(default_factory=dict)
     stop: bool = False
     session_nonce: str = ""
+    client_request_label: str = ""
+    server_idempotency_key: str = ""
 
 
 class JobSource(Protocol):
@@ -122,6 +144,15 @@ def serve_render_loop(
             continue
 
         if job.stop:
+            stop_result = {
+                "status": "stopped",
+                "request_id": job.request_id,
+                "canonical_job_id": job.request_id,
+                "stop_acknowledged": True,
+            }
+            if job.session_nonce:
+                stop_result["warm_session_nonce"] = job.session_nonce
+            job_source.publish_result(job.request_id, stop_result)
             _log(f"warm serve loop: stop sentinel received after {served} job(s)")
             return {"jobs_served": served, "exit_reason": "stop_requested"}
 
@@ -136,6 +167,11 @@ def serve_render_loop(
             _log(f"warm serve loop: request_id={job.request_id} render error: {exc!r}")
 
         result["request_id"] = job.request_id
+        result["canonical_job_id"] = job.request_id
+        if job.client_request_label:
+            result["client_request_label"] = job.client_request_label
+        if job.server_idempotency_key:
+            result["server_idempotency_key"] = job.server_idempotency_key
         if job.session_nonce:
             result["warm_session_nonce"] = job.session_nonce
         job_source.publish_result(job.request_id, result)
@@ -144,83 +180,427 @@ def serve_render_loop(
 
 
 class FileJobSource:
-    """A :class:`JobSource` backed by a local directory tree — for tests and shared-volume transport.
-
-    Jobs are dropped as ``jobs/<seq>_<request_id>.json`` (FIFO by zero-padded sequence, no clock/random
-    needed) and claimed by deletion on :meth:`poll`; results land in ``results/<request_id>.json``.
-    """
+    """Local/shared-volume adapter over the same durable queue contract."""
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
-        self.jobs_dir = self.root / "jobs"
-        self.results_dir = self.root / "results"
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
-        self.results_dir.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            from .warm_render_broker import DurableWarmRenderQueue
+        except ImportError:  # flat worker bundle
+            from warm_render_broker import DurableWarmRenderQueue  # type: ignore[no-redef]
 
-    def _next_seq(self) -> str:
-        return f"{len(list(self.jobs_dir.glob('*.json'))):06d}"
+        self._queue = DurableWarmRenderQueue(self.root / "warm_render_queue.sqlite3")
+        self._worker_id = f"file-worker-{uuid.uuid4().hex}"
+        self._active_claim_tokens: dict[str, str] = {}
 
-    def submit(self, request_id: str, scenario: dict[str, Any]) -> Path:
-        path = self.jobs_dir / f"{self._next_seq()}_{request_id}.json"
-        path.write_text(json.dumps({"request_id": request_id, "scenario": scenario, "stop": False}))
-        return path
+    def submit(self, request_id: str, scenario: dict[str, Any]) -> str:
+        submitted = self._queue.submit(
+            scenario=scenario,
+            idempotency_key=f"file-job:{request_id}",
+            client_request_label=request_id,
+        )
+        return str(submitted["canonical_job_id"])
 
-    def submit_stop(self) -> Path:
-        path = self.jobs_dir / f"{self._next_seq()}_stop.json"
-        path.write_text(json.dumps({"request_id": "stop", "scenario": {}, "stop": True}))
-        return path
+    def submit_stop(self, *, idempotency_key: str | None = None) -> str:
+        submitted = self._queue.submit(
+            scenario={},
+            idempotency_key=idempotency_key or f"file-stop:{uuid.uuid4().hex}",
+            client_request_label="stop",
+            stop=True,
+        )
+        return str(submitted["canonical_job_id"])
 
     def poll(self) -> Optional[WarmJob]:
-        files = sorted(self.jobs_dir.glob("*.json"))
-        if not files:
+        payload = self._queue.claim(
+            worker_id=self._worker_id,
+            lease_seconds=900,
+        )
+        if payload is None:
             return None
-        path = files[0]
-        try:
-            payload = json.loads(path.read_text())
-        except Exception:  # noqa: BLE001 - a half-written job file: drop it and move on
-            path.unlink(missing_ok=True)
-            return None
-        path.unlink(missing_ok=True)  # claim
+        canonical_id = str(payload["canonical_job_id"])
+        self._active_claim_tokens[canonical_id] = str(payload["claim_token"])
         return WarmJob(
-            request_id=str(payload.get("request_id") or path.stem),
+            request_id=canonical_id,
             scenario=dict(payload.get("scenario") or {}),
             stop=bool(payload.get("stop")),
-            session_nonce=str(payload.get("warm_session_nonce") or ""),
+            session_nonce=str(payload.get("session_nonce") or ""),
+            client_request_label=str(payload.get("client_request_label") or ""),
+            server_idempotency_key=str(payload.get("server_idempotency_key") or ""),
         )
 
     def publish_result(self, request_id: str, result: dict[str, Any]) -> None:
-        (self.results_dir / f"{request_id}.json").write_text(json.dumps(result, indent=2))
+        token = self._active_claim_tokens.get(request_id)
+        if token is None:
+            raise WarmBrokerContractError("local_warm_queue_active_claim_missing")
+        self._queue.publish_result(
+            canonical_job_id=request_id,
+            claim_token=token,
+            result=result,
+        )
+        self._active_claim_tokens.pop(request_id, None)
 
     def collect_result(self, request_id: str) -> Optional[dict[str, Any]]:
-        path = self.results_dir / f"{request_id}.json"
-        if not path.exists():
-            return None
-        return json.loads(path.read_text())
+        payload = self._queue.get_result(canonical_job_id=request_id)
+        return dict(payload["result"]) if payload is not None else None
 
 
 def _http_get_bytes(url: str, *, timeout: float = 60.0) -> bytes:
-    return urllib.request.urlopen(url, timeout=timeout).read()
+    allowed_origins = origins_from_env(WARM_SIGNED_URL_ALLOWED_ORIGINS_ENV)
+    if not allowed_origins:
+        allowed_origins = (exact_https_origin(url),)
+    return fetch_bounded_https(
+        url,
+        timeout_seconds=max(1, min(int(timeout), 600)),
+        max_bytes=WARM_SINGLE_OBJECT_MAX_BYTES,
+        allowed_origins=allowed_origins,
+        max_redirects=0,
+    ).body
 
 
-def _http_put_bytes(url: str, data: bytes, *, timeout: float = 60.0) -> None:
-    req = urllib.request.Request(url, data=data, method="PUT",
-                                 headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=timeout).read()
+def _http_put_bytes(url: str, data: bytes, *, timeout: float = 60.0) -> bytes:
+    if len(data) > WARM_SINGLE_OBJECT_MAX_BYTES:
+        raise WarmBrokerContractError("warm_single_object_payload_too_large")
+    allowed_origins = origins_from_env(WARM_SIGNED_URL_ALLOWED_ORIGINS_ENV)
+    if not allowed_origins:
+        allowed_origins = (exact_https_origin(url),)
+    return fetch_bounded_https(
+        url,
+        method="PUT",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        timeout_seconds=max(1, min(int(timeout), 600)),
+        max_bytes=1024 * 1024,
+        allowed_origins=allowed_origins,
+        max_redirects=0,
+    ).body
+
+
+_CANONICAL_BROKER_JOB_ID = re.compile(r"\Awrj_[0-9a-f]{32}\Z")
+_BROKER_CLAIM_TOKEN = re.compile(r"\Awrc_[0-9a-f]{64}\Z")
+_BROKER_WORKER_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+
+
+def _validated_broker_base_url(value: str) -> str:
+    text = value.strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(text)
+    local_host = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    if parsed.scheme not in ({"http", "https"} if local_host else {"https"}):
+        raise ValueError("warm_broker_https_required")
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("warm_broker_base_url_invalid")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("warm_broker_base_url_path_invalid")
+    if not local_host:
+        exact_https_origin(text)
+    return text
+
+
+def _validated_broker_token(value: str) -> str:
+    token = value.strip()
+    if len(token.encode("utf-8")) < 32:
+        raise ValueError("warm_broker_token_too_short")
+    return token
+
+
+def _canonical_broker_job_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not _CANONICAL_BROKER_JOB_ID.fullmatch(text):
+        raise WarmBrokerContractError("warm_broker_canonical_job_id_invalid")
+    return text
+
+
+def _broker_claim_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if not _BROKER_CLAIM_TOKEN.fullmatch(text):
+        raise WarmBrokerContractError("warm_broker_claim_token_invalid")
+    return text
+
+
+def _http_broker_json(
+    method: str,
+    url: str,
+    payload: Mapping[str, Any] | None,
+    bearer_token: str,
+    extra_headers: Mapping[str, str] | None = None,
+    *,
+    timeout: float = 60.0,
+) -> dict[str, Any] | None:
+    data = json.dumps(dict(payload), separators=(",", ":")).encode("utf-8") if payload is not None else None
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Accept": "application/json",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if extra_headers:
+        headers.update(dict(extra_headers))
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        allowed_origins = origins_from_env(WARM_BROKER_ALLOWED_ORIGINS_ENV)
+        if parsed.scheme.lower() == "https" and not allowed_origins:
+            allowed_origins = (exact_https_origin(url),)
+        response = fetch_bounded_service_url(
+            url,
+            method=method,
+            data=data,
+            headers=headers,
+            timeout_seconds=max(1, min(int(timeout), 600)),
+            max_bytes=WARM_BROKER_MAX_RESPONSE_BYTES,
+            allowed_origins=allowed_origins,
+            allowed_content_types=("application/json",),
+            max_redirects=0,
+        )
+        status_code = response.status
+        raw = response.body
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise PresignedUrlAccessError(
+                operation="warm_broker_request",
+                status_code=exc.code,
+                classification="warm_broker_unauthorized",
+            ) from exc
+        raise
+    if status_code == 204 or not raw:
+        return None
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WarmBrokerContractError("warm_broker_response_malformed") from exc
+    if not isinstance(decoded, Mapping):
+        raise WarmBrokerContractError("warm_broker_response_not_mapping")
+    return dict(decoded)
+
+
+class DurableBrokerJobSource:
+    """Worker-side durable broker transport with server leases and canonical IDs."""
+
+    def __init__(
+        self,
+        broker_base_url: str,
+        bearer_token: str,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: float = 900.0,
+        http_request: Callable[
+            [str, str, Mapping[str, Any] | None, str, Mapping[str, str] | None],
+            dict[str, Any] | None,
+        ] = _http_broker_json,
+        max_consecutive_failures: int = 10,
+    ) -> None:
+        self.broker_base_url = _validated_broker_base_url(broker_base_url)
+        self.bearer_token = _validated_broker_token(bearer_token)
+        self.worker_id = worker_id or f"warm-worker-{uuid.uuid4().hex}"
+        if not _BROKER_WORKER_ID.fullmatch(self.worker_id):
+            raise ValueError("warm_broker_worker_id_invalid")
+        self.lease_seconds = float(lease_seconds)
+        if not 1.0 <= self.lease_seconds <= 86_400.0:
+            raise ValueError("warm_broker_lease_seconds_out_of_range")
+        self._http_request = http_request
+        self.max_consecutive_failures = max(1, int(max_consecutive_failures))
+        self.consecutive_failures = 0
+        self.last_error: str | None = None
+        self._active_claim_tokens: dict[str, str] = {}
+
+    def _record_failure(self, reason: str) -> None:
+        self.consecutive_failures += 1
+        self.last_error = reason
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            raise WarmInboxUnrecoverable(
+                reason=reason,
+                failures=self.consecutive_failures,
+            )
+
+    def poll(self) -> Optional[WarmJob]:
+        try:
+            payload = self._http_request(
+                "POST",
+                f"{self.broker_base_url}/v1/warm-render/jobs/claim",
+                {"worker_id": self.worker_id, "lease_seconds": self.lease_seconds},
+                self.bearer_token,
+                None,
+            )
+        except PresignedUrlAccessError:
+            raise
+        except (OSError, urllib.error.HTTPError, WarmBrokerContractError):
+            self._record_failure("warm_broker_claim_failed")
+            return None
+        if payload is None:
+            self.consecutive_failures = 0
+            self.last_error = None
+            return None
+        try:
+            canonical_id = _canonical_broker_job_id(payload.get("canonical_job_id"))
+            claim_token = _broker_claim_token(payload.get("claim_token"))
+            scenario = payload.get("scenario")
+            if not isinstance(scenario, Mapping):
+                raise WarmBrokerContractError("warm_broker_scenario_not_mapping")
+        except WarmBrokerContractError:
+            self._record_failure("warm_broker_claim_contract_invalid")
+            return None
+        self.consecutive_failures = 0
+        self.last_error = None
+        self._active_claim_tokens[canonical_id] = claim_token
+        return WarmJob(
+            request_id=canonical_id,
+            scenario=dict(scenario),
+            stop=payload.get("stop") is True,
+            session_nonce=str(payload.get("session_nonce") or ""),
+            client_request_label=str(payload.get("client_request_label") or ""),
+            server_idempotency_key=str(payload.get("server_idempotency_key") or ""),
+        )
+
+    def publish_result(self, request_id: str, result: dict[str, Any]) -> None:
+        canonical_id = _canonical_broker_job_id(request_id)
+        claim_token = self._active_claim_tokens.get(canonical_id)
+        if claim_token is None:
+            raise WarmBrokerContractError("warm_broker_active_claim_missing")
+        self._http_request(
+            "PUT",
+            f"{self.broker_base_url}/v1/warm-render/jobs/{canonical_id}/result",
+            {"claim_token": claim_token, "result": dict(result)},
+            self.bearer_token,
+            None,
+        )
+        self._active_claim_tokens.pop(canonical_id, None)
+
+
+class DurableWarmPoolClient:
+    """Control-plane client for the durable warm-render broker."""
+
+    def __init__(
+        self,
+        broker_base_url: str,
+        bearer_token: str,
+        *,
+        http_request: Callable[
+            [str, str, Mapping[str, Any] | None, str, Mapping[str, str] | None],
+            dict[str, Any] | None,
+        ] = _http_broker_json,
+        session_nonce: str | None = None,
+    ) -> None:
+        self.broker_base_url = _validated_broker_base_url(broker_base_url)
+        self.bearer_token = _validated_broker_token(bearer_token)
+        self._http_request = http_request
+        self.session_nonce = session_nonce or uuid.uuid4().hex
+        self._submission_index = 0
+
+    def submit(
+        self,
+        scenario: dict[str, Any],
+        request_id: Optional[str] = None,
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
+        self._submission_index += 1
+        client_label = str(request_id or f"job-{self._submission_index}")
+        if idempotency_key is None:
+            idempotency_key = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    json.dumps(
+                        {
+                            "client_label": client_label,
+                            "scenario": scenario,
+                            "session_nonce": self.session_nonce,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+        response = self._http_request(
+            "POST",
+            f"{self.broker_base_url}/v1/warm-render/jobs",
+            {
+                "scenario": dict(scenario),
+                "idempotency_key": idempotency_key,
+                "client_request_label": client_label,
+                "session_nonce": self.session_nonce,
+                "stop": False,
+            },
+            self.bearer_token,
+            None,
+        )
+        if response is None:
+            raise WarmBrokerContractError("warm_broker_submit_response_missing")
+        return _canonical_broker_job_id(response.get("canonical_job_id"))
+
+    def submit_stop(self, *, idempotency_key: str | None = None) -> str:
+        key = idempotency_key or f"stop:{self.session_nonce}"
+        response = self._http_request(
+            "POST",
+            f"{self.broker_base_url}/v1/warm-render/jobs",
+            {
+                "scenario": {},
+                "idempotency_key": key,
+                "client_request_label": "stop",
+                "session_nonce": self.session_nonce,
+                "stop": True,
+            },
+            self.bearer_token,
+            None,
+        )
+        if response is None:
+            raise WarmBrokerContractError("warm_broker_stop_response_missing")
+        return _canonical_broker_job_id(response.get("canonical_job_id"))
+
+    def poll_result(
+        self,
+        request_id: str,
+        *,
+        timeout_s: float = 300.0,
+        interval_s: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Optional[dict[str, Any]]:
+        canonical_id = _canonical_broker_job_id(request_id)
+        deadline = clock() + timeout_s
+        while clock() < deadline:
+            try:
+                response = self._http_request(
+                    "GET",
+                    f"{self.broker_base_url}/v1/warm-render/jobs/{canonical_id}/result",
+                    None,
+                    self.bearer_token,
+                    {"X-Warm-Session-Nonce": self.session_nonce},
+                )
+                if response is not None:
+                    result = response.get("result")
+                    if not isinstance(result, Mapping):
+                        raise WarmBrokerContractError(
+                            "warm_broker_result_response_invalid"
+                        )
+                    if _canonical_broker_job_id(
+                        response.get("canonical_job_id")
+                    ) != canonical_id:
+                        raise WarmBrokerContractError(
+                            "warm_broker_result_job_id_mismatch"
+                        )
+                    return dict(result)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {404}:
+                    raise
+            sleep(interval_s)
+        return None
 
 
 class SignedUrlJobSource:
-    """Pod-side :class:`JobSource` over presigned object-store URLs.
+    """Unsafe compatibility shim for the retired single-object transport.
 
-    The control plane writes the next job to a single inbox key (one presigned PUT it holds); the pod
-    polls that key via a presigned GET and claims jobs by monotonic ``seq`` (so the same job is never
-    re-served). Results ride the EXISTING worker output channel: :meth:`publish_result` writes them
-    into the pod's out dir (``warm_results/<request_id>.json``), which the worker's heartbeat already
-    uploads — so no second presigned channel is needed.
+    Public/live call sites must use :class:`DurableBrokerJobSource`. This shim is
+    retained only to read historical fixtures and requires an explicit unsafe
+    opt-in so a deployment cannot silently return to overwriteable inbox state.
     """
 
     def __init__(self, inbox_get_url: str, out_dir: Path | str, *,
                  http_get: Callable[[str], bytes] = _http_get_bytes,
-                 max_consecutive_failures: int = 10) -> None:
+                 max_consecutive_failures: int = 10,
+                 allow_unsafe_single_object: bool = False) -> None:
+        if not allow_unsafe_single_object:
+            raise RuntimeError(
+                "single_object_warm_inbox_retired_use_durable_broker"
+            )
         self.inbox_get_url = inbox_get_url
         self.out_dir = Path(out_dir)
         self.results_dir = self.out_dir / "warm_results"
@@ -289,18 +669,20 @@ class SignedUrlJobSource:
 
 
 class WarmPoolClient:
-    """Control-plane client for a warm ``--serve`` pod: submit task jobs + collect their results.
+    """Unsafe compatibility shim for the retired single-object client.
 
-    ``submit`` PUTs a job (monotonic ``seq``) to the inbox key the pod polls; ``poll_result`` reads the
-    pod's continuously-uploaded output zip (the existing output GET url) and returns the job's result
-    once the pod has written it. Keeping the pod RUNNING between submits is what makes reruns seconds —
-    the caller is responsible for the pod's lifecycle (it is not torn down here).
+    Use :class:`DurableWarmPoolClient` for all live/public execution.
     """
 
     def __init__(self, inbox_put_url: str, output_get_url: str, *,
                  http_put: Callable[[str, bytes], None] = _http_put_bytes,
                  http_get: Callable[[str], bytes] = _http_get_bytes,
-                 session_nonce: str | None = None) -> None:
+                 session_nonce: str | None = None,
+                 allow_unsafe_single_object: bool = False) -> None:
+        if not allow_unsafe_single_object:
+            raise RuntimeError(
+                "single_object_warm_inbox_retired_use_durable_broker"
+            )
         self.inbox_put_url = inbox_put_url
         self.output_get_url = output_get_url
         self._http_put = http_put
@@ -381,16 +763,18 @@ def _load_scenarios(path: str | Path) -> list[dict[str, Any]]:
     return [dict(item) for item in payload if isinstance(item, Mapping)]
 
 
-def _warm_serve_url_files_from_manifest(manifest_path: str | Path) -> tuple[Path, Path]:
+def _warm_serve_broker_files_from_manifest(
+    manifest_path: str | Path,
+) -> tuple[Path, Path]:
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     warm_serve = manifest.get("warm_serve") if isinstance(manifest, Mapping) else None
     if not isinstance(warm_serve, Mapping):
         raise ValueError("manifest_missing_warm_serve")
-    inbox_put = str(warm_serve.get("inbox_put_url_file") or "").strip()
-    output_get = str(warm_serve.get("output_get_url_file") or "").strip()
-    if not inbox_put or not output_get:
-        raise ValueError("manifest_missing_warm_serve_url_files")
-    return Path(inbox_put), Path(output_get)
+    broker_url = str(warm_serve.get("broker_base_url_file") or "").strip()
+    broker_token = str(warm_serve.get("broker_token_file") or "").strip()
+    if not broker_url or not broker_token:
+        raise ValueError("manifest_missing_durable_warm_render_broker_files")
+    return Path(broker_url), Path(broker_token)
 
 
 def submit_warm_render_batch(
@@ -402,28 +786,52 @@ def submit_warm_render_batch(
     interval_s: float = 5.0,
     stop_after: bool = False,
     session_nonce: str | None = None,
-    http_put: Callable[[str, bytes], None] = _http_put_bytes,
+    http_put: Callable[[str, bytes], Any] = _http_put_bytes,
     http_get: Callable[[str], bytes] = _http_get_bytes,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Submit multiple scenarios through one warm-pool client session.
 
-    The sequence number is intentionally kept in one client instance for the whole batch. Creating a
-    new client per task would reset ``seq`` to 1, and the pod-side ``SignedUrlJobSource`` would ignore
-    later jobs as stale.
+    Every submission is assigned a canonical server ID. The supplied scenario ID
+    is only a client label and never becomes a broker key or result path.
     """
-    inbox_put_file, output_get_file = _warm_serve_url_files_from_manifest(manifest_path)
-    inbox_put_url = inbox_put_file.read_text(encoding="utf-8").strip()
-    output_get_url = output_get_file.read_text(encoding="utf-8").strip()
+    broker_url_file, broker_token_file = _warm_serve_broker_files_from_manifest(
+        manifest_path
+    )
+    broker_base_url = broker_url_file.read_text(encoding="utf-8").strip()
+    broker_token = broker_token_file.read_text(encoding="utf-8").strip()
     scenarios = _load_scenarios(scenarios_path)
     resolved_out = Path(out_dir)
     resolved_out.mkdir(parents=True, exist_ok=True)
-    client = WarmPoolClient(
-        inbox_put_url,
-        output_get_url,
-        http_put=http_put,
-        http_get=http_get,
+    def legacy_http_adapter(
+        method: str,
+        url: str,
+        payload: Mapping[str, Any] | None,
+        _token: str,
+        _headers: Mapping[str, str] | None,
+    ) -> dict[str, Any] | None:
+        if method in {"POST", "PUT"}:
+            response = http_put(
+                url,
+                json.dumps(dict(payload or {}), separators=(",", ":")).encode(),
+            )
+        else:
+            response = http_get(url)
+        if response is None or response == b"" or response == "":
+            return None
+        if isinstance(response, Mapping):
+            return dict(response)
+        raw = response.decode("utf-8") if isinstance(response, bytes) else str(response)
+        decoded = json.loads(raw)
+        if not isinstance(decoded, Mapping):
+            raise WarmBrokerContractError("warm_broker_response_not_mapping")
+        return dict(decoded)
+
+    client = DurableWarmPoolClient(
+        broker_base_url,
+        broker_token,
+        http_request=legacy_http_adapter,
         session_nonce=session_nonce,
     )
     records: list[dict[str, Any]] = []
@@ -447,6 +855,8 @@ def submit_warm_render_batch(
             )
             record = {
                 "request_id": submitted,
+                "canonical_job_id": submitted,
+                "client_request_label": request_id,
                 "scenario_id": scenario.get("scenario_id") or scenario.get("id"),
                 "result_collected": result is not None,
                 "result": result,
@@ -482,6 +892,8 @@ def submit_warm_render_batch(
         "results_collected": sum(1 for item in records if item.get("result_collected")),
         "blockers": sorted(set(blockers)),
         "session_nonce": client.session_nonce,
+        "durable_broker_used": True,
+        "single_object_transport_used": False,
         "records": records,
         "raw_url_values_recorded": False,
         "proof_boundary": (

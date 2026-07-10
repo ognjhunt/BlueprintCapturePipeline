@@ -33,6 +33,14 @@ from .wam_provider_object_store import stage_wam_provider_bundle_object_store
 
 SCHEMA_VERSION = "openvla_policy_provider_smoke.v1"
 DEFAULT_MODEL_REPO_ID = "openvla/openvla-7b"
+DEFAULT_MODEL_REPO_REVISION = "47a0ec7fc4ec123775a391911046cf33cf9ed83f"
+APPROVED_OPENVLA_MODELS = {
+    DEFAULT_MODEL_REPO_ID: {
+        "revision": DEFAULT_MODEL_REPO_REVISION,
+        "license": "mit",
+        "license_review_status": "approved",
+    }
+}
 DEFAULT_UNNORM_KEY = "bridge_orig"
 DEFAULT_TASK_ID = "contact_or_push_light_object"
 DEFAULT_TASK_PROMPT = "move the gripper toward the light object and make controlled contact"
@@ -47,6 +55,18 @@ OPENVLA_RUNTIME_DEPENDENCY_PINS = (
     "tokenizers==0.19.1",
     "timm==0.9.10",
 )
+
+
+def _approved_model(model_repo_id: str, model_repo_revision: str) -> dict[str, str]:
+    approval = APPROVED_OPENVLA_MODELS.get(model_repo_id)
+    if approval is None:
+        raise ValueError(f"openvla_model_repo_not_approved:{model_repo_id}")
+    if model_repo_revision != approval["revision"]:
+        raise ValueError(
+            "openvla_model_revision_not_approved:"
+            f"{model_repo_id}@{model_repo_revision or 'missing'}"
+        )
+    return dict(approval)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -106,6 +126,13 @@ OPENVLA_RUNTIME_DEPENDENCY_PINS = (
     "tokenizers==0.19.1",
     "timm==0.9.10",
 )
+APPROVED_OPENVLA_MODELS = {
+    "openvla/openvla-7b": {
+        "revision": "47a0ec7fc4ec123775a391911046cf33cf9ed83f",
+        "license": "mit",
+        "license_review_status": "approved",
+    },
+}
 WAM_PREFLIGHT_COMPATIBILITY_MARKERS = (
     "wam_runtime_result.json",
     "OSCAR-2B",
@@ -467,6 +494,22 @@ def main() -> int:
     }
     payload["observation"] = observation
     model_repo_id = _string(manifest.get("model_repo_id")) or "openvla/openvla-7b"
+    model_repo_revision = _string(manifest.get("model_repo_revision"))
+    model_license = _string(manifest.get("model_license")).lower()
+    approval = APPROVED_OPENVLA_MODELS.get(model_repo_id)
+    if (
+        approval is None
+        or model_repo_revision != approval["revision"]
+        or model_license != approval["license"]
+        or approval["license_review_status"] != "approved"
+    ):
+        return _blocked(
+            output_path,
+            ["blocked_openvla_model_approval_invalid"],
+            model_repo_id=model_repo_id,
+            model_repo_revision=model_repo_revision or None,
+            network_or_secret_access_attempted=False,
+        )
     unnorm_key = _string(manifest.get("unnorm_key")) or "bridge_orig"
     device_env = _string(os.environ.get("BLUEPRINT_OPENVLA_POLICY_DEVICE"))
     runtime = _ensure_runtime(output_path)
@@ -480,11 +523,16 @@ def main() -> int:
     _phase("openvla_inference_started", model_repo_id=model_repo_id, selected_device=selected_device)
     try:
         image = Image.open(frame_path).convert("RGB")
-        processor = AutoProcessor.from_pretrained(model_repo_id, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(
+            model_repo_id,
+            revision=model_repo_revision,
+            trust_remote_code=False,
+        )
         kwargs = {
             "torch_dtype": torch.bfloat16,
             "low_cpu_mem_usage": True,
-            "trust_remote_code": True,
+            "trust_remote_code": False,
+            "revision": model_repo_revision,
         }
         attn = _string(os.environ.get("BLUEPRINT_OPENVLA_ATTN_IMPLEMENTATION")) or "eager"
         if attn:
@@ -558,7 +606,9 @@ def main() -> int:
         "openvla_predict_action_invoked": True,
         "model_ran": True,
         "model_repo_id": model_repo_id,
-        "model_repo_revision": _string(manifest.get("model_repo_revision")) or None,
+        "model_repo_revision": model_repo_revision,
+        "model_license": model_license,
+        "model_remote_code_trusted": False,
         "selected_device": selected_device,
         "unnorm_key": unnorm_key,
         "task_id": observation.get("task_id"),
@@ -642,9 +692,11 @@ def build_openvla_policy_provider_bundle(
     task_id: str = DEFAULT_TASK_ID,
     task_prompt: str = DEFAULT_TASK_PROMPT,
     model_repo_id: str = DEFAULT_MODEL_REPO_ID,
+    model_repo_revision: str = DEFAULT_MODEL_REPO_REVISION,
     unnorm_key: str = DEFAULT_UNNORM_KEY,
     bundle_filename: str = DEFAULT_BUNDLE_FILENAME,
 ) -> dict[str, Any]:
+    model_approval = _approved_model(model_repo_id, model_repo_revision)
     generated_at = utc_now_iso()
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     bundle_root = resolved_job_dir / "openvla_policy_provider_bundle"
@@ -673,7 +725,10 @@ def build_openvla_policy_provider_bundle(
         "generated_at": generated_at,
         "status": "ready",
         "model_repo_id": model_repo_id,
-        "model_repo_revision": None,
+        "model_repo_revision": model_repo_revision,
+        "model_license": model_approval["license"],
+        "model_license_review_status": model_approval["license_review_status"],
+        "model_remote_code_trusted": False,
         "unnorm_key": unnorm_key,
         "task_id": task_id,
         "task_prompt": task_prompt,
@@ -731,6 +786,9 @@ def build_openvla_policy_provider_bundle(
             path.relative_to(bundle_root).as_posix() for path in bundle_root.rglob("*") if path.is_file()
         ),
         "model_repo_id": model_repo_id,
+        "model_repo_revision": model_repo_revision,
+        "model_license": model_approval["license"],
+        "model_remote_code_trusted": False,
         "unnorm_key": unnorm_key,
         "task_id": task_id,
         "task_prompt": task_prompt,
@@ -800,6 +858,7 @@ def run_openvla_policy_provider_smoke(
     task_id: str = DEFAULT_TASK_ID,
     task_prompt: str = DEFAULT_TASK_PROMPT,
     model_repo_id: str = DEFAULT_MODEL_REPO_ID,
+    model_repo_revision: str = DEFAULT_MODEL_REPO_REVISION,
     unnorm_key: str = DEFAULT_UNNORM_KEY,
     public_image: str = DEFAULT_WAM_PUBLIC_IMAGE,
     allow_paid_vast_launch: bool = False,
@@ -820,6 +879,7 @@ def run_openvla_policy_provider_smoke(
         task_id=task_id,
         task_prompt=task_prompt,
         model_repo_id=model_repo_id,
+        model_repo_revision=model_repo_revision,
         unnorm_key=unnorm_key,
     )
     normalize_model_access_env()
@@ -948,6 +1008,7 @@ def run_openvla_policy_provider_smoke(
         "openvla_policy_action_command_ran": bool(imported.get("openvla_policy_action_command_ran")),
         "action": imported.get("action") if imported else None,
         "model_repo_id": model_repo_id,
+        "model_repo_revision": model_repo_revision,
         "unnorm_key": unnorm_key,
         "public_image": public_image,
         "allow_paid_vast_launch": allow_paid_vast_launch,
@@ -981,6 +1042,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--task-id", default=DEFAULT_TASK_ID)
     parser.add_argument("--task-prompt", default=DEFAULT_TASK_PROMPT)
     parser.add_argument("--model-repo-id", default=DEFAULT_MODEL_REPO_ID)
+    parser.add_argument("--model-repo-revision", default=DEFAULT_MODEL_REPO_REVISION)
     parser.add_argument("--unnorm-key", default=DEFAULT_UNNORM_KEY)
     parser.add_argument("--public-image", default=os.getenv("BLUEPRINT_VAST_WAM_PUBLIC_IMAGE", DEFAULT_WAM_PUBLIC_IMAGE))
     parser.add_argument("--allow-paid-vast-launch", action="store_true")
@@ -1005,6 +1067,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         task_id=args.task_id,
         task_prompt=args.task_prompt,
         model_repo_id=args.model_repo_id,
+        model_repo_revision=args.model_repo_revision,
         unnorm_key=args.unnorm_key,
         public_image=args.public_image,
         allow_paid_vast_launch=args.allow_paid_vast_launch,

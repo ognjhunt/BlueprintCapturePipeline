@@ -7,6 +7,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import gpu_render_providers as providers
 from blueprint_pipeline import groot_oscar_digitalocean_closed_loop_job as J
 from blueprint_pipeline import groot_oscar_closed_loop_image as gocl
@@ -16,6 +18,16 @@ DIGEST_REF = "docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:" + "b" * 64
 TASK_PROMPT = (
     "Open the dishwasher door; if the dishwasher is already open, close the dishwasher door."
 )
+REAL_CONSISTENCY_COMMAND = "python -m owner_runtime.shared_model_inverse_scorer"
+
+
+@pytest.fixture(autouse=True)
+def _configure_real_consistency_scorer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        J,
+        "DEFAULT_CONFIGURED_WAM_CONSISTENCY_COMMAND",
+        REAL_CONSISTENCY_COMMAND,
+    )
 
 
 def _completed_closed_loop_manifest(
@@ -91,6 +103,7 @@ def _active_plan() -> dict:
         steps=J.DEFAULT_EPISODE_MAX_STEPS,
         task_prompt=TASK_PROMPT,
         output_dir="/workspace/closed_loop_out",
+        wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
 
 
@@ -256,10 +269,10 @@ def test_prepared_mode_writes_bundle_and_manifest_without_capacity_or_staging(
     }
     assert audit["forward_inverse_consistency_gate"] == {
         "required": True,
-        "command": gocl.DEFAULT_WAM_CONSISTENCY_COMMAND,
+        "command": REAL_CONSISTENCY_COMMAND,
         "require_flag_present": True,
         "allow_scoring_flag_present": True,
-        "command_arg": gocl.DEFAULT_WAM_CONSISTENCY_COMMAND,
+        "command_arg": REAL_CONSISTENCY_COMMAND,
     }
     assert audit["generated_video_success_label_gate"]["required"] is False
     assert audit["digitalocean_gpu_candidate_floor"]["min_gpu_ram_mb"] == (
@@ -890,7 +903,7 @@ def test_worker_bootstrap_runs_healthcheck_groot_and_task_adaptive_closed_loop()
     assert "--require-fresh-learned-policy-requery" in script
     assert "--allow-wam-consistency-scoring" in script
     assert "--require-forward-inverse-consistency" in script
-    assert gocl.DEFAULT_WAM_CONSISTENCY_COMMAND in script
+    assert REAL_CONSISTENCY_COMMAND in script
     assert "--stop-on-task-completion" in script
     assert "--min-steps 3" in script
     assert "--min-coherent-horizon-frames 2" in script

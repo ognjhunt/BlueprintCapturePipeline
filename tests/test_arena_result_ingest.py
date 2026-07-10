@@ -127,6 +127,7 @@ def test_arena_result_ingest_writes_package_and_surfaces_buyer_readout_blockers(
     signed_access = _read_json(output_dir / "signed_access_manifest.json")
     operators = _read_json(output_dir / "live_operator_ledger.json")
     package = _read_json(output_dir / "post_training_data_package_export_manifest.json")
+    buyer_readout = _read_json(output_dir / "buyer_package_readout.json")
 
     assert result["status"] == "completed"
     assert schedule["scenario_count"] == 500
@@ -139,11 +140,15 @@ def test_arena_result_ingest_writes_package_and_surfaces_buyer_readout_blockers(
     assert operators["status"] == "blocked"
     assert "missing_env_BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS" in operators["blockers"]
     assert "missing_openai_api_key" in operators["blockers"]
-    assert package["status"] == "blocked_buyer_readout_incomplete_package"
+    assert package["status"] == "blocked_package_quality_gates"
     assert package["buyer_readout_status"] == "blocked_incomplete_package"
+    assert (
+        "canonical_training_quality:canonical_pipeline_manifest_not_passed"
+        in package["blockers"]
+    )
     assert any(
-        str(blocker).startswith("buyer_readout:task_success_criteria:")
-        for blocker in package["blockers"]
+        str(blocker).startswith("task_success_criteria:")
+        for blocker in buyer_readout["blockers"]
     )
     buyer_report = _read_json(output_dir / "task_eval_run_report.json")
     assert buyer_report["schema_version"] == "task_eval_run_buyer_report.v1"
@@ -160,7 +165,10 @@ def test_arena_result_ingest_writes_package_and_surfaces_buyer_readout_blockers(
     assert condition["success_rate"] is None
     assert buyer_report["scorecard"]["status"] == "rates_withheld_insufficient_evidence"
     assert (output_dir / "dataset_card.json").is_file()
-    assert (output_dir / "archives" / "post_training_data_package.tar.gz").is_file()
+    assert not (output_dir / "archives" / "post_training_data_package.tar.gz").exists()
+    assert _read_json(output_dir / "archive_manifest.json")["status"] == (
+        "blocked_identity_signing"
+    )
 
     audit = build_arena_package_proof_boundary_audit(
         capture_root=capture_root,

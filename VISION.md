@@ -83,7 +83,9 @@ make the case concrete:
   **seven VLA policies** (381 hours of real table-bussing data), a **0.929 headline correlation**,
   and — honestly — a drop to **r = 0.870 out-of-distribution.** This is the same self-consistency
   family Blueprint's own WAM evaluator prepares (forward/inverse episode-consistency scoring, behind
-  a replaceable external-scorer boundary — see [`AGENTS.md`](AGENTS.md)).
+  a replaceable external-scorer boundary — see [`AGENTS.md`](AGENTS.md)). The `0.929` value is
+  SC3-Eval's published overall Pearson result across those seven policies, not a Blueprint
+  measurement; Blueprint has not measured an equivalent correlation.
 - **OSCAR** (Peking University · NVIDIA/Michigan, arXiv:2606.04463) — an **omni-embodiment,
   action-conditioned world model** (a fine-tune of Cosmos-Predict2.5-2B on a single GH200, using 2D
   kinematic-skeleton conditioning for cross-embodiment) — reports **Pearson r = 0.852 /
@@ -93,10 +95,11 @@ make the case concrete:
   world-model adapter (see [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md)).
 
 Earlier work corroborates the direction (SIMPLER r ≈ 0.924; AutoEval r ≈ 0.942 while cutting human
-supervision >99%). **The 0.929 rank fidelity Blueprint reports lives in exactly this regime — and it
-is the SC3-Eval headline number**, not a marketing figure. Ranking is the honest, defensible unit;
-the honest caveat is that the in-distribution 0.98 becomes ~0.85–0.87 cross-embodiment / OOD — which
-is precisely the gap rung 3b has to close.
+supervision >99%). **SC3-Eval reports an overall closed-loop Pearson correlation of `0.929` across
+seven policies under its published protocol. This is not a Blueprint measurement; Blueprint has
+not measured equivalent rank fidelity.** Ranking is the honest, defensible unit; the honest caveat
+is that SC3-Eval's in-distribution 0.98 becomes ~0.85–0.87 cross-embodiment / OOD — precisely the
+gap rung 3b has to close.
 
 **Proof boundary (non-negotiable).** We sell **rank fidelity and predicted success on captured
 tasks** — an estimate. We do **not** sell a guaranteed field outcome, an off-scope validation, or a
@@ -285,7 +288,7 @@ Figures below were gathered by first-party web research and passed an adversaria
 corrections from that check are already reflected above. Confidence and known caveats noted.
 
 **Generated-world policy evaluation — the scientific core of the wedge (rungs 1 & 3b)**
-- **SC3-Eval** — *Evaluating Robot Foundation Models via Self-Consistent Video Generation* (NVIDIA · Physical Intelligence · U Toronto/Vector · Stanford · UC Berkeley; Tseng et al., Jun 2026). Video world model → closed-loop evaluator via forward-inverse dynamics + cross-view + test-time consistency. **Pearson r = 0.984 (MMRV 0.022) in-distribution, 0.929 headline, 0.870 OOD**; 7 VLA policies; 381h real table-bussing; 2.3s/24-frame chunk on GB200. Beats Ctrl-World / IRASim / Cosmos-Predict2.5. *This is the source of Blueprint's 0.929 rank-fidelity figure, and the consistency family the WAM evaluator prepares.* https://arxiv.org/html/2606.18610v3 · project page https://weichengtseng.github.io/sc3-eval/
+- **SC3-Eval** — *Evaluating Robot Foundation Models via Self-Consistent Video Generation* (NVIDIA · Physical Intelligence · U Toronto/Vector · Stanford · UC Berkeley; Tseng et al., Jun 2026). Video world model → closed-loop evaluator via forward-inverse dynamics + cross-view + test-time consistency. **Pearson r = 0.984 (MMRV 0.022) in-distribution, 0.929 overall headline, 0.870 OOD**; 7 VLA policies; 381h real table-bussing; 2.3s/24-frame chunk on GB200. Beats Ctrl-World / IRASim / Cosmos-Predict2.5. *These are SC3-Eval paper results, not Blueprint measurements; Blueprint has not measured equivalent rank fidelity. The consistency family is an evaluator recipe Blueprint prepares behind an external-scorer boundary.* https://arxiv.org/html/2606.18610v3 · project page https://weichengtseng.github.io/sc3-eval/
 - **OSCAR** — *Omni-Embodiment Action-Conditioned World Model for Robotics* (Peking University · NVIDIA/Michigan; Wu & Gao, Jun 2026). Cosmos-Predict2.5-2B fine-tuned on a single GH200 with 2D kinematic-skeleton cross-embodiment conditioning. **RoboArena virtual-vs-real: Pearson r = 0.852 / Spearman ρ = 0.750 / MMRV 0.571**, 7 generalist DROID policies, 65 sessions, 1,365 pairwise comparisons; 180,657 curated episodes across 4 robot + 2 human embodiments. Goal: "robot policies … purely evaluated in virtual generated worlds." Sits behind Blueprint's swappable world-model adapter. https://arxiv.org/html/2606.04463v2
 
 **Market & deployment**

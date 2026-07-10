@@ -15,7 +15,10 @@ def test_unitree_unifolm_gpu_image_context_writes_cuda124_contract(
 ) -> None:
     manifest = image_module.build_unitree_unifolm_gpu_image_context(
         job_dir=tmp_path / "image-context",
-        image_ref="docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124",
+        image_ref=(
+            "docker.io/nijelhunt/blueprint-unitree-unifolm@sha256:"
+            + "a" * 64
+        ),
         generated_at="2026-06-22T00:00:00+00:00",
     )
 
@@ -175,4 +178,4 @@ def test_unitree_unifolm_gpu_image_context_blocks_unversioned_ref(
     )
 
     assert manifest["status"] == "context_written_blocked"
-    assert "blocked_unitree_unifolm_gpu_image_ref_not_versioned" in manifest["blockers"]
+    assert "blocked_unitree_unifolm_gpu_image_ref_not_digest_pinned" in manifest["blockers"]

@@ -498,3 +498,50 @@ def test_resolve_ios_simulator_destination_falls_back_to_available_iphone(monkey
     )
 
     assert destination == "platform=iOS Simulator,id=IPHONE-17"
+
+
+def test_paid_gate_returns_nonzero_for_release_evidence_blockers(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    results = [
+        gate.CommandResult(
+            id="contracts",
+            label="contracts",
+            repo="BlueprintCapturePipeline",
+            command=["pytest"],
+            cwd=str(tmp_path),
+            status="passed",
+            blocking=True,
+            source_tags=(),
+        )
+    ]
+
+    status, exit_code = gate.launch_status_and_exit_code(
+        results,
+        {
+            "status": "blocked",
+            "exit_code": 1,
+            "blockers": ["missing_evidence:restore_drill"],
+        },
+    )
+
+    assert status == "release_evidence_blocked"
+    assert exit_code == 1
+
+
+def test_paid_gate_manual_closeout_does_not_override_release_evidence() -> None:
+    gate = _load_gate_module()
+    report = {
+        "overall_status": "release_evidence_blocked",
+        "automated_checks": [],
+        "manual_checks": [
+            {"id": "operator_signoff", "status": "manual_signoff_complete"}
+        ],
+        "release_evidence_graph": {
+            "blockers": ["provider_canary_failed:failed"]
+        },
+    }
+
+    closeout = gate.closeout_summary(report)
+
+    assert closeout["release_evidence_blockers"] == ["provider_canary_failed:failed"]
+    assert "release-bound evidence graph is blocked" in closeout["operator_readout"]

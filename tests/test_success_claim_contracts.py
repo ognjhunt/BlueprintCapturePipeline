@@ -102,9 +102,7 @@ def test_freshness_passes_with_matching_run_id() -> None:
 
 
 def _fresh():
-    return scc.build_artifact_freshness_evidence(
-        artifact_run_id="run_a", current_run_id="run_a"
-    )
+    return scc.build_artifact_freshness_evidence(artifact_run_id="run_a", current_run_id="run_a")
 
 
 # --------------------------------------------------------------------------------------
@@ -119,9 +117,7 @@ def test_media_validity_fails_closed_on_missing_media() -> None:
 
 
 def test_media_validity_requires_freshness_evidence() -> None:
-    contract = scc.build_media_validity(
-        media_present=True, frame_count=10, decodable=True
-    )
+    contract = scc.build_media_validity(media_present=True, frame_count=10, decodable=True)
     assert contract["status"] == "FAIL"
     assert "media_freshness_evidence_missing" in contract["blockers"]
 
@@ -260,9 +256,7 @@ def test_provider_completed_without_artifacts_fails() -> None:
 
 
 def test_simulator_execution_rejects_stale_artifacts() -> None:
-    stale = scc.build_artifact_freshness_evidence(
-        artifact_run_id="old", current_run_id="new"
-    )
+    stale = scc.build_artifact_freshness_evidence(artifact_run_id="old", current_run_id="new")
     contract = scc.build_simulator_execution(
         provider_runtime_status="completed",
         output_artifacts_present=True,
@@ -336,10 +330,7 @@ def test_mask_overlap_is_rejected_as_contact_proof() -> None:
         contact_reports=[{"mask_overlap_only": True}],
     )
     assert contract["status"] == "FAIL"
-    assert (
-        "contact_report_rejected_mask_overlap_only_is_not_contact_proof"
-        in contract["blockers"]
-    )
+    assert "contact_report_rejected_mask_overlap_only_is_not_contact_proof" in contract["blockers"]
 
 
 def test_declared_state_change_requires_measurement() -> None:
@@ -463,10 +454,7 @@ def test_ledger_state_change_task_withholds_task_claim_without_proof() -> None:
     # Task declares a door state change; without measured contact/state-change proof
     # the ledger must stay at review level.
     assert ledger["highest_truthful_claim"] == "review_task_success"
-    assert (
-        "task_declares_state_change_but_contact_state_change_not_proven"
-        in ledger["blockers"]
-    )
+    assert "task_declares_state_change_but_contact_state_change_not_proven" in ledger["blockers"]
 
 
 def test_ledger_never_reports_physical_readiness_from_simulation() -> None:
@@ -477,9 +465,7 @@ def test_ledger_never_reports_physical_readiness_from_simulation() -> None:
         artifact_freshness=_fresh(),
         frames_rendered=100,
     )
-    contract = scc.build_task_success_contract_result(
-        task_metadata=task, trace_task_success=True
-    )
+    contract = scc.build_task_success_contract_result(task_metadata=task, trace_task_success=True)
     policy = scc.build_policy_action_execution(
         action_source="learned_policy",
         policy_id="p1",
@@ -522,8 +508,7 @@ def test_runner_ledger_kinematic_lane_is_not_policy_success() -> None:
     )
     assert ledger["claims"]["policy_task_success"] is False
     assert any(
-        b.startswith("policy_action_execution:action_source_not_policy")
-        for b in ledger["blockers"]
+        b.startswith("policy_action_execution:action_source_not_policy") for b in ledger["blockers"]
     )
     assert ledger["highest_truthful_claim"] == "simulator_task_success"
     assert ledger["claims"]["physical_deployment_ready"] is False
@@ -555,14 +540,9 @@ def test_runner_ledger_declared_state_change_blocks_simulator_claim() -> None:
         "task_success_contract": "visible_reach_to_affordance",
         "task_status": "passed",
     }
-    ledger = RUNNER._scenario_success_claim_ledger(
-        scenario, outcome, _runner_review_evidence(True)
-    )
+    ledger = RUNNER._scenario_success_claim_ledger(scenario, outcome, _runner_review_evidence(True))
     assert ledger["claims"]["simulator_task_success"] is False
-    assert (
-        "task_declares_state_change_but_contact_state_change_not_proven"
-        in ledger["blockers"]
-    )
+    assert "task_declares_state_change_but_contact_state_change_not_proven" in ledger["blockers"]
     assert ledger["highest_truthful_claim"] == "review_task_success"
 
 
@@ -599,10 +579,28 @@ def _wam_rollout():
     return [{"rollout_id": "r1", "policy_id": "p1", "generated_video_path": "v.mp4"}]
 
 
+def _criterion_results(*, passed: bool = True) -> list[dict[str, object]]:
+    return [
+        {
+            "criterion_id": "target_state_transition",
+            "passed": passed,
+            "evidence_refs": ["v.mp4#frame=4"],
+        }
+    ]
+
+
 def test_wam_label_media_validity_alone_is_not_authoritative() -> None:
     payload = {
         "status": "completed",
-        "labels": [{"rollout_id": "r1", "success": None}],
+        "labels": [
+            {
+                "rollout_id": "r1",
+                "success": None,
+                "confidence": 0.9,
+                "visual_evidence_used": True,
+                "criterion_results": _criterion_results(),
+            }
+        ],
     }
     labels = _normalize_wam_success_labels(
         command_payload=payload,
@@ -618,10 +616,18 @@ def test_wam_label_media_validity_alone_is_not_authoritative() -> None:
     assert "wam_success_label_verdict_not_strict_boolean" in labels["blockers"]
 
 
-def test_wam_label_boolean_verdict_with_valid_media_is_review_grade() -> None:
+def test_wam_label_boolean_verdict_without_calibrated_episode_proof_is_not_review_grade() -> None:
     payload = {
         "status": "completed",
-        "labels": [{"rollout_id": "r1", "success": True}],
+        "labels": [
+            {
+                "rollout_id": "r1",
+                "success": True,
+                "confidence": 0.9,
+                "visual_evidence_used": True,
+                "criterion_results": _criterion_results(),
+            }
+        ],
     }
     labels = _normalize_wam_success_labels(
         command_payload=payload,
@@ -631,19 +637,31 @@ def test_wam_label_boolean_verdict_with_valid_media_is_review_grade() -> None:
         visual_rollout_useful=True,
     )
     row = labels["labels"][0]
-    assert row["authoritative_task_success_label"] is True
-    assert row["review_task_success"] is True
-    assert labels["review_grade_success_labels"] is True
+    assert row["authoritative_task_success_label"] is False
+    assert row["review_task_success"] is False
+    assert labels["review_grade_success_labels"] is False
+    assert labels["status"] == "blocked"
+    assert "wam_success_label_calibration_artifact_missing" in labels["blockers"]
+    assert "wam_success_label_criterion_subresults_missing_or_invalid" in labels["blockers"]
+    assert "wam_success_label_full_episode_order_not_verified" in labels["blockers"]
     # Review-grade never upgrades to real-world proof.
-    assert labels["claim_boundary"][
-        "success_label_is_from_generated_video_not_physical_robot"
-    ] is True
+    assert (
+        labels["claim_boundary"]["success_label_is_from_generated_video_not_physical_robot"] is True
+    )
 
 
 def test_wam_label_degraded_media_blocks_review_grade() -> None:
     payload = {
         "status": "completed",
-        "labels": [{"rollout_id": "r1", "success": True}],
+        "labels": [
+            {
+                "rollout_id": "r1",
+                "success": True,
+                "confidence": 0.9,
+                "visual_evidence_used": True,
+                "criterion_results": _criterion_results(),
+            }
+        ],
     }
     labels = _normalize_wam_success_labels(
         command_payload=payload,
@@ -654,6 +672,32 @@ def test_wam_label_degraded_media_blocks_review_grade() -> None:
     )
     assert labels["review_grade_success_labels"] is False
     assert labels["labels"][0]["authoritative_task_success_label"] is False
+
+
+def test_wam_label_low_confidence_or_missing_criteria_abstains() -> None:
+    labels = _normalize_wam_success_labels(
+        command_payload={
+            "status": "completed",
+            "labels": [
+                {
+                    "rollout_id": "r1",
+                    "success": True,
+                    "confidence": 0.01,
+                    "visual_evidence_used": True,
+                }
+            ],
+        },
+        rollouts=_wam_rollout(),
+        generated_at="2026-07-04T00:00:00Z",
+        visual_smoke_status="passed",
+        visual_rollout_useful=True,
+    )
+
+    assert labels["status"] == "blocked"
+    assert labels["review_grade_success_labels"] is False
+    assert labels["labels"][0]["review_task_success"] is False
+    assert "wam_success_label_confidence_below_calibrated_floor" in labels["blockers"]
+    assert "wam_success_label_criterion_subresults_missing_or_invalid" in labels["blockers"]
 
 
 # --------------------------------------------------------------------------------------
@@ -746,8 +790,7 @@ _LOCAL_ARTIFACT_REQUESTS = (
             "kitchen_task_scaling_preflight_*/kitchen_task_scaling_request.json"
         )
     )
-    if os.environ.get("BLUEPRINT_TEST_LOCAL_ARTIFACTS") == "1"
-    and (REPO_ROOT / "output").is_dir()
+    if os.environ.get("BLUEPRINT_TEST_LOCAL_ARTIFACTS") == "1" and (REPO_ROOT / "output").is_dir()
     else []
 )
 
@@ -759,13 +802,9 @@ def test_hermetic_kitchen_fixture_present() -> None:
     # executing in every checkout; if it disappears they would silently degrade
     # to an empty parametrization.
     assert _FIXTURE_REQUESTS, "tests/fixtures/kitchen_task_min fixture is missing"
-    fixture_manifest = (
-        _FIXTURE_REQUESTS[0].parent / "kitchen_task_scaling_preflight_manifest.json"
-    )
+    fixture_manifest = _FIXTURE_REQUESTS[0].parent / "kitchen_task_scaling_preflight_manifest.json"
     assert fixture_manifest.is_file()
-    assert (
-        json.loads(fixture_manifest.read_text())["local_preflight_status"] == "passed"
-    )
+    assert json.loads(fixture_manifest.read_text())["local_preflight_status"] == "passed"
 
 
 @pytest.mark.parametrize(
@@ -777,9 +816,7 @@ def test_real_kitchen_task_metadata_derives_generic_requirements(request_path) -
     payload = json.loads(request_path.read_text())
     for spec in payload.get("scenarios") or []:
         requirements = scc.derive_task_proof_requirements(spec)
-        declares_targets = bool(
-            spec.get("affordance_object_ids") or spec.get("target_object_ids")
-        )
+        declares_targets = bool(spec.get("affordance_object_ids") or spec.get("target_object_ids"))
         # The requirement must be driven purely by the task metadata: any scenario
         # that declares target/affordance objects requires reach evidence, so visible
         # arm presence alone can never pass those tasks.
@@ -800,8 +837,7 @@ def test_real_kitchen_task_metadata_derives_generic_requirements(request_path) -
 
 def test_real_preflight_pass_never_reaches_task_success_claim() -> None:
     manifest_paths = [
-        p.parent / "kitchen_task_scaling_preflight_manifest.json"
-        for p in _ARTIFACT_REQUESTS
+        p.parent / "kitchen_task_scaling_preflight_manifest.json" for p in _ARTIFACT_REQUESTS
     ]
     manifest_paths = [p for p in manifest_paths if p.is_file()]
     assert manifest_paths, "request artifacts exist but no preflight manifests found"

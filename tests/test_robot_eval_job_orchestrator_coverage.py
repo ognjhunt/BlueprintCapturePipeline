@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import runpy
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.runpy_entrypoint import run_module_as_main
 
 from blueprint_pipeline import robot_eval_job_orchestrator as rejo
 
@@ -232,7 +232,9 @@ def test_robot_eval_job_cards_validation_scheduler_and_worker_edges(
     assert not rejo._worker_image_ref_is_versioned("repo/image")
     assert not rejo._worker_image_ref_is_versioned("image:latest")
     assert not rejo._worker_image_ref_is_provider_fetchable("image:candidate-1", versioned=True)
-    assert rejo._worker_manifest_uri_is_fetchable_by_provider("file:///tmp/worker.json", live_gpu_provider=False)
+    assert not rejo._worker_manifest_uri_is_fetchable_by_provider(
+        "file:///tmp/worker.json", live_gpu_provider=False
+    )
     assert not rejo._worker_manifest_uri_is_fetchable_by_provider("file:///tmp/worker.json", live_gpu_provider=True)
     assert rejo._provider_uri_is_fetchable("s3://bucket/input.zip", live_gpu_provider=True)
     assert rejo._provider_uri_is_fetchable("local://input.zip", live_gpu_provider=False)
@@ -653,8 +655,13 @@ def test_robot_eval_job_command_training_evaluation_projection_and_cli_edges(
 
     assert rejo._webapp_request_identity({}) is None
     assert rejo._webapp_request_identity({"source_kind": "webapp_route_forwarding_proof", "site_package": {"capture_root": "/cap", "capture_id": "cap", "site_slug": "slug"}})[0] == "webapp_route_forwarding_proof"
-    monkeypatch.setattr(Path, "stat", lambda self: (_ for _ in ()).throw(OSError("no stat")))
-    assert rejo._inbox_request_sort_key(tmp_path / "missing.json")[0] == 0
+    with monkeypatch.context() as path_stat_patch:
+        path_stat_patch.setattr(
+            Path,
+            "stat",
+            lambda self: (_ for _ in ()).throw(OSError("no stat")),
+        )
+        assert rejo._inbox_request_sort_key(tmp_path / "missing.json")[0] == 0
     with pytest.raises(ValueError):
         rejo._parse_simulator_commands(["fixture=bad"])
     with pytest.raises(ValueError):
@@ -671,9 +678,9 @@ def test_robot_eval_job_command_training_evaluation_projection_and_cli_edges(
     monkeypatch.setattr(rejo, "run_robot_eval_job_request_inbox", lambda **_kwargs: {"status": "completed", "processed_count": 2})
     assert rejo.main(["--capture-root", str(tmp_path), "--job-request-inbox", str(tmp_path / "inbox")]) == 0
     assert "processed_count=2" in capsys.readouterr().out
-    assert rejo.main(["--capture-root", str(tmp_path)]) == 1
+    assert rejo.main(["--capture-root", str(tmp_path)]) == 65
     assert "FAILED" in capsys.readouterr().out
     monkeypatch.setattr(sys, "argv", ["robot_eval_job_orchestrator", "--capture-root", str(tmp_path)])
     with pytest.raises(SystemExit) as entrypoint_exit:
-        runpy.run_module("blueprint_pipeline.robot_eval_job_orchestrator", run_name="__main__")
-    assert entrypoint_exit.value.code == 1
+        run_module_as_main("blueprint_pipeline.robot_eval_job_orchestrator")
+    assert entrypoint_exit.value.code == 65

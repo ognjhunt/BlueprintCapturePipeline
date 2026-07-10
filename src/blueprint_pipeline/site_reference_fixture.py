@@ -112,11 +112,30 @@ def _write_source_bundle(source_bundle: Path) -> None:
         raw_root / "manifest.json",
         {
             **common_identity,
+            "schema_version": "v3",
+            "capture_schema_version": "3.0.0",
             "generated_at": FIXTURE_GENERATED_AT,
             "capture_source": "iphone",
+            "capture_tier_hint": "tier1_iphone",
             "source_device": "iphone_arkit_fixture",
             "capture_modality": "iphone_arkit_lidar",
             "capture_profile_id": "iphone_arkit_lidar",
+            "capture_capabilities": {
+                "camera_pose": True,
+                "camera_intrinsics": True,
+                "depth": True,
+            },
+            "coordinate_frame_session_id": "fixture-coordinate-frame-001",
+            "capture_start_epoch_ms": 1_700_000_000_000,
+            "app_version": "1.0.0-test",
+            "app_build": "1",
+            "ios_version": "18.0-test",
+            "ios_build": "22A-test",
+            "hardware_model_identifier": "iPhoneFixture1,1",
+            "device_model_marketing": "iPhone ARKit fixture",
+            "has_lidar": True,
+            "depth_supported": True,
+            "rights_profile": "fixture_documented",
             "video_uri": "walkthrough.mov",
             "width": 640,
             "height": 480,
@@ -182,8 +201,12 @@ def _write_source_bundle(source_bundle: Path) -> None:
         raw_root / "capture_upload_complete.json",
         {
             **common_identity,
+            "schema_version": "v1",
             "status": "complete",
             "completed_at": FIXTURE_GENERATED_AT,
+            "raw_prefix": (
+                f"scenes/{FIXTURE_SCENE_ID}/captures/{FIXTURE_CAPTURE_ID}/raw"
+            ),
         },
     )
     write_json(
@@ -236,6 +259,7 @@ def _write_source_bundle(source_bundle: Path) -> None:
     )
     (raw_root / "walkthrough.mov").write_bytes(b"blueprint-site-reference-fixture-video\n")
     _write_arkit_geometry_fixture(raw_root)
+    _write_raw_hash_manifest(raw_root)
 
 
 def _write_arkit_geometry_fixture(raw_root: Path) -> None:
@@ -267,7 +291,8 @@ def _write_arkit_geometry_fixture(raw_root: Path) -> None:
         pose_rows.append(
             {
                 "frameIndex": frame_index,
-                "timestamp": float(frame_index) * 0.5,
+                "frame_id": frame_id,
+                "t_device_sec": float(frame_index) * 0.5,
                 "T_world_camera": [
                     [1.0, 0.0, 0.0, frame_index * 0.2],
                     [0.0, 1.0, 0.0, 0.0],
@@ -279,7 +304,8 @@ def _write_arkit_geometry_fixture(raw_root: Path) -> None:
         frame_rows.append(
             {
                 "frameIndex": frame_index,
-                "timestamp": float(frame_index) * 0.5,
+                "frame_id": frame_id,
+                "t_device_sec": float(frame_index) * 0.5,
                 "trackingState": "normal",
                 "sharpnessScore": 120.0,
                 "relocalizationEvent": False,
@@ -296,6 +322,23 @@ def _write_arkit_geometry_fixture(raw_root: Path) -> None:
     (arkit_root / "frames.jsonl").write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in frame_rows),
         encoding="utf-8",
+    )
+
+
+def _write_raw_hash_manifest(raw_root: Path) -> None:
+    artifacts = {
+        path.relative_to(raw_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(raw_root.rglob("*"))
+        if path.is_file() and path.name != "hashes.json"
+    }
+    canonical = "\n".join(f"{name}:{artifacts[name]}" for name in sorted(artifacts))
+    write_json(
+        raw_root / "hashes.json",
+        {
+            "schema_version": "v1",
+            "bundle_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "artifacts": artifacts,
+        },
     )
 
 

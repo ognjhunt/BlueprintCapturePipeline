@@ -29,9 +29,7 @@ POLICY_AUTORESEARCH_REPORT_SCHEMA_VERSION = "policy_autoresearch_report.v1"
 POLICY_AUTORESEARCH_VERIFIER_SCHEMA_VERSION = "policy_autoresearch_frozen_verifier.v1"
 POLICY_AUTORESEARCH_EVAL_SCHEMA_VERSION = "policy_autoresearch_eval_result.v1"
 POLICY_AUTORESEARCH_IDEA_TREE_SCHEMA_VERSION = "policy_autoresearch_agent_idea_tree.v1"
-POLICY_AUTORESEARCH_CANDIDATE_PACKAGE_SCHEMA_VERSION = (
-    "policy_autoresearch_candidate_package.v1"
-)
+POLICY_AUTORESEARCH_CANDIDATE_PACKAGE_SCHEMA_VERSION = "policy_autoresearch_candidate_package.v1"
 POLICY_AUTORESEARCH_FOLLOWUP_REQUEST_SCHEMA_VERSION = (
     "policy_autoresearch_real_world_validation_followup_request.v1"
 )
@@ -85,6 +83,7 @@ ARTIFACT_PATHS = {
     "agent_idea_tree": "agent_idea_tree.json",
     "policy_candidate_package": "policy_candidate_package.json",
     "heldout_eval_result": "heldout_eval_result.json",
+    "locked_test_eval_result": "locked_test_eval_result.json",
     "followup_real_world_validation_request": "followup_real_world_validation_request.json",
     "budget_ledger": "budget_ledger.json",
 }
@@ -131,6 +130,58 @@ def _json_sha256(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _claim_locked_test_once(
+    *,
+    claim_root: Path,
+    verifier_sha256: str,
+    locked_test_identity_sha256: str | None = None,
+    candidate_id: str,
+    generated_at: str,
+) -> tuple[bool, Path]:
+    """Atomically consume a locked test for one durable job/verifier digest."""
+
+    ensure_dir(claim_root)
+    claim_identity = _string(locked_test_identity_sha256) or verifier_sha256
+    claim_path = claim_root / f"locked_test_access_claim_{_safe_id(claim_identity)}.json"
+    payload = (
+        json.dumps(
+            {
+                "schema_version": "policy_autoresearch_locked_test_access_claim.v1",
+                "generated_at": generated_at,
+                "verifier_sha256": verifier_sha256,
+                "locked_test_identity_sha256": claim_identity,
+                "candidate_id": candidate_id,
+                "locked_test_access_count": 1,
+                "outcomes_not_present_in_claim": True,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    try:
+        descriptor = os.open(
+            claim_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    except FileExistsError:
+        return False, claim_path
+    try:
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return True, claim_path
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value] if value else []
@@ -154,7 +205,9 @@ def _evaluation_substrate_for_engine(value: Any) -> str:
 
 
 def _wam_substrate_requested(values: Sequence[str]) -> bool:
-    return any(_evaluation_substrate_for_engine(value) in WAM_EVALUATION_SUBSTRATES for value in values)
+    return any(
+        _evaluation_substrate_for_engine(value) in WAM_EVALUATION_SUBSTRATES for value in values
+    )
 
 
 def _requested_evaluation_substrate_cycle(values: Sequence[str] | None) -> list[str]:
@@ -173,17 +226,12 @@ def _parse_engine_evaluator_commands(values: Sequence[str] | None) -> dict[str, 
         if not text:
             continue
         if "=" not in text:
-            raise ValueError(
-                "--evaluator-command-by-engine must use ENGINE=COMMAND, "
-                f"got {text!r}"
-            )
+            raise ValueError(f"--evaluator-command-by-engine must use ENGINE=COMMAND, got {text!r}")
         engine, command = text.split("=", 1)
         engine_name = _string(engine)
         command_text = _string(command)
         if not engine_name or not command_text:
-            raise ValueError(
-                "--evaluator-command-by-engine requires non-empty engine and command"
-            )
+            raise ValueError("--evaluator-command-by-engine requires non-empty engine and command")
         commands[_engine_key(engine_name)] = command_text
     return commands
 
@@ -316,9 +364,7 @@ def _derive_policy_capabilities(recipe: Mapping[str, Any]) -> list[str]:
         capabilities.add("visual_recheck")
     if _int(params.get("retry_budget") or params.get("retryBudget"), 0) >= 1:
         capabilities.add("retry_recovery")
-    if bool(
-        params.get("grasp_alignment_correction") or params.get("graspAlignmentCorrection")
-    ):
+    if bool(params.get("grasp_alignment_correction") or params.get("graspAlignmentCorrection")):
         capabilities.add("grasp_alignment_correction")
     return sorted(capabilities)
 
@@ -379,30 +425,177 @@ def _split_runs(
     runs: Sequence[Mapping[str, Any]],
     *,
     heldout_ratio: float,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str]:
     explicit_train = [
         dict(run)
         for run in runs
         if _string(run.get("split") or run.get("eval_split") or run.get("evalSplit")).lower()
         == "train"
     ]
-    explicit_heldout = [
+    explicit_dev = [
         dict(run)
         for run in runs
         if _string(run.get("split") or run.get("eval_split") or run.get("evalSplit")).lower()
-        in {"heldout", "holdout", "validation"}
+        in {"heldout", "holdout", "validation", "dev"}
     ]
-    if explicit_train and explicit_heldout:
-        return explicit_train, explicit_heldout, "explicit_matrix_split"
+    explicit_test = [
+        dict(run)
+        for run in runs
+        if _string(run.get("split") or run.get("eval_split") or run.get("evalSplit")).lower()
+        in {"test", "locked_test", "final_test"}
+    ]
+    if explicit_train and explicit_dev:
+        return (
+            explicit_train,
+            explicit_dev,
+            explicit_test,
+            (
+                "explicit_train_dev_locked_test_split"
+                if explicit_test
+                else "explicit_train_dev_missing_locked_test"
+            ),
+        )
 
     run_list = [dict(run) for run in runs]
     if len(run_list) <= 1:
-        return run_list, run_list, "single_run_reused_as_heldout"
+        return run_list, [], [], "single_run_cannot_be_split"
     heldout_count = max(1, round(len(run_list) * max(0.0, min(1.0, heldout_ratio))))
     heldout_count = min(len(run_list) - 1, heldout_count)
     train = run_list[:-heldout_count]
     heldout = run_list[-heldout_count:]
-    return train, heldout, "deterministic_tail_holdout_split"
+    return train, heldout, [], "deterministic_tail_dev_missing_locked_test"
+
+
+def _split_design_validation(
+    *,
+    train_runs: Sequence[Mapping[str, Any]],
+    dev_runs: Sequence[Mapping[str, Any]],
+    locked_test_runs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    required_group_fields = (
+        "site_id",
+        "scene_id",
+        "task_id",
+        "object_id",
+        "source_trajectory_id",
+        "policy_lineage_id",
+    )
+    blockers: list[str] = []
+    forbidden_outcome_fields = {
+        "success",
+        "task_success",
+        "actual_success",
+        "predicted_success",
+        "score",
+        "reward",
+        "outcome",
+        "task_outcome",
+        "metrics",
+        "label",
+    }
+    if not train_runs:
+        blockers.append("autoresearch_train_split_missing")
+    if not dev_runs:
+        blockers.append("autoresearch_dev_split_missing")
+    if not locked_test_runs:
+        blockers.append("autoresearch_locked_test_split_missing")
+    groups_by_split: dict[str, set[tuple[str, ...]]] = {}
+    axis_values_by_split: dict[str, dict[str, set[str]]] = {}
+    content_digests_by_split: dict[str, dict[str, set[str]]] = {}
+    run_ids_by_split: dict[str, set[str]] = {}
+    for split_name, rows in (
+        ("train", train_runs),
+        ("dev", dev_runs),
+        ("locked_test", locked_test_runs),
+    ):
+        groups: set[tuple[str, ...]] = set()
+        axis_values = {field: set() for field in required_group_fields}
+        content_digests = {field: set() for field in required_group_fields}
+        run_ids: set[str] = set()
+        for index, row in enumerate(rows):
+            run_id = _string(row.get("scenario_eval_run_id"))
+            if not run_id or run_id in run_ids:
+                blockers.append(f"autoresearch_{split_name}_run_id_missing_or_duplicate:{index}")
+            run_ids.add(run_id)
+            group = tuple(_string(row.get(field)) for field in required_group_fields)
+            if any(not value for value in group):
+                blockers.append(f"autoresearch_{split_name}_group_fields_incomplete:{index}")
+            for field, value in zip(required_group_fields, group):
+                if value:
+                    axis_values[field].add(value)
+            group_artifacts = _mapping(row.get("group_artifacts"))
+            for field in required_group_fields:
+                artifact = _mapping(group_artifacts.get(field))
+                path_text = _string(artifact.get("path"))
+                digest = _string(artifact.get("sha256")).lower()
+                path = Path(path_text).expanduser() if path_text else None
+                manifest_valid = bool(
+                    path is not None
+                    and path.is_file()
+                    and len(digest) == 64
+                    and all(character in "0123456789abcdef" for character in digest)
+                    and _file_sha256(path) == digest
+                )
+                manifest: dict[str, Any] = {}
+                if manifest_valid and path is not None:
+                    try:
+                        manifest = _mapping(read_json_any(path))
+                    except Exception:
+                        manifest_valid = False
+                source_ref = _mapping(manifest.get("source_artifact"))
+                source_path_text = _string(source_ref.get("path"))
+                source_digest = _string(source_ref.get("sha256")).lower()
+                source_path = Path(source_path_text).expanduser() if source_path_text else None
+                content_valid = bool(
+                    manifest_valid
+                    and manifest.get("schema_version") == "policy_autoresearch_group_artifact.v1"
+                    and _string(manifest.get("axis")) == field
+                    and _string(manifest.get("group_id")) == _string(row.get(field))
+                    and source_path is not None
+                    and source_path.is_file()
+                    and len(source_digest) == 64
+                    and all(character in "0123456789abcdef" for character in source_digest)
+                    and _file_sha256(source_path) == source_digest
+                    and _string(manifest.get("source_content_sha256")).lower() == source_digest
+                )
+                if not content_valid:
+                    blockers.append(
+                        f"autoresearch_{split_name}_group_artifact_invalid:{index}:{field}"
+                    )
+                else:
+                    content_digests[field].add(source_digest)
+            leaked_fields = sorted(forbidden_outcome_fields & set(row))
+            if leaked_fields:
+                blockers.append(
+                    f"autoresearch_{split_name}_outcome_fields_forbidden:{index}:"
+                    + ",".join(leaked_fields)
+                )
+            groups.add(group)
+        groups_by_split[split_name] = groups
+        axis_values_by_split[split_name] = axis_values
+        content_digests_by_split[split_name] = content_digests
+        run_ids_by_split[split_name] = run_ids
+    for left, right in (("train", "dev"), ("train", "locked_test"), ("dev", "locked_test")):
+        if groups_by_split[left] & groups_by_split[right]:
+            blockers.append(f"autoresearch_group_leakage:{left}:{right}")
+        if run_ids_by_split[left] & run_ids_by_split[right]:
+            blockers.append(f"autoresearch_run_id_leakage:{left}:{right}")
+        for field in required_group_fields:
+            if axis_values_by_split[left][field] & axis_values_by_split[right][field]:
+                blockers.append(f"autoresearch_group_axis_leakage:{field}:{left}:{right}")
+            if content_digests_by_split[left][field] & content_digests_by_split[right][field]:
+                blockers.append(f"autoresearch_group_content_leakage:{field}:{left}:{right}")
+    blockers = sorted(set(blockers))
+    return {
+        "schema_version": "policy_autoresearch_split_design_validation.v1",
+        "status": "validated" if not blockers else "blocked",
+        "required_group_fields": list(required_group_fields),
+        "train_run_count": len(train_runs),
+        "dev_run_count": len(dev_runs),
+        "locked_test_run_count": len(locked_test_runs),
+        "locked_test_outcomes_hidden_during_search": True,
+        "blockers": blockers,
+    }
 
 
 def _build_verifier_manifest(
@@ -412,21 +605,29 @@ def _build_verifier_manifest(
     reviewed_examples_payload: Any,
     runs: Sequence[Mapping[str, Any]],
     train_runs: Sequence[Mapping[str, Any]],
-    heldout_runs: Sequence[Mapping[str, Any]],
+    dev_runs: Sequence[Mapping[str, Any]],
+    locked_test_runs: Sequence[Mapping[str, Any]],
+    split_design_validation: Mapping[str, Any],
     split_source: str,
     target_success_rate: float,
     generated_at: str,
 ) -> dict[str, Any]:
+    effective_split_design_validation = dict(split_design_validation)
     frozen_runs = [
         {
+            "source_run": dict(run),
+            "source_run_sha256": _json_sha256(dict(run)),
             "scenario_eval_run_id": _string(run.get("scenario_eval_run_id")),
             "scenario_variation_instance_id": run.get("scenario_variation_instance_id"),
             "task_id": _string(run.get("task_id")),
             "scenario_id": _string(run.get("scenario_id")),
             "variation_name": run.get("variation_name"),
-            "split": "heldout"
+            "split": "locked_test"
             if _string(run.get("scenario_eval_run_id"))
-            in {_string(item.get("scenario_eval_run_id")) for item in heldout_runs}
+            in {_string(item.get("scenario_eval_run_id")) for item in locked_test_runs}
+            else "dev"
+            if _string(run.get("scenario_eval_run_id"))
+            in {_string(item.get("scenario_eval_run_id")) for item in dev_runs}
             else "train",
             "required_policy_capabilities": sorted(
                 _string_list(run.get("required_policy_capabilities"))
@@ -436,33 +637,78 @@ def _build_verifier_manifest(
         }
         for run in runs
     ]
+    locked_test_identity_rows = [row for row in frozen_runs if row.get("split") == "locked_test"]
+    locked_test_identity_rows.sort(
+        key=lambda row: (
+            _string(row.get("scenario_eval_run_id")),
+            _string(row.get("scenario_variation_instance_id")),
+            _string(row.get("task_id")),
+            _string(row.get("scenario_id")),
+            _string(row.get("source_run_sha256")),
+        )
+    )
+    canonical_locked_identities = [
+        (
+            _string(row.get("scenario_eval_run_id")),
+            _string(row.get("scenario_variation_instance_id")),
+            _string(row.get("task_id")),
+            _string(row.get("scenario_id")),
+            _string(row.get("source_run_sha256")),
+        )
+        for row in locked_test_identity_rows
+    ]
+    if len(set(canonical_locked_identities)) != len(canonical_locked_identities):
+        split_blockers = _string_list(effective_split_design_validation.get("blockers"))
+        split_blockers.append("autoresearch_locked_test_canonical_identity_duplicate")
+        effective_split_design_validation["status"] = "blocked"
+        effective_split_design_validation["blockers"] = sorted(set(split_blockers))
+
     frozen_payload = {
-        "scenario_eval_matrix_path": str(matrix_path),
-        "reviewed_examples_path": str(reviewed_examples_path) if reviewed_examples_path else None,
+        "scenario_eval_matrix_sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
         "reviewed_examples_payload": reviewed_examples_payload,
         "target_success_rate": round(float(target_success_rate), 6),
         "max_safety_event_count": 0,
         "max_contact_event_count": 0,
         "split_source": split_source,
+        "split_design_validation": effective_split_design_validation,
         "runs": frozen_runs,
     }
+    locked_test_identity_payload = {
+        "schema_version": "policy_autoresearch_locked_test_identity.v1",
+        "split_source": split_source,
+        "canonical_sort": [
+            "scenario_eval_run_id",
+            "scenario_variation_instance_id",
+            "task_id",
+            "scenario_id",
+            "source_run_sha256",
+        ],
+        "locked_test_runs": locked_test_identity_rows,
+    }
+    locked_test_identity_sha256 = _json_sha256(locked_test_identity_payload)
     verifier_sha256 = _json_sha256(frozen_payload)
     return {
         "schema_version": POLICY_AUTORESEARCH_VERIFIER_SCHEMA_VERSION,
         "generated_at": generated_at,
         "status": "frozen",
         "verifier_sha256": verifier_sha256,
+        "locked_test_identity_sha256": locked_test_identity_sha256,
+        "locked_test_identity_payload": locked_test_identity_payload,
         "target_success_rate": round(float(target_success_rate), 6),
         "max_safety_event_count": 0,
         "max_contact_event_count": 0,
         "scenario_eval_matrix_path": str(matrix_path),
+        "scenario_eval_matrix_sha256": frozen_payload["scenario_eval_matrix_sha256"],
         "reviewed_examples_path": str(reviewed_examples_path) if reviewed_examples_path else None,
         "reviewed_examples_frozen": reviewed_examples_payload is not None,
         "reviewed_examples_payload": reviewed_examples_payload,
         "scenario_eval_run_count": len(runs),
         "train_run_count": len(train_runs),
-        "heldout_run_count": len(heldout_runs),
+        "dev_run_count": len(dev_runs),
+        "heldout_run_count": len(dev_runs),
+        "locked_test_run_count": len(locked_test_runs),
         "split_source": split_source,
+        "split_design_validation": effective_split_design_validation,
         "frozen_payload": frozen_payload,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
@@ -578,7 +824,18 @@ def _eval_result_from_attempts(
 ) -> dict[str, Any]:
     evaluation_substrate = _evaluation_substrate_for_engine(engine)
     normalized_attempts = [dict(attempt) for attempt in attempts]
-    success_count = sum(1 for attempt in normalized_attempts if bool(attempt.get("task_success") or attempt.get("success")))
+    success_count = sum(
+        1
+        for attempt in normalized_attempts
+        if attempt.get("task_success") is True or attempt.get("success") is True
+    )
+    safety_metrics_complete = bool(normalized_attempts) and all(
+        isinstance(_mapping(attempt.get("metrics")).get(metric_name), int)
+        and not isinstance(_mapping(attempt.get("metrics")).get(metric_name), bool)
+        and _mapping(attempt.get("metrics")).get(metric_name) >= 0
+        for attempt in normalized_attempts
+        for metric_name in ("safety_event_count", "contact_event_count")
+    )
     safety_event_count = sum(
         _int(_mapping(attempt.get("metrics")).get("safety_event_count"))
         for attempt in normalized_attempts
@@ -590,9 +847,11 @@ def _eval_result_from_attempts(
     failed = [
         attempt
         for attempt in normalized_attempts
-        if not bool(attempt.get("task_success") or attempt.get("success"))
+        if not (attempt.get("task_success") is True or attempt.get("success") is True)
     ]
-    success_rate = round(success_count / len(normalized_attempts), 6) if normalized_attempts else 0.0
+    success_rate = (
+        round(success_count / len(normalized_attempts), 6) if normalized_attempts else 0.0
+    )
     covered_run_ids = sorted(
         _string(attempt.get("scenario_eval_run_id"))
         for attempt in normalized_attempts
@@ -601,7 +860,13 @@ def _eval_result_from_attempts(
     return {
         "schema_version": POLICY_AUTORESEARCH_EVAL_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "status": "completed" if normalized_attempts else "blocked_missing_eval_runs",
+        "status": (
+            "completed"
+            if normalized_attempts and safety_metrics_complete
+            else "blocked_safety_metrics_missing_or_invalid"
+            if normalized_attempts
+            else "blocked_missing_eval_runs"
+        ),
         "phase": phase,
         "simulator_engine": engine,
         "evaluation_substrate": evaluation_substrate,
@@ -622,7 +887,10 @@ def _eval_result_from_attempts(
         "task_success_rate": success_rate,
         "safety_event_count": safety_event_count,
         "contact_event_count": contact_event_count,
-        "safety_contact_gate_passed": safety_event_count == 0 and contact_event_count == 0,
+        "safety_metrics_complete": safety_metrics_complete,
+        "safety_contact_gate_passed": bool(
+            safety_metrics_complete and safety_event_count == 0 and contact_event_count == 0
+        ),
         "covered_scenario_eval_run_ids": covered_run_ids,
         "failed_scenario_eval_run_ids": sorted(
             _string(attempt.get("scenario_eval_run_id"))
@@ -630,11 +898,7 @@ def _eval_result_from_attempts(
             if _string(attempt.get("scenario_eval_run_id"))
         ),
         "failure_mode_ids": sorted(
-            {
-                mode
-                for attempt in failed
-                for mode in _string_list(attempt.get("failure_mode_ids"))
-            }
+            {mode for attempt in failed for mode in _string_list(attempt.get("failure_mode_ids"))}
         ),
         "attempts": normalized_attempts,
         "claim_boundary": {
@@ -690,16 +954,18 @@ def _normalize_external_attempts(
         claim_boundary = (
             dict(raw_boundary)
             if isinstance(raw_boundary, Mapping)
-            else raw_boundary
-            or "external_policy_autoresearch_eval_output_not_rank_fidelity_proof"
+            else raw_boundary or "external_policy_autoresearch_eval_output_not_rank_fidelity_proof"
         )
-        normalized_engine = _string(
-            raw.get("simulator_engine")
-            or raw.get("simulatorEngine")
-            or raw.get("simulator_backend")
-            or raw.get("simulatorBackend")
-            or payload_engine
-        ) or engine
+        normalized_engine = (
+            _string(
+                raw.get("simulator_engine")
+                or raw.get("simulatorEngine")
+                or raw.get("simulator_backend")
+                or raw.get("simulatorBackend")
+                or payload_engine
+            )
+            or engine
+        )
         raw_isaac_proof = bool(
             raw.get("isaac_sim_execution_proven")
             or metrics.get("isaac_sim_execution_proven")
@@ -719,7 +985,8 @@ def _normalize_external_attempts(
                     "simulator_execution_performed": False,
                     "isaac_sim_execution_proven": False,
                 }
-        success = bool(raw.get("task_success") if "task_success" in raw else raw.get("success"))
+        success_raw = raw.get("task_success") if "task_success" in raw else raw.get("success")
+        success = success_raw if isinstance(success_raw, bool) else False
         normalized.append(
             {
                 "attempt_id": _string(raw.get("attempt_id") or raw.get("attemptId"))
@@ -728,14 +995,15 @@ def _normalize_external_attempts(
                 "scenario_variation_instance_id": raw.get("scenario_variation_instance_id")
                 or raw.get("scenarioVariationInstanceId")
                 or run.get("scenario_variation_instance_id"),
-                "task_id": _string(raw.get("task_id") or raw.get("taskId")) or _string(run.get("task_id")),
+                "task_id": _string(raw.get("task_id") or raw.get("taskId"))
+                or _string(run.get("task_id")),
                 "scenario_id": _string(raw.get("scenario_id") or raw.get("scenarioId"))
                 or _string(run.get("scenario_id")),
                 "variation_name": raw.get("variation_name")
                 or raw.get("variationName")
                 or run.get("variation_name"),
                 "policy_id": _string(raw.get("policy_id") or raw.get("policyId"))
-                or _string(recipe.get("policy_id")),
+                or _string(recipe.get("candidate_id") or recipe.get("policy_id")),
                 "policy_kind": _string(raw.get("policy_kind") or raw.get("policyKind"))
                 or _string(recipe.get("policy_kind")),
                 "simulator_engine": normalized_engine,
@@ -770,6 +1038,115 @@ def _normalize_external_attempts(
             }
         )
     return normalized
+
+
+def _external_attempt_rows(payload: Any) -> list[Any]:
+    if isinstance(payload, Mapping):
+        value = payload.get("attempts") or payload.get("results") or payload.get("episodes")
+    else:
+        value = payload
+    return list(value) if isinstance(value, list) else []
+
+
+def _validate_external_evaluator_payload(
+    *,
+    payload: Any,
+    recipe: Mapping[str, Any],
+    runs: Sequence[Mapping[str, Any]],
+    phase: str,
+    verifier_sha256: str,
+) -> list[str]:
+    """Require exact split/candidate/verifier binding before accepting attempts."""
+
+    blockers: list[str] = []
+    if not isinstance(payload, Mapping):
+        return ["external_evaluator_payload_not_object"]
+    if _string(payload.get("phase")) != phase:
+        blockers.append("external_evaluator_phase_binding_mismatch")
+    if _string(payload.get("frozen_verifier_sha256")) != verifier_sha256:
+        blockers.append("external_evaluator_verifier_binding_mismatch")
+    raw_attempts = _external_attempt_rows(payload)
+    expected_ids = [_string(run.get("scenario_eval_run_id")) for run in runs]
+    observed_ids: list[str] = []
+    expected_policy_id = _string(recipe.get("candidate_id") or recipe.get("policy_id"))
+    for index, raw in enumerate(raw_attempts):
+        if not isinstance(raw, Mapping):
+            blockers.append(f"external_evaluator_attempt_not_object:{index}")
+            continue
+        run_id = _string(raw.get("scenario_eval_run_id") or raw.get("scenarioEvalRunId"))
+        observed_ids.append(run_id)
+        success_values = [raw[key] for key in ("task_success", "success") if key in raw]
+        if not success_values or any(not isinstance(value, bool) for value in success_values):
+            blockers.append(f"external_evaluator_success_not_strict_boolean:{index}")
+        elif len(set(success_values)) > 1:
+            blockers.append(f"external_evaluator_success_fields_disagree:{index}")
+        if _string(raw.get("policy_id") or raw.get("policyId")) != expected_policy_id:
+            blockers.append(f"external_evaluator_candidate_binding_mismatch:{index}")
+        metrics = _mapping(raw.get("metrics"))
+        for metric_name in ("safety_event_count", "contact_event_count"):
+            value = metrics.get(metric_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                blockers.append(f"external_evaluator_{metric_name}_missing_or_invalid:{index}")
+        boundary = _mapping(raw.get("claim_boundary") or raw.get("claimBoundary"))
+        if not (
+            metrics.get("simulator_execution_performed") is True
+            and boundary.get("simulator_execution_performed") is True
+        ):
+            blockers.append(f"external_evaluator_simulator_execution_not_proven:{index}")
+    if len(raw_attempts) != len(expected_ids):
+        blockers.append("external_evaluator_attempt_count_mismatch")
+    if any(not run_id for run_id in observed_ids):
+        blockers.append("external_evaluator_run_id_missing")
+    if len(set(observed_ids)) != len(observed_ids):
+        blockers.append("external_evaluator_run_id_duplicate")
+    if sorted(observed_ids) != sorted(expected_ids):
+        blockers.append("external_evaluator_run_coverage_mismatch")
+    return sorted(set(blockers))
+
+
+def _load_attempt_trace_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    if path.suffix.lower() == ".jsonl":
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, Mapping):
+                rows.append(dict(value))
+        return rows
+    payload = read_json_any(path)
+    return [dict(row) for row in _external_attempt_rows(payload) if isinstance(row, Mapping)]
+
+
+def _phase_attempt_trace(
+    *,
+    source_path: Path,
+    runs: Sequence[Mapping[str, Any]],
+    phase: str,
+    run_dir: Path,
+) -> Path:
+    allowed_ids = {_string(run.get("scenario_eval_run_id")) for run in runs}
+    filtered = [
+        row
+        for row in _load_attempt_trace_rows(source_path)
+        if _string(row.get("scenario_eval_run_id") or row.get("scenarioEvalRunId")) in allowed_ids
+    ]
+    path = run_dir / "phase_attempt_trace.json"
+    write_json(
+        path,
+        {
+            "schema_version": "policy_autoresearch_phase_attempt_trace.v1",
+            "phase": phase,
+            "source_path_withheld": True,
+            "attempts": filtered,
+        },
+    )
+    return path
 
 
 def _evaluate_recipe_with_command(
@@ -818,12 +1195,15 @@ def _evaluate_recipe_with_command(
     }
     if source_capture_root is not None:
         env["BLUEPRINT_POLICY_AUTORESEARCH_CAPTURE_ROOT"] = str(source_capture_root)
-    if source_job_dir is not None:
-        env["BLUEPRINT_POLICY_AUTORESEARCH_JOB_DIR"] = str(source_job_dir)
-    if source_matrix_path is not None:
-        env["BLUEPRINT_POLICY_AUTORESEARCH_SOURCE_MATRIX"] = str(source_matrix_path)
+    phase_attempt_trace_path: Path | None = None
     if source_attempt_trace_path is not None:
-        env["BLUEPRINT_POLICY_AUTORESEARCH_ATTEMPT_TRACE"] = str(source_attempt_trace_path)
+        phase_attempt_trace_path = _phase_attempt_trace(
+            source_path=source_attempt_trace_path,
+            runs=runs,
+            phase=phase,
+            run_dir=run_dir,
+        )
+        env["BLUEPRINT_POLICY_AUTORESEARCH_ATTEMPT_TRACE"] = str(phase_attempt_trace_path)
     command = shlex.split(evaluator_command)
     command_started = time.monotonic()
     completed = subprocess.run(
@@ -846,11 +1226,12 @@ def _evaluate_recipe_with_command(
         "duration_seconds": evaluator_duration_seconds,
         "evaluation_substrate": evaluation_substrate,
         "source_capture_root": str(source_capture_root) if source_capture_root else None,
-        "source_job_dir": str(source_job_dir) if source_job_dir else None,
-        "source_matrix_path": str(source_matrix_path) if source_matrix_path else None,
-        "source_attempt_trace_path": str(source_attempt_trace_path)
-        if source_attempt_trace_path
+        "source_job_dir_exposed": False,
+        "source_matrix_path_exposed": False,
+        "source_attempt_trace_path": str(phase_attempt_trace_path)
+        if phase_attempt_trace_path
         else None,
+        "source_attempt_trace_filtered_to_phase": phase_attempt_trace_path is not None,
     }
     if completed.returncode != 0 or not output_path.is_file():
         return {
@@ -904,6 +1285,29 @@ def _evaluate_recipe_with_command(
             ),
             "status": "failed_evaluator_engine_mismatch",
             "failure_mode_ids": ["external_evaluator_engine_mismatch"],
+        }
+    contract_blockers = _validate_external_evaluator_payload(
+        payload=payload,
+        recipe=recipe,
+        runs=runs,
+        phase=phase,
+        verifier_sha256=verifier_sha256,
+    )
+    if contract_blockers:
+        return {
+            **_eval_result_from_attempts(
+                recipe=recipe,
+                attempts=[],
+                phase=phase,
+                engine=engine,
+                generated_at=generated_at,
+                verifier_sha256=verifier_sha256,
+                evaluator_command_used=True,
+                evaluator_detail={**detail, "contract_blockers": contract_blockers},
+            ),
+            "status": "failed_evaluator_contract",
+            "failure_mode_ids": ["external_evaluator_contract_failed"],
+            "contract_blockers": contract_blockers,
         }
     attempts = _normalize_external_attempts(
         payload=payload,
@@ -1030,7 +1434,9 @@ def _mutate_recipe(
     branch_index: int,
     engine: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    capabilities = _mutation_capabilities_from_failures(parent_train_eval, branch_index=branch_index)
+    capabilities = _mutation_capabilities_from_failures(
+        parent_train_eval, branch_index=branch_index
+    )
     candidate = deepcopy(dict(parent_recipe))
     parent_policy_id = _string(parent_recipe.get("policy_id")) or "policy"
     for capability in capabilities:
@@ -1062,10 +1468,10 @@ def _mutate_recipe(
     return candidate, idea
 
 
-def _rank_eval(eval_result: Mapping[str, Any]) -> tuple[float, int, int]:
+def _rank_eval(eval_result: Mapping[str, Any]) -> tuple[int, float, int]:
     return (
-        _float(eval_result.get("task_success_rate")),
         1 if bool(eval_result.get("safety_contact_gate_passed")) else 0,
+        _float(eval_result.get("task_success_rate")),
         -_int(eval_result.get("failed_task_attempt_count")),
     )
 
@@ -1142,9 +1548,7 @@ def _record_eval_budget_usage(
     if phase == "train":
         ledger["usage"]["train_eval_count"] = _int(ledger["usage"].get("train_eval_count")) + 1
     if phase == "heldout":
-        ledger["usage"]["heldout_eval_count"] = _int(
-            ledger["usage"].get("heldout_eval_count")
-        ) + 1
+        ledger["usage"]["heldout_eval_count"] = _int(ledger["usage"].get("heldout_eval_count")) + 1
     _update_budget_wall_time(ledger, start_monotonic=start_monotonic)
     ledger["events"].append(
         {
@@ -1216,7 +1620,9 @@ def _blocked_artifacts(
         "target_success_reached": False,
         "blockers": blockers,
         "artifact_paths": dict(ARTIFACT_PATHS),
-        "support_artifact_paths": {"verifier_manifest": "verifier_manifest.json"} if verifier else {},
+        "support_artifact_paths": {"verifier_manifest": "verifier_manifest.json"}
+        if verifier
+        else {},
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     budget_ledger = {
@@ -1236,6 +1642,7 @@ def _blocked_artifacts(
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     write_json(output_dir / ARTIFACT_PATHS["heldout_eval_result"], empty_eval)
+    write_json(output_dir / ARTIFACT_PATHS["locked_test_eval_result"], empty_eval)
     write_json(output_dir / ARTIFACT_PATHS["agent_idea_tree"], idea_tree)
     write_json(output_dir / ARTIFACT_PATHS["policy_candidate_package"], package)
     write_json(output_dir / ARTIFACT_PATHS["followup_real_world_validation_request"], followup)
@@ -1245,6 +1652,7 @@ def _blocked_artifacts(
         "report": report,
         "verifier_manifest": verifier,
         "heldout_eval_result": empty_eval,
+        "locked_test_eval_result": empty_eval,
         "agent_idea_tree": idea_tree,
         "policy_candidate_package": package,
         "followup_real_world_validation_request": followup,
@@ -1316,9 +1724,7 @@ def run_policy_autoresearch(
                 else None
             ),
             "max_candidate_evaluations": (
-                int(max_candidate_evaluations)
-                if max_candidate_evaluations is not None
-                else None
+                int(max_candidate_evaluations) if max_candidate_evaluations is not None else None
             ),
             "parallel_branch_limit": max(1, int(parallel_branch_limit)),
         },
@@ -1380,7 +1786,14 @@ def run_policy_autoresearch(
             blockers=["scenario_eval_matrix_empty"],
         )
 
-    train_runs, heldout_runs, split_source = _split_runs(runs, heldout_ratio=heldout_ratio)
+    train_runs, heldout_runs, locked_test_runs, split_source = _split_runs(
+        runs, heldout_ratio=heldout_ratio
+    )
+    split_design_validation = _split_design_validation(
+        train_runs=train_runs,
+        dev_runs=heldout_runs,
+        locked_test_runs=locked_test_runs,
+    )
     reviewed_examples_payload = read_json_any(examples_path) if examples_path is not None else None
     verifier_manifest = _build_verifier_manifest(
         matrix_path=matrix_path,
@@ -1388,7 +1801,9 @@ def run_policy_autoresearch(
         reviewed_examples_payload=reviewed_examples_payload,
         runs=runs,
         train_runs=train_runs,
-        heldout_runs=heldout_runs,
+        dev_runs=heldout_runs,
+        locked_test_runs=locked_test_runs,
+        split_design_validation=split_design_validation,
         split_source=split_source,
         target_success_rate=target_success_rate,
         generated_at=generated,
@@ -1415,7 +1830,9 @@ def run_policy_autoresearch(
     )
     if not engine_cycle:
         engine_cycle = list(DEFAULT_SIMULATOR_ENGINES)
-    evaluation_substrate_cycle = [_evaluation_substrate_for_engine(engine) for engine in engine_cycle]
+    evaluation_substrate_cycle = [
+        _evaluation_substrate_for_engine(engine) for engine in engine_cycle
+    ]
     wam_substrate_requested = _wam_substrate_requested(evaluation_substrate_cycle)
     engine = engine_cycle[0]
     baseline_evaluator_command = _evaluator_command_for_engine(
@@ -1547,9 +1964,8 @@ def run_policy_autoresearch(
                 }
             )
             break
-        if (
-            _float(best_heldout.get("task_success_rate")) >= target_success_rate
-            and bool(best_heldout.get("safety_contact_gate_passed"))
+        if _float(best_heldout.get("task_success_rate")) >= target_success_rate and bool(
+            best_heldout.get("safety_contact_gate_passed")
         ):
             break
 
@@ -1577,12 +1993,12 @@ def run_policy_autoresearch(
                 engine=candidate_engine,
             )
             estimated_tokens = _estimated_branch_tokens(candidate_recipe, idea)
-            budget_ledger["usage"]["estimated_tokens"] = _int(
-                budget_ledger["usage"].get("estimated_tokens")
-            ) + estimated_tokens
-            budget_ledger["usage"]["candidate_evaluations"] = _int(
-                budget_ledger["usage"].get("candidate_evaluations")
-            ) + 1
+            budget_ledger["usage"]["estimated_tokens"] = (
+                _int(budget_ledger["usage"].get("estimated_tokens")) + estimated_tokens
+            )
+            budget_ledger["usage"]["candidate_evaluations"] = (
+                _int(budget_ledger["usage"].get("candidate_evaluations")) + 1
+            )
             budget_ledger["events"].append(
                 {
                     "event": "branch_planned",
@@ -1693,9 +2109,7 @@ def run_policy_autoresearch(
                             "promoted_candidate": False,
                         }
                     )
-                    candidates.append(
-                        (candidate_recipe, candidate_train, candidate_heldout, idea)
-                    )
+                    candidates.append((candidate_recipe, candidate_train, candidate_heldout, idea))
                     iteration_records.append(
                         {
                             "iteration": iteration,
@@ -1709,9 +2123,7 @@ def run_policy_autoresearch(
                             "heldout_success_rate": candidate_heldout["task_success_rate"],
                             "train_status": candidate_train.get("status"),
                             "heldout_status": candidate_heldout.get("status"),
-                            "train_failure_mode_ids": candidate_train.get(
-                                "failure_mode_ids", []
-                            ),
+                            "train_failure_mode_ids": candidate_train.get("failure_mode_ids", []),
                             "heldout_failure_mode_ids": candidate_heldout.get(
                                 "failure_mode_ids", []
                             ),
@@ -1744,25 +2156,95 @@ def run_policy_autoresearch(
             selected_idea["accepted_for_next_iteration"] = True
         idea_nodes.extend(item[3] for item in candidates)
 
-    target_success_reached = (
-        _float(best_heldout.get("task_success_rate")) >= target_success_rate
-        and bool(best_heldout.get("safety_contact_gate_passed"))
+    locked_test_eval_count = 0
+    locked_test_claimed = False
+    locked_test_identity_sha256 = _string(verifier_manifest.get("locked_test_identity_sha256"))
+    locked_test_claim_path = (
+        capture_path
+        / "pipeline"
+        / ".policy_autoresearch_locked_test_claims"
+        / f"locked_test_access_claim_{_safe_id(locked_test_identity_sha256)}.json"
     )
-    promoted = target_success_reached and (
-        _float(best_heldout.get("task_success_rate"))
-        >= _float(baseline_heldout.get("task_success_rate"))
+    if split_design_validation.get("status") == "validated":
+        locked_test_claimed, locked_test_claim_path = _claim_locked_test_once(
+            claim_root=capture_path / "pipeline" / ".policy_autoresearch_locked_test_claims",
+            verifier_sha256=verifier_sha256,
+            locked_test_identity_sha256=locked_test_identity_sha256,
+            candidate_id=_string(best_recipe.get("candidate_id")) or "seed_policy",
+            generated_at=generated,
+        )
+    if split_design_validation.get("status") == "validated" and locked_test_claimed:
+        locked_test_eval_result = _evaluate_recipe(
+            recipe=best_recipe,
+            runs=locked_test_runs,
+            phase="locked_test",
+            engine=engine,
+            generated_at=generated,
+            verifier_sha256=verifier_sha256,
+            evaluator_command=baseline_evaluator_command,
+            evaluator_timeout_seconds=evaluator_timeout_seconds,
+            eval_root_dir=resolved_output_dir / "evaluator_runs",
+            source_capture_root=capture_path,
+            source_job_dir=resolved_job_dir,
+            source_matrix_path=matrix_path,
+            source_attempt_trace_path=attempt_trace_path,
+        )
+        locked_test_eval_count = 1
+        _record_eval_budget_usage(
+            budget_ledger,
+            eval_result=locked_test_eval_result,
+            phase="locked_test",
+            candidate_id=_string(best_recipe.get("candidate_id")) or "seed_policy",
+            branch_id="final_locked_test",
+            start_monotonic=started_monotonic,
+        )
+    else:
+        locked_test_eval_result = {
+            "schema_version": "policy_autoresearch_eval_result.v1",
+            "status": "blocked_locked_test_split_contract",
+            "phase": "locked_test",
+            "task_success_rate": 0.0,
+            "safety_contact_gate_passed": False,
+            "covered_scenario_eval_run_ids": [],
+            "blockers": (
+                ["locked_test_already_consumed_for_this_verifier"]
+                if split_design_validation.get("status") == "validated"
+                else _string_list(split_design_validation.get("blockers"))
+            ),
+        }
+    dev_target_success_reached = _float(
+        best_heldout.get("task_success_rate")
+    ) >= target_success_rate and bool(best_heldout.get("safety_contact_gate_passed"))
+    target_success_reached = bool(
+        dev_target_success_reached
+        and locked_test_eval_count == 1
+        and _float(locked_test_eval_result.get("task_success_rate")) >= target_success_rate
+        and bool(locked_test_eval_result.get("safety_contact_gate_passed"))
     )
+    promoted = target_success_reached
     for node in idea_nodes:
         if node.get("idea_id") == best_recipe.get("candidate_id") and promoted:
             node["promoted_candidate"] = True
 
     blockers = []
-    if not target_success_reached:
-        blockers.append("heldout_target_success_not_reached")
+    if split_design_validation.get("status") != "validated":
+        blockers.extend(_string_list(split_design_validation.get("blockers")))
+    if not dev_target_success_reached:
+        blockers.append("dev_target_success_not_reached")
+    if locked_test_eval_count != 1:
+        blockers.append("locked_test_not_executed_exactly_once")
+        if split_design_validation.get("status") == "validated" and not locked_test_claimed:
+            blockers.append("locked_test_already_consumed_for_this_verifier")
+    elif not target_success_reached:
+        blockers.append("locked_test_target_success_not_reached")
     if budget_stop_reasons and not target_success_reached:
         blockers.extend(reason for reason in budget_stop_reasons if reason not in blockers)
     if not bool(best_heldout.get("safety_contact_gate_passed")):
-        blockers.append("heldout_safety_contact_gate_failed")
+        blockers.append("dev_safety_contact_gate_failed")
+    if locked_test_eval_count == 1 and not bool(
+        locked_test_eval_result.get("safety_contact_gate_passed")
+    ):
+        blockers.append("locked_test_safety_contact_gate_failed")
     if not bool(best_train.get("safety_contact_gate_passed")):
         blockers.append("train_safety_contact_gate_failed")
     best_policy_id = (
@@ -1771,13 +2253,13 @@ def run_policy_autoresearch(
         or "seed_policy"
     )
 
-    simulator_execution_proven = _eval_has_simulator_execution(
-        best_train
-    ) and _eval_has_simulator_execution(best_heldout)
+    simulator_execution_proven = (
+        _eval_has_simulator_execution(best_train)
+        and _eval_has_simulator_execution(best_heldout)
+        and (locked_test_eval_count == 1 and _eval_has_simulator_execution(locked_test_eval_result))
+    )
     proven_simulator_engines = (
-        _proven_simulator_engines(best_train, best_heldout)
-        if simulator_execution_proven
-        else []
+        _proven_simulator_engines(best_train, best_heldout) if simulator_execution_proven else []
     )
     _update_budget_wall_time(budget_ledger, start_monotonic=started_monotonic)
     budget_ledger["status"] = "completed" if not budget_stop_reasons else "budget_exhausted"
@@ -1815,8 +2297,14 @@ def run_policy_autoresearch(
         "frozen_verifier_sha256": verifier_sha256,
         "train_eval_result_path": "train_eval_result.json",
         "heldout_eval_result_path": ARTIFACT_PATHS["heldout_eval_result"],
+        "locked_test_eval_result_path": ARTIFACT_PATHS["locked_test_eval_result"],
         "target_success_rate": round(float(target_success_rate), 6),
         "heldout_success_rate": best_heldout["task_success_rate"],
+        "dev_success_rate": best_heldout["task_success_rate"],
+        "locked_test_success_rate": locked_test_eval_result.get("task_success_rate"),
+        "locked_test_eval_count": locked_test_eval_count,
+        "locked_test_access_claim_path": locked_test_claim_path.name,
+        "split_design_validation": split_design_validation,
         "safety_contact_gate_passed": bool(best_heldout.get("safety_contact_gate_passed")),
         "blockers": blockers,
         "sim_only_policy_improvement_support_artifact": not wam_substrate_requested,
@@ -1827,9 +2315,7 @@ def run_policy_autoresearch(
         "evaluation_substrates": evaluation_substrate_cycle,
         "requested_evaluation_substrates": evaluation_substrate_cycle,
         "wam_evaluation_substrate_requested": wam_substrate_requested,
-        "generated_wam_rollouts_are_model_derived_support_artifacts": (
-            wam_substrate_requested
-        ),
+        "generated_wam_rollouts_are_model_derived_support_artifacts": (wam_substrate_requested),
         "customer_specific_srcc_claimed": False,
         "rank_fidelity_result_proven": False,
         "public_claim_upgrade_allowed": False,
@@ -1853,7 +2339,7 @@ def run_policy_autoresearch(
             "safety_contact_physics_evidence_for_every_promoted_scenario_eval_run",
             "paired_real_world_rollouts_for_customer_specific_srcc_claims",
         ],
-        "requested_real_world_validation_run_ids": best_heldout.get(
+        "requested_real_world_validation_run_ids": locked_test_eval_result.get(
             "covered_scenario_eval_run_ids", []
         )
         if promoted
@@ -1877,10 +2363,16 @@ def run_policy_autoresearch(
         "frozen_verifier_sha256": verifier_sha256,
         "target_success_rate": round(float(target_success_rate), 6),
         "target_success_reached": target_success_reached,
+        "dev_target_success_reached": dev_target_success_reached,
         "baseline_train_success_rate": baseline_train["task_success_rate"],
         "baseline_heldout_success_rate": baseline_heldout["task_success_rate"],
         "best_train_success_rate": best_train["task_success_rate"],
         "best_heldout_success_rate": best_heldout["task_success_rate"],
+        "best_dev_success_rate": best_heldout["task_success_rate"],
+        "locked_test_success_rate": locked_test_eval_result.get("task_success_rate"),
+        "locked_test_eval_count": locked_test_eval_count,
+        "locked_test_access_claim_path": locked_test_claim_path.name,
+        "split_design_validation": split_design_validation,
         "best_policy_id": best_policy_id,
         "promoted_policy_id": best_policy_id if promoted else None,
         "simulator_execution_proven": simulator_execution_proven,
@@ -1892,9 +2384,7 @@ def run_policy_autoresearch(
         "evaluation_substrates": evaluation_substrate_cycle,
         "requested_evaluation_substrates": evaluation_substrate_cycle,
         "wam_evaluation_substrate_requested": wam_substrate_requested,
-        "generated_wam_rollouts_are_model_derived_support_artifacts": (
-            wam_substrate_requested
-        ),
+        "generated_wam_rollouts_are_model_derived_support_artifacts": (wam_substrate_requested),
         "customer_specific_srcc_claimed": False,
         "evaluator_command_used": bool(evaluator_command or evaluator_commands_by_engine),
         "evaluator_commands_by_engine": sorted(
@@ -1909,7 +2399,7 @@ def run_policy_autoresearch(
             "verifier_manifest": "verifier_manifest.json",
             "train_eval_result": "train_eval_result.json",
             "baseline_train_eval_result": "baseline_train_eval_result.json",
-        "baseline_heldout_eval_result": "baseline_heldout_eval_result.json",
+            "baseline_heldout_eval_result": "baseline_heldout_eval_result.json",
             "budget_ledger": ARTIFACT_PATHS["budget_ledger"],
         },
         "rank_fidelity_result_proven": False,
@@ -1927,6 +2417,10 @@ def run_policy_autoresearch(
     write_json(resolved_output_dir / "baseline_heldout_eval_result.json", baseline_heldout)
     write_json(resolved_output_dir / "train_eval_result.json", best_train)
     write_json(resolved_output_dir / ARTIFACT_PATHS["heldout_eval_result"], heldout_eval_result)
+    write_json(
+        resolved_output_dir / ARTIFACT_PATHS["locked_test_eval_result"],
+        locked_test_eval_result,
+    )
     write_json(resolved_output_dir / ARTIFACT_PATHS["agent_idea_tree"], idea_tree)
     write_json(
         resolved_output_dir / ARTIFACT_PATHS["policy_candidate_package"],
@@ -1945,6 +2439,7 @@ def run_policy_autoresearch(
         "baseline_heldout_eval_result": baseline_heldout,
         "train_eval_result": best_train,
         "heldout_eval_result": heldout_eval_result,
+        "locked_test_eval_result": locked_test_eval_result,
         "agent_idea_tree": idea_tree,
         "policy_candidate_package": policy_candidate_package,
         "followup_real_world_validation_request": followup_request,

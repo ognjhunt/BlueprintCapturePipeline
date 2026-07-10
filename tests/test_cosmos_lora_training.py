@@ -153,3 +153,33 @@ def test_cosmos_lora_helpers_blocked_failed_and_cli(monkeypatch, capsys, tmp_pat
     monkeypatch.setattr(cosmos_lora_training, "run_cosmos_lora_training", lambda **_kwargs: {"status": "failed", "reason": "bad"})
     assert cosmos_lora_training.main() == 1
     assert "reason=bad" in capsys.readouterr().out
+
+
+def test_cosmos_lora_training_uses_argv_without_shell(monkeypatch, tmp_path: Path) -> None:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    _write_ready_export(capture_root)
+    seen: dict[str, object] = {}
+
+    def fake_run(command: object, **kwargs: object) -> subprocess.CompletedProcess[object]:
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 7, stdout="out", stderr="err")
+
+    monkeypatch.setattr(cosmos_lora_training.subprocess, "run", fake_run)
+    result = run_cosmos_lora_training(
+        capture_root=capture_root,
+        training_command="trainer {output_dir}",
+        timeout_seconds=1,
+    )
+
+    assert result["reason"] == "trainer_exit_code:7"
+    assert isinstance(seen["command"], list)
+    assert seen["kwargs"]["shell"] is False  # type: ignore[index]
+
+    invalid = run_cosmos_lora_training(
+        capture_root=capture_root,
+        training_command='"unterminated',
+        timeout_seconds=1,
+    )
+    assert invalid["status"] == "blocked"
+    assert invalid["reason"] == "invalid_training_command"

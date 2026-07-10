@@ -246,18 +246,33 @@ def test_robot_eval_execution_matrix_policy_and_command_edges(
         def read(self) -> bytes:
             return b'{"attempts":[{"status":"completed"}]}'
 
-    monkeypatch.setattr(ree.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(
+        ree,
+        "fetch_bounded_https",
+        lambda *args, **kwargs: type(
+            "BoundedResponse",
+            (),
+            {
+                "body": b'{"attempts":[{"status":"completed"}]}',
+                "status": 202,
+            },
+        )(),
+    )
     api_status, api_payload, api_detail = ree._call_policy_api(
-        endpoint="http://policy.local",
+        endpoint="https://policy.example",
         observation_manifest={"observations": []},
         timeout_seconds=1,
     )
     assert api_status == "completed"
     assert api_payload["attempts"][0]["status"] == "completed"
     assert api_detail["http_status"] == 202
-    monkeypatch.setattr(ree.urllib.request, "urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("down")))
+    monkeypatch.setattr(
+        ree,
+        "fetch_bounded_https",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("down")),
+    )
     failed_api = ree._call_policy_api(
-        endpoint="http://policy.local",
+        endpoint="https://policy.example",
         observation_manifest={"observations": []},
         timeout_seconds=1,
     )
@@ -599,11 +614,24 @@ def test_robot_eval_execution_remaining_policy_command_edges(
             )
 
     monkeypatch.setenv("BLUEPRINT_ALLOW_POLICY_EXECUTION", "true")
-    monkeypatch.setattr(ree.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(
+        ree,
+        "fetch_bounded_https",
+        lambda *args, **kwargs: type(
+            "BoundedResponse",
+            (),
+            {
+                "body": json.dumps(
+                    {"attempts": [{"scenario_eval_run_id": "run-1", "status": "completed"}]}
+                ).encode("utf-8"),
+                "status": 200,
+            },
+        )(),
+    )
     api_bundle = ree.build_policy_execution_bundle(
         capture_root=capture_root,
         job_dir=tmp_path / "job-api",
-        job_request={"policy_package": {"policy_api_endpoint": {"endpoint_url": "http://policy.local"}}},
+        job_request={"policy_package": {"policy_api_endpoint": {"endpoint_url": "https://policy.example"}}},
         observation_manifest=observation_manifest,
         allow_policy_execution=True,
         generated_at="2026-06-01T00:00:00Z",

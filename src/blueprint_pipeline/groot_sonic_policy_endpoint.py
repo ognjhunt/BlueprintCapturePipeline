@@ -158,9 +158,11 @@ def make_groot_sonic_zmq_policy_endpoint(
             ],
             "root_yaw_radians": round(prev_yaw + dyaw, 6),
             "sonic_action_chunk_dim": len(chunk),
+            "sonic_action_chunk": [round(v, 9) for v in chunk],
             "sonic_action_chunk_head": [round(v, 6) for v in chunk[:8]],
             "requery_step_index": int(step_index),
             "out_of_distribution_action_projection": True,
+            "not_a_learned_robot_policy_action": True,
             "projection": {
                 "kind": "declared_deterministic_leading_chunk_components_tanh",
                 "step_m": PROJECTION_STEP_M,

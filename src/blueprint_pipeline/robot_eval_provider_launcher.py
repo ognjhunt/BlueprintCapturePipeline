@@ -6,7 +6,10 @@ import argparse
 import logging
 import os
 import shlex
+import signal
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
@@ -144,6 +147,153 @@ def _command_summary(argv: Sequence[str]) -> dict[str, Any]:
         "argument_count": max(len(argv) - 1, 0),
         "arguments_redacted": max(len(argv) - 1, 0),
         "raw_command_stored": False,
+    }
+
+
+def _process_group_absent(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[str], *, grace_seconds: float = 5.0
+) -> dict[str, Any]:
+    process_group_id = int(process.pid)
+    term_sent = False
+    kill_sent = False
+    if not _process_group_absent(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+            term_sent = True
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=max(0.1, grace_seconds))
+        except subprocess.TimeoutExpired:
+            pass
+        deadline = time.monotonic() + max(0.1, grace_seconds)
+        while time.monotonic() < deadline and not _process_group_absent(
+            process_group_id
+        ):
+            time.sleep(0.02)
+        if not _process_group_absent(process_group_id):
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)
+                kill_sent = True
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=max(0.1, grace_seconds))
+            except subprocess.TimeoutExpired:
+                pass
+    try:
+        process.wait(timeout=max(0.1, grace_seconds))
+    except subprocess.TimeoutExpired:
+        pass
+    deadline = time.monotonic() + max(0.1, grace_seconds)
+    while time.monotonic() < deadline and not _process_group_absent(process_group_id):
+        time.sleep(0.02)
+    return {
+        "local_process_id": process.pid,
+        "local_process_group_id": process_group_id,
+        "sigterm_sent": term_sent,
+        "sigkill_sent": kill_sent,
+        "process_group_absent_verified": _process_group_absent(process_group_id),
+    }
+
+
+def _provider_cleanup_from_record(
+    *,
+    allocation_record_path: Path,
+    expected_launch_attempt_id: str,
+    env: Mapping[str, str],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    try:
+        payload = read_json_any(allocation_record_path)
+    except (OSError, ValueError):
+        payload = {}
+    record = dict(payload) if isinstance(payload, Mapping) else {}
+    provider_resource_id = _string(
+        record.get("provider_resource_id")
+        or record.get("provider_id")
+        or record.get("allocation_id")
+    )
+    teardown_argv = _string_list(record.get("teardown_argv"))
+    verify_absent_argv = _string_list(record.get("verify_absent_argv"))
+    blockers: list[str] = []
+    if record.get("schema_version") != "robot_eval_provider_allocation_record.v1":
+        blockers.append("provider_allocation_record_schema_invalid")
+    if _string(record.get("launch_attempt_id")) != expected_launch_attempt_id:
+        blockers.append("provider_allocation_launch_attempt_mismatch")
+    if record.get("persisted_before_provider_side_effects") is not True:
+        blockers.append("provider_allocation_not_persisted_before_side_effects")
+    if not provider_resource_id:
+        blockers.append("provider_allocation_identity_not_persisted")
+    if not teardown_argv:
+        blockers.append("provider_teardown_argv_not_persisted")
+    if not verify_absent_argv:
+        blockers.append("provider_absence_verification_argv_not_persisted")
+    teardown_returncode: int | None = None
+    verification_returncode: int | None = None
+    if teardown_argv:
+        try:
+            teardown = subprocess.run(
+                teardown_argv,
+                shell=False,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=max(1, min(timeout_seconds, 120)),
+                env=dict(env),
+            )
+            teardown_returncode = teardown.returncode
+            if teardown.returncode != 0:
+                blockers.append("provider_teardown_command_failed")
+        except (OSError, subprocess.TimeoutExpired):
+            blockers.append("provider_teardown_command_failed")
+    if verify_absent_argv:
+        try:
+            verification = subprocess.run(
+                verify_absent_argv,
+                shell=False,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=max(1, min(timeout_seconds, 120)),
+                env=dict(env),
+            )
+            verification_returncode = verification.returncode
+            if verification.returncode != 0:
+                blockers.append("provider_absence_not_verified")
+        except (OSError, subprocess.TimeoutExpired):
+            blockers.append("provider_absence_not_verified")
+    blockers = _dedupe(blockers)
+    return {
+        "allocation_record_path": str(allocation_record_path),
+        "allocation_record_present": allocation_record_path.is_file(),
+        "allocation_record_schema_valid": (
+            record.get("schema_version")
+            == "robot_eval_provider_allocation_record.v1"
+        ),
+        "launch_attempt_matches": (
+            _string(record.get("launch_attempt_id"))
+            == expected_launch_attempt_id
+        ),
+        "persisted_before_provider_side_effects": (
+            record.get("persisted_before_provider_side_effects") is True
+        ),
+        "provider_resource_id": provider_resource_id or None,
+        "teardown_returncode": teardown_returncode,
+        "verification_returncode": verification_returncode,
+        "provider_absence_verified": not blockers
+        and verification_returncode == 0,
+        "blockers": blockers,
     }
 
 
@@ -895,35 +1045,65 @@ def run_gpu_provider_launcher(
         stderr_path=stderr_path,
         request=request,
     )
+    launch_attempt_id = f"provider-launch-{uuid.uuid4().hex}"
+    attempt_dir = resolved_output.parent / "provider_launcher_attempts" / launch_attempt_id
+    ensure_dir(attempt_dir)
+    allocation_record_path = attempt_dir / "provider_allocation_record.json"
+    env["BLUEPRINT_PROVIDER_LAUNCH_ATTEMPT_ID"] = launch_attempt_id
+    env["BLUEPRINT_PROVIDER_ALLOCATION_RECORD_PATH"] = str(
+        allocation_record_path.resolve()
+    )
+    ownership_path = attempt_dir / "provider_launcher_ownership.json"
     secret_values = _secret_values_from_env(env, _secret_env_var_names(request))
     redaction_summary = _log_redaction_summary(secret_values)
+    process: subprocess.Popen[str] | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
             env=env,
+            start_new_session=True,
         )
-        stdout_path.write_text(_redact_text(completed.stdout, secret_values), encoding="utf-8")
-        stderr_path.write_text(_redact_text(completed.stderr, secret_values), encoding="utf-8")
-        success = completed.returncode == 0
+        write_json(
+            ownership_path,
+            {
+                "schema_version": "robot_eval_provider_launcher_ownership.v1",
+                "generated_at": utc_now_iso(),
+                "status": "running",
+                "launch_attempt_id": launch_attempt_id,
+                "local_process_id": process.pid,
+                "local_process_group_id": process.pid,
+                "allocation_record_path": str(allocation_record_path),
+                "process_group_isolated": True,
+                "cleanup_required_on_failure_or_timeout": True,
+            },
+        )
+        stdout, stderr = process.communicate(timeout=timeout)
+        stdout_path.write_text(_redact_text(stdout, secret_values), encoding="utf-8")
+        stderr_path.write_text(_redact_text(stderr, secret_values), encoding="utf-8")
+        success = process.returncode == 0
         result.update(
             {
                 "status": "completed" if success else "failed",
                 "reason": "provider_launcher_command_completed"
                 if success
                 else "provider_launcher_command_failed",
-                "blockers": [] if success else ["gpu_provider_launch_command_failed"],
+                "blockers": []
+                if success
+                else ["gpu_provider_launch_command_failed"],
                 "execution_performed": True,
                 "provider_launcher_command_executed": True,
                 "provider_side_effects_may_have_occurred": True,
                 "command": command_summary,
-                "exit_code": completed.returncode,
+                "exit_code": process.returncode,
                 "timeout_seconds": timeout,
                 "stdout_path": str(stdout_path),
                 "stderr_path": str(stderr_path),
+                "launch_attempt_id": launch_attempt_id,
+                "ownership_path": str(ownership_path),
+                "allocation_record_path": str(allocation_record_path),
                 **redaction_summary,
             }
         )
@@ -939,8 +1119,12 @@ def run_gpu_provider_launcher(
             }
         )
     except subprocess.TimeoutExpired as exc:
-        stdout_path.write_text(_redact_text(exc.stdout, secret_values), encoding="utf-8")
-        stderr_path.write_text(_redact_text(exc.stderr, secret_values), encoding="utf-8")
+        stdout_path.write_text(
+            _redact_text(exc.stdout, secret_values), encoding="utf-8"
+        )
+        stderr_path.write_text(
+            _redact_text(exc.stderr, secret_values), encoding="utf-8"
+        )
         result.update(
             {
                 "status": "failed",
@@ -953,9 +1137,113 @@ def run_gpu_provider_launcher(
                 "timeout_seconds": timeout,
                 "stdout_path": str(stdout_path),
                 "stderr_path": str(stderr_path),
+                "launch_attempt_id": launch_attempt_id,
+                "ownership_path": str(ownership_path),
+                "allocation_record_path": str(allocation_record_path),
                 **redaction_summary,
             }
         )
+    except Exception as exc:
+        result.update(
+            {
+                "status": "failed",
+                "reason": "provider_launcher_internal_failure",
+                "blockers": ["gpu_provider_launcher_internal_failure"],
+                "execution_performed": process is not None,
+                "provider_launcher_command_executed": process is not None,
+                "provider_side_effects_may_have_occurred": process is not None,
+                "command": command_summary,
+                "command_error_type": type(exc).__name__,
+                "timeout_seconds": timeout,
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+                "launch_attempt_id": launch_attempt_id,
+                "ownership_path": str(ownership_path),
+                "allocation_record_path": str(allocation_record_path),
+                **redaction_summary,
+            }
+        )
+    finally:
+        if process is not None:
+            local_cleanup = _terminate_process_group(process)
+            provider_cleanup = _provider_cleanup_from_record(
+                allocation_record_path=allocation_record_path,
+                expected_launch_attempt_id=launch_attempt_id,
+                env=env,
+                timeout_seconds=timeout,
+            )
+            cleanup_blockers = [
+                *(
+                    []
+                    if local_cleanup.get("process_group_absent_verified")
+                    else ["local_process_group_absence_not_verified"]
+                ),
+                *_string_list(provider_cleanup.get("blockers")),
+            ]
+            provider_absence_verified = bool(
+                local_cleanup.get("process_group_absent_verified")
+                and provider_cleanup.get("provider_absence_verified")
+            )
+            result.update(
+                {
+                    "local_process_cleanup": local_cleanup,
+                    "provider_cleanup": provider_cleanup,
+                    "provider_absence_verified": provider_absence_verified,
+                    "allocation_identity_persisted_before_side_effects": bool(
+                        provider_cleanup.get(
+                            "persisted_before_provider_side_effects"
+                        )
+                        and provider_cleanup.get("provider_resource_id")
+                        and provider_cleanup.get("launch_attempt_matches")
+                    ),
+                }
+            )
+            if cleanup_blockers:
+                result["blockers"] = _dedupe(
+                    [*_string_list(result.get("blockers")), *cleanup_blockers]
+                )
+                if result.get("status") == "completed":
+                    result["status"] = "failed"
+                    result["reason"] = "provider_launcher_cleanup_not_verified"
+            try:
+                write_json(
+                    ownership_path,
+                    {
+                        "schema_version": (
+                            "robot_eval_provider_launcher_ownership.v1"
+                        ),
+                        "generated_at": utc_now_iso(),
+                        "status": (
+                            "cleanup_verified"
+                            if provider_absence_verified
+                            else "cleanup_unverified"
+                        ),
+                        "launch_attempt_id": launch_attempt_id,
+                        "local_process_id": process.pid,
+                        "local_process_group_id": process.pid,
+                        "allocation_record_path": str(allocation_record_path),
+                        "process_group_isolated": True,
+                        "process_group_absent_verified": local_cleanup.get(
+                            "process_group_absent_verified"
+                        ),
+                        "provider_resource_id": provider_cleanup.get(
+                            "provider_resource_id"
+                        ),
+                        "provider_absence_verified": provider_cleanup.get(
+                            "provider_absence_verified"
+                        ),
+                        "cleanup_blockers": cleanup_blockers,
+                    },
+                )
+            except OSError:
+                result["status"] = "failed"
+                result["reason"] = "provider_launcher_ownership_commit_failed"
+                result["blockers"] = _dedupe(
+                    [
+                        *_string_list(result.get("blockers")),
+                        "provider_launcher_ownership_commit_failed",
+                    ]
+                )
     return _write_result(resolved_output, result)
 
 

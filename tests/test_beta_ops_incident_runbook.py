@@ -42,7 +42,10 @@ def test_pipeline_deploy_script_has_health_checked_rollback_mode() -> None:
     assert "DEPLOYMENT_MANIFEST_PATH" in text
     assert "write_deployment_manifest()" in text
     assert "blueprint.pipeline_deployment_manifest.v1" in text
-    assert "Local deployment manifest from deploy script" in text
+    assert "verify_deploy_release_provenance.py" in text
+    assert "run_deployment_service_canaries.py" in text
+    assert "Authenticated deployment service canaries did not pass." in text
+    assert "Provider-refreshed Terraform topology plus authenticated no-op service canaries" in text
     assert "reset --hard" not in text
 
     subprocess.run(["bash", "-n", str(DEPLOY_SCRIPT)], check=True)

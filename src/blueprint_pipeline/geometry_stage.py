@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 import numpy as np
 
 from .capture_bridge import CaptureDescriptor
+from .camera_geometry_validation import validate_camera_intrinsics, validate_se3_matrix
 from .common import PipelineError, ensure_dir, utc_now_iso, write_json
 from .geometry_da3 import run_da3_provider
 from .launch_proof_policy import synthetic_geometry_allowed
@@ -25,6 +27,13 @@ _VIDEO_CANDIDATES = (
     "walkthrough.mp4",
     "recording.mov",
     "recording.mp4",
+)
+
+_CURRENT_GEOMETRY_DIRS = ("camera", "frames", "depth", "confidence", "alignment", "masks")
+_CURRENT_GEOMETRY_FILES = (
+    "geometry_manifest.json",
+    "geometry_summary.json",
+    "geometry_run_status.json",
 )
 
 
@@ -75,8 +84,234 @@ def _frame_sharpness_score(image_path: str) -> Optional[float]:
     return round(max(0.0, score), 6)
 
 
+def _contained_artifact_path(path_text: Any, *, geometry_root: Path) -> Path | None:
+    text = str(path_text or "").strip()
+    if not text:
+        return None
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        candidate = geometry_root / candidate
+    try:
+        resolved = candidate.resolve(strict=True)
+        root = geometry_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if resolved == root or root not in resolved.parents:
+        return None
+    if candidate.is_symlink() or not resolved.is_file():
+        return None
+    return resolved
+
+
+def _decode_tensor(path: Path) -> np.ndarray | None:
+    try:
+        if path.suffix.lower() == ".npy":
+            array = np.load(path, allow_pickle=False)
+        elif path.suffix.lower() == ".npz":
+            with np.load(path, allow_pickle=False) as archive:
+                if len(archive.files) != 1:
+                    return None
+                array = archive[archive.files[0]]
+        else:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                image.verify()
+            with Image.open(path) as image:
+                array = np.asarray(image)
+    except Exception:
+        return None
+    array = np.asarray(array)
+    if array.size == 0 or not np.issubdtype(array.dtype, np.number):
+        return None
+    try:
+        if not np.isfinite(array).all():
+            return None
+    except TypeError:
+        return None
+    return array
+
+
+def _validate_geometry_frame_records(
+    *,
+    frame_records: List[Mapping[str, Any]],
+    intrinsics_payload: Mapping[str, Any],
+    geometry_root: Path,
+    provider_result_fallback: bool,
+) -> Dict[str, Any]:
+    """Verify aligned RGB/pose/depth/confidence records before counting them."""
+
+    intrinsics_result = validate_camera_intrinsics(intrinsics_payload)
+    intrinsics = intrinsics_result.get("normalized") or {}
+    width = int(intrinsics.get("width") or 0)
+    height = int(intrinsics.get("height") or 0)
+    ids = [str(row.get("frame_id") or _frame_id(_safe_int(row.get("frame_index")))) for row in frame_records]
+    indexes = [_safe_int(row.get("frame_index"), -1) for row in frame_records]
+    timestamps = [_safe_float(row.get("timestamp_seconds"), float("nan")) for row in frame_records]
+    id_counts = {value: ids.count(value) for value in set(ids)}
+    index_counts = {value: indexes.count(value) for value in set(indexes)}
+    timestamp_counts = {value: timestamps.count(value) for value in set(timestamps) if math.isfinite(value)}
+    verified: List[Mapping[str, Any]] = []
+    rejections: List[Dict[str, Any]] = []
+    prior_timestamp: float | None = None
+    for row_index, frame in enumerate(frame_records):
+        blockers: List[str] = []
+        frame_id = ids[row_index]
+        frame_index = indexes[row_index]
+        timestamp = timestamps[row_index]
+        if not frame_id or id_counts.get(frame_id, 0) != 1:
+            blockers.append("frame_id_missing_or_not_one_to_one")
+        if frame_index < 0 or index_counts.get(frame_index, 0) != 1:
+            blockers.append("frame_index_missing_or_not_one_to_one")
+        if not math.isfinite(timestamp) or timestamp < 0 or timestamp_counts.get(timestamp, 0) != 1:
+            blockers.append("timestamp_missing_nonfinite_negative_or_duplicate")
+        if prior_timestamp is not None and math.isfinite(timestamp) and timestamp <= prior_timestamp:
+            blockers.append("timestamp_not_strictly_monotonic")
+        if math.isfinite(timestamp):
+            prior_timestamp = timestamp
+
+        world_result = validate_se3_matrix(frame.get("world_from_camera"), field="world_from_camera")
+        camera_result = validate_se3_matrix(frame.get("camera_from_world"), field="camera_from_world")
+        blockers.extend(world_result["blockers"])
+        blockers.extend(camera_result["blockers"])
+        if world_result["valid"] and camera_result["valid"]:
+            world = np.asarray(world_result["matrix"], dtype=np.float64)
+            camera = np.asarray(camera_result["matrix"], dtype=np.float64)
+            if float(np.max(np.abs(world @ camera - np.eye(4)))) > 1e-5:
+                blockers.append("world_camera_pose_inverse_mismatch")
+
+        image_path = _contained_artifact_path(frame.get("image_path"), geometry_root=geometry_root)
+        depth_path = _contained_artifact_path(frame.get("depth_path"), geometry_root=geometry_root)
+        confidence_path = _contained_artifact_path(frame.get("confidence_path"), geometry_root=geometry_root)
+        image = _decode_tensor(image_path) if image_path else None
+        depth = _decode_tensor(depth_path) if depth_path else None
+        confidence = _decode_tensor(confidence_path) if confidence_path else None
+        if image is None or image.ndim not in {2, 3} or tuple(image.shape[:2]) != (height, width):
+            blockers.append("rgb_tensor_missing_corrupt_or_shape_mismatch")
+        if depth is None or depth.ndim != 2 or tuple(depth.shape) != (height, width):
+            blockers.append("depth_tensor_missing_corrupt_or_shape_mismatch")
+        elif float(np.min(depth)) <= 0.0 or float(np.max(depth)) > 10_000.0:
+            blockers.append("depth_tensor_range_invalid")
+        if confidence is None or confidence.ndim != 2 or tuple(confidence.shape) != (height, width):
+            blockers.append("confidence_tensor_missing_corrupt_or_shape_mismatch")
+        elif float(np.min(confidence)) < 0.0 or float(np.max(confidence)) > 1.0:
+            blockers.append("confidence_tensor_range_invalid")
+
+        depth_unit = str(frame.get("depth_unit") or "").strip().lower()
+        metric_depth_truth = frame.get("metric_depth_truth") is True
+        depth_source = str(frame.get("depth_measurement_source") or "").strip().lower()
+        if depth_unit not in {"m", "meter", "meters", "metre", "metres"}:
+            blockers.append("depth_unit_missing_or_not_meters")
+        if not provider_result_fallback and (
+            not metric_depth_truth
+            or depth_source not in {"sensor_depth", "validated_sfm", "provider_metric_reconstruction"}
+        ):
+            blockers.append("metric_depth_truth_not_explicitly_proven")
+        confidence_range = frame.get("confidence_range")
+        if not (
+            isinstance(confidence_range, list)
+            and len(confidence_range) == 2
+            and _safe_float(confidence_range[0], -1.0) == 0.0
+            and _safe_float(confidence_range[1], -1.0) == 1.0
+        ):
+            blockers.append("confidence_unit_range_missing_or_invalid")
+        pose_confidence = _safe_float(frame.get("pose_confidence"), float("nan"))
+        if not math.isfinite(pose_confidence) or not (0.0 <= pose_confidence <= 1.0):
+            blockers.append("pose_confidence_missing_or_out_of_range")
+
+        if not blockers:
+            normalized = dict(frame)
+            normalized.update(
+                {
+                    "frame_id": frame_id,
+                    "frame_index": frame_index,
+                    "timestamp_seconds": timestamp,
+                    "image_path": str(image_path),
+                    "depth_path": str(depth_path),
+                    "confidence_path": str(confidence_path),
+                    "width": width,
+                    "height": height,
+                    "depth_unit": "meters",
+                    "metric_depth_truth": metric_depth_truth and not provider_result_fallback,
+                    "geometry_record_verified": True,
+                }
+            )
+            verified.append(normalized)
+        else:
+            rejections.append(
+                {
+                    "row_index": row_index,
+                    "frame_id": frame_id or None,
+                    "frame_index": frame_index,
+                    "blockers": list(dict.fromkeys(blockers)),
+                }
+            )
+    return {
+        "schema_version": "geometry_record_validation.v1",
+        "intrinsics": intrinsics_result,
+        "input_record_count": len(frame_records),
+        "verified_record_count": len(verified),
+        "all_records_verified": bool(frame_records) and len(verified) == len(frame_records),
+        "verified_records": verified,
+        "rejections": rejections,
+    }
+
+
 def _frame_id(frame_index: int) -> str:
     return str(int(frame_index)).zfill(6)
+
+
+def _start_immutable_geometry_run(geometry_root: Path) -> Dict[str, Any]:
+    """Archive the prior canonical run before exposing a new current run."""
+
+    lineage: Dict[str, Any] = {
+        "schema_version": "geometry_previous_run_lineage.v1",
+        "previous_run_present": False,
+        "previous_run_archive_path": None,
+        "previous_status": None,
+        "previous_synthetic_geometry": False,
+    }
+    if not geometry_root.exists():
+        return lineage
+    if geometry_root.is_symlink() or not geometry_root.is_dir():
+        raise PipelineError(f"Geometry root must be a real directory: {geometry_root}")
+    previous_summary = _optional_json(geometry_root / "geometry_summary.json")
+    previous_status = _optional_json(geometry_root / "geometry_run_status.json")
+    history_root = geometry_root.parent / "geometry_runs"
+    ensure_dir(history_root)
+    base_name = utc_now_iso().replace(":", "").replace("-", "").replace("+", "_").replace(".", "_")
+    archive_path = history_root / base_name
+    suffix = 1
+    while archive_path.exists():
+        archive_path = history_root / f"{base_name}_{suffix}"
+        suffix += 1
+    geometry_root.replace(archive_path)
+    lineage.update(
+        {
+            "previous_run_present": True,
+            "previous_run_archive_path": str(archive_path),
+            "previous_status": previous_summary.get("status") or previous_status.get("status"),
+            "previous_synthetic_geometry": bool(
+                previous_summary.get("synthetic_geometry")
+                or previous_summary.get("synthetic_geometry_used")
+                or previous_status.get("synthetic_geometry")
+            ),
+        }
+    )
+    return lineage
+
+
+def _remove_current_geometry_tensors(geometry_root: Path) -> List[str]:
+    removed: List[str] = []
+    for name in _CURRENT_GEOMETRY_DIRS:
+        path = geometry_root / name
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+            removed.append(name)
+        elif path.is_dir():
+            shutil.rmtree(path)
+            removed.append(name)
+    return removed
 
 
 def _summary_capture_source(descriptor: CaptureDescriptor) -> str:
@@ -707,6 +942,8 @@ def _build_fallback_provider_result(
     width = _safe_int(video_probe.get("width"), 640)
     height = _safe_int(video_probe.get("height"), 480)
     duration = _safe_float(video_probe.get("duration_seconds"), 1.0)
+    diagnostic_height = max(height // 16, 24)
+    diagnostic_width = max(width // 16, 32)
     sample_count = max(3, min(8, int(round(duration)) + 2))
     timestamps = [round(duration * idx / float(max(sample_count - 1, 1)), 3) for idx in range(sample_count)]
     frames: List[Dict[str, Any]] = []
@@ -715,7 +952,7 @@ def _build_fallback_provider_result(
         image_path = frames_dir / f"frame_{idx:06d}.npy"
         depth_path = depth_dir / f"depth_{idx:06d}.npy"
         confidence_path = confidence_dir / f"confidence_{idx:06d}.npy"
-        rgb = np.full((max(height // 16, 24), max(width // 16, 32), 3), 80 + idx * 12, dtype=np.float32)
+        rgb = np.full((diagnostic_height, diagnostic_width, 3), 80 + idx * 12, dtype=np.float32)
         depth = np.full(rgb.shape[:2], 1.5 + idx * 0.05, dtype=np.float32)
         confidence = np.full(rgb.shape[:2], 0.75, dtype=np.float32)
         np.save(image_path, rgb)
@@ -752,6 +989,9 @@ def _build_fallback_provider_result(
                 "height": int(rgb.shape[0]),
                 "min_depth_m": float(depth.min()),
                 "max_depth_m": float(depth.max()),
+                "depth_unit": "meters",
+                "metric_depth_truth": False,
+                "depth_measurement_source": "synthetic_diagnostic",
                 "confidence_range": [0.0, 1.0],
             }
         )
@@ -759,12 +999,12 @@ def _build_fallback_provider_result(
     return {
         "intrinsics": {
             "camera_model": "pinhole",
-            "image_width": int(width),
-            "image_height": int(height),
-            "fx": float(max(width, height)),
-            "fy": float(max(width, height)),
-            "cx": float(width / 2.0),
-            "cy": float(height / 2.0),
+            "image_width": int(diagnostic_width),
+            "image_height": int(diagnostic_height),
+            "fx": float(max(diagnostic_width, diagnostic_height)),
+            "fy": float(max(diagnostic_width, diagnostic_height)),
+            "cx": float(diagnostic_width / 2.0),
+            "cy": float(diagnostic_height / 2.0),
             "distortion": {"model": "none", "coefficients": []},
         },
         "frames": frames,
@@ -910,7 +1150,11 @@ def _build_canonical_geometry_artifacts(
     ensure_dir(alignment_root)
 
     canonical_pointcloud_path = alignment_root / "canonical_pointcloud.ply"
-    source_path = Path(canonical_pointcloud_source_path) if canonical_pointcloud_source_path else None
+    source_path = (
+        _contained_artifact_path(canonical_pointcloud_source_path, geometry_root=geometry_root)
+        if canonical_pointcloud_source_path
+        else None
+    )
     if source_path and source_path.is_file():
         ensure_dir(canonical_pointcloud_path.parent)
         canonical_pointcloud_path.write_bytes(source_path.read_bytes())
@@ -1090,6 +1334,7 @@ def _write_blocked_geometry_artifacts(
     blocked so downstream stages and gates fail closed instead of consuming
     synthetic geometry.
     """
+    removed_tensor_directories = _remove_current_geometry_tensors(geometry_root)
     status_label = "blocked_geometry_unavailable"
     launch_blockers = [
         "geometry_provider_unavailable",
@@ -1119,20 +1364,31 @@ def _write_blocked_geometry_artifacts(
         "intrinsics_available": False,
         "site_frame_available": False,
         "scale_resolved": False,
+        "current_usable_artifacts": [],
+        "current_usable_tensor_count": 0,
+        "removed_partial_tensor_directories": removed_tensor_directories,
+        "previous_run_lineage": _optional_json(geometry_root / "previous_run_lineage.json"),
     }
     write_json(summary_path, summary_payload)
+    status_payload = _build_status_payload(
+        provider=provider,
+        model=model,
+        execution_mode=execution_mode,
+        status=status_label,
+        ready_for_world_model=False,
+        geometry_source="unavailable",
+        launch_blockers=blockers,
+        blocking_issues=blockers,
+    )
+    status_payload.update(
+        {
+            "current_usable_artifacts": [],
+            "current_usable_tensor_count": 0,
+        }
+    )
     write_json(
         status_path,
-        _build_status_payload(
-            provider=provider,
-            model=model,
-            execution_mode=execution_mode,
-            status=status_label,
-            ready_for_world_model=False,
-            geometry_source="unavailable",
-            launch_blockers=blockers,
-            blocking_issues=blockers,
-        ),
+        status_payload,
     )
     write_json(
         manifest_path,
@@ -1160,6 +1416,45 @@ def _write_blocked_geometry_artifacts(
             launch_blockers=blockers,
         ),
     )
+    manifest_payload = _optional_json(manifest_path)
+    manifest_payload.update(
+        {
+            "current_usable_artifacts": [],
+            "current_usable_tensor_count": 0,
+            "previous_run_lineage_path": str(geometry_root / "previous_run_lineage.json"),
+        }
+    )
+    write_json(manifest_path, manifest_payload)
+    descriptor = _load_descriptor(context)
+    topology = (
+        descriptor.metadata.get("capture_topology")
+        if isinstance(descriptor.metadata.get("capture_topology"), Mapping)
+        else {}
+    )
+    coordinate_frame_session_id = str(
+        descriptor.coordinate_frame_session_id
+        or topology.get("capture_session_id")
+        or topology.get("captureSessionId")
+        or context.capture_id
+    )
+    _patch_descriptor_with_geometry(
+        context=context,
+        descriptor=descriptor,
+        geometry_source="unavailable",
+        ready_for_world_model=False,
+        contract_ready_for_world_model=False,
+        internal_fallback_ready=False,
+        geometry_live_ready=False,
+        external_market_ready=False,
+        site_faithful_market_ready=False,
+        provider_native_result=False,
+        fallback_used=False,
+        fallback_kind=None,
+        launch_blockers=blockers,
+        coordinate_frame_session_id=coordinate_frame_session_id,
+        summary_path=summary_path,
+        manifest_path=manifest_path,
+    )
     return GeometryStageResult(
         capture_root=context.capture_root,
         geometry_root=geometry_root,
@@ -1183,6 +1478,7 @@ def build_geometry_stage_contract(
     video_probe = _probe_video(video_path)
 
     geometry_root = context.pipeline_root / "geometry"
+    previous_run_lineage = _start_immutable_geometry_run(geometry_root)
     camera_root = geometry_root / "camera"
     frames_root = geometry_root / "frames"
     depth_root = geometry_root / "depth"
@@ -1190,6 +1486,7 @@ def build_geometry_stage_contract(
     logs_root = geometry_root / "logs"
     for path in (geometry_root, camera_root, frames_root, depth_root, confidence_root, logs_root):
         ensure_dir(path)
+    write_json(geometry_root / "previous_run_lineage.json", previous_run_lineage)
 
     manifest_path = geometry_root / "geometry_manifest.json"
     summary_path = geometry_root / "geometry_summary.json"
@@ -1350,7 +1647,29 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
 
     frame_records = list(provider_result.get("frames") or [])
     if not frame_records:
-        raise PipelineError("Geometry stage produced no frame records.")
+        return _write_blocked_geometry_artifacts(
+            context=context,
+            provider=provider,
+            model=model,
+            execution_mode=execution_mode,
+            summary_path=summary_path,
+            status_path=status_path,
+            manifest_path=manifest_path,
+            inputs_path=inputs_path,
+            provider_request_path=provider_request_path,
+            provider_result_path=provider_result_path,
+            intrinsics_path=intrinsics_path,
+            poses_path=poses_path,
+            trajectory_summary_path=trajectory_summary_path,
+            keyframes_path=keyframes_path,
+            frame_index_path=frame_index_path,
+            depth_manifest_path=depth_manifest_path,
+            confidence_manifest_path=confidence_manifest_path,
+            implementation_notes_path=implementation_notes_path,
+            dynamic_mask_manifest_path=dynamic_mask_manifest_path,
+            geometry_root=geometry_root,
+            reason="provider_returned_zero_frame_records",
+        )
     provider_key = str(provider or "").strip().lower()
     local_da3_provider = provider_key in {"da3", "local_da3", "depth_anything_3"}
     provider_result_fallback = bool(provider_result.get("fallback_used"))
@@ -1384,6 +1703,15 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             "capture_truth": not provider_result_fallback,
         },
     }
+    validation_report = _validate_geometry_frame_records(
+        frame_records=[row for row in frame_records if isinstance(row, Mapping)],
+        intrinsics_payload=intrinsics_payload,
+        geometry_root=geometry_root,
+        provider_result_fallback=provider_result_fallback,
+    )
+    verified_frame_records = list(validation_report.pop("verified_records"))
+    validation_report_path = geometry_root / "geometry_validation_report.json"
+    write_json(validation_report_path, validation_report)
     write_json(intrinsics_path, intrinsics_payload)
 
     pose_records: List[Dict[str, Any]] = []
@@ -1392,7 +1720,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     depth_artifacts: List[Dict[str, Any]] = []
     confidence_artifacts: List[Dict[str, Any]] = []
 
-    for frame in frame_records:
+    for frame in verified_frame_records:
         frame_index = _safe_int(frame.get("frame_index"))
         timestamp_seconds = _safe_float(frame.get("timestamp_seconds"))
         frame_id = str(frame.get("frame_id") or _frame_id(frame_index))
@@ -1452,7 +1780,7 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
                 "height": _safe_int(frame.get("height") or intrinsics_payload.get("image_height")),
                 "min_depth_m": _safe_float(frame.get("min_depth_m")),
                 "max_depth_m": _safe_float(frame.get("max_depth_m")),
-                "metric_depth_truth": not provider_result_fallback,
+                "metric_depth_truth": frame.get("metric_depth_truth") is True,
                 "depth_source": "synthetic_diagnostic"
                 if provider_result_fallback
                 else frame_geometry_source,
@@ -1580,15 +1908,21 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         or metadata_topology.get("captureSessionId")
         or context.capture_id
     )
-    canonical_artifacts = _build_canonical_geometry_artifacts(
-        context=context,
-        geometry_root=geometry_root,
-        pose_records=pose_records,
-        geometry_source=geometry_source,
-        fallback_used=fallback_used,
-        coordinate_frame_session_id=coordinate_frame_session_id,
-        canonical_pointcloud_source_path=str(provider_result.get("canonical_pointcloud_source_path") or ""),
-    )
+    if pose_records:
+        canonical_artifacts = _build_canonical_geometry_artifacts(
+            context=context,
+            geometry_root=geometry_root,
+            pose_records=pose_records,
+            geometry_source=geometry_source,
+            fallback_used=fallback_used,
+            coordinate_frame_session_id=coordinate_frame_session_id,
+            canonical_pointcloud_source_path=str(provider_result.get("canonical_pointcloud_source_path") or ""),
+        )
+    else:
+        canonical_artifacts = {
+            "alignment_manifest_path": alignment_manifest_path,
+            "canonical_pointcloud_path": canonical_pointcloud_path,
+        }
 
     provider_result_payload = _provider_result_payload(
         provider=provider,
@@ -1608,17 +1942,18 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     )
     write_json(provider_result_path, provider_result_payload)
 
-    pose_coverage = round(len(pose_records) / float(len(frame_records) or 1), 6)
-    confidence_coverage = round(len(confidence_artifacts) / float(len(frame_records) or 1), 6)
-    depth_coverage = round(len(depth_artifacts) / float(len(frame_records) or 1), 6)
+    input_frame_count = int(validation_report.get("input_record_count") or len(frame_records))
+    pose_coverage = round(len(pose_records) / float(input_frame_count or 1), 6)
+    confidence_coverage = round(len(confidence_artifacts) / float(input_frame_count or 1), 6)
+    depth_coverage = round(len(depth_artifacts) / float(input_frame_count or 1), 6)
     intrinsics_available = bool(
-        intrinsics_payload.get("fx")
-        and intrinsics_payload.get("fy")
-        and intrinsics_payload.get("image_width")
-        and intrinsics_payload.get("image_height")
+        (validation_report.get("intrinsics") or {}).get("valid")
     )
     pose_track_count = len(pose_records)
-    pose_match_rate = _safe_float(provider_result.get("pose_match_rate"), pose_coverage)
+    pose_match_rate = min(
+        pose_coverage,
+        _safe_float(provider_result.get("pose_match_rate"), pose_coverage),
+    )
     p95_pose_delta_raw = provider_result.get("p95_pose_delta_sec")
     p95_pose_delta_sec = (
         _safe_float(p95_pose_delta_raw)
@@ -1629,8 +1964,13 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
     scale_resolved = bool(provider_result.get("scale_resolved")) or bool(
         scale_assessment.get("metric_trusted")
     )
+    all_records_verified = bool(validation_report.get("all_records_verified"))
     diagnostic_artifacts_shape_ready = bool(
-        pose_records and depth_artifacts and confidence_artifacts and intrinsics_available
+        all_records_verified
+        and pose_records
+        and depth_artifacts
+        and confidence_artifacts
+        and intrinsics_available
     )
     contract_ready_for_world_model = bool(
         diagnostic_artifacts_shape_ready
@@ -1664,6 +2004,8 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         )
     if not intrinsics_available:
         launch_blockers.append("intrinsics_missing")
+    if not all_records_verified:
+        launch_blockers.append("geometry_records_failed_verification")
     if not site_frame_available:
         launch_blockers.append("site_frame_not_proven")
     if not scale_resolved:
@@ -1702,6 +2044,11 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
         "contract_ready_for_world_model": contract_ready_for_world_model,
         "internal_fallback_ready": internal_fallback_ready,
         "diagnostic_artifacts_shape_ready": diagnostic_artifacts_shape_ready,
+        "geometry_records_all_verified": all_records_verified,
+        "input_geometry_record_count": input_frame_count,
+        "verified_geometry_record_count": len(pose_records),
+        "rejected_geometry_record_count": len(validation_report.get("rejections") or []),
+        "geometry_validation_report": _json_pointer(validation_report_path, context=context),
         "synthetic_geometry_used": fallback_used,
         "synthetic_artifacts_are_capture_truth": not fallback_used,
         "geometry_live_ready": geometry_live_ready,
@@ -1758,33 +2105,44 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             "keyframe_count": len(keyframe_items),
             "depth_frame_count": len(depth_artifacts),
             "confidence_frame_count": len(confidence_artifacts),
+            "verified_frame_count": len(pose_records),
+            "rejected_frame_count": len(validation_report.get("rejections") or []),
             "pose_coverage": pose_coverage,
             "depth_coverage": depth_coverage,
             "confidence_coverage": confidence_coverage,
         },
     }
     write_json(summary_path, summary_payload)
+    status_payload = _build_status_payload(
+        provider=provider,
+        model=model,
+        execution_mode=execution_mode,
+        status=status_label,
+        ready_for_world_model=ready_for_world_model,
+        geometry_source=geometry_source,
+        fallback_used=fallback_used,
+        fallback_kind=fallback_kind,
+        synthetic_geometry=synthetic_geometry,
+        provider_native_result=provider_native_result,
+        contract_ready_for_world_model=contract_ready_for_world_model,
+        internal_fallback_ready=internal_fallback_ready,
+        geometry_live_ready=geometry_live_ready,
+        external_market_ready=external_market_ready,
+        site_faithful_market_ready=site_faithful_market_ready,
+        launch_blockers=list(dict.fromkeys(launch_blockers)),
+        blocking_issues=list(dict.fromkeys([*list(provider_result_payload.get("errors") or []), *launch_blockers])),
+    )
+    status_payload.update(
+        {
+            "input_geometry_record_count": input_frame_count,
+            "verified_geometry_record_count": len(pose_records),
+            "rejected_geometry_record_count": len(validation_report.get("rejections") or []),
+            "current_usable_tensor_count": len(pose_records) * 3 if contract_ready_for_world_model else 0,
+        }
+    )
     write_json(
         status_path,
-        _build_status_payload(
-            provider=provider,
-            model=model,
-            execution_mode=execution_mode,
-            status=status_label,
-            ready_for_world_model=ready_for_world_model,
-            geometry_source=geometry_source,
-            fallback_used=fallback_used,
-            fallback_kind=fallback_kind,
-            synthetic_geometry=synthetic_geometry,
-            provider_native_result=provider_native_result,
-            contract_ready_for_world_model=contract_ready_for_world_model,
-            internal_fallback_ready=internal_fallback_ready,
-            geometry_live_ready=geometry_live_ready,
-            external_market_ready=external_market_ready,
-            site_faithful_market_ready=site_faithful_market_ready,
-            launch_blockers=list(dict.fromkeys(launch_blockers)),
-            blocking_issues=list(dict.fromkeys([*list(provider_result_payload.get("errors") or []), *launch_blockers])),
-        ),
+        status_payload,
     )
     write_json(
         manifest_path,
@@ -1822,6 +2180,16 @@ This folder contains derived canonical geometry for downstream SWM/Cosmos-style 
             launch_blockers=list(dict.fromkeys(launch_blockers)),
         ),
     )
+    manifest_payload = _optional_json(manifest_path)
+    manifest_payload.update(
+        {
+            "geometry_validation_report": _json_pointer(validation_report_path, context=context),
+            "verified_geometry_record_count": len(pose_records),
+            "current_usable_tensor_count": len(pose_records) * 3 if contract_ready_for_world_model else 0,
+            "previous_run_lineage_path": str(geometry_root / "previous_run_lineage.json"),
+        }
+    )
+    write_json(manifest_path, manifest_payload)
     _patch_descriptor_with_geometry(
         context=context,
         descriptor=descriptor,

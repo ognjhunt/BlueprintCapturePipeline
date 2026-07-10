@@ -11,16 +11,18 @@ or promote proof claims.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hmac
 import json
 import os
 import re
 import subprocess
 import time
+import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, AsyncIterator, Dict, Mapping, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -32,6 +34,7 @@ from .live_pipeline_control_plane import (
     WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
 )
 from .live_pipeline_input_intake import build_live_pipeline_input_intake
+from .security_controls import json_shape_within_limits, strict_identifier
 
 
 DEFAULT_MANIFEST_PATH = (
@@ -48,9 +51,29 @@ INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV = (
     "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT"
 )
 INTAKE_CAPTURE_ROOT_BY_SITE_ENV = "BLUEPRINT_LIVE_PIPELINE_CAPTURE_ROOT_BY_SITE_JSON"
+INTAKE_CLIENT_SECRETS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON"
+INTAKE_CLIENT_ROOTS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON"
+INTAKE_NONCE_STORE_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_NONCE_STORE_DIR"
+INTAKE_TRIGGER_SYSTEMD_UNIT_ENV = "BLUEPRINT_LIVE_PIPELINE_TRIGGER_SYSTEMD_UNIT"
+INTAKE_MAX_BODY_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_BODY_BYTES"
+INTAKE_MAX_JSON_DEPTH_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_DEPTH"
+INTAKE_MAX_JSON_ITEMS_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_JSON_ITEMS"
+INTAKE_RATE_LIMIT_PER_MINUTE_ENV = "BLUEPRINT_LIVE_PIPELINE_RATE_LIMIT_PER_MINUTE"
+INTAKE_MAX_CONCURRENT_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_CONCURRENT"
+INTAKE_MAX_QUEUE_FILES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_QUEUE_FILES"
+INTAKE_MAX_STORAGE_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_STORAGE_BYTES"
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
 CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
 DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS = 5 * 60
+DEFAULT_INTAKE_MAX_BODY_BYTES = 2 * 1024 * 1024
+DEFAULT_INTAKE_MAX_JSON_DEPTH = 32
+DEFAULT_INTAKE_MAX_JSON_ITEMS = 100_000
+DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE = 120
+DEFAULT_INTAKE_MAX_CONCURRENT = 8
+DEFAULT_INTAKE_MAX_QUEUE_FILES = 10_000
+DEFAULT_INTAKE_MAX_STORAGE_BYTES = 20 * 1024 * 1024 * 1024
+# Retained as an inert compatibility surface for older tests/importers. Replay
+# authority is the shared filesystem store below, never this process-local map.
 _INTAKE_NONCE_CACHE: Dict[str, float] = {}
 
 
@@ -215,23 +238,103 @@ def _valid_intake_nonce(value: str) -> bool:
     return bool(8 <= len(nonce) <= 160 and re.fullmatch(r"[A-Za-z0-9_.:-]+", nonce))
 
 
-def _prune_intake_nonce_cache(now: float, max_age_seconds: float) -> None:
-    cutoff = now - max(max_age_seconds * 2, max_age_seconds + 60)
-    for nonce, seen_at in list(_INTAKE_NONCE_CACHE.items()):
-        if seen_at < cutoff:
-            _INTAKE_NONCE_CACHE.pop(nonce, None)
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(_string(os.getenv(name)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
-def _claim_intake_nonce(nonce: str, now: float, max_age_seconds: float) -> bool:
-    _prune_intake_nonce_cache(now, max_age_seconds)
-    if nonce in _INTAKE_NONCE_CACHE:
-        return False
-    _INTAKE_NONCE_CACHE[nonce] = now
-    return True
+def _client_secrets() -> Dict[str, str]:
+    raw = _string(os.getenv(INTAKE_CLIENT_SECRETS_ENV))
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    return {
+        strict_identifier(key, field="client_id", max_length=80): _string(value)
+        for key, value in payload.items()
+        if _string(value)
+    }
 
 
-def _build_intake_signature(*, secret: str, timestamp: str, nonce: str, body: bytes) -> str:
-    canonical = f"{timestamp}.{nonce}.".encode("utf-8") + body
+def _nonce_store_dir() -> Path:
+    configured = _string(os.getenv(INTAKE_NONCE_STORE_DIR_ENV))
+    root = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else _manifest_path().expanduser().resolve().parent / "intake_nonce_store"
+    )
+    ensure_dir(root)
+    root.chmod(0o700)
+    return root
+
+
+def _claim_intake_nonce(
+    *, client_id: str, nonce: str, now: float, max_age_seconds: float
+) -> bool:
+    """Atomically claim a scoped nonce across processes and restarts."""
+
+    root = _nonce_store_dir()
+    digest = sha256(f"{client_id}\0{nonce}".encode("utf-8")).hexdigest()
+    path = root / f"{digest}.json"
+    expires_at = now + max(max_age_seconds * 2, max_age_seconds + 60)
+    payload = (
+        json.dumps(
+            {
+                "schema_version": "blueprint_intake_nonce_claim.v1",
+                "client_id_sha256": sha256(client_id.encode("utf-8")).hexdigest(),
+                "nonce_sha256": sha256(nonce.encode("utf-8")).hexdigest(),
+                "claimed_at_epoch": now,
+                "expires_at_epoch": expires_at,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            existing = _read_mapping_file(path)
+            try:
+                existing_expiry = float(existing.get("expires_at_epoch") or 0.0)
+            except (TypeError, ValueError):
+                existing_expiry = 0.0
+            if existing_expiry > now:
+                return False
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        try:
+            os.write(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        directory_descriptor = os.open(root, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+        return True
+    return False
+
+
+def _build_intake_signature(
+    *, secret: str, timestamp: str, client_id: str, nonce: str, body: bytes
+) -> str:
+    canonical = f"{timestamp}.{client_id}.{nonce}.".encode("utf-8") + body
     return hmac.new(secret.encode("utf-8"), canonical, "sha256").hexdigest()
 
 
@@ -239,6 +342,7 @@ def _verify_intake_signature(
     *,
     secret: str,
     timestamp: str,
+    client_id: str,
     nonce: str,
     signature: str,
     body: bytes,
@@ -265,6 +369,7 @@ def _verify_intake_signature(
     expected = _build_intake_signature(
         secret=secret,
         timestamp=_string(timestamp),
+        client_id=client_id,
         nonce=_string(nonce),
         body=body,
     )
@@ -274,7 +379,12 @@ def _verify_intake_signature(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid intake signature",
         )
-    if not _claim_intake_nonce(_string(nonce), current, max_skew):
+    if not _claim_intake_nonce(
+        client_id=client_id,
+        nonce=_string(nonce),
+        now=current,
+        max_age_seconds=max_skew,
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="replayed intake signature nonce",
@@ -367,14 +477,154 @@ def _capture_root_map() -> Dict[str, Path]:
     return roots
 
 
+def _client_root_map() -> Dict[str, Dict[str, Path]]:
+    """Return authenticated-client -> server-owned site/root mappings."""
+
+    raw = _string(os.getenv(INTAKE_CLIENT_ROOTS_ENV))
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    result: Dict[str, Dict[str, Path]] = {}
+    for raw_client_id, raw_roots in payload.items():
+        try:
+            client_id = strict_identifier(
+                raw_client_id,
+                field="client_id",
+                max_length=80,
+            )
+        except ValueError:
+            continue
+        if isinstance(raw_roots, str) and _string(raw_roots):
+            result[client_id] = {"default": Path(raw_roots).expanduser().resolve()}
+            continue
+        if not isinstance(raw_roots, Mapping):
+            continue
+        roots: Dict[str, Path] = {}
+        for key, value in raw_roots.items():
+            root = _string(value)
+            if _string(key) and root:
+                roots[_string(key)] = Path(root).expanduser().resolve()
+        if roots:
+            result[client_id] = roots
+    return result
+
+
+def _request_scope_keys(payload: Mapping[str, Any]) -> list[str]:
+    request = _request_from_payload(payload) or payload
+    site_package = _mapping(
+        request.get("site_package") or request.get("sitePackage")
+    )
+    source = _mapping(request.get("source"))
+    selection = _mapping(
+        source.get("selection_state") or source.get("selectionState")
+    )
+    values = [
+        site_package.get("site_slug") or site_package.get("siteSlug"),
+        site_package.get("site_submission_id")
+        or site_package.get("siteSubmissionId"),
+        site_package.get("capture_job_id") or site_package.get("captureJobId"),
+        site_package.get("capture_id") or site_package.get("captureId"),
+        payload.get("site_slug") or payload.get("siteSlug"),
+        payload.get("site_submission_id") or payload.get("siteSubmissionId"),
+        payload.get("capture_job_id") or payload.get("captureJobId"),
+        payload.get("capture_id") or payload.get("captureId"),
+        selection.get("site_slug") or selection.get("siteSlug"),
+    ]
+    return [text for value in values if (text := _string(value))]
+
+
+def _server_capture_root_for_client(
+    *,
+    payload: Mapping[str, Any],
+    client_id: str,
+    manifest_capture_root: Path | None,
+) -> Path | None:
+    client_roots = _client_root_map()
+    if client_roots:
+        scoped = client_roots.get(client_id)
+        if not scoped:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="authenticated client has no capture-root scope",
+            )
+        for key in _request_scope_keys(payload):
+            if key in scoped:
+                return scoped[key]
+        if "default" in scoped:
+            return scoped["default"]
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="request site is outside authenticated client scope",
+        )
+    return manifest_capture_root
+
+
+def _bind_payload_to_server_capture_root(
+    *,
+    payload: Mapping[str, Any],
+    client_id: str,
+    manifest_capture_root: Path | None,
+) -> Dict[str, Any]:
+    """Replace every caller root with the authenticated server-side mapping."""
+
+    bound = json.loads(json.dumps(dict(payload)))
+    request = _request_from_payload(bound)
+    if not request:
+        return bound
+    root = _server_capture_root_for_client(
+        payload=bound,
+        client_id=client_id,
+        manifest_capture_root=manifest_capture_root,
+    )
+    if root is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="server capture-root mapping is not configured",
+        )
+    request_payload = dict(request)
+    request_payload.pop("capture_root", None)
+    request_payload.pop("captureRoot", None)
+    site_package = dict(
+        _mapping(
+            request_payload.get("site_package")
+            or request_payload.get("sitePackage")
+        )
+    )
+    site_package.pop("captureRoot", None)
+    site_package["capture_root"] = str(root)
+    site_package["capture_root_source"] = "authenticated_server_mapping"
+    request_payload.pop("sitePackage", None)
+    request_payload["site_package"] = site_package
+    request_payload["authenticated_client_scope"] = {
+        "client_id": client_id,
+        "server_capture_root_mapped": True,
+        "caller_capture_root_authoritative": False,
+    }
+    if bound.get("queue_contract") == WEBAPP_JOB_REQUEST_QUEUE_CONTRACT:
+        bound["job_request"] = request_payload
+    else:
+        bound = request_payload
+    return bound
+
+
 def _capture_root_from_handoff_payload(
     *,
     payload: Mapping[str, Any],
+    client_id: str,
     manifest_capture_root: Path | None,
 ) -> Path | None:
-    explicit = _first_string(payload.get("capture_root"), payload.get("captureRoot"))
-    if explicit:
-        return Path(explicit).expanduser().resolve()
+    scoped = _server_capture_root_for_client(
+        payload=payload,
+        client_id=client_id,
+        manifest_capture_root=manifest_capture_root,
+    )
+    if scoped is not None:
+        return scoped
     roots = _capture_root_map()
     lookup_keys = [
         _first_string(payload.get("site_submission_id"), payload.get("siteSubmissionId")),
@@ -387,7 +637,7 @@ def _capture_root_from_handoff_payload(
     for key in lookup_keys:
         if key and key in roots:
             return roots[key]
-    return manifest_capture_root
+    return None
 
 
 def _select_dataset_task(capture_root: Path) -> tuple[Dict[str, Any] | None, list[str]]:
@@ -994,26 +1244,35 @@ def _redacted_closure_evidence_response(
 
 
 def _trigger_control_plane() -> Dict[str, Any]:
-    command = _string(os.getenv(INTAKE_TRIGGER_ENV))
+    unit = _string(os.getenv(INTAKE_TRIGGER_SYSTEMD_UNIT_ENV))
     allowed = _truthy(os.getenv(INTAKE_ALLOW_TRIGGER_ENV))
-    if not command:
+    if not unit:
         return {
             "status": "not_configured",
             "performed": False,
             "allowed": allowed,
-            "command_configured": False,
+            "systemd_unit_configured": False,
         }
     if not allowed:
         return {
             "status": "blocked",
             "performed": False,
             "allowed": False,
-            "command_configured": True,
+            "systemd_unit_configured": True,
             "blockers": [f"missing_env_{INTAKE_ALLOW_TRIGGER_ENV}"],
         }
+    if not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
+        return {
+            "status": "blocked",
+            "performed": False,
+            "allowed": True,
+            "systemd_unit_configured": True,
+            "blockers": ["intake_trigger_systemd_unit_invalid"],
+        }
+    command_argv = ["systemctl", "start", "--no-block", unit]
     completed = subprocess.run(
-        command,
-        shell=True,
+        command_argv,
+        shell=False,
         check=False,
         capture_output=True,
         text=True,
@@ -1023,7 +1282,9 @@ def _trigger_control_plane() -> Dict[str, Any]:
         "status": "triggered" if completed.returncode == 0 else "failed",
         "performed": completed.returncode == 0,
         "allowed": True,
-        "command_configured": True,
+        "systemd_unit_configured": True,
+        "systemd_unit": unit,
+        "command_argv_count": len(command_argv),
         "returncode": completed.returncode,
         "stdout_tail": completed.stdout[-2000:],
         "stderr_tail": completed.stderr[-2000:],
@@ -1037,12 +1298,14 @@ async def _require_token(
     x_blueprint_pipeline_timestamp: str | None = Header(default=None),
     x_blueprint_pipeline_signature: str | None = Header(default=None),
     x_blueprint_pipeline_nonce: str | None = Header(default=None),
-) -> None:
-    expected = _string(os.getenv(INTAKE_TOKEN_ENV))
-    if not expected:
+    x_blueprint_pipeline_client_id: str | None = Header(default=None),
+) -> str:
+    shared_secret = _string(os.getenv(INTAKE_TOKEN_ENV))
+    client_secrets = _client_secrets()
+    if not shared_secret and not client_secrets:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"{INTAKE_TOKEN_ENV} is not configured",
+            detail="intake client secrets are not configured",
         )
     timestamp_header = _string(x_blueprint_pipeline_timestamp)
     signature_header = _string(x_blueprint_pipeline_signature)
@@ -1053,14 +1316,38 @@ async def _require_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="intake signature requires timestamp, signature, and nonce headers",
             )
+        try:
+            client_id = strict_identifier(
+                x_blueprint_pipeline_client_id,
+                field="client_id",
+                max_length=80,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="signed intake requires a valid client identity",
+            ) from exc
+        if client_secrets and client_id not in client_secrets:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="unknown intake client identity",
+            )
+        expected = client_secrets.get(client_id) or shared_secret
+        if not expected:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="intake client has no configured signing secret",
+            )
         _verify_intake_signature(
             secret=expected,
             timestamp=timestamp_header,
+            client_id=client_id,
             nonce=nonce_header,
             signature=signature_header,
             body=await request.body(),
         )
-        return
+        request.state.intake_client_id = client_id
+        return client_id
 
     if not _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)):
         raise HTTPException(
@@ -1073,11 +1360,165 @@ async def _require_token(
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() == "bearer":
             provided = _string(token)
-    if not provided or not hmac.compare_digest(provided, expected):
+    if not provided or not shared_secret or not hmac.compare_digest(
+        provided, shared_secret
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid intake token",
         )
+    request.state.intake_client_id = "legacy-bearer"
+    return "legacy-bearer"
+
+
+def _intake_storage_usage(root: Path) -> tuple[int, int]:
+    file_count = 0
+    size_bytes = 0
+    if not root.exists():
+        return 0, 0
+    for path in root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        file_count += 1
+        try:
+            size_bytes += path.stat().st_size
+        except OSError:
+            continue
+    return file_count, size_bytes
+
+
+def _admission_state_paths() -> tuple[Path, Path]:
+    root = _work_dir(_manifest_path()).expanduser().resolve() / ".admission"
+    ensure_dir(root)
+    root.chmod(0o700)
+    return root / "state.json", root / "state.lock"
+
+
+def _claim_intake_admission(client_id: str) -> str:
+    state_path, lock_path = _admission_state_paths()
+    work_root = _work_dir(_manifest_path()).expanduser().resolve()
+    file_count, storage_bytes = _intake_storage_usage(work_root)
+    if file_count >= _positive_int_env(
+        INTAKE_MAX_QUEUE_FILES_ENV, DEFAULT_INTAKE_MAX_QUEUE_FILES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="intake queue file quota exceeded",
+        )
+    if storage_bytes >= _positive_int_env(
+        INTAKE_MAX_STORAGE_BYTES_ENV, DEFAULT_INTAKE_MAX_STORAGE_BYTES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="intake storage quota exceeded",
+        )
+    now = time.time()
+    lease_id = f"lease-{uuid.uuid4().hex}"
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state_payload = _read_mapping_file(state_path)
+        rates = {
+            str(key): [
+                float(item)
+                for item in value
+                if isinstance(item, (int, float)) and float(item) > now - 60.0
+            ]
+            for key, value in _mapping(state_payload.get("rate_windows")).items()
+            if isinstance(value, list)
+        }
+        active = {
+            str(key): dict(value)
+            for key, value in _mapping(state_payload.get("active_leases")).items()
+            if isinstance(value, Mapping)
+            and float(value.get("started_at_epoch") or 0.0) > now - 600.0
+        }
+        client_window = rates.setdefault(client_id, [])
+        if len(client_window) >= _positive_int_env(
+            INTAKE_RATE_LIMIT_PER_MINUTE_ENV,
+            DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="intake client rate limit exceeded",
+            )
+        if len(active) >= _positive_int_env(
+            INTAKE_MAX_CONCURRENT_ENV,
+            DEFAULT_INTAKE_MAX_CONCURRENT,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="intake concurrency quota exceeded",
+            )
+        client_window.append(now)
+        active[lease_id] = {
+            "client_id_sha256": sha256(client_id.encode("utf-8")).hexdigest(),
+            "started_at_epoch": now,
+        }
+        write_json(
+            state_path,
+            {
+                "schema_version": "blueprint_live_intake_admission_state.v1",
+                "updated_at": utc_now_iso(),
+                "rate_windows": rates,
+                "active_leases": active,
+            },
+        )
+    return lease_id
+
+
+def _release_intake_admission(lease_id: str) -> None:
+    state_path, lock_path = _admission_state_paths()
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state_payload = _read_mapping_file(state_path)
+        active = _mapping(state_payload.get("active_leases"))
+        active.pop(lease_id, None)
+        write_json(
+            state_path,
+            {
+                **state_payload,
+                "schema_version": "blueprint_live_intake_admission_state.v1",
+                "updated_at": utc_now_iso(),
+                "active_leases": active,
+            },
+        )
+
+
+async def _require_admission(
+    request: Request,
+    client_id: str = Depends(_require_token),
+) -> AsyncIterator[str]:
+    body = await request.body()
+    if len(body) > _positive_int_env(
+        INTAKE_MAX_BODY_BYTES_ENV, DEFAULT_INTAKE_MAX_BODY_BYTES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="intake request body exceeds byte limit",
+        )
+    if body:
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = None
+        if parsed is not None and not json_shape_within_limits(
+            parsed,
+            max_depth=_positive_int_env(
+                INTAKE_MAX_JSON_DEPTH_ENV, DEFAULT_INTAKE_MAX_JSON_DEPTH
+            ),
+            max_items=_positive_int_env(
+                INTAKE_MAX_JSON_ITEMS_ENV, DEFAULT_INTAKE_MAX_JSON_ITEMS
+            ),
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="intake JSON depth or item limit exceeded",
+            )
+    lease_id = _claim_intake_admission(client_id)
+    try:
+        yield client_id
+    finally:
+        _release_intake_admission(lease_id)
 
 
 def create_app() -> FastAPI:
@@ -1089,25 +1530,15 @@ def create_app() -> FastAPI:
         return {
             "ok": True,
             "schema_version": INTAKE_SCHEMA_VERSION,
-            "manifest_path": str(manifest_path),
-            "manifest_exists": manifest_path.is_file(),
-            "token_configured": bool(_string(os.getenv(INTAKE_TOKEN_ENV))),
+            "control_plane_ready": manifest_path.is_file(),
+            "authentication_configured": bool(
+                _string(os.getenv(INTAKE_TOKEN_ENV)) or _client_secrets()
+            ),
             "signed_intake_required": not _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
             "legacy_bearer_enabled": _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
-            "signature_replay_window_seconds": _intake_max_clock_skew_seconds(),
-            "trigger_configured": bool(_string(os.getenv(INTAKE_TRIGGER_ENV))),
-            "per_request_capture_root_enabled": _truthy(
-                os.getenv(INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV)
-            ),
-            "endpoints": [
-                "/api/live-pipeline/job-requests",
-                "/api/live-pipeline/capture-handoffs",
-                "/api/live-pipeline/policy-packages",
-                "/api/live-pipeline/real-robot-pov",
-                "/api/live-pipeline/deployment-outcomes",
-                "/api/live-pipeline/live-closure-evidence",
-                "/api/live-pipeline/intake-audit",
-            ],
+            "shared_nonce_store_enabled": True,
+            "server_capture_root_mapping_enforced": True,
+            "bounded_admission_enabled": True,
             "proof_boundary": {
                 "service_is_intake_only": True,
                 "simulator_execution_proven": False,
@@ -1115,7 +1546,7 @@ def create_app() -> FastAPI:
             },
         }
 
-    @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_token)])
+    @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_admission)])
     async def intake_job_request(request: Request) -> Dict[str, Any]:
         try:
             payload = await request.json()
@@ -1129,6 +1560,25 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail=f"control-plane manifest missing: {manifest_path}",
             )
+        manifest_payload = read_json_any(manifest_path)
+        if not isinstance(manifest_payload, Mapping):
+            raise HTTPException(
+                status_code=503,
+                detail="control-plane manifest is not JSON object",
+            )
+        manifest_capture_root_text = _string(manifest_payload.get("capture_root"))
+        manifest_capture_root = (
+            Path(manifest_capture_root_text).resolve()
+            if manifest_capture_root_text
+            else None
+        )
+        payload = _bind_payload_to_server_capture_root(
+            payload=payload,
+            client_id=_string(
+                getattr(request.state, "intake_client_id", "")
+            ),
+            manifest_capture_root=manifest_capture_root,
+        )
         work_dir = _work_dir(manifest_path).resolve()
         ensure_dir(work_dir)
         candidate_path = _candidate_path(payload, work_dir)
@@ -1138,9 +1588,7 @@ def create_app() -> FastAPI:
             webapp_job_request=candidate_path,
             stage_webapp_request=True,
             overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
-            allow_request_capture_root=_truthy(
-                os.getenv(INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV)
-            ),
+            allow_request_capture_root=True,
         )
         trigger = (
             _trigger_control_plane()
@@ -1160,7 +1608,7 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=202, content=response)
         return response
 
-    @app.post("/api/live-pipeline/capture-handoffs", dependencies=[Depends(_require_token)])
+    @app.post("/api/live-pipeline/capture-handoffs", dependencies=[Depends(_require_admission)])
     async def intake_capture_handoff(request: Request) -> Dict[str, Any]:
         try:
             payload = await request.json()
@@ -1185,6 +1633,9 @@ def create_app() -> FastAPI:
         )
         capture_root = _capture_root_from_handoff_payload(
             payload=payload,
+            client_id=_string(
+                getattr(request.state, "intake_client_id", "")
+            ),
             manifest_capture_root=manifest_capture_root,
         )
         if capture_root is None:
@@ -1271,7 +1722,7 @@ def create_app() -> FastAPI:
 
     @app.post(
         "/api/live-pipeline/policy-packages",
-        dependencies=[Depends(_require_token)],
+        dependencies=[Depends(_require_admission)],
     )
     async def intake_policy_package(request: Request) -> Dict[str, Any]:
         try:
@@ -1316,7 +1767,7 @@ def create_app() -> FastAPI:
 
     @app.post(
         "/api/live-pipeline/real-robot-pov",
-        dependencies=[Depends(_require_token)],
+        dependencies=[Depends(_require_admission)],
     )
     async def intake_real_robot_pov(request: Request) -> Dict[str, Any]:
         try:
@@ -1361,7 +1812,7 @@ def create_app() -> FastAPI:
 
     @app.post(
         "/api/live-pipeline/deployment-outcomes",
-        dependencies=[Depends(_require_token)],
+        dependencies=[Depends(_require_admission)],
     )
     async def intake_deployment_outcomes(request: Request) -> Dict[str, Any]:
         try:
@@ -1406,7 +1857,7 @@ def create_app() -> FastAPI:
 
     @app.post(
         "/api/live-pipeline/live-closure-evidence",
-        dependencies=[Depends(_require_token)],
+        dependencies=[Depends(_require_admission)],
     )
     async def intake_live_closure_evidence(request: Request) -> Dict[str, Any]:
         try:

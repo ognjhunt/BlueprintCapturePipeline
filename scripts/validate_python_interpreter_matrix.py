@@ -6,11 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
+    import tomli as tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +48,18 @@ def _collect_python_versions(value: Any) -> list[str]:
 def _workflow_python_versions(path: Path) -> list[str]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     return _collect_python_versions(payload)
+
+
+def _compatibility_matrix_versions(path: Path, job_name: str) -> list[str]:
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    jobs = dict(payload.get("jobs") or {}) if isinstance(payload, dict) else {}
+    job = dict(jobs.get(job_name) or {})
+    strategy = dict(job.get("strategy") or {})
+    matrix = dict(strategy.get("matrix") or {})
+    value = matrix.get("python-version") or []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _current_minor() -> str:
@@ -109,6 +125,31 @@ def validate(*, assert_current: bool = False, root: Path = ROOT) -> list[str]:
             errors.append(
                 f"workflow_not_on_canonical_python:{workflow.get('path')}:{expected_version}!={canonical}"
             )
+
+    compatibility = dict(matrix.get("compatibility_ci") or {})
+    compatibility_path = root / str(compatibility.get("path") or "")
+    compatibility_job = str(compatibility.get("job") or "")
+    expected_compatibility = [str(item) for item in compatibility.get("python_versions") or []]
+    if not compatibility_path.is_file():
+        errors.append(f"compatibility_workflow_missing:{compatibility_path}")
+    else:
+        actual_compatibility = _compatibility_matrix_versions(
+            compatibility_path,
+            compatibility_job,
+        )
+        if actual_compatibility != expected_compatibility:
+            errors.append(
+                "compatibility_workflow_python_matrix_mismatch:"
+                f"{actual_compatibility}!={expected_compatibility}"
+            )
+        if sorted(expected_compatibility) != sorted(supported):
+            errors.append(
+                f"supported_python_missing_from_compatibility_ci:{expected_compatibility}!={supported}"
+            )
+        workflow_text = compatibility_path.read_text(encoding="utf-8")
+        for suite_entry in compatibility.get("suite") or []:
+            if str(suite_entry) not in workflow_text:
+                errors.append(f"compatibility_suite_entry_missing:{suite_entry}")
 
     required_checks_doc = (root / "docs" / "CI_REQUIRED_CHECKS.md").read_text(encoding="utf-8")
     if "docs/CI_PYTHON_INTERPRETER_MATRIX.json" not in required_checks_doc:

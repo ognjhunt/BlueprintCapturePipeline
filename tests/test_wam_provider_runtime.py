@@ -48,6 +48,27 @@ def test_provider_rollout_normalization_handles_empty_and_invalid_numeric_payloa
     assert rollouts[1]["predicted_success"] is False
 
 
+def test_provider_rollout_normalization_excludes_text_to_video_preview() -> None:
+    payload = {
+        "endpoint_class": "text_to_video_preview",
+        "task_evaluation_run_eligible": False,
+        "rollouts": [
+            {
+                "rollout_id": "preview",
+                "policy_id": "not-a-policy-eval",
+                "scenario_eval_run_id": "preview-only",
+                "generated_video_path": "preview.mp4",
+            }
+        ],
+    }
+
+    assert normalize_provider_rollouts(
+        payload=payload,
+        substrate="oscar_wam",
+        generated_at="now",
+    ) == []
+
+
 def test_provider_command_parser_and_live_gate_are_fail_closed(monkeypatch) -> None:
     monkeypatch.delenv("BLUEPRINT_ALLOW_LIVE_WAM_PROVIDER", raising=False)
     commands = parse_wam_provider_commands(

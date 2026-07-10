@@ -1195,7 +1195,9 @@ def _objects_by_id(object_geometry_manifest: Mapping[str, Any]) -> Dict[str, Dic
         object_id = _string(item.get("object_id") or item.get("id") or f"object_{index}")
         if not object_id:
             continue
-        center = _object_center(item)
+        metric_placement_ready = item.get("metric_placement_ready") is True
+        physics_ready = item.get("physics_ready") is True and metric_placement_ready
+        center = _object_center(item) if metric_placement_ready else None
         objects[object_id] = {
             "object_id": object_id,
             "label": _string(item.get("label") or item.get("class_name") or "object"),
@@ -1207,10 +1209,12 @@ def _objects_by_id(object_geometry_manifest: Mapping[str, Any]) -> Dict[str, Dic
                 or ([item.get("task_role")] if item.get("task_role") else [])
             ),
             "center_xyz": center,
-            "has_collision_hulls": bool(item.get("collision_hulls")),
-            "has_support_surfaces": bool(item.get("support_surfaces")),
+            "metric_placement_ready": metric_placement_ready,
+            "physics_ready": physics_ready,
+            "has_collision_hulls": physics_ready and bool(item.get("collision_hulls")),
+            "has_support_surfaces": physics_ready and bool(item.get("support_surfaces")),
             "physics_coverage_status": "covered"
-            if item.get("collision_hulls") or item.get("support_surfaces")
+            if physics_ready and (item.get("collision_hulls") or item.get("support_surfaces"))
             else "review_required",
             "provenance": _mapping(item.get("provenance")),
         }
@@ -1251,15 +1255,21 @@ def _object_index(object_geometry_manifest: Mapping[str, Any]) -> Dict[str, Any]
         for item in objects
         if item.get("has_collision_hulls") or item.get("has_support_surfaces")
     ]
+    metric_placed = [item for item in objects if item.get("metric_placement_ready")]
     return {
         "schema_version": "robot_eval_object_index.v1",
         "status": "available" if objects else "missing",
         "object_count": len(objects),
+        "metric_placement_object_count": len(metric_placed),
+        "metric_placement_complete": bool(objects) and len(metric_placed) == len(objects),
         "physics_covered_object_count": len(physics_covered),
         "physics_coverage_complete": bool(objects) and len(physics_covered) == len(objects),
         "objects": sorted(objects, key=lambda item: item["object_id"]),
         "missing_physics_object_ids": [
             item["object_id"] for item in objects if item not in physics_covered
+        ],
+        "missing_metric_placement_object_ids": [
+            item["object_id"] for item in objects if item not in metric_placed
         ],
         "claim_boundary": "object_index_is_capture_derived_semantic_context_not_physical_scene_certification",
     }
@@ -3180,6 +3190,8 @@ def _object_location_cards(object_geometry_manifest: Mapping[str, Any]) -> List[
         object_id = _string(item.get("object_id") or item.get("id") or f"object_{index}")
         if not object_id:
             continue
+        metric_placement_ready = item.get("metric_placement_ready") is True
+        physics_ready = item.get("physics_ready") is True and metric_placement_ready
         objects.append(
             {
                 "object_id": object_id,
@@ -3190,12 +3202,16 @@ def _object_location_cards(object_geometry_manifest: Mapping[str, Any]) -> List[
                     or item.get("roles")
                     or ([item.get("task_role")] if item.get("task_role") else [])
                 ),
-                "location": item.get("placement_bbox") or item.get("boundingBox") or item.get("bbox"),
-                "center_xyz": _object_center(item),
-                "has_collision_hulls": bool(item.get("collision_hulls")),
-                "has_support_surfaces": bool(item.get("support_surfaces")),
+                "location": (item.get("placement_bbox") or item.get("boundingBox") or item.get("bbox"))
+                if metric_placement_ready
+                else None,
+                "center_xyz": _object_center(item) if metric_placement_ready else None,
+                "metric_placement_ready": metric_placement_ready,
+                "physics_ready": physics_ready,
+                "has_collision_hulls": physics_ready and bool(item.get("collision_hulls")),
+                "has_support_surfaces": physics_ready and bool(item.get("support_surfaces")),
                 "physics_coverage_status": "covered"
-                if item.get("collision_hulls") or item.get("support_surfaces")
+                if physics_ready and (item.get("collision_hulls") or item.get("support_surfaces"))
                 else "review_required",
                 "label_source": "object_geometry_manifest",
                 "confidence": _first_text(
@@ -3386,7 +3402,7 @@ def _site_card(
         semantics_metadata.get("metric_scale_factor")
         or world_manifest_semantics.get("metric_scale_factor")
     )
-    object_scale_available = bool(object_index["object_count"])
+    object_scale_available = bool(object_index["metric_placement_object_count"])
     if metric_scale_factor is None and object_scale_available:
         metric_scale_factor = 1.0
         scale_status = "derived_from_object_geometry_manifest"

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import shlex
-import sys
 from pathlib import Path
 
+from blueprint_pipeline import robot_eval_provider_race_launcher as race_module
 from blueprint_pipeline.robot_eval_provider_race_launcher import (
     ALLOW_PROVIDER_RACE_LAUNCH_ENV,
+    PROVIDER_ADAPTER_REGISTRY,
     main as provider_race_launcher_main,
     run_robot_eval_provider_race_launcher,
 )
@@ -19,10 +19,6 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _python_command(code: str) -> str:
-    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
 def _launch_request(path: Path, *, can_launch: bool = True) -> Path:
@@ -64,8 +60,6 @@ def _launch_request(path: Path, *, can_launch: bool = True) -> Path:
 
 
 def _handoff(path: Path, *, ready: bool = True) -> Path:
-    first_marker = path.parent / "runpod-attempt"
-    second_marker = path.parent / "vast-attempt"
     _write_json(
         path,
         {
@@ -110,9 +104,8 @@ def _handoff(path: Path, *, ready: bool = True) -> Path:
                 {
                     "provider": "runpod",
                     "operation": "enqueue_runpod_serverless_or_on_demand_worker",
-                    "adapter_command": _python_command(
-                        f"from pathlib import Path; Path({str(first_marker)!r}).write_text('failed'); raise SystemExit(7)"
-                    ),
+                    "adapter_id": "runpod_provider_adapter.v1",
+                    "adapter_command": "blueprint-run-runpod-provider-adapter",
                     "selected": True,
                     "launch_request_path": "gpu_provider_launch_request.json",
                     "adapter_result_path": "runpod_provider_adapter_result.json",
@@ -120,9 +113,8 @@ def _handoff(path: Path, *, ready: bool = True) -> Path:
                 {
                     "provider": "vast",
                     "operation": "create_vast_instance_and_run_worker",
-                    "adapter_command": _python_command(
-                        f"from pathlib import Path; Path({str(second_marker)!r}).write_text('won')"
-                    ),
+                    "adapter_id": "vast_provider_adapter.v1",
+                    "adapter_command": "blueprint-run-vast-provider-adapter",
                     "selected": False,
                     "launch_request_path": "gpu_provider_launch_request.json",
                     "adapter_result_path": "vast_provider_adapter_result.json",
@@ -168,6 +160,47 @@ def test_provider_race_launcher_executes_live_gated_serial_failover(
     request_path = _launch_request(tmp_path / "gpu_provider_launch_request.json")
     handoff_path = _handoff(tmp_path / "gpu_provider_race_handoff.json")
     monkeypatch.setenv(ALLOW_PROVIDER_RACE_LAUNCH_ENV, "true")
+    adapter_calls: list[str] = []
+
+    def fake_run_provider_adapter(**kwargs: object) -> dict[str, object]:
+        stdout_path = Path(str(kwargs["stdout_path"]))
+        argv = list(kwargs["argv"])  # type: ignore[arg-type]
+        provider = "runpod" if argv[0] == PROVIDER_ADAPTER_REGISTRY["runpod"]["executable"] else "vast"
+        adapter_calls.append(provider)
+        result_path = stdout_path.parent / PROVIDER_ADAPTER_REGISTRY[provider][
+            "result_filename"
+        ]
+        if provider == "runpod":
+            (tmp_path / "runpod-attempt").write_text("failed", encoding="utf-8")
+            _write_json(
+                result_path,
+                {
+                    "status": "failed",
+                    "job_id": "race-job-1",
+                    "api_call_performed": False,
+                    "runpod_side_effects_may_have_occurred": False,
+                },
+            )
+            return {"started": True, "exit_code": 7, "timed_out": False, "blockers": []}
+        (tmp_path / "vast-attempt").write_text("won", encoding="utf-8")
+        _write_json(
+            result_path,
+            {
+                "status": "completed",
+                "job_id": "race-job-1",
+                "terminal_artifact": {
+                    "status": "validated",
+                    "job_id": "race-job-1",
+                    "artifact_uri": "gs://proof/race-job-1/result.json",
+                    "sha256": "a" * 64,
+                },
+                "teardown_status": "completed",
+                "continuing_spend_from_this_run": False,
+            },
+        )
+        return {"started": True, "exit_code": 0, "timed_out": False, "blockers": []}
+
+    monkeypatch.setattr(race_module, "_run_provider_adapter", fake_run_provider_adapter)
 
     result = run_robot_eval_provider_race_launcher(
         provider_launch_request_path=request_path,
@@ -186,13 +219,27 @@ def test_provider_race_launcher_executes_live_gated_serial_failover(
         "vast",
     ]
     assert result["failover_attempts"][0]["status"] == "failed"
-    assert result["failover_attempts"][1]["status"] == "completed"
+    assert result["failover_attempts"][1]["status"] == "won"
+    assert all(
+        attempt["command"]["adapter_registry_owned"] is True
+        and attempt["command"]["raw_candidate_command_executed"] is False
+        for attempt in result["failover_attempts"]
+    )
     assert (tmp_path / "runpod-attempt").read_text(encoding="utf-8") == "failed"
     assert (tmp_path / "vast-attempt").read_text(encoding="utf-8") == "won"
     assert result["remote_cloud_execution_proven"] is False
     persisted = _read_json(tmp_path / "gpu_provider_race_launcher_result.json")
     assert persisted["status"] == "completed"
     assert persisted["winning_provider"] == "vast"
+    replay = run_robot_eval_provider_race_launcher(
+        provider_launch_request_path=request_path,
+        handoff_path=handoff_path,
+        allow_live_provider_race=True,
+        timeout_seconds=5,
+    )
+    assert replay["idempotent_replay"] is True
+    assert replay["provider_adapter_commands_executed_on_replay"] is False
+    assert adapter_calls == ["runpod", "vast"]
 
 
 def test_provider_race_launcher_blocks_on_blocked_handoff(tmp_path: Path) -> None:
@@ -237,6 +284,199 @@ def test_provider_race_launcher_blocks_nested_runtime_blockers(
     assert "teardown_owned_loser_cleanup_not_proven" in result["blockers"]
     assert "provider_race_runtime_launcher_contract_not_signed" in result["blockers"]
     assert result["live_provider_calls_performed"] is False
+
+
+def test_provider_race_exit_zero_without_terminal_artifact_has_no_winner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _launch_request(tmp_path / "gpu_provider_launch_request.json")
+    handoff_path = _handoff(tmp_path / "gpu_provider_race_handoff.json")
+    monkeypatch.setenv(ALLOW_PROVIDER_RACE_LAUNCH_ENV, "true")
+
+    def no_artifact(**kwargs: object) -> dict[str, object]:
+        stdout_path = Path(str(kwargs["stdout_path"]))
+        argv = list(kwargs["argv"])  # type: ignore[arg-type]
+        provider = next(
+            name
+            for name, adapter in PROVIDER_ADAPTER_REGISTRY.items()
+            if adapter["executable"] == argv[0]
+        )
+        _write_json(
+            stdout_path.parent / PROVIDER_ADAPTER_REGISTRY[provider]["result_filename"],
+            {
+                "status": "completed",
+                "job_id": "race-job-1",
+                "teardown_status": "completed",
+                "continuing_spend_from_this_run": False,
+            },
+        )
+        return {"started": True, "exit_code": 0, "timed_out": False, "blockers": []}
+
+    monkeypatch.setattr(race_module, "_run_provider_adapter", no_artifact)
+    result = run_robot_eval_provider_race_launcher(
+        provider_launch_request_path=request_path,
+        handoff_path=handoff_path,
+        allow_live_provider_race=True,
+    )
+    assert result["status"] == "failed"
+    assert result["provider_race_execution_proven"] is False
+    assert result["winning_provider"] is None
+    assert len(result["failover_attempts"]) == 2
+    assert all(
+        "provider_terminal_artifact_missing" in attempt["blockers"]
+        for attempt in result["failover_attempts"]
+    )
+
+
+def test_provider_race_timeout_tears_down_before_failover(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _launch_request(tmp_path / "gpu_provider_launch_request.json")
+    handoff_path = _handoff(tmp_path / "gpu_provider_race_handoff.json")
+    monkeypatch.setenv(ALLOW_PROVIDER_RACE_LAUNCH_ENV, "true")
+    calls: list[str] = []
+
+    def adapter_run(**kwargs: object) -> dict[str, object]:
+        stdout_path = Path(str(kwargs["stdout_path"]))
+        argv = list(kwargs["argv"])  # type: ignore[arg-type]
+        provider = next(
+            name
+            for name, adapter in PROVIDER_ADAPTER_REGISTRY.items()
+            if adapter["executable"] == argv[0]
+        )
+        calls.append(f"run:{provider}")
+        result_path = stdout_path.parent / PROVIDER_ADAPTER_REGISTRY[provider][
+            "result_filename"
+        ]
+        if provider == "runpod":
+            _write_json(
+                result_path,
+                {
+                    "status": "submitted",
+                    "job_id": "race-job-1",
+                    "api_call_performed": True,
+                    "runpod_side_effects_may_have_occurred": True,
+                    "runpod_response": {"id": "pod-stalled"},
+                },
+            )
+            return {
+                "started": True,
+                "exit_code": -15,
+                "timed_out": True,
+                "blockers": ["provider_adapter_command_timeout"],
+            }
+        _write_json(
+            result_path,
+            {
+                "status": "completed",
+                "job_id": "race-job-1",
+                "terminal_artifact": {
+                    "status": "validated",
+                    "job_id": "race-job-1",
+                    "artifact_uri": "gs://proof/race-job-1/vast.json",
+                    "sha256": "b" * 64,
+                },
+                "teardown_status": "completed",
+                "continuing_spend_from_this_run": False,
+            },
+        )
+        return {"started": True, "exit_code": 0, "timed_out": False, "blockers": []}
+
+    def cleanup(**kwargs: object) -> dict[str, object]:
+        provider = str(kwargs["provider"])
+        calls.append(f"teardown:{provider}")
+        return {
+            "status": "verified",
+            "teardown_verified": True,
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(race_module, "_run_provider_adapter", adapter_run)
+    monkeypatch.setattr(race_module, "_ensure_attempt_teardown", cleanup)
+    result = run_robot_eval_provider_race_launcher(
+        provider_launch_request_path=request_path,
+        handoff_path=handoff_path,
+        allow_live_provider_race=True,
+    )
+    assert result["status"] == "completed"
+    assert result["winning_provider"] == "vast"
+    assert calls == ["run:runpod", "teardown:runpod", "run:vast", "teardown:vast"]
+
+
+def test_provider_race_stops_failover_when_teardown_is_unverified(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _launch_request(tmp_path / "gpu_provider_launch_request.json")
+    handoff_path = _handoff(tmp_path / "gpu_provider_race_handoff.json")
+    monkeypatch.setenv(ALLOW_PROVIDER_RACE_LAUNCH_ENV, "true")
+    adapter_calls: list[str] = []
+
+    def submitted(**kwargs: object) -> dict[str, object]:
+        stdout_path = Path(str(kwargs["stdout_path"]))
+        argv = list(kwargs["argv"])  # type: ignore[arg-type]
+        provider = next(
+            name
+            for name, adapter in PROVIDER_ADAPTER_REGISTRY.items()
+            if adapter["executable"] == argv[0]
+        )
+        adapter_calls.append(provider)
+        _write_json(
+            stdout_path.parent / PROVIDER_ADAPTER_REGISTRY[provider]["result_filename"],
+            {
+                "status": "submitted",
+                "job_id": "race-job-1",
+                "api_call_performed": True,
+                "runpod_side_effects_may_have_occurred": True,
+                "runpod_response": {"id": "pod-unverified"},
+            },
+        )
+        return {"started": True, "exit_code": 0, "timed_out": False, "blockers": []}
+
+    monkeypatch.setattr(race_module, "_run_provider_adapter", submitted)
+    monkeypatch.setattr(
+        race_module,
+        "_ensure_attempt_teardown",
+        lambda **_kwargs: {
+            "status": "blocked",
+            "teardown_verified": False,
+            "blockers": ["provider_teardown_not_verified"],
+        },
+    )
+    result = run_robot_eval_provider_race_launcher(
+        provider_launch_request_path=request_path,
+        handoff_path=handoff_path,
+        allow_live_provider_race=True,
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "provider_teardown_unverified_failover_stopped"
+    assert result["provider_race_execution_proven"] is False
+    assert adapter_calls == ["runpod"]
+
+
+def test_provider_race_rejects_candidate_command_and_output_path_escape(
+    tmp_path: Path,
+) -> None:
+    request_path = _launch_request(tmp_path / "gpu_provider_launch_request.json")
+    handoff_path = _handoff(tmp_path / "gpu_provider_race_handoff.json")
+    handoff = _read_json(handoff_path)
+    handoff["runnable_candidates"][0]["adapter_command"] = "python -c malicious"
+    handoff["runnable_candidates"][0]["provider"] = "../../escape"
+    _write_json(handoff_path, handoff)
+    outside = tmp_path.parent / "escaped-result.json"
+
+    result = run_robot_eval_provider_race_launcher(
+        provider_launch_request_path=request_path,
+        handoff_path=handoff_path,
+        output_path=outside,
+    )
+    assert result["status"] == "blocked"
+    assert "provider_race_adapter_not_registered:../../escape" in result["blockers"]
+    assert "provider_race_output_path_outside_job_dir" in result["blockers"]
+    assert not outside.exists()
+    assert (tmp_path / "gpu_provider_race_launcher_result.json").is_file()
 
 
 def test_provider_race_launcher_cli_exits_zero_for_ready_handoff(

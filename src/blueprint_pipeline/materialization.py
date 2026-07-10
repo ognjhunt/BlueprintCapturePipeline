@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import _normalize_requested_lanes
 from .common import (
+    PipelineError,
     ensure_dir,
     join_gs_uri,
     parse_bool,
@@ -18,11 +22,43 @@ from .common import (
     try_parse_float,
     utc_now_iso,
     write_json,
+    write_text,
 )
+from .ios_manifest import verify_canonical_raw_bundle_path
+from .temporal_alignment import align_frame_pose_streams
 
 _IPHONE_POSE_MATCH_RATE_MIN = 0.65
 _IPHONE_P95_POSE_DELTA_MAX = 0.2
 _DEFAULT_REQUESTED_OUTPUTS = ["qualification", "preview_simulation"]
+
+
+@dataclass(frozen=True)
+class WorldModelCandidacyDecision:
+    """One typed decision projected to every descriptor/readiness surface."""
+
+    candidate: bool
+    reasoning: tuple[str, ...]
+    requested_mode: Optional[str]
+    resolved_mode: Optional[str]
+    downgrade_reason: Optional[str]
+    decision_sha256: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema_version": "blueprint.world_model_candidacy_decision.v1",
+            "candidate": self.candidate,
+            "reasoning": list(self.reasoning),
+            "capture_mode": (
+                {
+                    "requested_mode": self.requested_mode,
+                    "resolved_mode": self.resolved_mode,
+                    "downgrade_reason": self.downgrade_reason,
+                }
+                if self.requested_mode is not None
+                else None
+            ),
+            "decision_sha256": self.decision_sha256,
+        }
 
 
 def _read_optional_json(path: Path) -> Dict[str, Any]:
@@ -162,6 +198,14 @@ def _time_value(row: Mapping[str, Any]) -> Optional[float]:
     return None
 
 
+def _optional_finite_float(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _percentile(values: List[float], percentile: float) -> Optional[float]:
     if not values:
         return None
@@ -200,57 +244,35 @@ def _nearest_pose_time(ordered_pose_times: List[float], target_time: float) -> O
     return best
 
 
-def _inspect_pose_alignment(raw_root: Path) -> Dict[str, Optional[float]]:
+def _inspect_pose_alignment(raw_root: Path) -> Dict[str, Any]:
     frames_rows = _read_json_lines(raw_root / "arkit" / "frames.jsonl")
     pose_rows = _read_json_lines(raw_root / "arkit" / "poses.jsonl")
     if not frames_rows or not pose_rows:
         return {
             "pose_match_rate": None,
             "p95_pose_delta_sec": None,
+            "max_pose_delta_sec": None,
             "matched_pose_count": None,
             "frame_count": float(len(frames_rows)) if frames_rows else None,
+            "temporal_alignment_status": "blocked",
+            "temporal_alignment_blockers": ["frame_or_pose_stream_missing"],
+            "temporal_alignment": None,
         }
-
-    poses_by_frame_id: Dict[str, float] = {}
-    pose_times: List[float] = []
-    for row in pose_rows:
-        pose_time = _time_value(row)
-        if pose_time is None:
-            continue
-        pose_times.append(pose_time)
-        frame_id = _normalized_frame_id(
-            row.get("frame_id") or row.get("frameIndex") or row.get("frame_index")
-        )
-        if frame_id:
-            poses_by_frame_id[frame_id] = pose_time
-    pose_times.sort()
-
-    matched = 0
-    deltas: List[float] = []
-    for row in frames_rows:
-        frame_time = _time_value(row)
-        frame_id = _normalized_frame_id(
-            row.get("frame_id") or row.get("frameIndex") or row.get("frame_index")
-        )
-        matched_pose_time: Optional[float] = None
-        if frame_id and frame_id in poses_by_frame_id:
-            matched_pose_time = poses_by_frame_id[frame_id]
-        elif frame_time is not None:
-            matched_pose_time = _nearest_pose_time(pose_times, frame_time)
-        if matched_pose_time is None:
-            continue
-        matched += 1
-        if frame_time is not None:
-            deltas.append(abs(frame_time - matched_pose_time))
-
-    frame_count = len(frames_rows)
-    pose_match_rate = float(matched) / float(frame_count) if frame_count else None
-    p95_pose_delta_sec = _percentile(deltas, 95.0)
+    alignment = align_frame_pose_streams(
+        frames_rows,
+        pose_rows,
+        max_delta_sec=_IPHONE_P95_POSE_DELTA_MAX,
+    )
+    metrics = alignment["metrics"]
     return {
-        "pose_match_rate": pose_match_rate,
-        "p95_pose_delta_sec": p95_pose_delta_sec,
-        "matched_pose_count": float(matched),
-        "frame_count": float(frame_count),
+        "pose_match_rate": float(metrics["match_rate"]),
+        "p95_pose_delta_sec": metrics["delta_p95_sec"],
+        "max_pose_delta_sec": metrics["delta_max_sec"],
+        "matched_pose_count": float(metrics["matched_count"]),
+        "frame_count": float(metrics["frame_count"]),
+        "temporal_alignment_status": alignment["status"],
+        "temporal_alignment_blockers": list(alignment["blockers"]),
+        "temporal_alignment": alignment,
     }
 
 
@@ -283,6 +305,7 @@ def _canonical_world_model_candidate(
     capture_source: str = "iphone",
     pose_match_rate: Optional[float] = None,
     p95_pose_delta_sec: Optional[float] = None,
+    pose_alignment_valid: Optional[bool] = None,
     geometry_ready: bool = False,
     geometry_source: Optional[str] = None,
 ) -> bool:
@@ -299,16 +322,24 @@ def _canonical_world_model_candidate(
         # Backwards compatibility: captures predating capture_mode field.
         return site_id_present and evidence_tier != "pre_screen_video"
     resolved_mode = str(capture_mode.get("resolved_mode") or "qualification_only")
-    rights_block = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
+    rights_block = (
+        manifest.get("capture_rights")
+        if isinstance(manifest.get("capture_rights"), Mapping)
+        else {}
+    )
     arkit_ready = (
         arkit_poses_uri is not None
         and arkit_intrinsics_uri is not None
         and arkit_depth_prefix_uri is not None
     )
     if capture_source == "iphone":
-        spatial_conditioning_ready = arkit_ready and _iphone_pose_alignment_ok(
-            pose_match_rate,
-            p95_pose_delta_sec,
+        spatial_conditioning_ready = (
+            arkit_ready
+            and _iphone_pose_alignment_ok(
+                pose_match_rate,
+                p95_pose_delta_sec,
+            )
+            and pose_alignment_valid is not False
         )
     else:
         spatial_conditioning_ready = arkit_ready or geometry_ready
@@ -330,12 +361,21 @@ def _world_model_candidate_reasoning(
     capture_source: str = "iphone",
     pose_match_rate: Optional[float] = None,
     p95_pose_delta_sec: Optional[float] = None,
+    pose_alignment_valid: Optional[bool] = None,
     geometry_ready: bool = False,
     geometry_source: Optional[str] = None,
 ) -> list:
     capture_mode = manifest.get("capture_mode")
-    resolved_mode = str((capture_mode or {}).get("resolved_mode") or "qualification_only") if isinstance(capture_mode, Mapping) else "qualification_only"
-    rights_block = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
+    resolved_mode = (
+        str((capture_mode or {}).get("resolved_mode") or "qualification_only")
+        if isinstance(capture_mode, Mapping)
+        else "qualification_only"
+    )
+    rights_block = (
+        manifest.get("capture_rights")
+        if isinstance(manifest.get("capture_rights"), Mapping)
+        else {}
+    )
     return [
         f"capture_mode_site_world_candidate:{resolved_mode == 'site_world_candidate'}",
         f"site_id_present:{_stable_site_id_present(manifest)}",
@@ -343,7 +383,8 @@ def _world_model_candidate_reasoning(
         f"arkit_poses_valid:{arkit_poses_uri is not None}",
         f"arkit_intrinsics_valid:{arkit_intrinsics_uri is not None}",
         f"depth_coverage_ok:{arkit_depth_prefix_uri is not None}",
-        f"pose_alignment_ok:{capture_source != 'iphone' or _iphone_pose_alignment_ok(pose_match_rate, p95_pose_delta_sec)}",
+        f"pose_alignment_ok:{capture_source != 'iphone' or (_iphone_pose_alignment_ok(pose_match_rate, p95_pose_delta_sec) and pose_alignment_valid is not False)}",
+        f"temporal_alignment_verified:{pose_alignment_valid is not False if capture_source == 'iphone' else True}",
         f"pose_match_rate:{round(pose_match_rate, 4) if pose_match_rate is not None else 'missing'}",
         f"p95_pose_delta_sec:{round(p95_pose_delta_sec, 4) if p95_pose_delta_sec is not None else 'missing'}",
         f"geometry_ready:{geometry_ready}",
@@ -387,7 +428,9 @@ def _normalized_capture_topology(manifest: Mapping[str, Any]) -> Optional[Dict[s
         "capture_session_id": str(raw.get("capture_session_id") or "").strip() or None,
         "route_id": str(raw.get("route_id") or "").strip() or None,
         "pass_id": str(raw.get("pass_id") or "").strip() or None,
-        "pass_index": int(raw["pass_index"]) if isinstance(raw.get("pass_index"), (int, float)) else None,
+        "pass_index": int(raw["pass_index"])
+        if isinstance(raw.get("pass_index"), (int, float))
+        else None,
         "intended_pass_role": str(raw.get("intended_pass_role") or "primary"),
         "entry_anchor_id": str(raw.get("entry_anchor_id") or "").strip() or None,
         "return_anchor_id": str(raw.get("return_anchor_id") or "").strip() or None,
@@ -402,7 +445,8 @@ def _normalized_capture_topology(manifest: Mapping[str, Any]) -> Optional[Dict[s
             else None
         ),
         "site_visit_id": str(raw.get("site_visit_id") or "").strip() or None,
-        "coordinate_frame_session_id": str(raw.get("coordinate_frame_session_id") or "").strip() or None,
+        "coordinate_frame_session_id": str(raw.get("coordinate_frame_session_id") or "").strip()
+        or None,
         "arkit_session_id": str(raw.get("arkit_session_id") or "").strip() or None,
     }
 
@@ -418,8 +462,12 @@ def _normalized_route_anchors(raw: Any) -> Optional[Dict[str, Any]]:
                 continue
             route_anchors.append(
                 {
-                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip() or None,
-                    "anchor_type": str(item.get("anchor_type") or item.get("anchorType") or "").strip() or None,
+                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip()
+                    or None,
+                    "anchor_type": str(
+                        item.get("anchor_type") or item.get("anchorType") or ""
+                    ).strip()
+                    or None,
                     "label": str(item.get("label") or "").strip() or None,
                     "expected_observation": str(
                         item.get("expected_observation") or item.get("expectedObservation") or ""
@@ -454,16 +502,25 @@ def _normalized_checkpoint_events(raw: Any) -> Optional[Dict[str, Any]]:
                 continue
             checkpoint_events.append(
                 {
-                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip() or None,
+                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip()
+                    or None,
                     "pass_id": str(item.get("pass_id") or item.get("passId") or "").strip() or None,
                     "t_capture_sec": (
                         try_parse_float(item.get("t_capture_sec") or item.get("tCaptureSec"), 0.0)
-                        if (item.get("t_capture_sec") is not None or item.get("tCaptureSec") is not None)
+                        if (
+                            item.get("t_capture_sec") is not None
+                            or item.get("tCaptureSec") is not None
+                        )
                         else None
                     ),
                     "hold_duration_sec": (
-                        try_parse_float(item.get("hold_duration_sec") or item.get("holdDurationSec"), 0.0)
-                        if (item.get("hold_duration_sec") is not None or item.get("holdDurationSec") is not None)
+                        try_parse_float(
+                            item.get("hold_duration_sec") or item.get("holdDurationSec"), 0.0
+                        )
+                        if (
+                            item.get("hold_duration_sec") is not None
+                            or item.get("holdDurationSec") is not None
+                        )
                         else None
                     ),
                     "completed": bool(item.get("completed")),
@@ -486,18 +543,26 @@ def _normalized_relocalization_events(raw: Any) -> Optional[Dict[str, Any]]:
                 continue
             events.append(
                 {
-                    "event_id": str(item.get("event_id") or item.get("eventId") or "").strip() or None,
+                    "event_id": str(item.get("event_id") or item.get("eventId") or "").strip()
+                    or None,
                     "pass_id": str(item.get("pass_id") or item.get("passId") or "").strip() or None,
-                    "route_id": str(item.get("route_id") or item.get("routeId") or "").strip() or None,
+                    "route_id": str(item.get("route_id") or item.get("routeId") or "").strip()
+                    or None,
                     "t_capture_sec": (
                         try_parse_float(item.get("t_capture_sec") or item.get("tCaptureSec"), 0.0)
-                        if (item.get("t_capture_sec") is not None or item.get("tCaptureSec") is not None)
+                        if (
+                            item.get("t_capture_sec") is not None
+                            or item.get("tCaptureSec") is not None
+                        )
                         else None
                     ),
                     "status": str(item.get("status") or "").strip() or None,
-                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip() or None,
+                    "anchor_id": str(item.get("anchor_id") or item.get("anchorId") or "").strip()
+                    or None,
                     "coordinate_frame_session_id": str(
-                        item.get("coordinate_frame_session_id") or item.get("coordinateFrameSessionId") or ""
+                        item.get("coordinate_frame_session_id")
+                        or item.get("coordinateFrameSessionId")
+                        or ""
                     ).strip()
                     or None,
                 }
@@ -518,6 +583,7 @@ def _world_model_candidate_downgrade_reason(
     capture_source: str,
     pose_match_rate: Optional[float],
     p95_pose_delta_sec: Optional[float],
+    pose_alignment_valid: Optional[bool],
     geometry_ready: bool,
 ) -> str:
     if not _stable_site_id_present(manifest):
@@ -529,13 +595,27 @@ def _world_model_candidate_downgrade_reason(
             return "missing_arkit_intrinsics"
         if arkit_depth_prefix_uri is None:
             return "missing_lidar_depth"
-        if not _iphone_pose_alignment_ok(pose_match_rate, p95_pose_delta_sec):
+        if (
+            not _iphone_pose_alignment_ok(pose_match_rate, p95_pose_delta_sec)
+            or pose_alignment_valid is False
+        ):
             return "insufficient_spatial_evidence"
-    elif not (arkit_poses_uri is not None and arkit_intrinsics_uri is not None and arkit_depth_prefix_uri is not None) and not geometry_ready:
+    elif (
+        not (
+            arkit_poses_uri is not None
+            and arkit_intrinsics_uri is not None
+            and arkit_depth_prefix_uri is not None
+        )
+        and not geometry_ready
+    ):
         return "awaiting_geometry_stage"
     if not intake_complete:
         return "missing_complete_intake"
-    rights_block = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
+    rights_block = (
+        manifest.get("capture_rights")
+        if isinstance(manifest.get("capture_rights"), Mapping)
+        else {}
+    )
     if not bool(rights_block.get("derived_scene_generation_allowed", False)):
         return "derived_scene_generation_not_allowed"
     return "site_world_candidate_gates_not_met"
@@ -551,26 +631,31 @@ def _normalized_capture_mode(
     capture_source: str = "iphone",
     pose_match_rate: Optional[float] = None,
     p95_pose_delta_sec: Optional[float] = None,
+    pose_alignment_valid: Optional[bool] = None,
     geometry_ready: bool = False,
     geometry_source: Optional[str] = None,
+    canonical_candidate: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     raw = manifest.get("capture_mode")
     if not isinstance(raw, Mapping):
         return None
     requested_mode = str(raw.get("requested_mode") or "qualification_only")
-    candidate = _canonical_world_model_candidate(
-        manifest=manifest,
-        arkit_poses_uri=arkit_poses_uri,
-        arkit_intrinsics_uri=arkit_intrinsics_uri,
-        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
-        intake_complete=intake_complete,
-        evidence_tier=evidence_tier,
-        capture_source=capture_source,
-        pose_match_rate=pose_match_rate,
-        p95_pose_delta_sec=p95_pose_delta_sec,
-        geometry_ready=geometry_ready,
-        geometry_source=geometry_source,
-    )
+    candidate = canonical_candidate
+    if candidate is None:
+        candidate = _canonical_world_model_candidate(
+            manifest=manifest,
+            arkit_poses_uri=arkit_poses_uri,
+            arkit_intrinsics_uri=arkit_intrinsics_uri,
+            arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+            intake_complete=intake_complete,
+            evidence_tier=evidence_tier,
+            capture_source=capture_source,
+            pose_match_rate=pose_match_rate,
+            p95_pose_delta_sec=p95_pose_delta_sec,
+            pose_alignment_valid=pose_alignment_valid,
+            geometry_ready=geometry_ready,
+            geometry_source=geometry_source,
+        )
     resolved_mode = "site_world_candidate" if candidate else "qualification_only"
     downgrade_reason: Optional[str] = None
     if requested_mode == "site_world_candidate" and resolved_mode == "qualification_only":
@@ -583,6 +668,7 @@ def _normalized_capture_mode(
             capture_source=capture_source,
             pose_match_rate=pose_match_rate,
             p95_pose_delta_sec=p95_pose_delta_sec,
+            pose_alignment_valid=pose_alignment_valid,
             geometry_ready=geometry_ready,
         )
     return {
@@ -593,11 +679,19 @@ def _normalized_capture_mode(
 
 
 def _capture_rights_block(manifest: Mapping[str, Any]) -> Dict[str, Any]:
-    raw = manifest.get("capture_rights") if isinstance(manifest.get("capture_rights"), Mapping) else {}
+    raw = (
+        manifest.get("capture_rights")
+        if isinstance(manifest.get("capture_rights"), Mapping)
+        else {}
+    )
     return {
-        "derived_scene_generation_allowed": bool(raw.get("derived_scene_generation_allowed", False)),
+        "derived_scene_generation_allowed": bool(
+            raw.get("derived_scene_generation_allowed", False)
+        ),
         "data_licensing_allowed": bool(raw.get("data_licensing_allowed", False)),
-        "capture_contributor_payout_eligible": bool(raw.get("capture_contributor_payout_eligible", False)),
+        "capture_contributor_payout_eligible": bool(
+            raw.get("capture_contributor_payout_eligible", False)
+        ),
         "consent_status": str(raw.get("consent_status") or "unknown"),
         "permission_document_uri": str(raw.get("permission_document_uri") or "").strip() or None,
         "consent_scope": _string_list(raw.get("consent_scope")),
@@ -709,7 +803,9 @@ def _orientation_payload(
         display_rotation_degrees,
     )
     if declared_capture_width and declared_capture_height:
-        display_size = _size_payload(declared_capture_width, declared_capture_height) or display_size
+        display_size = (
+            _size_payload(declared_capture_width, declared_capture_height) or display_size
+        )
     if not display_orientation:
         display_orientation = _infer_display_orientation(
             display_size.get("width"),
@@ -746,10 +842,22 @@ def _capture_orientation_from_metadata(
     context: Mapping[str, Any],
 ) -> Dict[str, Any]:
     candidates = [
-        ("capture_context.captureOrientation", _raw_orientation_mapping(context.get("captureOrientation"))),
-        ("capture_context.capture_orientation", _raw_orientation_mapping(context.get("capture_orientation"))),
-        ("raw_manifest.capture_orientation", _raw_orientation_mapping(manifest.get("capture_orientation"))),
-        ("raw_manifest.captureOrientation", _raw_orientation_mapping(manifest.get("captureOrientation"))),
+        (
+            "capture_context.captureOrientation",
+            _raw_orientation_mapping(context.get("captureOrientation")),
+        ),
+        (
+            "capture_context.capture_orientation",
+            _raw_orientation_mapping(context.get("capture_orientation")),
+        ),
+        (
+            "raw_manifest.capture_orientation",
+            _raw_orientation_mapping(manifest.get("capture_orientation")),
+        ),
+        (
+            "raw_manifest.captureOrientation",
+            _raw_orientation_mapping(manifest.get("captureOrientation")),
+        ),
     ]
     encoded_width = _first_int(
         manifest.get("width"),
@@ -770,11 +878,11 @@ def _capture_orientation_from_metadata(
     for source, raw in candidates:
         if not raw:
             continue
-        display_orientation = str(
-            raw.get("display_orientation")
-            or raw.get("displayOrientation")
-            or ""
-        ).strip().lower()
+        display_orientation = (
+            str(raw.get("display_orientation") or raw.get("displayOrientation") or "")
+            .strip()
+            .lower()
+        )
         rotation_degrees = _normalize_rotation_degrees(
             raw.get("rotation_degrees") or raw.get("rotationDegrees")
         )
@@ -805,7 +913,12 @@ def _capture_orientation_from_metadata(
                     else (encoded_width, encoded_height)
                 )
             )
-        if not display_orientation and rotation_degrees is None and not display_width and not display_height:
+        if (
+            not display_orientation
+            and rotation_degrees is None
+            and not display_width
+            and not display_height
+        ):
             continue
         display_size = _size_payload(display_width, display_height) or _display_size_from_rotation(
             encoded_width, encoded_height, rotation_degrees
@@ -856,13 +969,22 @@ def _ffprobe_capture_orientation(video_path: Path) -> Dict[str, Any]:
     streams = payload.get("streams")
     if not isinstance(streams, list):
         return {}
-    stream = next((item for item in streams if isinstance(item, Mapping) and item.get("codec_type") == "video"), None)
+    stream = next(
+        (
+            item
+            for item in streams
+            if isinstance(item, Mapping) and item.get("codec_type") == "video"
+        ),
+        None,
+    )
     if not isinstance(stream, Mapping):
         return {}
     encoded_width = _first_int(stream.get("width"))
     encoded_height = _first_int(stream.get("height"))
     tags = stream.get("tags") if isinstance(stream.get("tags"), Mapping) else {}
-    side_data_list = stream.get("side_data_list") if isinstance(stream.get("side_data_list"), list) else []
+    side_data_list = (
+        stream.get("side_data_list") if isinstance(stream.get("side_data_list"), list) else []
+    )
     rotation_candidates: List[Any] = [tags.get("rotate") if isinstance(tags, Mapping) else None]
     for item in side_data_list:
         if isinstance(item, Mapping):
@@ -870,7 +992,9 @@ def _ffprobe_capture_orientation(video_path: Path) -> Dict[str, Any]:
     rotation_degrees = next(
         (
             normalized
-            for normalized in (_normalize_rotation_degrees(candidate) for candidate in rotation_candidates)
+            for normalized in (
+                _normalize_rotation_degrees(candidate) for candidate in rotation_candidates
+            )
             if normalized is not None
         ),
         0,
@@ -927,7 +1051,9 @@ def _capture_orientation_from_dimensions(
         and encoded_orientation != "unknown"
     )
     display_rotation_degrees = 90 if normalization_applied else 0
-    display_orientation = declared_orientation if declared_orientation != "unknown" else encoded_orientation
+    display_orientation = (
+        declared_orientation if declared_orientation != "unknown" else encoded_orientation
+    )
     return _orientation_payload(
         encoded_width=encoded_width,
         encoded_height=encoded_height,
@@ -963,7 +1089,9 @@ def _default_requested_lanes(
     manifest: Mapping[str, Any],
     context: Mapping[str, Any],
 ) -> List[str]:
-    raw_capture_mode = manifest.get("capture_mode") if isinstance(manifest.get("capture_mode"), Mapping) else {}
+    raw_capture_mode = (
+        manifest.get("capture_mode") if isinstance(manifest.get("capture_mode"), Mapping) else {}
+    )
     capture_mode = (
         _normalized_capture_mode(
             manifest=manifest,
@@ -972,7 +1100,9 @@ def _default_requested_lanes(
             arkit_depth_prefix_uri=None,
             intake_complete=bool(context.get("intake_complete") or False),
             evidence_tier=str(context.get("evidence_tier") or ""),
-            capture_source=str(context.get("capture_source") or manifest.get("capture_source") or "iphone"),
+            capture_source=str(
+                context.get("capture_source") or manifest.get("capture_source") or "iphone"
+            ),
             pose_match_rate=try_parse_float(context.get("pose_match_rate")),
             p95_pose_delta_sec=try_parse_float(context.get("p95_pose_delta_sec")),
             geometry_ready=bool(context.get("geometry_ready") or False),
@@ -986,9 +1116,12 @@ def _default_requested_lanes(
         if isinstance(manifest.get("scene_memory_capture"), Mapping)
         else {}
     )
-    native_default_candidate = (
-        str((raw_capture_mode or {}).get("resolved_mode") or (capture_mode or {}).get("resolved_mode") or "").strip().lower() == "site_world_candidate"
-        and bool(scene_memory_capture.get("world_model_candidate"))
+    native_default_candidate = str(
+        (raw_capture_mode or {}).get("resolved_mode")
+        or (capture_mode or {}).get("resolved_mode")
+        or ""
+    ).strip().lower() == "site_world_candidate" and bool(
+        scene_memory_capture.get("world_model_candidate")
     )
     current_default_lanes = ["qualification", "evaluation_prep", "simulation_automation"]
     legacy_scene_memory_lanes = ["qualification", "scene_memory"]
@@ -1001,7 +1134,9 @@ def _default_requested_lanes(
             or os.getenv("BLUEPRINT_SIM_ONLY_BETA_AUTONOMY")
             or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
-        return current_default_lanes if native_default_candidate or beta_default else ["qualification"]
+        return (
+            current_default_lanes if native_default_candidate or beta_default else ["qualification"]
+        )
 
     lanes: List[str] = []
 
@@ -1078,6 +1213,12 @@ def capture_materialization_readiness(
     walkthrough_path = raw_root / "walkthrough.mov"
     video_candidates = _raw_video_candidates(raw_root)
     selected_video_path = raw_root / video_candidates[0] if video_candidates else None
+    intake_verification = verify_canonical_raw_bundle_path(
+        raw_root,
+        expected_bucket=bucket,
+        expected_scene_id=scene_id,
+        expected_capture_id=capture_id,
+    )
     issues: List[str] = []
     if not manifest_path.is_file():
         issues.append("missing_manifest")
@@ -1085,6 +1226,11 @@ def capture_materialization_readiness(
         issues.append("invalid_manifest")
     if not video_candidates:
         issues.append("missing_raw_video")
+    if intake_verification.get("valid_for_derivation") is not True:
+        issues.extend(
+            f"raw_bundle_quarantined:{reason}"
+            for reason in intake_verification.get("quarantine_reasons", [])
+        )
     return {
         "ready": not issues,
         "issues": issues,
@@ -1094,7 +1240,37 @@ def capture_materialization_readiness(
         "selected_video_path": str(selected_video_path) if selected_video_path else None,
         "requested_outputs": requested_outputs,
         "video_candidates": video_candidates,
+        "intake_verification": intake_verification,
     }
+
+
+def _persist_intake_verification(
+    *,
+    capture_root: Path,
+    verification: Mapping[str, Any],
+) -> Path:
+    payload = dict(verification)
+    payload["recorded_at"] = utc_now_iso()
+    payload["capture_root"] = str(capture_root)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    record_digest = sha256(canonical).hexdigest()
+    if verification.get("status") == "quarantined":
+        record_root = capture_root / "quarantine" / "raw_intake"
+    else:
+        record_root = capture_root / "pipeline" / "intake" / "runs"
+    record_path = record_root / f"{record_digest}.json"
+    write_json(record_path, payload)
+    write_json(
+        record_root.parent / "current.json",
+        {
+            "schema_version": "raw_bundle_intake_current_pointer.v1",
+            "status": str(verification.get("status") or "unknown"),
+            "record_path": str(record_path.relative_to(capture_root)),
+            "record_digest": record_digest,
+            "intake_digest": verification.get("intake_digest"),
+        },
+    )
+    return record_path
 
 
 def assert_capture_materialization_ready(
@@ -1112,15 +1288,23 @@ def assert_capture_materialization_ready(
         gcs_root=gcs_root,
         raw_prefix_uri=raw_prefix_uri,
     )
+    capture_root = Path(str(readiness["raw_root"])).parent
+    verification = readiness.get("intake_verification")
+    if isinstance(verification, Mapping):
+        readiness["intake_verification_record_path"] = str(
+            _persist_intake_verification(capture_root=capture_root, verification=verification)
+        )
     if readiness["ready"]:
         return readiness
-    raise RuntimeError(
-        "capture_not_ready:" + ",".join(str(item) for item in readiness["issues"])
-    )
+    raise PipelineError("capture_not_ready:" + ",".join(str(item) for item in readiness["issues"]))
 
 
 def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> str:
-    profile = str(manifest.get("capture_profile_id") or context.get("captureProfileId") or "").strip().lower()
+    profile = (
+        str(manifest.get("capture_profile_id") or context.get("captureProfileId") or "")
+        .strip()
+        .lower()
+    )
     if profile.startswith("android_"):
         return "android"
     if profile.startswith("glasses_"):
@@ -1139,7 +1323,9 @@ def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> 
             return "android"
         if candidate == "iphonevideo":
             return "iphone"
-        if candidate == "metaglasses":  # pragma: no cover - kept for readability; handled by alias set above.
+        if (
+            candidate == "metaglasses"
+        ):  # pragma: no cover - kept for readability; handled by alias set above.
             return "glasses"
     return "unknown"
 
@@ -1183,7 +1369,11 @@ def _capture_modality(
     scaffolding_used: List[str],
     has_metric_arkit_bundle: bool,
 ) -> str:
-    explicit = str(context.get("captureModality") or manifest.get("capture_modality") or "").strip().lower()
+    explicit = (
+        str(context.get("captureModality") or manifest.get("capture_modality") or "")
+        .strip()
+        .lower()
+    )
     explicit_profile = str(manifest.get("capture_profile_id") or "").strip().lower()
     if explicit == "glasses_video_only" and explicit_profile == "glasses_pov":
         return explicit_profile
@@ -1230,10 +1420,7 @@ def _has_minimum_intake(intake: Mapping[str, Any]) -> bool:
     return bool(
         str(intake.get("workflowName") or "").strip()
         and _string_list(intake.get("taskSteps"))
-        and (
-            str(intake.get("zone") or "").strip()
-            or str(intake.get("owner") or "").strip()
-        )
+        and (str(intake.get("zone") or "").strip() or str(intake.get("owner") or "").strip())
     )
 
 
@@ -1282,34 +1469,113 @@ def _discover_raw_sidecars(
         and (arkit_root / "depth").is_dir()
     )
 
-    arkit_poses_uri = join_gs_uri(raw_prefix_uri, "arkit/poses.jsonl") if (arkit_root / "poses.jsonl").is_file() else None
-    arkit_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arkit/intrinsics.json") if (arkit_root / "intrinsics.json").is_file() else None
-    arkit_frames_uri = join_gs_uri(raw_prefix_uri, "arkit/frames.jsonl") if (arkit_root / "frames.jsonl").is_file() else None
-    arkit_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/depth") if (arkit_root / "depth").is_dir() else None
-    arkit_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arkit/confidence") if (arkit_root / "confidence").is_dir() else None
-    arcore_poses_uri = join_gs_uri(raw_prefix_uri, "arcore/poses.jsonl") if (arcore_root / "poses.jsonl").is_file() else None
-    arcore_intrinsics_uri = join_gs_uri(raw_prefix_uri, "arcore/session_intrinsics.json") if (arcore_root / "session_intrinsics.json").is_file() else None
-    arcore_frames_uri = join_gs_uri(raw_prefix_uri, "arcore/frames.jsonl") if (arcore_root / "frames.jsonl").is_file() else None
-    arcore_depth_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/depth_manifest.json") if (arcore_root / "depth_manifest.json").is_file() else None
-    arcore_confidence_manifest_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence_manifest.json") if (arcore_root / "confidence_manifest.json").is_file() else None
-    arcore_depth_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/depth") if (arcore_root / "depth").is_dir() else None
-    arcore_confidence_prefix_uri = join_gs_uri(raw_prefix_uri, "arcore/confidence") if (arcore_root / "confidence").is_dir() else None
-    arcore_point_cloud_uri = join_gs_uri(raw_prefix_uri, "arcore/point_cloud.jsonl") if (arcore_root / "point_cloud.jsonl").is_file() else None
-    arcore_planes_uri = join_gs_uri(raw_prefix_uri, "arcore/planes.jsonl") if (arcore_root / "planes.jsonl").is_file() else None
-    arcore_tracking_state_uri = join_gs_uri(raw_prefix_uri, "arcore/tracking_state.jsonl") if (arcore_root / "tracking_state.jsonl").is_file() else None
-    arcore_light_estimates_uri = join_gs_uri(raw_prefix_uri, "arcore/light_estimates.jsonl") if (arcore_root / "light_estimates.jsonl").is_file() else None
-    companion_phone_poses_uri = join_gs_uri(raw_prefix_uri, "companion_phone/poses.jsonl") if (companion_phone_root / "poses.jsonl").is_file() else None
-    companion_phone_intrinsics_uri = join_gs_uri(raw_prefix_uri, "companion_phone/session_intrinsics.json") if (companion_phone_root / "session_intrinsics.json").is_file() else None
-    companion_phone_calibration_uri = join_gs_uri(raw_prefix_uri, "companion_phone/calibration.json") if (companion_phone_root / "calibration.json").is_file() else None
-    object_index_uri = join_gs_uri(raw_prefix_uri, "object_index.json") if (raw_root / "object_index.json").is_file() else None
-    motion_log_uri = join_gs_uri(raw_prefix_uri, "motion.jsonl") if (raw_root / "motion.jsonl").is_file() else None
+    arkit_poses_uri = (
+        join_gs_uri(raw_prefix_uri, "arkit/poses.jsonl")
+        if (arkit_root / "poses.jsonl").is_file()
+        else None
+    )
+    arkit_intrinsics_uri = (
+        join_gs_uri(raw_prefix_uri, "arkit/intrinsics.json")
+        if (arkit_root / "intrinsics.json").is_file()
+        else None
+    )
+    arkit_frames_uri = (
+        join_gs_uri(raw_prefix_uri, "arkit/frames.jsonl")
+        if (arkit_root / "frames.jsonl").is_file()
+        else None
+    )
+    arkit_depth_prefix_uri = (
+        join_gs_uri(raw_prefix_uri, "arkit/depth") if (arkit_root / "depth").is_dir() else None
+    )
+    arkit_confidence_prefix_uri = (
+        join_gs_uri(raw_prefix_uri, "arkit/confidence")
+        if (arkit_root / "confidence").is_dir()
+        else None
+    )
+    arcore_poses_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/poses.jsonl")
+        if (arcore_root / "poses.jsonl").is_file()
+        else None
+    )
+    arcore_intrinsics_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/session_intrinsics.json")
+        if (arcore_root / "session_intrinsics.json").is_file()
+        else None
+    )
+    arcore_frames_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/frames.jsonl")
+        if (arcore_root / "frames.jsonl").is_file()
+        else None
+    )
+    arcore_depth_manifest_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/depth_manifest.json")
+        if (arcore_root / "depth_manifest.json").is_file()
+        else None
+    )
+    arcore_confidence_manifest_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/confidence_manifest.json")
+        if (arcore_root / "confidence_manifest.json").is_file()
+        else None
+    )
+    arcore_depth_prefix_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/depth") if (arcore_root / "depth").is_dir() else None
+    )
+    arcore_confidence_prefix_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/confidence")
+        if (arcore_root / "confidence").is_dir()
+        else None
+    )
+    arcore_point_cloud_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/point_cloud.jsonl")
+        if (arcore_root / "point_cloud.jsonl").is_file()
+        else None
+    )
+    arcore_planes_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/planes.jsonl")
+        if (arcore_root / "planes.jsonl").is_file()
+        else None
+    )
+    arcore_tracking_state_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/tracking_state.jsonl")
+        if (arcore_root / "tracking_state.jsonl").is_file()
+        else None
+    )
+    arcore_light_estimates_uri = (
+        join_gs_uri(raw_prefix_uri, "arcore/light_estimates.jsonl")
+        if (arcore_root / "light_estimates.jsonl").is_file()
+        else None
+    )
+    companion_phone_poses_uri = (
+        join_gs_uri(raw_prefix_uri, "companion_phone/poses.jsonl")
+        if (companion_phone_root / "poses.jsonl").is_file()
+        else None
+    )
+    companion_phone_intrinsics_uri = (
+        join_gs_uri(raw_prefix_uri, "companion_phone/session_intrinsics.json")
+        if (companion_phone_root / "session_intrinsics.json").is_file()
+        else None
+    )
+    companion_phone_calibration_uri = (
+        join_gs_uri(raw_prefix_uri, "companion_phone/calibration.json")
+        if (companion_phone_root / "calibration.json").is_file()
+        else None
+    )
+    object_index_uri = (
+        join_gs_uri(raw_prefix_uri, "object_index.json")
+        if (raw_root / "object_index.json").is_file()
+        else None
+    )
+    motion_log_uri = (
+        join_gs_uri(raw_prefix_uri, "motion.jsonl")
+        if (raw_root / "motion.jsonl").is_file()
+        else None
+    )
 
     video_candidates = _raw_video_candidates(raw_root)
     raw_video_uri = (
         join_gs_uri(raw_prefix_uri, video_candidates[0])
         if video_candidates
-        else str(manifest.get("video_uri") or "").strip()
-        or None
+        else str(manifest.get("video_uri") or "").strip() or None
     )
     frame_timestamps_uri = (
         join_gs_uri(raw_prefix_uri, "glasses/frame_timestamps.jsonl")
@@ -1340,22 +1606,34 @@ def _discover_raw_sidecars(
         and arkit_intrinsics_uri is not None
         and arkit_depth_prefix_uri is not None
     )
-    arcore_geometry_present = bool(arcore_poses_uri is not None and arcore_intrinsics_uri is not None)
-    geometry_source = "arkit" if arkit_geometry_ready else "arcore" if arcore_geometry_present else None
+    arcore_geometry_present = bool(
+        arcore_poses_uri is not None and arcore_intrinsics_uri is not None
+    )
+    geometry_source = (
+        "arkit" if arkit_geometry_ready else "arcore" if arcore_geometry_present else None
+    )
 
     pose_alignment = _inspect_pose_alignment(raw_root)
-    pose_match_rate = try_parse_float(
-        manifest.get("pose_match_rate"),
-        pose_alignment.get("pose_match_rate"),
-    )
-    p95_pose_delta_sec = try_parse_float(
-        manifest.get("p95_pose_delta_sec"),
-        pose_alignment.get("p95_pose_delta_sec"),
-    )
+    # The canonical one-to-one join is the sole authority for candidacy. Values
+    # supplied in the raw manifest are retained as declarations for diagnostics,
+    # but cannot promote or downgrade the recomputed result.
+    pose_match_rate = _optional_finite_float(pose_alignment.get("pose_match_rate"))
+    p95_pose_delta_sec = _optional_finite_float(pose_alignment.get("p95_pose_delta_sec"))
+    pose_alignment_declaration = {
+        "source": "raw_manifest",
+        "authority": "non_authoritative_declaration",
+        "used_for_candidacy": False,
+        "pose_match_rate": _optional_finite_float(manifest.get("pose_match_rate")),
+        "p95_pose_delta_sec": _optional_finite_float(manifest.get("p95_pose_delta_sec")),
+    }
     pose_alignment_ok = source != "iphone" or _iphone_pose_alignment_ok(
         pose_match_rate,
         p95_pose_delta_sec,
     )
+    if source == "iphone":
+        pose_alignment_ok = bool(
+            pose_alignment_ok and pose_alignment.get("temporal_alignment_status") == "verified"
+        )
 
     return {
         "has_metric_arkit_bundle": has_metric_arkit_bundle,
@@ -1388,25 +1666,25 @@ def _discover_raw_sidecars(
         "geometry_source": geometry_source,
         "pose_match_rate": pose_match_rate,
         "p95_pose_delta_sec": p95_pose_delta_sec,
+        "max_pose_delta_sec": pose_alignment.get("max_pose_delta_sec"),
         "pose_alignment_ok": pose_alignment_ok,
+        "temporal_alignment_status": pose_alignment.get("temporal_alignment_status"),
+        "temporal_alignment_blockers": pose_alignment.get("temporal_alignment_blockers") or [],
+        "temporal_alignment": pose_alignment.get("temporal_alignment"),
+        "pose_alignment_declaration": pose_alignment_declaration,
     }
 
 
-def _resolve_world_model_candidacy(
+def _compute_world_model_candidacy_decision(
     *,
     manifest: Mapping[str, Any],
     sidecars: Mapping[str, Any],
     intake_complete: bool,
     evidence_tier: str,
     source: str,
-) -> Dict[str, Any]:
-    """Project the capture-mode / world-model candidacy policy.
+) -> WorldModelCandidacyDecision:
+    """Compute the only world-model candidacy decision for a materialization run."""
 
-    Pure candidacy-policy projection extracted from
-    :func:`build_capture_bundle_records`. Bundles the world-model candidate flag,
-    its reasoning, and the normalized capture-mode block so the descriptor, metadata,
-    and qa-report assembly all reuse one consistent computation. No I/O.
-    """
     arkit_poses_uri = sidecars["arkit_poses_uri"]
     arkit_intrinsics_uri = sidecars["arkit_intrinsics_uri"]
     arkit_depth_prefix_uri = sidecars["arkit_depth_prefix_uri"]
@@ -1414,6 +1692,9 @@ def _resolve_world_model_candidacy(
     geometry_source = sidecars["geometry_source"]
     pose_match_rate = sidecars["pose_match_rate"]
     p95_pose_delta_sec = sidecars["p95_pose_delta_sec"]
+    pose_alignment_valid = (
+        bool(sidecars.get("pose_alignment_ok")) if "pose_alignment_ok" in sidecars else None
+    )
 
     world_model_candidate = _canonical_world_model_candidate(
         manifest=manifest,
@@ -1425,6 +1706,7 @@ def _resolve_world_model_candidacy(
         capture_source=source,
         pose_match_rate=pose_match_rate,
         p95_pose_delta_sec=p95_pose_delta_sec,
+        pose_alignment_valid=pose_alignment_valid,
         geometry_ready=geometry_ready,
         geometry_source=geometry_source,
     )
@@ -1437,6 +1719,7 @@ def _resolve_world_model_candidacy(
         capture_source=source,
         pose_match_rate=pose_match_rate,
         p95_pose_delta_sec=p95_pose_delta_sec,
+        pose_alignment_valid=pose_alignment_valid,
         geometry_ready=geometry_ready,
         geometry_source=geometry_source,
     )
@@ -1450,22 +1733,66 @@ def _resolve_world_model_candidacy(
         capture_source=source,
         pose_match_rate=pose_match_rate,
         p95_pose_delta_sec=p95_pose_delta_sec,
+        pose_alignment_valid=pose_alignment_valid,
         geometry_ready=geometry_ready,
         geometry_source=geometry_source,
+        canonical_candidate=world_model_candidate,
     )
-    readiness_world_model_candidate = _canonical_world_model_candidate(
+    decision_payload = {
+        "schema_version": "blueprint.world_model_candidacy_decision.v1",
+        "candidate": world_model_candidate,
+        "reasoning": world_model_candidate_reasoning,
+        "capture_mode": capture_mode,
+    }
+    decision_sha256 = sha256(
+        json.dumps(
+            decision_payload,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return WorldModelCandidacyDecision(
+        candidate=world_model_candidate,
+        reasoning=tuple(world_model_candidate_reasoning),
+        requested_mode=(
+            str(capture_mode.get("requested_mode")) if capture_mode is not None else None
+        ),
+        resolved_mode=(
+            str(capture_mode.get("resolved_mode")) if capture_mode is not None else None
+        ),
+        downgrade_reason=(
+            str(capture_mode.get("downgrade_reason"))
+            if capture_mode is not None and capture_mode.get("downgrade_reason") is not None
+            else None
+        ),
+        decision_sha256=decision_sha256,
+    )
+
+
+def _resolve_world_model_candidacy(
+    *,
+    manifest: Mapping[str, Any],
+    sidecars: Mapping[str, Any],
+    intake_complete: bool,
+    evidence_tier: str,
+    source: str,
+) -> Dict[str, Any]:
+    """Project one typed candidacy decision to all legacy output keys."""
+
+    decision = _compute_world_model_candidacy_decision(
         manifest=manifest,
-        arkit_poses_uri=arkit_poses_uri,
-        arkit_intrinsics_uri=arkit_intrinsics_uri,
-        arkit_depth_prefix_uri=arkit_depth_prefix_uri,
+        sidecars=sidecars,
         intake_complete=intake_complete,
         evidence_tier=evidence_tier,
+        source=source,
     )
     return {
-        "world_model_candidate": world_model_candidate,
-        "world_model_candidate_reasoning": world_model_candidate_reasoning,
-        "capture_mode": capture_mode,
-        "readiness_world_model_candidate": readiness_world_model_candidate,
+        "world_model_candidate": decision.candidate,
+        "world_model_candidate_reasoning": list(decision.reasoning),
+        "capture_mode": decision.to_dict()["capture_mode"],
+        "readiness_world_model_candidate": decision.candidate,
+        "decision": decision.to_dict(),
     }
 
 
@@ -1500,7 +1827,7 @@ def build_capture_bundle_records(
     write_frames_index: bool = True,
 ) -> Dict[str, Any]:
     raw_prefix_uri = raw_prefix_uri or f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/raw"
-    assert_capture_materialization_ready(
+    intake_readiness = assert_capture_materialization_ready(
         bucket=bucket,
         scene_id=scene_id,
         capture_id=capture_id,
@@ -1509,6 +1836,16 @@ def build_capture_bundle_records(
     )
     raw_root = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
     capture_root = raw_root.parent
+    initial_intake_verification = intake_readiness.get("intake_verification", {})
+    initial_intake_verification_recorded = bool(
+        isinstance(initial_intake_verification, Mapping)
+        and initial_intake_verification.get("status")
+    )
+    initial_intake_digest = (
+        initial_intake_verification.get("intake_digest")
+        if isinstance(initial_intake_verification, Mapping)
+        else None
+    )
 
     manifest_path = raw_root / "manifest.json"
     intake_path = raw_root / "intake_packet.json"
@@ -1528,10 +1865,16 @@ def build_capture_bundle_records(
     source = _capture_source(manifest, context)
     source_device = _source_device(manifest, context, source)
     tier = _capture_tier(source, manifest)
-    scaffolding_used = _string_list(context.get("scaffoldingUsed") or manifest.get("scaffolding_used"))
+    scaffolding_used = _string_list(
+        context.get("scaffoldingUsed") or manifest.get("scaffolding_used")
+    )
     coverage_plan = _string_list(context.get("coveragePlan") or manifest.get("coverage_plan"))
-    calibration_assets = _string_list(context.get("calibrationAssets") or manifest.get("calibration_assets"))
-    uncertainty_priors = _dict_float(context.get("uncertaintyPriors") or manifest.get("uncertainty_priors"))
+    calibration_assets = _string_list(
+        context.get("calibrationAssets") or manifest.get("calibration_assets")
+    )
+    uncertainty_priors = _dict_float(
+        context.get("uncertaintyPriors") or manifest.get("uncertainty_priors")
+    )
 
     sidecars = _discover_raw_sidecars(
         raw_root=raw_root,
@@ -1576,6 +1919,11 @@ def build_capture_bundle_records(
     pose_match_rate = sidecars["pose_match_rate"]
     p95_pose_delta_sec = sidecars["p95_pose_delta_sec"]
     pose_alignment_ok = sidecars["pose_alignment_ok"]
+    max_pose_delta_sec = sidecars["max_pose_delta_sec"]
+    temporal_alignment_status = sidecars["temporal_alignment_status"]
+    temporal_alignment_blockers = sidecars["temporal_alignment_blockers"]
+    temporal_alignment = sidecars["temporal_alignment"]
+    pose_alignment_declaration = sidecars["pose_alignment_declaration"]
 
     frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/frames/index.jsonl"
     frames_dir = capture_root / "frames"
@@ -1588,12 +1936,14 @@ def build_capture_bundle_records(
         "video_candidates": _raw_video_candidates(raw_root),
         "generated_at": utc_now_iso(),
     }
-    if write_frames_index:
-        ensure_dir(frames_dir)
-        frames_path.write_text(json.dumps(frame_index_payload) + "\n", encoding="utf-8")
-
-    intake_packet_uri = join_gs_uri(raw_prefix_uri, "intake_packet.json") if intake_path.is_file() else None
-    task_hypothesis_uri = join_gs_uri(raw_prefix_uri, "task_hypothesis.json") if task_hypothesis_path.is_file() else None
+    intake_packet_uri = (
+        join_gs_uri(raw_prefix_uri, "intake_packet.json") if intake_path.is_file() else None
+    )
+    task_hypothesis_uri = (
+        join_gs_uri(raw_prefix_uri, "task_hypothesis.json")
+        if task_hypothesis_path.is_file()
+        else None
+    )
     intake_complete = _has_minimum_intake(intake)
     validated_scale_raw = context.get("validatedScaleMeters") or manifest.get("validated_scale_m")
     validated_scale_m = None
@@ -1607,8 +1957,12 @@ def build_capture_bundle_records(
         context.get("hiddenZoneBound") or manifest.get("hidden_zone_bound"),
         1.0,
     )
-    scale_anchor_count = len(_string_list(context.get("scaleAnchorAssets") or manifest.get("scale_anchor_assets")))
-    checkpoint_count = len(_string_list(context.get("checkpointAssets") or manifest.get("checkpoint_assets")))
+    scale_anchor_count = len(
+        _string_list(context.get("scaleAnchorAssets") or manifest.get("scale_anchor_assets"))
+    )
+    checkpoint_count = len(
+        _string_list(context.get("checkpointAssets") or manifest.get("checkpoint_assets"))
+    )
     scaffolding_validation = {
         "scale_anchor_count": scale_anchor_count,
         "checkpoint_count": checkpoint_count,
@@ -1643,29 +1997,41 @@ def build_capture_bundle_records(
     world_model_candidate_reasoning = candidacy["world_model_candidate_reasoning"]
     capture_mode = candidacy["capture_mode"]
     readiness_world_model_candidate = candidacy["readiness_world_model_candidate"]
+    candidacy_decision = candidacy["decision"]
     normalized_site_identity = _normalized_site_identity(manifest)
     normalized_capture_topology = _normalized_capture_topology(manifest)
     normalized_route_anchors = _normalized_route_anchors(manifest.get("route_anchors"))
     normalized_checkpoint_events = _normalized_checkpoint_events(manifest.get("checkpoint_events"))
-    normalized_relocalization_events = _normalized_relocalization_events(manifest.get("relocalization_events"))
+    normalized_relocalization_events = _normalized_relocalization_events(
+        manifest.get("relocalization_events")
+    )
 
-    capture_capabilities = manifest.get("capture_capabilities") if isinstance(manifest.get("capture_capabilities"), Mapping) else {}
-    upstream_handoff = manifest.get("upstream_handoff") if isinstance(manifest.get("upstream_handoff"), Mapping) else {}
-    site_submission_id = str(
-        manifest.get("site_submission_id")
-        or upstream_handoff.get("site_submission_id")
-        or ""
-    ).strip() or None
-    buyer_request_id = str(
-        manifest.get("buyer_request_id")
-        or upstream_handoff.get("buyer_request_id")
-        or ""
-    ).strip() or None
-    capture_job_id = str(
-        manifest.get("capture_job_id")
-        or upstream_handoff.get("capture_job_id")
-        or ""
-    ).strip() or None
+    capture_capabilities = (
+        manifest.get("capture_capabilities")
+        if isinstance(manifest.get("capture_capabilities"), Mapping)
+        else {}
+    )
+    upstream_handoff = (
+        manifest.get("upstream_handoff")
+        if isinstance(manifest.get("upstream_handoff"), Mapping)
+        else {}
+    )
+    site_submission_id = (
+        str(
+            manifest.get("site_submission_id") or upstream_handoff.get("site_submission_id") or ""
+        ).strip()
+        or None
+    )
+    buyer_request_id = (
+        str(
+            manifest.get("buyer_request_id") or upstream_handoff.get("buyer_request_id") or ""
+        ).strip()
+        or None
+    )
+    capture_job_id = (
+        str(manifest.get("capture_job_id") or upstream_handoff.get("capture_job_id") or "").strip()
+        or None
+    )
     upstream_link_blockers = [
         blocker
         for blocker, value in (
@@ -1679,14 +2045,22 @@ def build_capture_bundle_records(
         "site_submission_id": site_submission_id,
         "buyer_request_id": buyer_request_id,
         "capture_job_id": capture_job_id,
-        "upstream_link_truth_state": "verified" if not upstream_link_blockers else "blocked_missing_upstream_ids",
+        "upstream_link_truth_state": "verified"
+        if not upstream_link_blockers
+        else "blocked_missing_upstream_ids",
         "upstream_link_blockers": upstream_link_blockers,
         "opportunity_id": scene_id,
         "task_statement": str(intake.get("workflowName") or manifest.get("scene_id") or scene_id),
         "workflow_context": " | ".join(_string_list(intake.get("taskSteps"))),
-        "success_criteria": [str(intake.get("targetKPI") or "").strip()] if str(intake.get("targetKPI") or "").strip() else [],
-        "task_zone": {"label": str(intake.get("zone") or "").strip()} if str(intake.get("zone") or "").strip() else {},
-        "operating_constraints": [value for value in [str(intake.get("shift") or "").strip()] if value],
+        "success_criteria": [str(intake.get("targetKPI") or "").strip()]
+        if str(intake.get("targetKPI") or "").strip()
+        else [],
+        "task_zone": {"label": str(intake.get("zone") or "").strip()}
+        if str(intake.get("zone") or "").strip()
+        else {},
+        "operating_constraints": [
+            value for value in [str(intake.get("shift") or "").strip()] if value
+        ],
         "privacy_restrictions": _string_list(intake.get("privacySecurityLimits")),
         "security_restrictions": _string_list(intake.get("captureRestrictions")),
         "known_blockers": _string_list(intake.get("knownBlockers")),
@@ -1704,6 +2078,12 @@ def build_capture_bundle_records(
         "scaffolding_validation": scaffolding_validation,
         "task_hypothesis": task_hypothesis if task_hypothesis else None,
         "capture_rights": _capture_rights_block(manifest),
+        "world_model_candidacy": candidacy_decision,
+        "temporal_alignment": temporal_alignment,
+        "temporal_alignment_authority": {
+            "authoritative_source": "canonical_recomputed_frame_pose_join",
+            "manifest_declaration": pose_alignment_declaration,
+        },
         "privacy_lineage": (
             dict(manifest.get("privacy_lineage"))
             if isinstance(manifest.get("privacy_lineage"), Mapping)
@@ -1716,7 +2096,9 @@ def build_capture_bundle_records(
         ),
         "media_metadata": media_metadata,
         "capture_profile_id": str(manifest.get("capture_profile_id") or "").strip() or None,
-        "capture_capabilities": dict(capture_capabilities) if isinstance(capture_capabilities, Mapping) else {},
+        "capture_capabilities": dict(capture_capabilities)
+        if isinstance(capture_capabilities, Mapping)
+        else {},
         "capture_orientation": capture_orientation,
         "scene_memory_capture": {
             "continuity_score": 0.9 if raw_video_uri else 0.0,
@@ -1730,8 +2112,10 @@ def build_capture_bundle_records(
                 "depth_conditioning": arkit_depth_prefix_uri is not None,
                 "camera_pose": arcore_poses_uri is not None,
                 "camera_intrinsics": arcore_intrinsics_uri is not None,
-                "depth": arcore_depth_manifest_uri is not None or arcore_depth_prefix_uri is not None,
-                "depth_confidence": arcore_confidence_manifest_uri is not None or arcore_confidence_prefix_uri is not None,
+                "depth": arcore_depth_manifest_uri is not None
+                or arcore_depth_prefix_uri is not None,
+                "depth_confidence": arcore_confidence_manifest_uri is not None
+                or arcore_confidence_prefix_uri is not None,
                 "point_cloud": arcore_point_cloud_uri is not None,
                 "planes": arcore_planes_uri is not None,
                 "tracking_state": arcore_tracking_state_uri is not None,
@@ -1744,6 +2128,7 @@ def build_capture_bundle_records(
             "operator_notes": [],
             "world_model_candidate": world_model_candidate,
             "world_model_candidate_reasoning": world_model_candidate_reasoning,
+            "world_model_candidacy_decision_sha256": candidacy_decision["decision_sha256"],
             "geometry_source": geometry_source,
             "geometry_ready": arkit_geometry_ready,
         },
@@ -1762,7 +2147,9 @@ def build_capture_bundle_records(
         "capture_source": source,
         "source_device": source_device,
         "capture_profile_id": str(manifest.get("capture_profile_id") or "").strip() or None,
-        "capture_capabilities": dict(capture_capabilities) if isinstance(capture_capabilities, Mapping) else {},
+        "capture_capabilities": dict(capture_capabilities)
+        if isinstance(capture_capabilities, Mapping)
+        else {},
         "capture_tier": tier,
         "capture_modality": modality,
         "evidence_tier": evidence_tier,
@@ -1855,14 +2242,44 @@ def build_capture_bundle_records(
         "quality": {
             "pose_match_rate": pose_match_rate,
             "p95_pose_delta_sec": p95_pose_delta_sec,
+            "max_pose_delta_sec": max_pose_delta_sec,
             "pose_alignment_ok": pose_alignment_ok,
-            "has_metric_geometry": evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"},
+            "temporal_alignment_status": temporal_alignment_status,
+            "temporal_alignment_blockers": temporal_alignment_blockers,
+            "has_metric_geometry": evidence_tier
+            in {"qualified_metric_capture", "video_with_validated_scaffolding"},
             "intake_complete": intake_complete,
             "world_model_candidate": world_model_candidate,
+            "world_model_candidacy_decision_sha256": candidacy_decision["decision_sha256"],
             "geometry_source": geometry_source,
             "geometry_ready": arkit_geometry_ready,
+            "raw_bundle_integrity_verified": bool(
+                isinstance(initial_intake_verification, Mapping)
+                and initial_intake_verification.get("status") == "verified"
+                and initial_intake_verification.get("valid_for_derivation") is True
+            ),
+            "raw_bundle_intake_status": (
+                str(initial_intake_verification.get("status") or "unknown")
+                if isinstance(initial_intake_verification, Mapping)
+                else "unknown"
+            ),
         },
         "metadata": metadata,
+    }
+    descriptor["metadata"]["raw_bundle_intake"] = {
+        "status": descriptor["quality"]["raw_bundle_intake_status"],
+        "intake_digest": initial_intake_digest,
+        "verification_record_path": intake_readiness.get("intake_verification_record_path"),
+        "current_schema": (
+            initial_intake_verification.get("current_schema")
+            if isinstance(initial_intake_verification, Mapping)
+            else None
+        ),
+        "claim_boundary": (
+            initial_intake_verification.get("claim_boundary")
+            if isinstance(initial_intake_verification, Mapping)
+            else None
+        ),
     }
 
     hidden_zone_score = min(
@@ -1877,12 +2294,21 @@ def build_capture_bundle_records(
         uncertainty_score = min(1.0, uncertainty_score + 0.15)
     if not raw_video_uri:
         uncertainty_score = min(1.0, uncertainty_score + 0.25)
-    if modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"} and not parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False):
+    if modality in {"glasses_plus_scaffolding", "android_plus_scaffolding"} and not parse_bool(
+        scaffolding_validation.get("validated_metric_bundle"), default=False
+    ):
         uncertainty_score = min(1.0, uncertainty_score + 0.2)
     if hidden_zone_bound is not None:
-        uncertainty_score = min(1.0, uncertainty_score + max(0.0, float(hidden_zone_bound) - 0.2) * 0.4)
+        uncertainty_score = min(
+            1.0, uncertainty_score + max(0.0, float(hidden_zone_bound) - 0.2) * 0.4
+        )
 
     checks = [
+        {
+            "name": "raw_bundle_integrity",
+            "passed": descriptor["quality"]["raw_bundle_integrity_verified"],
+            "detail": descriptor["quality"]["raw_bundle_intake_status"],
+        },
         {
             "name": "raw_manifest_present",
             "passed": manifest_path.is_file(),
@@ -1901,24 +2327,43 @@ def build_capture_bundle_records(
         {
             "name": "intake_complete",
             "passed": intake_complete,
-            "detail": "intake has workflow, steps, and zone/owner" if intake_complete else "intake missing workflow, steps, or zone/owner",
+            "detail": "intake has workflow, steps, and zone/owner"
+            if intake_complete
+            else "intake missing workflow, steps, or zone/owner",
         },
         {
             "name": "metric_geometry_present",
-            "passed": evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"},
-            "detail": "validated metric evidence present" if evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"} else "metric geometry not present",
+            "passed": evidence_tier
+            in {"qualified_metric_capture", "video_with_validated_scaffolding"},
+            "detail": "validated metric evidence present"
+            if evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"}
+            else "metric geometry not present",
         },
         {
             "name": "scaffolding_validated",
-            "passed": modality not in {"glasses_plus_scaffolding", "android_plus_scaffolding"} or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False),
-            "detail": "scaffolding validated for metric checks" if modality not in {"glasses_plus_scaffolding", "android_plus_scaffolding"} or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False) else "video scaffolding lacks validated scale/pose coverage",
+            "passed": modality not in {"glasses_plus_scaffolding", "android_plus_scaffolding"}
+            or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False),
+            "detail": "scaffolding validated for metric checks"
+            if modality not in {"glasses_plus_scaffolding", "android_plus_scaffolding"}
+            or parse_bool(scaffolding_validation.get("validated_metric_bundle"), default=False)
+            else "video scaffolding lacks validated scale/pose coverage",
         },
     ]
 
-    if evidence_tier == "qualified_metric_capture":
-        status = "passed" if manifest_path.is_file() and raw_video_uri and intake_complete else "degraded"
+    if descriptor["quality"]["raw_bundle_intake_status"] != "verified":
+        status = "degraded"
+    elif evidence_tier == "qualified_metric_capture":
+        status = (
+            "passed"
+            if manifest_path.is_file() and raw_video_uri and intake_complete
+            else "degraded"
+        )
     elif evidence_tier == "video_with_validated_scaffolding":
-        status = "passed" if manifest_path.is_file() and raw_video_uri and intake_complete else "degraded"
+        status = (
+            "passed"
+            if manifest_path.is_file() and raw_video_uri and intake_complete
+            else "degraded"
+        )
     else:
         status = "degraded"
 
@@ -1942,10 +2387,12 @@ def build_capture_bundle_records(
         "hidden_zone_score": round(hidden_zone_score, 4),
         "hidden_zone_bound": round(float(hidden_zone_bound or 1.0), 4),
         "scaffolding_validation": scaffolding_validation,
+        "raw_bundle_intake": descriptor["metadata"]["raw_bundle_intake"],
         "checks": checks,
         "escalation_recommendation": {
             "recommended_lane": recommended_lane if status == "passed" else "qualification",
-            "human_review_required": evidence_tier != "qualified_metric_capture" or uncertainty_score >= 0.3,
+            "human_review_required": evidence_tier != "qualified_metric_capture"
+            or uncertainty_score >= 0.3,
             "reason": (
                 "validated metric capture supports scene-memory derivation and explicit geometry conditioning"
                 if evidence_tier in {"qualified_metric_capture", "video_with_validated_scaffolding"}
@@ -1954,10 +2401,46 @@ def build_capture_bundle_records(
         },
         "scene_memory_readiness": {
             "world_model_candidate": readiness_world_model_candidate,
+            "world_model_candidacy_decision_sha256": candidacy_decision["decision_sha256"],
             "recommended_lane": recommended_lane,
             "derived_only": True,
         },
     }
+
+    final_intake_verification = verify_canonical_raw_bundle_path(
+        raw_root,
+        expected_bucket=bucket,
+        expected_scene_id=scene_id,
+        expected_capture_id=capture_id,
+    )
+    if initial_intake_verification_recorded and (
+        final_intake_verification.get("valid_for_derivation") is not True
+        or final_intake_verification.get("intake_digest") != initial_intake_digest
+        or final_intake_verification.get("status") != initial_intake_verification.get("status")
+    ):
+        _persist_intake_verification(
+            capture_root=capture_root,
+            verification={
+                **final_intake_verification,
+                "status": "quarantined",
+                "valid_for_derivation": False,
+                "quarantine_reasons": sorted(
+                    set(
+                        [
+                            *final_intake_verification.get("quarantine_reasons", []),
+                            "raw_bundle_changed_during_materialization",
+                        ]
+                    )
+                ),
+            },
+        )
+        raise PipelineError(
+            "capture_not_ready:raw_bundle_quarantined:raw_bundle_changed_during_materialization"
+        )
+
+    if write_frames_index:
+        ensure_dir(frames_dir)
+        write_text(frames_path, json.dumps(frame_index_payload) + "\n")
 
     return {
         "descriptor_uri": f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/capture_descriptor.json",

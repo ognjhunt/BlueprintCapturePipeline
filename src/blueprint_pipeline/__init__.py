@@ -1,41 +1,55 @@
-"""Qualification-first capture pipeline package."""
+"""Qualification-first capture pipeline package with lazy public imports.
 
-from .capture_bridge import (
-    CaptureDescriptor,
-    build_capture_bundle_constraints,
-    build_scene_manifest_seed,
-    build_scene_request_from_descriptor,
-)
-from .materialization import materialize_capture_bundle, preview_capture_bundle
+Keeping ``__init__`` side-effect free is a runtime contract: console/module
+entrypoints must not be imported before ``python -m`` executes them.
+"""
 
-try:
-    from .capture_orchestrator import PipelineConfig, run_capture_pipeline
-except ModuleNotFoundError:  # pragma: no cover - optional import surface
-    PipelineConfig = None  # type: ignore[assignment]
-    run_capture_pipeline = None  # type: ignore[assignment]
+from __future__ import annotations
 
-try:
-    from .evaluation_prep_stage import run_evaluation_prep_stage
-except ModuleNotFoundError:  # pragma: no cover - optional import surface
-    run_evaluation_prep_stage = None  # type: ignore[assignment]
+from importlib import import_module
+from typing import Any
 
-try:
-    from .object_geometry_stage import run_object_geometry_stage
-except ModuleNotFoundError:  # pragma: no cover - optional import surface
-    run_object_geometry_stage = None  # type: ignore[assignment]
 
 __version__ = "2.0.0"
 
-__all__ = [
-    "__version__",
-    "CaptureDescriptor",
-    "build_capture_bundle_constraints",
-    "build_scene_manifest_seed",
-    "build_scene_request_from_descriptor",
-    "PipelineConfig",
-    "run_capture_pipeline",
-    "run_evaluation_prep_stage",
-    "materialize_capture_bundle",
-    "run_object_geometry_stage",
-    "preview_capture_bundle",
-]
+_LAZY_PUBLIC_ATTRS = {
+    "CaptureDescriptor": (".capture_bridge", "CaptureDescriptor"),
+    "build_capture_bundle_constraints": (
+        ".capture_bridge",
+        "build_capture_bundle_constraints",
+    ),
+    "build_scene_manifest_seed": (".capture_bridge", "build_scene_manifest_seed"),
+    "build_scene_request_from_descriptor": (
+        ".capture_bridge",
+        "build_scene_request_from_descriptor",
+    ),
+    "materialize_capture_bundle": (".materialization", "materialize_capture_bundle"),
+    "preview_capture_bundle": (".materialization", "preview_capture_bundle"),
+    "PipelineConfig": (".capture_orchestrator", "PipelineConfig"),
+    "run_capture_pipeline": (".capture_orchestrator", "run_capture_pipeline"),
+    "run_evaluation_prep_stage": (
+        ".evaluation_prep_stage",
+        "run_evaluation_prep_stage",
+    ),
+    "run_object_geometry_stage": (
+        ".object_geometry_stage",
+        "run_object_geometry_stage",
+    ),
+}
+
+
+def __getattr__(name: str) -> Any:
+    target = _LAZY_PUBLIC_ATTRS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = target
+    value = getattr(import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_LAZY_PUBLIC_ATTRS})
+
+
+__all__ = ["__version__", *_LAZY_PUBLIC_ATTRS]

@@ -59,6 +59,8 @@ def test_collect_github_actions_evidence_includes_junit_counts_and_job_summaries
     assert evidence["workflow_name"] == "Full Test Lane"
     assert evidence["conclusion"] == "success"
     assert evidence["head_sha"] == "abc123"
+    assert evidence["junit_artifact_name"] == "junit.xml"
+    assert str(tmp_path) not in str(evidence)
     assert evidence["test_counts"] == {
         "tests": 5,
         "failures": 0,

@@ -391,6 +391,9 @@ def _write_geometry_lane(monkeypatch, capture_root: Path) -> None:  # type: igno
                     "height": 16,
                     "min_depth_m": 1.2,
                     "max_depth_m": 1.3,
+                    "depth_unit": "meters",
+                    "metric_depth_truth": True,
+                    "depth_measurement_source": "provider_metric_reconstruction",
                     "confidence_range": [0.0, 1.0],
                 }
             )
@@ -595,7 +598,12 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
     assert canonical_package["package_type"] == "BlueprintCanonicalSitePackage"
     assert canonical_package["identity"]["scene_id"] == "scene-1"
     assert canonical_package["conditioning"]["rgb_video"]["privacy_safe_world_model_input"]["uri"] == worldlabs_input_uri
-    assert canonical_package["conditioning"]["rgb_video"]["raw_walkthrough"]["uri"].endswith("/raw/walkthrough.mov")
+    assert canonical_package["conditioning"]["rgb_video"]["restricted_raw_capture"] == {
+        "present": True,
+        "exported": False,
+        "access_scope": "restricted_internal_evidence",
+    }
+    assert "/raw/walkthrough.mov" not in json.dumps(canonical_package, sort_keys=True)
     assert canonical_package["conditioning"]["frames"]["frame_index_uri"].endswith("/frames/index.jsonl")
     assert canonical_package["conditioning"]["temporal_alignment"]["arkit_frames_uri"] is None or canonical_package["conditioning"]["temporal_alignment"]["arkit_frames_uri"].endswith("/raw/arkit/frames.jsonl")
     assert canonical_package["conditioning"]["camera"]["poses_uri"].endswith("/raw/arkit/poses.jsonl")

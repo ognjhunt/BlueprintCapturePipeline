@@ -1,9 +1,73 @@
 from __future__ import annotations
 
+import base64
 import json
+from hashlib import sha256
 from pathlib import Path
 
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from blueprint_pipeline import openvla_policy_command_adapter as adapter
+
+
+def _approved_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    remote_code_required: bool = False,
+) -> tuple[Path, Path]:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    config_path = checkpoint / "config.json"
+    weights_path = checkpoint / "model.safetensors"
+    config_path.write_text('{"model_type":"openvla"}\n', encoding="utf-8")
+    weights_path.write_bytes(b"sealed-model-weights")
+    unsigned_manifest = {
+        "schema_version": "blueprint_openvla_checkpoint_approval.v1",
+        "model_revision": "a" * 40,
+        "license": {
+            "spdx_id": "Apache-2.0",
+            "review_status": "approved",
+            "approved_by": "model-governance",
+        },
+        "remote_code_required": remote_code_required,
+        "files": [
+            {
+                "path": path.name,
+                "size_bytes": path.stat().st_size,
+                "sha256": sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in (config_path, weights_path)
+        ],
+    }
+    canonical = json.dumps(
+        unsigned_manifest, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    private_key = Ed25519PrivateKey.generate()
+    signature = private_key.sign(adapter.OPENVLA_APPROVAL_SIGNATURE_DOMAIN + canonical)
+    manifest = {
+        **unsigned_manifest,
+        "approval_signature": {
+            "algorithm": "Ed25519",
+            "key_id": "test-model-governance",
+            "signature": base64.b64encode(signature).decode("ascii"),
+        },
+    }
+    (checkpoint / adapter.OPENVLA_CHECKPOINT_APPROVAL_FILENAME).write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    public_key_path = tmp_path / "model-governance-public.pem"
+    public_key_path.write_bytes(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    monkeypatch.setenv(adapter.OPENVLA_APPROVED_DIGEST_ENV, sha256(canonical).hexdigest())
+    monkeypatch.setenv(adapter.OPENVLA_APPROVAL_PUBLIC_KEY_ENV, str(public_key_path))
+    return checkpoint, weights_path
 
 
 class _FakeScalar:
@@ -77,6 +141,56 @@ def test_openvla_policy_adapter_blocks_without_checkpoint_or_frame(tmp_path: Pat
     assert "blocked_missing_policy_visual_observation_frame" in response["blockers"]
     assert response["claim_boundary"]["openvla_model_executed"] is False
     assert response["claim_boundary"]["unitree_g1_dexterous_manipulation_proven"] is False
+
+
+def test_openvla_checkpoint_requires_signed_digest_and_license_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint, weights_path = _approved_checkpoint(tmp_path, monkeypatch)
+
+    approval, blockers = adapter._validate_checkpoint_approval(checkpoint)
+
+    assert blockers == []
+    assert approval["status"] == "approved"
+    assert approval["model_revision"] == "a" * 40
+    assert approval["remote_code_allowed"] is False
+    assert approval["network_model_download_allowed"] is False
+
+    weights_path.write_bytes(b"tampered-model-weights")
+    tampered, tamper_blockers = adapter._validate_checkpoint_approval(checkpoint)
+    assert tampered["status"] == "blocked"
+    assert any(
+        blocker.startswith("blocked_openvla_checkpoint_digest_mismatch:model.safetensors")
+        for blocker in tamper_blockers
+    )
+
+
+def test_openvla_checkpoint_rejects_remote_code_and_external_source_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint, _weights_path = _approved_checkpoint(
+        tmp_path,
+        monkeypatch,
+        remote_code_required=True,
+    )
+    approval, blockers = adapter._validate_checkpoint_approval(checkpoint)
+    assert approval["status"] == "blocked"
+    assert "blocked_openvla_checkpoint_remote_code_required" in blockers
+
+    frame_path = tmp_path / "frame.png"
+    frame_path.write_bytes(b"not-decoded-because-preflight-blocks")
+    response, exit_code = adapter.run_openvla_policy(
+        payload={"observation": {"camera_frame_path": str(frame_path)}},
+        checkpoint=checkpoint,
+        source_root=tmp_path / "operator-code",
+        device="cpu",
+        unnorm_key="bridge_orig",
+        allow_cpu=True,
+    )
+    assert exit_code == 2
+    assert "blocked_openvla_external_source_root_forbidden" in response["blockers"]
 
 
 def test_openvla_policy_adapter_decodes_to_blueprint_actions() -> None:

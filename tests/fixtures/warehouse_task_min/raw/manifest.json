@@ -1,5 +1,5 @@
 {
-  "schema_version": "v3",
+  "schema_version": "warehouse_task_fixture_manifest.v1",
   "scene_id": "fixture_warehouse_task_min",
   "capture_id": "fixture_warehouse_capture_001",
   "site_type": "warehouse",

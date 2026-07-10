@@ -202,10 +202,13 @@ The worker runs the baked healthcheck, starts the GR00T policy server, then runs
 `oscar_isaac_closed_loop_eval` at native OSCAR resolution with
 `--require-fresh-learned-policy-requery`, `--min-coherent-horizon-frames 2`,
 `--allow-wam-consistency-scoring`, `--require-forward-inverse-consistency`, and
-`--stop-on-task-completion --min-steps 3`. The default consistency scorer is the
-quota-free local CV command
-`python -m blueprint_pipeline.wam_episode_consistency_label_local`; it is a
-generated-video reliability/abstention gate, not manipulation success proof.
+`--stop-on-task-completion --min-steps 3`. There is no default forward/inverse
+scorer: provide `--wam-consistency-command` for a scorer that consumes the exact
+commanded actions and emits recovered actions, numeric error/uncertainty, and a
+calibrated threshold. The quota-free local CV command
+`python -m blueprint_pipeline.wam_episode_consistency_label_local` is retained
+only as a visual-motion smoke compatibility alias. It never reads action values,
+always leaves forward/inverse proof false, and is rejected as the strict scorer.
 
 The `--steps` value is a safety cap, not a fixed frame count. OSCAR clip
 `--num-frames` is scoped to a generated support clip, not the episode length.

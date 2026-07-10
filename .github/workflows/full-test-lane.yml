@@ -5,12 +5,6 @@ on:
   push:
     branches: ["main"]
   workflow_dispatch:
-    inputs:
-      pytest_args:
-        description: "Extra pytest arguments appended after scripts/pytest_full.sh."
-        required: false
-        default: ""
-        type: string
   schedule:
     - cron: "17 8 * * 1"
 
@@ -31,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Checkout BlueprintContracts
         shell: bash
@@ -50,8 +44,9 @@ jobs:
           git checkout --detach FETCH_HEAD
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
+          version: "0.10.7"
           python-version: "3.12"
 
       - name: Install system media dependencies
@@ -65,7 +60,8 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          uv sync --extra dev --extra cloud
+          uv lock --check
+          uv sync --frozen --extra dev --extra cloud --extra groot-libero
           uv pip install -e BlueprintContracts
 
       - name: Validate Python interpreter matrix
@@ -92,27 +88,53 @@ jobs:
             tests/test_provider_preview_qa.py::test_provider_preview_qa_blocks_raw_bypass_in_production
 
       - name: Collect full lane
+        env:
+          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: output/ci/full-test-lane-planned.json
+          BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: planned
         run: |
           mkdir -p output/ci
-          uv run python -m pytest -m "" --collect-only -q \
+          uv run python -m pytest \
+            -p blueprint_pipeline.pytest_full_lane_evidence \
+            -m "" --collect-only -q \
             > output/ci/full-test-lane-collection.txt
 
       - name: Run full lane
+        env:
+          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: output/ci/full-test-lane-executed.json
+          BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: executed
         run: |
           set -euo pipefail
-          extra_args="${{ inputs.pytest_args }}"
-          # shellcheck disable=SC2086
           uv run scripts/pytest_full.sh \
-            --junitxml=output/ci/full-test-lane-junit.xml \
-            ${extra_args}
+            -p blueprint_pipeline.pytest_full_lane_evidence \
+            --junitxml=output/ci/full-test-lane-junit.xml
+
+      - name: Verify exact full-lane collection
+        if: always()
+        run: |
+          uv run python scripts/verify_full_lane_collection.py \
+            --planned output/ci/full-test-lane-planned.json \
+            --executed output/ci/full-test-lane-executed.json
+
+      - name: Build fail-closed CPU full-lane evidence
+        if: always()
+        run: |
+          uv run python scripts/build_cpu_full_lane_evidence.py \
+            --planned output/ci/full-test-lane-planned.json \
+            --executed output/ci/full-test-lane-executed.json \
+            --junit output/ci/full-test-lane-junit.xml \
+            --repository-sha '${{ github.sha }}' \
+            --output output/ci/cpu_full.json
 
       - name: Upload full lane report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: full-test-lane-${{ github.run_id }}
-          retention-days: 14
-          if-no-files-found: ignore
+          retention-days: 90
+          if-no-files-found: error
           path: |
             output/ci/full-test-lane-collection.txt
+            output/ci/full-test-lane-planned.json
+            output/ci/full-test-lane-executed.json
             output/ci/full-test-lane-junit.xml
+            output/ci/cpu_full.json

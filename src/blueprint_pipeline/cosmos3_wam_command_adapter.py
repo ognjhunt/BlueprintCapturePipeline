@@ -18,7 +18,10 @@ provider-command interface. It mirrors the OSCAR adapter honesty mechanics:
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
+import math
 import os
 import shlex
 import shutil
@@ -26,16 +29,22 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .oscar_cosmos_wam_command_adapter import (
     _failure_signals,
+    _mapping,
     _materialize_cosmos_input_package,
     _read_json,
     _redacted_argv,
     _runtime_env,
     _string,
     _write_json,
+)
+from .sc3_fidelity_contracts import (
+    SC3_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV,
+    validate_checkpoint_attestation,
+    validate_horizon_execution_trace,
 )
 from .wam_generated_video_review import validate_generated_mp4_for_review
 
@@ -47,6 +56,7 @@ EXPECTED_BASE_MODEL = "Cosmos3-Nano"
 EXPECTED_MODEL_FAMILY = "Cosmos 3"
 LOCAL_MODEL_GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_MODEL"
 DEFAULT_MODEL = "cosmos3/nano/action-cond"
+SC3_EXECUTOR_SIGNING_PRIVATE_KEY_FILE_ENV = "BLUEPRINT_SC3_EXECUTOR_SIGNING_PRIVATE_KEY_FILE"
 DEFAULT_ENTRYPOINT_RELPATH = "examples/action_conditioned.py"
 
 CHECKPOINT_IDENTITY_FILENAMES = (
@@ -103,6 +113,373 @@ SC3_RECIPE_DECLARED_CONFIG = {
 }
 
 
+def _validated_sc3_callback_evidence(
+    value: Any,
+    *,
+    expected_schema_version: str,
+    expected_bindings: Mapping[str, Any],
+    error_prefix: str,
+) -> dict[str, str]:
+    ref = _mapping(value)
+    path = Path(_string(ref.get("path"))).expanduser()
+    digest = _string(ref.get("sha256")).lower()
+    if not path.is_file():
+        raise ValueError(f"{error_prefix}_evidence_file_missing")
+    if len(digest) != 64 or _sha256_file(path) != digest:
+        raise ValueError(f"{error_prefix}_evidence_digest_invalid")
+    try:
+        payload = _mapping(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{error_prefix}_evidence_json_invalid") from exc
+    if payload.get("schema_version") != expected_schema_version:
+        raise ValueError(f"{error_prefix}_evidence_schema_invalid")
+    if any(payload.get(key) != expected for key, expected in expected_bindings.items()):
+        raise ValueError(f"{error_prefix}_evidence_binding_invalid")
+    return {"path": str(path.resolve()), "sha256": digest}
+
+
+def execute_sc3_receding_horizon_chunk(
+    *,
+    propose_actions: Callable[[], Sequence[Mapping[str, Any]]],
+    world_model_predict: Callable[[Mapping[str, Any], int], Mapping[str, Any]],
+    controller_execute: Callable[[Mapping[str, Any], int, float], Mapping[str, Any]],
+    output_dir: str | Path,
+    runtime_session_id: str,
+    runtime_executor_id: str,
+    runtime_executor_code_sha256: str,
+    controller_id: str,
+    controller_sha256: str,
+    world_model_checkpoint_sha256: str,
+    control_rate_hz: float,
+    chunk_start_timestamp_sec: float,
+    signing_private_key_file: str | Path | None = None,
+) -> dict[str, Any]:
+    """Execute and attest one real SC3 25/24/16 receding-horizon chunk."""
+
+    for identity_name, identity_value in (
+        ("runtime_session_id", runtime_session_id),
+        ("runtime_executor_id", runtime_executor_id),
+        ("controller_id", controller_id),
+    ):
+        if not _string(identity_value):
+            raise ValueError(f"sc3_executor_{identity_name}_missing")
+    for digest_name, digest_value in (
+        ("runtime_executor_code_sha256", runtime_executor_code_sha256),
+        ("controller_sha256", controller_sha256),
+        ("world_model_checkpoint_sha256", world_model_checkpoint_sha256),
+    ):
+        digest = _string(digest_value).lower()
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError(f"sc3_executor_{digest_name}_invalid")
+    rate = float(control_rate_hz)
+    chunk_start = float(chunk_start_timestamp_sec)
+    if not math.isfinite(rate) or rate <= 0.0:
+        raise ValueError("sc3_executor_control_rate_hz_invalid")
+    if not math.isfinite(chunk_start):
+        raise ValueError("sc3_executor_chunk_start_timestamp_invalid")
+
+    private_key_path = Path(
+        signing_private_key_file or _string(os.getenv(SC3_EXECUTOR_SIGNING_PRIVATE_KEY_FILE_ENV))
+    ).expanduser()
+    if not private_key_path.is_file():
+        raise ValueError("sc3_executor_signing_private_key_file_missing")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = serialization.load_pem_private_key(private_key_path.read_bytes(), password=None)
+    if not isinstance(private_key, Ed25519PrivateKey):
+        raise TypeError("sc3_executor_signing_key_must_be_ed25519")
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    public_key_sha256 = hashlib.sha256(public_key).hexdigest()
+    trusted_public_key_sha256 = _string(
+        os.getenv(SC3_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV)
+    ).lower()
+    if public_key_sha256 != trusted_public_key_sha256:
+        raise ValueError("sc3_executor_signing_key_not_trusted")
+
+    output_root = Path(output_dir).expanduser().resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    proposed_actions = [dict(row) for row in propose_actions()]
+    if len(proposed_actions) != 25:
+        raise ValueError("sc3_executor_policy_must_propose_exactly_25_actions")
+    action_ids: set[str] = set()
+    for index, action in enumerate(proposed_actions):
+        action_id = _string(action.get("action_id"))
+        vector = action.get("action_vector_7d")
+        if not action_id or action_id in action_ids:
+            raise ValueError(f"sc3_executor_action_id_missing_or_duplicate:{index}")
+        action_ids.add(action_id)
+        if not (
+            isinstance(vector, Sequence)
+            and not isinstance(vector, (str, bytes, bytearray))
+            and len(vector) == 7
+        ):
+            raise ValueError(f"sc3_executor_action_vector_invalid:{index}")
+        try:
+            numeric_vector = [float(value) for value in vector]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"sc3_executor_action_vector_invalid:{index}") from exc
+        if not all(math.isfinite(value) for value in numeric_vector):
+            raise ValueError(f"sc3_executor_action_vector_invalid:{index}")
+        expected_action_sha256 = hashlib.sha256(
+            json.dumps(numeric_vector, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if _string(action.get("action_sha256")).lower() != expected_action_sha256:
+            raise ValueError(f"sc3_executor_action_sha256_mismatch:{index}")
+    predictions: list[dict[str, Any]] = []
+    prediction_runtime_result_ids: set[str] = set()
+    prediction_evidence_sha256s: set[str] = set()
+    for index, action in enumerate(proposed_actions[:24]):
+        prediction = dict(world_model_predict(action, index) or {})
+        prediction_id = _string(prediction.get("prediction_id"))
+        runtime_result_id = _string(prediction.get("runtime_result_id"))
+        if not (
+            prediction.get("schema_version") == "sc3_world_model_prediction_result.v1"
+            and prediction.get("status") == "completed"
+            and prediction_id
+            and runtime_result_id
+            and prediction.get("action_id") == action.get("action_id")
+            and _string(prediction.get("action_sha256")).lower()
+            == _string(action.get("action_sha256")).lower()
+            and _string(prediction.get("world_model_checkpoint_sha256")).lower()
+            == _string(world_model_checkpoint_sha256).lower()
+        ):
+            raise ValueError(f"sc3_executor_prediction_result_invalid:{index}")
+        if runtime_result_id in prediction_runtime_result_ids:
+            raise ValueError(f"sc3_executor_prediction_runtime_result_id_duplicate:{index}")
+        prediction_runtime_result_ids.add(runtime_result_id)
+        prediction_evidence = _validated_sc3_callback_evidence(
+            prediction.get("evidence_artifact"),
+            expected_schema_version="sc3_world_model_prediction_evidence.v1",
+            expected_bindings={
+                "status": "completed",
+                "runtime_session_id": runtime_session_id,
+                "runtime_result_id": runtime_result_id,
+                "prediction_id": prediction_id,
+                "action_id": action.get("action_id"),
+                "action_sha256": action.get("action_sha256"),
+                "world_model_checkpoint_sha256": world_model_checkpoint_sha256,
+            },
+            error_prefix=f"sc3_executor_prediction:{index}",
+        )
+        if prediction_evidence["sha256"] in prediction_evidence_sha256s:
+            raise ValueError(f"sc3_executor_prediction_evidence_duplicate:{index}")
+        prediction_evidence_sha256s.add(prediction_evidence["sha256"])
+        predictions.append(
+            {
+                **action,
+                "prediction_result_schema_version": prediction.get("schema_version"),
+                "prediction_id": prediction_id,
+                "prediction_runtime_result_id": runtime_result_id,
+                "prediction_evidence_artifact": prediction_evidence,
+                "prediction_index": index,
+                "prediction_status": "completed",
+            }
+        )
+    retained = [
+        {**action, "retention_status": "retained_for_execution"} for action in proposed_actions[:16]
+    ]
+    executed: list[dict[str, Any]] = []
+    controller_runtime_result_ids: set[str] = set()
+    controller_evidence_sha256s: set[str] = set()
+    for index, action in enumerate(proposed_actions[:16]):
+        execution_timestamp = chunk_start + index / rate
+        execution = dict(controller_execute(action, index, execution_timestamp) or {})
+        runtime_result_id = _string(execution.get("runtime_result_id"))
+        try:
+            observed_execution_timestamp = float(execution.get("execution_timestamp_sec"))
+        except (TypeError, ValueError):
+            observed_execution_timestamp = math.nan
+        if not (
+            execution.get("schema_version") == "sc3_controller_execution_result.v1"
+            and execution.get("status") == "completed"
+            and runtime_result_id
+            and execution.get("action_id") == action.get("action_id")
+            and _string(execution.get("action_sha256")).lower()
+            == _string(action.get("action_sha256")).lower()
+            and execution.get("controller_id") == controller_id
+            and _string(execution.get("controller_sha256")).lower()
+            == _string(controller_sha256).lower()
+            and math.isfinite(observed_execution_timestamp)
+            and math.isclose(
+                observed_execution_timestamp,
+                execution_timestamp,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ):
+            raise ValueError(f"sc3_executor_controller_result_invalid:{index}")
+        if runtime_result_id in controller_runtime_result_ids:
+            raise ValueError(f"sc3_executor_controller_runtime_result_id_duplicate:{index}")
+        controller_runtime_result_ids.add(runtime_result_id)
+        controller_evidence = _validated_sc3_callback_evidence(
+            execution.get("evidence_artifact"),
+            expected_schema_version="sc3_controller_execution_evidence.v1",
+            expected_bindings={
+                "status": "completed",
+                "runtime_session_id": runtime_session_id,
+                "runtime_result_id": runtime_result_id,
+                "action_id": action.get("action_id"),
+                "action_sha256": action.get("action_sha256"),
+                "controller_id": controller_id,
+                "controller_sha256": controller_sha256,
+                "execution_timestamp_sec": execution_timestamp,
+            },
+            error_prefix=f"sc3_executor_controller:{index}",
+        )
+        if controller_evidence["sha256"] in controller_evidence_sha256s:
+            raise ValueError(f"sc3_executor_controller_evidence_duplicate:{index}")
+        controller_evidence_sha256s.add(controller_evidence["sha256"])
+        executed.append(
+            {
+                **action,
+                "execution_result_schema_version": execution.get("schema_version"),
+                "controller_runtime_result_id": runtime_result_id,
+                "controller_evidence_artifact": controller_evidence,
+                "execution_status": "executed",
+                "execution_timestamp_sec": execution_timestamp,
+            }
+        )
+    discarded = [
+        {
+            **action,
+            "retention_status": "discarded_not_executed",
+            "executed": False,
+        }
+        for action in proposed_actions[16:24]
+    ]
+    trace = {
+        "trace_producer_id": "blueprint_sc3_receding_horizon_executor",
+        "runtime_session_id": runtime_session_id,
+        "runtime_executor_id": runtime_executor_id,
+        "runtime_executor_code_sha256": runtime_executor_code_sha256,
+        "controller_id": controller_id,
+        "controller_sha256": controller_sha256,
+        "world_model_checkpoint_sha256": world_model_checkpoint_sha256,
+        "runtime_execution_proven": True,
+        "world_model_prediction_proven": True,
+        "receding_horizon_controller_proven": True,
+        "proposed_actions": proposed_actions,
+        "world_model_predictions": predictions,
+        "retained_actions": retained,
+        "executed_actions": executed,
+        "discarded_predictions": discarded,
+        "control_rate_hz": rate,
+        "chunk_start_timestamp_sec": chunk_start,
+        "requery_timestamp_sec": chunk_start + 16 / rate,
+    }
+    artifact = output_root / "sc3_horizon_executor_trace.json"
+    artifact.write_text(
+        json.dumps(
+            {"schema_version": "sc3_horizon_executor_trace.v1", **trace},
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    trace["executor_trace_artifact"] = {
+        "path": str(artifact),
+        "sha256": _sha256_file(artifact),
+    }
+    # The artifact ref is transport metadata, not part of the validator's
+    # signed execution fields.
+    signed_fields = {key: value for key, value in trace.items() if key != "executor_trace_artifact"}
+    signed_payload = json.dumps(signed_fields, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    payload_sha256 = hashlib.sha256(signed_payload).hexdigest()
+    report = output_root / "sc3_horizon_executor_signature_report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": "sc3_signature_verification_report.v1",
+                "algorithm": "Ed25519",
+                "verification_status": "verified",
+                "public_key_sha256": public_key_sha256,
+                "signed_payload_sha256": payload_sha256,
+                "signer_key_id": runtime_executor_id,
+                "verifier_id": "blueprint_sc3_receding_horizon_executor",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    trace["executor_attestation"] = {
+        "algorithm": "Ed25519",
+        "signature_verified": True,
+        "signer_key_id": runtime_executor_id,
+        "verifier_id": "blueprint_sc3_receding_horizon_executor",
+        "public_key_base64": base64.b64encode(public_key).decode("ascii"),
+        "public_key_sha256": public_key_sha256,
+        "signature_base64": base64.b64encode(private_key.sign(signed_payload)).decode("ascii"),
+        "signed_payload_sha256": payload_sha256,
+        "verification_report_artifact": {
+            "path": str(report),
+            "sha256": _sha256_file(report),
+        },
+    }
+    validation = validate_horizon_execution_trace(trace)
+    return {
+        **trace,
+        "status": validation.get("status"),
+        "validation": validation,
+        "blockers": validation.get("blockers", []),
+    }
+
+
+def build_sc3_horizon_execution_trace(
+    package_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate an executor-emitted 25/24/16 trace without fabricating stages.
+
+    The Cosmos input package contains proposed actions, but this adapter does not
+    itself execute a receding-horizon controller. Only a runtime-supplied trace
+    may populate prediction, retention, execution, discard, and requery evidence.
+    """
+
+    supplied = package_manifest.get("sc3_horizon_execution_trace")
+    trace = (
+        dict(supplied)
+        if isinstance(supplied, Mapping)
+        else {
+            "schema_version": "sc3_horizon_execution_trace.v1",
+            "runtime_execution_proven": False,
+            "world_model_prediction_proven": False,
+            "receding_horizon_controller_proven": False,
+            "proposed_actions": [],
+            "world_model_predictions": [],
+            "retained_actions": [],
+            "executed_actions": [],
+            "discarded_predictions": [],
+            "control_rate_hz": package_manifest.get("control_rate_hz"),
+            "chunk_start_timestamp_sec": package_manifest.get("chunk_start_timestamp_sec"),
+            "requery_timestamp_sec": None,
+        }
+    )
+    validation = validate_horizon_execution_trace(trace)
+    blockers = list(validation["blockers"])
+    if not isinstance(supplied, Mapping):
+        blockers.append("horizon_runtime_execution_trace_missing")
+        blockers = sorted(set(blockers))
+    return {
+        **trace,
+        "status": "validated" if not blockers else "blocked",
+        "validation": {
+            **validation,
+            "status": "validated" if not blockers else "blocked",
+            "blockers": blockers,
+        },
+        "blockers": blockers,
+        "claim_boundary": {
+            "trace_is_executable_horizon_evidence": not blockers,
+            "declared_recipe_metadata_alone_is_not_execution_proof": True,
+            "input_action_records_are_not_prediction_or_execution_evidence": True,
+        },
+    }
+
+
 def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -151,8 +528,7 @@ def _identity_value_is_wrong_family(value: Any) -> bool:
     if COSMOS3_NANO_IDENTITY_TOKEN in normalized:
         return False
     return any(
-        marker.replace("-", "").replace(".", "") in normalized
-        for marker in WRONG_FAMILY_MARKERS
+        marker.replace("-", "").replace(".", "") in normalized for marker in WRONG_FAMILY_MARKERS
     )
 
 
@@ -167,25 +543,81 @@ def _identity_candidate_files(checkpoint: Path) -> list[Path]:
     return files
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def checkpoint_identity_probe(checkpoint: Path) -> dict[str, Any]:
     """Machine-check the operator-supplied checkpoint's declared identity."""
 
     declared: list[str] = []
     scanned: list[str] = []
+    attestation_candidates: list[dict[str, Any]] = []
     for identity_file in _identity_candidate_files(checkpoint):
         scanned.append(str(identity_file))
         try:
             payload = _read_json(identity_file)
         except (json.JSONDecodeError, OSError):
             continue
+        attestation = _mapping(payload.get("sc3_checkpoint_attestation"))
+        if not attestation and payload.get("trained_modes"):
+            attestation = dict(payload)
+        if attestation:
+            attestation_candidates.append(attestation)
         for key in CHECKPOINT_IDENTITY_KEYS:
             value = _string(payload.get(key))
             if value and value not in declared:
                 declared.append(value)
     verified = any(_identity_value_is_cosmos3_nano(value) for value in declared)
-    wrong_family_values = [
-        value for value in declared if _identity_value_is_wrong_family(value)
+    wrong_family_values = [value for value in declared if _identity_value_is_wrong_family(value)]
+    attestation_validations = [
+        validate_checkpoint_attestation(candidate) for candidate in attestation_candidates
     ]
+    accepted_pair = next(
+        (
+            (candidate, validation)
+            for candidate, validation in zip(attestation_candidates, attestation_validations)
+            if validation.get("status") == "validated"
+        ),
+        None,
+    )
+    accepted_attestation = (
+        dict(accepted_pair[1]) if accepted_pair is not None else validate_checkpoint_attestation({})
+    )
+    selected_checkpoint_binding_proven = False
+    if accepted_pair is not None:
+        candidate = accepted_pair[0]
+        checkpoint_ref = _mapping(candidate.get("checkpoint_artifact"))
+        attested_path = Path(_string(checkpoint_ref.get("path"))).expanduser()
+        selected_path_contains_attested_checkpoint = bool(
+            attested_path.is_file()
+            and (
+                attested_path.resolve() == checkpoint.resolve()
+                if checkpoint.is_file()
+                else attested_path.resolve().is_relative_to(checkpoint.resolve())
+            )
+        )
+        selected_checkpoint_binding_proven = bool(
+            selected_path_contains_attested_checkpoint
+            and _string(checkpoint_ref.get("sha256")).lower()
+            == _sha256_file(attested_path)
+            == _string(candidate.get("checkpoint_sha256")).lower()
+        )
+    if accepted_pair is not None and not selected_checkpoint_binding_proven:
+        accepted_attestation = {
+            **accepted_attestation,
+            "status": "blocked",
+            "blockers": sorted(
+                {
+                    *accepted_attestation.get("blockers", []),
+                    "sc3_checkpoint_selected_path_not_bound_to_attestation",
+                }
+            ),
+        }
     return {
         "schema_version": "cosmos3_checkpoint_identity_probe.v1",
         "checkpoint_path": str(checkpoint),
@@ -195,6 +627,9 @@ def checkpoint_identity_probe(checkpoint: Path) -> dict[str, Any]:
         "checkpoint_identity_verified": verified,
         "wrong_model_family_detected": bool(wrong_family_values) and not verified,
         "wrong_family_identity_values": wrong_family_values if not verified else [],
+        "sc3_checkpoint_attestation_validation": accepted_attestation,
+        "selected_checkpoint_binding_proven": selected_checkpoint_binding_proven,
+        "sc3_trained_checkpoint_proven": accepted_attestation.get("status") == "validated",
     }
 
 
@@ -235,9 +670,7 @@ def _probe_modules() -> list[str]:
     return [_string(value) for value in values if _string(value)]
 
 
-def _run_import_probe(
-    *, python: str, source_root: Path, timeout_seconds: float
-) -> dict[str, Any]:
+def _run_import_probe(*, python: str, source_root: Path, timeout_seconds: float) -> dict[str, Any]:
     modules = _probe_modules()
     started = time.monotonic()
     result = subprocess.run(
@@ -280,10 +713,7 @@ def _run_import_probe(
 
 
 def _entrypoint_relpath() -> str:
-    return (
-        _string(os.getenv("BLUEPRINT_COSMOS3_WAM_ENTRYPOINT"))
-        or DEFAULT_ENTRYPOINT_RELPATH
-    )
+    return _string(os.getenv("BLUEPRINT_COSMOS3_WAM_ENTRYPOINT")) or DEFAULT_ENTRYPOINT_RELPATH
 
 
 def _run_cosmos3(
@@ -401,32 +831,25 @@ def _rollout_payload(
 ) -> dict[str, Any]:
     save_root = Path(_string(package_manifest.get("save_root")))
     generated_videos = sorted(path.resolve() for path in save_root.rglob("*.mp4"))
-    video_validations = [
-        validate_generated_mp4_for_review(path) for path in generated_videos
-    ]
+    video_validations = [validate_generated_mp4_for_review(path) for path in generated_videos]
     subprocess_completed = subprocess_detail.get("status") == "completed"
     identity_verified = bool(
         checkpoint_identity.get("checkpoint_identity_verified")
         and source_identity.get("source_identity_verified")
     )
     rollouts = []
-    for index, (path, validation) in enumerate(
-        zip(generated_videos, video_validations), start=1
-    ):
+    for index, (path, validation) in enumerate(zip(generated_videos, video_validations), start=1):
         if validation.get("status") != "completed":
             continue
         rollouts.append(
             {
                 "rollout_id": f"cosmos3_wam_rollout_{index:04d}",
                 "policy_id": ADAPTER_ID,
-                "model_candidate": os.getenv("BLUEPRINT_WAM_MODEL_CANDIDATE")
-                or SUBSTRATE,
+                "model_candidate": os.getenv("BLUEPRINT_WAM_MODEL_CANDIDATE") or SUBSTRATE,
                 "base_model": EXPECTED_BASE_MODEL,
                 "model": model,
                 "generated_video_path": str(path),
-                "source_review_video_path": package_manifest.get(
-                    "source_review_video_path"
-                ),
+                "source_review_video_path": package_manifest.get("source_review_video_path"),
                 "source_camera": package_manifest.get("source_camera"),
                 "scenario_eval_run_id": package_manifest.get("scenario_eval_run_id"),
                 "task_id": package_manifest.get("task_id"),
@@ -457,6 +880,7 @@ def _rollout_payload(
         ]
     )
     model_ran = bool(rollouts and subprocess_completed and identity_verified)
+    horizon_trace = build_sc3_horizon_execution_trace(package_manifest)
     return _base_payload(
         status=status,
         blockers=blockers,
@@ -479,21 +903,24 @@ def _rollout_payload(
                 "source_identity_probe": dict(source_identity),
             },
             "input_package": dict(package_manifest),
+            "sc3_horizon_execution_trace": horizon_trace,
             "cosmos3_subprocess": dict(subprocess_detail),
-            "fresh_model_command_executed_this_invocation": bool(
-                rollouts and subprocess_completed
-            ),
+            "fresh_model_command_executed_this_invocation": bool(rollouts and subprocess_completed),
             "fresh_model_run_claimed": model_ran,
             "learned_wam_model_ran": model_ran,
             "truth_boundary": {
-                "generated_video_is_model_output": bool(
-                    rollouts and subprocess_completed
-                ),
+                "generated_video_is_model_output": bool(rollouts and subprocess_completed),
                 "checkpoint_identity_verified_as_cosmos3_nano": bool(
                     checkpoint_identity.get("checkpoint_identity_verified")
                 ),
                 "source_identity_verified_as_cosmos3": bool(
                     source_identity.get("source_identity_verified")
+                ),
+                "sc3_trained_checkpoint_proven": bool(
+                    checkpoint_identity.get("sc3_trained_checkpoint_proven")
+                ),
+                "sc3_checkpoint_attestation_validation": _mapping(
+                    checkpoint_identity.get("sc3_checkpoint_attestation_validation")
                 ),
                 "cosmos3_identity_match_required_for_learned_wam_claim": True,
                 "sc3_recipe_metadata_is_declared_config_not_proof": True,
@@ -522,7 +949,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=int(os.getenv("BLUEPRINT_COSMOS3_WAM_CHUNK_SIZE", "16")),
+        default=int(os.getenv("BLUEPRINT_COSMOS3_WAM_CHUNK_SIZE", "25")),
     )
     parser.add_argument(
         "--resolution",
@@ -551,14 +978,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
     args = _build_parser().parse_args(argv)
     source_root = (
-        args.source_root.expanduser().resolve()
-        if args.source_root
-        else _source_root_from_env()
+        args.source_root.expanduser().resolve() if args.source_root else _source_root_from_env()
     )
     checkpoint = (
-        args.checkpoint.expanduser().resolve()
-        if args.checkpoint
-        else _checkpoint_from_env()
+        args.checkpoint.expanduser().resolve() if args.checkpoint else _checkpoint_from_env()
     )
     output_path = Path(
         os.getenv("BLUEPRINT_WAM_ROLLOUT_OUTPUT", "wam_provider_output.json")

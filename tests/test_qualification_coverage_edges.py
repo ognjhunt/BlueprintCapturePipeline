@@ -67,6 +67,15 @@ def test_qualification_small_helpers_and_handoff_paths(
 
     build_report = tmp_path / "raw" / "object_index_build_report.json"
     build_report.parent.mkdir()
+    (build_report.parent / "object_index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "object_index.v2",
+                "objects": [{"object_id": "fixture-object", "label": "fixture"}],
+            }
+        ),
+        encoding="utf-8",
+    )
     build_report.write_text(
         json.dumps(
             {
@@ -377,7 +386,9 @@ def test_scene_memory_bundle_and_geometry_artifact_helpers(tmp_path: Path) -> No
         (advanced_dir / name).write_text("{}", encoding="utf-8")
     descriptor = _descriptor(
         evidence_tier="qualified_metric_capture",
-        raw_video_uri="gs://bucket/captures/scene-1/capture-1/privacy/final_walkthrough.mp4",
+        privacy_processed_video_uri=(
+            "gs://bucket/captures/scene-1/capture-1/privacy/final_walkthrough.mp4"
+        ),
         metadata={
             "capture_rights": {
                 "derived_scene_generation_allowed": True,
@@ -415,6 +426,28 @@ def test_scene_memory_bundle_and_geometry_artifact_helpers(tmp_path: Path) -> No
     assert artifacts["geometry_summary_uri"].endswith("geometry_summary.json")
     assert artifacts["depth_conditioning"]["source"] == "privacy"
     assert (pipeline_dir / "presentation_world" / "authoritative_runtime_render_manifest.json").is_file()
+    derived_payloads = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(pipeline_dir.rglob("*.json"))
+    ]
+    serialized = json.dumps(derived_payloads, sort_keys=True)
+    assert "raw_video_uri" not in serialized
+    assert "/raw/final_walkthrough" not in serialized
+
+    with pytest.raises(StageError, match="privacy_processed_video_required"):
+        q._write_scene_memory_bundle(
+            storage_root=tmp_path / "raw-only",
+            bucket="bucket",
+            pipeline_prefix="pipeline",
+            pipeline_dir=tmp_path / "raw-only" / "pipeline",
+            descriptor=_descriptor(
+                raw_video_uri="gs://bucket/scenes/scene-1/captures/capture-1/raw/walkthrough.mov",
+                privacy_processed_video_uri=None,
+                world_model_video_uri=None,
+            ),
+            scorecard={"completeness_status": "sufficient"},
+            qualification_record={"readiness_state": "ready"},
+        )
 
     disabled = q._disabled_task_targets("scene", "capture", "missing")
     assert disabled["inference_mode"] == "disabled"

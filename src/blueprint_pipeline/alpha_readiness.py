@@ -966,6 +966,7 @@ def build_alpha_readiness_summary(
     env_checks.extend(_env_check(resolved_env, name) for name in _PRIVACY_ENV_VARS)
     if runtime_launch_expected:
         env_checks.append(_env_check(resolved_env, "SITE_WORLD_RUNTIME_SERVICE_URL"))
+        env_checks.append(_env_check(resolved_env, "SITE_WORLD_RUNTIME_SERVICE_API_KEY"))
     if profile in {"iphone_video_only", "meta_glasses", "android_video"}:
         env_checks.append(_env_check(resolved_env, "VIDEO_TO_WORLD_URL"))
         env_checks.append(_env_check(resolved_env, "VIDEO_TO_WORLD_RUNNER_TOKEN"))

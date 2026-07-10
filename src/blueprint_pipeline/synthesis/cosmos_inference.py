@@ -32,6 +32,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -50,12 +51,35 @@ _DEFAULT_COSMOS_MODEL_ID = os.getenv(
     "COSMOS_MODEL_ID",
     "nvidia/Cosmos-Predict2.5-2B",
 )
-_DEFAULT_COSMOS_MODEL_REVISION = os.getenv(
-    "COSMOS_MODEL_REVISION",
-    "diffusers/base/post-trained",
+# Hugging Face revision ``diffusers/base/post-trained`` resolved to this
+# immutable commit when the source pin was audited.  Branch names and caller-
+# supplied hashes are deliberately not accepted: adding a new model revision
+# requires a reviewed source change that extends this allowlist.
+_COSMOS_PREDICT25_2B_DIFFUSERS_REVISION = "0d37c7498f54cee3c599d438d895a0a4a8608064"
+_APPROVED_COSMOS_MODEL_REVISIONS = {
+    "nvidia/Cosmos-Predict2.5-2B": frozenset({_COSMOS_PREDICT25_2B_DIFFUSERS_REVISION}),
+}
+_IMMUTABLE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_DEFAULT_COSMOS_MODEL_REVISION = (
+    os.getenv(
+        "COSMOS_MODEL_REVISION",
+        _COSMOS_PREDICT25_2B_DIFFUSERS_REVISION,
+    )
+    .strip()
+    .lower()
 )
+_DEFAULT_COSMOS_MODEL_VARIANT = os.getenv(
+    "COSMOS_MODEL_VARIANT",
+    "post-trained",
+).strip()
+# NVIDIA's official-repository Inference API selects a mutable model variant
+# and currently exposes no immutable checkpoint revision argument.  Keep those
+# backends unavailable until that API can be bound to the approved model commit.
+_OFFICIAL_REPO_IMMUTABLE_MODEL_REVISION_SUPPORTED = False
 _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT = os.getenv("COSMOS_OFFICIAL_REPO_ROOT", "").strip()
-_DEFAULT_COSMOS_DISABLE_GUARDRAILS = str(os.getenv("COSMOS_DISABLE_GUARDRAILS") or "").strip().lower() in {
+_DEFAULT_COSMOS_DISABLE_GUARDRAILS = str(
+    os.getenv("COSMOS_DISABLE_GUARDRAILS") or ""
+).strip().lower() in {
     "1",
     "true",
     "yes",
@@ -72,7 +96,7 @@ _DEFAULT_COSMOS_PROMPT = os.getenv(
 )
 
 # Cosmos generation defaults — tuned for Blueprint facility captures
-_DEFAULT_NUM_FRAMES = 57      # ~2 seconds at ~28fps; matches Cosmos training length
+_DEFAULT_NUM_FRAMES = 57  # ~2 seconds at ~28fps; matches Cosmos training length
 _DEFAULT_WIDTH = 1280
 _DEFAULT_HEIGHT = 720
 _DEFAULT_GUIDANCE_SCALE = 7.0
@@ -80,6 +104,22 @@ _DEFAULT_NUM_STEPS = 35
 _OFFICIAL_REPO_INFERENCE_LOCK = threading.Lock()
 _LOADED_MODELS: Dict[str, Any] = {}
 _LOADED_MODELS_LOCK = threading.Lock()
+
+
+def _approved_cosmos_model_revision(
+    model_id: str,
+    revision: str | None = None,
+) -> str | None:
+    """Return a reviewed immutable revision, or fail closed with ``None``."""
+
+    normalized_model_id = str(model_id or "").strip()
+    normalized_revision = (
+        str(revision if revision is not None else _DEFAULT_COSMOS_MODEL_REVISION).strip().lower()
+    )
+    if _IMMUTABLE_REVISION_PATTERN.fullmatch(normalized_revision) is None:
+        return None
+    approved = _APPROVED_COSMOS_MODEL_REVISIONS.get(normalized_model_id, frozenset())
+    return normalized_revision if normalized_revision in approved else None
 
 
 def _env_truthy(name: str, *, default: bool = False) -> bool:
@@ -121,8 +161,12 @@ class PersistentCosmosWorkerClient:
         self.worker_env = _normalized_subprocess_env(worker_env)
         self.model_id = model_id
         self.model_variant = model_variant
-        self.startup_timeout_s = max(30.0, float(os.getenv("COSMOS_WORKER_STARTUP_TIMEOUT_S", "900")))
-        self.request_timeout_s = max(30.0, float(os.getenv("COSMOS_WORKER_REQUEST_TIMEOUT_S", "900")))
+        self.startup_timeout_s = max(
+            30.0, float(os.getenv("COSMOS_WORKER_STARTUP_TIMEOUT_S", "900"))
+        )
+        self.request_timeout_s = max(
+            30.0, float(os.getenv("COSMOS_WORKER_REQUEST_TIMEOUT_S", "900"))
+        )
         self._process: Optional[subprocess.Popen[str]] = None
         self._stdout_queue: queue.Queue[Dict[str, Any]] = queue.Queue()
         self._reader_thread: Optional[threading.Thread] = None
@@ -231,7 +275,10 @@ class PersistentCosmosWorkerClient:
 
         self.close()
         log_path = Path(
-            str(self.worker_env.get("COSMOS_WORKER_LOG_PATH") or (self.repo_root / "assets" / "outputs" / "blueprint_cosmos_worker.log"))
+            str(
+                self.worker_env.get("COSMOS_WORKER_LOG_PATH")
+                or (self.repo_root / "assets" / "outputs" / "blueprint_cosmos_worker.log")
+            )
         )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_handle = log_path.open("a", encoding="utf-8")
@@ -328,11 +375,11 @@ atexit.register(_close_loaded_models)
 
 def generate_view(
     *,
-    splatted_image: np.ndarray,          # [H, W, 3] uint8 RGB — depth-splatted reference
-    coverage_mask: np.ndarray,           # [H, W] bool — True = valid pixels in splatted_image
-    target_plucker_map: Optional[np.ndarray] = None,   # [6, H, W] float32 (for future conditioning)
+    splatted_image: np.ndarray,  # [H, W, 3] uint8 RGB — depth-splatted reference
+    coverage_mask: np.ndarray,  # [H, W] bool — True = valid pixels in splatted_image
+    target_plucker_map: Optional[np.ndarray] = None,  # [6, H, W] float32 (for future conditioning)
     output_path: Path,
-    mode: str = "splat_only",            # "splat_only" | "cosmos_i2w"
+    mode: str = "splat_only",  # "splat_only" | "cosmos_i2w"
     cosmos_model: Optional[Any] = None,  # pre-loaded model; loads if None
     num_frames: int = _DEFAULT_NUM_FRAMES,
     width: int = _DEFAULT_WIDTH,
@@ -393,8 +440,15 @@ def load_cosmos_model(model_id: Optional[str] = None) -> Any:
     to avoid reloading on every call.
     """
     mid = model_id or _DEFAULT_COSMOS_MODEL_ID
+    revision = _approved_cosmos_model_revision(mid)
+    if revision is None:
+        raise ValueError(
+            "cosmos_model_revision_not_approved: model downloads require a "
+            "reviewed immutable commit"
+        )
+    cache_key = f"{mid}@{revision}"
     with _LOADED_MODELS_LOCK:
-        cached = _LOADED_MODELS.get(mid)
+        cached = _LOADED_MODELS.get(cache_key)
         if cached is not None:
             return cached
 
@@ -408,7 +462,7 @@ def load_cosmos_model(model_id: Optional[str] = None) -> Any:
         if model is None:
             model = _try_load_cosmos_official_repo(mid)
         if model is not None:
-            _LOADED_MODELS[mid] = model
+            _LOADED_MODELS[cache_key] = model
             return model
     raise ImportError(
         "Could not load Cosmos-Predict2.5-2B. Tried the deprecated cosmos-predict2-5 wheel path, "
@@ -425,6 +479,9 @@ def prewarm_cosmos_model(model_id: Optional[str] = None) -> Dict[str, Any]:
         payload.update(model.prewarm())
     payload["prewarm_ms"] = int(round((time.monotonic() - started_at) * 1000.0))
     payload["model_id"] = model_id or _DEFAULT_COSMOS_MODEL_ID
+    payload["model_revision"] = _approved_cosmos_model_revision(
+        model_id or _DEFAULT_COSMOS_MODEL_ID
+    )
     return payload
 
 
@@ -466,9 +523,7 @@ def _cosmos_image_to_world(
             num_steps=num_steps,
         )
         return output_path
-    pil_image = Image.fromarray(conditioning_image).resize(
-        (width, height), Image.LANCZOS
-    )
+    pil_image = Image.fromarray(conditioning_image).resize((width, height), Image.LANCZOS)
 
     video_frames = _invoke_cosmos(
         model=model,
@@ -497,7 +552,7 @@ def _cosmos_image_to_world(
 def _invoke_cosmos(
     *,
     model: Any,
-    conditioning_image: Any,     # PIL Image
+    conditioning_image: Any,  # PIL Image
     num_frames: int,
     width: int,
     height: int,
@@ -597,10 +652,14 @@ def _save_video(frames: List[Any], path: Path, fps: int = 28) -> None:
 
 
 def _try_load_cosmos_official(model_id: str) -> Optional[Any]:
+    revision = _approved_cosmos_model_revision(model_id)
+    if revision is None:
+        return None
     try:
         # NVIDIA's official cosmos-predict2-5 package
         from cosmos_predict2_5 import CosmosPredict25  # type: ignore[import]
-        model = CosmosPredict25.from_pretrained(model_id)
+
+        model = CosmosPredict25.from_pretrained(model_id, revision=revision)
         model.eval()
         return model
     except (ImportError, Exception):
@@ -608,12 +667,16 @@ def _try_load_cosmos_official(model_id: str) -> Optional[Any]:
 
 
 def _try_load_cosmos_diffusers(model_id: str) -> Optional[Any]:
+    revision = _approved_cosmos_model_revision(model_id)
+    if revision is None:
+        return None
     try:
         import torch
         from diffusers import DiffusionPipeline  # type: ignore[import]
+
         pipe = DiffusionPipeline.from_pretrained(
             model_id,
-            revision=_DEFAULT_COSMOS_MODEL_REVISION,
+            revision=revision,
             torch_dtype=torch.bfloat16,
         )
         if torch.cuda.is_available():
@@ -624,10 +687,14 @@ def _try_load_cosmos_diffusers(model_id: str) -> Optional[Any]:
 
 
 def _try_load_cosmos_official_repo_direct(model_id: str) -> Optional[Dict[str, Any]]:
-    if not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT:
+    if (
+        not _OFFICIAL_REPO_IMMUTABLE_MODEL_REVISION_SUPPORTED
+        or _approved_cosmos_model_revision(model_id) is None
+        or not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT
+    ):
         return None
     repo_root = Path(_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT).expanduser()
-    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_REVISION)
+    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_VARIANT)
     if model_variant is None:
         return None
     try:
@@ -635,7 +702,9 @@ def _try_load_cosmos_official_repo_direct(model_id: str) -> Optional[Dict[str, A
         from cosmos_predict2.config import SetupArguments
         from cosmos_predict2.inference import Inference
 
-        output_root = (repo_root / "assets" / "outputs" / "blueprint_cosmos_resident_worker").resolve()
+        output_root = (
+            repo_root / "assets" / "outputs" / "blueprint_cosmos_resident_worker"
+        ).resolve()
         output_root.mkdir(parents=True, exist_ok=True)
         init_environment()
         init_output_dir(output_root, profile=False)
@@ -658,14 +727,19 @@ def _try_load_cosmos_official_repo_direct(model_id: str) -> Optional[Dict[str, A
 
 
 def _try_load_cosmos_official_repo_worker(model_id: str) -> Optional[PersistentCosmosWorkerClient]:
-    if not _persistent_worker_enabled() or not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT:
+    if (
+        not _OFFICIAL_REPO_IMMUTABLE_MODEL_REVISION_SUPPORTED
+        or _approved_cosmos_model_revision(model_id) is None
+        or not _persistent_worker_enabled()
+        or not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT
+    ):
         return None
     repo_root = Path(_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT).expanduser()
     inference_entrypoint = repo_root / "examples" / "inference.py"
     venv_python = repo_root / ".venv" / "bin" / "python"
     if not inference_entrypoint.is_file() or not venv_python.is_file():
         return None
-    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_REVISION)
+    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_VARIANT)
     if model_variant is None:
         return None
     worker_python_raw = str(os.getenv("COSMOS_WORKER_PYTHON_BIN") or "").strip()
@@ -682,7 +756,12 @@ def _try_load_cosmos_official_repo_worker(model_id: str) -> Optional[PersistentC
 
 
 def _try_load_cosmos_official_repo(model_id: str) -> Optional[Dict[str, Any]]:
-    if _skip_official_repo_script() or not _cold_subprocess_fallback_enabled():
+    if (
+        not _OFFICIAL_REPO_IMMUTABLE_MODEL_REVISION_SUPPORTED
+        or _approved_cosmos_model_revision(model_id) is None
+        or _skip_official_repo_script()
+        or not _cold_subprocess_fallback_enabled()
+    ):
         return None
     if not _DEFAULT_COSMOS_OFFICIAL_REPO_ROOT:
         return None
@@ -691,7 +770,7 @@ def _try_load_cosmos_official_repo(model_id: str) -> Optional[Dict[str, Any]]:
     venv_python = repo_root / ".venv" / "bin" / "python"
     if not inference_entrypoint.is_file() or not venv_python.is_file():
         return None
-    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_REVISION)
+    model_variant = _official_repo_model_variant(model_id, _DEFAULT_COSMOS_MODEL_VARIANT)
     if model_variant is None:
         return None
     return {
@@ -700,21 +779,22 @@ def _try_load_cosmos_official_repo(model_id: str) -> Optional[Dict[str, Any]]:
         "python_bin": str(venv_python),
         "model_variant": model_variant,
         "disable_guardrails": _DEFAULT_COSMOS_DISABLE_GUARDRAILS,
-        "subprocess_env": _official_repo_subprocess_env(repo_root=repo_root, python_bin=venv_python),
+        "subprocess_env": _official_repo_subprocess_env(
+            repo_root=repo_root, python_bin=venv_python
+        ),
     }
 
 
-def _official_repo_model_variant(model_id: str, revision: str) -> str | None:
+def _official_repo_model_variant(model_id: str, variant: str) -> str | None:
     text = str(model_id or "").strip()
     if not text.startswith("nvidia/Cosmos-Predict2.5-"):
         return None
     size = "2B" if text.endswith("2B") else ("14B" if text.endswith("14B") else None)
     if size is None:
         return None
-    if "pre-trained" in revision:
-        suffix = "pre-trained"
-    else:
-        suffix = "post-trained"
+    suffix = str(variant or "").strip()
+    if suffix not in {"pre-trained", "post-trained"}:
+        return None
     return f"{size}/{suffix}"
 
 
@@ -727,7 +807,9 @@ def _invoke_cosmos_official_repo_script(
 
     repo_root = Path(str(model["repo_root"])).resolve()
     python_bin = Path(str(model["python_bin"]))
-    output_root = (repo_root / "assets" / "outputs" / f"blueprint_cosmos_official_{uuid.uuid4().hex[:8]}").resolve()
+    output_root = (
+        repo_root / "assets" / "outputs" / f"blueprint_cosmos_official_{uuid.uuid4().hex[:8]}"
+    ).resolve()
     output_root.mkdir(parents=True, exist_ok=False)
     sample_name = output_root.name
     input_path = output_root / f"{sample_name}.jpg"
@@ -876,6 +958,7 @@ def _official_repo_worker_env(*, repo_root: Path, python_bin: Path) -> Dict[str,
     env["COSMOS_OFFICIAL_REPO_ROOT"] = str(repo_root.resolve())
     env["COSMOS_MODEL_ID"] = _DEFAULT_COSMOS_MODEL_ID
     env["COSMOS_MODEL_REVISION"] = _DEFAULT_COSMOS_MODEL_REVISION
+    env["COSMOS_MODEL_VARIANT"] = _DEFAULT_COSMOS_MODEL_VARIANT
     env["COSMOS_DISABLE_GUARDRAILS"] = "1" if _DEFAULT_COSMOS_DISABLE_GUARDRAILS else "0"
     env["COSMOS_DISABLE_PERSISTENT_WORKER"] = "1"
     env["COSMOS_SKIP_OFFICIAL_REPO_SCRIPT"] = "1"

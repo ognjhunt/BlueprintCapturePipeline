@@ -558,17 +558,25 @@ def test_ransac_and_refinement_reject_outliers(tmp_path: Path, monkeypatch: pyte
     T_rot[1, 1] = -1.0
     r_rot = dict(r0, reference_id="ref-rot", T_world_camera=T_rot.tolist())
     candidates = [(q0, r0, 1.0), (q_trans, r_trans, 1.0), (q_rot, r_rot, 1.0)]
-    monkeypatch.setattr(fas.random, "randint", lambda _start, _stop: 0)
-
-    _, inliers, fraction = fas._ransac_se3(
+    first_transform, inliers, fraction = fas._ransac_se3(
         candidates=candidates,
-        n_iters=1,
+        n_iters=len(candidates),
         translation_threshold_m=0.1,
         rotation_threshold_deg=20.0,
     )
 
     assert inliers == 1
     assert fraction == pytest.approx(1 / 3)
+    second_transform, second_inliers, second_fraction = fas._ransac_se3(
+        candidates=candidates,
+        n_iters=len(candidates),
+        translation_threshold_m=0.1,
+        rotation_threshold_deg=20.0,
+    )
+    np.testing.assert_array_equal(first_transform, second_transform)
+    assert second_inliers == inliers
+    assert second_fraction == fraction
+    assert fas._transform_fingerprint(first_transform) == fas._transform_fingerprint(second_transform)
     refined = fas._refine_translation(
         T_site_from_session=np.eye(4),
         candidates=candidates[1:],
@@ -587,6 +595,18 @@ def test_ransac_and_refinement_reject_outliers(tmp_path: Path, monkeypatch: pyte
     assert failed_T is None
     assert failed_inliers == 0
     assert failed_fraction == 0.0
+
+    reflected = dict(q0)
+    bad_pose = np.eye(4, dtype=float)
+    bad_pose[0, 0] = -1.0
+    reflected["T_world_camera"] = bad_pose.tolist()
+    with pytest.raises(ValueError, match="invalid T_world_camera"):
+        fas._ransac_se3(
+            candidates=[(reflected, r0, 1.0)],
+            n_iters=1,
+            translation_threshold_m=0.1,
+            rotation_threshold_deg=20.0,
+        )
 
 
 def test_static_memory_artifact_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

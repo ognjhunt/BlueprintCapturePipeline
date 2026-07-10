@@ -34,7 +34,6 @@ from .oscar_cosmos_wam_evaluator import (
     WAM_SUCCESS_LABEL_GATE_ENV,
 )
 from .oscar_official_release import OFFICIAL_OSCAR_HF_REVISION
-from .wam_episode_consistency_label_local import GATE_ENV as LOCAL_WAM_CONSISTENCY_GATE_ENV
 
 # --------------------------------------------------------------------------- #
 # configuration keys
@@ -47,9 +46,10 @@ DEFAULT_IMAGE_REF_FILE = "~/.blueprint-secrets/groot_oscar_closed_loop_image_ref
 
 SEALED_CONFIRMED_ENV = "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED"
 DEFAULT_MIN_TASK_ADAPTIVE_STEPS = 3
-DEFAULT_WAM_CONSISTENCY_COMMAND = (
+DEFAULT_VISUAL_MOTION_SMOKE_COMMAND = (
     "python -m blueprint_pipeline.wam_episode_consistency_label_local"
 )
+DEFAULT_WAM_CONSISTENCY_COMMAND: str | None = None
 DEFAULT_WAM_CONSISTENCY_TIMEOUT_SECONDS = 300.0
 DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS = 900.0
 
@@ -289,6 +289,15 @@ def build_sealed_launch_plan(
         plan["blockers"].append("wam_consistency_command_required")
         plan["sealed_active"] = False
         return plan
+    if (
+        require_forward_inverse_consistency
+        and _string(wam_consistency_command) == DEFAULT_VISUAL_MOTION_SMOKE_COMMAND
+    ):
+        plan["blockers"].append(
+            "visual_motion_smoke_cannot_satisfy_forward_inverse_consistency"
+        )
+        plan["sealed_active"] = False
+        return plan
     if require_generated_video_success_label and not _string(wam_success_label_command):
         plan["blockers"].append("wam_success_label_command_required")
         plan["sealed_active"] = False
@@ -377,7 +386,6 @@ def build_sealed_launch_plan(
     }
     if consistency_command or allow_wam_consistency_scoring or require_forward_inverse_consistency:
         plan["env"][WAM_CONSISTENCY_GATE_ENV] = "true"
-        plan["env"][LOCAL_WAM_CONSISTENCY_GATE_ENV] = "true"
         if consistency_command:
             plan["env"][WAM_CONSISTENCY_COMMAND_ENV] = consistency_command
     if success_label_command or allow_wam_success_labeling or require_generated_video_success_label:

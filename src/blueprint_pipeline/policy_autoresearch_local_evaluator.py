@@ -289,7 +289,9 @@ def _build_attempt(
     generated_at: str,
 ) -> dict[str, Any]:
     observed = dict(observed_attempt or {})
-    observed_success = bool(observed.get("task_success") or observed.get("success"))
+    observed_success = bool(
+        observed.get("task_success") is True or observed.get("success") is True
+    )
     initial_modes = (
         _failure_modes_from_attempt(observed)
         if observed
@@ -317,7 +319,7 @@ def _build_attempt(
         "task_id": _string(observed.get("task_id")) or _string(run.get("task_id")),
         "scenario_id": _string(observed.get("scenario_id")) or _string(run.get("scenario_id")),
         "variation_name": observed.get("variation_name") or run.get("variation_name"),
-        "policy_id": _string(recipe.get("policy_id")),
+        "policy_id": _string(recipe.get("candidate_id") or recipe.get("policy_id")),
         "policy_kind": _string(recipe.get("policy_kind") or recipe.get("policyKind")),
         "status": "completed" if task_success else "failed_counterfactual_replay",
         "success": task_success,

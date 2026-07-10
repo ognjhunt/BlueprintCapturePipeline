@@ -18,7 +18,12 @@ from uuid import uuid4
 
 from PIL import Image, ImageDraw
 
+from .camera_geometry_validation import (
+    validate_camera_calibration,
+    validate_se3_matrix,
+)
 from .model_access_env import normalize_model_access_env
+from .security_controls import contained_path, strict_identifier
 from blueprint_contracts.runtime_service_contract import RuntimeMetadata
 from blueprint_contracts.site_world_contract import merge_site_world_definition
 
@@ -282,7 +287,12 @@ def _pose_from_site_index(site_index_path: Path):
         with site_index_path.open() as f:
             rec = json.loads(f.readline())
         import numpy as np
-        return np.array(rec["T_world_camera"], dtype=np.float64)
+        validation = validate_se3_matrix(
+            rec.get("T_world_camera"), field="site_index_world_from_camera"
+        )
+        if not validation["valid"]:
+            return None
+        return np.array(validation["matrix"], dtype=np.float64)
     except Exception:
         return None
 
@@ -291,18 +301,24 @@ def _intrinsics_from_site_index(site_index_path: Path) -> Tuple[Dict[str, float]
     try:
         with site_index_path.open("r", encoding="utf-8") as handle:
             rec = json.loads(handle.readline())
-        intrinsics = dict(rec.get("intrinsics") or {})
-    except Exception:
-        intrinsics = {}
-    width = int(intrinsics.get("width") or 960)
-    height = int(intrinsics.get("height") or 540)
-    intrinsics.setdefault("fx", float(max(width, height)))
-    intrinsics.setdefault("fy", float(max(width, height)))
-    intrinsics.setdefault("cx", float(width) / 2.0)
-    intrinsics.setdefault("cy", float(height) / 2.0)
-    intrinsics["width"] = width
-    intrinsics["height"] = height
-    return intrinsics, height, width
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("site_index_camera_calibration_unreadable") from exc
+    if not isinstance(rec, Mapping):
+        raise RuntimeError("site_index_camera_calibration_record_invalid")
+    validation = validate_camera_calibration(
+        rec,
+        require_extrinsics=True,
+        require_frame_metadata=True,
+        require_translation_units=True,
+        require_reprojection_error=True,
+    )
+    if validation["status"] != "passed":
+        raise RuntimeError(
+            "site_index_camera_calibration_blocked:"
+            + ",".join(str(item) for item in validation["blockers"])
+        )
+    intrinsics = dict(validation["intrinsics"])
+    return intrinsics, int(intrinsics["height"]), int(intrinsics["width"])
 
 
 def _resolve_site_index_path(
@@ -313,11 +329,28 @@ def _resolve_site_index_path(
     bucket: str,
 ) -> Optional[Path]:
     """Return the site_reference_index.jsonl path if it exists."""
-    p = storage_root / bucket / "sites" / site_id / "reference_memory" / "site_reference_index.jsonl"
+    safe_bucket = strict_identifier(bucket, field="storage_bucket")
+    safe_site_id = strict_identifier(site_id, field="site_id")
+    p = contained_path(
+        storage_root,
+        safe_bucket,
+        "sites",
+        safe_site_id,
+        "reference_memory",
+        "site_reference_index.jsonl",
+        field="site reference index path",
+    )
     if p.is_file():
         return p
     # Also try without bucket prefix (flat layout)
-    p2 = storage_root / "sites" / site_id / "reference_memory" / "site_reference_index.jsonl"
+    p2 = contained_path(
+        storage_root,
+        "sites",
+        safe_site_id,
+        "reference_memory",
+        "site_reference_index.jsonl",
+        field="flat site reference index path",
+    )
     return p2 if p2.is_file() else None
 
 
@@ -326,9 +359,26 @@ def _resolve_site_reference_manifest_path(
     storage_root: Path,
     bucket: str,
 ) -> Optional[Path]:
+    safe_bucket = strict_identifier(bucket, field="storage_bucket")
+    safe_site_id = strict_identifier(site_id, field="site_id")
     candidates = [
-        storage_root / bucket / "sites" / site_id / "reference_memory" / "site_reference_manifest.json",
-        storage_root / "sites" / site_id / "reference_memory" / "site_reference_manifest.json",
+        contained_path(
+            storage_root,
+            safe_bucket,
+            "sites",
+            safe_site_id,
+            "reference_memory",
+            "site_reference_manifest.json",
+            field="site reference manifest path",
+        ),
+        contained_path(
+            storage_root,
+            "sites",
+            safe_site_id,
+            "reference_memory",
+            "site_reference_manifest.json",
+            field="flat site reference manifest path",
+        ),
     ]
     for path in candidates:
         if path.is_file():
@@ -340,14 +390,27 @@ def _resolve_site_id(site_world: Mapping[str, Any], scene_id: str, capture_id: s
     """Best-effort site_id resolution from site_world metadata or capture_descriptor."""
     site_id = str(site_world.get("site_id") or "").strip()
     if site_id:
-        return site_id
+        return strict_identifier(site_id, field="site_id")
     # Fall back to reading capture_descriptor
-    desc_path = storage_root / bucket / "scenes" / scene_id / "captures" / capture_id / "capture_descriptor.json"
+    safe_bucket = strict_identifier(bucket, field="storage_bucket")
+    safe_scene_id = strict_identifier(scene_id, field="scene_id")
+    safe_capture_id = strict_identifier(capture_id, field="capture_id")
+    desc_path = contained_path(
+        storage_root,
+        safe_bucket,
+        "scenes",
+        safe_scene_id,
+        "captures",
+        safe_capture_id,
+        "capture_descriptor.json",
+        field="capture descriptor path",
+    )
     try:
         desc = json.loads(desc_path.read_text())
         meta = desc.get("metadata") or desc
         identity = meta.get("site_identity") or {}
-        return str(identity.get("site_id") or "").strip()
+        resolved_site_id = str(identity.get("site_id") or "").strip()
+        return strict_identifier(resolved_site_id, field="site_id") if resolved_site_id else ""
     except Exception:
         return ""
 
@@ -569,15 +632,18 @@ class NativeWorldModelRuntimeStore:
         self._generation_owner_session_id: Optional[str] = None
         self._generation_owner_acquired_at: Optional[str] = None
         self._prewarm_lock = threading.Lock()
+        self._registration_lock = threading.RLock()
         self._prewarm_status: Dict[str, Any] = {"status": "idle"}
         self.site_worlds_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
     def _site_world_dir(self, site_world_id: str) -> Path:
-        return self.site_worlds_dir / site_world_id
+        safe_id = strict_identifier(site_world_id, field="site_world_id")
+        return contained_path(self.site_worlds_dir, safe_id, field="site world path")
 
     def _session_dir(self, session_id: str) -> Path:
-        return self.sessions_dir / session_id
+        safe_id = strict_identifier(session_id, field="session_id")
+        return contained_path(self.sessions_dir, safe_id, field="session path")
 
     def _registration_path(self, site_world_id: str) -> Path:
         return self._site_world_dir(site_world_id) / "site_world_registration.json"
@@ -607,10 +673,20 @@ class NativeWorldModelRuntimeStore:
         return self._session_dir(session_id) / "video_chunks"
 
     def _chunk_video_path(self, session_id: str, chunk_id: str) -> Path:
-        return self._video_chunks_dir(session_id) / f"{chunk_id}.mp4"
+        safe_chunk_id = strict_identifier(chunk_id, field="chunk_id")
+        return contained_path(
+            self._video_chunks_dir(session_id),
+            f"{safe_chunk_id}.mp4",
+            field="video chunk path",
+        )
 
     def _chunk_tail_path(self, session_id: str, chunk_id: str) -> Path:
-        return self._video_chunks_dir(session_id) / f"{chunk_id}_tail.png"
+        safe_chunk_id = strict_identifier(chunk_id, field="chunk_id")
+        return contained_path(
+            self._video_chunks_dir(session_id),
+            f"{safe_chunk_id}_tail.png",
+            field="video chunk tail path",
+        )
 
     def _rollout_defaults(self) -> Dict[str, Any]:
         # COSMOS_CHUNK_SIZE and COSMOS_CHUNK_OVERLAP are the canonical env vars.
@@ -977,14 +1053,23 @@ class NativeWorldModelRuntimeStore:
         registration: Mapping[str, Any],
         health: Mapping[str, Any],
     ) -> Dict[str, Any]:
-        site_world_id = str(registration.get("site_world_id") or "").strip()
-        if not site_world_id:
+        if not str(registration.get("site_world_id") or "").strip():
             raise RuntimeError("site_world_registration requires site_world_id")
-        site_world_dir = self._site_world_dir(site_world_id)
-        site_world_dir.mkdir(parents=True, exist_ok=True)
-        _json_write(self._registration_path(site_world_id), registration)
-        _json_write(self._spec_path(site_world_id), spec)
-        _json_write(self._health_path(site_world_id), health)
+        site_world_id = strict_identifier(registration.get("site_world_id"), field="site_world_id")
+        with self._registration_lock:
+            registration_path = self._registration_path(site_world_id)
+            if registration_path.is_file():
+                existing_tenant = str(
+                    _json_read(registration_path).get("tenant_id") or ""
+                ).strip() or None
+                incoming_tenant = str(registration.get("tenant_id") or "").strip() or None
+                if existing_tenant != incoming_tenant:
+                    raise PermissionError("site world tenant ownership cannot be changed")
+            site_world_dir = self._site_world_dir(site_world_id)
+            site_world_dir.mkdir(parents=True, exist_ok=True)
+            _json_write(registration_path, registration)
+            _json_write(self._spec_path(site_world_id), spec)
+            _json_write(self._health_path(site_world_id), health)
         return self.load_site_world(site_world_id)
 
     def load_site_world(self, site_world_id: str) -> Dict[str, Any]:
@@ -1003,6 +1088,15 @@ class NativeWorldModelRuntimeStore:
         if not health_path.is_file():
             raise FileNotFoundError(site_world_id)
         return _json_read(health_path)
+
+    def site_world_tenant_id(self, site_world_id: str) -> str | None:
+        registration_path = self._registration_path(site_world_id)
+        if not registration_path.is_file():
+            raise FileNotFoundError(site_world_id)
+        return str(_json_read(registration_path).get("tenant_id") or "").strip() or None
+
+    def session_tenant_id(self, session_id: str) -> str | None:
+        return str(self._load_session_state(session_id).get("tenant_id") or "").strip() or None
 
     def _load_session_state(self, session_id: str) -> Dict[str, Any]:
         state_path = self._session_state_path(session_id)
@@ -1817,10 +1911,10 @@ class NativeWorldModelRuntimeStore:
                 bucket=bucket,
                 k=1,
             )
-            target_intrinsics, target_h, target_w = (
-                _intrinsics_from_site_index(site_index_path)
-                if site_index_path
-                else ({"fx": 960.0, "fy": 960.0, "cx": 480.0, "cy": 270.0}, 540, 960)
+            if site_index_path is None:
+                raise RuntimeError("site_index_camera_calibration_missing")
+            target_intrinsics, target_h, target_w = _intrinsics_from_site_index(
+                site_index_path
             )
             output_png = self._video_chunks_dir(session_id) / f"{chunk_id}.png"
             previous_tail_path = rollout.get("last_chunk_tail_path")
@@ -2034,7 +2128,7 @@ class NativeWorldModelRuntimeStore:
         site_world = self.load_site_world(site_world_id)
         health = self.load_site_world_health(site_world_id)
         launchable = bool(health.get("launchable", False))
-        if not launchable and not bool(kwargs.get("unsafe_allow_blocked_site_world")):
+        if not launchable:
             blockers = ",".join(_runtime_blockers(site_world, health)) or "site_world_not_launchable"
             raise RuntimeError(f"site world is blocked: {blockers}")
 
@@ -2045,9 +2139,12 @@ class NativeWorldModelRuntimeStore:
         )
         requested_backend = str(kwargs.get("requested_backend") or "").strip()
         selected_backend = requested_backend or str(runtime_eligibility.get("default_backend") or "native_world_model")
-        session_id = str(kwargs.get("session_id") or uuid4())
-        scene_id = str(site_world.get("scene_id") or "").strip()
-        capture_id = str(site_world.get("capture_id") or "").strip()
+        session_id = strict_identifier(
+            str(kwargs.get("session_id") or uuid4()),
+            field="session_id",
+        )
+        scene_id = strict_identifier(site_world.get("scene_id"), field="scene_id")
+        capture_id = strict_identifier(site_world.get("capture_id"), field="capture_id")
         storage_root = _default_storage_root()
         bucket = _bucket_from_site_world(site_world)
         site_id = _resolve_site_id(site_world, scene_id, capture_id, storage_root, bucket)
@@ -2081,6 +2178,7 @@ class NativeWorldModelRuntimeStore:
 
         state = {
             "session_id": session_id,
+            "tenant_id": str(kwargs.get("tenant_id") or "").strip() or None,
             "site_world_id": site_world_id,
             "scene_id": scene_id,
             "capture_id": capture_id,
@@ -2109,7 +2207,7 @@ class NativeWorldModelRuntimeStore:
             "canonical_package_uri": kwargs.get("canonical_package_uri") or site_world.get("canonical_package_uri"),
             "canonical_package_version": kwargs.get("canonical_package_version") or site_world.get("canonical_package_version"),
             "presentation_model": kwargs.get("presentation_model"),
-            "debug_mode": bool(kwargs.get("debug_mode")),
+            "debug_mode": False,
             "created_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
             "step_count": 0,
@@ -2126,8 +2224,11 @@ class NativeWorldModelRuntimeStore:
             "observation": self._make_observation(session_id, 0, render_source="bootstrap_prebuilt"),
             "rollout": self._rollout_defaults(),
         }
-        _json_write(site_reference_runtime_artifact_path, site_reference_runtime_adapter)
-        stored = self._store_session_state(session_id, state)
+        with _cosmos_session_lock(f"state:{session_id}"):
+            if self._session_state_path(session_id).exists():
+                raise FileExistsError(session_id)
+            _json_write(site_reference_runtime_artifact_path, site_reference_runtime_adapter)
+            stored = self._store_session_state(session_id, state)
         # Kick off background Cosmos prep so frames are ready for first render
         threading.Thread(
             target=self._ensure_cosmos_frames,
@@ -2772,13 +2873,18 @@ class NativeWorldModelRuntimeStore:
         viewport_height: int | None,
         refine_mode: str | None,
     ) -> Dict[str, Any]:
+        safe_camera_id = strict_identifier(camera_id, field="camera_id")
         state = self._load_session_state(session_id)
         state["pose"] = dict(pose)
         state["updated_at"] = _utc_now_iso()
         self._store_session_state(session_id, state)
         frame_dir = self._session_dir(session_id) / "explorer_frames"
         frame_dir.mkdir(parents=True, exist_ok=True)
-        frame_path = frame_dir / f"{camera_id}.png"
+        frame_path = contained_path(
+            frame_dir,
+            f"{safe_camera_id}.png",
+            field="explorer frame path",
+        )
         live_render = self._latest_render_path(state)
         if live_render is not None:
             live_render_bytes = _read_bytes_if_available(live_render)
@@ -2831,7 +2937,12 @@ class NativeWorldModelRuntimeStore:
         }
 
     def explorer_frame_bytes(self, session_id: str, camera_id: str) -> bytes:
-        frame_path = self._session_dir(session_id) / "explorer_frames" / f"{camera_id}.png"
+        safe_camera_id = strict_identifier(camera_id, field="camera_id")
+        frame_path = contained_path(
+            self._session_dir(session_id) / "explorer_frames",
+            f"{safe_camera_id}.png",
+            field="explorer frame path",
+        )
         if frame_path.is_file():
             frame_bytes = _read_bytes_if_available(frame_path)
             if frame_bytes is not None:

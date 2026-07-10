@@ -159,6 +159,9 @@ def test_retrieval_index_uses_pipeline_geometry_for_non_arkit(monkeypatch, tmp_p
                     "height": 16,
                     "min_depth_m": 1.0,
                     "max_depth_m": 1.2,
+                    "depth_unit": "meters",
+                    "metric_depth_truth": True,
+                    "depth_measurement_source": "provider_metric_reconstruction",
                     "confidence_range": [0.0, 1.0],
                 }
             )
@@ -337,6 +340,9 @@ def test_retrieval_index_requires_privacy_safe_video_by_default(monkeypatch, tmp
                     "height": 16,
                     "min_depth_m": 1.0,
                     "max_depth_m": 1.0,
+                    "depth_unit": "meters",
+                    "metric_depth_truth": True,
+                    "depth_measurement_source": "provider_metric_reconstruction",
                     "confidence_range": [0.0, 1.0],
                 }
             ],

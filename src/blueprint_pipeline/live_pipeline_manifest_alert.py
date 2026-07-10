@@ -14,8 +14,10 @@ import json
 import os
 import urllib.error
 import urllib.request
+from math import isfinite
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 
@@ -76,6 +78,8 @@ def _manifest_blockers(manifest: Mapping[str, Any]) -> list[str]:
 
 
 def _alert_required(manifest: Mapping[str, Any]) -> bool:
+    if _mapping(manifest.get("page_event")).get("required") is True:
+        return True
     status = _string(manifest.get("status")).lower()
     if "blocked" in status:
         return True
@@ -91,11 +95,34 @@ def _message_text(
     status = _string(manifest.get("status")) or "unknown"
     job_id = _string(manifest.get("job_id"))
     capture_root = _string(manifest.get("capture_root"))
-    blocker_text = ", ".join(blockers[:5]) if blockers else "status contains blocked"
-    parts = [
-        f"Blueprint live pipeline control plane is blocked: status={status}.",
-        f"manifest={manifest_path}",
-    ]
+    page_event = _mapping(manifest.get("page_event"))
+    blocker_text = (
+        ", ".join(blockers[:5])
+        if blockers
+        else (
+            "threshold crossing requires operator notification"
+            if page_event.get("required") is True
+            else "status contains blocked"
+        )
+    )
+    if manifest.get("schema_version") == "blueprint.paid_spend_admission_lock.v1":
+        effective_spend = manifest.get("effective_spend_usd")
+        hard_stop = manifest.get("hard_stop_usd")
+        if status == "override_open":
+            headline = (
+                "Blueprint paid spend override is active after a hard-stop crossing: "
+                f"status={status}, effective_spend_usd={effective_spend}, "
+                f"hard_stop_usd={hard_stop}."
+            )
+        else:
+            headline = (
+                "Blueprint paid spend admission is locked: "
+                f"status={status}, effective_spend_usd={effective_spend}, "
+                f"hard_stop_usd={hard_stop}."
+            )
+    else:
+        headline = f"Blueprint live pipeline control plane is blocked: status={status}."
+    parts = [headline, f"manifest={manifest_path}"]
     if job_id:
         parts.append(f"job_id={job_id}")
     if capture_root:
@@ -104,15 +131,42 @@ def _message_text(
     return " ".join(parts)[:3000]
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _validated_webhook_url(value: str) -> str:
+    url = _string(value)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("operator webhook URL is malformed") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or port not in {None, 443}
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        raise RuntimeError("operator webhook URL must use a credential-free HTTPS origin")
+    return url
+
+
 def _post_webhook(url: str, payload: Mapping[str, Any], *, timeout_seconds: float) -> None:
+    if not isfinite(timeout_seconds) or not 0.1 <= timeout_seconds <= 30.0:
+        raise RuntimeError("operator webhook timeout must be between 0.1 and 30 seconds")
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        url,
+        _validated_webhook_url(url),
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    opener = urllib.request.build_opener(_RejectRedirects)
+    with opener.open(request, timeout=timeout_seconds) as response:
         status = int(getattr(response, "status", 0) or 0)
         if status < 200 or status >= 300:
             raise RuntimeError(f"webhook returned HTTP {status}")

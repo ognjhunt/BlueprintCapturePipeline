@@ -1,4 +1,43 @@
 {
+  "angle_unit": "radians",
+  "linear_unit": "meters",
+  "timestamp_unit": "seconds",
+  "reference_frame": "world",
+  "base_frame": "base_link",
+  "reference_tolerance_m": 0.000001,
+  "max_link_step_m": 0.1,
+  "joint_state_frames": [
+    {
+      "timestamp": 0.0,
+      "joint_names": ["right_ee_slide"],
+      "joint_positions": [0.005],
+      "world_from_robot_base": [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+      ],
+      "expected_link_positions": {
+        "base_link": [0, 0, 0],
+        "right_end_effector": [0.005, -0.13, 2.0]
+      }
+    },
+    {
+      "timestamp": 0.1,
+      "joint_names": ["right_ee_slide"],
+      "joint_positions": [0.006],
+      "world_from_robot_base": [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+      ],
+      "expected_link_positions": {
+        "base_link": [0, 0, 0],
+        "right_end_effector": [0.006, -0.13, 2.0]
+      }
+    }
+  ],
   "right_arm": [0, 0, 0, 0, 0, 0, 0],
   "right_hand": [0, 0, 0, 0, 0, 0, 0],
   "right_end_effector_xyz": [0.2, -0.1, 2.0],

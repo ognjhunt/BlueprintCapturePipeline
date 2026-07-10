@@ -1,5 +1,9 @@
 # 100 Beta Tester Launch Blocker Audit - 2026-07-06
 
+> [!WARNING]
+> **SUPERSEDED FOR CURRENT LAUNCH STATUS.** This file is historical evidence, not a current completion or launch decision.
+> Use the [current 107-gap ledger](/docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json) and the [July 9 source audit](/docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md). Do not infer current status from “proposed,” “implemented,” or “fixed” wording below.
+
 ## Verdict
 
 Do not launch this service to 100 external beta testers yet.
@@ -32,7 +36,7 @@ This audit uses the current worktree and artifacts as of July 6, 2026. It does n
   - `overall_status=automation_failed`.
   - Output: `output/paid_marketplace_launch_gate.json` and `output/paid_marketplace_launch_gate.md`.
 - WebApp forwarding preflight artifact:
-  - `/Users/nijelhunt_1/workspace/Blueprint-WebApp/output/pipeline/robot_eval_job_requests/forwarding_preflight.json`
+  - `$HOME/workspace/Blueprint-WebApp/output/pipeline/robot_eval_job_requests/forwarding_preflight.json`
   - `status=blocked`.
   - blockers: `missing_env_ROBOT_EVAL_JOB_REQUEST_FORWARD_URL`, `missing_env_ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN`.
 - `python -m blueprint_pipeline.live_pipeline_setup --no-load-env-files --output-path output/launch_audit_live_pipeline_setup_20260706.json`

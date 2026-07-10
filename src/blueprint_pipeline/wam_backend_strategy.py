@@ -50,7 +50,7 @@ OSCAR_POLICY_EVAL_METRICS = {
     "mmrv": 0.571,
     "spearman": 0.750,
     "pearson": 0.852,
-    "sisr_delta_pp": 1.73,
+    "success_rate_difference_pp": 1.73,
 }
 
 OSCAR_DATASET_FACTS = {

@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
-import math
 import os
 import shlex
 import shutil
 import subprocess
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+from . import robot_eval_calibration as _calibration
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, write_json
 from .robot_initial_observation import build_initial_observation_source_resolution
+from .security_controls import (
+    SecurityValidationError,
+    fetch_bounded_https,
+    json_shape_within_limits,
+    origins_from_env,
+)
 
 
 ROBOT_POV_OBSERVATION_SCHEMA_VERSION = "robot_pov_observation_manifest.v1"
@@ -34,15 +37,62 @@ SIM_VS_REAL_CALIBRATION_SCHEMA_VERSION = "sim_vs_real_calibration_report.v1"
 PREDICTION_VS_ACTUAL_DEPLOYMENT_SCHEMA_VERSION = "prediction_vs_actual_deployment_summary.v1"
 REAL_WORLD_VALIDATION_FOLLOWUP_PLAN_SCHEMA_VERSION = "real_world_validation_followup_plan.v1"
 SIMULATOR_COMMAND_ARTIFACTS_SCHEMA_VERSION = "simulator_command_artifacts.v1"
-ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = "accepted_real_world_anchor.v1"
-ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS = (
-    "scenario_eval_run_id",
-    "policy_id",
-    "task_id",
-    "scenario_variation_instance_id",
+ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION = _calibration.ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION
+ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS = _calibration.ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS
+MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION = _calibration.MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION
+MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION = _calibration.MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION
+MIN_POLICY_CHECKPOINT_COUNT_FOR_PUBLIC_RANK_FIDELITY = (
+    _calibration.MIN_POLICY_CHECKPOINT_COUNT_FOR_PUBLIC_RANK_FIDELITY
 )
-MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION = 4
-MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION = 2
+MIN_CRITERION_COUNT_FOR_PUBLIC_RANK_FIDELITY = (
+    _calibration.MIN_CRITERION_COUNT_FOR_PUBLIC_RANK_FIDELITY
+)
+MIN_REGISTERED_SPLIT_COUNT_FOR_PUBLIC_RANK_FIDELITY = (
+    _calibration.MIN_REGISTERED_SPLIT_COUNT_FOR_PUBLIC_RANK_FIDELITY
+)
+MIN_MATCHED_TRIALS_PER_CELL_FOR_PUBLIC_RANK_FIDELITY = (
+    _calibration.MIN_MATCHED_TRIALS_PER_CELL_FOR_PUBLIC_RANK_FIDELITY
+)
+DEFAULT_CALIBRATION_BOOTSTRAP_SEED = _calibration.DEFAULT_CALIBRATION_BOOTSTRAP_SEED
+DEFAULT_CALIBRATION_BOOTSTRAP_REPLICATES = _calibration.DEFAULT_CALIBRATION_BOOTSTRAP_REPLICATES
+RANK_FIDELITY_CLAIM_ELIGIBILITY_SCHEMA_VERSION = (
+    _calibration.RANK_FIDELITY_CLAIM_ELIGIBILITY_SCHEMA_VERSION
+)
+UNIT_OF_ANALYSIS_FIELDS = _calibration.UNIT_OF_ANALYSIS_FIELDS
+
+# Backward-compatible private aliases.  New code imports the typed calibration
+# module directly; legacy callers keep a stable surface during the split.
+_prediction_index = _calibration._prediction_index
+_prediction_for_actual = _calibration._prediction_for_actual
+_predicted_success = _calibration._predicted_success
+_actual_success = _calibration._actual_success
+_failure_ids = _calibration._failure_ids
+_actual_signal_present = _calibration._actual_signal_present
+_anchor_variation_instance_id = _calibration._anchor_variation_instance_id
+_anchor_key = _calibration._anchor_key
+_anchor_key_dict = _calibration._anchor_key_dict
+_missing_anchor_key_fields = _calibration._missing_anchor_key_fields
+_anchor_record_status = _calibration._anchor_record_status
+_anchor_record_is_stale = _calibration._anchor_record_is_stale
+_accepted_review_value = _calibration._accepted_review_value
+_anchor_review_accepted = _calibration._anchor_review_accepted
+_attestation_signed = _calibration._attestation_signed
+_physical_evidence_requested = _calibration._physical_evidence_requested
+_physical_evidence_present = _calibration._physical_evidence_present
+_prediction_anchor_rows = _calibration._prediction_anchor_rows
+_prediction_anchor_index = _calibration._prediction_anchor_index
+_average_ranks = _calibration._average_ranks
+_pearson = _calibration._pearson
+_policy_anchor_summaries = _calibration.policy_anchor_summaries
+_summaries_with_rank_position_diagnostics = _calibration._summaries_with_rank_position_diagnostics
+_simpler_pairwise_margin_rank_violations = _calibration._simpler_pairwise_margin_rank_violations
+_calibration_metrics_from_policy_summaries = _calibration.calibration_metrics_from_policy_summaries
+_macro_calibration_estimand = _calibration._macro_calibration_estimand
+_registered_split_estimands = _calibration._registered_split_estimands
+_percentile = _calibration._percentile
+_bootstrap_confidence_intervals = _calibration._bootstrap_confidence_intervals
+_rank_fidelity_claim_eligibility = _calibration.evaluate_rank_fidelity_claim_eligibility
+_accepted_anchor_calibration = _calibration.build_accepted_anchor_calibration
 BATCH_TRACE_ARTIFACT_JOB_NAMES = {
     "attempt_trace_jsonl": "simulator_command_batch_attempt_trace.jsonl",
     "contact_stream_jsonl": "simulator_command_batch_contact_stream.jsonl",
@@ -64,6 +114,8 @@ POLICY_MODALITIES = (
     "sim_controller_plugin",
 )
 DEFAULT_TEST_POLICY_ID = "blueprint_default_walk_to_target_test_policy"
+DEFAULT_POLICY_API_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+DEFAULT_POLICY_API_MAX_REQUEST_BYTES = 4 * 1024 * 1024
 
 CLAIM_BOUNDARY: Dict[str, Any] = {
     "artifact_purpose": "robot_eval_execution_and_calibration_support",
@@ -314,6 +366,7 @@ def default_test_policy_package_from_request(job_request: Mapping[str, Any]) -> 
         }
     }
 
+
 def _read_optional_any(path: Path) -> Any:
     try:
         return read_json_any(path)
@@ -340,11 +393,7 @@ def _load_real_robot_pov_payload(
     job_id = job_dir.name
     for path in (
         job_dir / "real_robot_pov_manifest.json",
-        capture_root
-        / "pipeline"
-        / "robot_eval_inputs"
-        / job_id
-        / "real_robot_pov_manifest.json",
+        capture_root / "pipeline" / "robot_eval_inputs" / job_id / "real_robot_pov_manifest.json",
         capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json",
     ):
         loaded = _read_optional_any(path)
@@ -416,7 +465,9 @@ def _real_robot_pov_evidence(record: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _real_robot_pov_index(records: Sequence[Mapping[str, Any]]) -> Dict[tuple[str, str], Dict[str, Any]]:
+def _real_robot_pov_index(
+    records: Sequence[Mapping[str, Any]],
+) -> Dict[tuple[str, str], Dict[str, Any]]:
     index: Dict[tuple[str, str], Dict[str, Any]] = {}
     for record in records:
         task_id = _string(record.get("task_id") or record.get("taskId"))
@@ -455,7 +506,9 @@ def _local_reference_path(
     if text.startswith("file://"):
         return Path(text[7:]).expanduser()
     if text.startswith("gs://"):
-        default_gcs_root = capture_root.parents[3] if len(capture_root.parents) > 3 else capture_root
+        default_gcs_root = (
+            capture_root.parents[3] if len(capture_root.parents) > 3 else capture_root
+        )
         return resolve_gs_uri_to_path(text, Path(os.getenv("GCS_ROOT", str(default_gcs_root))))
     if "://" in text:
         return None
@@ -497,14 +550,15 @@ def _requested_scenarios(
     rows: List[Dict[str, str]] = []
     requested_tasks = request.get("requested_tasks") or request.get("requestedTasks") or []
     explicit_requested_tasks = (
-        "requested_tasks" in request
-        or "requestedTasks" in request
-    ) and isinstance(
-        requested_tasks,
-        Sequence,
-    ) and not isinstance(
-        requested_tasks,
-        (str, bytes, bytearray),
+        ("requested_tasks" in request or "requestedTasks" in request)
+        and isinstance(
+            requested_tasks,
+            Sequence,
+        )
+        and not isinstance(
+            requested_tasks,
+            (str, bytes, bytearray),
+        )
     )
     for task in requested_tasks if explicit_requested_tasks else []:
         if not isinstance(task, Mapping):
@@ -567,7 +621,13 @@ def _requested_scenario_eval_run_filters(request: Mapping[str, Any]) -> List[Dic
 
 
 def _run_matches_requested_filter(run: Mapping[str, Any], filter_row: Mapping[str, str]) -> bool:
-    for field in ("task_id", "scenario_id", "scenario_eval_run_id", "scenario_variation_instance_id", "variation_name"):
+    for field in (
+        "task_id",
+        "scenario_id",
+        "scenario_eval_run_id",
+        "scenario_variation_instance_id",
+        "variation_name",
+    ):
         expected = _string(filter_row.get(field))
         if expected and expected != _string(run.get(field)):
             return False
@@ -635,15 +695,13 @@ def _requested_scenario_eval_run_target_count(
         (
             "execution_request.scenario_batch",
             _mapping(
-                execution_request.get("scenario_batch")
-                or execution_request.get("scenarioBatch")
+                execution_request.get("scenario_batch") or execution_request.get("scenarioBatch")
             ),
         ),
         (
             "execution_request.scenario_matrix",
             _mapping(
-                execution_request.get("scenario_matrix")
-                or execution_request.get("scenarioMatrix")
+                execution_request.get("scenario_matrix") or execution_request.get("scenarioMatrix")
             ),
         ),
         (
@@ -732,10 +790,7 @@ def _policy_candidate_rows(job_request: Mapping[str, Any]) -> list[Dict[str, Any
                     or POLICY_OBSERVATION_SCHEMA_ID
                 ),
                 "action_protocol_id": (
-                    _string(
-                        payload.get("action_protocol_id")
-                        or payload.get("actionProtocolId")
-                    )
+                    _string(payload.get("action_protocol_id") or payload.get("actionProtocolId"))
                     or POLICY_ACTION_SCHEMA_ID
                 ),
             }
@@ -767,12 +822,17 @@ def _wam_matrix_policy_expansion_blocked(job_request: Mapping[str, Any]) -> bool
     execution_request = _mapping(
         job_request.get("execution_request") or job_request.get("executionRequest")
     )
-    substrate = _string(
-        job_request.get("evaluation_substrate")
-        or job_request.get("evaluationSubstrate")
-        or execution_request.get("evaluation_substrate")
-        or execution_request.get("evaluationSubstrate")
-    ).lower().replace("-", "_").replace(" ", "_")
+    substrate = (
+        _string(
+            job_request.get("evaluation_substrate")
+            or job_request.get("evaluationSubstrate")
+            or execution_request.get("evaluation_substrate")
+            or execution_request.get("evaluationSubstrate")
+        )
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
     return substrate in {
         "fixture_wam",
         "wam_fixture",
@@ -825,7 +885,9 @@ def _policy_comparison_rows(
             base.get("scenario_eval_run_id")
         )
         for candidate_index, candidate in enumerate(candidates, start=1):
-            policy_id = _string(candidate.get("policy_id")) or f"policy_candidate_{candidate_index:02d}"
+            policy_id = (
+                _string(candidate.get("policy_id")) or f"policy_candidate_{candidate_index:02d}"
+            )
             candidate_run_id = f"{base_run_id}__policy_{_safe_id(policy_id)}"
             expanded.append(
                 {
@@ -902,7 +964,9 @@ def _first_valid_candidate(candidates: Any) -> dict[str, Any] | None:
         return None
     for item in candidates:
         candidate = _mapping(item)
-        pose = _pose_triplet(candidate.get("pose_xyz") or candidate.get("xyz") or candidate.get("pose"))
+        pose = _pose_triplet(
+            candidate.get("pose_xyz") or candidate.get("xyz") or candidate.get("pose")
+        )
         if pose is None:
             continue
         if candidate.get("validated") is False:
@@ -938,7 +1002,9 @@ def _scenario_card_spawn_target_context(scenario_card: Mapping[str, Any] | None)
         "target_candidate_id": _string(_mapping(target_candidate).get("zone_id")) or None,
         "spawn_candidate": spawn_candidate,
         "target_candidate": target_candidate,
-        "source": "scenario_card_validated_site_zone_pair" if pair_valid else "missing_scenario_card_site_zone_pair",
+        "source": "scenario_card_validated_site_zone_pair"
+        if pair_valid
+        else "missing_scenario_card_site_zone_pair",
         "blockers": blockers,
         "claim_boundary": "scenario-card spawn target candidates are finite site-coordinate eval inputs, not navigation safety proof",
     }
@@ -1057,7 +1123,9 @@ def _with_deterministic_scenario_fields(
             "batch_source_scenario_eval_run_id": batch_source_run_id
             or _string(out.get("scenario_eval_run_id")),
             "spawn_goal_variation_seed_frozen": True,
-            "validated_spawn_target_pair": bool(semantic_validated and not deterministic_fallback_used),
+            "validated_spawn_target_pair": bool(
+                semantic_validated and not deterministic_fallback_used
+            ),
             "semantic_spawn_target_source": out.get("semantic_spawn_target_source"),
             "deterministic_spawn_target_fallback_used": deterministic_fallback_used,
             "deterministic_scenario_parameters": {
@@ -1170,19 +1238,12 @@ def build_scenario_eval_matrix(
         if _string(card.get("scenario_id"))
     }
     scenario_card_task_ids = {
-        _string(card.get("task_id"))
-        for card in scenario_card_rows
-        if _string(card.get("task_id"))
+        _string(card.get("task_id")) for card in scenario_card_rows if _string(card.get("task_id"))
     }
     requested_task_ids = [
         _string(task.get("task_id") or task.get("taskId"))
-        for task in (
-            job_request.get("requested_tasks")
-            or job_request.get("requestedTasks")
-            or []
-        )
-        if isinstance(task, Mapping)
-        and _string(task.get("task_id") or task.get("taskId"))
+        for task in (job_request.get("requested_tasks") or job_request.get("requestedTasks") or [])
+        if isinstance(task, Mapping) and _string(task.get("task_id") or task.get("taskId"))
     ]
     variation_payload = _load_scenario_variation_instances(capture_path)
     variations_by_scenario = _scenario_variation_rows_by_scenario(variation_payload)
@@ -1239,9 +1300,9 @@ def build_scenario_eval_matrix(
         task_id = row["task_id"]
         scenario_id = row["scenario_id"]
         scenario_card = scenario_cards_by_id.get(scenario_id)
-        variations = variations_by_scenario.get((task_id, scenario_id)) or variations_by_scenario.get(
-            ("", scenario_id)
-        )
+        variations = variations_by_scenario.get(
+            (task_id, scenario_id)
+        ) or variations_by_scenario.get(("", scenario_id))
         if not variations:
             missing_variation_scenarios.append(scenario_id)
             runs.append(
@@ -1304,11 +1365,7 @@ def build_scenario_eval_matrix(
         filtered_runs: List[Dict[str, Any]] = []
         seen_run_ids: set[str] = set()
         for filter_row in requested_eval_run_filters:
-            matches = [
-                run
-                for run in runs
-                if _run_matches_requested_filter(run, filter_row)
-            ]
+            matches = [run for run in runs if _run_matches_requested_filter(run, filter_row)]
             if not matches:
                 unmatched_requested_eval_run_filters.append(dict(filter_row))
                 continue
@@ -1324,7 +1381,7 @@ def build_scenario_eval_matrix(
                             key: value for key, value in filter_row.items() if value
                         },
                     }
-            )
+                )
         runs = filtered_runs
     runs, batch_expansion = _expand_scenario_eval_runs_to_target_count(
         runs,
@@ -1400,9 +1457,7 @@ def build_scenario_eval_matrix(
         ],
         "scenario_eval_batch_expansion": batch_expansion,
         "policy_comparison_mode": bool(policy_comparison_expansion.get("enabled")),
-        "policy_comparison_requested": bool(
-            policy_comparison_expansion.get("requested")
-        ),
+        "policy_comparison_requested": bool(policy_comparison_expansion.get("requested")),
         "policy_comparison_candidate_count": int(
             policy_comparison_expansion.get("candidate_count") or 0
         ),
@@ -1431,17 +1486,13 @@ def build_scenario_eval_matrix(
             policy_comparison_expansion.get("same_action_protocol_required")
         ),
         "policy_comparison_same_observation_action_protocol_required": bool(
-            policy_comparison_expansion.get(
-                "same_observation_action_protocol_required"
-            )
+            policy_comparison_expansion.get("same_observation_action_protocol_required")
         ),
         "policy_comparison_expansion": policy_comparison_expansion,
         "unmatched_requested_scenario_eval_run_filter_count": len(
             unmatched_requested_eval_run_filters
         ),
-        "unmatched_requested_scenario_eval_run_filters": (
-            unmatched_requested_eval_run_filters
-        ),
+        "unmatched_requested_scenario_eval_run_filters": (unmatched_requested_eval_run_filters),
         "scenario_eval_run_count": len(runs),
         "variation_instance_count": int(variation_payload.get("instance_count") or 0),
         "required_variation_names": required_names,
@@ -1679,8 +1730,7 @@ def build_robot_pov_observation_bundle(
         scenario = scenarios_by_id.get(scenario_id, {})
         task = tasks_by_id.get(task_id, {})
         observation_id = (
-            f"robot_pov_{_safe_id(task_id)}_{_safe_id(scenario_id)}_"
-            f"{_safe_id(variation_name)}"
+            f"robot_pov_{_safe_id(task_id)}_{_safe_id(scenario_id)}_{_safe_id(variation_name)}"
         )
         frame_path = frame_dir / f"{observation_id}.png"
         lines = [
@@ -1844,7 +1894,9 @@ def build_robot_pov_observation_bundle(
         for run_id in required_scenario_eval_run_ids
         if run_id not in real_robot_pov_covered_scenario_eval_run_ids
     ]
-    robot_pov_evidence_proven = bool(observations) and not missing_real_robot_pov_scenario_eval_run_ids
+    robot_pov_evidence_proven = (
+        bool(observations) and not missing_real_robot_pov_scenario_eval_run_ids
+    )
     initial_observation_resolution = build_initial_observation_source_resolution(
         capture_root=capture_path,
         job_dir=resolved_job_dir,
@@ -1896,16 +1948,12 @@ def build_robot_pov_observation_bundle(
                 "selected_initial_policy_observation.json"
             ),
             "camera_profile_registry_path": "robot_camera_profile_registry.json",
-            "camera_profile_launch_readiness_path": (
-                "robot_camera_profile_launch_readiness.json"
-            ),
+            "camera_profile_launch_readiness_path": ("robot_camera_profile_launch_readiness.json"),
             "owner_robot_camera_calibration_request_path": (
                 "owner_robot_camera_calibration_request.json"
             ),
             "camera_profile_count": camera_profile_registry.get("profile_count"),
-            "camera_profile_launch_readiness_status": camera_profile_launch_readiness.get(
-                "status"
-            ),
+            "camera_profile_launch_readiness_status": camera_profile_launch_readiness.get("status"),
             "camera_profile_ready_for_launch": camera_profile_launch_readiness.get(
                 "ready_for_launch"
             ),
@@ -2027,7 +2075,9 @@ def _redact(value: Any) -> Any:
         out: Dict[str, Any] = {}
         for key, child in value.items():
             key_text = str(key)
-            if any(marker in key_text.lower() for marker in ("token", "secret", "password", "auth")):
+            if any(
+                marker in key_text.lower() for marker in ("token", "secret", "password", "auth")
+            ):
                 out[key_text] = "<redacted>"
             else:
                 out[key_text] = _redact(child)
@@ -2076,11 +2126,7 @@ def _normalize_policy_attempts(
     attempts: List[Dict[str, Any]] = []
     if not observations:
         observations = [{"observation_id": "observation_1", "scenario_id": "", "task_id": ""}]
-    if (
-        modality == "high_level_skill_trace"
-        and len(raw_attempts) == 1
-        and len(observations) > 1
-    ):
+    if modality == "high_level_skill_trace" and len(raw_attempts) == 1 and len(observations) > 1:
         only = raw_attempts[0]
         has_explicit_scope = any(
             _string(only.get(key))
@@ -2100,12 +2146,17 @@ def _normalize_policy_attempts(
         observation = observations[(index - 1) % len(observations)]
         status = _string(raw.get("status") or raw.get("result") or "completed").lower()
         success_raw = raw.get("success")
-        success = _boolish(success_raw) if success_raw is not None else status in {
-            "completed",
-            "success",
-            "succeeded",
-            "passed",
-        }
+        success = (
+            _boolish(success_raw)
+            if success_raw is not None
+            else status
+            in {
+                "completed",
+                "success",
+                "succeeded",
+                "passed",
+            }
+        )
         attempts.append(
             {
                 "attempt_id": _string(raw.get("attempt_id") or raw.get("attemptId"))
@@ -2212,7 +2263,9 @@ def _run_command(
         "stdout": completed.stdout[-4000:],
         "stderr": completed.stderr[-4000:],
         "exit_code": completed.returncode,
-        "blockers": [] if status == "completed" else [f"policy_command_exit:{completed.returncode}"],
+        "blockers": []
+        if status == "completed"
+        else [f"policy_command_exit:{completed.returncode}"],
     }
     return status, payload, detail
 
@@ -2224,18 +2277,33 @@ def _call_policy_api(
     timeout_seconds: int,
 ) -> tuple[str, Any, Dict[str, Any]]:
     data = json.dumps({"observation_manifest": observation_manifest}).encode("utf-8")
-    request = urllib.request.Request(
-        endpoint,
-        data=data,
-        method="POST",
-        headers={"content-type": "application/json"},
-    )
+    if len(data) > DEFAULT_POLICY_API_MAX_REQUEST_BYTES:
+        return "failed", None, {"blockers": ["policy_api_request_too_large"]}
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            return "completed", payload, {"http_status": response.status, "blockers": []}
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        return "failed", None, {"blockers": ["policy_api_call_failed"], "error": str(exc)}
+        response = fetch_bounded_https(
+            endpoint,
+            method="POST",
+            data=data,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout_seconds=max(1, min(int(timeout_seconds), 30)),
+            max_bytes=DEFAULT_POLICY_API_MAX_RESPONSE_BYTES,
+            allowed_origins=origins_from_env("BLUEPRINT_POLICY_ENDPOINT_ALLOWED_ORIGINS"),
+            allowed_content_types=("application/json",),
+            max_redirects=1,
+        )
+        payload = json.loads(response.body.decode("utf-8"))
+        if not json_shape_within_limits(payload, max_depth=32, max_items=100_000):
+            raise SecurityValidationError("policy API JSON exceeds shape limits")
+        return "completed", payload, {"http_status": response.status, "blockers": []}
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        return (
+            "failed",
+            None,
+            {
+                "blockers": ["policy_api_call_failed"],
+                "error_type": type(exc).__name__,
+            },
+        )
 
 
 def _docker_command(payload: Mapping[str, Any]) -> str:
@@ -2258,7 +2326,11 @@ def _replay_reference_payload(
         "recorded_action_trace": ("trace_manifest_uri", "traceManifestUri"),
         "teleop_demo": ("demo_artifact_uri", "demoArtifactUri"),
         "sim_controller_plugin": ("plugin_uri", "pluginUri"),
-        "policy_api_endpoint": ("response_manifest_uri", "responseManifestUri", "local_response_path"),
+        "policy_api_endpoint": (
+            "response_manifest_uri",
+            "responseManifestUri",
+            "local_response_path",
+        ),
         "docker_container": ("output_manifest_uri", "outputManifestUri", "local_output_path"),
     }.get(modality, ())
     for key in keys:
@@ -2266,7 +2338,9 @@ def _replay_reference_payload(
         if loaded is not None:
             return loaded
     if modality == "high_level_skill_trace":
-        sequence = payload.get("ordered_skill_sequence") or payload.get("orderedSkillSequence") or []
+        sequence = (
+            payload.get("ordered_skill_sequence") or payload.get("orderedSkillSequence") or []
+        )
         return {"attempts": [{"status": "completed", "skills": list(sequence), "success": True}]}
     return None
 
@@ -2284,8 +2358,12 @@ def _default_test_policy_execution_payload(
     payload: Mapping[str, Any],
     observations: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    policy_kind = _string(payload.get("policy_kind") or payload.get("policyKind")) or "walk_to_target"
-    policy_id = _string(payload.get("policy_id") or payload.get("policyId")) or DEFAULT_TEST_POLICY_ID
+    policy_kind = (
+        _string(payload.get("policy_kind") or payload.get("policyKind")) or "walk_to_target"
+    )
+    policy_id = (
+        _string(payload.get("policy_id") or payload.get("policyId")) or DEFAULT_TEST_POLICY_ID
+    )
     if policy_kind == "mobile_manipulation_pick_carry_place":
         task_id = _string(payload.get("task_id") or payload.get("taskId")) or (
             "mobile_pick_carry_place_tote"
@@ -2315,9 +2393,11 @@ def _default_test_policy_execution_payload(
                 },
             }
         raw_phases = payload.get("ordered_skill_sequence")
-        phases = [dict(item) for item in raw_phases if isinstance(item, Mapping)] if isinstance(
-            raw_phases, list
-        ) else []
+        phases = (
+            [dict(item) for item in raw_phases if isinstance(item, Mapping)]
+            if isinstance(raw_phases, list)
+            else []
+        )
         if not phases:
             phases = [
                 {"skill_id": name, "name": name}
@@ -2475,6 +2555,7 @@ def _default_test_policy_execution_payload(
         },
     }
 
+
 def build_policy_execution_bundle(
     *,
     capture_root: str | Path,
@@ -2527,7 +2608,12 @@ def build_policy_execution_bundle(
             commands=commands,
         )
         default_test_policy = _is_default_test_policy_payload(modality, payload)
-        if not command_text and modality == "docker_container" and allow_policy_execution and env_allows:
+        if (
+            not command_text
+            and modality == "docker_container"
+            and allow_policy_execution
+            and env_allows
+        ):
             command_text = _docker_command(payload)
 
         payload_result: Any = None
@@ -2565,9 +2651,7 @@ def build_policy_execution_bundle(
                 else "blocked_missing_policy_execution_trace"
             )
             payload_blockers = [
-                _string(item)
-                for item in payload_result.get("blockers", [])
-                if _string(item)
+                _string(item) for item in payload_result.get("blockers", []) if _string(item)
             ]
             detail = {
                 "adapter": "blueprint_default_walk_to_target_policy",
@@ -2603,7 +2687,9 @@ def build_policy_execution_bundle(
             )
             execution_performed = True
         elif modality == "policy_api_endpoint" and allow_policy_execution and env_allows:
-            endpoint = _string(payload.get("endpoint_url") or payload.get("endpointUrl") or payload.get("url"))
+            endpoint = _string(
+                payload.get("endpoint_url") or payload.get("endpointUrl") or payload.get("url")
+            )
             status, payload_result, detail = _call_policy_api(
                 endpoint=endpoint,
                 observation_manifest=observation_manifest,
@@ -2621,8 +2707,12 @@ def build_policy_execution_bundle(
                 capture_root=capture_path,
                 job_dir=resolved_job_dir,
             )
-            status = "completed_reference_replay" if payload_result is not None else "reference_ready"
-            detail = {"blockers": [] if payload_result is not None else ["local_reference_not_available"]}
+            status = (
+                "completed_reference_replay" if payload_result is not None else "reference_ready"
+            )
+            detail = {
+                "blockers": [] if payload_result is not None else ["local_reference_not_available"]
+            }
 
         attempts = (
             _normalize_policy_attempts(
@@ -2681,12 +2771,10 @@ def build_policy_execution_bundle(
         bool(item.get("robot_policy_execution_proven")) for item in modality_results.values()
     )
     default_test_execution_proven = any(
-        bool(item.get("default_test_policy_execution_proven"))
-        for item in modality_results.values()
+        bool(item.get("default_test_policy_execution_proven")) for item in modality_results.values()
     )
     robot_team_policy_execution_proven = any(
-        bool(item.get("robot_team_policy_execution_proven"))
-        for item in modality_results.values()
+        bool(item.get("robot_team_policy_execution_proven")) for item in modality_results.values()
     )
     aggregate_coverage = _policy_run_coverage(all_attempts, required_run_ids)
     trace = {
@@ -2938,7 +3026,9 @@ def _simulator_attempts_from_payload(
         )
         failure_ids = _failure_ids(record, "failure_mode_ids", "failure_modes", "failures")
         if not failure_ids:
-            failure_ids = _failure_ids(task_outcome, "failure_mode_ids", "failure_modes", "failures")
+            failure_ids = _failure_ids(
+                task_outcome, "failure_mode_ids", "failure_modes", "failures"
+            )
         if (not success or not task_success) and not failure_ids:
             failure_ids = [
                 _string(record.get("failure_reason"))
@@ -2973,7 +3063,9 @@ def _simulator_attempts_from_payload(
                     or record.get("scenarioVariationInstanceId")
                 )
                 or None,
-                "variation_name": _string(record.get("variation_name") or record.get("variationName"))
+                "variation_name": _string(
+                    record.get("variation_name") or record.get("variationName")
+                )
                 or None,
                 "task_id": _string(record.get("task_id") or record.get("taskId")),
                 "policy_id": _string(record.get("policy_id") or record.get("policyId")),
@@ -3010,7 +3102,9 @@ def _simulator_attempts_from_payload(
                 "route_waypoints": record.get("route_waypoints")
                 if isinstance(record.get("route_waypoints"), list)
                 else [],
-                "action_trace": record.get("actions") if isinstance(record.get("actions"), list) else [],
+                "action_trace": record.get("actions")
+                if isinstance(record.get("actions"), list)
+                else [],
                 "contact_trace": record.get("contact_trace")
                 if isinstance(record.get("contact_trace"), list)
                 else [],
@@ -3018,7 +3112,9 @@ def _simulator_attempts_from_payload(
                 if isinstance(record.get("safety_events"), list)
                 else [],
                 "video_path": _string(record.get("video_path") or record.get("videoPath")) or None,
-                "artifact_paths": _mapping(record.get("artifact_paths") or record.get("artifactPaths")),
+                "artifact_paths": _mapping(
+                    record.get("artifact_paths") or record.get("artifactPaths")
+                ),
                 "generated_at": generated_at,
                 "claim_boundary": "simulator_command_output_not_real_robot_deployment_proof",
             }
@@ -3050,8 +3146,7 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
             generated_video_vlm_judged_attempt_count += 1
         if not disclosure:
             undisclosed_attempt_ids.append(
-                _string(attempt.get("attempt_id"))
-                or f"attempt_{len(undisclosed_attempt_ids) + 1}"
+                _string(attempt.get("attempt_id")) or f"attempt_{len(undisclosed_attempt_ids) + 1}"
             )
 
     for attempt in failed:
@@ -3095,13 +3190,9 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
         "attempt_count": len(attempts),
         "successful_attempt_count": len(successful),
         "failed_attempt_count": len(failed),
-        "task_success_rate": round(len(successful) / len(attempts), 6)
-        if attempts
-        else None,
+        "task_success_rate": round(len(successful) / len(attempts), 6) if attempts else None,
         "task_success_label_provenance_counts": dict(sorted(provenance_counts.items())),
-        "task_success_label_provenance_disclosures": dict(
-            sorted(provenance_disclosures.items())
-        ),
+        "task_success_label_provenance_disclosures": dict(sorted(provenance_disclosures.items())),
         "generated_video_vlm_judged_attempt_count": generated_video_vlm_judged_attempt_count,
         "success_rate_requires_provenance_disclosure": True,
         "success_rate_provenance_disclosed": success_rate_provenance_disclosed,
@@ -3117,8 +3208,7 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
         "near_miss_attempt_count": sum(
             1
             for attempt in attempts
-            if int(_mapping(attempt.get("task_outcome")).get("near_miss_event_count") or 0)
-            > 0
+            if int(_mapping(attempt.get("task_outcome")).get("near_miss_event_count") or 0) > 0
         )
         if outcome_has("near_miss_event_count")
         else None,
@@ -3141,12 +3231,16 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
             default=None,
         ),
         "fall_attempt_count": sum(
-            1 for attempt in attempts if bool(_mapping(attempt.get("task_outcome")).get("fall_detected"))
+            1
+            for attempt in attempts
+            if bool(_mapping(attempt.get("task_outcome")).get("fall_detected"))
         )
         if outcome_has("fall_detected")
         else None,
         "stuck_attempt_count": sum(
-            1 for attempt in attempts if bool(_mapping(attempt.get("task_outcome")).get("stuck_detected"))
+            1
+            for attempt in attempts
+            if bool(_mapping(attempt.get("task_outcome")).get("stuck_detected"))
         )
         if outcome_has("stuck_detected")
         else None,
@@ -3160,7 +3254,9 @@ def _task_success_summary_from_attempts(attempts: Sequence[Mapping[str, Any]]) -
         "scene_contact_attempt_count": sum(
             1
             for attempt in attempts
-            if int(_mapping(attempt.get("task_outcome")).get("robot_scene_contact_event_count") or 0)
+            if int(
+                _mapping(attempt.get("task_outcome")).get("robot_scene_contact_event_count") or 0
+            )
             > 0
         )
         if outcome_has("robot_scene_contact_event_count")
@@ -3247,16 +3343,12 @@ def build_simulator_command_artifacts(
         missing_scenario_eval_run_ids = _string_list(
             simulator_payload.get("missing_scenario_eval_run_ids")
         )
-    attempt_count_matches_matrix_count = (
-        not required_scenario_eval_run_ids
-        or len(attempts) == len(required_scenario_eval_run_ids)
+    attempt_count_matches_matrix_count = not required_scenario_eval_run_ids or len(attempts) == len(
+        required_scenario_eval_run_ids
     )
-    scenario_eval_run_id_coverage_exact = (
-        not required_scenario_eval_run_ids
-        or (
-            set(covered_scenario_eval_run_ids) == set(required_scenario_eval_run_ids)
-            and len(covered_scenario_eval_run_ids) == len(required_scenario_eval_run_ids)
-        )
+    scenario_eval_run_id_coverage_exact = not required_scenario_eval_run_ids or (
+        set(covered_scenario_eval_run_ids) == set(required_scenario_eval_run_ids)
+        and len(covered_scenario_eval_run_ids) == len(required_scenario_eval_run_ids)
     )
     scenario_eval_run_coverage_complete = (
         bool(required_scenario_eval_run_ids)
@@ -3273,7 +3365,9 @@ def build_simulator_command_artifacts(
     failures = [attempt for attempt in attempts if not bool(attempt.get("success"))]
     task_success_summary = _task_success_summary_from_attempts(attempts)
     failed_attempt_ids = sorted(
-        _string(attempt.get("attempt_id")) for attempt in failures if _string(attempt.get("attempt_id"))
+        _string(attempt.get("attempt_id"))
+        for attempt in failures
+        if _string(attempt.get("attempt_id"))
     )
     failed_scenario_eval_run_ids = sorted(
         _string(attempt.get("scenario_eval_run_id"))
@@ -3390,9 +3484,7 @@ def build_simulator_command_artifacts(
             "label_id": f"label_{_safe_id(_string(attempt.get('attempt_id')))}",
             "attempt_id": attempt.get("attempt_id"),
             "scenario_eval_run_id": attempt.get("scenario_eval_run_id"),
-            "scenario_variation_instance_id": attempt.get(
-                "scenario_variation_instance_id"
-            ),
+            "scenario_variation_instance_id": attempt.get("scenario_variation_instance_id"),
             "variation_name": attempt.get("variation_name"),
             "task_id": attempt.get("task_id"),
             "scenario_id": attempt.get("scenario_id"),
@@ -3461,9 +3553,7 @@ def build_simulator_command_artifacts(
                 "no_timeout": not bool(task_outcome.get("timeout")),
                 "no_fall_detected": not bool(task_outcome.get("fall_detected")),
                 "no_stuck_or_no_progress": not bool(task_outcome.get("stuck_detected")),
-                "no_policy_instability": not bool(
-                    task_outcome.get("policy_instability_detected")
-                ),
+                "no_policy_instability": not bool(task_outcome.get("policy_instability_detected")),
                 "no_clearance_near_miss": not bool(
                     task_outcome.get("clearance_threshold_violation")
                 ),
@@ -3533,9 +3623,7 @@ def build_simulator_command_artifacts(
             "predicted_final_target_error_m": _number(
                 _mapping(attempt.get("task_outcome")).get("final_target_error_m")
             ),
-            "predicted_endpoint_clean": _mapping(attempt.get("task_outcome")).get(
-                "endpoint_clean"
-            ),
+            "predicted_endpoint_clean": _mapping(attempt.get("task_outcome")).get("endpoint_clean"),
             "failure_mode_ids": attempt.get("failure_mode_ids") or [],
             "source": f"{simulator}_command_output",
             "actual_status": "needs_actual_outcome",
@@ -3603,9 +3691,7 @@ def build_simulator_command_artifacts(
             ),
             "artifact_paths": dict(command_batch_trace_copied_paths),
             "job_artifact_copy_status": "copied"
-            if set(BATCH_TRACE_ARTIFACT_JOB_NAMES).issubset(
-                set(command_batch_trace_copied_paths)
-            )
+            if set(BATCH_TRACE_ARTIFACT_JOB_NAMES).issubset(set(command_batch_trace_copied_paths))
             else "partial_or_missing",
             "job_artifact_copy_records": command_batch_trace_copy_records,
         }
@@ -3616,9 +3702,7 @@ def build_simulator_command_artifacts(
         "source_ref": None,
         "job_artifact": digital_twin_qa_job_name,
     }
-    digital_twin_qa_source_ref = _string(
-        simulator_artifact_paths.get("digital_twin_fidelity_qa")
-    )
+    digital_twin_qa_source_ref = _string(simulator_artifact_paths.get("digital_twin_fidelity_qa"))
     if digital_twin_qa_source_ref:
         if "://" in digital_twin_qa_source_ref:
             digital_twin_qa_copy_record = {
@@ -3666,9 +3750,7 @@ def build_simulator_command_artifacts(
             "simulator_command_batch_closure_manifest.json"
         )
     if digital_twin_qa_copy_record.get("status") == "copied":
-        artifact_paths["simulator_command_digital_twin_fidelity_qa"] = (
-            digital_twin_qa_job_name
-        )
+        artifact_paths["simulator_command_digital_twin_fidelity_qa"] = digital_twin_qa_job_name
     manifest = {
         "schema_version": SIMULATOR_COMMAND_ARTIFACTS_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -3688,9 +3770,7 @@ def build_simulator_command_artifacts(
         "failed_task_attempt_count": task_success_summary["failed_attempt_count"],
         "task_success_rate": task_success_summary["task_success_rate"],
         "visual_review_count": visual_review_ledger["review_count"],
-        "visual_review_coverage_complete": visual_review_ledger[
-            "visual_review_coverage_complete"
-        ],
+        "visual_review_coverage_complete": visual_review_ledger["visual_review_coverage_complete"],
         "artifact_paths": artifact_paths,
         "command_batch_trace_package_status": command_batch_trace_package.get("status"),
         "command_batch_trace_job_artifact_copy_status": command_batch_trace_package.get(
@@ -3698,13 +3778,9 @@ def build_simulator_command_artifacts(
         ),
         "command_batch_trace_job_artifacts_copied": bool(
             command_batch_trace_package
-            and set(BATCH_TRACE_ARTIFACT_JOB_NAMES).issubset(
-                set(command_batch_trace_copied_paths)
-            )
+            and set(BATCH_TRACE_ARTIFACT_JOB_NAMES).issubset(set(command_batch_trace_copied_paths))
         ),
-        "simulator_command_digital_twin_fidelity_qa_copy_record": (
-            digital_twin_qa_copy_record
-        ),
+        "simulator_command_digital_twin_fidelity_qa_copy_record": (digital_twin_qa_copy_record),
         "command_batch_closure_status": command_batch_closure_manifest.get("status"),
         "machine_trace_package_complete": command_batch_closure_manifest.get(
             "machine_trace_package_complete"
@@ -3790,18 +3866,8 @@ def _load_actual_outcome_payload(
 def _load_actual_outcome_inbox(*, capture_root: Path, job_dir: Path) -> Dict[str, Any]:
     job_id = job_dir.name
     inboxes = (
-        capture_root
-        / "pipeline"
-        / "robot_eval_inputs"
-        / job_id
-        / "deployment_outcomes"
-        / "inbox",
-        capture_root
-        / "pipeline"
-        / "robot_eval_inputs"
-        / job_id
-        / "actual_outcomes"
-        / "inbox",
+        capture_root / "pipeline" / "robot_eval_inputs" / job_id / "deployment_outcomes" / "inbox",
+        capture_root / "pipeline" / "robot_eval_inputs" / job_id / "actual_outcomes" / "inbox",
         capture_root / "pipeline" / "robot_eval_inputs" / "deployment_outcomes" / "inbox",
         capture_root / "pipeline" / "robot_eval_inputs" / "actual_outcomes" / "inbox",
         job_dir / "deployment_outcomes" / "inbox",
@@ -3837,801 +3903,6 @@ def _load_actual_outcome_inbox(*, capture_root: Path, job_dir: Path) -> Dict[str
         "records": records,
         "blockers": blockers,
         "claim_boundary": "deployment_outcome_inbox_is_owner_supplied_actual_outcome_input",
-    }
-
-
-def _prediction_index(
-    prediction_ledger: Mapping[str, Any],
-    attempt_trace: Mapping[str, Any],
-) -> Dict[tuple[str, str, str, str], Dict[str, Any]]:
-    index: Dict[tuple[str, str, str, str], Dict[str, Any]] = {}
-
-    def add_prediction(record: Mapping[str, Any], prediction: Dict[str, Any]) -> None:
-        task_id = _string(record.get("task_id"))
-        scenario_id = _string(record.get("scenario_id"))
-        run_id = _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId"))
-        variation_id = _string(
-            record.get("scenario_variation_instance_id")
-            or record.get("scenarioVariationInstanceId")
-        )
-        keys = []
-        if run_id and variation_id:
-            keys.append((task_id, scenario_id, run_id, variation_id))
-        if run_id:
-            keys.append((task_id, scenario_id, run_id, ""))
-        if variation_id:
-            keys.append((task_id, scenario_id, "", variation_id))
-        keys.append((task_id, scenario_id, "", ""))
-        for key in keys:
-            if key[:2] != ("", "") and key not in index:
-                index[key] = dict(prediction)
-
-    for record in prediction_ledger.get("records", []) or []:
-        if not isinstance(record, Mapping):
-            continue
-        add_prediction(record, dict(record))
-    for attempt in attempt_trace.get("attempts", []) or []:
-        if not isinstance(attempt, Mapping):
-            continue
-        prediction = {
-            "task_id": _string(attempt.get("task_id")),
-            "scenario_id": _string(attempt.get("scenario_id")),
-            "scenario_eval_run_id": _string(
-                attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId")
-            )
-            or None,
-            "scenario_variation_instance_id": _string(
-                attempt.get("scenario_variation_instance_id")
-                or attempt.get("scenarioVariationInstanceId")
-            )
-            or None,
-            "variation_name": attempt.get("variation_name"),
-            "predicted_success": attempt.get("predicted_success"),
-            "predicted_cycle_time_seconds": attempt.get("predicted_cycle_time_seconds"),
-            "failure_mode_ids": attempt.get("failure_mode_ids") or [],
-            "source": "normalized_attempt_trace",
-        }
-        add_prediction(attempt, prediction)
-    return index
-
-
-def _prediction_for_actual(
-    predictions: Mapping[tuple[str, str, str, str], Mapping[str, Any]],
-    *,
-    task_id: str,
-    scenario_id: str,
-    scenario_eval_run_id: str,
-    scenario_variation_instance_id: str,
-) -> tuple[Dict[str, Any], str]:
-    keys: List[tuple[tuple[str, str, str, str], str]] = []
-    if scenario_eval_run_id and scenario_variation_instance_id:
-        keys.append(
-            (
-                (task_id, scenario_id, scenario_eval_run_id, scenario_variation_instance_id),
-                "scenario_eval_run_and_variation",
-            )
-        )
-    if scenario_eval_run_id:
-        keys.append(((task_id, scenario_id, scenario_eval_run_id, ""), "scenario_eval_run"))
-    if scenario_variation_instance_id:
-        keys.append(
-            (
-                (task_id, scenario_id, "", scenario_variation_instance_id),
-                "scenario_variation_instance",
-            )
-        )
-    if not scenario_eval_run_id and not scenario_variation_instance_id:
-        keys.append(((task_id, scenario_id, "", ""), "task_scenario_fallback"))
-    for key, match_level in keys:
-        prediction = predictions.get(key)
-        if prediction:
-            return dict(prediction), match_level
-    return {}, "unmatched"
-
-
-def _predicted_success(record: Mapping[str, Any]) -> bool | None:
-    if "predicted_success" in record:
-        value = record.get("predicted_success")
-        return _boolish(value) if value is not None else None
-    for key in ("success", "task_success", "predicted_task_success"):
-        if key in record and record.get(key) is not None:
-            return _boolish(record.get(key))
-    status = _string(record.get("predicted_status") or record.get("prediction_status")).lower()
-    if status in {"pass", "passed", "success", "succeeded", "completed"}:
-        return True
-    if status in {"fail", "failed", "failure", "predicted_failure"}:
-        return False
-    failures = _string_list(record.get("failure_mode_ids"))
-    if failures:
-        return False
-    return None
-
-
-def _actual_success(record: Mapping[str, Any]) -> bool | None:
-    for key in ("actual_success", "actualSuccess", "success", "passed"):
-        if key in record and record.get(key) is not None:
-            return _boolish(record.get(key))
-    status = _string(record.get("actual_status") or record.get("status")).lower()
-    if status in {"pass", "passed", "success", "succeeded", "completed"}:
-        return True
-    if status in {"fail", "failed", "failure", "timeout", "collision"}:
-        return False
-    return None
-
-
-def _failure_ids(record: Mapping[str, Any], *keys: str) -> List[str]:
-    for key in keys:
-        values = _string_list(record.get(key))
-        if values:
-            return values
-    return []
-
-
-def _actual_signal_present(record: Mapping[str, Any]) -> bool:
-    for key in (
-        "actual_success",
-        "actualSuccess",
-        "success",
-        "passed",
-        "actual_status",
-        "actualStatus",
-        "status",
-    ):
-        if key in record and _string(record.get(key)):
-            return True
-    return bool(_failure_ids(record, "failure_mode_ids", "actual_failures", "actualFailures", "failures"))
-
-
-def _anchor_variation_instance_id(record: Mapping[str, Any]) -> str:
-    return _string(
-        record.get("scenario_variation_instance_id")
-        or record.get("scenarioVariationInstanceId")
-        or record.get("variation_instance_id")
-        or record.get("variationInstanceId")
-        or record.get("variation_id")
-        or record.get("variationId")
-    )
-
-
-def _anchor_key(record: Mapping[str, Any]) -> tuple[str, str, str, str]:
-    return (
-        _string(record.get("scenario_eval_run_id") or record.get("scenarioEvalRunId")),
-        _string(record.get("policy_id") or record.get("policyId")),
-        _string(record.get("task_id") or record.get("taskId")),
-        _anchor_variation_instance_id(record),
-    )
-
-
-def _anchor_key_dict(key: tuple[str, str, str, str]) -> Dict[str, str]:
-    return {
-        "scenario_eval_run_id": key[0],
-        "policy_id": key[1],
-        "task_id": key[2],
-        "scenario_variation_instance_id": key[3],
-    }
-
-
-def _missing_anchor_key_fields(key: tuple[str, str, str, str]) -> List[str]:
-    return [field for field, value in zip(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS, key) if not value]
-
-
-def _anchor_record_status(record: Mapping[str, Any]) -> str:
-    return _string(
-        record.get("anchor_status")
-        or record.get("anchorStatus")
-        or record.get("validation_status")
-        or record.get("validationStatus")
-        or record.get("review_status")
-        or record.get("reviewStatus")
-    ).lower()
-
-
-def _anchor_record_is_stale(record: Mapping[str, Any]) -> bool:
-    if _boolish(record.get("stale") or record.get("is_stale") or record.get("isStale")):
-        return True
-    return _anchor_record_status(record) in {"stale", "expired", "superseded"}
-
-
-def _accepted_review_value(value: Any) -> bool:
-    return _string(value).lower() in {
-        "accepted",
-        "approved",
-        "passed",
-        "succeeded",
-        "complete",
-        "completed",
-    }
-
-
-def _anchor_review_accepted(record: Mapping[str, Any]) -> bool:
-    reviewer_decision = _mapping(record.get("reviewer_decision") or record.get("reviewerDecision"))
-    if _boolish(
-        record.get("accepted_for_calibration")
-        or record.get("acceptedForCalibration")
-        or reviewer_decision.get("accepted_for_calibration")
-        or reviewer_decision.get("acceptedForCalibration")
-    ):
-        return True
-    for key in (
-        "calibration_review_decision",
-        "calibrationReviewDecision",
-        "policy_review_decision",
-        "policyReviewDecision",
-        "review_decision",
-        "reviewDecision",
-        "status",
-    ):
-        if _accepted_review_value(reviewer_decision.get(key)):
-            return True
-    return _accepted_review_value(_anchor_record_status(record))
-
-
-def _attestation_signed(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    actor_id = _string(
-        value.get("attested_by")
-        or value.get("attestedBy")
-        or value.get("operator_id")
-        or value.get("operatorId")
-        or value.get("owner_id")
-        or value.get("ownerId")
-    )
-    statement = _string(
-        value.get("statement")
-        or value.get("attestation")
-        or value.get("accepted_claim_boundary")
-        or value.get("acceptedClaimBoundary")
-    )
-    status = _string(value.get("status") or value.get("signature_status") or value.get("signatureStatus"))
-    signature_ref = _string(
-        value.get("signature")
-        or value.get("signature_ref")
-        or value.get("signatureRef")
-        or value.get("signed_at_utc")
-        or value.get("signedAtUtc")
-    )
-    return bool(actor_id and statement and (status == "signed" or signature_ref))
-
-
-def _physical_evidence_requested(record: Mapping[str, Any]) -> bool:
-    reviewer_decision = _mapping(record.get("reviewer_decision") or record.get("reviewerDecision"))
-    return bool(
-        _boolish(record.get("physical_evidence_required"))
-        or _boolish(record.get("physicalEvidenceRequired"))
-        or _boolish(record.get("field_evidence_required"))
-        or _boolish(record.get("fieldEvidenceRequired"))
-        or _boolish(reviewer_decision.get("physical_evidence_required"))
-        or _boolish(reviewer_decision.get("physicalEvidenceRequired"))
-    )
-
-
-def _physical_evidence_present(record: Mapping[str, Any]) -> bool:
-    refs = _mapping(record.get("physical_evidence_refs") or record.get("physicalEvidenceRefs"))
-    owner_refs = _mapping(record.get("owner_evidence_refs") or record.get("ownerEvidenceRefs"))
-    evidence_refs = _mapping(record.get("evidence_refs") or record.get("evidenceRefs"))
-    if refs:
-        return True
-    physical_keys = {
-        "physical_robot_run_manifest",
-        "robot_camera_video",
-        "robot_pov_video",
-        "video_review",
-        "action_log",
-        "robot_state_log",
-        "timestamp_alignment",
-        "operator_log",
-    }
-    if physical_keys.intersection(owner_refs) or physical_keys.intersection(evidence_refs):
-        return True
-    return bool(
-        _string(record.get("robot_camera_video_uri") or record.get("robotCameraVideoUri"))
-        or _string(record.get("robot_pov_video_uri") or record.get("robotPovVideoUri"))
-        or _string(record.get("physical_robot_run_manifest_uri") or record.get("physicalRobotRunManifestUri"))
-    )
-
-
-def _prediction_anchor_rows(
-    prediction_ledger: Mapping[str, Any],
-    attempt_trace: Mapping[str, Any],
-) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for record in prediction_ledger.get("records", []) or []:
-        if not isinstance(record, Mapping):
-            continue
-        rows.append(
-            {
-                **dict(record),
-                "prediction_source": record.get("source") or "prediction_outcome_ledger",
-            }
-        )
-    for attempt in attempt_trace.get("attempts", []) or []:
-        if not isinstance(attempt, Mapping):
-            continue
-        rows.append(
-            {
-                "task_id": _string(attempt.get("task_id") or attempt.get("taskId")),
-                "scenario_id": _string(attempt.get("scenario_id") or attempt.get("scenarioId")),
-                "scenario_eval_run_id": _string(
-                    attempt.get("scenario_eval_run_id") or attempt.get("scenarioEvalRunId")
-                )
-                or None,
-                "scenario_variation_instance_id": _anchor_variation_instance_id(attempt)
-                or None,
-                "variation_name": attempt.get("variation_name") or attempt.get("variationName"),
-                "policy_id": _string(attempt.get("policy_id") or attempt.get("policyId")),
-                "predicted_success": _predicted_success(attempt),
-                "predicted_cycle_time_seconds": _number(
-                    attempt.get("predicted_cycle_time_seconds")
-                    or attempt.get("cycle_time_seconds")
-                    or _mapping(attempt.get("metrics")).get("cycle_time_seconds")
-                ),
-                "failure_mode_ids": attempt.get("failure_mode_ids") or [],
-                "prediction_source": "normalized_attempt_trace",
-            }
-        )
-    return rows
-
-
-def _prediction_anchor_index(
-    prediction_rows: Sequence[Mapping[str, Any]],
-) -> tuple[
-    Dict[tuple[str, str, str, str], Dict[str, Any]],
-    List[str],
-    List[Dict[str, Any]],
-]:
-    index: Dict[tuple[str, str, str, str], Dict[str, Any]] = {}
-    conflicts: Dict[tuple[str, str, str, str], set[bool]] = {}
-    incomplete: List[Dict[str, Any]] = []
-    for row_index, row in enumerate(prediction_rows, start=1):
-        key = _anchor_key(row)
-        missing_fields = _missing_anchor_key_fields(key)
-        record_id = (
-            _string(row.get("record_id") or row.get("attempt_id") or row.get("id"))
-            or f"prediction_row_{row_index:04d}"
-        )
-        predicted = _predicted_success(row)
-        if missing_fields or predicted is None:
-            incomplete.append(
-                {
-                    "record_id": record_id,
-                    "missing_fields": missing_fields
-                    + (["predicted_success"] if predicted is None else []),
-                    "join_key": _anchor_key_dict(key),
-                }
-            )
-            continue
-        conflicts.setdefault(key, set()).add(bool(predicted))
-        index.setdefault(
-            key,
-            {
-                **dict(row),
-                "record_id": record_id,
-                "predicted_success": bool(predicted),
-                "anchor_join_key": _anchor_key_dict(key),
-            },
-        )
-    conflict_ids = [
-        _string(index.get(key, {}).get("record_id")) or "|".join(key)
-        for key, values in conflicts.items()
-        if len(values) > 1
-    ]
-    return index, sorted(conflict_ids), incomplete
-
-
-def _average_ranks(values: Sequence[float], *, descending: bool = False) -> List[float]:
-    indexed = list(enumerate(values))
-    indexed.sort(key=lambda item: item[1], reverse=descending)
-    ranks = [0.0 for _ in values]
-    position = 1
-    cursor = 0
-    while cursor < len(indexed):
-        end = cursor + 1
-        while end < len(indexed) and indexed[end][1] == indexed[cursor][1]:
-            end += 1
-        average_rank = (position + position + (end - cursor) - 1) / 2.0
-        for original_index, _ in indexed[cursor:end]:
-            ranks[original_index] = average_rank
-        position += end - cursor
-        cursor = end
-    return ranks
-
-
-def _pearson(values_a: Sequence[float], values_b: Sequence[float]) -> float | None:
-    if len(values_a) != len(values_b) or len(values_a) < 2:
-        return None
-    mean_a = sum(values_a) / len(values_a)
-    mean_b = sum(values_b) / len(values_b)
-    centered_a = [value - mean_a for value in values_a]
-    centered_b = [value - mean_b for value in values_b]
-    denominator = math.sqrt(sum(value * value for value in centered_a)) * math.sqrt(
-        sum(value * value for value in centered_b)
-    )
-    if denominator == 0.0:
-        return None
-    return sum(a * b for a, b in zip(centered_a, centered_b)) / denominator
-
-
-def _policy_anchor_summaries(
-    accepted_anchors: Sequence[Mapping[str, Any]],
-) -> List[Dict[str, Any]]:
-    grouped: Dict[str, List[Mapping[str, Any]]] = {}
-    for row in accepted_anchors:
-        grouped.setdefault(_string(row.get("policy_id")) or "policy", []).append(row)
-    summaries: List[Dict[str, Any]] = []
-    for policy_id, rows in sorted(grouped.items()):
-        predicted_successes = [bool(row.get("predicted_success")) for row in rows]
-        actual_successes = [bool(row.get("actual_success")) for row in rows]
-        predicted_success_rate = sum(predicted_successes) / len(predicted_successes)
-        actual_success_rate = sum(actual_successes) / len(actual_successes)
-        summaries.append(
-            {
-                "policy_id": policy_id,
-                "accepted_anchor_count": len(rows),
-                "predicted_success_rate": round(predicted_success_rate, 6),
-                "actual_success_rate": round(actual_success_rate, 6),
-                "success_rate_error": round(predicted_success_rate - actual_success_rate, 6),
-                "absolute_success_rate_error": round(
-                    abs(predicted_success_rate - actual_success_rate),
-                    6,
-                ),
-            }
-        )
-    predicted_ranks = _average_ranks(
-        [float(row["predicted_success_rate"]) for row in summaries],
-        descending=True,
-    )
-    actual_ranks = _average_ranks(
-        [float(row["actual_success_rate"]) for row in summaries],
-        descending=True,
-    )
-    for row, predicted_rank, actual_rank in zip(summaries, predicted_ranks, actual_ranks):
-        row["predicted_rank"] = predicted_rank
-        row["actual_rank"] = actual_rank
-        row["rank_violation"] = abs(predicted_rank - actual_rank)
-        row["normalized_rank_violation"] = (
-            row["rank_violation"] / max(1, len(summaries) - 1)
-        )
-    return summaries
-
-
-def _calibration_metrics_from_policy_summaries(
-    summaries: Sequence[Mapping[str, Any]],
-) -> Dict[str, float | None]:
-    if len(summaries) < MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION:
-        return {
-            "spearman_rank_correlation": None,
-            "pearson_success_rate_correlation": None,
-            "mean_maximum_rank_violation": None,
-            "mmrv": None,
-            "maximum_rank_violation": None,
-            "mean_absolute_success_rate_error": None,
-            "sim_vs_real_calibration_score": None,
-        }
-    predicted_rates = [float(row.get("predicted_success_rate") or 0.0) for row in summaries]
-    actual_rates = [float(row.get("actual_success_rate") or 0.0) for row in summaries]
-    predicted_ranks = [float(row.get("predicted_rank") or 0.0) for row in summaries]
-    actual_ranks = [float(row.get("actual_rank") or 0.0) for row in summaries]
-    rank_violations = [float(row.get("normalized_rank_violation") or 0.0) for row in summaries]
-    absolute_errors = [
-        float(row.get("absolute_success_rate_error") or 0.0) for row in summaries
-    ]
-    pearson = _pearson(predicted_rates, actual_rates)
-    spearman = _pearson(predicted_ranks, actual_ranks)
-    mae = sum(absolute_errors) / len(absolute_errors)
-    mmrv = sum(rank_violations) / len(rank_violations)
-    return {
-        "spearman_rank_correlation": round(spearman, 6) if spearman is not None else None,
-        "pearson_success_rate_correlation": round(pearson, 6) if pearson is not None else None,
-        "mean_maximum_rank_violation": round(mmrv, 6),
-        "mmrv": round(mmrv, 6),
-        "maximum_rank_violation": round(max(rank_violations), 6) if rank_violations else None,
-        "mean_absolute_success_rate_error": round(mae, 6),
-        "sim_vs_real_calibration_score": round(max(0.0, 1.0 - mae), 6),
-    }
-
-
-def _percentile(values: Sequence[float], percentile: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return round(ordered[0], 6)
-    position = (len(ordered) - 1) * percentile
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return round(ordered[int(position)], 6)
-    fraction = position - lower
-    return round(ordered[lower] * (1 - fraction) + ordered[upper] * fraction, 6)
-
-
-def _bootstrap_confidence_intervals(
-    summaries: Sequence[Mapping[str, Any]],
-) -> Dict[str, Dict[str, float | None]]:
-    if len(summaries) < MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION:
-        return {}
-    metric_samples: Dict[str, List[float]] = {
-        "spearman_rank_correlation": [],
-        "pearson_success_rate_correlation": [],
-        "mean_maximum_rank_violation": [],
-        "mmrv": [],
-        "mean_absolute_success_rate_error": [],
-        "sim_vs_real_calibration_score": [],
-    }
-    summary_list = [dict(row) for row in summaries]
-    sample_indexes = itertools.product(range(len(summary_list)), repeat=len(summary_list))
-    max_samples = 512
-    for sample_count, indexes in enumerate(sample_indexes, start=1):
-        if sample_count > max_samples:
-            break
-        sample_summaries = [dict(summary_list[index]) for index in indexes]
-        predicted_ranks = _average_ranks(
-            [float(row.get("predicted_success_rate") or 0.0) for row in sample_summaries],
-            descending=True,
-        )
-        actual_ranks = _average_ranks(
-            [float(row.get("actual_success_rate") or 0.0) for row in sample_summaries],
-            descending=True,
-        )
-        for row, predicted_rank, actual_rank in zip(
-            sample_summaries,
-            predicted_ranks,
-            actual_ranks,
-        ):
-            row["predicted_rank"] = predicted_rank
-            row["actual_rank"] = actual_rank
-            row["normalized_rank_violation"] = (
-                abs(predicted_rank - actual_rank) / max(1, len(sample_summaries) - 1)
-            )
-        metrics = _calibration_metrics_from_policy_summaries(sample_summaries)
-        for key in metric_samples:
-            value = metrics.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metric_samples[key].append(float(value))
-    intervals: Dict[str, Dict[str, float | None]] = {}
-    for key, values in metric_samples.items():
-        intervals[key] = {
-            "confidence": 0.95,
-            "lower": _percentile(values, 0.025),
-            "upper": _percentile(values, 0.975),
-            "sample_count": len(values),
-        }
-    return intervals
-
-
-def _accepted_anchor_calibration(
-    *,
-    rows: Sequence[Mapping[str, Any]],
-    prediction_rows: Sequence[Mapping[str, Any]],
-    prediction_anchor_index: Mapping[tuple[str, str, str, str], Mapping[str, Any]],
-    prediction_conflict_ids: Sequence[str],
-    prediction_incomplete_rows: Sequence[Mapping[str, Any]],
-) -> Dict[str, Any]:
-    if not rows:
-        complete_prediction_keys = sorted(
-            {
-                _anchor_key(row)
-                for row in prediction_rows
-                if not _missing_anchor_key_fields(_anchor_key(row))
-                and _predicted_success(row) is not None
-            }
-        )
-        unmatched_prediction_rows = [_anchor_key_dict(key) for key in complete_prediction_keys]
-        blockers = ["insufficient_anchor_count", "insufficient_policy_group_count"]
-        if unmatched_prediction_rows:
-            blockers.append("unmatched_prediction_rows")
-        return {
-            "status": "not_measured",
-            "blockers": sorted(set(blockers)),
-            "accepted_anchor_schema": {
-                "schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
-                "join_keys": list(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS),
-                "required_prediction_fields": [
-                    *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
-                    "predicted_success",
-                ],
-                "required_actual_fields": [
-                    *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
-                    "actual_success",
-                    "owner_evidence_or_operator_attestation",
-                ],
-                "accepted_anchor_status": "accepted",
-                "claim_boundary": (
-                    "Accepted anchors are paired prediction/actual records. They are "
-                    "inputs for external accuracy calibration, not generated-world "
-                    "rank-fidelity result."
-                ),
-            },
-            "accepted_anchor_count": 0,
-            "minimum_accepted_anchor_count": MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION,
-            "policy_group_count": 0,
-            "minimum_policy_group_count": MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION,
-            "accepted_anchors": [],
-            "rejected_anchors": [],
-            "policy_success_rate_rows": [],
-            "unmatched_prediction_row_count": len(unmatched_prediction_rows),
-            "unmatched_prediction_rows": unmatched_prediction_rows,
-            "unmatched_actual_row_count": 0,
-            "unmatched_actual_row_ids": [],
-            "stale_anchor_row_count": 0,
-            "stale_anchor_row_ids": [],
-            "conflicting_anchor_row_count": 0,
-            "conflicting_anchor_row_ids": [],
-            "prediction_incomplete_row_count": len(prediction_incomplete_rows),
-            "prediction_incomplete_rows": list(prediction_incomplete_rows),
-            "confidence_intervals": {},
-            "spearman_rank_correlation": None,
-            "pearson_success_rate_correlation": None,
-            "mean_maximum_rank_violation": None,
-            "mmrv": None,
-            "maximum_rank_violation": None,
-            "mean_absolute_success_rate_error": None,
-            "sim_vs_real_calibration_score": None,
-        }
-    actual_keys: Dict[tuple[str, str, str, str], List[Mapping[str, Any]]] = {}
-    for row in rows:
-        key = _anchor_key(row)
-        if not _missing_anchor_key_fields(key):
-            actual_keys.setdefault(key, []).append(row)
-    actual_conflict_keys = {
-        key
-        for key, keyed_rows in actual_keys.items()
-        if len({bool(item.get("actual_success")) for item in keyed_rows if item.get("actual_success") is not None})
-        > 1
-    }
-    stale_anchor_row_ids: List[str] = []
-    unmatched_actual_row_ids: List[str] = []
-    accepted_anchors: List[Dict[str, Any]] = []
-    rejected_anchors: List[Dict[str, Any]] = []
-    for row_index, row in enumerate(rows, start=1):
-        key = _anchor_key(row)
-        record_id = _string(row.get("record_id")) or f"deployment_outcome_{row_index:04d}"
-        missing_fields = _missing_anchor_key_fields(key)
-        anchor_blockers: List[str] = []
-        if missing_fields:
-            anchor_blockers.append("missing_anchor_join_key_fields")
-        if row.get("predicted_success") is None:
-            anchor_blockers.append("missing_predicted_success")
-        if row.get("actual_success") is None:
-            anchor_blockers.append("missing_actual_success")
-        if not row.get("owner_evidence_present"):
-            anchor_blockers.append("missing_owner_evidence_or_operator_attestation")
-        if not row.get("signed_operator_attestation_present"):
-            anchor_blockers.append("owner_or_operator_attestation_not_signed")
-        if _physical_evidence_requested(row) and not row.get("physical_evidence_present"):
-            anchor_blockers.append("missing_required_physical_evidence")
-        if not row.get("actual_result_signal_present"):
-            anchor_blockers.append("missing_actual_result_signal")
-        if not _anchor_review_accepted(row):
-            anchor_blockers.append("anchor_review_not_accepted")
-        if _anchor_record_is_stale(row):
-            anchor_blockers.append("stale_anchor_row")
-            stale_anchor_row_ids.append(record_id)
-        if key in actual_conflict_keys:
-            anchor_blockers.append("conflicting_actual_anchor_row")
-        if key not in prediction_anchor_index:
-            anchor_blockers.append("unmatched_actual_row")
-            unmatched_actual_row_ids.append(record_id)
-        if row.get("matched_prediction") and not row.get("strict_anchor_prediction_match"):
-            anchor_blockers.append("loose_or_inferred_anchor_match_rejected")
-        if anchor_blockers:
-            rejected_anchors.append(
-                {
-                    "record_id": record_id,
-                    "anchor_acceptance_status": "blocked",
-                    "anchor_blockers": sorted(set(anchor_blockers)),
-                    "anchor_join_key": _anchor_key_dict(key),
-                }
-            )
-            continue
-        accepted_anchors.append(
-            {
-                **dict(row),
-                "record_id": record_id,
-                "anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
-                "anchor_acceptance_status": "accepted",
-                "anchor_join_key": _anchor_key_dict(key),
-            }
-        )
-    accepted_keys = {_anchor_key(row) for row in accepted_anchors}
-    complete_prediction_keys = {
-        _anchor_key(row)
-        for row in prediction_rows
-        if not _missing_anchor_key_fields(_anchor_key(row)) and _predicted_success(row) is not None
-    }
-    unmatched_prediction_keys = sorted(complete_prediction_keys - accepted_keys)
-    unmatched_prediction_rows = [
-        _anchor_key_dict(key) for key in unmatched_prediction_keys
-    ]
-    conflicting_anchor_rows = sorted(
-        {
-            *[
-                _string(row.get("record_id")) or "|".join(_anchor_key(row))
-                for key in actual_conflict_keys
-                for row in actual_keys.get(key, [])
-            ],
-            *prediction_conflict_ids,
-        }
-    )
-    blockers: List[str] = []
-    if len(accepted_anchors) < MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION:
-        blockers.append("insufficient_anchor_count")
-    if unmatched_prediction_rows:
-        blockers.append("unmatched_prediction_rows")
-    if unmatched_actual_row_ids:
-        blockers.append("unmatched_actual_rows")
-    if stale_anchor_row_ids:
-        blockers.append("stale_anchor_rows")
-    if conflicting_anchor_rows:
-        blockers.append("conflicting_anchor_rows")
-    policy_summaries = _policy_anchor_summaries(accepted_anchors)
-    if len(policy_summaries) < MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION:
-        blockers.append("insufficient_policy_group_count")
-    metrics: Dict[str, Any] = {
-        "spearman_rank_correlation": None,
-        "pearson_success_rate_correlation": None,
-        "mean_maximum_rank_violation": None,
-        "mmrv": None,
-        "maximum_rank_violation": None,
-        "mean_absolute_success_rate_error": None,
-        "sim_vs_real_calibration_score": None,
-    }
-    confidence_intervals: Dict[str, Any] = {}
-    if not blockers:
-        metrics = _calibration_metrics_from_policy_summaries(policy_summaries)
-        confidence_intervals = _bootstrap_confidence_intervals(policy_summaries)
-    status = (
-        "not_measured"
-        if not rows
-        else "completed"
-        if not blockers
-        else "blocked_anchor_quality"
-    )
-    if "insufficient_anchor_count" in blockers and set(blockers).issubset(
-        {"insufficient_anchor_count", "insufficient_policy_group_count"}
-    ):
-        status = "blocked_insufficient_anchor_count" if rows else "not_measured"
-    return {
-        "status": status,
-        "blockers": sorted(set(blockers)),
-        "accepted_anchor_schema": {
-            "schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
-            "join_keys": list(ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS),
-            "required_prediction_fields": [
-                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
-                "predicted_success",
-            ],
-            "required_actual_fields": [
-                *ACCEPTED_REAL_WORLD_ANCHOR_JOIN_KEYS,
-                "actual_success",
-                "owner_evidence_or_operator_attestation",
-            ],
-            "accepted_anchor_status": "accepted",
-            "claim_boundary": (
-                "Accepted anchors are paired prediction/actual records. They are "
-                "inputs for external accuracy calibration, not generated-world rank-fidelity result."
-            ),
-        },
-        "accepted_anchor_count": len(accepted_anchors),
-        "minimum_accepted_anchor_count": MIN_ACCEPTED_ANCHOR_COUNT_FOR_CALIBRATION,
-        "policy_group_count": len(policy_summaries),
-        "minimum_policy_group_count": MIN_POLICY_GROUP_COUNT_FOR_CALIBRATION,
-        "accepted_anchors": accepted_anchors,
-        "rejected_anchors": rejected_anchors,
-        "policy_success_rate_rows": policy_summaries,
-        "unmatched_prediction_row_count": len(unmatched_prediction_rows),
-        "unmatched_prediction_rows": unmatched_prediction_rows,
-        "unmatched_actual_row_count": len(set(unmatched_actual_row_ids)),
-        "unmatched_actual_row_ids": sorted(set(unmatched_actual_row_ids)),
-        "stale_anchor_row_count": len(set(stale_anchor_row_ids)),
-        "stale_anchor_row_ids": sorted(set(stale_anchor_row_ids)),
-        "conflicting_anchor_row_count": len(conflicting_anchor_rows),
-        "conflicting_anchor_row_ids": conflicting_anchor_rows,
-        "prediction_incomplete_row_count": len(prediction_incomplete_rows),
-        "prediction_incomplete_rows": list(prediction_incomplete_rows),
-        "confidence_intervals": confidence_intervals,
-        **metrics,
     }
 
 
@@ -4697,9 +3968,7 @@ def _followup_action_context(row: Mapping[str, Any]) -> Dict[str, Any]:
         "task_id": _string(row.get("task_id")),
         "scenario_id": _string(row.get("scenario_id")),
         "scenario_eval_run_id": _string(row.get("scenario_eval_run_id")) or None,
-        "scenario_variation_instance_id": _string(
-            row.get("scenario_variation_instance_id")
-        )
+        "scenario_variation_instance_id": _string(row.get("scenario_variation_instance_id"))
         or None,
         "variation_name": _string(row.get("variation_name")) or None,
         "policy_id": _string(row.get("policy_id")) or None,
@@ -4773,9 +4042,7 @@ def _build_real_world_validation_followup_plan(
                     ),
                     "rerun_inputs": {
                         "scenario_eval_run_id": row.get("scenario_eval_run_id"),
-                        "scenario_variation_instance_id": row.get(
-                            "scenario_variation_instance_id"
-                        ),
+                        "scenario_variation_instance_id": row.get("scenario_variation_instance_id"),
                         "task_id": row.get("task_id"),
                         "scenario_id": row.get("scenario_id"),
                         "policy_id": row.get("policy_id"),
@@ -4794,9 +4061,11 @@ def _build_real_world_validation_followup_plan(
                     ),
                 },
             )
-        tuning_needed = bool(row.get("real_world_tuning_needed")) or bool(
-            _number(row.get("tuning_hours"), 0.0)
-        ) or bool(int(_number(row.get("tuning_iterations"), 0.0) or 0))
+        tuning_needed = (
+            bool(row.get("real_world_tuning_needed"))
+            or bool(_number(row.get("tuning_hours"), 0.0))
+            or bool(int(_number(row.get("tuning_iterations"), 0.0) or 0))
+        )
         if tuning_needed:
             add_action(
                 row,
@@ -4804,9 +4073,7 @@ def _build_real_world_validation_followup_plan(
                 reasons=("real_world_tuning_needed",),
                 details={
                     "tuning_hours": _number(row.get("tuning_hours"), 0.0),
-                    "tuning_iterations": int(
-                        _number(row.get("tuning_iterations"), 0.0) or 0
-                    ),
+                    "tuning_iterations": int(_number(row.get("tuning_iterations"), 0.0) or 0),
                     "tuning_notes": _string_list(row.get("tuning_notes")),
                     "recommended_next_step": (
                         "request_robot_team_tuning_notes_and_replay_updated_policy"
@@ -4852,25 +4119,17 @@ def _build_real_world_validation_followup_plan(
             if action.get("action_type") == "update_scenario_library_for_missed_failures"
         ),
         "robot_team_tuning_review_count": sum(
-            1
-            for action in actions
-            if action.get("action_type") == "robot_team_tuning_review"
+            1 for action in actions if action.get("action_type") == "robot_team_tuning_review"
         ),
         "site_modification_review_count": sum(
-            1
-            for action in actions
-            if action.get("action_type") == "site_modification_review"
+            1 for action in actions if action.get("action_type") == "site_modification_review"
         ),
         "unmatched_actual_review_count": sum(
             1 for action in actions if action.get("action_type") == "unmatched_actual_review"
         ),
     }
     status = (
-        "not_requested"
-        if not rows
-        else "review_required"
-        if actions
-        else "no_followup_required"
+        "not_requested" if not rows else "review_required" if actions else "no_followup_required"
     )
     return {
         "schema_version": REAL_WORLD_VALIDATION_FOLLOWUP_PLAN_SCHEMA_VERSION,
@@ -4982,8 +4241,11 @@ def build_deployment_validation_bundle(
         predicted_success = _predicted_success(anchor_prediction or prediction)
         actual_success = _actual_success(actual)
         actual_result_signal_present = _actual_signal_present(actual)
-        site_modifications = actual.get("site_modifications") or actual.get("siteModifications") or []
+        site_modifications = (
+            actual.get("site_modifications") or actual.get("siteModifications") or []
+        )
         owner_evidence = _outcome_owner_evidence(actual)
+        unit_source = anchor_prediction or prediction
         row = {
             "record_id": _string(actual.get("outcome_id") or actual.get("record_id"))
             or f"deployment_outcome_{index:04d}",
@@ -5003,6 +4265,63 @@ def build_deployment_validation_bundle(
             or _string(prediction.get("variation_name"))
             or None,
             "policy_id": policy_id,
+            "checkpoint_id": _string(
+                actual.get("checkpoint_id")
+                or actual.get("checkpointId")
+                or actual.get("policy_checkpoint_id")
+                or actual.get("policyCheckpointId")
+                or unit_source.get("checkpoint_id")
+                or unit_source.get("checkpointId")
+                or unit_source.get("policy_checkpoint_id")
+                or unit_source.get("policyCheckpointId")
+            )
+            or None,
+            "criterion_id": _string(
+                actual.get("criterion_id")
+                or actual.get("criterionId")
+                or actual.get("success_criterion_id")
+                or actual.get("successCriterionId")
+                or unit_source.get("criterion_id")
+                or unit_source.get("criterionId")
+                or unit_source.get("success_criterion_id")
+                or unit_source.get("successCriterionId")
+            )
+            or None,
+            "registered_split": _string(
+                actual.get("registered_split")
+                or actual.get("registeredSplit")
+                or actual.get("evaluation_split")
+                or actual.get("evaluationSplit")
+                or actual.get("split")
+                or unit_source.get("registered_split")
+                or unit_source.get("registeredSplit")
+                or unit_source.get("evaluation_split")
+                or unit_source.get("evaluationSplit")
+                or unit_source.get("split")
+            )
+            or None,
+            "task_family": _string(
+                actual.get("task_family")
+                or actual.get("taskFamily")
+                or actual.get("registered_task_family")
+                or actual.get("registeredTaskFamily")
+                or unit_source.get("task_family")
+                or unit_source.get("taskFamily")
+                or unit_source.get("registered_task_family")
+                or unit_source.get("registeredTaskFamily")
+            )
+            or None,
+            "matched_initial_condition_id": _string(
+                actual.get("matched_initial_condition_id")
+                or actual.get("matchedInitialConditionId")
+                or actual.get("initial_condition_id")
+                or actual.get("initialConditionId")
+                or unit_source.get("matched_initial_condition_id")
+                or unit_source.get("matchedInitialConditionId")
+                or unit_source.get("initial_condition_id")
+                or unit_source.get("initialConditionId")
+            )
+            or None,
             "anchor_schema_version": ACCEPTED_REAL_WORLD_ANCHOR_SCHEMA_VERSION,
             "anchor_join_key": _anchor_key_dict(anchor_key),
             "accepted_anchor_join_key_present": not _missing_anchor_key_fields(anchor_key),
@@ -5049,7 +4368,9 @@ def build_deployment_validation_bundle(
             "tuning_iterations": int(_number(actual.get("tuning_iterations"), 0.0) or 0),
             "tuning_hours": _number(actual.get("tuning_hours") or actual.get("tuningHours"), 0.0),
             "tuning_notes": _string_list(actual.get("tuning_notes") or actual.get("tuningNotes")),
-            "site_modifications": site_modifications if isinstance(site_modifications, list) else [],
+            "site_modifications": site_modifications
+            if isinstance(site_modifications, list)
+            else [],
             "site_modifications_helped": actual.get("site_modifications_helped")
             if actual.get("site_modifications_helped") is not None
             else actual.get("siteModificationsHelped"),
@@ -5072,23 +4393,35 @@ def build_deployment_validation_bundle(
         }
         rows.append(row)
 
+    study_design = _mapping(
+        job_request.get("rank_fidelity_study_design")
+        or job_request.get("rankFidelityStudyDesign")
+        or job_request.get("sc3_study_design")
+        or job_request.get("sc3StudyDesign")
+        or _mapping(payload).get("rank_fidelity_study_design")
+    )
     anchor_calibration = _accepted_anchor_calibration(
         rows=rows,
         prediction_rows=prediction_rows,
         prediction_anchor_index=prediction_anchor_index,
         prediction_conflict_ids=prediction_conflict_ids,
         prediction_incomplete_rows=prediction_incomplete_rows,
+        study_design=study_design,
     )
     score = anchor_calibration.get("sim_vs_real_calibration_score")
+    rank_fidelity_claim_eligibility = _mapping(
+        anchor_calibration.get("rank_fidelity_claim_eligibility")
+    )
+    public_rank_fidelity_claim_eligible = (
+        rank_fidelity_claim_eligibility.get("public_rank_fidelity_claim_eligible") is True
+    )
     status = "completed" if rows else "not_requested"
     owner_evidence_record_count = sum(1 for row in rows if row.get("owner_evidence_present"))
     missing_owner_evidence_record_ids = [
         _string(row.get("record_id")) for row in rows if not row.get("owner_evidence_present")
     ]
     missing_actual_signal_record_ids = [
-        _string(row.get("record_id"))
-        for row in rows
-        if not row.get("actual_result_signal_present")
+        _string(row.get("record_id")) for row in rows if not row.get("actual_result_signal_present")
     ]
     unmatched_actual_record_ids = [
         _string(row.get("record_id")) for row in rows if not row.get("matched_prediction")
@@ -5106,7 +4439,9 @@ def build_deployment_validation_bundle(
     exact_prediction_record_count = sum(1 for row in rows if row.get("exact_prediction_match"))
     prediction_match_counts = {
         "scenario_eval_run_and_variation": sum(
-            1 for row in rows if row.get("prediction_match_level") == "scenario_eval_run_and_variation"
+            1
+            for row in rows
+            if row.get("prediction_match_level") == "scenario_eval_run_and_variation"
         ),
         "scenario_eval_run": sum(
             1 for row in rows if row.get("prediction_match_level") == "scenario_eval_run"
@@ -5143,10 +4478,7 @@ def build_deployment_validation_bundle(
         and weak_prediction_match_record_ids
         and exact_prediction_record_count == 0
         and (
-            (
-                missing_exact_prediction_join_key_record_ids
-                and not missing_owner_evidence_record_ids
-            )
+            (missing_exact_prediction_join_key_record_ids and not missing_owner_evidence_record_ids)
             or outcome_source == "deployment_outcome_inbox"
         )
     ):
@@ -5172,6 +4504,8 @@ def build_deployment_validation_bundle(
         "unmatched_actual_record_ids": unmatched_actual_record_ids,
         "accepted_anchor_count": anchor_calibration.get("accepted_anchor_count"),
         "accepted_anchor_blockers": calibration_blockers,
+        "rank_fidelity_claim_eligibility": rank_fidelity_claim_eligibility,
+        "public_rank_fidelity_claim_eligible": public_rank_fidelity_claim_eligible,
         "prediction_match_counts": prediction_match_counts,
         "real_world_outcome_records_present": real_world_outcome_records_present,
         "owner_evidence_record_count": owner_evidence_record_count,
@@ -5204,25 +4538,38 @@ def build_deployment_validation_bundle(
             ]
         ),
         "accepted_anchor_count": anchor_calibration.get("accepted_anchor_count"),
-        "minimum_accepted_anchor_count": anchor_calibration.get(
-            "minimum_accepted_anchor_count"
-        ),
+        "minimum_accepted_anchor_count": anchor_calibration.get("minimum_accepted_anchor_count"),
         "policy_group_count": anchor_calibration.get("policy_group_count"),
         "minimum_policy_group_count": anchor_calibration.get("minimum_policy_group_count"),
+        "policy_checkpoint_group_count": anchor_calibration.get("policy_checkpoint_group_count"),
+        "minimum_policy_checkpoint_count_for_public_rank_fidelity": (
+            anchor_calibration.get("minimum_policy_checkpoint_count_for_public_rank_fidelity")
+        ),
         "sim_vs_real_calibration_score": score,
         "spearman_rank_correlation": anchor_calibration.get("spearman_rank_correlation"),
         "pearson_success_rate_correlation": anchor_calibration.get(
             "pearson_success_rate_correlation"
         ),
-        "mean_maximum_rank_violation": anchor_calibration.get(
-            "mean_maximum_rank_violation"
-        ),
+        "mean_maximum_rank_violation": anchor_calibration.get("mean_maximum_rank_violation"),
         "mmrv": anchor_calibration.get("mmrv"),
-        "maximum_rank_violation": anchor_calibration.get("maximum_rank_violation"),
+        "mmrv_definition": anchor_calibration.get("mmrv_definition"),
+        "maximum_pairwise_real_margin_rank_violation": anchor_calibration.get(
+            "maximum_pairwise_real_margin_rank_violation"
+        ),
+        "mean_normalized_rank_position_error": anchor_calibration.get(
+            "mean_normalized_rank_position_error"
+        ),
+        "maximum_normalized_rank_position_error": anchor_calibration.get(
+            "maximum_normalized_rank_position_error"
+        ),
         "mean_absolute_success_rate_error": anchor_calibration.get(
             "mean_absolute_success_rate_error"
         ),
         "confidence_intervals": anchor_calibration.get("confidence_intervals") or {},
+        "unit_of_analysis_fields": anchor_calibration.get("unit_of_analysis_fields")
+        or list(UNIT_OF_ANALYSIS_FIELDS),
+        "estimands": anchor_calibration.get("estimands") or {},
+        "rank_fidelity_claim_eligibility": rank_fidelity_claim_eligibility,
         "matched_prediction_record_count": len(rows) - len(unmatched_actual_record_ids),
         "exact_prediction_record_count": exact_prediction_record_count,
         "missing_exact_prediction_join_key_record_count": len(
@@ -5238,19 +4585,12 @@ def build_deployment_validation_bundle(
         "accepted_anchors": anchor_calibration.get("accepted_anchors") or [],
         "rejected_anchors": anchor_calibration.get("rejected_anchors") or [],
         "policy_success_rate_rows": anchor_calibration.get("policy_success_rate_rows") or [],
-        "unmatched_prediction_row_count": anchor_calibration.get(
-            "unmatched_prediction_row_count"
-        ),
+        "unmatched_prediction_row_count": anchor_calibration.get("unmatched_prediction_row_count"),
         "unmatched_prediction_rows": anchor_calibration.get("unmatched_prediction_rows") or [],
         "stale_anchor_row_count": anchor_calibration.get("stale_anchor_row_count"),
         "stale_anchor_row_ids": anchor_calibration.get("stale_anchor_row_ids") or [],
-        "conflicting_anchor_row_count": anchor_calibration.get(
-            "conflicting_anchor_row_count"
-        ),
-        "conflicting_anchor_row_ids": anchor_calibration.get(
-            "conflicting_anchor_row_ids"
-        )
-        or [],
+        "conflicting_anchor_row_count": anchor_calibration.get("conflicting_anchor_row_count"),
+        "conflicting_anchor_row_ids": anchor_calibration.get("conflicting_anchor_row_ids") or [],
         "blockers": [],
         "diagnostic_blockers": calibration_blockers,
         "prediction_match_counts": prediction_match_counts,
@@ -5259,23 +4599,27 @@ def build_deployment_validation_bundle(
             len(_string_list(row.get("false_alarm_failures"))) for row in rows
         ),
         "site_modification_count": sum(len(row.get("site_modifications") or []) for row in rows),
-        "tuning_hours_total": round(sum(_number(row.get("tuning_hours"), 0.0) or 0.0 for row in rows), 4),
+        "tuning_hours_total": round(
+            sum(_number(row.get("tuning_hours"), 0.0) or 0.0 for row in rows), 4
+        ),
         "records": rows,
         "real_world_outcome_records_present": real_world_outcome_records_present,
         "owner_evidence_record_count": owner_evidence_record_count,
         "missing_owner_evidence_record_ids": missing_owner_evidence_record_ids,
         "missing_actual_result_signal_record_ids": missing_actual_signal_record_ids,
         "real_world_outcome_proven": real_world_outcome_proven,
-        "rank_fidelity_result_proven": False,
-        "public_claim_upgrade_allowed": False,
-        "deployment_accuracy_claim_allowed": bool(score is not None),
-        "external_accuracy_claim_allowed": bool(score is not None),
+        "rank_fidelity_result_proven": public_rank_fidelity_claim_eligible,
+        "public_rank_fidelity_claim_eligible": public_rank_fidelity_claim_eligible,
+        "deployment_accuracy_claim_supported": False,
+        "real_world_success_rate_prediction_claim_supported": False,
         "sim_only_beta_ranking_blocked": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
             "real_world_outcome_records_present": real_world_outcome_records_present,
             "real_world_outcome_proven": real_world_outcome_proven,
-            "deployment_accuracy_claim_allowed": bool(score is not None),
+            "public_rank_fidelity_claim_eligible": public_rank_fidelity_claim_eligible,
+            "deployment_accuracy_claim_supported": False,
+            "real_world_success_rate_prediction_claim_supported": False,
             "sim_only_beta_ranking_blocked": False,
             "external_real_world_calibration_not_requested": not real_world_outcome_records_present,
         },
@@ -5295,9 +4639,7 @@ def build_deployment_validation_bundle(
                 "predicted_success": row.get("predicted_success"),
                 "predicted_failures": row.get("predicted_failures"),
                 "prediction_match_level": row.get("prediction_match_level"),
-                "exact_prediction_join_key_present": row.get(
-                    "exact_prediction_join_key_present"
-                ),
+                "exact_prediction_join_key_present": row.get("exact_prediction_join_key_present"),
                 "exact_prediction_match": row.get("exact_prediction_match"),
             }
             for row in rows
@@ -5312,9 +4654,7 @@ def build_deployment_validation_bundle(
                 "actual_success": row.get("actual_success"),
                 "actual_failures": row.get("actual_failures"),
                 "prediction_match_level": row.get("prediction_match_level"),
-                "exact_prediction_join_key_present": row.get(
-                    "exact_prediction_join_key_present"
-                ),
+                "exact_prediction_join_key_present": row.get("exact_prediction_join_key_present"),
                 "exact_prediction_match": row.get("exact_prediction_match"),
             }
             for row in rows
@@ -5352,22 +4692,28 @@ def build_deployment_validation_bundle(
         ],
         "sim_vs_real_calibration_score": score,
         "accepted_anchor_count": anchor_calibration.get("accepted_anchor_count"),
-        "minimum_accepted_anchor_count": anchor_calibration.get(
-            "minimum_accepted_anchor_count"
-        ),
+        "minimum_accepted_anchor_count": anchor_calibration.get("minimum_accepted_anchor_count"),
         "policy_group_count": anchor_calibration.get("policy_group_count"),
+        "policy_checkpoint_group_count": anchor_calibration.get("policy_checkpoint_group_count"),
         "spearman_rank_correlation": anchor_calibration.get("spearman_rank_correlation"),
         "pearson_success_rate_correlation": anchor_calibration.get(
             "pearson_success_rate_correlation"
         ),
-        "mean_maximum_rank_violation": anchor_calibration.get(
-            "mean_maximum_rank_violation"
-        ),
+        "mean_maximum_rank_violation": anchor_calibration.get("mean_maximum_rank_violation"),
         "mmrv": anchor_calibration.get("mmrv"),
+        "mmrv_definition": anchor_calibration.get("mmrv_definition"),
+        "mean_normalized_rank_position_error": anchor_calibration.get(
+            "mean_normalized_rank_position_error"
+        ),
         "mean_absolute_success_rate_error": anchor_calibration.get(
             "mean_absolute_success_rate_error"
         ),
         "confidence_intervals": anchor_calibration.get("confidence_intervals") or {},
+        "unit_of_analysis_fields": anchor_calibration.get("unit_of_analysis_fields")
+        or list(UNIT_OF_ANALYSIS_FIELDS),
+        "estimands": anchor_calibration.get("estimands") or {},
+        "rank_fidelity_claim_eligibility": rank_fidelity_claim_eligibility,
+        "public_rank_fidelity_claim_eligible": public_rank_fidelity_claim_eligible,
         "matched_prediction_record_count": len(rows) - len(unmatched_actual_record_ids),
         "exact_prediction_record_count": exact_prediction_record_count,
         "missing_exact_prediction_join_key_record_count": len(
@@ -5380,19 +4726,12 @@ def build_deployment_validation_bundle(
         "weak_prediction_match_record_ids": weak_prediction_match_record_ids,
         "unmatched_actual_record_count": len(unmatched_actual_record_ids),
         "unmatched_actual_record_ids": unmatched_actual_record_ids,
-        "unmatched_prediction_row_count": anchor_calibration.get(
-            "unmatched_prediction_row_count"
-        ),
+        "unmatched_prediction_row_count": anchor_calibration.get("unmatched_prediction_row_count"),
         "unmatched_prediction_rows": anchor_calibration.get("unmatched_prediction_rows") or [],
         "stale_anchor_row_count": anchor_calibration.get("stale_anchor_row_count"),
         "stale_anchor_row_ids": anchor_calibration.get("stale_anchor_row_ids") or [],
-        "conflicting_anchor_row_count": anchor_calibration.get(
-            "conflicting_anchor_row_count"
-        ),
-        "conflicting_anchor_row_ids": anchor_calibration.get(
-            "conflicting_anchor_row_ids"
-        )
-        or [],
+        "conflicting_anchor_row_count": anchor_calibration.get("conflicting_anchor_row_count"),
+        "conflicting_anchor_row_ids": anchor_calibration.get("conflicting_anchor_row_ids") or [],
         "blockers": [],
         "diagnostic_blockers": calibration_blockers,
         "prediction_match_counts": prediction_match_counts,
@@ -5401,9 +4740,7 @@ def build_deployment_validation_bundle(
         "missing_owner_evidence_record_ids": missing_owner_evidence_record_ids,
         "missing_actual_result_signal_record_ids": missing_actual_signal_record_ids,
         "real_world_outcome_proven": real_world_outcome_proven,
-        "real_world_validation_followup_plan_path": (
-            "real_world_validation_followup_plan.json"
-        ),
+        "real_world_validation_followup_plan_path": ("real_world_validation_followup_plan.json"),
         "claim_boundary": report["claim_boundary"],
     }
     followup_plan = _build_real_world_validation_followup_plan(

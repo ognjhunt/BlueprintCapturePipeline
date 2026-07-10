@@ -204,6 +204,17 @@ def test_robot_eval_worker_uri_bundle_and_upload_helpers(
             return self.body
 
     monkeypatch.setattr(rew.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    def fake_secure_fetch(*args, output_path=None, **kwargs):  # type: ignore[no-untyped-def]
+        assert output_path is not None
+        output_path.write_bytes(b'{"ok": true}')
+        return type(
+            "BoundedResponse",
+            (),
+            {"body": b"", "status": 200, "content_type": "application/json"},
+        )()
+
+    monkeypatch.setattr(rew, "fetch_bounded_https", fake_secure_fetch)
     assert rew._uri_to_local_path("https://trusted.invalid/manifest.json", tmp_path).is_file()
     monkeypatch.setattr(
         rew,
@@ -538,6 +549,7 @@ def test_robot_eval_worker_main_and_selected_runtime_paths(
     runtime = rew.run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker-3",
+        capture_root=capture_root,
         allow_simulator_execution=True,
     )
     assert runtime["blockers"] == ["worker_runtime_preflight_blocked"]

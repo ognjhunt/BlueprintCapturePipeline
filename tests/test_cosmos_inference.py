@@ -8,10 +8,22 @@ from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
+
 pytest.importorskip("PIL")
 from PIL import Image
 
 from blueprint_pipeline.synthesis import cosmos_inference
+
+
+@pytest.fixture(autouse=True)
+def _enable_hypothetical_official_repo_revision_binding(monkeypatch) -> None:
+    """Exercise legacy repo adapters only under an explicit test-only capability."""
+
+    monkeypatch.setattr(
+        cosmos_inference,
+        "_OFFICIAL_REPO_IMMUTABLE_MODEL_REVISION_SUPPORTED",
+        True,
+    )
 
 
 def test_try_load_cosmos_official_repo_exposes_subprocess_env(monkeypatch, tmp_path: Path) -> None:
@@ -67,9 +79,7 @@ def test_try_load_cosmos_official_repo_worker_sets_resident_worker_env(
     monkeypatch.setenv("PYTHONPATH", "/tmp/existing")
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", str(repo_root))
 
-    client = cosmos_inference._try_load_cosmos_official_repo_worker(
-        "nvidia/Cosmos-Predict2.5-2B"
-    )
+    client = cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B")
 
     assert client is not None
     assert client.describe()["backend"] == "persistent_worker"
@@ -78,7 +88,9 @@ def test_try_load_cosmos_official_repo_worker_sets_resident_worker_env(
     assert env["COSMOS_SKIP_OFFICIAL_REPO_SCRIPT"] == "1"
     assert env["COSMOS_ALLOW_COLD_SUBPROCESS_FALLBACK"] == "0"
     assert str((repo_root / ".venv" / "bin").resolve()) == env["PATH"].split(":")[0]
-    assert str(Path(cosmos_inference.__file__).resolve().parents[2]) == env["PYTHONPATH"].split(":")[0]
+    assert (
+        str(Path(cosmos_inference.__file__).resolve().parents[2]) == env["PYTHONPATH"].split(":")[0]
+    )
 
 
 def test_try_load_cosmos_official_repo_worker_honors_python_override(
@@ -99,9 +111,7 @@ def test_try_load_cosmos_official_repo_worker_honors_python_override(
     monkeypatch.setenv("COSMOS_WORKER_PYTHON_BIN", str(override_python))
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", str(repo_root))
 
-    client = cosmos_inference._try_load_cosmos_official_repo_worker(
-        "nvidia/Cosmos-Predict2.5-2B"
-    )
+    client = cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B")
 
     assert client is not None
     assert client.python_bin == override_python
@@ -110,12 +120,15 @@ def test_try_load_cosmos_official_repo_worker_honors_python_override(
 def test_cosmos_generation_model_cache_and_invocation_paths(monkeypatch, tmp_path: Path) -> None:
     image = np.zeros((4, 5, 3), dtype=np.uint8)
     output = tmp_path / "view.jpg"
-    assert cosmos_inference.generate_view(
-        splatted_image=image,
-        coverage_mask=np.ones((4, 5), dtype=bool),
-        output_path=output,
-        mode="splat_only",
-    ) == output
+    assert (
+        cosmos_inference.generate_view(
+            splatted_image=image,
+            coverage_mask=np.ones((4, 5), dtype=bool),
+            output_path=output,
+            mode="splat_only",
+        )
+        == output
+    )
     assert output.is_file()
     with pytest.raises(ValueError, match="Unknown generation mode"):
         cosmos_inference.generate_view(
@@ -136,24 +149,34 @@ def test_cosmos_generation_model_cache_and_invocation_paths(monkeypatch, tmp_pat
         def __call__(self, **_kwargs):
             return SimpleNamespace(frames=[[np.zeros((2, 2, 3), dtype=np.uint8)]])
 
-    assert len(cosmos_inference._invoke_cosmos(
-        model=OfficialModel(),
-        conditioning_image=Image.fromarray(image),
-        num_frames=2,
-        width=8,
-        height=8,
-        guidance_scale=1.0,
-        num_steps=1,
-    )) == 1
-    assert len(cosmos_inference._invoke_cosmos(
-        model=CallableModel(),
-        conditioning_image=Image.fromarray(image),
-        num_frames=2,
-        width=8,
-        height=8,
-        guidance_scale=1.0,
-        num_steps=1,
-    )) == 1
+    assert (
+        len(
+            cosmos_inference._invoke_cosmos(
+                model=OfficialModel(),
+                conditioning_image=Image.fromarray(image),
+                num_frames=2,
+                width=8,
+                height=8,
+                guidance_scale=1.0,
+                num_steps=1,
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            cosmos_inference._invoke_cosmos(
+                model=CallableModel(),
+                conditioning_image=Image.fromarray(image),
+                num_frames=2,
+                width=8,
+                height=8,
+                guidance_scale=1.0,
+                num_steps=1,
+            )
+        )
+        == 1
+    )
     assert cosmos_inference._extract_frames(SimpleNamespace(images=[1, 2])) == [1, 2]
     with pytest.raises(RuntimeError, match="Cannot extract frames"):
         cosmos_inference._extract_frames(object())
@@ -179,21 +202,28 @@ def test_cosmos_generation_model_cache_and_invocation_paths(monkeypatch, tmp_pat
 
     worker = FakeWorker()
     monkeypatch.setattr(cosmos_inference, "PersistentCosmosWorkerClient", FakeWorker)
-    assert cosmos_inference._cosmos_image_to_world(
-        conditioning_image=image,
-        output_path=tmp_path / "worker.jpg",
-        cosmos_model=worker,
-        num_frames=1,
-        width=4,
-        height=4,
-        guidance_scale=1.0,
-        num_steps=1,
-    ).name == "worker.jpg"
+    assert (
+        cosmos_inference._cosmos_image_to_world(
+            conditioning_image=image,
+            output_path=tmp_path / "worker.jpg",
+            cosmos_model=worker,
+            num_frames=1,
+            width=4,
+            height=4,
+            guidance_scale=1.0,
+            num_steps=1,
+        ).name
+        == "worker.jpg"
+    )
     assert worker.generated is True
 
     original_save_video = cosmos_inference._save_video
-    monkeypatch.setattr(cosmos_inference, "_invoke_cosmos", lambda **_kwargs: [np.ones((2, 2, 3), dtype=np.uint8)])
-    monkeypatch.setattr(cosmos_inference, "_save_video", lambda frames, path, fps=28: path.write_bytes(b"mp4"))
+    monkeypatch.setattr(
+        cosmos_inference, "_invoke_cosmos", lambda **_kwargs: [np.ones((2, 2, 3), dtype=np.uint8)]
+    )
+    monkeypatch.setattr(
+        cosmos_inference, "_save_video", lambda frames, path, fps=28: path.write_bytes(b"mp4")
+    )
     cosmos_out = cosmos_inference._cosmos_image_to_world(
         conditioning_image=image,
         output_path=tmp_path / "cosmos.jpg",
@@ -223,15 +253,23 @@ def test_cosmos_generation_model_cache_and_invocation_paths(monkeypatch, tmp_pat
     imageio_mod.get_writer = lambda *_args, **_kwargs: writer
     monkeypatch.setitem(sys.modules, "imageio", imageio_mod)
     monkeypatch.setattr(cosmos_inference, "_save_video", original_save_video)
-    cosmos_inference._save_video([np.zeros((1, 1, 3), dtype=np.uint8), Image.fromarray(np.zeros((1, 1, 3), dtype=np.uint8))], tmp_path / "saved.mp4")
+    cosmos_inference._save_video(
+        [np.zeros((1, 1, 3), dtype=np.uint8), Image.fromarray(np.zeros((1, 1, 3), dtype=np.uint8))],
+        tmp_path / "saved.mp4",
+    )
     assert len(writer.frames) == 2
 
     with cosmos_inference._LOADED_MODELS_LOCK:
         cosmos_inference._LOADED_MODELS.clear()
-    monkeypatch.setattr(cosmos_inference, "_try_load_cosmos_official", lambda mid: {"backend": "official", "model_id": mid})
-    model = cosmos_inference.load_cosmos_model("model-a")
+    monkeypatch.setattr(
+        cosmos_inference,
+        "_try_load_cosmos_official",
+        lambda mid: {"backend": "official", "model_id": mid},
+    )
+    approved_model = "nvidia/Cosmos-Predict2.5-2B"
+    model = cosmos_inference.load_cosmos_model(approved_model)
     assert model["backend"] == "official"
-    assert cosmos_inference.load_cosmos_model("model-a") is model
+    assert cosmos_inference.load_cosmos_model(approved_model) is model
     with cosmos_inference._LOADED_MODELS_LOCK:
         cosmos_inference._LOADED_MODELS.clear()
     monkeypatch.setattr(cosmos_inference, "_try_load_cosmos_official", lambda mid: None)
@@ -240,8 +278,10 @@ def test_cosmos_generation_model_cache_and_invocation_paths(monkeypatch, tmp_pat
     monkeypatch.setattr(cosmos_inference, "_try_load_cosmos_official_repo_worker", lambda mid: None)
     monkeypatch.setattr(cosmos_inference, "_try_load_cosmos_official_repo", lambda mid: None)
     with pytest.raises(ImportError):
-        cosmos_inference.load_cosmos_model("missing")
-    monkeypatch.setattr(cosmos_inference, "load_cosmos_model", lambda model_id=None: {"backend": "mapping"})
+        cosmos_inference.load_cosmos_model(approved_model)
+    monkeypatch.setattr(
+        cosmos_inference, "load_cosmos_model", lambda model_id=None: {"backend": "mapping"}
+    )
     prewarm = cosmos_inference.prewarm_cosmos_model("model-b")
     assert prewarm["backend"] == "mapping"
     assert prewarm["model_id"] == "model-b"
@@ -297,13 +337,15 @@ def test_persistent_worker_client_protocol_and_close(monkeypatch, tmp_path: Path
     processes: list[FakeProcess] = []
 
     def fake_popen(*_args, **_kwargs):
-        proc = FakeProcess([
-            "\n",
-            "not-json\n",
-            json.dumps({"type": "ready", "backend": "fake-worker"}) + "\n",
-            json.dumps({"type": "pong"}) + "\n",
-            json.dumps({"type": "result", "request_id": "rid", "ok": True}) + "\n",
-        ])
+        proc = FakeProcess(
+            [
+                "\n",
+                "not-json\n",
+                json.dumps({"type": "ready", "backend": "fake-worker"}) + "\n",
+                json.dumps({"type": "pong"}) + "\n",
+                json.dumps({"type": "result", "request_id": "rid", "ok": True}) + "\n",
+            ]
+        )
         processes.append(proc)
         return proc
 
@@ -349,7 +391,9 @@ def test_persistent_worker_client_protocol_and_close(monkeypatch, tmp_path: Path
         stopped._await_message(message_type="ready", timeout_s=1)
 
 
-def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, tmp_path: Path) -> None:
+def test_cosmos_backend_loader_and_official_repo_invocation_edges(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("COSMOS_ENABLE_PERSISTENT_WORKER", "false")
     assert cosmos_inference._persistent_worker_enabled() is False
     monkeypatch.setenv("COSMOS_SKIP_OFFICIAL_REPO_SCRIPT", "true")
@@ -359,9 +403,12 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
 
     official_mod = ModuleType("cosmos_predict2_5")
 
+    official_calls = []
+
     class Official:
         @classmethod
-        def from_pretrained(cls, model_id):
+        def from_pretrained(cls, model_id, *, revision):
+            official_calls.append((model_id, revision))
             return cls()
 
         def eval(self):
@@ -369,9 +416,13 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
 
     official_mod.CosmosPredict25 = Official
     monkeypatch.setitem(sys.modules, "cosmos_predict2_5", official_mod)
-    assert isinstance(cosmos_inference._try_load_cosmos_official("model"), Official)
+    approved_model = "nvidia/Cosmos-Predict2.5-2B"
+    assert isinstance(cosmos_inference._try_load_cosmos_official(approved_model), Official)
+    assert official_calls == [
+        (approved_model, cosmos_inference._COSMOS_PREDICT25_2B_DIFFUSERS_REVISION)
+    ]
     monkeypatch.delitem(sys.modules, "cosmos_predict2_5", raising=False)
-    assert cosmos_inference._try_load_cosmos_official("model") is None
+    assert cosmos_inference._try_load_cosmos_official(approved_model) is None
 
     torch_mod = ModuleType("torch")
     torch_mod.bfloat16 = "bf16"
@@ -389,15 +440,49 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
             self.moved_to = device
             return self
 
-    diffusers_mod.DiffusionPipeline = SimpleNamespace(from_pretrained=lambda *args, **kwargs: Pipe())
+    diffusers_calls = []
+
+    def from_pretrained(*args, **kwargs):
+        diffusers_calls.append((args, kwargs))
+        return Pipe()
+
+    diffusers_mod.DiffusionPipeline = SimpleNamespace(from_pretrained=from_pretrained)
     monkeypatch.setitem(sys.modules, "torch", torch_mod)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers_mod)
-    assert cosmos_inference._try_load_cosmos_diffusers("model").moved_to == "cuda"
+    assert cosmos_inference._try_load_cosmos_diffusers(approved_model).moved_to == "cuda"
+    assert diffusers_calls[0][1]["revision"] == (
+        cosmos_inference._COSMOS_PREDICT25_2B_DIFFUSERS_REVISION
+    )
     monkeypatch.delitem(sys.modules, "diffusers", raising=False)
-    assert cosmos_inference._try_load_cosmos_diffusers("model") is None
+    assert cosmos_inference._try_load_cosmos_diffusers(approved_model) is None
+
+    assert (
+        cosmos_inference._approved_cosmos_model_revision(
+            approved_model,
+            "diffusers/base/post-trained",
+        )
+        is None
+    )
+    assert (
+        cosmos_inference._approved_cosmos_model_revision(
+            approved_model,
+            "a" * 40,
+        )
+        is None
+    )
+    assert (
+        cosmos_inference._approved_cosmos_model_revision(
+            approved_model,
+            cosmos_inference._COSMOS_PREDICT25_2B_DIFFUSERS_REVISION,
+        )
+        == cosmos_inference._COSMOS_PREDICT25_2B_DIFFUSERS_REVISION
+    )
 
     assert cosmos_inference._official_repo_model_variant("bad", "post-trained") is None
-    assert cosmos_inference._official_repo_model_variant("nvidia/Cosmos-Predict2.5-14B", "pre-trained") == "14B/pre-trained"
+    assert (
+        cosmos_inference._official_repo_model_variant("nvidia/Cosmos-Predict2.5-14B", "pre-trained")
+        == "14B/pre-trained"
+    )
     assert cosmos_inference._normalized_subprocess_env({"A": "b", 1: "skip", "C": 3}) == {"A": "b"}
     monkeypatch.setenv("HF_TOKEN", "hf")
     monkeypatch.setenv("UNSAFE_SECRET", "no")
@@ -411,15 +496,23 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
     inference_entrypoint.write_text("ok", encoding="utf-8")
     python_bin.write_text("python", encoding="utf-8")
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", "")
-    assert cosmos_inference._try_load_cosmos_official_repo_direct("nvidia/Cosmos-Predict2.5-2B") is None
-    assert cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B") is None
+    assert (
+        cosmos_inference._try_load_cosmos_official_repo_direct("nvidia/Cosmos-Predict2.5-2B")
+        is None
+    )
+    assert (
+        cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B")
+        is None
+    )
     assert cosmos_inference._try_load_cosmos_official_repo("nvidia/Cosmos-Predict2.5-2B") is None
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", str(repo_root))
     monkeypatch.setattr(cosmos_inference, "_persistent_worker_enabled", lambda: False)
-    assert cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B") is None
+    assert (
+        cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B")
+        is None
+    )
     monkeypatch.setattr(cosmos_inference, "_skip_official_repo_script", lambda: True)
     assert cosmos_inference._try_load_cosmos_official_repo("nvidia/Cosmos-Predict2.5-2B") is None
-
     imageio_v3 = ModuleType("imageio.v3")
     imageio_v3.imiter = lambda path: [np.zeros((2, 2, 3), dtype=np.uint8)]
     imageio_pkg = ModuleType("imageio")
@@ -427,8 +520,12 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
     monkeypatch.setitem(sys.modules, "imageio", imageio_pkg)
     monkeypatch.setitem(sys.modules, "imageio.v3", imageio_v3)
 
-    uuid_values = iter(["abcdef123456", "fedcba654321", "123456abcdef", "654321fedcba", "aaaaaaaabbbb"])
-    monkeypatch.setattr(cosmos_inference.uuid, "uuid4", lambda: SimpleNamespace(hex=next(uuid_values)))
+    uuid_values = iter(
+        ["abcdef123456", "fedcba654321", "123456abcdef", "654321fedcba", "aaaaaaaabbbb"]
+    )
+    monkeypatch.setattr(
+        cosmos_inference.uuid, "uuid4", lambda: SimpleNamespace(hex=next(uuid_values))
+    )
 
     def run_script(command, **kwargs):
         output_dir = Path(command[command.index("-o") + 1])
@@ -449,7 +546,11 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
         conditioning_image=np.zeros((2, 2, 3), dtype=np.uint8),
     )
     assert len(frames) == 1
-    monkeypatch.setattr(cosmos_inference.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 2))
+    monkeypatch.setattr(
+        cosmos_inference.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 2),
+    )
     with pytest.raises(RuntimeError, match="official_repo_inference_failed"):
         cosmos_inference._invoke_cosmos_official_repo_script(
             model={
@@ -479,13 +580,21 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
 
     direct_video = tmp_path / "direct.mp4"
     direct_video.write_bytes(b"mp4")
-    assert len(cosmos_inference._invoke_cosmos_official_repo_direct(
-        model={"output_root": str(tmp_path / "direct-out"), "inference": DirectInference(direct_video)},
-        conditioning_image=np.zeros((2, 2, 3), dtype=np.uint8),
-        num_frames=3,
-        guidance_scale=9.0,
-        num_steps=2,
-    )) == 1
+    assert (
+        len(
+            cosmos_inference._invoke_cosmos_official_repo_direct(
+                model={
+                    "output_root": str(tmp_path / "direct-out"),
+                    "inference": DirectInference(direct_video),
+                },
+                conditioning_image=np.zeros((2, 2, 3), dtype=np.uint8),
+                num_frames=3,
+                guidance_scale=9.0,
+                num_steps=2,
+            )
+        )
+        == 1
+    )
     with pytest.raises(RuntimeError, match="official_repo_direct_inference_missing"):
         cosmos_inference._invoke_cosmos_official_repo_direct(
             model={"output_root": str(tmp_path / "direct-missing")},
@@ -496,12 +605,41 @@ def test_cosmos_backend_loader_and_official_repo_invocation_edges(monkeypatch, t
         )
     with pytest.raises(RuntimeError, match="official_repo_direct_output_missing"):
         cosmos_inference._invoke_cosmos_official_repo_direct(
-            model={"output_root": str(tmp_path / "direct-empty"), "inference": DirectInference(None)},
+            model={
+                "output_root": str(tmp_path / "direct-empty"),
+                "inference": DirectInference(None),
+            },
             conditioning_image=np.zeros((2, 2, 3), dtype=np.uint8),
             num_frames=1,
             guidance_scale=1,
             num_steps=1,
         )
+
+
+def test_official_repo_backends_fail_closed_without_immutable_model_revision_support(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "cosmos-predict2.5"
+    (repo_root / "examples").mkdir(parents=True)
+    (repo_root / ".venv" / "bin").mkdir(parents=True)
+    (repo_root / "examples" / "inference.py").write_text("pass\n", encoding="utf-8")
+    (repo_root / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        cosmos_inference,
+        "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT",
+        str(repo_root),
+    )
+    monkeypatch.setattr(
+        cosmos_inference,
+        "_OFFICIAL_REPO_IMMUTABLE_MODEL_REVISION_SUPPORTED",
+        False,
+    )
+
+    model_id = "nvidia/Cosmos-Predict2.5-2B"
+    assert cosmos_inference._try_load_cosmos_official_repo_direct(model_id) is None
+    assert cosmos_inference._try_load_cosmos_official_repo_worker(model_id) is None
+    assert cosmos_inference._try_load_cosmos_official_repo(model_id) is None
 
 
 def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
@@ -576,9 +714,13 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
         model_id="model",
         model_variant="2B/post-trained",
     )
-    monkeypatch.setattr(cosmos_inference.subprocess, "Popen", lambda *_args, **_kwargs: StartedThenClosedProcess())
+    monkeypatch.setattr(
+        cosmos_inference.subprocess, "Popen", lambda *_args, **_kwargs: StartedThenClosedProcess()
+    )
     monkeypatch.setattr(cosmos_inference.threading, "Thread", FakeThread)
-    startup_failure._await_message = lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("startup bad"))
+    startup_failure._await_message = lambda **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("startup bad")
+    )
     with pytest.raises(RuntimeError, match="startup bad"):
         startup_failure._ensure_started()
     assert startup_failure._process is None
@@ -644,7 +786,12 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     skipped_message_client._stdout_queue.put({"type": "log"})
     skipped_message_client._stdout_queue.put({"type": "result", "request_id": "other"})
     skipped_message_client._stdout_queue.put({"type": "result", "request_id": "wanted", "ok": True})
-    assert skipped_message_client._await_message(message_type="result", request_id="wanted", timeout_s=1)["ok"] is True
+    assert (
+        skipped_message_client._await_message(
+            message_type="result", request_id="wanted", timeout_s=1
+        )["ok"]
+        is True
+    )
 
     continuing_client = cosmos_inference.PersistentCosmosWorkerClient(
         repo_root=tmp_path,
@@ -688,13 +835,18 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     assert close_calls == ["closed"]
 
     real_cosmos_image_to_world = cosmos_inference._cosmos_image_to_world
-    monkeypatch.setattr(cosmos_inference, "_cosmos_image_to_world", lambda **kwargs: Path(kwargs["output_path"]))
-    assert cosmos_inference.generate_view(
-        splatted_image=image,
-        coverage_mask=np.ones((2, 3), dtype=bool),
-        output_path=tmp_path / "generated.jpg",
-        mode="cosmos_i2w",
-    ).name == "generated.jpg"
+    monkeypatch.setattr(
+        cosmos_inference, "_cosmos_image_to_world", lambda **kwargs: Path(kwargs["output_path"])
+    )
+    assert (
+        cosmos_inference.generate_view(
+            splatted_image=image,
+            coverage_mask=np.ones((2, 3), dtype=bool),
+            output_path=tmp_path / "generated.jpg",
+            mode="cosmos_i2w",
+        ).name
+        == "generated.jpg"
+    )
     monkeypatch.setattr(cosmos_inference, "_cosmos_image_to_world", real_cosmos_image_to_world)
 
     worker_for_prewarm = cosmos_inference.PersistentCosmosWorkerClient(
@@ -706,16 +858,22 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     )
     worker_for_prewarm.describe = lambda: {"backend": "persistent_worker", "ready": True}
     worker_for_prewarm.prewarm = lambda: {"type": "pong"}
-    monkeypatch.setattr(cosmos_inference, "load_cosmos_model", lambda model_id=None: worker_for_prewarm)
+    monkeypatch.setattr(
+        cosmos_inference, "load_cosmos_model", lambda model_id=None: worker_for_prewarm
+    )
     prewarm_payload = cosmos_inference.prewarm_cosmos_model("model")
     assert prewarm_payload["type"] == "pong"
     assert cosmos_inference.describe_cosmos_model(worker_for_prewarm)["ready"] is True
 
     real_invoke_cosmos = cosmos_inference._invoke_cosmos
-    monkeypatch.setattr(cosmos_inference, "_invoke_cosmos", lambda **_kwargs: [Image.fromarray(image)])
+    monkeypatch.setattr(
+        cosmos_inference, "_invoke_cosmos", lambda **_kwargs: [Image.fromarray(image)]
+    )
     saved_videos: list[Path] = []
     real_save_video = cosmos_inference._save_video
-    monkeypatch.setattr(cosmos_inference, "_save_video", lambda _frames, path, fps=28: saved_videos.append(path))
+    monkeypatch.setattr(
+        cosmos_inference, "_save_video", lambda _frames, path, fps=28: saved_videos.append(path)
+    )
     pil_output = cosmos_inference._cosmos_image_to_world(
         conditioning_image=image,
         output_path=tmp_path / "pil-frame.jpg",
@@ -732,8 +890,12 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cosmos_inference, "_invoke_cosmos", real_invoke_cosmos)
     real_official_repo_direct = cosmos_inference._invoke_cosmos_official_repo_direct
     real_official_repo_script = cosmos_inference._invoke_cosmos_official_repo_script
-    monkeypatch.setattr(cosmos_inference, "_invoke_cosmos_official_repo_direct", lambda **_kwargs: ["direct"])
-    monkeypatch.setattr(cosmos_inference, "_invoke_cosmos_official_repo_script", lambda **_kwargs: ["script"])
+    monkeypatch.setattr(
+        cosmos_inference, "_invoke_cosmos_official_repo_direct", lambda **_kwargs: ["direct"]
+    )
+    monkeypatch.setattr(
+        cosmos_inference, "_invoke_cosmos_official_repo_script", lambda **_kwargs: ["script"]
+    )
     assert cosmos_inference._invoke_cosmos(
         model={"backend": "official_repo_direct"},
         conditioning_image=Image.fromarray(image),
@@ -752,19 +914,28 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
         guidance_scale=1,
         num_steps=1,
     ) == ["script"]
-    monkeypatch.setattr(cosmos_inference, "_invoke_cosmos_official_repo_direct", real_official_repo_direct)
-    monkeypatch.setattr(cosmos_inference, "_invoke_cosmos_official_repo_script", real_official_repo_script)
+    monkeypatch.setattr(
+        cosmos_inference, "_invoke_cosmos_official_repo_direct", real_official_repo_direct
+    )
+    monkeypatch.setattr(
+        cosmos_inference, "_invoke_cosmos_official_repo_script", real_official_repo_script
+    )
     assert cosmos_inference._extract_frames(SimpleNamespace(frames=[[1, 2]])) == [1, 2]
 
     imageio_mod = ModuleType("imageio")
-    imageio_mod.get_writer = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("writer failed"))
+    imageio_mod.get_writer = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("writer failed")
+    )
     monkeypatch.setitem(sys.modules, "imageio", imageio_mod)
     monkeypatch.setattr(cosmos_inference, "_save_video", real_save_video)
     cosmos_inference._save_video([image], tmp_path / "best-effort.mp4")
 
     repo_root = tmp_path / "official-repo"
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", str(repo_root))
-    assert cosmos_inference._try_load_cosmos_official_repo_direct("nvidia/Cosmos-Predict2.5-7B") is None
+    assert (
+        cosmos_inference._try_load_cosmos_official_repo_direct("nvidia/Cosmos-Predict2.5-7B")
+        is None
+    )
 
     init_mod = ModuleType("cosmos_oss.init")
     init_mod.init_environment = lambda: None
@@ -788,16 +959,24 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setitem(sys.modules, "cosmos_predict2", ModuleType("cosmos_predict2"))
     monkeypatch.setitem(sys.modules, "cosmos_predict2.config", config_mod)
     monkeypatch.setitem(sys.modules, "cosmos_predict2.inference", inference_mod)
-    direct_model = cosmos_inference._try_load_cosmos_official_repo_direct("nvidia/Cosmos-Predict2.5-2B")
+    direct_model = cosmos_inference._try_load_cosmos_official_repo_direct(
+        "nvidia/Cosmos-Predict2.5-2B"
+    )
     assert direct_model is not None
     assert direct_model["backend"] == "official_repo_direct"
     monkeypatch.delitem(sys.modules, "cosmos_oss.init", raising=False)
-    assert cosmos_inference._try_load_cosmos_official_repo_direct("nvidia/Cosmos-Predict2.5-2B") is None
+    assert (
+        cosmos_inference._try_load_cosmos_official_repo_direct("nvidia/Cosmos-Predict2.5-2B")
+        is None
+    )
 
     missing_repo = tmp_path / "missing-repo"
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", str(missing_repo))
     monkeypatch.setattr(cosmos_inference, "_persistent_worker_enabled", lambda: True)
-    assert cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B") is None
+    assert (
+        cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B")
+        is None
+    )
     worker_repo = tmp_path / "worker-repo"
     worker_python = worker_repo / ".venv" / "bin" / "python"
     worker_entrypoint = worker_repo / "examples" / "inference.py"
@@ -806,9 +985,14 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     worker_python.write_text("", encoding="utf-8")
     worker_entrypoint.write_text("", encoding="utf-8")
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", str(worker_repo))
-    assert cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-7B") is None
+    assert (
+        cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-7B")
+        is None
+    )
     monkeypatch.setenv("COSMOS_WORKER_PYTHON_BIN", str(tmp_path / "absent-python"))
-    fallback_worker = cosmos_inference._try_load_cosmos_official_repo_worker("nvidia/Cosmos-Predict2.5-2B")
+    fallback_worker = cosmos_inference._try_load_cosmos_official_repo_worker(
+        "nvidia/Cosmos-Predict2.5-2B"
+    )
     assert fallback_worker is not None
     assert fallback_worker.python_bin == worker_python
 
@@ -820,7 +1004,10 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     assert cosmos_inference._try_load_cosmos_official_repo("nvidia/Cosmos-Predict2.5-2B") is None
     monkeypatch.setattr(cosmos_inference, "_DEFAULT_COSMOS_OFFICIAL_REPO_ROOT", str(worker_repo))
     assert cosmos_inference._try_load_cosmos_official_repo("nvidia/Cosmos-Predict2.5-7B") is None
-    assert cosmos_inference._official_repo_model_variant("nvidia/Cosmos-Predict2.5-7B", "post-trained") is None
+    assert (
+        cosmos_inference._official_repo_model_variant("nvidia/Cosmos-Predict2.5-7B", "post-trained")
+        is None
+    )
 
     script_model = {
         "backend": "official_repo_script",
@@ -830,7 +1017,11 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
         "subprocess_env": {"PATH": "x"},
     }
     monkeypatch.setattr(cosmos_inference.uuid, "uuid4", lambda: SimpleNamespace(hex="11111111"))
-    monkeypatch.setattr(cosmos_inference.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0))
+    monkeypatch.setattr(
+        cosmos_inference.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+    )
     with pytest.raises(RuntimeError, match="official_repo_output_missing"):
         cosmos_inference._invoke_cosmos_official_repo_script(
             model=script_model,
@@ -886,7 +1077,10 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="official_repo_direct_output_missing"):
         cosmos_inference._invoke_cosmos_official_repo_direct(
-            model={"output_root": str(tmp_path / "direct-missing-path"), "inference": DirectInference([tmp_path / "missing.mp4"])},
+            model={
+                "output_root": str(tmp_path / "direct-missing-path"),
+                "inference": DirectInference([tmp_path / "missing.mp4"]),
+            },
             conditioning_image=image,
             num_frames=1,
             guidance_scale=1,
@@ -902,7 +1096,10 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setitem(sys.modules, "imageio.v3", imageio_v3_decode)
     with pytest.raises(RuntimeError, match="official_repo_direct_decode_failed"):
         cosmos_inference._invoke_cosmos_official_repo_direct(
-            model={"output_root": str(tmp_path / "direct-decode"), "inference": DirectInference([direct_video])},
+            model={
+                "output_root": str(tmp_path / "direct-decode"),
+                "inference": DirectInference([direct_video]),
+            },
             conditioning_image=image,
             num_frames=1,
             guidance_scale=1,
@@ -916,12 +1113,17 @@ def test_cosmos_remaining_branch_edges(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setitem(sys.modules, "imageio.v3", imageio_v3_empty_direct)
     with pytest.raises(RuntimeError, match="official_repo_direct_output_empty"):
         cosmos_inference._invoke_cosmos_official_repo_direct(
-            model={"output_root": str(tmp_path / "direct-empty-output"), "inference": DirectInference([direct_video])},
+            model={
+                "output_root": str(tmp_path / "direct-empty-output"),
+                "inference": DirectInference([direct_video]),
+            },
             conditioning_image=image,
             num_frames=1,
             guidance_scale=1,
             num_steps=1,
         )
 
-    monkeypatch.setattr(cosmos_inference.os, "environ", {"PATH": "/bin", "HF_TOKEN": "hf", "BAD": object()})
+    monkeypatch.setattr(
+        cosmos_inference.os, "environ", {"PATH": "/bin", "HF_TOKEN": "hf", "BAD": object()}
+    )
     assert cosmos_inference._select_official_repo_env_vars() == {"PATH": "/bin", "HF_TOKEN": "hf"}

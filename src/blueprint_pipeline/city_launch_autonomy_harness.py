@@ -15,6 +15,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from blueprint_pipeline.city_launch_evidence_policy import (
+    RUN_SCHEMA_VERSION,
+    build_artifact_inventory,
+    default_output_root,
+    evidence_policy,
+    prepare_evidence_root,
+    prepare_run_root,
+)
+from blueprint_pipeline.common import write_json as atomic_write_json
+from blueprint_pipeline.common import write_text as atomic_write_text
 from blueprint_pipeline.local_capture import resolve_local_capture_context
 from blueprint_pipeline.safe_env import contract_test_env, load_env_files
 
@@ -29,8 +39,7 @@ def utc_now_iso() -> str:
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_json(path, dict(payload))
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -1206,10 +1215,9 @@ def execute_local_packets(
 
 
 def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write_text(
+        path,
         "".join(json.dumps(dict(row), sort_keys=True) + "\n" for row in rows),
-        encoding="utf-8",
     )
 
 
@@ -1220,7 +1228,7 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
     env_summary = load_env_files([pipeline_repo, capture_repo, webapp_repo])
     capture_paths = tuple(args.capture_path or ("iphone",))
     run_id = args.run_id or f"{utc_now_iso().replace(':', '').replace('+', 'Z')}-{uuid.uuid4().hex[:8]}"
-    output_root = Path(args.output_root).expanduser().resolve()
+    output_root = prepare_evidence_root(Path(args.output_root), source_root=ROOT)
     run_root = output_root / args.city_slug / run_id
     work_packet_root = run_root / "work-packets"
     lane_results_root = run_root / "lane-results"
@@ -1244,7 +1252,7 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
         webapp_repo=webapp_repo,
         capture_paths=capture_paths,
     )
-    run_root.mkdir(parents=True, exist_ok=True)
+    prepare_run_root(run_root)
     for packet in packets:
         write_json(work_packet_root / f"{packet.lane_id}.json", packet.to_dict())
 
@@ -1310,14 +1318,15 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
     proof["harness"]["launch_gap_report"] = str(gap_report_path)
     proof["harness"]["updated_at"] = utc_now_iso()
 
+    created_or_updated_at = utc_now_iso()
     manifest = {
-        "schema_version": "city-launch-harness-run.v1",
+        "schema_version": RUN_SCHEMA_VERSION,
         "run_id": run_id,
         "city_slug": args.city_slug,
         "budget_cents": args.budget_cents,
         "capture_paths": list(capture_paths),
         "status": status,
-        "created_or_updated_at": utc_now_iso(),
+        "created_or_updated_at": created_or_updated_at,
         "repos": {
             "pipeline": str(pipeline_repo),
             "capture": str(capture_repo),
@@ -1332,6 +1341,9 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
         },
         "env_files_loaded": env_summary,
         "first_blocker": blockers[0] if blockers else None,
+        "evidence_policy": evidence_policy(
+            created_at=datetime.fromisoformat(created_or_updated_at.replace("Z", "+00:00"))
+        ),
     }
     summary = {
         "run_id": run_id,
@@ -1344,10 +1356,11 @@ def run_harness(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     write_json(proof_path, proof)
-    write_json(run_root / "manifest.json", manifest)
     write_json(run_root / "summary.json", summary)
     write_jsonl(run_root / "blockers.jsonl", blockers)
     write_json(gap_report_path, gap_report)
+    manifest["artifact_inventory"] = build_artifact_inventory(run_root)
+    write_json(run_root / "manifest.json", manifest)
     return summary
 
 
@@ -1364,7 +1377,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pipeline-repo", default=str(ROOT))
     parser.add_argument("--capture-repo", default=str(DEFAULT_CAPTURE_REPO))
     parser.add_argument("--webapp-repo", default=str(DEFAULT_WEBAPP_REPO))
-    parser.add_argument("--output-root", default=str(ROOT / "ops/city-launch-runs"))
+    parser.add_argument(
+        "--output-root",
+        default=str(default_output_root()),
+        help=(
+            "Private evidence root outside the source checkout. Defaults to "
+            "BLUEPRINT_CITY_LAUNCH_OUTPUT_ROOT or the user state directory."
+        ),
+    )
     parser.add_argument("--capture-root", help="Optional real capture root to scan for Pipeline lane evidence.")
     parser.add_argument("--proof-file", action="append", help="Optional real cross-repo launch proof JSON to merge.")
     parser.add_argument(

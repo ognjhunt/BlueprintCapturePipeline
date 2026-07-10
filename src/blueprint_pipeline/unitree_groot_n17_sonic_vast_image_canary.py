@@ -55,7 +55,7 @@ _TINY_PNG = bytes.fromhex(
 )
 
 
-CANARY_RUNNER = r'''#!/usr/bin/env python3
+CANARY_RUNNER = r"""#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
@@ -144,7 +144,7 @@ out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encodi
 if completed:
     print(CANARY_MARKER, flush=True)
 raise SystemExit(0 if completed else 2)
-'''
+"""
 
 
 CANARY_RUN_SCRIPT = """#!/usr/bin/env bash
@@ -327,9 +327,7 @@ def _safe_summary(
         "selected_offer": canary_result.get("selected_offer"),
         "vast_instance_ids": canary_result.get("vast_instance_ids"),
         "estimated_cost_usd": canary_result.get("estimated_cost_usd"),
-        "continuing_spend_from_this_run": canary_result.get(
-            "continuing_spend_from_this_run"
-        ),
+        "continuing_spend_from_this_run": canary_result.get("continuing_spend_from_this_run"),
         "heartbeat_completed": canary_result.get("heartbeat_completed"),
         "gpu_sanity_completed": canary_result.get("gpu_sanity_completed"),
         "provider_bundle_downloaded_and_ran": canary_result.get(
@@ -409,11 +407,11 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
     staging_dir = job / "object_store_staging"
     bundle_url = (staging_dir / "provider_bundle_url.txt").read_text(encoding="utf-8").strip()
     output_put_url = (
-        staging_dir / "provider_output_put_url.txt"
-    ).read_text(encoding="utf-8").strip()
+        (staging_dir / "provider_output_put_url.txt").read_text(encoding="utf-8").strip()
+    )
     output_get_url = (
-        staging_dir / "provider_output_get_url.txt"
-    ).read_text(encoding="utf-8").strip()
+        (staging_dir / "provider_output_get_url.txt").read_text(encoding="utf-8").strip()
+    )
     vast_run_dir = job / "vast_provider_run"
     output_zip = vast_run_dir / "vast_provider_runtime_output.zip"
     avoidlist_path = job / "vast_canary_machine_avoidlist.json"
@@ -430,24 +428,38 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
                 "raw_secret_values_recorded": False,
             },
         )
-    resolved_public_image = _string(public_image or os.getenv(PUBLIC_IMAGE_ENV)) or DEFAULT_PUBLIC_CUDA_IMAGE
+    resolved_public_image = (
+        _string(public_image or os.getenv(PUBLIC_IMAGE_ENV)) or DEFAULT_PUBLIC_CUDA_IMAGE
+    )
+    resolved_max_hourly_rate = (
+        max_hourly_rate
+        if max_hourly_rate is not None
+        else _float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_HOURLY_RATE", 0.60)
+    )
+    resolved_target_spend_usd = (
+        target_spend_usd
+        if target_spend_usd is not None
+        else _float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_TARGET_SPEND_USD", 3.0)
+    )
+    resolved_hard_cap_usd = (
+        hard_cap_usd
+        if hard_cap_usd is not None
+        else _float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_HARD_CAP_USD", 3.0)
+    )
+    resolved_max_live_minutes = (
+        max_live_minutes
+        if max_live_minutes is not None
+        else _int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_LIVE_MINUTES", 55)
+    )
     adapter_result = run_vast_provider_adapter(
         job_dir=vast_run_dir,
         mode="live-startup-probe",
         allow_vast_api_call=_truthy(os.getenv("BLUEPRINT_ALLOW_VAST_API_CALLS")),
         allow_instance_launch=_truthy(os.getenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")),
-        max_hourly_rate=max_hourly_rate
-        if max_hourly_rate is not None
-        else _float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_HOURLY_RATE", 0.60),
-        target_spend_usd=target_spend_usd
-        if target_spend_usd is not None
-        else _float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_TARGET_SPEND_USD", 3.0),
-        hard_cap_usd=hard_cap_usd
-        if hard_cap_usd is not None
-        else _float_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_HARD_CAP_USD", 3.0),
-        max_live_minutes=max_live_minutes
-        if max_live_minutes is not None
-        else _int_env("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_MAX_LIVE_MINUTES", 55),
+        max_hourly_rate=resolved_max_hourly_rate,
+        target_spend_usd=resolved_target_spend_usd,
+        hard_cap_usd=resolved_hard_cap_usd,
+        max_live_minutes=resolved_max_live_minutes,
         session_max_live_minutes=session_max_live_minutes
         if session_max_live_minutes is not None
         else _int_env(
@@ -462,8 +474,7 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
         provider_runtime_output_zip=output_zip,
         enable_blueprint_bundle=True,
         provider_bundle_kind="unitree_groot_n17_sonic",
-        vast_launch_mode=_string(launch_mode or os.getenv(VAST_LAUNCH_MODE_ENV))
-        or "ssh_direct",
+        vast_launch_mode=_string(launch_mode or os.getenv(VAST_LAUNCH_MODE_ENV)) or "ssh_direct",
         ngc_image_login_mode=os.getenv(VAST_IMAGE_LOGIN_MODE_ENV),
         disk_gb=disk_gb
         if disk_gb is not None
@@ -486,12 +497,16 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
     command = _read_json(vast_run_dir / "vast_provider_command_result.json")
     teardown = _read_json(vast_run_dir / "vast_teardown_manifest.json")
     offer = _read_json(vast_run_dir / "vast_offer_selection_manifest.json")
+    budget = _read_json(vast_run_dir / "vast_budget_ledger.json")
     provider_output = _provider_output_from_zip(output_zip, job / "provider_output")
-    selected_offer = offer.get("selected_offer") if isinstance(offer.get("selected_offer"), Mapping) else {}
+    selected_offer = (
+        offer.get("selected_offer") if isinstance(offer.get("selected_offer"), Mapping) else {}
+    )
     result_blockers: list[str] = []
     if adapter_result.get("status") != "completed":
         result_blockers.extend(
-            str(item) for item in adapter_result.get("blockers", []) or ["vast_canary_adapter_blocked"]
+            str(item)
+            for item in adapter_result.get("blockers", []) or ["vast_canary_adapter_blocked"]
         )
     if startup.get("heartbeat_completed") is not True:
         result_blockers.append("vast_canary_heartbeat_not_completed")
@@ -505,16 +520,44 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
         result_blockers.extend(
             str(item)
             for item in (
-                provider_output.get("blockers")
-                or ["vast_canary_provider_output_not_completed"]
+                provider_output.get("blockers") or ["vast_canary_provider_output_not_completed"]
             )
         )
     if provider_output.get("canary_marker") != CANARY_MARKER:
         result_blockers.append("vast_canary_marker_missing")
-    checks = provider_output.get("checks") if isinstance(provider_output.get("checks"), Mapping) else {}
-    nvidia_smi = checks.get("nvidia_smi") if isinstance(checks.get("nvidia_smi"), Mapping) else {}
+    raw_checks = provider_output.get("checks")
+    checks: Mapping[str, Any] = raw_checks if isinstance(raw_checks, Mapping) else {}
+    raw_nvidia_smi = checks.get("nvidia_smi")
+    nvidia_smi: Mapping[str, Any] = raw_nvidia_smi if isinstance(raw_nvidia_smi, Mapping) else {}
     if nvidia_smi.get("returncode") != 0:
         result_blockers.append("vast_canary_provider_nvidia_smi_check_failed")
+    selected_hourly_rate = budget.get("selected_hourly_rate_usd")
+    actual_live_runtime_seconds = budget.get("actual_live_runtime_seconds_observed_by_adapter")
+    estimated_cost_usd = budget.get("estimated_cost_usd")
+    if budget.get("status") != "completed":
+        result_blockers.append("vast_canary_budget_ledger_not_completed")
+    if (
+        not isinstance(selected_hourly_rate, (int, float))
+        or isinstance(selected_hourly_rate, bool)
+        or not 0 < float(selected_hourly_rate) <= resolved_max_hourly_rate
+    ):
+        result_blockers.append("vast_canary_selected_hourly_rate_invalid")
+    if (
+        not isinstance(actual_live_runtime_seconds, (int, float))
+        or isinstance(actual_live_runtime_seconds, bool)
+        or not 0 < float(actual_live_runtime_seconds) <= resolved_max_live_minutes * 60
+    ):
+        result_blockers.append("vast_canary_live_runtime_invalid")
+    if (
+        not isinstance(estimated_cost_usd, (int, float))
+        or isinstance(estimated_cost_usd, bool)
+        or not 0 <= float(estimated_cost_usd) <= resolved_hard_cap_usd
+    ):
+        result_blockers.append("vast_canary_estimated_cost_invalid")
+    if budget.get("estimated_spend_under_hard_cap") is not True:
+        result_blockers.append("vast_canary_budget_hard_cap_not_proven")
+    if budget.get("continuing_spend_from_this_run") is not False:
+        result_blockers.append("vast_canary_budget_continuing_spend")
     result = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated,
@@ -526,16 +569,23 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
             job / "object_store_staging" / "wam_provider_object_store_staging_manifest.json"
         ),
         "vast_run_dir": str(vast_run_dir),
-        "vast_provider_adapter_result_path": str(vast_run_dir / "vast_provider_adapter_result.json"),
+        "vast_provider_adapter_result_path": str(
+            vast_run_dir / "vast_provider_adapter_result.json"
+        ),
         "vast_startup_probe_manifest_path": str(vast_run_dir / "vast_startup_probe_manifest.json"),
         "vast_gpu_sanity_report_path": str(vast_run_dir / "vast_gpu_sanity_report.json"),
-        "vast_provider_command_result_path": str(vast_run_dir / "vast_provider_command_result.json"),
+        "vast_provider_command_result_path": str(
+            vast_run_dir / "vast_provider_command_result.json"
+        ),
         "vast_teardown_manifest_path": str(vast_run_dir / "vast_teardown_manifest.json"),
+        "vast_budget_ledger_path": str(vast_run_dir / "vast_budget_ledger.json"),
         "provider_output_zip_path": str(output_zip),
         "min_gpu_ram_mb": min_gpu_ram_mb,
         "selected_offer": selected_offer,
         "vast_instance_ids": adapter_result.get("vast_instance_ids", []),
-        "estimated_cost_usd": adapter_result.get("estimated_cost_usd"),
+        "selected_hourly_rate_usd": selected_hourly_rate,
+        "actual_live_runtime_seconds": actual_live_runtime_seconds,
+        "estimated_cost_usd": estimated_cost_usd,
         "continuing_spend_from_this_run": teardown.get("continuing_spend_from_this_run"),
         "heartbeat_completed": startup.get("heartbeat_completed") is True,
         "gpu_sanity_completed": gpu.get("status") == "completed",
@@ -544,9 +594,7 @@ def run_unitree_groot_n17_sonic_vast_image_canary(
             and command.get("blueprint_provider_bundle_execution_proven")
         ),
         "provider_output_upload_ok": command.get("provider_output_upload_ok") is True,
-        "provider_runtime_output_zip_produced": command.get(
-            "provider_runtime_output_zip_produced"
-        )
+        "provider_runtime_output_zip_produced": command.get("provider_runtime_output_zip_produced")
         is True,
         "canary_marker_observed": provider_output.get("canary_marker") == CANARY_MARKER,
         "provider_output": {

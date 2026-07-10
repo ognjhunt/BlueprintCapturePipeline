@@ -328,7 +328,7 @@ That file points the G1 policy root and checkpoint envs at the verified local
 Unitree RL Gym snapshot:
 
 ```bash
-export BLUEPRINT_UNITREE_G1_POLICY_ROOT=/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/robot_eval_jobs/unitree_g1_runtime_setup_20260620T214055Z/runtime_sources/unitree_rl_gym
+export BLUEPRINT_UNITREE_G1_POLICY_ROOT=$HOME/workspace/BlueprintCapturePipeline/robot_eval_jobs/unitree_g1_runtime_setup_20260620T214055Z/runtime_sources/unitree_rl_gym
 export BLUEPRINT_UNITREE_G1_POLICY_SOURCE_ROOT="$BLUEPRINT_UNITREE_G1_POLICY_ROOT"
 export BLUEPRINT_UNITREE_RL_GYM_ROOT="$BLUEPRINT_UNITREE_G1_POLICY_ROOT"
 export BLUEPRINT_UNITREE_G1_POLICY_CHECKPOINT="$BLUEPRINT_UNITREE_G1_POLICY_ROOT/deploy/pre_train/g1/motion.pt"
@@ -338,7 +338,7 @@ It also points `BLUEPRINT_UNITREE_LEROBOT_ROOT` at the local official Unitree
 LeRobot source checkout used for probe/dry-run command construction:
 
 ```bash
-export BLUEPRINT_UNITREE_LEROBOT_ROOT=/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/robot_eval_jobs/unitree_lerobot_runtime_setup_20260622T000000Z/runtime_sources/unitree_lerobot
+export BLUEPRINT_UNITREE_LEROBOT_ROOT=$HOME/workspace/BlueprintCapturePipeline/robot_eval_jobs/unitree_lerobot_runtime_setup_20260622T000000Z/runtime_sources/unitree_lerobot
 ```
 
 `BLUEPRINT_UNITREE_LEROBOT_PYTHON` may point at a dedicated Python 3.10/venv

@@ -273,6 +273,44 @@ def _deepinfra_request_payload(runtime_manifest: Mapping[str, Any]) -> dict[str,
     return payload
 
 
+def _deepinfra_conditioning_contract(runtime_manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe the hosted endpoint's actual conditioning, without inference.
+
+    DeepInfra's current Cosmos3-Nano API accepts text generation controls only.
+    Bundle metadata that happens to name an observation or action must not turn
+    that endpoint into an action-conditioned evaluator.
+    """
+
+    observation_identity = _string(
+        runtime_manifest.get("observation_id")
+        or runtime_manifest.get("source_observation_sha256")
+    )
+    action_identity = _string(
+        runtime_manifest.get("action_chunk_sha256")
+        or runtime_manifest.get("action_trace_sha256")
+    )
+    return {
+        "endpoint_class": "text_to_video_preview",
+        "request_schema_accepts_observation_content": False,
+        "request_schema_accepts_action_content": False,
+        "request_schema_accepts_skeleton_conditioning": False,
+        "request_schema_accepts_robot_state": False,
+        "request_schema_accepts_camera_calibration": False,
+        "bundle_observation_identity_present_but_not_transmitted": bool(
+            observation_identity
+        ),
+        "bundle_action_identity_present_but_not_transmitted": bool(action_identity),
+        "observation_action_conditioning_proven": False,
+        "action_only_perturbation_changes_request_conditioning": False,
+        "task_evaluation_run_eligible": False,
+        "policy_ranking_artifact_eligible": False,
+        "blockers": [
+            "deepinfra_endpoint_does_not_accept_observation_conditioning",
+            "deepinfra_endpoint_does_not_accept_action_conditioning",
+        ],
+    }
+
+
 def _deepinfra_post_json(
     *,
     url: str,
@@ -587,6 +625,7 @@ class DeepInfraCosmos3NanoProvider(WamComputeProvider):
     def build_request(self, spec: WamComputeLaunchSpec, job_dir: Path) -> dict[str, Any]:
         runtime_manifest = _deepinfra_runtime_manifest_from_bundle(spec.bundle_path)
         payload = _deepinfra_request_payload(runtime_manifest)
+        conditioning = _deepinfra_conditioning_contract(runtime_manifest)
         duration = _safe_float(payload.get("duration_seconds"), 5.0)
         resolution = _string(payload.get("resolution")) or "480p"
         key_file = Path(
@@ -607,6 +646,10 @@ class DeepInfraCosmos3NanoProvider(WamComputeProvider):
             "provider_bundle_kind": spec.provider_bundle_kind,
             "output_zip_path": str(spec.output_path_for(self.name, job_dir)),
             "request_payload": payload,
+            "endpoint_class": "text_to_video_preview",
+            "conditioning_contract": conditioning,
+            "task_evaluation_run_eligible": False,
+            "policy_ranking_artifact_eligible": False,
             "estimated_cost_usd": estimated_cost,
             "pricing": {
                 "price_per_generated_second_480p_usd": (
@@ -1037,6 +1080,10 @@ class DeepInfraCosmos3NanoProvider(WamComputeProvider):
 
 def _deepinfra_claim_boundary() -> dict[str, Any]:
     return {
+        "deepinfra_endpoint_class": "text_to_video_preview",
+        "deepinfra_endpoint_is_unconditioned_by_observation_or_action": True,
+        "deepinfra_output_excluded_from_task_evaluation_runs": True,
+        "deepinfra_output_excluded_from_policy_ranking": True,
         "deepinfra_cosmos3_output_is_model_derived_support_artifact": True,
         "deepinfra_api_success_is_not_task_success": True,
         "valid_mp4_or_provider_completed_is_not_visual_success": True,
@@ -1189,9 +1236,9 @@ def _write_deepinfra_provider_output(
     runtime_result: Mapping[str, Any],
 ) -> dict[str, Any]:
     request_payload = _mapping(request_manifest.get("request_payload"))
-    rollouts: list[dict[str, Any]] = []
+    preview_rollouts: list[dict[str, Any]] = []
     if mp4_path and mp4_path.is_file():
-        rollouts.append(
+        preview_rollouts.append(
             {
                 "rollout_id": "deepinfra_cosmos3_rollout_0001",
                 "policy_id": "deepinfra_cosmos3_nano_api",
@@ -1212,7 +1259,11 @@ def _write_deepinfra_provider_output(
         "adapter_id": "deepinfra_cosmos3_nano_api",
         "provider": DEEPINFRA_PROVIDER_NAME,
         "model_id": _deepinfra_model_id(),
-        "rollouts": rollouts,
+        "endpoint_class": "text_to_video_preview",
+        "task_evaluation_run_eligible": False,
+        "policy_ranking_eligible": False,
+        "rollouts": [],
+        "preview_rollouts": preview_rollouts,
         "blockers": sorted(set(str(item) for item in blockers if str(item))),
         "fresh_model_run_claimed": bool(status == "completed" and model_output),
         "fresh_provider_model_run_claimed": bool(status == "completed" and model_output),

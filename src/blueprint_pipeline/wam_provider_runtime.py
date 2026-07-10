@@ -316,6 +316,16 @@ def normalize_provider_rollouts(
     generated_at: str,
 ) -> list[Dict[str, Any]]:
     source = _mapping(payload)
+    source_boundary = _mapping(source.get("claim_boundary"))
+    endpoint_class = _string(
+        source.get("endpoint_class") or source_boundary.get("endpoint_class")
+    ).lower()
+    if (
+        endpoint_class == "text_to_video_preview"
+        or source.get("task_evaluation_run_eligible") is False
+        or source_boundary.get("task_evaluation_run_eligible") is False
+    ):
+        return []
     raw = source.get("rollouts")
     if not isinstance(raw, list):
         raw = _mapping(source.get("wam_rollout_results")).get("rollouts")
@@ -326,6 +336,17 @@ def normalize_provider_rollouts(
         if not isinstance(item, Mapping):
             continue
         rollout = dict(item)
+        rollout_boundary = _mapping(rollout.get("claim_boundary"))
+        rollout_endpoint_class = _string(
+            rollout.get("endpoint_class")
+            or rollout_boundary.get("endpoint_class")
+        ).lower()
+        if (
+            rollout_endpoint_class == "text_to_video_preview"
+            or rollout.get("task_evaluation_run_eligible") is False
+            or rollout_boundary.get("task_evaluation_run_eligible") is False
+        ):
+            continue
         policy_id = _string(rollout.get("policy_id") or rollout.get("policyId")) or "policy"
         run_id = _string(
             rollout.get("scenario_eval_run_id") or rollout.get("scenarioEvalRunId")

@@ -1,15 +1,20 @@
-"""SC3/OSCAR-style WAM evaluator over MuJoCo Unitree G1 endpoint traces.
+"""OSCAR-inspired WAM evaluator over MuJoCo Unitree G1 endpoint traces.
 
 The evaluator prepares action-conditioned WAM rollout inputs from MuJoCo traces
 and review videos. It only runs a learned model when an explicit local command,
 checkpoint, and opt-in gate are present; otherwise it writes blocked dry-run
 artifacts without faking generated video or success labels.
+
+OSCAR benchmark metrics remain separate from SC3-Eval checkpoint/criterion
+correlation metrics; this module does not transfer metric names between them.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import platform
 import shlex
@@ -18,6 +23,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +40,13 @@ from .failure_diagnosis_contract import (
     review_status_for_failure_label as _failure_review_status,
 )
 from .secret_artifact_policy import redacted_secret_file_status_from_env
+from .sc3_fidelity_contracts import validate_trusted_ed25519_attestation
+from .security_controls import (
+    SecurityValidationError,
+    fetch_bounded_service_url,
+    json_shape_within_limits,
+    origins_from_env,
+)
 from .model_access_env import model_access_secret_status, normalize_model_access_env
 from .policy_model_runtime_proofs import (
     discover_openvla_provider_smoke_proof,
@@ -60,12 +73,23 @@ LOCAL_MODEL_GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_MODEL"
 WAM_SUCCESS_LABEL_GATE_ENV = "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"
 WAM_SUCCESS_LABEL_COMMAND_ENV = "BLUEPRINT_WAM_SUCCESS_LABEL_COMMAND"
 WAM_SUCCESS_LABEL_COMMAND_OUTPUT = "wam_success_labels.command.json"
+WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE = 0.8
+WAM_SUCCESS_LABEL_CALIBRATION_ARTIFACT_ENV = "BLUEPRINT_WAM_SUCCESS_LABEL_CALIBRATION_ARTIFACT"
+WAM_SUCCESS_LABEL_CALIBRATION_SHA256_ENV = "BLUEPRINT_WAM_SUCCESS_LABEL_CALIBRATION_SHA256"
+WAM_SUCCESS_LABEL_CALIBRATION_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
+    "BLUEPRINT_WAM_SUCCESS_LABEL_CALIBRATION_TRUSTED_PUBLIC_KEY_SHA256"
+)
+WAM_SUCCESS_LABEL_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
+    "BLUEPRINT_WAM_SUCCESS_LABEL_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256"
+)
 WAM_CONSISTENCY_GATE_ENV = "BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING"
 WAM_CONSISTENCY_COMMAND_ENV = "BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND"
 WAM_CONSISTENCY_COMMAND_OUTPUT = "wam_episode_consistency.command.json"
 EVAL_READY_TASK_GROUNDING_ENV = "BLUEPRINT_EVAL_READY_TASK_GROUNDING"
 EGOCENTRIC_WAM_INPUT_CAMERAS = ("head_pov", "torso_pov", "robot_pov")
 DIAGNOSTIC_REVIEW_CAMERAS = ("third_person", "robot_follow", "overhead")
+POLICY_REQUERY_MAX_REQUEST_BYTES = 8 * 1024 * 1024
+POLICY_REQUERY_MAX_RESPONSE_BYTES = 1024 * 1024
 
 MODEL_RUNTIME_CONTRACTS = {
     "oscar_wam": {
@@ -356,8 +380,7 @@ def _source_unitree_controller_proof(
         and not _string_list(controller_truth.get("blockers"))
     )
     same_scene_trusted = bool(
-        same_scene.get("schema_version")
-        == "same_scene_unitree_rl_gym_controller_backend.v1"
+        same_scene.get("schema_version") == "same_scene_unitree_rl_gym_controller_backend.v1"
         and same_scene.get("status") == "completed"
         and not _string_list(same_scene.get("blockers"))
     )
@@ -394,14 +417,8 @@ def _source_unitree_controller_proof(
                 controller_truth_trusted
                 and controller_truth.get("balanced_walking_controller_proven") is True
             )
-            or (
-                same_scene_trusted
-                and same_scene.get("balanced_walking_controller_proven") is True
-            )
-            or (
-                bridge_trusted
-                and bridge.get("balanced_walking_controller_proven") is True
-            )
+            or (same_scene_trusted and same_scene.get("balanced_walking_controller_proven") is True)
+            or (bridge_trusted and bridge.get("balanced_walking_controller_proven") is True)
         )
     )
     realistic_navigation_policy_used = bool(
@@ -415,8 +432,7 @@ def _source_unitree_controller_proof(
         )
         or (
             same_scene_trusted
-            and same_scene.get("realistic_navigation_policy_used_for_endpoint_rollouts")
-            is True
+            and same_scene.get("realistic_navigation_policy_used_for_endpoint_rollouts") is True
         )
         or (
             bridge_trusted
@@ -424,10 +440,7 @@ def _source_unitree_controller_proof(
         )
     )
     freejoint_proxy_used = bool(
-        (
-            controller_truth_trusted
-            and controller_truth.get("freejoint_proxy_used") is True
-        )
+        (controller_truth_trusted and controller_truth.get("freejoint_proxy_used") is True)
         or trace_rows_with_freejoint_proxy
     )
     unitree_locomotion_policy_used = bool(
@@ -441,8 +454,7 @@ def _source_unitree_controller_proof(
                 same_scene_trusted
                 and (
                     same_scene.get("controller_backend") == "unitree_rl_gym"
-                    or same_scene.get("backend_id")
-                    == "unitree_rl_gym_same_scene_lower_body_policy"
+                    or same_scene.get("backend_id") == "unitree_rl_gym_same_scene_lower_body_policy"
                 )
             )
         )
@@ -451,8 +463,7 @@ def _source_unitree_controller_proof(
         controller_truth_trusted
         and (
             controller_truth.get("unitree_hand_manipulation_policy_used") is True
-            or controller_truth.get("unitree_lerobot_or_isaaclab_manipulation_policy_used")
-            is True
+            or controller_truth.get("unitree_lerobot_or_isaaclab_manipulation_policy_used") is True
         )
     )
     return {
@@ -553,8 +564,14 @@ def _eval_ready_grounding_candidates(input_dir: Path) -> list[Path]:
             input_dir / "simulation_automation" / "eval_ready_task_grounding.json",
             input_dir / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
             input_dir.parent / "simulation_automation" / "eval_ready_task_grounding.json",
-            input_dir.parent / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
-            input_dir.parent.parent / "pipeline" / "simulation_automation" / "eval_ready_task_grounding.json",
+            input_dir.parent
+            / "pipeline"
+            / "simulation_automation"
+            / "eval_ready_task_grounding.json",
+            input_dir.parent.parent
+            / "pipeline"
+            / "simulation_automation"
+            / "eval_ready_task_grounding.json",
         ]
     )
     deduped: list[Path] = []
@@ -860,14 +877,25 @@ def _default_source_roots_for_candidate(candidate: str) -> list[tuple[str, Path]
     repo = Path(__file__).resolve().parents[2]
     roots: dict[str, list[tuple[str, Path]]] = {
         "oscar_wam": [
-            ("workspace_oscar_vendor", workspace / "BlueprintValidation" / "data" / "vendor" / "oscar"),
-            ("workspace_oscar_vendor_caps", workspace / "BlueprintValidation" / "data" / "vendor" / "OSCAR"),
+            (
+                "workspace_oscar_vendor",
+                workspace / "BlueprintValidation" / "data" / "vendor" / "oscar",
+            ),
+            (
+                "workspace_oscar_vendor_caps",
+                workspace / "BlueprintValidation" / "data" / "vendor" / "OSCAR",
+            ),
             ("workspace_oscar_repo", workspace / "oscar"),
         ],
         "cosmos_wam": [
             (
                 "workspace_dreamdojo_cosmos_predict2",
-                workspace / "BlueprintValidation" / "data" / "vendor" / "DreamDojo" / "cosmos_predict2",
+                workspace
+                / "BlueprintValidation"
+                / "data"
+                / "vendor"
+                / "DreamDojo"
+                / "cosmos_predict2",
             ),
             (
                 "workspace_cosmos_transfer",
@@ -1004,11 +1032,15 @@ def _local_source_tree_probe(
     for root_row in _source_roots_for_candidate(candidate):
         path = Path(root_row["path"]).expanduser()
         present = path.exists()
-        checkpoint_scan = _checkpoint_like_files(path) if present else {
-            "files_scanned": 0,
-            "truncated": False,
-            "checkpoint_files_found": [],
-        }
+        checkpoint_scan = (
+            _checkpoint_like_files(path)
+            if present
+            else {
+                "files_scanned": 0,
+                "truncated": False,
+                "checkpoint_files_found": [],
+            }
+        )
         checkpoint_files = list(checkpoint_scan["checkpoint_files_found"])
         source_rows.append(
             {
@@ -1120,9 +1152,7 @@ def _local_host_probe() -> dict[str, Any]:
         "cuda_visible_devices_configured": bool(os.getenv("CUDA_VISIBLE_DEVICES")),
         "torch_cuda_available": torch_cuda_available,
         "torch_probe_error_type": torch_import_error,
-        "local_host_is_likely_cuda_gpu_host": bool(
-            nvidia_smi_available or torch_cuda_available
-        ),
+        "local_host_is_likely_cuda_gpu_host": bool(nvidia_smi_available or torch_cuda_available),
     }
 
 
@@ -1164,7 +1194,9 @@ def build_policy_model_endpoint_readiness_manifest(
             _checkpoint_env_names_with_aliases(contract)
         )
         checkpoint_env_statuses = _required_checkpoint_env_statuses_for_contract(contract)
-        selected_explicit_candidate = explicit_candidate_id or (candidates[0] if candidates else None)
+        selected_explicit_candidate = explicit_candidate_id or (
+            candidates[0] if candidates else None
+        )
         if explicit_command and candidate == (explicit_candidate_id or candidate):
             command_env = "cli:--wam-model-command"
             command = explicit_command
@@ -1237,9 +1269,7 @@ def build_policy_model_endpoint_readiness_manifest(
                 "candidate_id": candidate,
                 "runtime_role": contract.get("runtime_role", "replaceable_model_adapter"),
                 "backend_strategy": backend_strategy,
-                "backend_recommendation_tier": backend_strategy.get(
-                    "recommendation_tier"
-                ),
+                "backend_recommendation_tier": backend_strategy.get("recommendation_tier"),
                 "preferred_for_new_configured_learned_wam": bool(
                     backend_strategy.get("preferred_for_new_configured_learned_wam")
                 ),
@@ -1253,8 +1283,7 @@ def build_policy_model_endpoint_readiness_manifest(
                 "command_value_redacted": "<configured>" if command else None,
                 "checkpoint_envs": list(contract.get("checkpoint_envs", ())),
                 "checkpoint_env_aliases": {
-                    key: list(values)
-                    for key, values in _checkpoint_env_aliases(contract).items()
+                    key: list(values) for key, values in _checkpoint_env_aliases(contract).items()
                 },
                 "configured_checkpoint_env": checkpoint_env,
                 "checkpoint_configured": bool(checkpoint),
@@ -1304,13 +1333,7 @@ def build_policy_model_endpoint_readiness_manifest(
         )
     ready = [row for row in rows if row["real_model_runtime_ready"]]
     wrapper_ready = [row for row in rows if row["endpoint_wrapper_can_be_created"]]
-    blockers = sorted(
-        {
-            item
-            for row in rows
-            for item in row["what_is_needed_to_make_true"]
-        }
-    )
+    blockers = sorted({item for row in rows for item in row["what_is_needed_to_make_true"]})
     return {
         "schema_version": "policy_model_endpoint_readiness_manifest.v1",
         "generated_at": generated_at,
@@ -1375,8 +1398,7 @@ def build_policy_model_endpoint_creation_plan(
                 "runtime_role": row.get("runtime_role"),
                 "can_start_http_wrapper_now": endpoint_wrapper_can_be_created,
                 "can_claim_real_model_endpoint_now": real_ready,
-                "can_run_wam_generated_rollout_now": real_ready
-                and candidate_id.endswith("_wam"),
+                "can_run_wam_generated_rollout_now": real_ready and candidate_id.endswith("_wam"),
                 "http_wrapper_without_real_model_claim": bool(
                     endpoint_wrapper_can_be_created and not real_ready
                 ),
@@ -1408,14 +1430,14 @@ def build_policy_model_endpoint_creation_plan(
                 "launch_endpoint_command": (
                     (
                         "BLUEPRINT_WAM_VLA_POLICY_COMMAND='<configured --wam-model-command>' "
-                        "BLUEPRINT_WAM_VLA_POLICY_AUTH_TOKEN_FILE=\"$TEAM_POLICY_AUTH_TOKEN_FILE\" "
+                        'BLUEPRINT_WAM_VLA_POLICY_AUTH_TOKEN_FILE="$TEAM_POLICY_AUTH_TOKEN_FILE" '
                         "blueprint-serve-wam-vla-policy-endpoint --host 127.0.0.1 --port 8765"
                     )
                     if command_from_cli
                     else (
-                        "BLUEPRINT_WAM_VLA_POLICY_COMMAND=\"$"
-                        f"{command_env}\" "
-                        "BLUEPRINT_WAM_VLA_POLICY_AUTH_TOKEN_FILE=\"$TEAM_POLICY_AUTH_TOKEN_FILE\" "
+                        'BLUEPRINT_WAM_VLA_POLICY_COMMAND="$'
+                        f'{command_env}" '
+                        'BLUEPRINT_WAM_VLA_POLICY_AUTH_TOKEN_FILE="$TEAM_POLICY_AUTH_TOKEN_FILE" '
                         "blueprint-serve-wam-vla-policy-endpoint --host 127.0.0.1 --port 8765"
                     )
                     if command_env
@@ -1454,9 +1476,7 @@ def build_policy_model_endpoint_creation_plan(
             "unitree_g1_policy",
         }
     ]
-    wam_rollout_ready_count = sum(
-        1 for row in wam_rows if row["can_run_wam_generated_rollout_now"]
-    )
+    wam_rollout_ready_count = sum(1 for row in wam_rows if row["can_run_wam_generated_rollout_now"])
     vla_manipulation_ready_count = sum(
         1
         for row in rows
@@ -1472,8 +1492,7 @@ def build_policy_model_endpoint_creation_plan(
     unitree_unifolm_policy_ready_count = sum(
         1
         for row in rows
-        if row["candidate_id"]
-        in {"unitree_unifolm_vla_policy", "unitree_unifolm_wma_policy"}
+        if row["candidate_id"] in {"unitree_unifolm_vla_policy", "unitree_unifolm_wma_policy"}
         and row["can_claim_real_model_endpoint_now"]
     )
     unitree_lerobot_policy_ready_count = sum(
@@ -1485,8 +1504,7 @@ def build_policy_model_endpoint_creation_plan(
     g1_policy_ready_count = sum(
         1
         for row in rows
-        if row["candidate_id"] == "unitree_g1_policy"
-        and row["can_claim_real_model_endpoint_now"]
+        if row["candidate_id"] == "unitree_g1_policy" and row["can_claim_real_model_endpoint_now"]
     )
     closed_loop_prerequisites_configured = bool(
         wam_rollout_ready_count and vla_manipulation_ready_count
@@ -1569,9 +1587,7 @@ def build_policy_model_endpoint_creation_plan(
                     "required file-based model-source auth",
                     "explicit local/cloud run gates",
                 ],
-                "proves": [
-                    "configured command and checkpoint are ready for model execution"
-                ],
+                "proves": ["configured command and checkpoint are ready for model execution"],
                 "does_not_prove": [
                     "task success",
                     "forward/inverse consistency",
@@ -1651,7 +1667,9 @@ def discover_cloud_gpu_setup(*, generated_at: str) -> dict[str, Any]:
                 "object_store_note": contract.get("object_store_note"),
             }
         )
-    provider_ready_for_gated_launch = any(row["status"] == "ready_for_gated_launch" for row in providers)
+    provider_ready_for_gated_launch = any(
+        row["status"] == "ready_for_gated_launch" for row in providers
+    )
     provider_secret_available = any(row["api_key_file"]["present"] for row in providers)
     return {
         "schema_version": "policy_cloud_gpu_setup_manifest.v1",
@@ -1701,7 +1719,9 @@ def discover_wam_model_runtimes(
             _checkpoint_env_names_with_aliases(contract)
         )
         checkpoint_env_statuses = _required_checkpoint_env_statuses_for_contract(contract)
-        selected_explicit_candidate = explicit_candidate_id or (candidates[0] if candidates else None)
+        selected_explicit_candidate = explicit_candidate_id or (
+            candidates[0] if candidates else None
+        )
         if explicit_command and candidate == selected_explicit_candidate:
             command_env = "cli:--wam-model-command"
             command = explicit_command
@@ -1736,7 +1756,9 @@ def discover_wam_model_runtimes(
             candidate == "oscar_wam"
             and "blueprint_pipeline.oscar_wam_command_adapter" in command_text
         )
-        if official_oscar_adapter_configured and not host_probe.get("local_host_is_likely_cuda_gpu_host"):
+        if official_oscar_adapter_configured and not host_probe.get(
+            "local_host_is_likely_cuda_gpu_host"
+        ):
             if platform.system() == "Darwin":
                 official_adapter_host_blockers.append("blocked_oscar_linux_cuda_runtime_required")
             official_adapter_host_blockers.append("blocked_oscar_requires_cuda_gpu_runtime")
@@ -1760,9 +1782,7 @@ def discover_wam_model_runtimes(
                 "candidate_id": candidate,
                 "runtime_role": contract.get("runtime_role", "replaceable_wam_adapter"),
                 "backend_strategy": backend_strategy,
-                "backend_recommendation_tier": backend_strategy.get(
-                    "recommendation_tier"
-                ),
+                "backend_recommendation_tier": backend_strategy.get("recommendation_tier"),
                 "preferred_for_new_configured_learned_wam": bool(
                     backend_strategy.get("preferred_for_new_configured_learned_wam")
                 ),
@@ -1774,8 +1794,7 @@ def discover_wam_model_runtimes(
                 "checkpoint_env": checkpoint_env,
                 "checkpoint_envs": list(checkpoint_envs),
                 "checkpoint_env_aliases": {
-                    key: list(values)
-                    for key, values in _checkpoint_env_aliases(contract).items()
+                    key: list(values) for key, values in _checkpoint_env_aliases(contract).items()
                 },
                 "checkpoint_configured": bool(checkpoint),
                 "checkpoint_exists": local_checkpoint_ok,
@@ -1818,7 +1837,9 @@ def discover_wam_model_runtimes(
         )
     ready = [row for row in rows if row.get("direct_local_model_run_ready")]
     configured = [row for row in rows if row.get("configured_command_checkpoint_ready")]
-    selected_row = ready[0] if ready else (configured[0] if configured else (rows[0] if rows else None))
+    selected_row = (
+        ready[0] if ready else (configured[0] if configured else (rows[0] if rows else None))
+    )
     selected_blockers = (
         list(selected_row.get("blockers", []))
         + list(selected_row.get("official_adapter_host_preflight_blockers", []))
@@ -2540,7 +2561,9 @@ def _build_policy_model_endpoint_probe_results(
                 "real_model_runtime_ready_by_static_readiness": real_model_runtime_ready,
                 "command_invocation_attempted": invocation_attempted,
                 "command_probe_completed": bool(invocation_attempted and command_completed),
-                "blueprint_output_contract_valid": bool(invocation_attempted and payload_contract_valid),
+                "blueprint_output_contract_valid": bool(
+                    invocation_attempted and payload_contract_valid
+                ),
                 "payload_status": (payload_status or None) if invocation_attempted else None,
                 "rollout_count": len(payload_rollouts) if invocation_attempted else 0,
                 "action_response_present": bool(
@@ -2555,7 +2578,8 @@ def _build_policy_model_endpoint_probe_results(
                     invocation_attempted and model_payload.get("provider_output_replayed")
                 ),
                 "provider_generated_video_is_model_output": bool(
-                    invocation_attempted and model_payload.get("provider_generated_video_is_model_output")
+                    invocation_attempted
+                    and model_payload.get("provider_generated_video_is_model_output")
                 ),
                 "command_exit_code": model_execution_detail.get("command_exit_code")
                 if invocation_attempted
@@ -2577,12 +2601,7 @@ def _build_policy_model_endpoint_probe_results(
     probed_rows = [row for row in rows if row["command_invocation_attempted"]]
     passed_rows = [row for row in rows if row["blueprint_output_contract_valid"]]
     all_row_blockers = sorted(
-        {
-            blocker
-            for row in rows
-            for blocker in row.get("blockers", [])
-            if blocker
-        }
+        {blocker for row in rows for blocker in row.get("blockers", []) if blocker}
     )
     selected_row_blockers = sorted(
         {
@@ -2600,9 +2619,7 @@ def _build_policy_model_endpoint_probe_results(
         "selected_candidate_id": selected or None,
         "probe_attempted_candidate_count": len(probed_rows),
         "probe_passed_candidate_count": len(passed_rows),
-        "can_create_http_wrapper": bool(
-            readiness_manifest.get("http_endpoint_wrapper_available")
-        ),
+        "can_create_http_wrapper": bool(readiness_manifest.get("http_endpoint_wrapper_available")),
         "can_claim_real_model_endpoint_after_probe": bool(passed_rows),
         "why_cannot_just_create_endpoints": [
             "The HTTP wrapper can be created around any configured command, but it only proves HTTP/auth plumbing.",
@@ -2669,6 +2686,480 @@ def _run_wam_success_label_command(
     return payload, detail
 
 
+def _rollout_evidence_video_paths(rollout: Mapping[str, Any]) -> set[Path]:
+    video_texts = [_string(rollout.get("generated_video_path"))]
+    video_texts.extend(
+        _string(row.get("generated_video_path"))
+        for row in rollout.get("ordered_step_videos", []) or []
+        if isinstance(row, Mapping)
+    )
+    return {
+        Path(value).expanduser().resolve()
+        for value in video_texts
+        if value and Path(value).expanduser().is_file()
+    }
+
+
+def _ordered_episode_integrity(rollout: Mapping[str, Any]) -> dict[str, Any]:
+    ordered_rows = [
+        dict(row)
+        for row in rollout.get("ordered_step_videos", []) or []
+        if isinstance(row, Mapping)
+    ]
+    selected_text = _string(rollout.get("generated_video_path"))
+    selected_path = Path(selected_text).expanduser().resolve() if selected_text else None
+    if not ordered_rows:
+        valid = bool(selected_path and selected_path.is_file())
+        return {
+            "status": "validated" if valid else "blocked",
+            "ordered_step_count": 0,
+            "source_video_paths": {selected_path} if valid and selected_path else set(),
+            "blockers": [] if valid else ["wam_success_label_selected_video_missing"],
+        }
+
+    blockers: list[str] = []
+    indices: list[int] = []
+    resolved_paths: list[Path] = []
+    declared_digests: list[str] = []
+    for position, row in enumerate(ordered_rows, start=1):
+        step_index = row.get("step_index")
+        if isinstance(step_index, bool) or not isinstance(step_index, int):
+            blockers.append(f"wam_success_label_ordered_step_index_invalid:{position}")
+        else:
+            indices.append(step_index)
+        path_text = _string(row.get("generated_video_path"))
+        path = Path(path_text).expanduser().resolve() if path_text else None
+        digest = _string(row.get("generated_video_sha256")).lower()
+        if path is None or not path.is_file():
+            blockers.append(f"wam_success_label_ordered_step_video_missing:{position}")
+            continue
+        resolved_paths.append(path)
+        declared_digests.append(digest)
+        if not (
+            len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+            and hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        ):
+            blockers.append(f"wam_success_label_ordered_step_digest_invalid:{position}")
+    expected_indices = list(range(1, len(ordered_rows) + 1))
+    if indices != expected_indices:
+        blockers.append("wam_success_label_ordered_step_indices_not_contiguous")
+    if len(set(resolved_paths)) != len(ordered_rows):
+        blockers.append("wam_success_label_ordered_step_video_paths_duplicate")
+    if len(set(declared_digests)) != len(ordered_rows):
+        blockers.append("wam_success_label_ordered_step_video_digests_duplicate")
+    if selected_path is None or not resolved_paths or selected_path != resolved_paths[-1]:
+        blockers.append("wam_success_label_selected_video_not_final_ordered_step")
+    declared_indices = rollout.get("ordered_step_indices")
+    if declared_indices is not None and list(declared_indices) != expected_indices:
+        blockers.append("wam_success_label_declared_ordered_indices_mismatch")
+    declared_count = rollout.get("step_video_count")
+    if declared_count is not None and declared_count != len(ordered_rows):
+        blockers.append("wam_success_label_declared_step_video_count_mismatch")
+    if rollout.get("episode_order_verified") is not True:
+        blockers.append("wam_success_label_episode_order_not_declared_verified")
+    blockers = sorted(set(blockers))
+    return {
+        "status": "validated" if not blockers else "blocked",
+        "ordered_step_count": len(ordered_rows),
+        "source_video_paths": set(resolved_paths) if not blockers else set(),
+        "blockers": blockers,
+    }
+
+
+def success_label_inference_input_manifest(
+    rollouts: Sequence[Mapping[str, Any]],
+    *,
+    criterion_ids: Sequence[str],
+) -> dict[str, Any]:
+    bound_rollouts: list[dict[str, Any]] = []
+    for rollout in rollouts:
+        ordered_rows = [
+            dict(row)
+            for row in rollout.get("ordered_step_videos", []) or []
+            if isinstance(row, Mapping)
+        ]
+        if ordered_rows:
+            videos = [
+                {
+                    "step_index": row.get("step_index"),
+                    "generated_video_path": _string(row.get("generated_video_path")),
+                    "generated_video_sha256": _string(row.get("generated_video_sha256")).lower(),
+                }
+                for row in ordered_rows
+            ]
+        else:
+            path_text = _string(rollout.get("generated_video_path"))
+            path = Path(path_text).expanduser() if path_text else None
+            videos = [
+                {
+                    "step_index": 1,
+                    "generated_video_path": path_text,
+                    "generated_video_sha256": hashlib.sha256(path.read_bytes()).hexdigest()
+                    if path is not None and path.is_file()
+                    else None,
+                }
+            ]
+        bound_rollouts.append(
+            {
+                "rollout_id": _string(rollout.get("rollout_id")),
+                "scenario_eval_run_id": _string(rollout.get("scenario_eval_run_id")),
+                "policy_id": _string(rollout.get("policy_id")),
+                "ordered_videos": videos,
+            }
+        )
+    return {
+        "schema_version": "wam_success_label_inference_input.v1",
+        "criterion_ids": sorted(_string_list(criterion_ids)),
+        "rollouts": bound_rollouts,
+    }
+
+
+def success_label_inference_input_sha256(
+    rollouts: Sequence[Mapping[str, Any]],
+    *,
+    criterion_ids: Sequence[str],
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            success_label_inference_input_manifest(
+                rollouts,
+                criterion_ids=criterion_ids,
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_success_label_evidence_refs(
+    refs: Sequence[str],
+    *,
+    source_video_paths: set[Path],
+    video_probe_cache: dict[Path, dict[str, Any]],
+) -> tuple[bool, set[Path]]:
+    """Validate referenced files and require a join to the labeled rollout.
+
+    The OpenAI and Gemini adapters cite sampled frames as
+    ``/path/to/video.mp4#frame=N``.  ``Path`` cannot validate that URI-like
+    fragment directly, so validate the base video and the non-negative frame
+    index explicitly.  Auxiliary files are allowed, but at least one ref must
+    resolve to a video registered on the source rollout.
+    """
+
+    if not refs:
+        return False, set()
+    all_files_valid = True
+    bound_source_videos: set[Path] = set()
+    for raw_ref in refs:
+        ref = _string(raw_ref)
+        base_text, marker, frame_text = ref.partition("#frame=")
+        if marker and (not frame_text.isdigit() or int(frame_text) < 0 or "#" in frame_text):
+            all_files_valid = False
+            continue
+        path = Path(base_text if marker else ref).expanduser()
+        if not path.is_file():
+            all_files_valid = False
+            continue
+        resolved = path.resolve()
+        if resolved in source_video_paths:
+            bound_source_videos.add(resolved)
+            if marker:
+                probe = video_probe_cache.setdefault(
+                    resolved,
+                    validate_generated_mp4_for_review(resolved),
+                )
+                frame_count = probe.get("frame_count")
+                if (
+                    probe.get("status") != "completed"
+                    or isinstance(frame_count, bool)
+                    or not isinstance(frame_count, int)
+                    or int(frame_text) >= frame_count
+                ):
+                    all_files_valid = False
+    return all_files_valid, bound_source_videos
+
+
+def _success_label_calibration_contract(
+    *,
+    command_payload: Mapping[str, Any],
+    required_criterion_ids: set[str],
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    calibration_authority_sha256 = _string(
+        os.getenv(WAM_SUCCESS_LABEL_CALIBRATION_TRUSTED_PUBLIC_KEY_SHA256_ENV)
+    ).lower()
+    runtime_authority_sha256 = _string(
+        os.getenv(WAM_SUCCESS_LABEL_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV)
+    ).lower()
+    if (
+        len(calibration_authority_sha256) == 64
+        and all(character in "0123456789abcdef" for character in calibration_authority_sha256)
+        and len(runtime_authority_sha256) == 64
+        and all(character in "0123456789abcdef" for character in runtime_authority_sha256)
+        and calibration_authority_sha256 == runtime_authority_sha256
+    ):
+        blockers.append("wam_success_label_calibration_runtime_authorities_not_separated")
+    artifact_path_text = _string(os.getenv(WAM_SUCCESS_LABEL_CALIBRATION_ARTIFACT_ENV))
+    pinned_sha256 = _string(os.getenv(WAM_SUCCESS_LABEL_CALIBRATION_SHA256_ENV)).lower()
+    artifact_path = Path(artifact_path_text).expanduser() if artifact_path_text else None
+    if artifact_path is None or not artifact_path.is_file():
+        blockers.append("wam_success_label_calibration_artifact_missing")
+    if len(pinned_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in pinned_sha256
+    ):
+        blockers.append("wam_success_label_calibration_sha256_not_pinned")
+    elif (
+        artifact_path is not None
+        and artifact_path.is_file()
+        and hashlib.sha256(artifact_path.read_bytes()).hexdigest() != pinned_sha256
+    ):
+        blockers.append("wam_success_label_calibration_sha256_mismatch")
+    calibration: dict[str, Any] = {}
+    if artifact_path is not None and artifact_path.is_file():
+        try:
+            calibration = _mapping(json.loads(artifact_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            blockers.append("wam_success_label_calibration_json_invalid")
+    provider = _string(command_payload.get("provider"))
+    model = _string(command_payload.get("model"))
+    prompt_template_sha256 = _string(command_payload.get("prompt_template_sha256")).lower()
+    confidence_floor_value = calibration.get("confidence_floor")
+    declared_confidence_floor = (
+        float(confidence_floor_value)
+        if isinstance(confidence_floor_value, (int, float))
+        and not isinstance(confidence_floor_value, bool)
+        and math.isfinite(float(confidence_floor_value))
+        else None
+    )
+    if not (
+        calibration.get("schema_version") == "wam_success_label_calibration.v1"
+        and calibration.get("status") == "accepted"
+        and _string(calibration.get("provider")) == provider
+        and _string(calibration.get("model")) == model
+        and _string(calibration.get("prompt_template_sha256")).lower() == prompt_template_sha256
+        and len(prompt_template_sha256) == 64
+        and set(_string_list(calibration.get("criterion_ids"))) == required_criterion_ids
+        and calibration.get("calibration_method")
+        == "lowest_registered_threshold_meeting_accuracy_v1"
+        and calibration.get("registered_minimum_confidence_floor")
+        == WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE
+        and calibration.get("minimum_high_confidence_samples") == 10
+        and calibration.get("minimum_high_confidence_accuracy")
+        == WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE
+        and declared_confidence_floor is not None
+        and WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE <= declared_confidence_floor <= 1.0
+    ):
+        blockers.append("wam_success_label_calibration_binding_invalid")
+    dataset_ref = _mapping(calibration.get("calibration_dataset_artifact"))
+    dataset_path = Path(_string(dataset_ref.get("path"))).expanduser()
+    dataset_sha256 = _string(dataset_ref.get("sha256")).lower()
+    if not (
+        dataset_path.is_file()
+        and len(dataset_sha256) == 64
+        and hashlib.sha256(dataset_path.read_bytes()).hexdigest() == dataset_sha256
+    ):
+        blockers.append("wam_success_label_calibration_dataset_artifact_invalid")
+    dataset: dict[str, Any] = {}
+    if dataset_path.is_file():
+        try:
+            dataset = _mapping(json.loads(dataset_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            pass
+    reviewer_attestation = validate_trusted_ed25519_attestation(
+        _mapping(dataset.get("reviewer_attestation")),
+        signed_payload={
+            key: value for key, value in dataset.items() if key != "reviewer_attestation"
+        },
+        prefix="wam_success_label_calibration_reviewer_attestation",
+        trusted_public_key_sha256_env=(WAM_SUCCESS_LABEL_CALIBRATION_TRUSTED_PUBLIC_KEY_SHA256_ENV),
+    )
+    blockers.extend(_string_list(reviewer_attestation.get("blockers")))
+    rows = [dict(row) for row in dataset.get("rows", []) or [] if isinstance(row, Mapping)]
+    calibrated_rows: list[tuple[float, bool]] = []
+    registered_rater_ids = set(_string_list(dataset.get("registered_blinded_rater_ids")))
+    sample_ids: set[str] = set()
+    sample_evidence_sha256s: set[str] = set()
+    agreement_pair_count = 0
+    agreement_pair_match_count = 0
+    typed_row_count = 0
+    criterion_ids_sha256 = hashlib.sha256(
+        json.dumps(sorted(required_criterion_ids), separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    for index, row in enumerate(rows):
+        row_valid = True
+        sample_id = _string(row.get("sample_id"))
+        blinded_sample_id = _string(row.get("blinded_sample_id"))
+        if not sample_id or sample_id in sample_ids or not blinded_sample_id:
+            row_valid = False
+        sample_ids.add(sample_id)
+        evidence_ref = _mapping(row.get("source_evidence_artifact"))
+        evidence_path = Path(_string(evidence_ref.get("path"))).expanduser()
+        evidence_sha256 = _string(evidence_ref.get("sha256")).lower()
+        evidence_payload: dict[str, Any] = {}
+        if not (
+            evidence_path.is_file()
+            and len(evidence_sha256) == 64
+            and hashlib.sha256(evidence_path.read_bytes()).hexdigest() == evidence_sha256
+            and evidence_sha256 not in sample_evidence_sha256s
+        ):
+            row_valid = False
+        elif evidence_path.is_file():
+            try:
+                evidence_payload = _mapping(json.loads(evidence_path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                row_valid = False
+        sample_evidence_sha256s.add(evidence_sha256)
+        if not (
+            evidence_payload.get("schema_version") == "wam_success_label_calibration_sample.v1"
+            and evidence_payload.get("sample_id") == sample_id
+            and evidence_payload.get("blinded_sample_id") == blinded_sample_id
+            and evidence_payload.get("criterion_ids_sha256") == criterion_ids_sha256
+        ):
+            row_valid = False
+        rater_votes = [
+            dict(vote)
+            for vote in row.get("blinded_rater_votes", []) or []
+            if isinstance(vote, Mapping)
+        ]
+        row_rater_ids = [_string(vote.get("rater_id")) for vote in rater_votes]
+        if not (
+            len(rater_votes) >= 2
+            and all(row_rater_ids)
+            and len(set(row_rater_ids)) == len(row_rater_ids)
+            and set(row_rater_ids) == registered_rater_ids
+            and all(isinstance(vote.get("verdict"), bool) for vote in rater_votes)
+            and row.get("rater_votes_blinded_to_model") is True
+            and row.get("model_verdict_recorded_before_adjudication") is True
+        ):
+            row_valid = False
+        else:
+            for left_index, left_vote in enumerate(rater_votes):
+                for right_vote in rater_votes[left_index + 1 :]:
+                    agreement_pair_count += 1
+                    if left_vote.get("verdict") == right_vote.get("verdict"):
+                        agreement_pair_match_count += 1
+        confidence = row.get("reported_confidence")
+        model_verdict = row.get("model_verdict")
+        adjudicated_ground_truth = row.get("adjudicated_ground_truth")
+        if (
+            isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and math.isfinite(float(confidence))
+            and 0.0 <= float(confidence) <= 1.0
+            and isinstance(model_verdict, bool)
+            and isinstance(adjudicated_ground_truth, bool)
+            and _string(row.get("adjudicator_id"))
+            and row_valid
+        ):
+            calibrated_rows.append((float(confidence), model_verdict == adjudicated_ground_truth))
+            typed_row_count += 1
+    registered_thresholds = [0.8, 0.85, 0.9, 0.95, 1.0]
+    derived_confidence_floor: float | None = None
+    for candidate in registered_thresholds:
+        candidate_rows = [row for row in calibrated_rows if row[0] >= candidate]
+        candidate_accuracy = (
+            sum(1 for _, correct in candidate_rows if correct) / len(candidate_rows)
+            if candidate_rows
+            else None
+        )
+        if (
+            len(candidate_rows) >= 10
+            and candidate_accuracy is not None
+            and candidate_accuracy >= WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE
+        ):
+            derived_confidence_floor = candidate
+            break
+    confidence_floor = derived_confidence_floor
+    high_confidence_rows = [
+        row
+        for row in calibrated_rows
+        if confidence_floor is not None and row[0] >= confidence_floor
+    ]
+    brier_score = (
+        sum((confidence - float(correct)) ** 2 for confidence, correct in calibrated_rows)
+        / len(calibrated_rows)
+        if calibrated_rows
+        else None
+    )
+    high_confidence_accuracy = (
+        sum(1 for _, correct in high_confidence_rows if correct) / len(high_confidence_rows)
+        if high_confidence_rows
+        else None
+    )
+    inter_rater_agreement = (
+        agreement_pair_match_count / agreement_pair_count if agreement_pair_count else None
+    )
+    supplied_inter_rater_agreement = dataset.get("inter_rater_agreement")
+    if not (
+        dataset.get("schema_version") == "wam_success_label_calibration_dataset.v1"
+        and dataset.get("blinded_human_labels") is True
+        and dataset.get("adjudication_completed") is True
+        and _string(dataset.get("provider")) == provider
+        and _string(dataset.get("model")) == model
+        and _string(dataset.get("prompt_template_sha256")).lower() == prompt_template_sha256
+        and set(_string_list(dataset.get("criterion_ids"))) == required_criterion_ids
+        and len(registered_rater_ids) >= 2
+        and len(rows) == typed_row_count
+        and len(calibrated_rows) >= 20
+        and len(high_confidence_rows) >= 10
+        and inter_rater_agreement is not None
+        and 0.6 <= inter_rater_agreement <= 1.0
+        and isinstance(supplied_inter_rater_agreement, (int, float))
+        and not isinstance(supplied_inter_rater_agreement, bool)
+        and math.isclose(
+            float(supplied_inter_rater_agreement),
+            inter_rater_agreement,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+        and brier_score is not None
+        and brier_score <= 0.1
+        and high_confidence_accuracy is not None
+        and confidence_floor is not None
+        and high_confidence_accuracy >= WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE
+        and declared_confidence_floor is not None
+        and math.isclose(
+            declared_confidence_floor,
+            confidence_floor,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+    ):
+        blockers.append("wam_success_label_calibration_dataset_result_invalid")
+    if (
+        declared_confidence_floor is not None
+        and derived_confidence_floor is not None
+        and not math.isclose(
+            declared_confidence_floor,
+            derived_confidence_floor,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+    ):
+        blockers.append("wam_success_label_calibration_threshold_mismatch")
+    blockers = sorted(set(blockers))
+    return {
+        "status": "validated" if not blockers else "blocked",
+        "artifact_path": str(artifact_path) if artifact_path else None,
+        "artifact_sha256": pinned_sha256 or None,
+        "provider": provider or None,
+        "model": model or None,
+        "prompt_template_sha256": prompt_template_sha256 or None,
+        "confidence_floor": confidence_floor,
+        "declared_confidence_floor": declared_confidence_floor,
+        "calibration_method": calibration.get("calibration_method"),
+        "calibration_row_count": len(calibrated_rows),
+        "unique_calibration_sample_count": len(sample_ids),
+        "high_confidence_row_count": len(high_confidence_rows),
+        "brier_score": brier_score,
+        "high_confidence_accuracy": high_confidence_accuracy,
+        "inter_rater_agreement": inter_rater_agreement,
+        "reviewer_attestation_status": reviewer_attestation.get("status"),
+        "blockers": blockers,
+    }
+
+
 def _normalize_wam_success_labels(
     *,
     command_payload: Mapping[str, Any],
@@ -2677,6 +3168,12 @@ def _normalize_wam_success_labels(
     visual_smoke_status: str,
     visual_rollout_useful: bool,
 ) -> dict[str, Any]:
+    required_criterion_ids = {
+        "end_effector_reaches_target",
+        "target_state_change_visible",
+        "robot_caused_target_motion",
+    }
+    rollout_ids = [_string(row.get("rollout_id")) for row in rollouts if isinstance(row, Mapping)]
     rollout_by_id = {
         _string(row.get("rollout_id")): dict(row)
         for row in rollouts
@@ -2684,21 +3181,62 @@ def _normalize_wam_success_labels(
     }
     labels: list[dict[str, Any]] = []
     blockers = _string_list(command_payload.get("blockers"))
+    calibration = _success_label_calibration_contract(
+        command_payload=command_payload,
+        required_criterion_ids=required_criterion_ids,
+    )
+    blockers.extend(_string_list(calibration.get("blockers")))
+    calibrated_confidence_floor = calibration.get("confidence_floor")
+    if any(not rollout_id for rollout_id in rollout_ids):
+        blockers.append("wam_success_label_source_rollout_id_missing")
+    if len(set(rollout_ids)) != len(rollout_ids):
+        blockers.append("wam_success_label_source_rollout_ids_duplicate")
     payload_status = _string(command_payload.get("status"))
     if payload_status and payload_status not in {"completed", "completed_review_required"}:
         blockers.append("wam_success_label_command_payload_not_completed")
     if rollouts and not visual_rollout_useful:
         blockers.append("blocked_generated_rollout_not_visually_useful_for_success_review")
-    for item in command_payload.get("labels", []) or []:
-        if not isinstance(item, Mapping):
-            continue
+    raw_labels = [
+        dict(item) for item in command_payload.get("labels", []) or [] if isinstance(item, Mapping)
+    ]
+    inference_input_sha256 = success_label_inference_input_sha256(
+        rollouts,
+        criterion_ids=sorted(required_criterion_ids),
+    )
+    inference_runtime_result_id = _string(command_payload.get("inference_runtime_result_id"))
+    inference_signed_payload = {
+        "schema_version": "wam_success_label_inference_result.v1",
+        "provider": _string(command_payload.get("provider")),
+        "model": _string(command_payload.get("model")),
+        "prompt_template_sha256": _string(command_payload.get("prompt_template_sha256")).lower(),
+        "inference_input_manifest_sha256": inference_input_sha256,
+        "inference_runtime_result_id": inference_runtime_result_id,
+        "labels": raw_labels,
+    }
+    inference_attestation = validate_trusted_ed25519_attestation(
+        _mapping(command_payload.get("inference_attestation")),
+        signed_payload=inference_signed_payload,
+        prefix="wam_success_label_inference_attestation",
+        trusted_public_key_sha256_env=(WAM_SUCCESS_LABEL_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV),
+    )
+    blockers.extend(_string_list(inference_attestation.get("blockers")))
+    if not inference_runtime_result_id:
+        blockers.append("wam_success_label_inference_runtime_result_id_missing")
+    if (
+        _string(command_payload.get("inference_input_manifest_sha256")).lower()
+        != inference_input_sha256
+    ):
+        blockers.append("wam_success_label_inference_input_manifest_mismatch")
+    label_rollout_counts: dict[str, int] = {}
+    for item in raw_labels:
         rollout_id = _string(item.get("rollout_id"))
+        label_rollout_counts[rollout_id] = label_rollout_counts.get(rollout_id, 0) + 1
         source_rollout = rollout_by_id.get(rollout_id, {})
         if not source_rollout:
             blockers.append("wam_success_label_unknown_rollout_id")
             continue
-        if not bool(item.get("visual_evidence_used", True)):
-            blockers.append("wam_success_label_missing_visual_evidence")
+        if item.get("visual_evidence_used") is not True:
+            blockers.append("wam_success_label_visual_evidence_used_not_explicit_true")
             continue
         success_value = item.get("success")
         if not isinstance(success_value, bool):
@@ -2710,11 +3248,103 @@ def _normalize_wam_success_labels(
         confidence = (
             float(confidence_value)
             if isinstance(confidence_value, (int, float))
+            and not isinstance(confidence_value, bool)
+            and math.isfinite(float(confidence_value))
+            and 0.0 <= float(confidence_value) <= 1.0
             else None
         )
+        calibrated_confidence_passed = bool(
+            calibration.get("status") == "validated"
+            and confidence is not None
+            and math.isfinite(confidence)
+            and isinstance(calibrated_confidence_floor, (int, float))
+            and float(calibrated_confidence_floor) <= confidence <= 1.0
+        )
+        criterion_results = [
+            dict(row) for row in item.get("criterion_results", []) or [] if isinstance(row, Mapping)
+        ]
+        criterion_ids = [_string(row.get("criterion_id")) for row in criterion_results]
+        criterion_evidence_refs = [
+            ref for row in criterion_results for ref in _string_list(row.get("evidence_refs"))
+        ]
+        episode_integrity = _ordered_episode_integrity(source_rollout)
+        source_video_paths = set(episode_integrity.get("source_video_paths") or set())
+        blockers.extend(_string_list(episode_integrity.get("blockers")))
+        video_probe_cache: dict[Path, dict[str, Any]] = {}
+        criterion_ref_validations = [
+            _validate_success_label_evidence_refs(
+                _string_list(row.get("evidence_refs")),
+                source_video_paths=source_video_paths,
+                video_probe_cache=video_probe_cache,
+            )
+            for row in criterion_results
+        ]
+        evidence_covered_source_videos = {
+            path for _, bound_paths in criterion_ref_validations for path in bound_paths
+        }
+        full_episode_evidence_coverage = bool(
+            source_video_paths and evidence_covered_source_videos == source_video_paths
+        )
+        criterion_evidence_files_valid = bool(
+            criterion_evidence_refs
+            and source_video_paths
+            and criterion_ref_validations
+            and all(
+                files_valid and bound_paths
+                for files_valid, bound_paths in criterion_ref_validations
+            )
+            and full_episode_evidence_coverage
+        )
+        criteria_complete = bool(
+            criterion_results
+            and len(criterion_results) == len(required_criterion_ids)
+            and len(set(criterion_ids)) == len(criterion_ids)
+            and set(criterion_ids) == required_criterion_ids
+            and all(
+                criterion_id
+                and isinstance(row.get("passed"), bool)
+                and _string_list(row.get("evidence_refs"))
+                for criterion_id, row in zip(criterion_ids, criterion_results)
+            )
+            and criterion_evidence_files_valid
+        )
+        criterion_verdict_matches = bool(
+            criteria_complete
+            and (
+                (
+                    success_value is True
+                    and all(row.get("passed") is True for row in criterion_results)
+                )
+                or (
+                    success_value is False
+                    and any(row.get("passed") is False for row in criterion_results)
+                )
+            )
+        )
+        ordered_step_videos = [
+            dict(row)
+            for row in source_rollout.get("ordered_step_videos", []) or []
+            if isinstance(row, Mapping)
+        ]
+        full_episode_order_verified = (
+            bool(episode_integrity.get("status") == "validated") and full_episode_evidence_coverage
+        )
+        if not calibrated_confidence_passed:
+            blockers.append("wam_success_label_confidence_below_calibrated_floor")
+        if not criteria_complete:
+            blockers.append("wam_success_label_criterion_subresults_missing_or_invalid")
+            if set(criterion_ids) != required_criterion_ids:
+                blockers.append("wam_success_label_registered_criterion_set_mismatch")
+            if not criterion_evidence_files_valid:
+                blockers.append("wam_success_label_criterion_evidence_file_missing")
+        elif not criterion_verdict_matches:
+            blockers.append("wam_success_label_criterion_verdict_mismatch")
+        if not full_episode_order_verified:
+            blockers.append("wam_success_label_full_episode_order_not_verified")
         labels.append(
             {
-                "label_id": _string(item.get("label_id")) or f"wam_success_{rollout_id or len(labels) + 1}",
+                "label_id": _string(item.get("label_id"))
+                or f"wam_success_{rollout_id or len(labels) + 1}",
                 "rollout_id": rollout_id or None,
                 "scenario_eval_run_id": item.get("scenario_eval_run_id")
                 or source_rollout.get("scenario_eval_run_id"),
@@ -2729,6 +3359,17 @@ def _normalize_wam_success_labels(
                 ),
                 "success": success_value,
                 "confidence": confidence,
+                "calibrated_confidence_floor": calibrated_confidence_floor,
+                "calibration_contract": calibration,
+                "calibrated_confidence_passed": calibrated_confidence_passed,
+                "criterion_results": criterion_results,
+                "criteria_complete": criteria_complete,
+                "required_criterion_ids": sorted(required_criterion_ids),
+                "criterion_evidence_files_valid": criterion_evidence_files_valid,
+                "full_episode_evidence_coverage": full_episode_evidence_coverage,
+                "criterion_verdict_matches": criterion_verdict_matches,
+                "full_episode_order_verified": full_episode_order_verified,
+                "ordered_step_video_count": len(ordered_step_videos),
                 "rationale": _string(item.get("rationale")) or None,
                 "task_completion_evidence": item.get("task_completion_evidence")
                 if isinstance(item.get("task_completion_evidence"), list)
@@ -2744,7 +3385,9 @@ def _normalize_wam_success_labels(
                 "label_source": _string(item.get("label_source"))
                 or _string(command_payload.get("provider"))
                 or "wam_success_label_command",
-                "model": _string(item.get("model")) or _string(command_payload.get("model")) or None,
+                "model": _string(item.get("model"))
+                or _string(command_payload.get("model"))
+                or None,
                 "visual_evidence_used": bool(item.get("visual_evidence_used", True)),
                 "visual_smoke_status": visual_smoke_status,
                 "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
@@ -2754,10 +3397,18 @@ def _normalize_wam_success_labels(
                 "media_validity_passed": visual_rollout_useful,
                 "reviewer_verdict_strict_boolean": strict_boolean_verdict,
                 "authoritative_task_success_label": bool(
-                    visual_rollout_useful and strict_boolean_verdict
+                    visual_rollout_useful
+                    and strict_boolean_verdict
+                    and calibrated_confidence_passed
+                    and criterion_verdict_matches
+                    and full_episode_order_verified
                 ),
                 "review_task_success": bool(
-                    visual_rollout_useful and success_value is True
+                    visual_rollout_useful
+                    and success_value is True
+                    and calibrated_confidence_passed
+                    and criterion_verdict_matches
+                    and full_episode_order_verified
                 ),
                 "failure_diagnosis_blocked_by_visual_quality": (
                     success_value is False and not visual_rollout_useful
@@ -2773,18 +3424,32 @@ def _normalize_wam_success_labels(
                 "public_claim_upgrade_allowed": False,
             }
         )
+    for rollout_id in sorted(set(rollout_ids)):
+        count = label_rollout_counts.get(rollout_id, 0)
+        if count == 0:
+            blockers.append(f"wam_success_label_missing_rollout_label:{rollout_id}")
+        elif count > 1:
+            blockers.append(f"wam_success_label_duplicate_rollout_label:{rollout_id}")
+    if len(raw_labels) != len(rollout_ids):
+        blockers.append("wam_success_label_exact_rollout_coverage_required")
     strict_boolean_label_count = sum(
         1 for row in labels if row.get("reviewer_verdict_strict_boolean")
     )
     if labels and strict_boolean_label_count < len(labels):
         blockers.append("wam_success_label_verdict_not_strict_boolean")
+    review_grade_label_count = sum(
+        1 for row in labels if row.get("authoritative_task_success_label") is True
+    )
     status = "completed" if labels and not blockers else "blocked"
     return {
         "schema_version": "wam_success_labels.v1",
         "generated_at": generated_at,
         "status": status,
         "wam_success_label_from_generated_video": bool(
-            labels and not blockers and strict_boolean_label_count == len(labels)
+            labels
+            and not blockers
+            and strict_boolean_label_count == len(labels)
+            and review_grade_label_count == len(labels)
         ),
         "visual_smoke_status": visual_smoke_status,
         "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
@@ -2795,9 +3460,24 @@ def _normalize_wam_success_labels(
             and not blockers
             and visual_rollout_useful
             and strict_boolean_label_count == len(labels)
+            and review_grade_label_count == len(labels)
+        ),
+        "review_grade_label_count": review_grade_label_count,
+        "calibrated_confidence_floor": WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE,
+        "expected_rollout_count": len(rollout_ids),
+        "exact_rollout_label_coverage": bool(
+            rollout_ids
+            and all(rollout_ids)
+            and len(set(rollout_ids)) == len(rollout_ids)
+            and len(raw_labels) == len(rollout_ids)
+            and all(label_rollout_counts.get(rollout_id) == 1 for rollout_id in rollout_ids)
         ),
         "label_count": len(labels),
         "labels": labels,
+        "calibration_contract": calibration,
+        "inference_input_manifest_sha256": inference_input_sha256,
+        "inference_runtime_result_id": inference_runtime_result_id or None,
+        "inference_attestation_status": inference_attestation.get("status"),
         "provider": _string(command_payload.get("provider")) or None,
         "model": _string(command_payload.get("model")) or None,
         "blockers": blockers,
@@ -2846,9 +3526,11 @@ def _generated_rollout_failure_labels(
     for index, source_label in enumerate(failed_success_labels, start=1):
         rollout_id = _string(source_label.get("rollout_id"))
         source_rollout = rollout_by_id.get(rollout_id, {})
-        failure_mode_ids = _string_list(source_label.get("failure_modes")) or _string_list(
-            source_label.get("failure_mode_ids")
-        ) or ["wam_generated_rollout_task_failure"]
+        failure_mode_ids = (
+            _string_list(source_label.get("failure_modes"))
+            or _string_list(source_label.get("failure_mode_ids"))
+            or ["wam_generated_rollout_task_failure"]
+        )
         frame_refs = _failure_frame_or_clip_refs(source_label) or _failure_frame_or_clip_refs(
             source_rollout
         )
@@ -2918,8 +3600,7 @@ def _generated_rollout_failure_labels(
                 "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
                 "visual_review_blockers": visual_review_blockers,
                 "review_grade_failure_diagnosis": bool(
-                    visual_rollout_useful
-                    and review_status != "non_reviewable_failure_hypothesis"
+                    visual_rollout_useful and review_status != "non_reviewable_failure_hypothesis"
                 ),
                 "authoritative_failure_diagnosis": False,
                 "generated_wam_rollout": True,
@@ -3011,9 +3692,7 @@ def _generated_rollout_failure_labels(
         failure_diagnosis_blockers.append("failure_labels_nonreviewable_failure_hypotheses")
     failure_diagnosis_blockers = _dedupe_refs(failure_diagnosis_blockers)
     failure_diagnosis_complete = bool(
-        coverage_complete
-        and not nonreviewable_label_ids
-        and (visual_rollout_useful or not rows)
+        coverage_complete and not nonreviewable_label_ids and (visual_rollout_useful or not rows)
     )
     review_grade_failure_diagnosis = bool(
         rows and failure_diagnosis_complete and visual_rollout_useful
@@ -3021,11 +3700,7 @@ def _generated_rollout_failure_labels(
     return {
         "schema_version": "wam_generated_rollout_failure_labels.v1",
         "generated_at": generated_at,
-        "status": "review_required"
-        if rows
-        else "blocked"
-        if blockers
-        else "no_failures_labeled",
+        "status": "review_required" if rows else "blocked" if blockers else "no_failures_labeled",
         "visual_smoke_status": visual_smoke_status,
         "visual_rollout_useful_for_task_success_review": visual_rollout_useful,
         "visual_review_blockers": visual_review_blockers,
@@ -3191,9 +3866,7 @@ def _normalize_wam_episode_consistency(
                 "inverse_consistent": inverse_value,
                 "confidence": _confidence_or_none(item.get("confidence")),
                 "rationale": _string(item.get("rationale")) or None,
-                "visible_action_alignment_evidence": item.get(
-                    "visible_action_alignment_evidence"
-                )
+                "visible_action_alignment_evidence": item.get("visible_action_alignment_evidence")
                 if isinstance(item.get("visible_action_alignment_evidence"), list)
                 else [],
                 "inconsistency_evidence": item.get("inconsistency_evidence")
@@ -3209,7 +3882,9 @@ def _normalize_wam_episode_consistency(
                 "label_source": _string(item.get("label_source"))
                 or _string(command_payload.get("provider"))
                 or "wam_episode_consistency_command",
-                "model": _string(item.get("model")) or _string(command_payload.get("model")) or None,
+                "model": _string(item.get("model"))
+                or _string(command_payload.get("model"))
+                or None,
                 "proof_effect": "external_episode_consistency_label_on_generated_video_and_trace_context",
                 "task_success_proven": False,
                 "generated_world_rank_fidelity_result_proven": False,
@@ -3235,8 +3910,12 @@ def _normalize_wam_episode_consistency(
         or "wam_episode_consistency_command",
         "model": _string(command_payload.get("model")) or None,
         "forward_inverse_consistency_proven": proven,
-        "forward_dynamics_consistency_proven": forward_proven and evidence_complete and not blockers,
-        "inverse_dynamics_consistency_proven": inverse_proven and evidence_complete and not blockers,
+        "forward_dynamics_consistency_proven": forward_proven
+        and evidence_complete
+        and not blockers,
+        "inverse_dynamics_consistency_proven": inverse_proven
+        and evidence_complete
+        and not blockers,
         "action_conditioned_video_rollout_generated": action_conditioned_video_rollout_generated,
         "action_conditioned_video_rollout_available": action_conditioned_video_rollout_available,
         "provider_output_replay_used": provider_output_replay_used,
@@ -3251,7 +3930,9 @@ def _normalize_wam_episode_consistency(
                 "check_id": "forward_dynamics_consistency",
                 "status": "passed" if proven and forward_proven else "requires_review",
                 "proven": forward_proven and evidence_complete and not blockers,
-                "blockers": [] if forward_proven and evidence_complete and not blockers else sorted(set(blockers)),
+                "blockers": []
+                if forward_proven and evidence_complete and not blockers
+                else sorted(set(blockers)),
                 "scorer": _string(command_payload.get("provider"))
                 or "wam_episode_consistency_command",
                 "proof_scope": "external_vlm_episode_consistency_label",
@@ -3260,7 +3941,9 @@ def _normalize_wam_episode_consistency(
                 "check_id": "inverse_dynamics_consistency",
                 "status": "passed" if proven and inverse_proven else "requires_review",
                 "proven": inverse_proven and evidence_complete and not blockers,
-                "blockers": [] if inverse_proven and evidence_complete and not blockers else sorted(set(blockers)),
+                "blockers": []
+                if inverse_proven and evidence_complete and not blockers
+                else sorted(set(blockers)),
                 "scorer": _string(command_payload.get("provider"))
                 or "wam_episode_consistency_command",
                 "proof_scope": "external_vlm_episode_consistency_label",
@@ -3270,7 +3953,9 @@ def _normalize_wam_episode_consistency(
         if proven
         else sorted(set(blockers or ["external_wam_episode_consistency_scorer_must_pass"])),
         "generated_rollout_termination_reason": (
-            "external_episode_consistency_scorer_passed" if proven else "needs_external_episode_consistency_review"
+            "external_episode_consistency_scorer_passed"
+            if proven
+            else "needs_external_episode_consistency_review"
         ),
         "model_rollout_confidence": None,
         "claim_boundary": {
@@ -3456,9 +4141,7 @@ def _single_step_policy_requery_visual_candidate(
     visual_smoke: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Return whether an early generated frame is usable for one policy requery."""
-    rollout_rows = [
-        row for row in visual_smoke.get("rollouts", []) if isinstance(row, Mapping)
-    ]
+    rollout_rows = [row for row in visual_smoke.get("rollouts", []) if isinstance(row, Mapping)]
     first_rollout = dict(rollout_rows[0]) if rollout_rows else {}
     flags = _mapping(first_rollout.get("visual_quality_flags"))
     sampled_frames = [
@@ -3537,18 +4220,54 @@ def _policy_endpoint_health_url(endpoint_url: str) -> str:
     return endpoint_url.rstrip("/") + "/health"
 
 
-def _probe_policy_requery_endpoint_health(endpoint_url: str, timeout_seconds: float = 2.0) -> dict[str, Any]:
+def _fetch_policy_requery_json(
+    url: str,
+    *,
+    method: str = "GET",
+    data: bytes | None = None,
+    headers: Mapping[str, str] | None = None,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], int]:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise SecurityValidationError(
+            "policy requery endpoint may not contain credentials, query, or fragment"
+        )
+    if data is not None and len(data) > POLICY_REQUERY_MAX_REQUEST_BYTES:
+        raise SecurityValidationError("policy requery request exceeds byte limit")
+    response = fetch_bounded_service_url(
+        url,
+        method=method,
+        data=data,
+        headers=headers,
+        timeout_seconds=max(1, min(int(math.ceil(timeout_seconds)), 30)),
+        max_bytes=POLICY_REQUERY_MAX_RESPONSE_BYTES,
+        allowed_origins=origins_from_env("BLUEPRINT_POLICY_ENDPOINT_ALLOWED_ORIGINS"),
+        allowed_content_types=("application/json",),
+        max_redirects=0,
+    )
+    payload = json.loads(response.body.decode("utf-8") or "{}")
+    if not isinstance(payload, Mapping):
+        raise ValueError("policy_requery_response_not_json_object")
+    if not json_shape_within_limits(payload, max_depth=32, max_items=100_000):
+        raise SecurityValidationError("policy requery JSON exceeds shape limits")
+    return dict(payload), response.status
+
+
+def _probe_policy_requery_endpoint_health(
+    endpoint_url: str, timeout_seconds: float = 2.0
+) -> dict[str, Any]:
     health_url = _policy_endpoint_health_url(endpoint_url)
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(health_url, timeout=timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8") or "{}")
-        if not isinstance(payload, Mapping):
-            raise ValueError("endpoint_health_response_not_json_object")
+        payload, http_status = _fetch_policy_requery_json(
+            health_url,
+            timeout_seconds=timeout_seconds,
+        )
         return {
             "status": "completed",
             "health_url": health_url,
-            "http_status": 200,
+            "http_status": http_status,
             "duration_seconds": round(time.monotonic() - started, 6),
             "health_payload_redacted": _redact(payload),
             "raw_token_values_persisted": False,
@@ -3776,26 +4495,30 @@ def _call_policy_requery_endpoint(
             "blockers": ["blocked_missing_policy_requery_endpoint_or_auth"],
         }
     token = token_file.read_text(encoding="utf-8").strip()
-    request = urllib.request.Request(
-        endpoint_url,
-        data=json.dumps({"observation": dict(observation)}).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-        },
-        method="POST",
-    )
+    if not token:
+        return None, {
+            "status": "blocked",
+            "endpoint_invoked": False,
+            "blockers": ["blocked_empty_policy_requery_auth_token"],
+        }
+    request_body = json.dumps({"observation": dict(observation)}).encode("utf-8")
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8") or "{}")
-        if not isinstance(payload, Mapping):
-            raise ValueError("policy_requery_response_not_json_object")
-        return dict(payload), {
+        payload, http_status = _fetch_policy_requery_json(
+            endpoint_url,
+            method="POST",
+            data=request_body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        return payload, {
             "status": "completed",
             "endpoint_invoked": True,
             "duration_seconds": round(time.monotonic() - started, 6),
-            "http_status": 200,
+            "http_status": http_status,
             "raw_token_values_persisted": False,
             "raw_token_hashes_persisted": False,
         }
@@ -3883,7 +4606,9 @@ def _run_wam_policy_requery(
             "blockers": _string_list(frame_meta.get("blockers")),
         }
     prompt_by_run = {
-        _string(row.get("scenario_eval_run_id")): row for row in task_prompts if isinstance(row, Mapping)
+        _string(row.get("scenario_eval_run_id")): row
+        for row in task_prompts
+        if isinstance(row, Mapping)
     }
     prompt_row = prompt_by_run.get(_string(rollout.get("scenario_eval_run_id")), {})
     observation = {
@@ -3917,7 +4642,9 @@ def _run_wam_policy_requery(
     action = _mapping(payload).get("action") if payload else None
     completed = bool(payload and isinstance(action, Mapping))
     payload_mapping = _mapping(payload)
-    raw_response = _mapping(_mapping(payload_mapping.get("endpoint_metadata")).get("raw_response_redacted"))
+    raw_response = _mapping(
+        _mapping(payload_mapping.get("endpoint_metadata")).get("raw_response_redacted")
+    )
     response_claim_boundary = _mapping(raw_response.get("claim_boundary"))
     policy_id = _string(payload_mapping.get("policy_id") or raw_response.get("policy_id"))
     policy_kind = _string(raw_response.get("policy_kind"))
@@ -3949,9 +4676,7 @@ def _run_wam_policy_requery(
         unitree_g1_hand_policy_output_observed and not provider_replay_used
     )
     real_vla_or_unitree_hand_policy_endpoint_used = unitree_g1_hand_policy_endpoint_used
-    single_step_policy_requery_proven = bool(
-        completed and unitree_g1_hand_policy_endpoint_used
-    )
+    single_step_policy_requery_proven = bool(completed and unitree_g1_hand_policy_endpoint_used)
     if single_step_policy_requery_proven:
         blockers: list[str] = []
     elif completed and provider_replay_used and unitree_g1_hand_policy_output_observed:
@@ -3968,12 +4693,16 @@ def _run_wam_policy_requery(
         blockers = _string_list(endpoint_meta.get("blockers")) or [
             "blocked_policy_requery_missing_action"
         ]
-    status = "completed" if single_step_policy_requery_proven else (
-        "blocked_policy_requery_provider_replay_not_fresh_unitree_hand_policy"
-        if completed and provider_replay_used and unitree_g1_hand_policy_output_observed
-        else "blocked_policy_requery_endpoint_not_unitree_g1_hand_policy"
-        if completed
-        else "blocked_policy_requery_failed"
+    status = (
+        "completed"
+        if single_step_policy_requery_proven
+        else (
+            "blocked_policy_requery_provider_replay_not_fresh_unitree_hand_policy"
+            if completed and provider_replay_used and unitree_g1_hand_policy_output_observed
+            else "blocked_policy_requery_endpoint_not_unitree_g1_hand_policy"
+            if completed
+            else "blocked_policy_requery_failed"
+        )
     )
     return {
         **base,
@@ -4084,9 +4813,7 @@ def run_oscar_cosmos_wam_evaluator(
     locomotion_rows = _read_jsonl(input_dir / "g1_mujoco_locomotion_trace.jsonl")
     g1_projected_skeleton_trace_path = input_dir / "g1_projected_skeleton_trace.jsonl"
     g1_projected_skeleton_rows = _read_jsonl(g1_projected_skeleton_trace_path)
-    g1_projected_skeleton_manifest = _load_json(
-        input_dir / "g1_projected_skeleton_manifest.json"
-    )
+    g1_projected_skeleton_manifest = _load_json(input_dir / "g1_projected_skeleton_manifest.json")
     generic_fk_projection_manifest_path = Path(
         eval_ready_grounding_artifacts.get("robot_fk_projection_manifest", "")
     )
@@ -4112,15 +4839,13 @@ def run_oscar_cosmos_wam_evaluator(
         generic_fk_projection_manifest.get("status") == "completed"
         and generic_fk_projection_rows
         and any(
-            int(row.get("projected_landmark_count") or 0) > 0
-            for row in generic_fk_projection_rows
+            int(row.get("projected_landmark_count") or 0) > 0 for row in generic_fk_projection_rows
         )
     )
     g1_projected_skeleton_available = bool(
         g1_projected_skeleton_rows
         and any(
-            int(row.get("projected_landmark_count") or 0) > 0
-            for row in g1_projected_skeleton_rows
+            int(row.get("projected_landmark_count") or 0) > 0 for row in g1_projected_skeleton_rows
         )
     )
     unitree_controller_proof = _source_unitree_controller_proof(
@@ -4130,18 +4855,12 @@ def run_oscar_cosmos_wam_evaluator(
     write_json(output_dir / "source_unitree_controller_proof.json", unitree_controller_proof)
     videos = _review_videos(input_dir)
     attempts = [
-        dict(item)
-        for item in attempt_trace.get("attempts", []) or []
-        if isinstance(item, Mapping)
+        dict(item) for item in attempt_trace.get("attempts", []) or [] if isinstance(item, Mapping)
     ]
     matrix_runs = [
-        dict(item)
-        for item in scenario_matrix.get("runs", []) or []
-        if isinstance(item, Mapping)
+        dict(item) for item in scenario_matrix.get("runs", []) or [] if isinstance(item, Mapping)
     ]
-    local_model_gate_enabled = bool(
-        allow_wam_model_run or _env_truthy(LOCAL_MODEL_GATE_ENV)
-    )
+    local_model_gate_enabled = bool(allow_wam_model_run or _env_truthy(LOCAL_MODEL_GATE_ENV))
     runtime_discovery = discover_wam_model_runtimes(
         candidates=model_candidates,
         generated_at=generated,
@@ -4222,9 +4941,7 @@ def run_oscar_cosmos_wam_evaluator(
         ),
     )
 
-    wam_input_videos = [
-        row for row in videos if _is_egocentric_wam_input_video(_mapping(row))
-    ]
+    wam_input_videos = [row for row in videos if _is_egocentric_wam_input_video(_mapping(row))]
     diagnostic_review_videos = [
         row for row in videos if not _is_egocentric_wam_input_video(_mapping(row))
     ]
@@ -4241,9 +4958,10 @@ def run_oscar_cosmos_wam_evaluator(
                 rollout_input_blockers.append(f"eval_ready:{blocker}")
         if not grounding_readiness.get("robot_projection_ready"):
             rollout_input_blockers.append("blocked_eval_ready_robot_projection_not_ready")
-        if _mapping(eval_ready_grounding.get("camera_calibration_quality_gate")).get(
-            "status"
-        ) == "blocked":
+        if (
+            _mapping(eval_ready_grounding.get("camera_calibration_quality_gate")).get("status")
+            == "blocked"
+        ):
             rollout_input_blockers.append("blocked_eval_ready_camera_calibration_quality")
     rollout_input_status = (
         "ready_for_model"
@@ -4267,15 +4985,11 @@ def run_oscar_cosmos_wam_evaluator(
             "normalized_policy_action_trace_jsonl": str(
                 input_dir / "normalized_policy_action_trace.jsonl"
             ),
-            "g1_mujoco_locomotion_trace_jsonl": str(
-                input_dir / "g1_mujoco_locomotion_trace.jsonl"
-            ),
+            "g1_mujoco_locomotion_trace_jsonl": str(input_dir / "g1_mujoco_locomotion_trace.jsonl"),
             "g1_projected_skeleton_trace_jsonl": str(g1_projected_skeleton_trace_path)
             if g1_projected_skeleton_trace_path.is_file()
             else None,
-            "g1_projected_skeleton_manifest": str(
-                input_dir / "g1_projected_skeleton_manifest.json"
-            )
+            "g1_projected_skeleton_manifest": str(input_dir / "g1_projected_skeleton_manifest.json")
             if (input_dir / "g1_projected_skeleton_manifest.json").is_file()
             else None,
             "eval_ready_task_grounding": eval_ready_grounding_artifacts.get(
@@ -4324,9 +5038,9 @@ def run_oscar_cosmos_wam_evaluator(
             if eval_ready_grounding_source_path
             else None,
             "status": eval_ready_grounding.get("status"),
-            "learned_rollout_request_ready": _mapping(
-                eval_ready_grounding.get("readiness")
-            ).get("learned_rollout_request_ready"),
+            "learned_rollout_request_ready": _mapping(eval_ready_grounding.get("readiness")).get(
+                "learned_rollout_request_ready"
+            ),
             "robot_projection_ready": _mapping(eval_ready_grounding.get("readiness")).get(
                 "robot_projection_ready"
             ),
@@ -4515,8 +5229,13 @@ def run_oscar_cosmos_wam_evaluator(
         generated_blocker_set.add("blocked_generated_rollout_video_not_reviewable")
         for validation in generated_video_review_validations:
             generated_blocker_set.update(_string_list(validation.get("blockers")))
-    generated_blockers = [] if rollouts else sorted(
-        generated_blocker_set or {"blocked_missing_wam_runtime", "blocked_missing_wam_model_checkpoint"}
+    generated_blockers = (
+        []
+        if rollouts
+        else sorted(
+            generated_blocker_set
+            or {"blocked_missing_wam_runtime", "blocked_missing_wam_model_checkpoint"}
+        )
     )
     model_payload_mode = _string(model_payload.get("mode"))
     provider_output_replay_used = model_payload_mode == "replay_existing_provider_output"
@@ -4536,15 +5255,10 @@ def run_oscar_cosmos_wam_evaluator(
         model_execution_detail=model_execution_detail,
         provider_output_replay_used=provider_output_replay_used,
     )
-    provider_wam_model_output_proven = _provider_wam_payload_proves_model_output(
-        model_payload
-    )
+    provider_wam_model_output_proven = _provider_wam_payload_proves_model_output(model_payload)
     learned_wam_model_ran_or_imported = bool(
         learned_wam_model_output_available
-        and (
-            fresh_wam_model_execution_proven
-            or provider_wam_model_output_proven
-        )
+        and (fresh_wam_model_execution_proven or provider_wam_model_output_proven)
     )
     openvla_provider_smoke_imported = bool(
         openvla_provider_smoke_proof.get("openvla_policy_action_command_imported")
@@ -4553,9 +5267,7 @@ def run_oscar_cosmos_wam_evaluator(
         openvla_provider_smoke_proof.get("openvla_policy_action_command_ran")
     )
     unitree_policy_action_command_ran = bool(
-        unitree_unifolm_provider_smoke_proof.get(
-            "unitree_unifolm_policy_action_command_ran"
-        )
+        unitree_unifolm_provider_smoke_proof.get("unitree_unifolm_policy_action_command_ran")
     )
     unitree_locomotion_policy_ran = bool(
         unitree_controller_proof.get("unitree_locomotion_policy_ran")
@@ -4627,17 +5339,15 @@ def run_oscar_cosmos_wam_evaluator(
             "visual_rollout_useful_for_task_success_review"
         )
     )
-    single_step_policy_requery_visual_candidate = (
-        _single_step_policy_requery_visual_candidate(visual_smoke)
+    single_step_policy_requery_visual_candidate = _single_step_policy_requery_visual_candidate(
+        visual_smoke
     )
     write_json(
         output_dir / "single_step_wam_policy_requery_visual_candidate.json",
         single_step_policy_requery_visual_candidate,
     )
     single_step_policy_requery_frame_useful = bool(
-        single_step_policy_requery_visual_candidate.get(
-            "single_step_policy_requery_frame_useful"
-        )
+        single_step_policy_requery_visual_candidate.get("single_step_policy_requery_frame_useful")
     )
     visual_quality_blockers = (
         sorted(
@@ -4679,11 +5389,23 @@ def run_oscar_cosmos_wam_evaluator(
         else "blocked_missing_generated_rollout",
         "source_mujoco_endpoint_eval_job_dir": str(input_dir),
         "generated_rollout_results": str(output_dir / "wam_generated_rollout_results.json"),
-        "generated_rollout_visual_smoke": str(output_dir / "wam_generated_rollout_visual_smoke.json"),
+        "generated_rollout_visual_smoke": str(
+            output_dir / "wam_generated_rollout_visual_smoke.json"
+        ),
         "generated_rollout_visual_smoke_status": visual_smoke_status,
         "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
         "rollouts": rollouts,
-        "blockers": visual_quality_blockers if rollouts and not visual_rollout_useful else generated_blockers,
+        "inference_input_manifest_sha256": success_label_inference_input_sha256(
+            rollouts,
+            criterion_ids=(
+                "end_effector_reaches_target",
+                "target_state_change_visible",
+                "robot_caused_target_motion",
+            ),
+        ),
+        "blockers": visual_quality_blockers
+        if rollouts and not visual_rollout_useful
+        else generated_blockers,
         "task_prompts": rollout_input_manifest["task_prompts"],
         "eval_ready_task_grounding": {
             "available": bool(eval_ready_grounding),
@@ -4727,11 +5449,13 @@ def run_oscar_cosmos_wam_evaluator(
         if not configured_success_label_command:
             success_label_blockers.append("missing_wam_success_label_command")
         if not success_label_blockers:
-            success_label_command_payload, success_label_command_result = _run_wam_success_label_command(
-                command=configured_success_label_command,
-                input_path=output_dir / "wam_success_label_request.json",
-                output_path=output_dir / WAM_SUCCESS_LABEL_COMMAND_OUTPUT,
-                timeout_seconds=timeout_seconds,
+            success_label_command_payload, success_label_command_result = (
+                _run_wam_success_label_command(
+                    command=configured_success_label_command,
+                    input_path=output_dir / "wam_success_label_request.json",
+                    output_path=output_dir / WAM_SUCCESS_LABEL_COMMAND_OUTPUT,
+                    timeout_seconds=timeout_seconds,
+                )
             )
             if success_label_command_result.get("status") != "completed":
                 success_label_blockers.extend(
@@ -4788,7 +5512,9 @@ def run_oscar_cosmos_wam_evaluator(
         else "blocked_missing_generated_rollout",
         "source_mujoco_endpoint_eval_job_dir": str(input_dir),
         "generated_rollout_results": str(output_dir / "wam_generated_rollout_results.json"),
-        "generated_rollout_visual_smoke": str(output_dir / "wam_generated_rollout_visual_smoke.json"),
+        "generated_rollout_visual_smoke": str(
+            output_dir / "wam_generated_rollout_visual_smoke.json"
+        ),
         "generated_rollout_visual_smoke_status": visual_smoke_status,
         "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
         "rollouts": rollouts,
@@ -4797,9 +5523,7 @@ def run_oscar_cosmos_wam_evaluator(
             "normalized_policy_action_trace_jsonl": str(
                 input_dir / "normalized_policy_action_trace.jsonl"
             ),
-            "g1_mujoco_locomotion_trace_jsonl": str(
-                input_dir / "g1_mujoco_locomotion_trace.jsonl"
-            ),
+            "g1_mujoco_locomotion_trace_jsonl": str(input_dir / "g1_mujoco_locomotion_trace.jsonl"),
             "normalized_attempt_trace": str(input_dir / "normalized_attempt_trace.json"),
             "eval_ready_task_grounding": eval_ready_grounding_artifacts.get(
                 "eval_ready_task_grounding"
@@ -4898,9 +5622,7 @@ def run_oscar_cosmos_wam_evaluator(
         if consistency_command_result is not None:
             consistency["command_result"] = consistency_command_result
     write_json(output_dir / "wam_consistency_checks.json", consistency)
-    forward_inverse_consistency_proven = bool(
-        consistency.get("forward_inverse_consistency_proven")
-    )
+    forward_inverse_consistency_proven = bool(consistency.get("forward_inverse_consistency_proven"))
     forward_inverse_scorer_ran = bool(consistency.get("external_episode_consistency_scorer_ran"))
 
     write_json(output_dir / "wam_success_labels.json", success_labels)
@@ -4961,9 +5683,9 @@ def run_oscar_cosmos_wam_evaluator(
             eval_ready_grounding.get("camera_calibration_quality_gate")
         ).get("status"),
         "robot_fk_projection_status": generic_fk_projection_manifest.get("status"),
-        "handle_proxy_state": _mapping(
-            eval_ready_grounding.get("handle_proxy_state_check")
-        ).get("handle_proxy_state"),
+        "handle_proxy_state": _mapping(eval_ready_grounding.get("handle_proxy_state_check")).get(
+            "handle_proxy_state"
+        ),
         "handle_proxy_on_candidate": bool(
             _mapping(eval_ready_grounding.get("handle_proxy_state_check")).get("on_candidate")
         ),
@@ -4999,6 +5721,7 @@ def run_oscar_cosmos_wam_evaluator(
     write_json(output_dir / "wam_consistency_score.json", wam_consistency_score)
     calibration_anchor_check = evaluate_wam_calibration_anchors(
         _load_json(input_dir / "policy_ranking_ladder_validation.json") or None,
+        allowed_source_root=input_dir,
         generated_at=generated,
     )
     write_json(output_dir / "wam_calibration_anchor_check.json", calibration_anchor_check)
@@ -5075,12 +5798,16 @@ def run_oscar_cosmos_wam_evaluator(
         wam_policy_requery=wam_policy_requery,
         policy_requery_ran=policy_requery_ran,
     )
-    write_json(output_dir / "wam_manipulation_loop_readiness_manifest.json", manipulation_loop_readiness)
+    write_json(
+        output_dir / "wam_manipulation_loop_readiness_manifest.json", manipulation_loop_readiness
+    )
 
     wam_policy_loop_manifest = {
         "schema_version": "wam_policy_loop_manifest.v1",
         "generated_at": generated,
-        "status": "completed" if rollout_input_manifest["status"] == "ready_for_model" else "blocked",
+        "status": "completed"
+        if rollout_input_manifest["status"] == "ready_for_model"
+        else "blocked",
         "target_architecture": (
             "policy endpoint observes image/state -> policy emits action chunk -> WAM predicts "
             "next video/world observation -> policy observes generated next observation -> repeat "
@@ -5097,9 +5824,9 @@ def run_oscar_cosmos_wam_evaluator(
         "camera_calibration_quality_status": _mapping(
             eval_ready_grounding.get("camera_calibration_quality_gate")
         ).get("status"),
-        "handle_proxy_state": _mapping(
-            eval_ready_grounding.get("handle_proxy_state_check")
-        ).get("handle_proxy_state"),
+        "handle_proxy_state": _mapping(eval_ready_grounding.get("handle_proxy_state_check")).get(
+            "handle_proxy_state"
+        ),
         "selected_model_candidate": runtime_discovery.get("selected_candidate"),
         "model_command_executed_this_invocation": model_command_executed_this_invocation,
         "fresh_model_command_executed_this_invocation": fresh_model_command_executed_this_invocation,
@@ -5198,9 +5925,7 @@ def run_oscar_cosmos_wam_evaluator(
         "policy_requery_endpoint_readiness_manifest": str(
             output_dir / "policy_requery_endpoint_readiness_manifest.json"
         ),
-        "policy_requery_endpoint_readiness_status": policy_requery_endpoint_readiness.get(
-            "status"
-        ),
+        "policy_requery_endpoint_readiness_status": policy_requery_endpoint_readiness.get("status"),
         "live_policy_requery_endpoint_ready": bool(
             policy_requery_endpoint_readiness.get("live_policy_requery_endpoint_ready")
         ),
@@ -5216,9 +5941,7 @@ def run_oscar_cosmos_wam_evaluator(
         ),
         "wam_success_label_from_generated_video": success_label_generated,
         "wam_success_label_blockers": success_label_blockers,
-        "why_wam_success_label_not_run": []
-        if success_label_generated
-        else success_label_blockers,
+        "why_wam_success_label_not_run": [] if success_label_generated else success_label_blockers,
         "failure_diagnosis_status": generated_failure_labels.get("status"),
         "failure_diagnosis_coverage_complete": bool(
             generated_failure_labels.get("failure_diagnosis_coverage_complete")
@@ -5265,15 +5988,11 @@ def run_oscar_cosmos_wam_evaluator(
             "normalized_policy_action_trace_jsonl": str(
                 input_dir / "normalized_policy_action_trace.jsonl"
             ),
-            "g1_mujoco_locomotion_trace_jsonl": str(
-                input_dir / "g1_mujoco_locomotion_trace.jsonl"
-            ),
+            "g1_mujoco_locomotion_trace_jsonl": str(input_dir / "g1_mujoco_locomotion_trace.jsonl"),
             "g1_projected_skeleton_trace_jsonl": str(g1_projected_skeleton_trace_path)
             if g1_projected_skeleton_trace_path.is_file()
             else None,
-            "g1_projected_skeleton_manifest": str(
-                input_dir / "g1_projected_skeleton_manifest.json"
-            )
+            "g1_projected_skeleton_manifest": str(input_dir / "g1_projected_skeleton_manifest.json")
             if (input_dir / "g1_projected_skeleton_manifest.json").is_file()
             else None,
             "review_video_selection_manifest": str(
@@ -5388,9 +6107,7 @@ def run_oscar_cosmos_wam_evaluator(
             openvla_provider_smoke_proof.get("openvla_model_executed")
         ),
         "openvla_provider_smoke_job_dir": openvla_provider_smoke_proof.get("job_dir"),
-        "openvla_policy_action_from_provider_smoke": openvla_provider_smoke_proof.get(
-            "action"
-        ),
+        "openvla_policy_action_from_provider_smoke": openvla_provider_smoke_proof.get("action"),
         "openvla_provider_smoke_imported": openvla_provider_smoke_imported,
         "openvla_policy_action_command_imported": openvla_provider_smoke_imported,
         "unitree_unifolm_provider_smoke_proof": unitree_unifolm_provider_smoke_proof,
@@ -5463,9 +6180,7 @@ def run_oscar_cosmos_wam_evaluator(
         ),
         "full_closed_loop_episode_proven": False,
         "wam_policy_requery_status": wam_policy_requery.get("status"),
-        "policy_requery_endpoint_readiness_status": policy_requery_endpoint_readiness.get(
-            "status"
-        ),
+        "policy_requery_endpoint_readiness_status": policy_requery_endpoint_readiness.get("status"),
         "live_policy_requery_endpoint_ready": bool(
             policy_requery_endpoint_readiness.get("live_policy_requery_endpoint_ready")
         ),
@@ -5592,7 +6307,9 @@ def run_oscar_cosmos_wam_evaluator(
     summary = {
         "schema_version": WAM_EVALUATOR_SCHEMA_VERSION,
         "generated_at": generated,
-        "status": "completed" if rollout_input_manifest["status"] == "ready_for_model" else "blocked",
+        "status": "completed"
+        if rollout_input_manifest["status"] == "ready_for_model"
+        else "blocked",
         "job_dir": str(output_dir),
         "input_job_dir": str(input_dir),
         "wam_generated_rollout_status": generated_manifest["status"],
@@ -5681,9 +6398,7 @@ def run_oscar_cosmos_wam_evaluator(
         ),
         "full_closed_loop_episode_proven": False,
         "wam_policy_requery_status": wam_policy_requery.get("status"),
-        "policy_requery_endpoint_readiness_status": policy_requery_endpoint_readiness.get(
-            "status"
-        ),
+        "policy_requery_endpoint_readiness_status": policy_requery_endpoint_readiness.get("status"),
         "live_policy_requery_endpoint_ready": bool(
             policy_requery_endpoint_readiness.get("live_policy_requery_endpoint_ready")
         ),
@@ -5749,9 +6464,7 @@ def run_oscar_cosmos_wam_evaluator(
         == "calibrated_evaluator_grade",
         "wam_score_claim_gate_status": wam_score_claim_gate["status"],
         "wam_consistency_score": wam_consistency_score.get("consistency_score"),
-        "wam_calibration_anchors_passed": bool(
-            calibration_anchor_check.get("anchors_passed")
-        ),
+        "wam_calibration_anchors_passed": bool(calibration_anchor_check.get("anchors_passed")),
         "blockers": visual_quality_blockers
         if visual_quality_blockers
         else generated_blockers
@@ -5761,10 +6474,16 @@ def run_oscar_cosmos_wam_evaluator(
             "wam_model_runtime_discovery": str(output_dir / "wam_model_runtime_discovery.json"),
             "wam_backend_strategy_manifest": str(output_dir / "wam_backend_strategy_manifest.json"),
             "wam_rollout_input_manifest": str(output_dir / "wam_rollout_input_manifest.json"),
-            "wam_action_conditioning_manifest": str(output_dir / "wam_action_conditioning_manifest.json"),
-            "wam_generated_rollout_manifest": str(output_dir / "wam_generated_rollout_manifest.json"),
+            "wam_action_conditioning_manifest": str(
+                output_dir / "wam_action_conditioning_manifest.json"
+            ),
+            "wam_generated_rollout_manifest": str(
+                output_dir / "wam_generated_rollout_manifest.json"
+            ),
             "wam_generated_rollout_results": str(output_dir / "wam_generated_rollout_results.json"),
-            "wam_generated_rollout_visual_smoke": str(output_dir / "wam_generated_rollout_visual_smoke.json"),
+            "wam_generated_rollout_visual_smoke": str(
+                output_dir / "wam_generated_rollout_visual_smoke.json"
+            ),
             "wam_success_label_request": str(output_dir / "wam_success_label_request.json"),
             "wam_episode_consistency_request": str(
                 output_dir / "wam_episode_consistency_request.json"
@@ -5774,9 +6493,7 @@ def run_oscar_cosmos_wam_evaluator(
             "failure_labels": str(output_dir / "failure_labels.json"),
             "wam_policy_scorecard": str(output_dir / "wam_policy_scorecard.json"),
             "wam_consistency_score": str(output_dir / "wam_consistency_score.json"),
-            "wam_calibration_anchor_check": str(
-                output_dir / "wam_calibration_anchor_check.json"
-            ),
+            "wam_calibration_anchor_check": str(output_dir / "wam_calibration_anchor_check.json"),
             "wam_score_claim_gate": str(output_dir / "wam_score_claim_gate.json"),
             "wam_prediction_outcome_correlation_ledger": str(
                 output_dir / "wam_prediction_outcome_correlation_ledger.json"
@@ -5826,7 +6543,9 @@ def run_oscar_cosmos_wam_evaluator(
             "source_unitree_controller_proof": str(
                 output_dir / "source_unitree_controller_proof.json"
             ),
-            "policy_cloud_gpu_setup_manifest": str(output_dir / "policy_cloud_gpu_setup_manifest.json"),
+            "policy_cloud_gpu_setup_manifest": str(
+                output_dir / "policy_cloud_gpu_setup_manifest.json"
+            ),
             "local_model_source_tree_discovery": str(
                 output_dir / "local_model_source_tree_discovery.json"
             ),

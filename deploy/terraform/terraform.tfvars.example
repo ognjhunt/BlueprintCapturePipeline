@@ -1,6 +1,8 @@
 # Blueprint Capture Pipeline - Terraform Variables
 #
-# Copy this file to terraform.tfvars and customize for your deployment.
+# Non-secret reference only. Production deploys use deploy/scripts/deploy.sh,
+# which supplies these values through TF_VAR_* after validating the remote
+# backend. Do not create a persistent secret-bearing terraform.tfvars file.
 
 # Required
 project_id = "blueprint-8c1ca"
@@ -8,21 +10,21 @@ project_id = "blueprint-8c1ca"
 # Primary region for all resources
 primary_region = "us-central1"
 
-# Secondary regions for overflow and geographic distribution
+# US-only beta secondary regions for overflow
 # Set to [] for single-region deployment
-secondary_regions = ["us-east1", "europe-west1"]
+secondary_regions = ["us-east1"]
 
 # Firebase Storage bucket (typically {project_id}.appspot.com)
 storage_bucket = "blueprint-8c1ca.appspot.com"
 
 # Release images for the pipeline and GPU services.
-# Use the git-SHA tag produced by deploy/scripts/deploy.sh or immutable
-# @sha256 digests from the deployment manifest; do not use :latest.
-docker_image               = "gcr.io/blueprint-8c1ca/blueprint-pipeline:0123456789ab"
-privacy_sam3_image         = "gcr.io/blueprint-8c1ca/sam3-privacy:0123456789ab"
-privacy_vip_image          = "gcr.io/blueprint-8c1ca/vip-privacy:0123456789ab"
-privacy_deepprivacy2_image = "gcr.io/blueprint-8c1ca/deepprivacy2-privacy:0123456789ab"
-video_to_world_image       = "gcr.io/blueprint-8c1ca/video-to-world:0123456789ab"
+# Production inputs must be immutable @sha256 digests resolved from the
+# exact git-SHA tags by deploy/scripts/deploy.sh.
+docker_image               = "gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+privacy_sam3_image         = "gcr.io/blueprint-8c1ca/sam3-privacy@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+privacy_vip_image          = "gcr.io/blueprint-8c1ca/vip-privacy@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+privacy_deepprivacy2_image = "gcr.io/blueprint-8c1ca/deepprivacy2-privacy@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+video_to_world_image       = "gcr.io/blueprint-8c1ca/video-to-world@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
 # Maximum concurrent pipeline dispatches
 max_concurrent_jobs = 25
@@ -42,11 +44,13 @@ additional_privacy_runner_invoker_members = []
 # Preview + World Labs request-manifest generation
 blueprint_preview_provider = "world_labs"
 worldlabs_default_model    = "Marble 0.1-mini"
+worldlabs_api_key_secret_name = "blueprint-worldlabs-api-key"
 
 # Privacy-safe video preparation
 privacy_pipeline_enabled     = true
 privacy_fail_closed          = true
-video_to_world_runner_token  = ""
+privacy_runner_token_secret_name = "blueprint-privacy-runner-token"
+video_to_world_runner_token_secret_name = "blueprint-video-to-world-runner-token"
 video_to_world_pipeline_preset = "preprocess_plus_alignment"
 video_to_world_command_template = ""
 sam3_weights_path            = ""
@@ -56,8 +60,8 @@ depth_anything_model_path    = ""
 huggingface_token_secret_name = ""
 
 # Blueprint-WebApp sync-back
-pipeline_sync_webapp_url = ""
-pipeline_sync_token      = ""
+pipeline_sync_webapp_url          = "https://example.invalid/api/pipeline-sync"
+pipeline_sync_token_secret_name   = "blueprint-pipeline-sync-token"
 
 # BlueprintCapture extractFrames publisher for large-video ingest requests.
 capture_extract_frames_service_account_email = ""

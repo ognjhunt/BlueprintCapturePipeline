@@ -149,6 +149,9 @@ def _write_frame_artifacts(base_dir: Path, *, frame_count: int = 3) -> list[dict
                 "height": 24,
                 "min_depth_m": float(depth.min()),
                 "max_depth_m": float(depth.max()),
+                "depth_unit": "meters",
+                "metric_depth_truth": True,
+                "depth_measurement_source": "provider_metric_reconstruction",
                 "confidence_range": [0.0, 1.0],
             }
         )
@@ -410,6 +413,120 @@ def test_synthetic_geometry_disabled_env_blocks_dev_fallback(monkeypatch, tmp_pa
 
     result = build_geometry_stage_contract(capture_root)
     assert result.status == "blocked_geometry_unavailable"
+
+
+def test_geometry_verification_rejects_empty_external_and_corrupt_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
+
+    def _invalid_provider(**kwargs):  # type: ignore[no-untyped-def]
+        geometry_root = Path(kwargs["geometry_root"])
+        frames = _write_frame_artifacts(geometry_root)
+        frames[0]["world_from_camera"] = []
+        outside_depth = tmp_path / "outside_depth.npy"
+        np.save(outside_depth, np.ones((24, 32), dtype=np.float32))
+        frames[1]["depth_path"] = str(outside_depth)
+        corrupt_confidence = Path(str(frames[2]["confidence_path"]))
+        corrupt_confidence.write_bytes(b"not-a-decodable-array")
+        return {
+            "intrinsics": {
+                "camera_model": "pinhole",
+                "image_width": 32,
+                "image_height": 24,
+                "fx": 28.0,
+                "fy": 29.0,
+                "cx": 16.0,
+                "cy": 12.0,
+            },
+            "frames": frames,
+            "provider_native_result": True,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 1.0,
+            "p95_pose_delta_sec": 0.01,
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _invalid_provider)
+    result = build_geometry_stage_contract(capture_root)
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    report = json.loads(
+        (capture_root / "pipeline" / "geometry" / "geometry_validation_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    reasons = {reason for rejection in report["rejections"] for reason in rejection["blockers"]}
+
+    assert result.status == "completed_degraded"
+    assert summary["verified_geometry_record_count"] == 0
+    assert summary["scale_assessment"]["pose_coverage"] == 0.0
+    assert summary["scale_assessment"]["depth_coverage"] == 0.0
+    assert summary["ready_for_world_model"] is False
+    assert "geometry_records_failed_verification" in summary["blockers"]
+    assert "world_from_camera_missing_misshaped_or_nonfinite" in reasons
+    assert "depth_tensor_missing_corrupt_or_shape_mismatch" in reasons
+    assert "confidence_tensor_missing_corrupt_or_shape_mismatch" in reasons
+    assert not (capture_root / "pipeline" / "geometry" / "alignment" / "canonical_pointcloud.ply").exists()
+
+
+def test_blocked_rerun_quarantines_prior_tensors_and_clears_descriptor_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_staged_capture(tmp_path)
+    monkeypatch.setenv("VIDEO_TO_WORLD_URL", "http://video-to-world.local")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
+
+    def _valid_provider(**kwargs):  # type: ignore[no-untyped-def]
+        geometry_root = Path(kwargs["geometry_root"])
+        return {
+            "intrinsics": {
+                "image_width": 32,
+                "image_height": 24,
+                "fx": 28.0,
+                "fy": 29.0,
+                "cx": 16.0,
+                "cy": 12.0,
+            },
+            "frames": _write_frame_artifacts(geometry_root),
+            "provider_native_result": True,
+            "site_frame_available": True,
+            "scale_resolved": True,
+            "pose_match_rate": 1.0,
+            "p95_pose_delta_sec": 0.01,
+        }
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _valid_provider)
+    first = build_geometry_stage_contract(capture_root)
+    assert first.status == "completed"
+    assert (capture_root / "pipeline" / "geometry" / "depth" / "depth_000000.npy").is_file()
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SYNTHETIC_GEOMETRY", "0")
+
+    def _blocked_provider(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _blocked_provider)
+    second = build_geometry_stage_contract(capture_root)
+    summary = json.loads(second.summary_path.read_text(encoding="utf-8"))
+    status = json.loads(second.status_path.read_text(encoding="utf-8"))
+    descriptor = json.loads((capture_root / "capture_descriptor.json").read_text(encoding="utf-8"))
+    lineage = json.loads(
+        (capture_root / "pipeline" / "geometry" / "previous_run_lineage.json").read_text(encoding="utf-8")
+    )
+
+    assert second.status == "blocked_geometry_unavailable"
+    assert summary["current_usable_tensor_count"] == 0
+    assert status["current_usable_tensor_count"] == 0
+    assert not list((capture_root / "pipeline" / "geometry").rglob("*.npy"))
+    assert descriptor["geometry_ready"] is False
+    assert descriptor["geometry_live_ready"] is False
+    assert lineage["previous_status"] == "completed"
+    assert Path(lineage["previous_run_archive_path"]).is_dir()
+    assert list(Path(lineage["previous_run_archive_path"]).rglob("*.npy"))
 
 
 def test_assess_geometry_scale_respects_metric_policy() -> None:
@@ -688,7 +805,14 @@ def test_materialization_promotes_android_scaffolding_to_metric_ready_video(tmp_
     assert descriptor["capture_tier"] == "tier2_android"
     assert descriptor["capture_modality"] == "android_plus_scaffolding"
     assert descriptor["evidence_tier"] == "video_with_validated_scaffolding"
-    assert qa_report["status"] == "passed"
+    # Metric scaffolding is accepted, but this legacy fixture deliberately has
+    # no current v3 raw-integrity inventory, so the overall launch QA must stay
+    # degraded rather than laundering legacy bytes into current proof.
+    assert qa_report["status"] == "degraded"
+    checks = {row["name"]: row["passed"] for row in qa_report["checks"]}
+    assert checks["metric_geometry_present"] is True
+    assert checks["scaffolding_validated"] is True
+    assert checks["raw_bundle_integrity"] is False
 
 
 def test_geometry_stage_helper_edges(monkeypatch, tmp_path: Path) -> None:
@@ -783,7 +907,7 @@ def test_geometry_stage_helper_edges(monkeypatch, tmp_path: Path) -> None:
         video_probe={"width": 320, "height": 240, "duration_seconds": 2.0},
         provider_error=RuntimeError("offline"),
     )
-    assert fallback["intrinsics"]["fx"] == 320.0
+    assert fallback["intrinsics"]["fx"] == 32.0
 
     privacy_mask = capture_root / "privacy" / "masks" / "mask.png"
     privacy_mask.parent.mkdir(parents=True)
@@ -799,7 +923,8 @@ def test_geometry_stage_helper_edges(monkeypatch, tmp_path: Path) -> None:
     assert mask_manifest["mask_source"] == "privacy_processing"
     assert mask_manifest["artifacts"][0]["relative_path"] == "privacy/masks/mask.png"
 
-    source_pointcloud = tmp_path / "source.ply"
+    source_pointcloud = tmp_path / "canonical-geometry" / "provider" / "source.ply"
+    source_pointcloud.parent.mkdir(parents=True)
     source_pointcloud.write_text("ply\ncopied\n", encoding="utf-8")
     canonical = _build_canonical_geometry_artifacts(
         context=context,
@@ -845,8 +970,11 @@ def test_geometry_stage_da3_and_empty_frame_edges(monkeypatch, tmp_path: Path) -
         return {"frames": []}
 
     monkeypatch.setattr(geometry_stage, "run_video_to_world_provider", _empty_provider)
-    with pytest.raises(PipelineError, match="produced no frame records"):
-        build_geometry_stage_contract(capture_root)
+    blocked = build_geometry_stage_contract(capture_root)
+    assert blocked.status == "blocked_geometry_unavailable"
+    blocked_summary = json.loads(blocked.summary_path.read_text(encoding="utf-8"))
+    assert blocked_summary["current_usable_tensor_count"] == 0
+    assert blocked_summary["blocked_reason"] == "provider_returned_zero_frame_records"
 
     def _da3_provider_without_intrinsics(**kwargs):  # type: ignore[no-untyped-def]
         geometry_root = Path(kwargs["geometry_root"])

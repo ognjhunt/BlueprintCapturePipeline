@@ -17,7 +17,8 @@ import struct
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
-from xml.etree import ElementTree as ET
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from .common import PipelineError, ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
@@ -1223,7 +1224,7 @@ def inspect_obj_asset(path: Path) -> Dict[str, Any]:
 def _inspect_xml_asset(path: Path) -> Dict[str, Any]:
     try:
         root = ET.parse(path).getroot()
-    except ET.ParseError as exc:
+    except (ET.ParseError, DefusedXmlException) as exc:
         return {
             "asset_type": _asset_type_for_path(path),
             "path": str(path.resolve()),

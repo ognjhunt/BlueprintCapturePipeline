@@ -29,12 +29,19 @@ def _standard_env(args: argparse.Namespace) -> Dict[str, str]:
         {
             "COSMOS_TRAINER_CONFIG_PATH": str(Path(args.trainer_config).resolve()),
             "COSMOS_TRAINER_OUTPUT_DIR": str(Path(args.output_dir).resolve()),
-            "COSMOS_EXPORT_MANIFEST_PATH": str(Path(args.export_manifest).resolve()) if args.export_manifest else "",
-            "COSMOS_CAPTURE_ROOT": str(Path(args.capture_root).resolve()) if args.capture_root else "",
+            "COSMOS_EXPORT_MANIFEST_PATH": str(Path(args.export_manifest).resolve())
+            if args.export_manifest
+            else "",
+            "COSMOS_CAPTURE_ROOT": str(Path(args.capture_root).resolve())
+            if args.capture_root
+            else "",
             "COSMOS_PAIRED_REFERENCE_TARGET_PATH": args.paired_reference_target or "",
             "COSMOS_K_REFERENCE_CONDITIONING_PATH": args.k_reference_conditioning or "",
             "COSMOS_TRAIN_VAL_SPLIT_PATH": args.train_val_split or "",
             "COSMOS_MODEL_ID": str(os.getenv("COSMOS_MODEL_ID") or "nvidia/Cosmos-Predict2.5-2B"),
+            "COSMOS_MODEL_REVISION": str(
+                os.getenv("COSMOS_MODEL_REVISION") or "0d37c7498f54cee3c599d438d895a0a4a8608064"
+            ),
         }
     )
     return env
@@ -51,15 +58,15 @@ def _accelerate_prefix() -> list[str]:
 
 def _trainer_command(args: argparse.Namespace) -> list[str]:
     trainer_command_template = str(
-        os.getenv("COSMOS_TRAINER_COMMAND")
-        or os.getenv("COSMOS_TRAINING_COMMAND")
-        or ""
+        os.getenv("COSMOS_TRAINER_COMMAND") or os.getenv("COSMOS_TRAINING_COMMAND") or ""
     ).strip()
     if trainer_command_template:
         mapping = {
             "trainer_config_path": str(Path(args.trainer_config).resolve()),
             "output_dir": str(Path(args.output_dir).resolve()),
-            "export_manifest_path": str(Path(args.export_manifest).resolve()) if args.export_manifest else "",
+            "export_manifest_path": str(Path(args.export_manifest).resolve())
+            if args.export_manifest
+            else "",
             "capture_root": str(Path(args.capture_root).resolve()) if args.capture_root else "",
             "paired_reference_target_path": args.paired_reference_target or "",
             "k_reference_conditioning_path": args.k_reference_conditioning or "",
@@ -68,9 +75,7 @@ def _trainer_command(args: argparse.Namespace) -> list[str]:
         return shlex.split(trainer_command_template.format_map(mapping))
 
     entrypoint = str(
-        os.getenv("COSMOS_TRAINER_ENTRYPOINT")
-        or os.getenv("COSMOS_VAST_TRAINER_ENTRYPOINT")
-        or ""
+        os.getenv("COSMOS_TRAINER_ENTRYPOINT") or os.getenv("COSMOS_VAST_TRAINER_ENTRYPOINT") or ""
     ).strip()
     if not entrypoint:
         raise RuntimeError(
@@ -123,7 +128,9 @@ def _trainer_command(args: argparse.Namespace) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the configured Cosmos LoRA trainer on a GPU VM")
+    parser = argparse.ArgumentParser(
+        description="Run the configured Cosmos LoRA trainer on a GPU VM"
+    )
     parser.add_argument("--trainer-config", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--export-manifest", default=None)
@@ -143,7 +150,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"command": command}, indent=2))
         return 0
 
-    timeout = max(1, int(args.timeout_seconds or int(os.getenv("COSMOS_TRAINER_TIMEOUT_SECONDS") or "86400")))
+    timeout = max(
+        1, int(args.timeout_seconds or int(os.getenv("COSMOS_TRAINER_TIMEOUT_SECONDS") or "86400"))
+    )
     env = _standard_env(args)
     result = subprocess.run(
         command,

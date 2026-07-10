@@ -14,9 +14,13 @@ import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.alpha_readiness import validate_operator_launch_evidence
+from blueprint_pipeline.common import write_json, write_text
+from blueprint_pipeline.release_evidence_graph import (
+    validate_release_evidence_graph_result,
+)
 
 
 SCHEMA_VERSION = "blueprint.launch_readiness_packet.v1"
@@ -29,7 +33,9 @@ PIPELINE_SOURCE_REQUIRED_ARTIFACT_IDS = {
 }
 BETA_DATA_RETENTION_POLICY_JSON = "docs/beta_data_retention_policy_2026-07-09.json"
 BETA_DATA_RETENTION_POLICY_MD = "docs/BETA_DATA_RETENTION_POLICY_2026-07-09.md"
-BETA_DATA_RESIDENCY_TRANSFER_POLICY_JSON = "docs/beta_data_residency_transfer_policy_2026-07-09.json"
+BETA_DATA_RESIDENCY_TRANSFER_POLICY_JSON = (
+    "docs/beta_data_residency_transfer_policy_2026-07-09.json"
+)
 BETA_DATA_RESIDENCY_TRANSFER_POLICY_MD = "docs/BETA_DATA_RESIDENCY_TRANSFER_POLICY_2026-07-09.md"
 
 
@@ -39,6 +45,16 @@ def _repo_root() -> Path:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_generated_at(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return datetime.now(timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -78,9 +94,7 @@ def _run_git(repo: Path, *args: str) -> str | None:
 def _repo_info(repo: Path) -> dict[str, Any]:
     status = _run_git(repo, "status", "--short") or ""
     dirty_entries = [
-        line[3:].split(" -> ")[-1]
-        for line in status.splitlines()
-        if line.strip() and len(line) > 3
+        line[3:].split(" -> ")[-1] for line in status.splitlines() if line.strip() and len(line) > 3
     ]
     head = _run_git(repo, "rev-parse", "HEAD")
     origin_main = _run_git(repo, "rev-parse", "--verify", "origin/main")
@@ -101,10 +115,9 @@ def _repo_info(repo: Path) -> dict[str, Any]:
 def _artifact(id_: str, path: Path, *, source_repo: str) -> dict[str, Any]:
     payload = _read_json(path) if path.suffix == ".json" else {}
     status = payload.get("overall_status") or payload.get("status")
-    pipeline_source = (
-        payload.get("pipeline_source")
-        if isinstance(payload.get("pipeline_source"), Mapping)
-        else {}
+    raw_pipeline_source = payload.get("pipeline_source")
+    pipeline_source: Mapping[str, Any] = (
+        raw_pipeline_source if isinstance(raw_pipeline_source, Mapping) else {}
     )
     return {
         "id": id_,
@@ -114,7 +127,9 @@ def _artifact(id_: str, path: Path, *, source_repo: str) -> dict[str, Any]:
         "bytes": path.stat().st_size if path.is_file() else 0,
         "sha256": _sha256(path),
         "json_status": status if isinstance(status, str) else None,
-        "schema_version": payload.get("schema_version") if isinstance(payload.get("schema_version"), str) else None,
+        "schema_version": payload.get("schema_version")
+        if isinstance(payload.get("schema_version"), str)
+        else None,
         "pipeline_source_head": pipeline_source.get("head")
         if isinstance(pipeline_source.get("head"), str)
         else None,
@@ -129,8 +144,12 @@ def _ci_artifact(id_: str, path: Path, *, repo_name: str, workflow: str) -> dict
     payload = _read_json(path)
     artifact["repo_name"] = repo_name
     artifact["workflow"] = workflow
-    artifact["conclusion"] = payload.get("conclusion") if isinstance(payload.get("conclusion"), str) else None
-    artifact["head_sha"] = payload.get("head_sha") if isinstance(payload.get("head_sha"), str) else None
+    artifact["conclusion"] = (
+        payload.get("conclusion") if isinstance(payload.get("conclusion"), str) else None
+    )
+    artifact["head_sha"] = (
+        payload.get("head_sha") if isinstance(payload.get("head_sha"), str) else None
+    )
     artifact["run_url"] = payload.get("url") if isinstance(payload.get("url"), str) else None
     test_counts = payload.get("test_counts")
     if isinstance(test_counts, Mapping):
@@ -144,7 +163,9 @@ def _ci_artifact(id_: str, path: Path, *, repo_name: str, workflow: str) -> dict
 
 def _latest_sim_only_report(pipeline_repo: Path) -> Path:
     candidates = sorted(
-        pipeline_repo.glob("output/sim_only_beta_local_gate_fixture/**/sim_only_beta_local_gate_report.json"),
+        pipeline_repo.glob(
+            "output/sim_only_beta_local_gate_fixture/**/sim_only_beta_local_gate_report.json"
+        ),
         key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
         reverse=True,
     )
@@ -197,16 +218,13 @@ def _external_manual_items(payload: Mapping[str, Any]) -> list[str]:
 
 
 def _forwarding_packet_blockers(payload: Mapping[str, Any]) -> list[str]:
-    blockers = [
-        str(item)
-        for item in payload.get("blockers", [])
-        if str(item).strip()
-    ]
+    blockers = [str(item) for item in payload.get("blockers", []) if str(item).strip()]
     if blockers:
         return blockers
 
     status = str(payload.get("status") or "").strip()
-    probe = payload.get("probe") if isinstance(payload.get("probe"), Mapping) else {}
+    raw_probe = payload.get("probe")
+    probe: Mapping[str, Any] = raw_probe if isinstance(raw_probe, Mapping) else {}
     if payload.get("forwarding_required") is not True:
         blockers.append("webapp_forwarding_not_required")
     if payload.get("endpoint_configured") is not True:
@@ -218,23 +236,18 @@ def _forwarding_packet_blockers(payload: Mapping[str, Any]) -> list[str]:
     probe_status = str(probe.get("status") or "").strip()
     if probe_status != "reachable":
         blockers.append(f"webapp_forwarding_probe_not_reachable:{probe_status or 'missing'}")
-    configured_env = (
-        payload.get("configured_env")
-        if isinstance(payload.get("configured_env"), Mapping)
-        else {}
+    raw_configured_env = payload.get("configured_env")
+    configured_env: Mapping[str, Any] = (
+        raw_configured_env if isinstance(raw_configured_env, Mapping) else {}
     )
-    forward_url = (
-        configured_env.get("forward_url")
-        if isinstance(configured_env.get("forward_url"), Mapping)
-        else {}
-    )
+    raw_forward_url = configured_env.get("forward_url")
+    forward_url: Mapping[str, Any] = raw_forward_url if isinstance(raw_forward_url, Mapping) else {}
     forward_origin = str(forward_url.get("origin") or "").strip()
     if _origin_is_loopback(forward_origin):
         blockers.append(f"webapp_forwarding_forward_url_loopback:{forward_origin}")
-    intake_audit_url = (
-        probe.get("intake_audit_url")
-        if isinstance(probe.get("intake_audit_url"), Mapping)
-        else {}
+    raw_intake_audit_url = probe.get("intake_audit_url")
+    intake_audit_url: Mapping[str, Any] = (
+        raw_intake_audit_url if isinstance(raw_intake_audit_url, Mapping) else {}
     )
     probe_origin = str(intake_audit_url.get("origin") or "").strip()
     if _origin_is_loopback(probe_origin):
@@ -256,18 +269,22 @@ def _origin_is_loopback(origin: str) -> bool:
     )
 
 
-def _artifact_blockers(artifacts: list[Mapping[str, Any]]) -> list[str]:
-    return [f"missing_artifact:{artifact['id']}" for artifact in artifacts if not artifact.get("exists")]
+def _artifact_blockers(artifacts: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [
+        f"missing_artifact:{artifact['id']}" for artifact in artifacts if not artifact.get("exists")
+    ]
 
 
 def _artifact_trust_blockers(
-    artifacts: list[Mapping[str, Any]],
+    artifacts: Sequence[Mapping[str, Any]],
     repository_blockers: list[str],
 ) -> list[str]:
     blocked_repo_names = {
         blocker.split(":", 2)[1]
         for blocker in repository_blockers
-        if blocker.startswith(("repo_dirty:", "repo_not_at_origin_main:", "repo_git_metadata_missing:"))
+        if blocker.startswith(
+            ("repo_dirty:", "repo_not_at_origin_main:", "repo_git_metadata_missing:")
+        )
         and len(blocker.split(":", 2)) >= 2
     }
     blockers: list[str] = []
@@ -280,7 +297,7 @@ def _artifact_trust_blockers(
 
 
 def _artifact_source_blockers(
-    artifacts: list[Mapping[str, Any]],
+    artifacts: Sequence[Mapping[str, Any]],
     repos: Mapping[str, Mapping[str, Any]],
 ) -> list[str]:
     pipeline_head = str(repos.get("BlueprintCapturePipeline", {}).get("head") or "")
@@ -307,7 +324,9 @@ def _artifact_source_blockers(
 
 def _is_allowed_dirty_entry(entry: str, prefixes: tuple[str, ...]) -> bool:
     normalized = entry.lstrip("/")
-    return any(normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in prefixes)
+    return any(
+        normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in prefixes
+    )
 
 
 def _repository_blockers(
@@ -324,15 +343,11 @@ def _repository_blockers(
             blockers.append(f"repo_git_metadata_missing:{name}")
             continue
         dirty_entries = [
-            str(entry)
-            for entry in info.get("dirty_entries", [])
-            if str(entry).strip()
+            str(entry) for entry in info.get("dirty_entries", []) if str(entry).strip()
         ]
         allowed_prefixes = allowed_dirty_prefixes.get(name, ())
         blocking_dirty_entries = [
-            entry
-            for entry in dirty_entries
-            if not _is_allowed_dirty_entry(entry, allowed_prefixes)
+            entry for entry in dirty_entries if not _is_allowed_dirty_entry(entry, allowed_prefixes)
         ]
         if blocking_dirty_entries:
             blockers.append(f"repo_dirty:{name}:{len(blocking_dirty_entries)}")
@@ -342,7 +357,7 @@ def _repository_blockers(
 
 
 def _ci_evidence_blockers(
-    ci_artifacts: list[Mapping[str, Any]],
+    ci_artifacts: Sequence[Mapping[str, Any]],
     repos: Mapping[str, Mapping[str, Any]],
 ) -> list[str]:
     blockers: list[str] = []
@@ -366,14 +381,49 @@ def _ci_evidence_blockers(
             blockers.append(f"ci_evidence_head_mismatch:{artifact_id}:{head_sha or 'missing'}")
         test_counts = artifact.get("test_counts")
         if isinstance(test_counts, Mapping):
-            failures = int(test_counts.get("failures") or 0)
-            errors = int(test_counts.get("errors") or 0)
-            tests = int(test_counts.get("tests") or 0)
+            parsed_counts: dict[str, int] = {}
+            for name in ("tests", "failures", "errors", "skipped"):
+                value = test_counts.get(name)
+                if type(value) is not int or value < 0:
+                    blockers.append(f"ci_evidence_test_count_invalid:{artifact_id}:{name}")
+                    parsed_counts[name] = 0
+                else:
+                    parsed_counts[name] = value
+            failures = parsed_counts["failures"]
+            errors = parsed_counts["errors"]
+            tests = parsed_counts["tests"]
+            skipped = parsed_counts["skipped"]
             if failures or errors:
                 blockers.append(f"ci_evidence_test_failures:{artifact_id}")
+            if skipped:
+                blockers.append(f"ci_evidence_test_skips:{artifact_id}:{skipped}")
             if tests <= 0:
                 blockers.append(f"ci_evidence_empty_test_count:{artifact_id}")
     return blockers
+
+
+def _paid_gate_release_evidence_blockers(
+    payload: Mapping[str, Any],
+    *,
+    expected_repository_sha: str,
+    requirements_path: Path,
+    now: datetime,
+) -> list[str]:
+    blockers: list[str] = []
+    status = str(payload.get("overall_status") or "").strip()
+    if status != "automated_contracts_passed_manual_ops_required":
+        blockers.append(f"paid_gate_status_not_accepted:{status or 'missing'}")
+    graph = payload.get("release_evidence_graph")
+    blockers.extend(
+        validate_release_evidence_graph_result(
+            graph if isinstance(graph, Mapping) else None,
+            expected_scope="PAID",
+            expected_repository_sha=expected_repository_sha,
+            requirements_path=requirements_path,
+            now=now,
+        )
+    )
+    return sorted(set(blockers))
 
 
 def build_launch_readiness_packet(
@@ -385,6 +435,7 @@ def build_launch_readiness_packet(
     operator_evidence_path: Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
+    packet_generated_at = generated_at or _utc_now()
     paid_gate = pipeline_repo / "output" / "paid_marketplace_launch_gate.json"
     paid_gate_md = pipeline_repo / "output" / "paid_marketplace_launch_gate.md"
     external_gate = pipeline_repo / "output" / "external_alpha_launch_gate.json"
@@ -392,11 +443,19 @@ def build_launch_readiness_packet(
     live_setup = pipeline_repo / "output" / "launch_audit_live_pipeline_setup_20260707.json"
     sim_only_report = _latest_sim_only_report(pipeline_repo)
     forwarding_preflight = (
-        webapp_repo / "output" / "pipeline" / "robot_eval_job_requests" / "forwarding_preflight.json"
+        webapp_repo
+        / "output"
+        / "pipeline"
+        / "robot_eval_job_requests"
+        / "forwarding_preflight.json"
     )
     pipeline_ci_evidence = pipeline_repo / "output" / "pipeline_main_ci_evidence.json"
-    pipeline_full_lane_evidence = pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json"
-    pipeline_sim_only_evidence = pipeline_repo / "output" / "pipeline_sim_only_local_gate_ci_evidence.json"
+    pipeline_full_lane_evidence = (
+        pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json"
+    )
+    pipeline_sim_only_evidence = (
+        pipeline_repo / "output" / "pipeline_sim_only_local_gate_ci_evidence.json"
+    )
     webapp_ci_evidence = pipeline_repo / "output" / "webapp_main_ci_evidence.json"
     beta_data_retention_policy = pipeline_repo / BETA_DATA_RETENTION_POLICY_JSON
     beta_data_retention_policy_md = pipeline_repo / BETA_DATA_RETENTION_POLICY_MD
@@ -405,14 +464,36 @@ def build_launch_readiness_packet(
     resolved_operator_evidence_path = _operator_evidence_path(pipeline_repo, operator_evidence_path)
 
     artifacts = [
-        _artifact("paid_marketplace_launch_gate_json", paid_gate, source_repo="BlueprintCapturePipeline"),
-        _artifact("paid_marketplace_launch_gate_markdown", paid_gate_md, source_repo="BlueprintCapturePipeline"),
-        _artifact("external_alpha_launch_gate_json", external_gate, source_repo="BlueprintCapturePipeline"),
-        _artifact("external_alpha_launch_gate_markdown", external_gate_md, source_repo="BlueprintCapturePipeline"),
-        _artifact("sim_only_beta_local_gate_report", sim_only_report, source_repo="BlueprintCapturePipeline"),
+        _artifact(
+            "paid_marketplace_launch_gate_json", paid_gate, source_repo="BlueprintCapturePipeline"
+        ),
+        _artifact(
+            "paid_marketplace_launch_gate_markdown",
+            paid_gate_md,
+            source_repo="BlueprintCapturePipeline",
+        ),
+        _artifact(
+            "external_alpha_launch_gate_json", external_gate, source_repo="BlueprintCapturePipeline"
+        ),
+        _artifact(
+            "external_alpha_launch_gate_markdown",
+            external_gate_md,
+            source_repo="BlueprintCapturePipeline",
+        ),
+        _artifact(
+            "sim_only_beta_local_gate_report",
+            sim_only_report,
+            source_repo="BlueprintCapturePipeline",
+        ),
         _artifact("live_pipeline_setup_audit", live_setup, source_repo="BlueprintCapturePipeline"),
-        _artifact("webapp_forwarding_preflight", forwarding_preflight, source_repo="Blueprint-WebApp"),
-        _artifact("beta_data_retention_policy_json", beta_data_retention_policy, source_repo="BlueprintCapturePipeline"),
+        _artifact(
+            "webapp_forwarding_preflight", forwarding_preflight, source_repo="Blueprint-WebApp"
+        ),
+        _artifact(
+            "beta_data_retention_policy_json",
+            beta_data_retention_policy,
+            source_repo="BlueprintCapturePipeline",
+        ),
         _artifact(
             "beta_data_retention_policy_markdown",
             beta_data_retention_policy_md,
@@ -489,9 +570,7 @@ def build_launch_readiness_packet(
         if str(item).strip()
     ]
     live_setup_blockers = [
-        str(item)
-        for item in live_payload.get("blockers", [])
-        if str(item).strip()
+        str(item) for item in live_payload.get("blockers", []) if str(item).strip()
     ]
     forwarding_blockers = _forwarding_packet_blockers(forwarding_payload)
     external_manual_items = _external_manual_items(external_payload)
@@ -512,6 +591,12 @@ def build_launch_readiness_packet(
     artifact_trust_blockers = _artifact_trust_blockers(all_artifacts, repository_blockers)
     artifact_source_blockers = _artifact_source_blockers(all_artifacts, repos)
     ci_evidence_blockers = _ci_evidence_blockers(ci_artifacts, repos)
+    paid_release_evidence_blockers = _paid_gate_release_evidence_blockers(
+        paid_payload,
+        expected_repository_sha=str(repos["BlueprintCapturePipeline"].get("head") or ""),
+        requirements_path=pipeline_repo / "docs" / "release_evidence_requirements.json",
+        now=_parse_generated_at(packet_generated_at),
+    )
 
     status = "ready"
     if (
@@ -520,6 +605,7 @@ def build_launch_readiness_packet(
         or artifact_trust_blockers
         or artifact_source_blockers
         or ci_evidence_blockers
+        or paid_release_evidence_blockers
     ):
         status = "incomplete_packet"
     elif manual_evidence_ids or live_setup_blockers or forwarding_blockers or external_manual_items:
@@ -527,7 +613,7 @@ def build_launch_readiness_packet(
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "generated_at": generated_at or _utc_now(),
+        "generated_at": packet_generated_at,
         "status": status,
         "repos": repos,
         "artifacts": all_artifacts,
@@ -536,6 +622,7 @@ def build_launch_readiness_packet(
         "artifact_source_blockers": artifact_source_blockers,
         "repository_blockers": repository_blockers,
         "ci_evidence_blockers": ci_evidence_blockers,
+        "paid_release_evidence_blockers": paid_release_evidence_blockers,
         "readiness_summary": {
             "paid_marketplace_launch_gate": paid_payload.get("overall_status"),
             "external_alpha_launch_gate": external_payload.get("overall_status"),
@@ -559,10 +646,13 @@ def build_launch_readiness_packet(
             "webapp_forwarding_blockers": forwarding_blockers,
             "artifact_source_blockers": artifact_source_blockers,
             "ci_evidence_blockers": ci_evidence_blockers,
+            "paid_release_evidence_blockers": paid_release_evidence_blockers,
         },
         "operator_evidence_status": {
             **operator_evidence_status,
-            "evidence_file": str(resolved_operator_evidence_path) if resolved_operator_evidence_path else None,
+            "evidence_file": str(resolved_operator_evidence_path)
+            if resolved_operator_evidence_path
+            else None,
             "paid_gate_manual_evidence_ids": paid_gate_manual_evidence_ids,
         },
         "commands_to_refresh": [
@@ -685,12 +775,24 @@ def _markdown(packet: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+def launch_readiness_exit_code(packet: Mapping[str, Any]) -> int:
+    """Treat every non-ready packet as a failing launch gate."""
+
+    return 0 if packet.get("status") == "ready" else 1
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pipeline-repo", type=Path, default=_repo_root())
-    parser.add_argument("--webapp-repo", type=Path, default=_repo_root().parent / "Blueprint-WebApp")
-    parser.add_argument("--contracts-repo", type=Path, default=_repo_root().parent / "BlueprintContracts")
-    parser.add_argument("--capture-repo", type=Path, default=_repo_root().parent / "BlueprintCapture")
+    parser.add_argument(
+        "--webapp-repo", type=Path, default=_repo_root().parent / "Blueprint-WebApp"
+    )
+    parser.add_argument(
+        "--contracts-repo", type=Path, default=_repo_root().parent / "BlueprintContracts"
+    )
+    parser.add_argument(
+        "--capture-repo", type=Path, default=_repo_root().parent / "BlueprintCapture"
+    )
     parser.add_argument(
         "--operator-evidence",
         type=Path,
@@ -699,7 +801,9 @@ def main() -> None:
             "output/operator_launch_evidence.json is used if present."
         ),
     )
-    parser.add_argument("--output", type=Path, default=_repo_root() / "output" / "launch_readiness_packet.json")
+    parser.add_argument(
+        "--output", type=Path, default=_repo_root() / "output" / "launch_readiness_packet.json"
+    )
     parser.add_argument(
         "--markdown-output",
         type=Path,
@@ -715,13 +819,14 @@ def main() -> None:
         operator_evidence_path=args.operator_evidence.resolve() if args.operator_evidence else None,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(packet, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json(args.output, packet)
     args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
-    args.markdown_output.write_text(_markdown(packet), encoding="utf-8")
+    write_text(args.markdown_output, _markdown(packet))
     print(f"[launch-readiness-packet] status={packet['status']}")
     print(f"[launch-readiness-packet] json={args.output}")
     print(f"[launch-readiness-packet] markdown={args.markdown_output}")
+    return launch_readiness_exit_code(packet)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

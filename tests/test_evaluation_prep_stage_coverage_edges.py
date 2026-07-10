@@ -239,7 +239,7 @@ def test_world_model_descriptor_and_readiness_edges(tmp_path: Path) -> None:
 
     geometry_descriptor = eps._primary_runtime_render_descriptor(
         conditioning_bundle={
-            "raw_video_uri": "gs://bucket/raw.mov",
+            "privacy_processed_video_uri": "gs://bucket/privacy/final_walkthrough.mov",
             "geometry": {
                 "poses_uri": "gs://bucket/poses.jsonl",
                 "intrinsics_uri": "gs://bucket/intrinsics.json",

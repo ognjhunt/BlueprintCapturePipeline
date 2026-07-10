@@ -7,15 +7,15 @@ Status: handoff prompt for next session
 ## Copy/Paste Goal Prompt
 
 ```text
-/goal In /Users/nijelhunt_1/workspace/BlueprintCapturePipeline, implement the provider-agnostic WAM compute abstraction described in /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/superpowers/specs/2026-06-27-provider-agnostic-wam-compute-design.md and keep working in a loop until it is implemented, verified, or blocked by a concrete external provider condition.
+/goal In $HOME/workspace/BlueprintCapturePipeline, implement the provider-agnostic WAM compute abstraction described in $HOME/workspace/BlueprintCapturePipeline/docs/superpowers/specs/2026-06-27-provider-agnostic-wam-compute-design.md and keep working in a loop until it is implemented, verified, or blocked by a concrete external provider condition.
 
 Read first, in order:
-1. /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/AGENTS.md
-2. /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md
-3. /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md
-4. /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/README.md
-5. /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/pyproject.toml
-6. /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/superpowers/specs/2026-06-27-provider-agnostic-wam-compute-design.md
+1. $HOME/workspace/BlueprintCapturePipeline/AGENTS.md
+2. $HOME/workspace/BlueprintCapturePipeline/PLATFORM_CONTEXT.md
+3. $HOME/workspace/BlueprintCapturePipeline/WORLD_MODEL_STRATEGY_CONTEXT.md
+4. $HOME/workspace/BlueprintCapturePipeline/README.md
+5. $HOME/workspace/BlueprintCapturePipeline/pyproject.toml
+6. $HOME/workspace/BlueprintCapturePipeline/docs/superpowers/specs/2026-06-27-provider-agnostic-wam-compute-design.md
 
 Before editing, inspect current state:
 - git status --short --branch
@@ -30,7 +30,7 @@ Before editing, inspect current state:
 - tests/test_unitree_groot_n17_sonic_vast_persistent_session.py
 
 Also inspect the current Isaac OSCAR job state before launching or polling anything:
-ISAAC_OSCAR_JOB=/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611/pipeline/isaac_oscar_wam_job
+ISAAC_OSCAR_JOB=$HOME/workspace/BlueprintCapturePipeline/output/first-gpu-walkthrough2-storage/local-blueprint/scenes/first-gpu-walkthrough-2/captures/downloads-walkthrough2-20260611/pipeline/isaac_oscar_wam_job
 Check $ISAAC_OSCAR_JOB/wam_rollout_input_manifest.json, $ISAAC_OSCAR_JOB/wam_provider_output.json, and $ISAAC_OSCAR_JOB/provider_job/vast_provider_run/vast_wam_async_state.json if present. At the time of this handoff the exact Isaac artic3 WAM output was not complete: the prior output was blocked on vast_wam_provider_poll_blocked, and a newer Vast state showed instance_created for 42880112 with the phase log ending at vast_heartbeat_started. Do not claim a real OSCAR-generated MP4 until a valid extracted oscar_generated_rollout.mp4, final poll manifest, and teardown/spend state exist. If an instance is active, first do a bounded poll/resume using existing repo commands and report phase, output, teardown, and continuing_spend_from_this_run exactly; do not start another paid run unless the existing run is closed or blocked and explicit paid gates are present.
 
 Implementation objective:

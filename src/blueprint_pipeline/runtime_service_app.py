@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import json
 import logging
-from typing import Any, Dict, Protocol
+import os
+import threading
+from typing import Any, Dict, Mapping, Protocol
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from blueprint_contracts.site_world_contract import normalize_trajectory_payload
 
@@ -80,6 +85,8 @@ class RuntimeBackend(Protocol):
 
 
 class SessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_id: str | None = None
     robot_profile_id: str
     task_id: str
@@ -92,8 +99,6 @@ class SessionCreateRequest(BaseModel):
     prompt: str | None = None
     trajectory: Dict[str, Any] | str | None = None
     presentation_model: str | None = None
-    debug_mode: bool = False
-    unsafe_allow_blocked_site_world: bool = False
 
 
 class SessionResetRequest(BaseModel):
@@ -133,8 +138,158 @@ class ExplorerRenderRequest(BaseModel):
     refine_mode: str | None = None
 
 
-def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_auth_tokens_from_env() -> dict[str, str]:
+    """Return bearer-token -> tenant-id without persisting raw tokens."""
+
+    configured: dict[str, str] = {}
+    raw = str(os.getenv("BLUEPRINT_RUNTIME_AUTH_TOKENS_JSON") or "").strip()
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("BLUEPRINT_RUNTIME_AUTH_TOKENS_JSON must be valid JSON") from exc
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("BLUEPRINT_RUNTIME_AUTH_TOKENS_JSON must be an object")
+        for tenant_id, token in payload.items():
+            tenant = str(tenant_id or "").strip()
+            secret = str(token or "").strip()
+            if not tenant or not secret:
+                raise RuntimeError("runtime auth token entries require nonempty tenant and token")
+            configured[secret] = tenant
+    single = str(
+        os.getenv("BLUEPRINT_RUNTIME_AUTH_TOKEN")
+        or os.getenv("SITE_WORLD_RUNTIME_SERVICE_API_KEY")
+        or ""
+    ).strip()
+    if single:
+        tenant = str(
+            os.getenv("BLUEPRINT_RUNTIME_TENANT_ID")
+            or os.getenv("SITE_WORLD_RUNTIME_TENANT_ID")
+            or "default"
+        ).strip()
+        if not tenant:
+            raise RuntimeError("BLUEPRINT_RUNTIME_TENANT_ID must be nonempty")
+        configured[single] = tenant
+    return configured
+
+
+def runtime_auth_required_from_env() -> bool:
+    return bool(
+        _env_truthy("BLUEPRINT_RUNTIME_REQUIRE_AUTH")
+        or _env_truthy("NATIVE_WORLD_MODEL_PRODUCTION_GRADE")
+        or _runtime_auth_tokens_from_env()
+    )
+
+
+def validate_runtime_service_exposure(*, host: str) -> None:
+    """Prevent a non-loopback runtime from starting without bearer auth."""
+
+    exposed = host.strip().lower() not in {"127.0.0.1", "::1", "localhost"}
+    if exposed and not _runtime_auth_tokens_from_env():
+        raise RuntimeError(
+            "non-loopback runtime service requires BLUEPRINT_RUNTIME_AUTH_TOKEN "
+            "or BLUEPRINT_RUNTIME_AUTH_TOKENS_JSON (SITE_WORLD_RUNTIME_SERVICE_API_KEY "
+            "is accepted for the single-tenant client contract)"
+        )
+
+
+def create_runtime_app(
+    *,
+    backend: RuntimeBackend,
+    title: str,
+    auth_tokens: Mapping[str, str] | None = None,
+    require_auth: bool | None = None,
+) -> FastAPI:
     app = FastAPI(title=title, version="1.0.0")
+    raw_auth_tokens = dict(auth_tokens) if auth_tokens is not None else _runtime_auth_tokens_from_env()
+    resolved_auth_tokens = {
+        str(token).strip(): str(tenant_id).strip()
+        for token, tenant_id in raw_auth_tokens.items()
+    }
+    if any(
+        not str(token).strip()
+        or not str(tenant_id).strip()
+        or len(str(tenant_id).strip()) > 256
+        for token, tenant_id in resolved_auth_tokens.items()
+    ):
+        raise RuntimeError("runtime auth tokens require nonempty tokens and tenant identifiers")
+    auth_required = runtime_auth_required_from_env() if require_auth is None else require_auth
+    auth_enabled = bool(auth_required or resolved_auth_tokens)
+    site_world_tenants: dict[str, str] = {}
+    session_tenants: dict[str, str] = {}
+    resource_owner_lock = threading.RLock()
+
+    def _authenticate_header(value: str | None) -> str | None:
+        header = str(value or "").strip()
+        if not header.startswith("Bearer "):
+            return None
+        candidate = header[7:]
+        for token, tenant_id in resolved_auth_tokens.items():
+            if hmac.compare_digest(candidate.encode("utf-8"), token.encode("utf-8")):
+                return str(tenant_id)
+        return None
+
+    @app.middleware("http")
+    async def authenticate_request(request: Request, call_next):  # type: ignore[no-untyped-def]
+        if request.url.path == "/healthz" or not auth_enabled:
+            return await call_next(request)
+        tenant_id = _authenticate_header(request.headers.get("Authorization"))
+        if tenant_id is None:
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        request.state.runtime_tenant_id = tenant_id
+        return await call_next(request)
+
+    def _tenant_context(request: Request) -> str | None:
+        return getattr(request.state, "runtime_tenant_id", None)
+
+    def _site_world_owner(site_world_id: str) -> str | None:
+        if site_world_id in site_world_tenants:
+            return site_world_tenants[site_world_id]
+        owner_loader = getattr(backend, "site_world_tenant_id", None)
+        if callable(owner_loader):
+            owner = str(owner_loader(site_world_id) or "").strip() or None
+        else:
+            owner = str(backend.load_site_world(site_world_id).get("tenant_id") or "").strip() or None
+        if owner:
+            site_world_tenants[site_world_id] = owner
+        return owner
+
+    def _session_owner(session_id: str) -> str | None:
+        if session_id in session_tenants:
+            return session_tenants[session_id]
+        owner_loader = getattr(backend, "session_tenant_id", None)
+        if callable(owner_loader):
+            owner = str(owner_loader(session_id) or "").strip() or None
+        else:
+            owner = str(backend.session_state(session_id).get("tenant_id") or "").strip() or None
+        if owner:
+            session_tenants[session_id] = owner
+        return owner
+
+    def _authorize_owner(owner: str | None, tenant_id: str | None) -> None:
+        if not auth_enabled:
+            return
+        if (
+            not owner
+            or not tenant_id
+            or not hmac.compare_digest(owner.encode("utf-8"), tenant_id.encode("utf-8"))
+        ):
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+    def _authorized_session_context(
+        session_id: str,
+        tenant_id: str | None = Depends(_tenant_context),
+    ) -> str | None:
+        if auth_enabled:
+            try:
+                _authorize_owner(_session_owner(session_id), tenant_id)
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Session not found") from exc
+        return tenant_id
 
     def _http_error(
         *,
@@ -158,6 +313,8 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
     @app.on_event("startup")
     async def prewarm_backend() -> None:
+        if auth_required and not resolved_auth_tokens:
+            raise RuntimeError("runtime authentication is required but no bearer token is configured")
         prewarm = getattr(backend, "prewarm_runtime", None)
         if callable(prewarm):
             log_event(logger, logging.INFO, "runtime_service.prewarm_started", title=title)
@@ -196,22 +353,47 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         }
 
     @app.get("/v1/runtime")
-    def runtime_info() -> Dict[str, Any]:
+    def runtime_info(_tenant_id: str | None = Depends(_tenant_context)) -> Dict[str, Any]:
         return backend.runtime_info(service_version=app.version)
 
     @app.post("/v1/site-worlds")
-    def register_site_world(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def register_site_world(
+        payload: Dict[str, Any],
+        tenant_id: str | None = Depends(_tenant_context),
+    ) -> Dict[str, Any]:
         try:
             if not all(isinstance(payload.get(key), dict) for key in ("spec", "registration", "health")):
                 raise ValueError("site-world registration requires spec + registration + health payloads")
-            registration = dict(
-                backend.register_site_world_package(
-                    spec=dict(payload["spec"]),
-                    registration=dict(payload["registration"]),
-                    health=dict(payload["health"]),
+            registration_payload = dict(payload["registration"])
+            supplied_tenant = str(registration_payload.get("tenant_id") or "").strip() or None
+            if auth_enabled and supplied_tenant not in {None, tenant_id}:
+                raise PermissionError("registration tenant does not match authenticated tenant")
+            if tenant_id:
+                registration_payload["tenant_id"] = tenant_id
+            site_world_id = str(registration_payload.get("site_world_id") or "").strip()
+            with resource_owner_lock:
+                if auth_enabled and site_world_id:
+                    try:
+                        _authorize_owner(_site_world_owner(site_world_id), tenant_id)
+                    except FileNotFoundError:
+                        pass
+                registration = dict(
+                    backend.register_site_world_package(
+                        spec=dict(payload["spec"]),
+                        registration=registration_payload,
+                        health=dict(payload["health"]),
+                    )
                 )
-            )
             health = dict(backend.load_site_world_health(str(registration.get("site_world_id") or "")))
+        except PermissionError as exc:
+            raise _http_error(
+                route="register_site_world",
+                status_code=403,
+                detail="Forbidden",
+                exc=exc,
+            ) from exc
+        except HTTPException:
+            raise
         except Exception as exc:
             raise _http_error(
                 route="register_site_world",
@@ -226,14 +408,20 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
             site_world_id=registration.get("site_world_id"),
             health_status=health.get("status"),
         )
+        if tenant_id:
+            site_world_tenants[str(registration.get("site_world_id") or "")] = tenant_id
         return {
             **registration,
             "health": health,
         }
 
     @app.get("/v1/site-worlds/{site_world_id}")
-    def get_site_world(site_world_id: str) -> Dict[str, Any]:
+    def get_site_world(
+        site_world_id: str,
+        tenant_id: str | None = Depends(_tenant_context),
+    ) -> Dict[str, Any]:
         try:
+            _authorize_owner(_site_world_owner(site_world_id), tenant_id)
             payload = dict(backend.load_site_world(site_world_id))
         except FileNotFoundError as exc:
             detail = f"site world not found: {site_world_id}"
@@ -253,8 +441,12 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         return payload
 
     @app.get("/v1/site-worlds/{site_world_id}/health")
-    def get_site_world_health(site_world_id: str) -> Dict[str, Any]:
+    def get_site_world_health(
+        site_world_id: str,
+        tenant_id: str | None = Depends(_tenant_context),
+    ) -> Dict[str, Any]:
         try:
+            _authorize_owner(_site_world_owner(site_world_id), tenant_id)
             payload = dict(backend.load_site_world_health(site_world_id))
         except FileNotFoundError as exc:
             detail = f"site world not found: {site_world_id}"
@@ -275,33 +467,56 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         return payload
 
     @app.post("/v1/site-worlds/{site_world_id}/sessions")
-    def create_session(site_world_id: str, request: SessionCreateRequest) -> Dict[str, Any]:
+    def create_session(
+        site_world_id: str,
+        request: SessionCreateRequest,
+        tenant_id: str | None = Depends(_tenant_context),
+    ) -> Dict[str, Any]:
         try:
-            session = dict(
-                backend.create_session(
-                    site_world_id,
-                    session_id=request.session_id,
-                    robot_profile_id=request.robot_profile_id,
-                    task_id=request.task_id,
-                    scenario_id=request.scenario_id,
-                    start_state_id=request.start_state_id,
-                    requested_backend=request.requested_backend,
-                    notes=request.notes,
-                    canonical_package_uri=request.canonical_package_uri,
-                    canonical_package_version=request.canonical_package_version,
-                    prompt=request.prompt,
-                    trajectory=normalize_trajectory_payload(request.trajectory),
-                    presentation_model=request.presentation_model,
-                    debug_mode=request.debug_mode,
-                    unsafe_allow_blocked_site_world=request.unsafe_allow_blocked_site_world,
+            _authorize_owner(_site_world_owner(site_world_id), tenant_id)
+            with resource_owner_lock:
+                if auth_enabled and request.session_id:
+                    try:
+                        _session_owner(request.session_id)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise HTTPException(status_code=409, detail="Session already exists")
+                session = dict(
+                    backend.create_session(
+                        site_world_id,
+                        session_id=request.session_id,
+                        robot_profile_id=request.robot_profile_id,
+                        task_id=request.task_id,
+                        scenario_id=request.scenario_id,
+                        start_state_id=request.start_state_id,
+                        requested_backend=request.requested_backend,
+                        notes=request.notes,
+                        canonical_package_uri=request.canonical_package_uri,
+                        canonical_package_version=request.canonical_package_version,
+                        prompt=request.prompt,
+                        trajectory=normalize_trajectory_payload(request.trajectory),
+                        presentation_model=request.presentation_model,
+                        debug_mode=False,
+                        tenant_id=tenant_id,
+                    )
                 )
-            )
         except FileNotFoundError as exc:
             detail = f"site world not found: {site_world_id}"
             raise _http_error(
                 route="create_session",
                 status_code=404,
                 detail=detail,
+                exc=exc,
+                site_world_id=site_world_id,
+            ) from exc
+        except HTTPException:
+            raise
+        except FileExistsError as exc:
+            raise _http_error(
+                route="create_session",
+                status_code=409,
+                detail="Session already exists",
                 exc=exc,
                 site_world_id=site_world_id,
             ) from exc
@@ -324,12 +539,18 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
             scenario_id=request.scenario_id,
             start_state_id=request.start_state_id,
             requested_backend=request.requested_backend,
-            debug_mode=request.debug_mode,
+            debug_mode=False,
         )
+        if tenant_id:
+            session_tenants[str(session.get("session_id") or "")] = tenant_id
         return session
 
     @app.post("/v1/sessions/{session_id}/reset")
-    def reset_session(session_id: str, request: SessionResetRequest) -> Dict[str, Any]:
+    def reset_session(
+        session_id: str,
+        request: SessionResetRequest,
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Dict[str, Any]:
         try:
             payload = dict(
                 backend.reset_session(
@@ -368,7 +589,11 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         return payload
 
     @app.post("/v1/sessions/{session_id}/step")
-    def step_session(session_id: str, request: SessionStepRequest) -> Dict[str, Any]:
+    def step_session(
+        session_id: str,
+        request: SessionStepRequest,
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Dict[str, Any]:
         try:
             payload = dict(backend.step_session(session_id, action=request.action))
         except FileNotFoundError as exc:
@@ -398,7 +623,10 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         return payload
 
     @app.get("/v1/sessions/{session_id}/state")
-    def session_state(session_id: str) -> Dict[str, Any]:
+    def session_state(
+        session_id: str,
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Dict[str, Any]:
         try:
             return dict(backend.session_state(session_id))
         except FileNotFoundError as exc:
@@ -421,7 +649,11 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
     @app.get("/v1/sessions/{session_id}/render")
     @app.get("/v1/sessions/{session_id}/render/{camera_id}")
-    def render_session(session_id: str, camera_id: str = "head_rgb") -> Response:
+    def render_session(
+        session_id: str,
+        camera_id: str = "head_rgb",
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Response:
         try:
             payload = backend.render_bytes(session_id, camera_id)
         except FileNotFoundError as exc:
@@ -446,7 +678,11 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         return Response(content=payload, media_type="image/png")
 
     @app.post("/v2/sessions/{session_id}/control")
-    def control_session(session_id: str, request: SessionControlRequest) -> Dict[str, Any]:
+    def control_session(
+        session_id: str,
+        request: SessionControlRequest,
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Dict[str, Any]:
         try:
             payload = dict(backend.control_session(session_id, control=request.model_dump()))
         except FileNotFoundError as exc:
@@ -477,7 +713,12 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
     @app.get("/v2/sessions/{session_id}/media")
     @app.get("/v2/sessions/{session_id}/media/{camera_id}")
-    def media_session(session_id: str, camera_id: str = "head_rgb", chunk_id: str | None = None) -> Response:
+    def media_session(
+        session_id: str,
+        camera_id: str = "head_rgb",
+        chunk_id: str | None = None,
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Response:
         try:
             payload = dict(backend.media_response(session_id, camera_id=camera_id, chunk_id=chunk_id))
         except FileNotFoundError as exc:
@@ -510,7 +751,10 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         return response
 
     @app.get("/v2/sessions/{session_id}/rollout")
-    def rollout_session(session_id: str) -> Dict[str, Any]:
+    def rollout_session(
+        session_id: str,
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Dict[str, Any]:
         try:
             state = dict(backend.session_state(session_id))
         except FileNotFoundError as exc:
@@ -535,7 +779,11 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
     @app.post("/v1/sessions/{session_id}/explorer/render")
     @app.post("/v1/sessions/{session_id}/explorer-render")
-    def explorer_render(session_id: str, request: ExplorerRenderRequest) -> Dict[str, Any]:
+    def explorer_render(
+        session_id: str,
+        request: ExplorerRenderRequest,
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Dict[str, Any]:
         try:
             payload = dict(
                 backend.explorer_render(
@@ -578,7 +826,11 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
     @app.get("/v1/sessions/{session_id}/explorer/frame/{camera_id}")
     @app.get("/v1/sessions/{session_id}/explorer-frame")
-    def explorer_frame(session_id: str, camera_id: str = "head_rgb") -> Response:
+    def explorer_frame(
+        session_id: str,
+        camera_id: str = "head_rgb",
+        _tenant_id: str | None = Depends(_authorized_session_context),
+    ) -> Response:
         try:
             payload = backend.explorer_frame_bytes(session_id, camera_id)
         except FileNotFoundError as exc:
@@ -614,6 +866,19 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         chunk-generation threads push to. This allows sub-50ms notification
         latency for chunk transitions instead of the 250ms state-poll period.
         """
+        if auth_enabled:
+            tenant_id = _authenticate_header(websocket.headers.get("Authorization"))
+            if tenant_id is None:
+                await websocket.close(code=4401)
+                return
+            try:
+                _authorize_owner(_session_owner(session_id), tenant_id)
+            except FileNotFoundError:
+                await websocket.close(code=4404)
+                return
+            except HTTPException:
+                await websocket.close(code=4403)
+                return
         await websocket.accept()
         log_event(
             logger,

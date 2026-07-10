@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -708,7 +709,12 @@ def Xform "World" {
     assert obj_path.read_text(encoding="utf-8").count("\nf ") == 12
 
 
-def test_mjcf_scene_summary_uses_mujoco_target_geom(tmp_path: Path) -> None:
+def test_mjcf_scene_summary_uses_mujoco_target_geom(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform == "darwin":
+        monkeypatch.delenv("MUJOCO_GL", raising=False)
     scene = tmp_path / "scene.xml"
     scene.write_text(
         """
@@ -731,7 +737,10 @@ def test_mjcf_scene_summary_uses_mujoco_target_geom(tmp_path: Path) -> None:
 
 def test_compose_scene_with_unitree_g1_mjcf_places_robot_and_keeps_scene_noncontact(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if sys.platform == "darwin":
+        monkeypatch.delenv("MUJOCO_GL", raising=False)
     scene = tmp_path / "scene.xml"
     scene.write_text(
         """

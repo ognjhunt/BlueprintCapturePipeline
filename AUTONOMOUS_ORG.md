@@ -8,9 +8,9 @@
 
 Treat these as the canonical operating files:
 
-1. `/Users/nijelhunt_1/workspace/Blueprint-WebApp/AUTONOMOUS_ORG.md`
-2. `/Users/nijelhunt_1/workspace/Blueprint-WebApp/ops/paperclip/blueprint-company/.paperclip.yaml`
-3. `/Users/nijelhunt_1/workspace/Blueprint-WebApp/ops/paperclip/BLUEPRINT_AUTOMATION.md`
+1. `$HOME/workspace/Blueprint-WebApp/AUTONOMOUS_ORG.md`
+2. `$HOME/workspace/Blueprint-WebApp/ops/paperclip/blueprint-company/.paperclip.yaml`
+3. `$HOME/workspace/Blueprint-WebApp/ops/paperclip/BLUEPRINT_AUTOMATION.md`
 
 If this file drifts from those, update this file immediately rather than inventing a repo-local org shape.
 
@@ -118,7 +118,7 @@ The live Paperclip package currently runs from the shared trusted host and inclu
 
 For the exact current task and routine inventory, read:
 
-- `/Users/nijelhunt_1/workspace/Blueprint-WebApp/ops/paperclip/blueprint-company/.paperclip.yaml`
+- `$HOME/workspace/Blueprint-WebApp/ops/paperclip/blueprint-company/.paperclip.yaml`
 
 ## Rules For Pipeline Repo Work
 
@@ -134,8 +134,8 @@ When autonomous-org work touches `BlueprintCapturePipeline`, keep these constrai
 
 This mirror should change whenever one of these changes:
 
-- the role registry in `/Users/nijelhunt_1/workspace/Blueprint-WebApp/AUTONOMOUS_ORG.md`
-- the live company package in `/Users/nijelhunt_1/workspace/Blueprint-WebApp/ops/paperclip/blueprint-company/.paperclip.yaml`
-- the Paperclip/Hermes runtime split in `/Users/nijelhunt_1/workspace/Blueprint-WebApp/ops/paperclip/BLUEPRINT_AUTOMATION.md`
+- the role registry in `$HOME/workspace/Blueprint-WebApp/AUTONOMOUS_ORG.md`
+- the live company package in `$HOME/workspace/Blueprint-WebApp/ops/paperclip/blueprint-company/.paperclip.yaml`
+- the Paperclip/Hermes runtime split in `$HOME/workspace/Blueprint-WebApp/ops/paperclip/BLUEPRINT_AUTOMATION.md`
 
 Do not keep an older repo-local org chart alive once the shared control plane has moved on.

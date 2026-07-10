@@ -19,6 +19,7 @@ from .secret_artifact_policy import (
 from .wam_real_provider_validation_probe import (
     DEFAULT_DA3_MODEL_ID,
     DEFAULT_DEPTH_MODEL_ID,
+    DEFAULT_DEPTH_MODEL_REVISION,
     DEFAULT_POSE_MODEL_PATH,
 )
 
@@ -26,7 +27,10 @@ from .wam_real_provider_validation_probe import (
 WAM_PERCEPTION_HARNESS_GPU_IMAGE_SCHEMA_VERSION = (
     "wam_perception_harness_gpu_image_context.v1"
 )
-DEFAULT_BASE_IMAGE = "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04"
+DEFAULT_BASE_IMAGE = (
+    "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@"
+    "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
+)
 DEFAULT_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu126"
 DEFAULT_TORCH_VERSION = "2.7.0"
 DEFAULT_TORCHVISION_VERSION = "0.22.0"
@@ -397,7 +401,7 @@ RUN if [ "$INSTALL_DA3" = "true" ]; then \\
 RUN mkdir -p /models/hf /models/sam3 /models/yolo
 
 RUN if [ "$PREFETCH_WAM_PERCEPTION_MODELS" = "true" ]; then \\
-      python3 -c 'from pathlib import Path; from transformers import AutoImageProcessor, AutoModelForDepthEstimation; from ultralytics import YOLO; AutoImageProcessor.from_pretrained("{DEFAULT_DEPTH_MODEL_ID}"); AutoModelForDepthEstimation.from_pretrained("{DEFAULT_DEPTH_MODEL_ID}"); YOLO("{DEFAULT_POSE_MODEL_PATH}"); source = Path("{DEFAULT_POSE_MODEL_PATH}"); target = Path("{DEFAULT_POSE_MODEL_IMAGE_PATH}"); target.parent.mkdir(parents=True, exist_ok=True); source.is_file() and (not target.is_file()) and target.write_bytes(source.read_bytes())'; \\
+      python3 -c 'from pathlib import Path; from transformers import AutoImageProcessor, AutoModelForDepthEstimation; from ultralytics import YOLO; kwargs={{"revision":"{DEFAULT_DEPTH_MODEL_REVISION}","trust_remote_code":False}}; AutoImageProcessor.from_pretrained("{DEFAULT_DEPTH_MODEL_ID}", **kwargs); AutoModelForDepthEstimation.from_pretrained("{DEFAULT_DEPTH_MODEL_ID}", **kwargs); YOLO("{DEFAULT_POSE_MODEL_PATH}"); source = Path("{DEFAULT_POSE_MODEL_PATH}"); target = Path("{DEFAULT_POSE_MODEL_IMAGE_PATH}"); target.parent.mkdir(parents=True, exist_ok=True); source.is_file() and (not target.is_file()) and target.write_bytes(source.read_bytes())'; \\
     fi
 
 RUN python /opt/blueprint/wam_perception_harness_image_healthcheck.py --build-time
@@ -687,6 +691,7 @@ def build_wam_perception_harness_gpu_image_context(
             "supports_optional_da3": True,
             "default_depth_provider": "transformers_depth_anything_v2",
             "default_depth_model_id": DEFAULT_DEPTH_MODEL_ID,
+            "default_depth_model_revision": DEFAULT_DEPTH_MODEL_REVISION,
             "default_pose_model_path": DEFAULT_POSE_MODEL_IMAGE_PATH,
         },
         "artifact_paths": {

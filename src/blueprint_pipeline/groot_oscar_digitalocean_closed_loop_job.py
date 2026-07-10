@@ -68,6 +68,7 @@ OBJECTIVE_READINESS_AUDIT_FILENAME = "kitchen_dishwasher_full_pipeline_readiness
 DIGITALOCEAN_CAPACITY_PROBE_FILENAME = "digitalocean_capacity_probe.json"
 DIGITALOCEAN_CAPACITY_WAIT_FILENAME = "digitalocean_capacity_wait.json"
 DEFAULT_PROVIDER = "digitalocean"
+DEFAULT_CONFIGURED_WAM_CONSISTENCY_COMMAND: str | None = None
 DEFAULT_MAX_HOURLY_RATE_USD = 3.5
 DEFAULT_CONTAINER_DISK_GB = 220
 DEFAULT_VOLUME_GB = 120
@@ -222,6 +223,7 @@ def _paid_resume_command_payload(
     volume_gb: int,
     seed_provenance_file: str | Path | None,
     key_prefix: str,
+    wam_consistency_command: str | None = None,
     require_generated_video_success_label: bool = False,
     wam_success_label_command: str | None = None,
     allow_wam_success_labeling: bool = False,
@@ -273,6 +275,8 @@ def _paid_resume_command_payload(
     ]
     if seed_provenance_file:
         argv.extend(["--seed-provenance-file", str(seed_provenance_file)])
+    if wam_consistency_command:
+        argv.extend(["--wam-consistency-command", str(wam_consistency_command)])
     if require_generated_video_success_label:
         argv.append("--require-generated-video-success-label")
     if wam_success_label_command:
@@ -2055,6 +2059,7 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     seed_provenance_file: str | Path | None = None,
     key_prefix: str = "blueprint/groot-oscar-closed-loop",
     image_ref: str | None = None,
+    wam_consistency_command: str | None = None,
     require_generated_video_success_label: bool = False,
     wam_success_label_command: str | None = None,
     allow_wam_success_labeling: bool = False,
@@ -2107,6 +2112,11 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     if contract.get("sealed_active") is not True:
         manifest["blockers"].extend(contract.get("blockers") or ["sealed_image_not_active"])
         return _write_job_manifest(out, manifest)
+    resolved_wam_consistency_command = (
+        str(wam_consistency_command).strip()
+        if wam_consistency_command is not None
+        else str(DEFAULT_CONFIGURED_WAM_CONSISTENCY_COMMAND or "").strip()
+    )
     plan = build_sealed_launch_plan(
         start_frame="/workspace/initial_policy_frame.png",
         route_file="/workspace/route.json",
@@ -2117,6 +2127,7 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         oscar_width=int(oscar_width),
         min_coherent_horizon_frames=int(min_coherent_horizon_frames),
         min_task_adaptive_steps=int(min_task_completion_steps),
+        wam_consistency_command=resolved_wam_consistency_command or None,
         require_generated_video_success_label=bool(
             require_generated_video_success_label
         ),
@@ -2149,6 +2160,7 @@ def run_groot_oscar_digitalocean_closed_loop_job(
             volume_gb=int(volume_gb),
             seed_provenance_file=seed_provenance_file,
             key_prefix=key_prefix,
+            wam_consistency_command=resolved_wam_consistency_command or None,
             require_generated_video_success_label=bool(
                 require_generated_video_success_label
             ),
@@ -2401,6 +2413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed-provenance-file", default=None)
     parser.add_argument("--key-prefix", default="blueprint/groot-oscar-closed-loop")
     parser.add_argument("--image-ref", default=None)
+    parser.add_argument("--wam-consistency-command", default=None)
     parser.add_argument("--require-generated-video-success-label", action="store_true")
     parser.add_argument("--wam-success-label-command", default=None)
     parser.add_argument("--allow-wam-success-labeling", action="store_true")
@@ -2480,6 +2493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed_provenance_file=args.seed_provenance_file,
         key_prefix=args.key_prefix,
         image_ref=args.image_ref,
+        wam_consistency_command=args.wam_consistency_command,
         require_generated_video_success_label=bool(
             args.require_generated_video_success_label
         ),

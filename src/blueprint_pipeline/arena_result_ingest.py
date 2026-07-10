@@ -29,6 +29,10 @@ from .agent_operator_runtime import (
 )
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .local_capture import resolve_local_capture_context
+from .output_run_transaction import (
+    OutputRunTransaction,
+    current_output_run_descriptor,
+)
 
 
 ARENA_EVAL_SCHEDULE_SCHEMA_VERSION = "arena_eval_schedule.v1"
@@ -1949,7 +1953,7 @@ def _write_result_artifacts(
     )
 
 
-def build_arena_result_ingest(
+def _build_arena_result_ingest(
     *,
     capture_root: str | Path,
     job_dir: str | Path | None = None,
@@ -2124,6 +2128,7 @@ def build_arena_result_ingest(
         "status": attempt_trace.get("status"),
         "capture_root": str(context.capture_root),
         "output_dir": str(resolved_output_dir),
+        "output_transaction": current_output_run_descriptor(),
         "arena_results_dir": str(results_dir),
         "scenario_count": schedule.get("scenario_count"),
         "attempt_count": attempt_trace.get("attempt_count"),
@@ -2167,6 +2172,157 @@ def build_arena_result_ingest(
         "run_manifest": run_manifest,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
+
+
+def _arena_output_request_fingerprint(
+    *,
+    capture_root: Path,
+    results_dir: Path,
+    job_request: Mapping[str, Any],
+    configuration: Mapping[str, Any],
+) -> str:
+    files: list[dict[str, Any]] = []
+    if results_dir.is_dir():
+        for path in sorted(results_dir.rglob("*")):
+            if path.is_symlink():
+                raise ValueError("arena_results_symlink_forbidden")
+            if path.is_file():
+                files.append(
+                    {
+                        "path": path.relative_to(results_dir).as_posix(),
+                        "size_bytes": path.stat().st_size,
+                        "sha256": _sha_file(path),
+                    }
+                )
+    return _sha_payload(
+        {
+            "capture_root": str(capture_root),
+            "results": files,
+            "job_request": dict(job_request),
+            "configuration": dict(configuration),
+        }
+    )
+
+
+def build_arena_result_ingest(
+    *,
+    capture_root: str | Path,
+    job_dir: str | Path | None = None,
+    arena_results_dir: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    job_request: Mapping[str, Any] | None = None,
+    scenario_count: int = DEFAULT_SCENARIO_COUNT,
+    shard_size: int = DEFAULT_SHARD_SIZE,
+    num_envs: int = DEFAULT_NUM_ENVS,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    retry_budget: int = DEFAULT_RETRY_BUDGET,
+    cost_budget_usd: float | None = None,
+    allow_rollout_vision_labeling: bool = False,
+    vision_labeling_command: str | None = None,
+    allow_delivery_upload: bool = False,
+    delivery_command: str | None = None,
+    operator_mode: str = "none",
+    allow_live_agents_sdk: bool = False,
+    allow_live_codex_sdk: bool = False,
+) -> Dict[str, Any]:
+    context = resolve_local_capture_context(capture_root)
+    resolved_job_dir = Path(job_dir).resolve() if job_dir else None
+    resolved_output_dir = (
+        Path(output_dir).resolve()
+        if output_dir
+        else resolved_job_dir
+        if resolved_job_dir
+        else context.pipeline_root / "arena_eval_package"
+    )
+    results_dir = (
+        Path(arena_results_dir).resolve()
+        if arena_results_dir
+        else resolved_output_dir / "arena_results"
+    )
+    if current_output_run_descriptor():
+        return _build_arena_result_ingest(
+            capture_root=capture_root,
+            job_dir=job_dir,
+            arena_results_dir=arena_results_dir,
+            output_dir=output_dir,
+            job_request=job_request,
+            scenario_count=scenario_count,
+            shard_size=shard_size,
+            num_envs=num_envs,
+            timeout_seconds=timeout_seconds,
+            retry_budget=retry_budget,
+            cost_budget_usd=cost_budget_usd,
+            allow_rollout_vision_labeling=allow_rollout_vision_labeling,
+            vision_labeling_command=vision_labeling_command,
+            allow_delivery_upload=allow_delivery_upload,
+            delivery_command=delivery_command,
+            operator_mode=operator_mode,
+            allow_live_agents_sdk=allow_live_agents_sdk,
+            allow_live_codex_sdk=allow_live_codex_sdk,
+        )
+    request_fingerprint = _arena_output_request_fingerprint(
+        capture_root=context.capture_root,
+        results_dir=results_dir,
+        job_request=dict(job_request or {}),
+        configuration={
+            "scenario_count": scenario_count,
+            "shard_size": shard_size,
+            "num_envs": num_envs,
+            "timeout_seconds": timeout_seconds,
+            "retry_budget": retry_budget,
+            "cost_budget_usd": cost_budget_usd,
+            "allow_rollout_vision_labeling": allow_rollout_vision_labeling,
+            "allow_delivery_upload": allow_delivery_upload,
+            "operator_mode": operator_mode,
+        },
+    )
+    preserve_top_level: list[str] = []
+    try:
+        relative_results = results_dir.relative_to(resolved_output_dir)
+    except ValueError:
+        relative_results = None
+    if relative_results and relative_results.parts:
+        preserve_top_level.append(relative_results.parts[0])
+    reset_output = resolved_output_dir not in {
+        context.pipeline_root,
+        resolved_job_dir,
+    }
+    with OutputRunTransaction(
+        resolved_output_dir,
+        lane="arena_result_ingest",
+        request_fingerprint=request_fingerprint,
+        reset_output=reset_output,
+        preserve_top_level=preserve_top_level,
+    ) as transaction:
+        result = _build_arena_result_ingest(
+            capture_root=capture_root,
+            job_dir=job_dir,
+            arena_results_dir=arena_results_dir,
+            output_dir=output_dir,
+            job_request=job_request,
+            scenario_count=scenario_count,
+            shard_size=shard_size,
+            num_envs=num_envs,
+            timeout_seconds=timeout_seconds,
+            retry_budget=retry_budget,
+            cost_budget_usd=cost_budget_usd,
+            allow_rollout_vision_labeling=allow_rollout_vision_labeling,
+            vision_labeling_command=vision_labeling_command,
+            allow_delivery_upload=allow_delivery_upload,
+            delivery_command=delivery_command,
+            operator_mode=operator_mode,
+            allow_live_agents_sdk=allow_live_agents_sdk,
+            allow_live_codex_sdk=allow_live_codex_sdk,
+        )
+        commit = transaction.commit()
+    result["output_run_commit"] = {
+        "status": commit["status"],
+        "run_id": commit["run_id"],
+        "request_fingerprint": commit["request_fingerprint"],
+        "inventory_sha256": commit["inventory_sha256"],
+        "commit_path": "run_commit.json",
+    }
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

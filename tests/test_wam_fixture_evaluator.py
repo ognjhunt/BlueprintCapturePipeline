@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import base64
 import sys
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from blueprint_pipeline import wam_fixture_evaluator as wam_fixture_module
 from blueprint_pipeline.wam_fixture_evaluator import main, run_wam_eval_job
+
+
+_TEST_GOVERNANCE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+_TEST_RUNTIME_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
+_TEST_REVIEWER_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(2, 34)))
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -134,7 +144,282 @@ def _reviewed_success_label(
         "review_status": "accepted_reviewed_success_label",
         "review_label_refs": [f"review_labels/{label_id}.json"],
         "frame_or_clip_refs": [f"review_media/{label_id}.mp4"],
+        "registered_ood_axes_complete": True,
+        "ood_registration_blockers": [],
     }
+
+
+def _sha256_ref(path: Path) -> str:
+    return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+
+def _public_key_bytes(key: Ed25519PrivateKey) -> bytes:
+    return key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+
+
+def _public_key_b64(key: Ed25519PrivateKey) -> str:
+    return base64.b64encode(_public_key_bytes(key)).decode("ascii")
+
+
+def _public_key_fingerprint(key: Ed25519PrivateKey) -> str:
+    return f"sha256:{hashlib.sha256(_public_key_bytes(key)).hexdigest()}"
+
+
+def _sign_payload(
+    payload: dict,
+    *,
+    signature_field: str,
+    key: Ed25519PrivateKey,
+) -> None:
+    fingerprint = _public_key_fingerprint(key)
+    payload[signature_field] = {
+        "algorithm": "ed25519",
+        "key_fingerprint": fingerprint,
+        "signature_base64": base64.b64encode(
+            key.sign(
+                wam_fixture_module._canonical_signature_payload(
+                    payload,
+                    signature_field=signature_field,
+                )
+            )
+        ).decode("ascii"),
+    }
+
+
+def _configure_test_governance_key(monkeypatch) -> None:
+    monkeypatch.setattr(
+        wam_fixture_module,
+        "PINNED_DECISION_GOVERNANCE_PUBLIC_KEY_B64",
+        _public_key_b64(_TEST_GOVERNANCE_KEY),
+    )
+    monkeypatch.setattr(
+        wam_fixture_module,
+        "PINNED_DECISION_GOVERNANCE_KEY_FINGERPRINT",
+        _public_key_fingerprint(_TEST_GOVERNANCE_KEY),
+    )
+
+
+def _write_decision_authority_registry(
+    root: Path,
+    *,
+    substrate: str,
+) -> dict[str, str]:
+    path = root / "decision-evidence" / "authority-registry.json"
+    payload = {
+        "schema_version": "blueprint.wam_decision_authority_registry.v1",
+        "status": "approved",
+        "registry_id": "blueprint-sc3-decision-authorities",
+        "registry_version": 1,
+        "evaluation_substrate": substrate,
+        "fixture_evidence_decision_grade_allowed": False,
+        "approved_by": "@evaluation-security-owner",
+        "authorities": [
+            {
+                "authority_id": "runtime-attestor-1",
+                "role": "runtime",
+                "public_key_base64": _public_key_b64(_TEST_RUNTIME_KEY),
+                "public_key_fingerprint": _public_key_fingerprint(_TEST_RUNTIME_KEY),
+            },
+            {
+                "authority_id": "review-board-1",
+                "role": "reviewer",
+                "public_key_base64": _public_key_b64(_TEST_REVIEWER_KEY),
+                "public_key_fingerprint": _public_key_fingerprint(_TEST_REVIEWER_KEY),
+            },
+        ],
+    }
+    _sign_payload(
+        payload,
+        signature_field="governance_signature",
+        key=_TEST_GOVERNANCE_KEY,
+    )
+    _write_json(path, payload)
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "sha256": _sha256_ref(path),
+    }
+
+
+def _attach_decision_evidence(
+    root: Path,
+    row: dict,
+    *,
+    authority_registry: dict[str, str],
+) -> dict:
+    label_id = str(row["label_id"])
+    evidence_dir = root / "decision-evidence" / label_id
+    execution_artifact = evidence_dir / "execution.jsonl"
+    media_artifact = evidence_dir / "review.mp4"
+    outcome_artifact = evidence_dir / "review-label.json"
+    execution_artifact.parent.mkdir(parents=True, exist_ok=True)
+    execution_artifact.write_text(
+        json.dumps({"label_id": label_id, "event": "terminal_result"}) + "\n",
+        encoding="utf-8",
+    )
+    media_artifact.write_bytes(f"review-media:{label_id}".encode())
+    _write_json(
+        outcome_artifact,
+        {
+            "label_id": label_id,
+            "task_success": row["task_success"],
+            "reviewer_id": "review-board-1",
+        },
+    )
+    condition_path = root / "decision-evidence" / "conditions" / f"{row['matched_pair_id']}.json"
+    condition_payload = {
+        "schema_version": "blueprint.wam_matched_condition_manifest.v1",
+        "status": "frozen",
+        "condition_id": row["condition_id"],
+        "replicate_seed": row["replicate_seed"],
+        "matched_pair_id": row["matched_pair_id"],
+        "replicate_id": row["replicate_id"],
+        "scenario_eval_run_id": row["scenario_eval_run_id"],
+        "task_id": row["task_id"],
+        "scenario_id": row["scenario_id"],
+        "criterion_id": row["criterion_id"],
+        "initial_state_id": row["initial_state_id"],
+    }
+    _write_json(condition_path, condition_payload)
+    condition_reference = {
+        "path": condition_path.relative_to(root).as_posix(),
+        "sha256": _sha256_ref(condition_path),
+    }
+    binding = {
+        "policy_id": row["policy_id"],
+        "condition_id": row["condition_id"],
+        "replicate_id": row["replicate_id"],
+        "replicate_seed": row["replicate_seed"],
+        "scenario_eval_run_id": row["scenario_eval_run_id"],
+        "matched_pair_id": row["matched_pair_id"],
+        "task_id": row["task_id"],
+        "scenario_id": row["scenario_id"],
+        "criterion_id": row["criterion_id"],
+        "initial_state_id": row["initial_state_id"],
+        "runtime_result_id": row["runtime_result_id"],
+        "condition_manifest_sha256": condition_reference["sha256"],
+        "authority_registry_sha256": authority_registry["sha256"],
+        "result_task_success": row["task_success"],
+    }
+    runtime_fingerprint = _public_key_fingerprint(_TEST_RUNTIME_KEY)
+    reviewer_fingerprint = _public_key_fingerprint(_TEST_REVIEWER_KEY)
+    manifests = {
+        "execution": {
+            "schema_version": "blueprint.wam_replicate_execution_evidence.v1",
+            "status": "completed",
+            "evidence_id": f"execution-{label_id}",
+            **binding,
+            "authority": {
+                "role": "runtime",
+                "authority_id": "runtime-attestor-1",
+                "public_key_fingerprint": runtime_fingerprint,
+            },
+            "artifact": {
+                "path": execution_artifact.relative_to(root).as_posix(),
+                "sha256": _sha256_ref(execution_artifact),
+            },
+        },
+        "media": {
+            "schema_version": "blueprint.wam_replicate_media_evidence.v1",
+            "status": "valid",
+            "evidence_id": f"media-{label_id}",
+            **binding,
+            "authority": {
+                "role": "reviewer",
+                "authority_id": "review-board-1",
+                "public_key_fingerprint": reviewer_fingerprint,
+            },
+            "artifact": {
+                "path": media_artifact.relative_to(root).as_posix(),
+                "sha256": _sha256_ref(media_artifact),
+            },
+        },
+        "outcome_label": {
+            "schema_version": "blueprint.wam_replicate_outcome_label_evidence.v1",
+            "status": "accepted_reviewed_label",
+            "evidence_id": f"outcome-{label_id}",
+            **binding,
+            "authority": {
+                "role": "reviewer",
+                "authority_id": "review-board-1",
+                "public_key_fingerprint": reviewer_fingerprint,
+            },
+            "artifact": {
+                "path": outcome_artifact.relative_to(root).as_posix(),
+                "sha256": _sha256_ref(outcome_artifact),
+            },
+        },
+    }
+    references: dict[str, dict[str, str]] = {}
+    for kind, payload in manifests.items():
+        _sign_payload(
+            payload,
+            signature_field="signature",
+            key=_TEST_RUNTIME_KEY if kind == "execution" else _TEST_REVIEWER_KEY,
+        )
+        path = evidence_dir / f"{kind}.json"
+        _write_json(path, payload)
+        references[kind] = {
+            "path": path.relative_to(root).as_posix(),
+            "sha256": _sha256_ref(path),
+        }
+    return {
+        **row,
+        "matched_condition_manifest": condition_reference,
+        "decision_grade_evidence": references,
+    }
+
+
+def _decision_grade_bundle(
+    root: Path,
+    *,
+    substrate: str,
+    condition_outcomes: dict[str, tuple[bool, bool]],
+) -> tuple[list[str], list[dict], dict[str, str]]:
+    run_ids: list[str] = []
+    rows: list[dict] = []
+    authority_registry = _write_decision_authority_registry(
+        root,
+        substrate=substrate,
+    )
+    for condition_id, outcomes in condition_outcomes.items():
+        for seed in range(20):
+            run_id = f"{condition_id}-run-{seed:02d}"
+            run_ids.append(run_id)
+            for policy_id, success in zip(
+                ("policy-a", "policy-b"),
+                outcomes,
+                strict=True,
+            ):
+                label_id = f"{policy_id}-{condition_id}-{seed:02d}"
+                rows.append(
+                    _attach_decision_evidence(
+                        root,
+                        {
+                            **_reviewed_success_label(
+                                label_id=label_id,
+                                policy_id=policy_id,
+                                run_id=run_id,
+                                task_success=success,
+                            ),
+                            "condition_id": condition_id,
+                            "replicate_id": f"{condition_id}-replicate-{seed:02d}",
+                            "replicate_seed": seed,
+                            "matched_pair_id": f"{condition_id}-pair-{seed:02d}",
+                            "criterion_id": "strict_task_success",
+                            "initial_state_id": f"{condition_id}-state-{seed:02d}",
+                            "runtime_result_id": (f"{policy_id}-{condition_id}-result-{seed:02d}"),
+                        },
+                        authority_registry=authority_registry,
+                    )
+                )
+    return (
+        list(dict.fromkeys(run_ids)),
+        rows,
+        authority_registry,
+    )
 
 
 def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
@@ -211,9 +496,7 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert labels["fixture_evaluator_only"] is True
     assert labels["visual_rollout_useful_for_task_success_review"] is False
     assert labels["review_grade_success_labels"] is False
-    assert labels["labels"][0]["visual_smoke_status"] == (
-        "fixture_evaluator_only_no_visual_smoke"
-    )
+    assert labels["labels"][0]["visual_smoke_status"] == ("fixture_evaluator_only_no_visual_smoke")
     assert labels["labels"][0]["fixture_evaluator_only"] is True
     assert task_eval_report["schema_version"] == "task_eval_run_buyer_report.v1"
     assert task_eval_report["success_claim_ledger"]["highest_truthful_claim"] in {
@@ -222,20 +505,20 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
         "review_task_success",
     }
     assert (
-        task_eval_report["claim_boundary"]["provider_runtime_success_is_not_task_success"]
-        is True
+        task_eval_report["claim_boundary"]["provider_runtime_success_is_not_task_success"] is True
     )
     assert trace["attempt_count"] == 4
-    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["status"] == "completed_inconclusive_insufficient_replicates"
     assert scorecard["top_policy_id"] is None
     assert scorecard["evaluator_top_policy_id"] == "site_finetune_policy"
     assert scorecard["policy_count"] == 2
     assert scorecard["fixture_evaluator_only"] is True
     assert scorecard["review_grade_policy_ranking"] is False
     assert scorecard["visual_rollout_useful_for_task_success_review"] is False
-    assert "fixture_evaluator_only_no_review_grade_visual_evidence" in scorecard[
-        "visual_review_blockers"
-    ]
+    assert (
+        "fixture_evaluator_only_no_review_grade_visual_evidence"
+        in scorecard["visual_review_blockers"]
+    )
     assert scorecard["required_scenario_eval_run_ids"] == [
         "run_train_clearance",
         "run_heldout_grasp_glare",
@@ -257,20 +540,22 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert scorecard["ranking_confidence"]["top_policy_margin"] > 0
     assert scorecard["ranking_confidence"]["ranking_ambiguous"] is False
     assert scorecard["single_best_policy_claimed"] is False
-    assert candidate_report["status"] == "visual_review_required_candidate_shortlist"
+    assert candidate_report["status"] == (
+        "inconclusive_insufficient_replicates_candidate_shortlist"
+    )
     assert candidate_report["top_policy_id"] is None
     assert candidate_report["evaluator_top_policy_id"] == "site_finetune_policy"
     assert candidate_report["runner_up_policy_id"] == "baseline_policy"
     assert candidate_report["margin"]["predicted_success_rate"] == 0.5
-    assert candidate_report["tie_or_ambiguity_status"] == "visual_review_required"
+    assert candidate_report["tie_or_ambiguity_status"] == (
+        "insufficient_replicates_or_interval_overlap"
+    )
     assert [row["policy_id"] for row in candidate_report["candidate_shortlist"]] == [
         "site_finetune_policy",
         "baseline_policy",
     ]
     assert candidate_report["recommendation"]["recommended_policy_id"] is None
-    assert candidate_report["recommendation"]["evaluator_top_policy_id"] == (
-        "site_finetune_policy"
-    )
+    assert candidate_report["recommendation"]["evaluator_top_policy_id"] == ("site_finetune_policy")
     assert any(
         row["reason"] == "visual_review_blockers_present"
         for row in candidate_report["recommended_reruns"]
@@ -288,19 +573,26 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert scorecard["comparison_contract"]["same_observation_protocol"] is True
     assert scorecard["comparison_contract"]["same_action_protocol"] is True
     assert scorecard["comparison_contract"]["evaluation_readiness_claimed"] is False
-    assert scorecard["comparison_contract"][
-        "forward_inverse_consistency_metrics_are_support_signals_only"
-    ] is True
-    assert scorecard["comparison_contract"][
-        "forward_inverse_consistency_does_not_upgrade_policy_ranking"
-    ] is True
+    assert (
+        scorecard["comparison_contract"][
+            "forward_inverse_consistency_metrics_are_support_signals_only"
+        ]
+        is True
+    )
+    assert (
+        scorecard["comparison_contract"][
+            "forward_inverse_consistency_does_not_upgrade_policy_ranking"
+        ]
+        is True
+    )
     assert scorecard["forward_inverse_consistency_signal_summary"]["status"] == "not_provided"
     assert scorecard["forward_inverse_consistency_signal_summary"]["support_signal_only"] is True
     assert failure_labels["fixture_evaluator_only"] is True
     assert failure_labels["review_grade_failure_diagnosis"] is False
-    assert "fixture_evaluator_only_no_review_grade_visual_evidence" in failure_labels[
-        "failure_diagnosis_blockers"
-    ]
+    assert (
+        "fixture_evaluator_only_no_review_grade_visual_evidence"
+        in failure_labels["failure_diagnosis_blockers"]
+    )
     assert claim_boundary["generated_rollouts_are_model_derived_support_artifacts"] is True
     assert claim_boundary["fixture_evaluator_only"] is True
     assert claim_boundary["visual_smoke_required_for_review_grade_policy_ranking"] is True
@@ -312,12 +604,13 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert claim_boundary["live_provider_calls_performed"] is False
     assert claim_boundary["customer_specific_srcc_claimed"] is False
     assert claim_boundary["passing_wam_heldout_eval_is_not_rank_fidelity_result"] is True
-    assert claim_boundary[
-        "forward_inverse_consistency_is_reliability_review_signal_only"
-    ] is True
-    assert claim_boundary[
-        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
-    ] is True
+    assert claim_boundary["forward_inverse_consistency_is_reliability_review_signal_only"] is True
+    assert (
+        claim_boundary[
+            "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
+        ]
+        is True
+    )
     assert claim_boundary["policy_success_claimed_from_consistency"] is False
     assert claim_boundary["task_success_claimed_from_consistency"] is False
     assert claim_boundary["rank_fidelity_claimed_from_consistency"] is False
@@ -330,18 +623,19 @@ def test_fixture_wam_eval_job_writes_rollouts_labels_scorecard_and_boundaries(
     assert anchor_manifest["usable_anchor_count"] == 1
     assert anchor_manifest["missing_or_incomplete_anchor_count"] == 1
     assert anchor_manifest["anchors"][0]["actual_success"] is True
-    assert anchor_manifest["missing_anchor_requirements"][0]["record_id"] == "missing-owner-evidence"
+    assert (
+        anchor_manifest["missing_anchor_requirements"][0]["record_id"] == "missing-owner-evidence"
+    )
     assert handoff["visual_reviewability_gate"]["status"] == "blocked_visual_review_required"
     assert handoff["forward_inverse_consistency_signal_summary"]["support_signal_only"] is True
-    assert "fixture_evaluator_only_no_review_grade_visual_evidence" in handoff[
-        "visual_reviewability_gate"
-    ]["blockers"]
+    assert (
+        "fixture_evaluator_only_no_review_grade_visual_evidence"
+        in handoff["visual_reviewability_gate"]["blockers"]
+    )
     assert visual_blockers["status"] == "blocked_visual_review_required"
     assert visual_blockers["recommended_policy_id"] is None
     assert visual_blockers["evaluator_top_policy_id"] == "site_finetune_policy"
-    assert "fixture_evaluator_only_no_review_grade_visual_evidence" in visual_blockers[
-        "blockers"
-    ]
+    assert "fixture_evaluator_only_no_review_grade_visual_evidence" in visual_blockers["blockers"]
 
 
 def test_forward_inverse_consistency_overclaims_do_not_upgrade_fixture_policy_ranking() -> None:
@@ -403,9 +697,12 @@ def test_forward_inverse_consistency_overclaims_do_not_upgrade_fixture_policy_ra
     assert scorecard["review_grade_policy_ranking"] is False
     assert scorecard["ranking_confidence"]["ranking_ambiguous"] is True
     assert scorecard["comparison_contract"]["evaluation_readiness_claimed"] is False
-    assert scorecard["claim_boundary"][
-        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
-    ] is True
+    assert (
+        scorecard["claim_boundary"][
+            "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
+        ]
+        is True
+    )
     assert scorecard["claim_boundary"]["task_success_claimed_from_consistency"] is False
     assert scorecard["claim_boundary"]["external_validation_claimed_from_consistency"] is False
 
@@ -428,15 +725,11 @@ def test_fixture_wam_failure_labels_stay_review_required_and_breakage_aggregates
     assert labels["status"] == "review_required"
     assert labels["failure_diagnosis_coverage_complete"] is True
     assert labels["failure_diagnosis_complete"] is False
-    assert "failure_labels_nonreviewable_failure_hypotheses" in labels[
-        "failure_diagnosis_blockers"
-    ]
+    assert "failure_labels_nonreviewable_failure_hypotheses" in labels["failure_diagnosis_blockers"]
     first = labels["labels"][0]
     assert first["status"] == "review_required"
     assert first["reviewer_acceptance_required"] is True
-    assert first["proof_effect"] == (
-        "none_until_review_accepted_or_real_world_validation_supplied"
-    )
+    assert first["proof_effect"] == ("none_until_review_accepted_or_real_world_validation_supplied")
     assert first["evidence_refs"]
     assert "normalized_attempt_trace.json" in first["source_trace_refs"]
     assert first["root_cause_category"]
@@ -477,39 +770,31 @@ def test_candidate_selection_report_shortlists_when_visual_review_is_blocked(
     assert report["primary_eval_question"] == (
         "which policy performed best in this evaluator, and what broke"
     )
-    assert report["status"] == "visual_review_required_candidate_shortlist"
+    assert report["status"] == ("inconclusive_insufficient_replicates_candidate_shortlist")
     assert report["top_policy_id"] is None
     assert report["evaluator_top_policy_id"] == "site_finetune_policy"
     assert report["runner_up_policy_id"] == "baseline_policy"
-    assert [
-        row["policy_id"] for row in report["candidate_shortlist"]
-    ] == ["site_finetune_policy", "baseline_policy"]
-    assert report["recommendation"]["status"] == "no_winner_claim_use_shortlist"
-    assert report["decisive_scenarios"][0]["scenario_eval_run_id"] == (
-        "run_heldout_grasp_glare"
-    )
-    assert report["decisive_scenarios"][0]["successful_policy_ids"] == [
-        "site_finetune_policy"
+    assert [row["policy_id"] for row in report["candidate_shortlist"]] == [
+        "site_finetune_policy",
+        "baseline_policy",
     ]
+    assert report["recommendation"]["status"] == "no_winner_claim_use_shortlist"
+    assert report["decisive_scenarios"][0]["scenario_eval_run_id"] == ("run_heldout_grasp_glare")
+    assert report["decisive_scenarios"][0]["successful_policy_ids"] == ["site_finetune_policy"]
     assert report["decisive_scenarios"][0]["failed_policy_ids"] == ["baseline_policy"]
     cluster_ids = {cluster["failure_mode_id"] for cluster in report["failure_clusters"]}
     assert "perception_ambiguity_failure" in cluster_ids
     assert "manipulation_alignment_failure" in cluster_ids
-    assert report["dominant_failure_modes"][0]["evidence_strength"] == (
-        "label_only_needs_review"
-    )
+    assert report["dominant_failure_modes"][0]["evidence_strength"] == ("label_only_needs_review")
     first_cluster = report["failure_clusters"][0]
     hooks = first_cluster["post_training_data_package_hooks"]
     assert hooks["data_to_collect"]
     assert hooks["scenario_variants_to_add"]
-    assert hooks["policy_adapter_or_checkpoint_to_retry"][0]["policy_id"] == (
-        "baseline_policy"
-    )
+    assert hooks["policy_adapter_or_checkpoint_to_retry"][0]["policy_id"] == ("baseline_policy")
     assert "real_world_validation_followup_request" not in report
     assert "real_world_validation_requests" not in report
     assert all(
-        row["reason"] != "paired_real_world_anchor_missing"
-        for row in report["recommended_reruns"]
+        row["reason"] != "paired_real_world_anchor_missing" for row in report["recommended_reruns"]
     )
     assert report["claim_boundary"]["boundary_statement"] == (
         "sim-ranking handoff only; IRL validation is out of scope"
@@ -525,7 +810,7 @@ def test_candidate_selection_report_shortlists_when_visual_review_is_blocked(
     assert "will work irl" not in markdown_lower
     assert handoff["candidate_selection_report_path"] == "candidate_selection_report.json"
     assert handoff["candidate_selection_summary"]["status"] == (
-        "visual_review_required_candidate_shortlist"
+        "inconclusive_insufficient_replicates_candidate_shortlist"
     )
 
 
@@ -550,13 +835,14 @@ def test_candidate_ranking_ambiguous_report_uses_shortlist_instead_of_best_polic
     report = _read_json(job_dir / "candidate_selection_report.json")
     handoff = _read_json(job_dir / "customer_handoff_report.json")
 
-    assert report["status"] == "visual_review_required_candidate_shortlist"
+    assert report["status"] == ("inconclusive_insufficient_replicates_candidate_shortlist")
     assert report["top_policy_id"] is None
     assert report["selection"]["ranking_ambiguous"] is True
-    assert "visual_review_blockers_or_fixture_only_labels_prevent_winner_claim" in report[
-        "selection"
-    ]["ambiguity_reasons"]
-    assert report["tie_or_ambiguity_status"] == "visual_review_required"
+    assert (
+        "decision_grade_replicate_or_interval_evidence_missing"
+        in report["selection"]["ambiguity_reasons"]
+    )
+    assert report["tie_or_ambiguity_status"] == ("insufficient_replicates_or_interval_overlap")
     assert [row["policy_id"] for row in report["candidate_shortlist"]] == [
         "policy_alpha",
         "policy_beta",
@@ -564,8 +850,7 @@ def test_candidate_ranking_ambiguous_report_uses_shortlist_instead_of_best_polic
     assert report["margin"]["predicted_success_rate"] == 0.0
     assert handoff["top_policy_id"] is None
     assert [
-        row["policy_id"]
-        for row in handoff["candidate_selection_summary"]["candidate_shortlist"]
+        row["policy_id"] for row in handoff["candidate_selection_summary"]["candidate_shortlist"]
     ] == [
         "policy_alpha",
         "policy_beta",
@@ -604,12 +889,10 @@ def test_candidate_selection_blocks_completed_visual_review_required_scorecard()
         }
     )
 
-    assert selection["status"] == "visual_review_required_candidate_shortlist"
+    assert selection["status"] == ("inconclusive_insufficient_replicates_candidate_shortlist")
     assert selection["top_policy_id"] is None
     assert selection["evaluator_top_policy_id"] == "policy-a"
-    assert "visual_review_blockers_or_fixture_only_labels_prevent_winner_claim" in selection[
-        "ambiguity_reasons"
-    ]
+    assert "decision_grade_replicate_or_interval_evidence_missing" in selection["ambiguity_reasons"]
     assert [row["policy_id"] for row in selection["candidate_shortlist"]] == [
         "policy-a",
         "policy-b",
@@ -659,20 +942,21 @@ def test_review_grade_ranking_requires_short_sanity_manifest_and_review_refs(
         labels=labels,
     )
 
-    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["status"] == "completed_inconclusive_insufficient_replicates"
     assert scorecard["top_policy_id"] is None
     assert scorecard["evaluator_top_policy_id"] == "policy-a"
     assert scorecard["review_grade_policy_ranking"] is False
-    assert "short_visual_sanity_manifest_missing_for_review_grade_ranking" in scorecard[
-        "visual_review_blockers"
-    ]
+    assert (
+        "short_visual_sanity_manifest_missing_for_review_grade_ranking"
+        in scorecard["visual_review_blockers"]
+    )
     assert scorecard["short_visual_sanity_gate"]["passed"] is False
     selection = wam_fixture_module._candidate_selection_summary(scorecard)
-    assert selection["status"] == "visual_review_required_candidate_shortlist"
+    assert selection["status"] == ("inconclusive_insufficient_replicates_candidate_shortlist")
     assert selection["top_policy_id"] is None
 
 
-def test_review_grade_ranking_can_claim_winner_with_passed_short_sanity_gate(
+def test_review_grade_ranking_still_needs_decision_grade_replicates(
     tmp_path: Path,
 ) -> None:
     labels = {
@@ -717,16 +1001,352 @@ def test_review_grade_ranking_can_claim_winner_with_passed_short_sanity_gate(
         labels=labels,
     )
 
-    assert scorecard["status"] == "completed"
-    assert scorecard["top_policy_id"] == "policy-a"
-    assert scorecard["single_best_policy_claimed"] is True
-    assert scorecard["review_grade_policy_ranking"] is True
+    assert scorecard["status"] == "completed_inconclusive_insufficient_replicates"
+    assert scorecard["top_policy_id"] is None
+    assert scorecard["single_best_policy_claimed"] is False
+    assert scorecard["review_grade_policy_ranking"] is False
     assert scorecard["short_visual_sanity_gate"]["passed"] is True
     assert scorecard["short_visual_sanity_gate"]["contact_sheet_refs"]
     assert scorecard["short_visual_sanity_gate"]["provenance_refs"]
     selection = wam_fixture_module._candidate_selection_summary(scorecard)
-    assert selection["status"] == "clear_winner"
-    assert selection["top_policy_id"] == "policy-a"
+    assert selection["status"] == ("inconclusive_insufficient_replicates_candidate_shortlist")
+    assert selection["top_policy_id"] is None
+
+
+def test_decision_grade_matched_replicates_can_prove_paired_cluster_winner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_test_governance_key(monkeypatch)
+    run_ids, label_rows, authority_registry = _decision_grade_bundle(
+        tmp_path,
+        substrate="oscar_wam",
+        condition_outcomes={"matched-condition": (True, False)},
+    )
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="oscar_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=run_ids,
+        policy_ids=["policy-a", "policy-b"],
+        evidence_root=tmp_path,
+        labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
+            "review_grade_visual_evidence_available": True,
+            "fixture_evaluator_only": False,
+            "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
+            "decision_grade_authority_registry": authority_registry,
+            "labels": label_rows,
+        },
+    )
+
+    assert scorecard["decision_grade_replicate_validation"]["status"] == ("decision_grade")
+    assert scorecard["interval_winner_proven"] is True
+    inference = scorecard["paired_cluster_bootstrap_inference"]
+    assert inference["status"] == "winner_proven"
+    assert inference["winner_policy_id"] == "policy-a"
+    assert inference["all_adjusted_pairwise_intervals_exclude_zero"] is True
+    assert inference["pairwise_intervals"][0]["lower"] == 1.0
+    assert scorecard["multiplicity_control"]["method"] == (
+        "bonferroni_all_policy_pairs_cluster_bootstrap"
+    )
+    assert scorecard["status"] == "completed"
+    assert scorecard["single_best_policy_claimed"] is True
+    assert scorecard["top_policy_id"] == "policy-a"
+
+
+def test_default_production_trust_root_rejects_test_governance_key(
+    tmp_path: Path,
+) -> None:
+    registry_ref = _write_decision_authority_registry(
+        tmp_path,
+        substrate="oscar_wam",
+    )
+
+    _authorities, registry, blockers = wam_fixture_module._decision_authority_registry(
+        substrate="oscar_wam",
+        evidence_root=tmp_path,
+        reference=registry_ref,
+    )
+
+    assert registry["status"] == "blocked"
+    assert any("governance:signature_key_fingerprint_mismatch" in item for item in blockers)
+    assert any("governance:signature_verification_failed" in item for item in blockers)
+
+
+def test_matched_design_rejects_authentic_different_run_task_and_scenario(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_test_governance_key(monkeypatch)
+    run_ids, label_rows, authority_registry = _decision_grade_bundle(
+        tmp_path,
+        substrate="oscar_wam",
+        condition_outcomes={"matched-condition": (True, False)},
+    )
+    mismatched = {
+        **label_rows[1],
+        "scenario_eval_run_id": "different-authentic-run",
+        "task_id": "different-authentic-task",
+        "scenario_id": "different-authentic-scenario",
+        "matched_pair_id": "different-authentic-pair",
+        "runtime_result_id": "different-authentic-result",
+    }
+    label_rows[1] = _attach_decision_evidence(
+        tmp_path,
+        mismatched,
+        authority_registry=authority_registry,
+    )
+
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="oscar_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=run_ids,
+        policy_ids=["policy-a", "policy-b"],
+        evidence_root=tmp_path,
+        labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
+            "review_grade_visual_evidence_available": True,
+            "fixture_evaluator_only": False,
+            "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
+            "decision_grade_authority_registry": authority_registry,
+            "labels": label_rows,
+        },
+    )
+
+    blockers = scorecard["decision_grade_replicate_validation"]["blockers"]
+    assert any("ranking_matched_design_mismatch" in item for item in blockers)
+    assert any(item.endswith(":scenario_eval_run_id") for item in blockers)
+    assert any(item.endswith(":task_id") for item in blockers)
+    assert any(item.endswith(":scenario_id") for item in blockers)
+    inference = scorecard["paired_cluster_bootstrap_inference"]
+    assert inference["status"] == "inconclusive"
+    assert inference["winner_policy_id"] is None
+    assert inference["pairwise_intervals"] == []
+    assert scorecard["single_best_policy_claimed"] is False
+    assert scorecard["top_policy_id"] is None
+
+
+def test_decision_grade_rejects_cloned_or_tampered_replicate_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_test_governance_key(monkeypatch)
+    run_ids, label_rows, authority_registry = _decision_grade_bundle(
+        tmp_path,
+        substrate="oscar_wam",
+        condition_outcomes={"matched-condition": (True, False)},
+    )
+    original = label_rows[0]["decision_grade_evidence"]
+    label_rows[1]["decision_grade_evidence"] = dict(original)
+    label_rows[4]["runtime_result_id"] = label_rows[0]["runtime_result_id"]
+    media_manifest_path = tmp_path / label_rows[2]["decision_grade_evidence"]["media"]["path"]
+    media_manifest = _read_json(media_manifest_path)
+    media_artifact_path = tmp_path / media_manifest["artifact"]["path"]
+    media_artifact_path.write_bytes(b"tampered-after-attestation")
+    untrusted_outcome_ref = label_rows[3]["decision_grade_evidence"]["outcome_label"]
+    untrusted_outcome_path = tmp_path / untrusted_outcome_ref["path"]
+    untrusted_outcome = _read_json(untrusted_outcome_path)
+    untrusted_outcome["authority"]["authority_id"] = "unregistered-reviewer"
+    _write_json(untrusted_outcome_path, untrusted_outcome)
+    untrusted_outcome_ref["sha256"] = _sha256_ref(untrusted_outcome_path)
+
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="oscar_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=run_ids,
+        policy_ids=["policy-a", "policy-b"],
+        evidence_root=tmp_path,
+        labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
+            "review_grade_visual_evidence_available": True,
+            "fixture_evaluator_only": False,
+            "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
+            "decision_grade_authority_registry": authority_registry,
+            "labels": label_rows,
+        },
+    )
+
+    validation = scorecard["decision_grade_replicate_validation"]
+    evidence_blockers = validation["evidence_validation"]["blockers"]
+    assert validation["status"] == "inconclusive"
+    assert any("evidence_manifest_reused_from" in item for item in evidence_blockers)
+    assert any("evidence_id_reused_from" in item for item in evidence_blockers)
+    assert any("runtime_result_id_reused_from" in item for item in evidence_blockers)
+    assert any("artifact_sha256_mismatch" in item for item in evidence_blockers)
+    assert any("authority_untrusted" in item for item in evidence_blockers)
+    assert any("signature_key_fingerprint_mismatch" in item for item in evidence_blockers)
+    inference = scorecard["paired_cluster_bootstrap_inference"]
+    assert inference["status"] == "inconclusive"
+    assert inference["winner_policy_id"] is None
+    assert inference["pairwise_intervals"] == []
+    assert scorecard["interval_winner_proven"] is False
+    assert scorecard["single_best_policy_claimed"] is False
+    assert scorecard["top_policy_id"] is None
+
+
+def test_clustered_counterexample_blocks_pooled_rate_winner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _configure_test_governance_key(monkeypatch)
+    run_ids, label_rows, authority_registry = _decision_grade_bundle(
+        tmp_path,
+        substrate="oscar_wam",
+        condition_outcomes={
+            "condition-a-win-1": (True, False),
+            "condition-a-win-2": (True, False),
+            "condition-b-win": (False, True),
+        },
+    )
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="oscar_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=run_ids,
+        policy_ids=["policy-a", "policy-b"],
+        evidence_root=tmp_path,
+        labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
+            "review_grade_visual_evidence_available": True,
+            "fixture_evaluator_only": False,
+            "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
+            "decision_grade_authority_registry": authority_registry,
+            "labels": label_rows,
+        },
+    )
+
+    assert scorecard["decision_grade_replicate_validation"]["status"] == ("decision_grade")
+    assert scorecard["policy_rankings"][0]["predicted_success_rate"] == 0.666667
+    assert scorecard["policy_rankings"][1]["predicted_success_rate"] == 0.333333
+    inference = scorecard["paired_cluster_bootstrap_inference"]
+    assert inference["status"] == "inconclusive"
+    assert inference["pairwise_intervals"][0]["lower"] <= 0.0
+    assert inference["pairwise_intervals"][0]["upper"] > 0.0
+    assert inference["all_adjusted_pairwise_intervals_exclude_zero"] is False
+    assert scorecard["interval_winner_proven"] is False
+    assert scorecard["status"] == "completed_ambiguous_ranking"
+    assert scorecard["single_best_policy_claimed"] is False
+    assert scorecard["top_policy_id"] is None
+
+
+def test_fixture_replicates_remain_support_only_even_with_review_labels(
+    tmp_path: Path,
+) -> None:
+    run_ids, label_rows, authority_registry = _decision_grade_bundle(
+        tmp_path,
+        substrate="fixture_wam",
+        condition_outcomes={"matched-condition": (True, False)},
+    )
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="fixture_wam",
+        generated_at="2026-06-20T00:00:00+00:00",
+        required_scenario_eval_run_ids=run_ids,
+        policy_ids=["policy-a", "policy-b"],
+        evidence_root=tmp_path,
+        labels={
+            "visual_rollout_useful_for_task_success_review": True,
+            "review_grade_success_labels": True,
+            "review_grade_visual_evidence_available": True,
+            "fixture_evaluator_only": False,
+            "short_visual_sanity_manifest": _passed_short_visual_sanity_manifest(tmp_path),
+            "decision_grade_authority_registry": authority_registry,
+            "labels": label_rows,
+        },
+    )
+
+    assert (
+        "ranking_fixture_substrate_support_only"
+        in scorecard["decision_grade_replicate_validation"]["blockers"]
+    )
+    inference = scorecard["paired_cluster_bootstrap_inference"]
+    assert inference["status"] == "inconclusive"
+    assert inference["winner_policy_id"] is None
+    assert inference["pairwise_intervals"] == []
+    assert scorecard["single_best_policy_claimed"] is False
+    assert scorecard["top_policy_id"] is None
+
+
+def test_decision_grade_rejects_many_replicate_ids_with_one_reused_seed() -> None:
+    labels = {
+        "labels": [
+            {
+                "policy_id": policy_id,
+                "scenario_eval_run_id": f"{policy_id}-run-{index:02d}",
+                "condition_id": "condition-a",
+                "replicate_id": f"{policy_id}-replicate-{index:02d}",
+                "replicate_seed": 7,
+                "review_task_success": policy_id == "policy-a",
+                "authoritative_task_success_label": True,
+            }
+            for policy_id in ("policy-a", "policy-b")
+            for index in range(20)
+        ],
+        "review_grade_success_labels": True,
+        "visual_rollout_useful_for_task_success_review": True,
+    }
+
+    scorecard = wam_fixture_module._policy_scorecard(
+        substrate="fixture_wam",
+        labels=labels,
+        generated_at="now",
+        policy_ids=("policy-a", "policy-b"),
+    )
+
+    validation = scorecard["decision_grade_replicate_validation"]
+    assert validation["status"] == "inconclusive"
+    assert any("ranking_cell_unique_seeds_lt_20" in row for row in validation["blockers"])
+    assert any("ranking_replicate_seeds_duplicate" in row for row in validation["blockers"])
+
+
+def test_ood_flags_require_frozen_registered_axes_not_keywords(tmp_path: Path) -> None:
+    keyword_only = wam_fixture_module._rollout_for_run(
+        job_dir=tmp_path / "keyword",
+        substrate="fixture_wam",
+        policy={"policy_id": "p", "capabilities": ["all"]},
+        run={
+            "scenario_eval_run_id": "run-keyword",
+            "variation_name": "wrong_object_glare_missing_label",
+        },
+        index=1,
+        generated_at="now",
+    )
+    assert keyword_only["ood_flags"] == []
+    assert "ood_axes_registration_missing" in keyword_only["ood_registration_blockers"]
+    assert keyword_only["registered_ood_axes_complete"] is False
+
+    registered = wam_fixture_module._rollout_for_run(
+        job_dir=tmp_path / "registered",
+        substrate="fixture_wam",
+        policy={"policy_id": "p", "capabilities": ["all"]},
+        run={
+            "scenario_eval_run_id": "run-registered",
+            "variation_name": "ordinary",
+            "registered_ood": {"visual": True, "camera": False},
+        },
+        index=1,
+        generated_at="now",
+    )
+    assert registered["ood_flags"] == ["visual"]
+    assert "ood_axis_registration_missing:site" in registered["ood_registration_blockers"]
+    assert registered["registered_ood_axes_complete"] is False
+
+    complete = wam_fixture_module._rollout_for_run(
+        job_dir=tmp_path / "complete",
+        substrate="fixture_wam",
+        policy={"policy_id": "p", "capabilities": ["all"]},
+        run={
+            "scenario_eval_run_id": "run-complete",
+            "variation_name": "ordinary",
+            "registered_ood": {axis: axis == "visual" for axis in wam_fixture_module.SC3_OOD_AXES},
+        },
+        index=1,
+        generated_at="now",
+    )
+    assert complete["ood_registration_blockers"] == []
+    assert complete["registered_ood_axes_complete"] is True
 
 
 def test_review_grade_ranking_blocks_visually_weak_short_sanity_manifest(
@@ -769,18 +1389,12 @@ def test_review_grade_ranking_blocks_visually_weak_short_sanity_manifest(
         labels=labels,
     )
 
-    assert scorecard["status"] == "completed_visual_review_required"
+    assert scorecard["status"] == "completed_inconclusive_insufficient_replicates"
     assert scorecard["top_policy_id"] is None
     assert scorecard["short_visual_sanity_gate"]["passed"] is False
-    assert "short_visual_sanity_manifest_not_passed" in scorecard[
-        "visual_review_blockers"
-    ]
-    assert "short_visual_sanity_manifest_not_visually_useful" in scorecard[
-        "visual_review_blockers"
-    ]
-    assert "short_visual_sanity_wam_visual_quality_failed" in scorecard[
-        "visual_review_blockers"
-    ]
+    assert "short_visual_sanity_manifest_not_passed" in scorecard["visual_review_blockers"]
+    assert "short_visual_sanity_manifest_not_visually_useful" in scorecard["visual_review_blockers"]
+    assert "short_visual_sanity_wam_visual_quality_failed" in scorecard["visual_review_blockers"]
 
 
 def test_failure_diagnosis_blocks_when_review_label_refs_are_missing(
@@ -813,12 +1427,11 @@ def test_failure_diagnosis_blocks_when_review_label_refs_are_missing(
     )
 
     assert failure_labels["failure_diagnosis_complete"] is False
-    assert "review_grade_failure_label_refs_missing" in failure_labels[
-        "failure_diagnosis_blockers"
-    ]
-    assert "short_visual_sanity_manifest_missing_for_review_grade_ranking" in failure_labels[
-        "failure_diagnosis_blockers"
-    ]
+    assert "review_grade_failure_label_refs_missing" in failure_labels["failure_diagnosis_blockers"]
+    assert (
+        "short_visual_sanity_manifest_missing_for_review_grade_ranking"
+        in failure_labels["failure_diagnosis_blockers"]
+    )
     first = failure_labels["labels"][0]
     assert first["non_reviewable_failure_hypothesis"] is False
     assert first["label_id"] in failure_labels["nonreviewable_failure_hypothesis_label_ids"]
@@ -904,9 +1517,12 @@ def test_candidate_failure_handoff_uses_unknown_when_failure_evidence_is_weak() 
     ]
     assert report["failure_clusters"][0]["failure_mode_id"] is None
     assert report["failure_clusters"][0]["diagnosis"] == "unknown_needs_review"
-    assert report["failure_clusters"][0]["post_training_data_package_hooks"][
-        "policy_adapter_or_checkpoint_to_retry"
-    ][0]["checkpoint_id"] == "ckpt-alpha"
+    assert (
+        report["failure_clusters"][0]["post_training_data_package_hooks"][
+            "policy_adapter_or_checkpoint_to_retry"
+        ][0]["checkpoint_id"]
+        == "ckpt-alpha"
+    )
 
 
 def test_fixture_wam_cli_and_live_provider_blocked_manifest(tmp_path: Path) -> None:
@@ -1065,9 +1681,9 @@ def test_policy_ranking_blocks_missing_scenario_ids_without_candidate_winner() -
 
     assert scorecard["status"] == "blocked_inconclusive_ranking"
     assert scorecard["missing_by_policy"] == {"policy-a": ["run-1"], "policy-b": ["run-1"]}
-    assert "policy_coverage_missing_required_scenario_eval_run_ids" in scorecard[
-        "comparison_blockers"
-    ]
+    assert (
+        "policy_coverage_missing_required_scenario_eval_run_ids" in scorecard["comparison_blockers"]
+    )
     assert scorecard["top_policy_id"] is None
     assert scorecard["single_best_policy_claimed"] is False
     selection = wam_fixture_module._candidate_selection_summary(scorecard)
@@ -1256,7 +1872,8 @@ def test_fixture_wam_helper_edges_cover_forced_failure_and_generated_run_ids(
     )
 
     assert rollout["predicted_success"] is False
-    assert "fixture_forced_failure" in rollout["ood_flags"]
+    assert rollout["ood_flags"] == []
+    assert "fixture_policy_failure" in rollout["failure_mode_ids"]
     assert "fixture_policy_failure" in rollout["failure_mode_ids"]
     assert "dynamic_agent_safety_failure" in rollout["failure_mode_ids"]
 
@@ -1310,7 +1927,7 @@ def test_policy_ranking_blocks_asymmetric_policy_scenario_coverage() -> None:
                     "uncertainty_score": 0.12,
                     "confidence": 0.88,
                 },
-            ]
+            ],
         },
     )
 
@@ -1318,9 +1935,9 @@ def test_policy_ranking_blocks_asymmetric_policy_scenario_coverage() -> None:
     assert scorecard["coverage_complete"] is False
     assert scorecard["missing_by_policy"]["policy-b"] == ["run-2"]
     assert scorecard["attempt_count_by_policy"] == {"policy-a": 2, "policy-b": 1}
-    assert "policy_coverage_missing_required_scenario_eval_run_ids" in scorecard[
-        "comparison_blockers"
-    ]
+    assert (
+        "policy_coverage_missing_required_scenario_eval_run_ids" in scorecard["comparison_blockers"]
+    )
     assert scorecard["top_policy_id"] is None
     assert scorecard["single_best_policy_claimed"] is False
 
@@ -1366,16 +1983,18 @@ def test_policy_ranking_tie_band_is_ambiguous_without_best_policy_claim(
                     task_success=False,
                     uncertainty_score=0.2,
                 ),
-            ]
+            ],
         },
     )
 
-    assert scorecard["status"] == "completed_ambiguous_ranking"
+    assert scorecard["status"] == "completed_inconclusive_insufficient_replicates"
     assert scorecard["coverage_complete"] is True
     assert scorecard["comparison_blockers"] == []
     assert scorecard["ranking_confidence"]["top_policy_margin"] == 0.0
     assert scorecard["ranking_confidence"]["ranking_ambiguous"] is True
-    assert scorecard["ranking_confidence"]["confidence_level"] == "ambiguous"
+    assert scorecard["ranking_confidence"]["confidence_level"] == (
+        "inconclusive_insufficient_replicates"
+    )
     assert scorecard["evaluator_top_policy_id"] == "policy-a"
     assert scorecard["top_policy_id"] is None
     assert scorecard["single_best_policy_claimed"] is False
@@ -1431,27 +2050,27 @@ def test_policy_ranking_high_ood_or_uncertainty_downgrades_confidence(
                     task_success=False,
                     uncertainty_score=0.1,
                 ),
-            ]
+            ],
         },
     )
 
-    assert scorecard["status"] == "completed_low_confidence_ranking"
+    assert scorecard["status"] == "completed_inconclusive_insufficient_replicates"
     assert scorecard["top_policy_id"] is None
     assert scorecard["evaluator_top_policy_id"] == "policy-a"
     assert scorecard["single_best_policy_claimed"] is False
     assert scorecard["ranking_confidence"]["top_policy_margin"] == 0.5
     assert scorecard["ranking_confidence"]["uncertainty_penalty_applied"] is True
-    assert scorecard["ranking_confidence"]["ood_blockers"] == [
-        "policy:policy-a:ood_rate_high"
-    ]
-    assert scorecard["ranking_confidence"]["confidence_level"] == "low"
+    assert scorecard["ranking_confidence"]["ood_blockers"] == ["policy:policy-a:ood_rate_high"]
+    assert scorecard["ranking_confidence"]["confidence_level"] == (
+        "inconclusive_insufficient_replicates"
+    )
     assert scorecard["ranking_confidence"]["real_world_calibration_metrics"] == {
         "spearman_rank_correlation": "not_measured",
         "pearson_success_rate_correlation": "not_measured",
         "mean_maximum_rank_violation": "not_measured",
     }
     selection = wam_fixture_module._candidate_selection_summary(scorecard)
-    assert selection["status"] == "low_confidence_candidate_shortlist"
+    assert selection["status"] == ("inconclusive_insufficient_replicates_candidate_shortlist")
     assert selection["top_policy_id"] is None
     assert selection["evaluator_top_policy_id"] == "policy-a"
     assert [row["policy_id"] for row in selection["candidate_shortlist"]] == [

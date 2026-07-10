@@ -65,10 +65,33 @@ def test_privacy_runner_service_auth_get_post_and_main(monkeypatch) -> None:  # 
     )
     handler, response = _handler(privacy_runner_service._Handler, path="/run", body={"open": True})
     handler.do_POST()
-    assert response["status"] == HTTPStatus.OK
-    assert _payload(handler)["body"] == {"open": True}
+    assert response["status"] == HTTPStatus.UNAUTHORIZED
 
     monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "secret")
+    handler, response = _handler(
+        privacy_runner_service._Handler,
+        path="/canary",
+        headers={"Authorization": "Bearer secret"},
+    )
+    handler.do_POST()
+    assert response["status"] == HTTPStatus.OK
+    assert _payload(handler) == {
+        "status": "ok",
+        "authentication": "verified",
+        "runner_kind": "sam3",
+        "model_execution_performed": False,
+    }
+
+    handler, response = _handler(
+        privacy_runner_service._Handler,
+        path="/canary",
+        body={"forbidden": True},
+        headers={"Authorization": "Bearer secret"},
+    )
+    handler.do_POST()
+    assert response["status"] == HTTPStatus.BAD_REQUEST
+    assert _payload(handler)["reason"] == "canary_body_forbidden"
+
     handler, response = _handler(privacy_runner_service._Handler, path="/run", body={})
     handler.do_POST()
     assert response["status"] == HTTPStatus.UNAUTHORIZED
@@ -80,8 +103,8 @@ def test_privacy_runner_service_auth_get_post_and_main(monkeypatch) -> None:  # 
         headers={"Authorization": "Bearer secret", "Content-Length": "bad"},
     )
     handler.do_POST()
-    assert response["status"] == HTTPStatus.OK
-    assert _payload(handler)["body"] == {}
+    assert response["status"] == HTTPStatus.BAD_REQUEST
+    assert _payload(handler)["reason"] == "invalid_content_length"
 
     invalid_raw = b"{bad-json"
     handler, response = _handler(
@@ -159,7 +182,7 @@ def test_privacy_runner_service_auth_get_post_and_main(monkeypatch) -> None:  # 
     monkeypatch.setattr(privacy_runner_service, "ThreadingHTTPServer", FakeServer)
     assert privacy_runner_service.main() == 0
     assert started == {
-        "address": ("0.0.0.0", 8080),
+        "address": ("127.0.0.1", 8080),
         "handler_cls": privacy_runner_service._Handler,
         "served": True,
     }
@@ -177,11 +200,24 @@ def test_video_to_world_runner_service_auth_get_post_and_main(monkeypatch) -> No
     )
     handler, response = _handler(video_to_world_runner_service._Handler, path="/run", body={"open": True})
     handler.do_POST()
-    assert response["status"] == HTTPStatus.OK
-    assert _payload(handler)["body"] == {"open": True}
+    assert response["status"] == HTTPStatus.UNAUTHORIZED
 
     monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "fallback")
     assert video_to_world_runner_service._auth_token() == "fallback"
+
+    handler, response = _handler(
+        video_to_world_runner_service._Handler,
+        path="/canary",
+        headers={"Authorization": "Bearer fallback"},
+    )
+    handler.do_POST()
+    assert response["status"] == HTTPStatus.OK
+    assert _payload(handler) == {
+        "status": "ok",
+        "authentication": "verified",
+        "runner": "video_to_world",
+        "model_execution_performed": False,
+    }
 
     handler, response = _handler(video_to_world_runner_service._Handler, path="/")
     handler.do_GET()
@@ -203,8 +239,8 @@ def test_video_to_world_runner_service_auth_get_post_and_main(monkeypatch) -> No
         headers={"Authorization": "Bearer fallback", "Content-Length": "bad"},
     )
     handler.do_POST()
-    assert response["status"] == HTTPStatus.OK
-    assert _payload(handler)["body"] == {}
+    assert response["status"] == HTTPStatus.BAD_REQUEST
+    assert _payload(handler)["reason"] == "invalid_content_length"
 
     invalid_raw = b"{bad-json"
     handler, response = _handler(
@@ -280,7 +316,7 @@ def test_video_to_world_runner_service_auth_get_post_and_main(monkeypatch) -> No
     monkeypatch.setattr(video_to_world_runner_service, "ThreadingHTTPServer", FakeServer)
     assert video_to_world_runner_service.main() == 0
     assert started == {
-        "address": ("0.0.0.0", 9090),
+        "address": ("127.0.0.1", 9090),
         "handler_cls": video_to_world_runner_service._Handler,
         "served": True,
     }
@@ -288,4 +324,4 @@ def test_video_to_world_runner_service_auth_get_post_and_main(monkeypatch) -> No
     started.clear()
     monkeypatch.setenv("PORT", "not-an-int")
     assert video_to_world_runner_service.main() == 0
-    assert started["address"] == ("0.0.0.0", 8080)
+    assert started["address"] == ("127.0.0.1", 8080)

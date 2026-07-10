@@ -60,8 +60,41 @@ def test_openvla_policy_provider_bundle_contains_runtime_contract(tmp_path: Path
     assert "openvla_runtime_dependency_version_mismatch" in runner_text
     assert "_runtime_dependency_version_issues" in runner_text
     assert "initial_dependency_version_issues" in runner_text
+    assert "trust_remote_code=True" not in runner_text
+    assert '"trust_remote_code": False' in runner_text
+    assert smoke.DEFAULT_MODEL_REPO_REVISION in runner_text
+    assert "blocked_openvla_model_approval_invalid" in runner_text
+    assert manifest["model_repo_revision"] == smoke.DEFAULT_MODEL_REPO_REVISION
+    assert manifest["model_license"] == "mit"
+    assert manifest["model_remote_code_trusted"] is False
     assert manifest["truth_boundary"]["unitree_g1_dexterous_manipulation_proven"] is False
     assert manifest["raw_credentials_written_to_artifacts"] is False
+
+
+def test_openvla_provider_rejects_unapproved_model_before_staging(
+    tmp_path: Path, monkeypatch
+) -> None:
+    staging_called = False
+
+    def fail_if_staged(**_kwargs):
+        nonlocal staging_called
+        staging_called = True
+        raise AssertionError("unapproved model must not reach object-store or provider staging")
+
+    monkeypatch.setattr(smoke, "stage_wam_provider_bundle_object_store", fail_if_staged)
+
+    try:
+        smoke.run_openvla_policy_provider_smoke(
+            job_dir=tmp_path / "job",
+            frame_path=_frame(tmp_path / "frame.png"),
+            model_repo_revision="0" * 40,
+            dry_run=True,
+        )
+    except ValueError as exc:
+        assert "openvla_model_revision_not_approved" in str(exc)
+    else:
+        raise AssertionError("unapproved OpenVLA revision was accepted")
+    assert staging_called is False
 
 
 def test_import_openvla_provider_output_completed(tmp_path: Path) -> None:

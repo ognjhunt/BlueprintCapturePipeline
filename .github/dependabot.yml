@@ -1,0 +1,50 @@
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Chicago
+    open-pull-requests-limit: 10
+    labels: [dependencies, security]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:15"
+      timezone: America/Chicago
+    open-pull-requests-limit: 10
+    labels: [dependencies, security]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:30"
+      timezone: America/Chicago
+    open-pull-requests-limit: 10
+    labels: [dependencies, security]
+
+  - package-ecosystem: docker
+    directories:
+      - /deploy/docker/deepprivacy2
+      - /deploy/docker/robot_eval_worker/groot_oscar_closed_loop
+      - /deploy/docker/robot_eval_worker/isaac
+      - /deploy/docker/robot_eval_worker/mujoco
+      - /deploy/docker/robot_eval_worker/unitree_groot_sonic_vast
+      - /deploy/docker/robot_eval_worker/unitree_groot_sonic_wam
+      - /deploy/docker/sam3
+      - /deploy/docker/video_to_world
+      - /deploy/docker/vip
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:45"
+      timezone: America/Chicago
+    open-pull-requests-limit: 10
+    labels: [dependencies, security]
