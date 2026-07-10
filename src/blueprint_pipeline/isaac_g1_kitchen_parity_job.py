@@ -45,6 +45,7 @@ from .launch_provenance import (
     evaluate_dirty_tree_paid_launch_gate,
     git_worktree_evidence,
 )
+from . import machine_quarantine_registry as machine_quarantine
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
@@ -1885,6 +1886,11 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
     reused later. Returns the launch of the first pod that actually started."""
     attempts: list[dict] = []
     failed_machine_ids: set[str] = set()
+    launch_image = str(request.get("imageName") or request.get("image") or "").strip()
+    launch_image_digest = (
+        launch_image.split("@", 1)[1] if "@sha256:" in launch_image else ""
+    )
+    launcher_provider_name = getattr(prov, "name", "unknown")
     trace = {
         "schema_version": "isaac_g1_kitchen_parity_launch_attempts.v1",
         "status": "starting",
@@ -1904,6 +1910,23 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
             "or robot readiness."
         ),
     }
+    # P0-2: seed the in-call quarantine with still-valid durable entries so a
+    # machine that killed a PREVIOUS run is terminated on first re-allocation
+    # instead of after another full startup timeout. Keyed strictly by
+    # provider + image digest + Isaac version; unpinned images skip this.
+    if launch_image_digest:
+        durable_machine_ids = {
+            str(entry.get("machine_id") or "").strip()
+            for entry in machine_quarantine.load_quarantine_entries()
+            if entry.get("provider") == launcher_provider_name
+            and entry.get("image_digest") == launch_image_digest
+            and entry.get("isaac_version") == machine_quarantine.DEFAULT_ISAAC_VERSION
+        }
+        durable_machine_ids.discard("")
+        if durable_machine_ids:
+            failed_machine_ids.update(durable_machine_ids)
+            trace["quarantined_machine_ids"] = sorted(failed_machine_ids)
+            trace["durable_quarantine_machine_ids"] = sorted(durable_machine_ids)
     trace_path = _write_launch_attempt_trace(job_dir, trace)
     if prelaunch_guard and prelaunch_guard.get("can_launch") is not True:
         blockers = [
@@ -2052,6 +2075,29 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                     if failed_machine_id:
                         failed_machine_ids.add(failed_machine_id)
                         trace["quarantined_machine_ids"] = sorted(failed_machine_ids)
+                        if launch_image_digest:
+                            # Durable cross-run quarantine (P0-2): a later
+                            # command must not re-select this dead host for the
+                            # same image digest and Isaac version.
+                            try:
+                                durable_entry = machine_quarantine.record_machine_quarantine(
+                                    provider=launcher_provider_name,
+                                    machine_id=failed_machine_id,
+                                    image_digest=launch_image_digest,
+                                    isaac_version=machine_quarantine.DEFAULT_ISAAC_VERSION,
+                                    failure_class="container_never_started",
+                                    phase=machine_quarantine.PHASE_PRE_RUNTIME,
+                                    evidence_paths=(trace_path,),
+                                    run_id=launch_session_id,
+                                )
+                                attempt_record["durable_quarantine_path"] = (
+                                    durable_entry["path"]
+                                )
+                            except machine_quarantine.QuarantineRefused:
+                                # Non-machine-attributable classes are refused
+                                # by design; the in-call quarantine above still
+                                # protects this run.
+                                pass
                     break
         attempt_record["elapsed_seconds"] = round(time.time() - t0, 1)
         attempt_record["marker_seen"] = marker_seen

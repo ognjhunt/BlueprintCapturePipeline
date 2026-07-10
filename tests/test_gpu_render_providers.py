@@ -157,6 +157,96 @@ def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> Non
     assert "single_gpu_stock_unavailable" in a6000["blockers"]
 
 
+def test_runpod_capacity_preflight_reports_honest_confidence(monkeypatch) -> None:
+    """P1-1: a textual stock label with an empty count list is advisory-at-best
+    'unknown', never 'immediately available'; only create is authoritative."""
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA A40",
+                        "displayName": "A40",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            # Attempt-021 shape: label says Medium, counts empty,
+                            # create then failed with HTTP 500 no-resources.
+                            "stockStatus": "Medium",
+                            "uninterruptablePrice": 0.44,
+                            "availableGpuCounts": [],
+                        },
+                    },
+                    {
+                        "id": "NVIDIA RTX A6000",
+                        "displayName": "RTX A6000",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "High",
+                            "uninterruptablePrice": 0.49,
+                            "availableGpuCounts": [1, 2],
+                        },
+                    },
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "gpuTypeIds": ["NVIDIA A40", "NVIDIA RTX A6000"],
+            "min_gpu_ram_mb": 48000,
+            "requires_rtx": True,
+        }
+    )
+
+    assert result["reservation_proven"] is False
+    assert result["authoritative_capacity_source"] == "provider_create_response"
+    by_id = {row["gpu_type_id"]: row for row in result["considered_gpu_types"]}
+    a40 = by_id["NVIDIA A40"]
+    assert a40["catalog_reported_stock"] == "Medium"
+    assert a40["single_gpu_count_known"] is False
+    assert a40["reservation_proven"] is False
+    assert a40["capacity_confidence"] == "unknown"
+    a6000 = by_id["NVIDIA RTX A6000"]
+    assert a6000["single_gpu_count_known"] is True
+    assert a6000["capacity_confidence"] == "advisory"
+    # Overall confidence never exceeds advisory: the probe is not a reservation.
+    assert result["capacity_confidence"] == "advisory"
+
+
+def test_runpod_create_capacity_failure_is_capacity_outcome_not_spend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda method, path, body, *, key, timeout=90: (
+            500,
+            {"error": "This machine does not have the resources to deploy your pod"},
+        ),
+    )
+    request = {
+        "imageName": "img@sha256:abc",
+        "prelaunch_spend_guard": {
+            "required_before_provider_launch": True,
+            "can_launch": True,
+        },
+    }
+    res = RunPodRenderProvider().launch(tmp_path, request, cold=True)
+    assert res["status"] == "blocked"
+    assert res["blockers"][0] == "runpod_secure_cloud_create_capacity_unavailable"
+    assert res["capacity_outcome"] is True
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
+
+
 def test_runpod_capacity_preflight_fails_closed_on_query_error(monkeypatch) -> None:
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
     monkeypatch.setattr(
@@ -1136,7 +1226,14 @@ def test_default_runpod_gpu_types_exclude_consumer_4090_pool(monkeypatch) -> Non
     monkeypatch.delenv("BLUEPRINT_RUNPOD_GPU_TYPES", raising=False)
     spec = _spec()
     assert "NVIDIA GeForce RTX 4090" not in spec.gpu_types
-    assert spec.gpu_types[0] == "NVIDIA L40S"
+    # Price-aware capability-gated priority (P1-1): cheapest RTX-capable first.
+    assert spec.gpu_types[0] == "NVIDIA A40"
+    assert spec.gpu_types[1] == "NVIDIA RTX A6000"
+    assert set(spec.gpu_types) == {
+        "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
+        "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
+    }
+    assert not any(("H100" in g or "H200" in g) for g in spec.gpu_types)
     assert all(("GeForce" not in g) for g in spec.gpu_types)
 
     monkeypatch.setenv(
