@@ -49,7 +49,7 @@ _CLAIM_BOUNDARY = {
     "asset_presence_proven_only": True,
     "scene_load_proven": False,
     "placement_proven": False,
-    "task_success_proven": False,
+    "proves_task_success": False,
     "note": (
         "A passing gate proves only that the expected kitchen asset bundle is "
         "present and content-address-intact on this worker before simulator "
@@ -454,10 +454,19 @@ def run_kitchen_asset_startup_gate(
                     "bytes_extracted": bytes_extracted,
                 }
 
+            # The PEP 706 "data" filter is absent on pre-3.10.12/3.11.4
+            # interpreters; extraction stays safe there because
+            # verify_archive_safety already rejected traversal/link/device
+            # members before this point.
+            try:
+                tarfile.data_filter  # noqa: B018 - feature probe
+                extract_kwargs: dict[str, Any] = {"filter": "data"}
+            except AttributeError:  # pragma: no cover - old-stdlib fallback
+                extract_kwargs = {}
             try:
                 with tarfile.open(archive, mode="r:*") as tar:
                     for member in tar:
-                        tar.extract(member, path=dest, filter="data")
+                        tar.extract(member, path=dest, **extract_kwargs)
                         if member.isfile():
                             files_extracted += 1
                             bytes_extracted += member.size

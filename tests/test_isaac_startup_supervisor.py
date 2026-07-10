@@ -481,6 +481,26 @@ def test_supervisor_exception_mid_attempt_still_finalizes_teardown(tmp_path):
     assert manifest["final_inventory"]["live_resource_count"] == 0
 
 
+def test_allocate_raising_cancels_pending_teardown_and_settles(tmp_path):
+    class _RaisingProvider(FakeProvider):
+        def allocate(self, **ctx):
+            raise RuntimeError("provider api 502")
+
+    provider = _RaisingProvider()
+    with pytest.raises(RuntimeError):
+        _run(tmp_path, _request(tmp_path), provider)
+    # No allocation ever existed: the record is cancelled, not left as an
+    # unresolvable open billing alarm.
+    assert load_pending_teardowns(registry_dir=tmp_path / "teardowns") == []
+    manifest = _artifact(tmp_path, SUP.MANIFEST_FILENAME)
+    assert manifest["status"] == "aborted"
+    attempt = manifest["attempts"][0]
+    assert attempt["outcome"] == "allocation_raised"
+    assert "provider api 502" in attempt["allocation_error"]
+    ledger = _artifact(tmp_path, "startup_cumulative_spend_ledger.json")
+    assert ledger["attempts"][0]["settled"] is True
+
+
 def test_unexpected_exception_finalizes_and_reraises(tmp_path):
     provider = FakeProvider()
 

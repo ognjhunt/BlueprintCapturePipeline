@@ -484,13 +484,27 @@ def run_startup_supervisor(
                 _persist_attempts()
 
             trace.record(PHASE_ALLOCATION_REQUESTED, detail={"attempt": attempt_id})
-            allocation = _mapping(
-                provider_client.allocate(
-                    gpu_type=attempt["gpu_type"],
-                    attempt_id=attempt_id,
-                    launch_nonce=attempt_nonce,
+            try:
+                allocation = _mapping(
+                    provider_client.allocate(
+                        gpu_type=attempt["gpu_type"],
+                        attempt_id=attempt_id,
+                        launch_nonce=attempt_nonce,
+                    )
                 )
-            )
+            except Exception as exc:
+                # No allocation id exists, so the record would otherwise stay
+                # open forever as an unresolvable billing alarm.
+                cancel_pending_teardown(
+                    pending["path"],
+                    reason="provider_allocate_raised_before_allocation",
+                )
+                state.pending_teardown_path = ""
+                attempt["allocation_error"] = "".join(
+                    traceback.format_exception_only(type(exc), exc)
+                ).strip()
+                _settle("allocation_raised", "allocation_failed")
+                raise
             if allocation.get("status") != "launched" or not allocation.get(
                 "instance_id"
             ):
@@ -704,7 +718,9 @@ def run_startup_supervisor(
         if outcome_status == "blocked" and not state.promoted:
             _final_inventory_snapshot()
         manifest["status"] = outcome_status
-    except BaseException as exc:
+    except Exception as exc:
+        # SupervisorInterrupted (the SIGTERM handler) lands here too; the
+        # finally-finalizer below also covers KeyboardInterrupt/SystemExit.
         manifest["status"] = "aborted"
         manifest["blockers"].append(
             "startup_supervisor_interrupted"

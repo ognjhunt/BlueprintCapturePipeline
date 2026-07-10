@@ -79,7 +79,7 @@ PROVIDER_ACCEPTANCE_NOTE = (
 CLAIM_BOUNDARY = {
     "local_gate_acceptance_only": True,
     "provider_acceptance_proven": False,
-    "task_success_proven": False,
+    "proves_task_success": False,
     "agent_cannot_waive_gates": True,
 }
 

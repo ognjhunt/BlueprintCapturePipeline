@@ -78,16 +78,6 @@ KNOWN_FAILURE_CLASSES = frozenset(
 )
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{1,79}$")
-_SECRET_KEY_MARKERS = (
-    "api_key",
-    "apikey",
-    "token",
-    "secret",
-    "password",
-    "authorization",
-    "credential",
-    "signature",
-)
 _SECRET_VALUE_MARKERS = ("x-amz-", "bearer ", "?token=", "&token=", "signature=")
 
 

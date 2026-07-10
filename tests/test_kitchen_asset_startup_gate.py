@@ -174,7 +174,7 @@ def test_tree_happy_path(tmp_path: Path) -> None:
     assert boundary["asset_presence_proven_only"] is True
     assert boundary["scene_load_proven"] is False
     assert boundary["placement_proven"] is False
-    assert boundary["task_success_proven"] is False
+    assert boundary["proves_task_success"] is False
     assert _gate_artifact(out)["status"] == "completed"
 
 

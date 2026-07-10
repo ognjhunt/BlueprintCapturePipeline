@@ -156,8 +156,10 @@ def test_concurrent_writers_do_not_corrupt_entry(tmp_path):
 
 
 def test_no_raw_payload_or_secret_keys_persisted(tmp_path):
+    from pathlib import Path
+
     entry = _record(tmp_path)
-    text = json.dumps(json.loads(open(entry["path"], encoding="utf-8").read())).lower()
+    text = Path(entry["path"]).read_text(encoding="utf-8").lower()
     for marker in ("api_key", "authorization", "x-amz", "raw_response"):
         assert marker not in text
 

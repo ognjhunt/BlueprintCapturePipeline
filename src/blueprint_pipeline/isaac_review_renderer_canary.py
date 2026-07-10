@@ -410,7 +410,7 @@ def run_isaac_review_renderer_canary(
             ),
             "kitchen_scene_placement_proven": False,
             "policy_execution_proven": False,
-            "task_success_proven": False,
+            "proves_task_success": False,
             "fast_startup_canary_is_not_review_proof": True,
             "public_claim_upgrade_allowed": False,
         },
@@ -422,6 +422,8 @@ def run_isaac_review_renderer_canary(
         try:
             close_callable()
         except Exception:
+            # Isaac fastShutdown may kill the process from close(); the JSON
+            # artifact was persisted above, so a close failure changes nothing.
             pass
     return payload
 

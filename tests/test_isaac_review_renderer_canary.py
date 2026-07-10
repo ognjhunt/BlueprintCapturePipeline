@@ -227,7 +227,7 @@ def test_run_canary_blocked_without_renderer_backend(tmp_path: Path) -> None:
     claim_boundary = persisted["claim_boundary"]  # type: ignore[index]
     assert claim_boundary["kitchen_scene_placement_proven"] is False
     assert claim_boundary["policy_execution_proven"] is False
-    assert claim_boundary["task_success_proven"] is False
+    assert claim_boundary["proves_task_success"] is False
     assert claim_boundary["fast_startup_canary_is_not_review_proof"] is True
     assert persisted["secret_values_in_artifact"] is False
 

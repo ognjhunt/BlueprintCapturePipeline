@@ -309,7 +309,7 @@ def test_accepted_run_writes_artifacts_and_claim_boundary(tmp_path):
     assert result["claim_boundary"] == {
         "local_gate_acceptance_only": True,
         "provider_acceptance_proven": False,
-        "task_success_proven": False,
+        "proves_task_success": False,
         "agent_cannot_waive_gates": True,
     }
     final = read_json(out_dir / RESULT_ARTIFACT_NAME)

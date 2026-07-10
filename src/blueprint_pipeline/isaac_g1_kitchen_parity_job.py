@@ -2094,6 +2094,9 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                                     durable_entry["path"]
                                 )
                             except machine_quarantine.QuarantineRefused:
+                                # Non-machine-attributable classes are refused
+                                # by design; the in-call quarantine above still
+                                # protects this run.
                                 pass
                     break
         attempt_record["elapsed_seconds"] = round(time.time() - t0, 1)
