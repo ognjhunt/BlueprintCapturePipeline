@@ -2353,6 +2353,148 @@ def test_launch_with_marker_retry_quarantines_repeated_bad_machine_without_secon
     assert trace["quarantined_machine_ids"] == ["machine-repeated"]
 
 
+_PINNED_TEST_IMAGE = "docker.io/example/worker@sha256:" + "d" * 64
+
+
+def test_launch_with_marker_retry_records_durable_machine_quarantine(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """P0-2: a pre-runtime stall must leave a durable cross-run quarantine
+    entry keyed by provider + machine + image digest + Isaac version."""
+    from blueprint_pipeline import machine_quarantine_registry as Q
+
+    registry_dir = tmp_path / "quarantine"
+    monkeypatch.setenv(Q.REGISTRY_DIR_ENV, str(registry_dir))
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+
+    class _PreRuntimeProvider:
+        name = "runpod"
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            return {"status": "launched", "instance_id": "pod0", "mode": "cold_create"}
+
+        def inspect(self, instance_id):
+            return {
+                "status": "observed",
+                "http": 200,
+                "instance_id": instance_id,
+                "desiredStatus": "RUNNING",
+                "runtime_present": False,
+                "public_ip_present": False,
+                "machineId": "machine-dead",
+                "raw_provider_response_recorded": False,
+            }
+
+        def terminate(self, instance_id):
+            return {"status": "terminated", "http": 204}
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(J.urllib.request, "urlopen", _make_fake_provider()(marker=False).urlopen)
+
+    res = J.launch_with_marker_retry(
+        _PreRuntimeProvider(),
+        jd,
+        {"env": {}, "imageName": _PINNED_TEST_IMAGE},
+        max_attempts=1,
+        marker_timeout=100,
+        startup_no_runtime_timeout=3,
+        poll=1,
+    )
+
+    assert res["status"] == "blocked"
+    assert res["attempts"][0]["durable_quarantine_path"]
+    entry = Q.find_active_quarantine(
+        provider="runpod",
+        machine_id="machine-dead",
+        image_digest="sha256:" + "d" * 64,
+        isaac_version=Q.DEFAULT_ISAAC_VERSION,
+        registry_dir=registry_dir,
+    )
+    assert entry is not None
+    assert entry["failure_class"] == "container_never_started"
+    assert entry["phase"] == Q.PHASE_PRE_RUNTIME
+
+
+def test_launch_with_marker_retry_seeds_quarantine_from_durable_registry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A machine quarantined by a PREVIOUS run is terminated on first
+    re-allocation without waiting out a second startup timeout."""
+    from blueprint_pipeline import machine_quarantine_registry as Q
+
+    registry_dir = tmp_path / "quarantine"
+    monkeypatch.setenv(Q.REGISTRY_DIR_ENV, str(registry_dir))
+    Q.record_machine_quarantine(
+        provider="runpod",
+        machine_id="machine-dead",
+        image_digest="sha256:" + "d" * 64,
+        isaac_version=Q.DEFAULT_ISAAC_VERSION,
+        failure_class="container_never_started",
+        phase=Q.PHASE_PRE_RUNTIME,
+        registry_dir=registry_dir,
+    )
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+
+    class _PreRuntimeProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.terminated: list[str] = []
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            return {"status": "launched", "instance_id": "pod0", "mode": "cold_create"}
+
+        def inspect(self, instance_id):
+            return {
+                "status": "observed",
+                "http": 200,
+                "instance_id": instance_id,
+                "desiredStatus": "RUNNING",
+                "runtime_present": False,
+                "public_ip_present": False,
+                "machineId": "machine-dead",
+                "raw_provider_response_recorded": False,
+            }
+
+        def terminate(self, instance_id):
+            self.terminated.append(instance_id)
+            return {"status": "terminated", "http": 204}
+
+    provider = _PreRuntimeProvider()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(J.urllib.request, "urlopen", _make_fake_provider()(marker=False).urlopen)
+
+    res = J.launch_with_marker_retry(
+        provider,
+        jd,
+        {"env": {}, "imageName": _PINNED_TEST_IMAGE},
+        max_attempts=1,
+        marker_timeout=100,
+        startup_no_runtime_timeout=30,
+        poll=1,
+    )
+
+    assert res["status"] == "blocked"
+    assert provider.terminated == ["pod0"]
+    attempt = res["attempts"][0]
+    # Quarantine fired on the first poll, far before the 30s startup timeout.
+    assert attempt["result"] == "quarantined_machine_terminated"
+    assert attempt["elapsed_seconds"] == 1.0
+    assert "provider_repeated_quarantined_machine" in res["blockers"]
+    trace = json.loads((jd / J.LAUNCH_ATTEMPT_TRACE_FILENAME).read_text(encoding="utf-8"))
+    assert trace["durable_quarantine_machine_ids"] == ["machine-dead"]
+
+
 def test_launch_with_marker_retry_ignores_stale_bootstrap_marker(tmp_path: Path, monkeypatch) -> None:
     jd = tmp_path / "job"
     jd.mkdir()

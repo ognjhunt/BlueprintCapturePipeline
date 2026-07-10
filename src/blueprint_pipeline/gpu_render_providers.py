@@ -45,9 +45,15 @@ def _read_secret(name: str) -> str | None:
 
 # ----------------------------- neutral launch spec -----------------------------
 
+# Price-aware but capability-gated review-lane priority: A40 first when truly
+# allocatable ($0.44/hr), RTX A6000 next ($0.49/hr, live-proven 2026-07-10 on
+# ONE machine at driver 570.211.01 — one machine's driver is never a guarantee
+# for the whole GPU model), then L40/L40S/RTX 6000 Ada. H100/H200 stay excluded
+# from the RTX review lane (no RT cores) but remain valid for explicitly
+# compute-only policy/model workers.
 DEFAULT_RUNPOD_RENDER_GPU_TYPES: tuple = (
-    "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation", "NVIDIA RTX A6000",
-    "NVIDIA L40", "NVIDIA A40",
+    "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
+    "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
 )
 
 
@@ -312,13 +318,17 @@ class RunPodRenderProvider(GpuRenderProvider):
                 for value in (price.get("availableGpuCounts") or [])
                 if isinstance(value, int) and not isinstance(value, bool)
             ]
+            single_gpu_count_known = bool(counts)
             record = {
                 "gpu_type_id": gpu_type,
                 "display_name": row.get("displayName"),
                 "memory_in_gb": memory_gb or None,
                 "secure_cloud": row.get("secureCloud") is True,
                 "stock_status": stock,
+                "catalog_reported_stock": stock,
                 "available_gpu_counts": counts,
+                "single_gpu_count_known": single_gpu_count_known,
+                "reservation_proven": False,
                 "on_demand_price_usd_per_hour": price.get("uninterruptablePrice"),
                 "rtx_required": requires_rtx,
             }
@@ -336,9 +346,24 @@ class RunPodRenderProvider(GpuRenderProvider):
             if _positive_float(price.get("uninterruptablePrice")) is None:
                 blockers.append("on_demand_price_missing")
             record["blockers"] = blockers
+            if blockers:
+                record["capacity_confidence"] = "unavailable"
+            elif single_gpu_count_known and 1 in counts:
+                record["capacity_confidence"] = "advisory"
+            else:
+                # A textual stock label ("Medium") with an empty per-count list
+                # is NOT immediate availability — attempt 021 got HTTP 500 on
+                # create in exactly this state.
+                record["capacity_confidence"] = "unknown"
             if not blockers:
                 viable.append(record)
             considered.append(record)
+        confidences = {row["capacity_confidence"] for row in viable}
+        overall_confidence = (
+            "advisory"
+            if "advisory" in confidences
+            else "unknown" if "unknown" in confidences else "unavailable"
+        )
         return {
             "status": "available" if viable else "blocked",
             "provider": self.name,
@@ -348,10 +373,17 @@ class RunPodRenderProvider(GpuRenderProvider):
             "requires_rtx": requires_rtx,
             "viable_gpu_types": viable,
             "considered_gpu_types": considered,
+            "reservation_proven": False,
+            "capacity_confidence": overall_confidence,
+            "authoritative_capacity_source": "provider_create_response",
             "raw_provider_response_recorded": False,
             "claim_boundary": (
-                "This is a read-only Secure Cloud stock/price snapshot. It does not "
-                "reserve capacity or prove pod creation, image startup, or rendering."
+                "This is a read-only Secure Cloud stock/price snapshot. It is "
+                "advisory only: it does not reserve capacity, and only the "
+                "provider create response is authoritative. It proves nothing "
+                "about pod creation, image startup, or rendering. A create "
+                "failure that allocates no pod is a capacity outcome, not a "
+                "startup failure and not spend."
             ),
         }
 
@@ -442,9 +474,19 @@ class RunPodRenderProvider(GpuRenderProvider):
             return {"status": "launched", "instance_id": pid,
                     "mode": "cold_create", "attempts": attempts}
         blockers = ["no_pod_started"]
-        if _runpod_create_capacity_unavailable(s, r):
+        capacity_outcome = _runpod_create_capacity_unavailable(s, r)
+        if capacity_outcome:
             blockers.insert(0, "runpod_secure_cloud_create_capacity_unavailable")
-        return {"status": "blocked", "blockers": blockers, "attempts": attempts}
+        return {
+            "status": "blocked",
+            "blockers": blockers,
+            "attempts": attempts,
+            # A create failure with no pod is a capacity outcome, not a startup
+            # failure: nothing was allocated and nothing billed.
+            "capacity_outcome": capacity_outcome,
+            "allocation_created": False,
+            "spend_occurred": False,
+        }
 
     def stop(self, instance_id: str) -> dict:
         key = self._key()

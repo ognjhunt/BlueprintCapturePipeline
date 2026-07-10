@@ -354,6 +354,25 @@ def run_isaac_worker_runtime_preflight(
             "non_ranking_operational_claim_validated": False,
             "public_claim_upgrade_allowed": False,
         },
+        # P0-4 split-canary contract: this is the fast startup canary. The
+        # 64x64 first-non-empty-frame check proves RTX pixels only; the
+        # review-resolution lane is proven solely by
+        # blueprint_pipeline.isaac_review_renderer_canary.
+        "canary_contract": {
+            "contract": "fast_startup_canary",
+            "frame_width": RTX_SMOKE_WIDTH,
+            "frame_height": RTX_SMOKE_HEIGHT,
+            "does_not_validate": [
+                "dlss",
+                "review_resolution_quality",
+                "review_media_usability",
+                "kitchen_placement",
+                "policy_execution",
+                "task_success",
+            ],
+            "isaac_review_renderer_operational_claim_allowed": False,
+            "review_renderer_contract": "isaac_review_renderer_canary.v1",
+        },
         "secret_values_in_artifact": False,
     }
     write_json(Path(output_path), payload)
