@@ -1606,6 +1606,23 @@ def plan_task_stance(
     return blocked
 
 
+def episode_trace_consistency_gate_blockers(
+    outcome: Mapping[str, Any],
+    trace_consistency: Mapping[str, Any],
+) -> list[str]:
+    """Fail-closed direction only: a claimed task success without a scored, passing
+    graded consistency score is blocked; a failed episode just carries the score as
+    evidence. The graded score never upgrades a boolean success."""
+    if not outcome.get("task_success"):
+        return []
+    status = str(trace_consistency.get("status") or "")
+    if status != "scored":
+        return ["episode_success_claim_without_scored_trace_consistency"]
+    if not trace_consistency.get("passed"):
+        return ["episode_success_claim_below_min_trace_consistency_score"]
+    return []
+
+
 def assemble_collision_summary(*, actions: Sequence[Mapping[str, Any]],
                                rejected_probe_total: int, response_event_total: int) -> dict:
     """Build the collision_summary that compute_task_outcome consumes from the per-step trace."""
@@ -11561,6 +11578,18 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
             outcome["frames_captured"] = cap
             outcome["truncated"] = truncated
             outcome["episode_termination"] = dict(dynamic_episode_report or {})
+            trace_consistency = policy_mod.compute_episode_trace_consistency(actions=actions)
+            outcome["episode_trace_consistency"] = trace_consistency
+            for gate_blocker in episode_trace_consistency_gate_blockers(
+                outcome, trace_consistency
+            ):
+                if gate_blocker not in blockers:
+                    blockers.append(gate_blocker)
+                    _log(
+                        f"scenario {sid}: strict trace-consistency gate blocked success "
+                        f"claim ({gate_blocker}; score="
+                        f"{trace_consistency.get('consistency_score')})"
+                    )
             outcome["per_frame_camera_contract_emitted"] = bool(camera_contract_rows)
             outcome["per_frame_camera_contract_frames"] = len(camera_contract_rows)
             outcome["per_frame_camera_contract_available_intrinsics_frames"] = sum(

@@ -703,6 +703,163 @@ def compute_task_outcome(
     }
 
 
+EPISODE_TRACE_CONSISTENCY_SCHEMA_VERSION = "episode_trace_consistency.v1"
+# Strict default: an episode claiming success must carry a graded score at or
+# above this. The score itself stays continuous; the threshold only derives the
+# auxiliary ``passed`` flag and the runner's success-claim gate.
+EPISODE_TRACE_CONSISTENCY_MIN_PASSING_SCORE = 0.80
+_EPISODE_TRACE_GAP_OUTLIER_FACTOR = 3.0
+_EPISODE_TRACE_JUMP_OUTLIER_FACTOR = 3.0
+
+
+def _finite_vector(value: Any, size: int = 3) -> tuple[float, ...] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) < size:
+        return None
+    out = []
+    for item in list(value)[:size]:
+        try:
+            number = float(item)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number):
+            return None
+        out.append(number)
+    return tuple(out)
+
+
+def compute_episode_trace_consistency(
+    *,
+    actions: Sequence[Mapping[str, Any]],
+    min_passing_score: float = EPISODE_TRACE_CONSISTENCY_MIN_PASSING_SCORE,
+) -> dict[str, Any]:
+    """Graded (non-boolean) consistency score of an episode's per-step trace.
+
+    Three continuous components in [0, 1], each measured from the recorded trace —
+    never defaulted to a passing value:
+
+    - ``temporal_consistency``: fraction of ``sim_time_s`` gaps that are positive
+      and within an outlier factor of the median gap (clock stalls / jumps).
+    - ``tracking_consistency``: 1 - normalized RMSE between the observed
+      ``root_position`` and the commanded ``desired_root_position`` — the
+      commanded-vs-observed conditioning signal at root/FK level.
+    - ``smoothness_consistency``: fraction of per-step displacements that are not
+      teleport-scale outliers versus the median moving step.
+
+    ``consistency_score`` is the minimum of the components. Missing, degenerate, or
+    non-finite trace data produces ``status="blocked"`` with ``consistency_score=None``
+    — never a passing score. The score is a support signal: it must never upgrade a
+    boolean ``task_success``, but a success claim without a passing score is expected
+    to be blocked by the caller (fail-closed direction only)."""
+    blockers: list[str] = []
+    observed: list[tuple[float, ...]] = []
+    desired: list[tuple[float, ...]] = []
+    timestamps: list[float] = []
+    dropped_steps = 0
+    for record in actions or ():
+        if not isinstance(record, Mapping):
+            dropped_steps += 1
+            continue
+        root = _finite_vector(record.get("root_position"))
+        command = _finite_vector(record.get("desired_root_position"))
+        try:
+            sim_time = float(record.get("sim_time_s"))
+        except (TypeError, ValueError):
+            sim_time = math.nan
+        if root is None or command is None or not math.isfinite(sim_time):
+            dropped_steps += 1
+            continue
+        observed.append(root)
+        desired.append(command)
+        timestamps.append(sim_time)
+    if len(observed) < 2:
+        blockers.append("episode_trace_missing_or_degenerate")
+    if dropped_steps:
+        blockers.append("episode_trace_steps_missing_pose_or_time")
+    if blockers:
+        return {
+            "schema_version": EPISODE_TRACE_CONSISTENCY_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": sorted(set(blockers)),
+            "consistency_score": None,
+            "temporal_consistency": None,
+            "tracking_consistency": None,
+            "smoothness_consistency": None,
+            "scored_step_count": len(observed),
+            "dropped_step_count": dropped_steps,
+            "min_passing_score": float(min_passing_score),
+            "passed": False,
+            "score_is_graded_not_boolean": True,
+            "claim_boundary": _episode_trace_consistency_claim_boundary(),
+        }
+
+    gaps = [timestamps[i + 1] - timestamps[i] for i in range(len(timestamps) - 1)]
+    positive_gaps = sorted(gap for gap in gaps if gap > 0.0)
+    if positive_gaps:
+        median_gap = positive_gaps[len(positive_gaps) // 2]
+        gap_violations = sum(
+            1
+            for gap in gaps
+            if gap <= 0.0 or gap > _EPISODE_TRACE_GAP_OUTLIER_FACTOR * median_gap
+        )
+        temporal = max(0.0, 1.0 - gap_violations / len(gaps))
+    else:
+        temporal = 0.0
+
+    deviations = [pose_distance(o, d) for o, d in zip(observed, desired)]
+    rmse = math.sqrt(sum(value * value for value in deviations) / len(deviations))
+    lows = [min(vector[axis] for vector in desired) for axis in range(3)]
+    highs = [max(vector[axis] for vector in desired) for axis in range(3)]
+    span = math.sqrt(sum((high - low) ** 2 for low, high in zip(lows, highs)))
+    tracking_scale = max(span, TASK_GOAL_TOLERANCE_M)
+    tracking = max(0.0, min(1.0, 1.0 - rmse / tracking_scale))
+
+    displacements = [
+        pose_distance(observed[i + 1], observed[i]) for i in range(len(observed) - 1)
+    ]
+    moving = sorted(value for value in displacements if value > 1e-9)
+    if moving:
+        median_step = moving[len(moving) // 2]
+        jump_violations = sum(
+            1
+            for value in displacements
+            if value > _EPISODE_TRACE_JUMP_OUTLIER_FACTOR * max(median_step, 1e-9)
+        )
+        smoothness = max(0.0, 1.0 - jump_violations / len(displacements))
+    else:
+        # A root static by design (manipulation stance) has no moving steps and
+        # therefore no teleport evidence to penalize.
+        smoothness = 1.0
+
+    score = min(temporal, tracking, smoothness)
+    return {
+        "schema_version": EPISODE_TRACE_CONSISTENCY_SCHEMA_VERSION,
+        "status": "scored",
+        "blockers": [],
+        "consistency_score": round(score, 6),
+        "temporal_consistency": round(temporal, 6),
+        "tracking_consistency": round(tracking, 6),
+        "smoothness_consistency": round(smoothness, 6),
+        "tracking_rmse_m": round(rmse, 6),
+        "tracking_scale_m": round(tracking_scale, 6),
+        "scored_step_count": len(observed),
+        "dropped_step_count": dropped_steps,
+        "min_passing_score": float(min_passing_score),
+        "passed": bool(score >= float(min_passing_score)),
+        "score_is_graded_not_boolean": True,
+        "claim_boundary": _episode_trace_consistency_claim_boundary(),
+    }
+
+
+def _episode_trace_consistency_claim_boundary() -> dict[str, Any]:
+    return {
+        "consistency_score_is_support_signal_not_task_success": True,
+        "consistency_score_never_upgrades_task_success": True,
+        "consistency_score_gate_direction_is_fail_closed_only": True,
+        "consistency_input_is_recorded_step_trace_not_learned_policy_proof": True,
+        "consistency_score_is_graded_continuous_not_boolean": True,
+    }
+
+
 def action_record(*, decision: StepDecision, step: int, sim_time_s: float, target: Sequence[float],
                   committed_scene_contact_count: int = 0, contact_count: int = 0,
                   scenario_eval_run_id: str | None = None) -> dict[str, Any]:

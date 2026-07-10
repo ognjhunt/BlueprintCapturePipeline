@@ -5119,3 +5119,56 @@ def test_adaptive_stance_search_still_runs_placement_validator_on_new_poses() ->
     assert plan["status"] == "blocked"
     assert len(validated_poses) > before, "re-swept poses must hit the same validator"
     assert plan["stance_search_status"] in {"infeasible", "budget_exhausted", "search_stalled"}
+
+
+# --------------------------------------------------------------------------
+# Strict graded episode trace-consistency gate (fail-closed direction only)
+# --------------------------------------------------------------------------
+
+
+def test_trace_consistency_gate_blocks_success_claim_without_scored_trace() -> None:
+    blockers = M.episode_trace_consistency_gate_blockers(
+        {"task_success": True},
+        {"status": "blocked", "consistency_score": None, "passed": False},
+    )
+    assert blockers == ["episode_success_claim_without_scored_trace_consistency"]
+
+
+def test_trace_consistency_gate_blocks_success_claim_below_min_score() -> None:
+    blockers = M.episode_trace_consistency_gate_blockers(
+        {"task_success": True},
+        {"status": "scored", "consistency_score": 0.41, "passed": False},
+    )
+    assert blockers == ["episode_success_claim_below_min_trace_consistency_score"]
+
+
+def test_trace_consistency_gate_never_blocks_or_upgrades_failed_episode() -> None:
+    # Failed episodes carry the graded score as evidence but are not re-gated,
+    # and a high score must not upgrade the failure.
+    for trace in (
+        {"status": "scored", "consistency_score": 1.0, "passed": True},
+        {"status": "blocked", "consistency_score": None, "passed": False},
+    ):
+        assert (
+            M.episode_trace_consistency_gate_blockers({"task_success": False}, trace)
+            == []
+        )
+
+
+def test_trace_consistency_gate_accepts_scored_passing_success() -> None:
+    assert (
+        M.episode_trace_consistency_gate_blockers(
+            {"task_success": True},
+            {"status": "scored", "consistency_score": 0.93, "passed": True},
+        )
+        == []
+    )
+
+
+def test_runner_attaches_graded_trace_consistency_to_episode_outcome() -> None:
+    # The scenario loop itself needs Isaac; assert the wiring at source level the
+    # same way other GPU-loop contracts are pinned in this file.
+    source = _RUNNER.read_text()
+    assert "compute_episode_trace_consistency(actions=actions)" in source
+    assert 'outcome["episode_trace_consistency"] = trace_consistency' in source
+    assert "episode_trace_consistency_gate_blockers(" in source
