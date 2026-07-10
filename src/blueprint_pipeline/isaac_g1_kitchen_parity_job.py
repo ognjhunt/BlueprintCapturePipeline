@@ -111,6 +111,7 @@ ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV = (
 PARITY_BUNDLE_REQUIRED_FILES = (
     "run_isaac_g1_kitchen_parity_eval.py",
     "isaac_g1_policy.py",
+    "stance_configuration_agent.py",
     "render_visual_qc.py",
     "warm_render_server.py",
     "warm_render_broker.py",
@@ -1034,20 +1035,19 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     bundle = out_dir / "bundle"
     (bundle / "kitchen").mkdir(parents=True, exist_ok=True)
     runner = _repo_root() / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
-    policy = _repo_root() / "src" / "blueprint_pipeline" / "isaac_g1_policy.py"
-    visual_qc = _repo_root() / "src" / "blueprint_pipeline" / "render_visual_qc.py"
-    # Warm transport modules are copied flat for the worker runner's import fallback.
-    warm_server = _repo_root() / "src" / "blueprint_pipeline" / "warm_render_server.py"
-    warm_broker = _repo_root() / "src" / "blueprint_pipeline" / "warm_render_broker.py"
-    # g1_render_noise_audit degrades its package-relative common import to local fallbacks, so a
-    # flat copy is importable as `import g1_render_noise_audit` for the --render-noise-audit mode.
-    noise_audit = _repo_root() / "src" / "blueprint_pipeline" / "g1_render_noise_audit.py"
     (bundle / "run_isaac_g1_kitchen_parity_eval.py").write_bytes(runner.read_bytes())
-    (bundle / "isaac_g1_policy.py").write_bytes(policy.read_bytes())
-    (bundle / "render_visual_qc.py").write_bytes(visual_qc.read_bytes())
-    (bundle / "warm_render_server.py").write_bytes(warm_server.read_bytes())
-    (bundle / "warm_render_broker.py").write_bytes(warm_broker.read_bytes())
-    (bundle / "g1_render_noise_audit.py").write_bytes(noise_audit.read_bytes())
+    # Flat single-file modules the runner imports bundle-first on the worker (the
+    # policy, stance search agent, placement QC, warm transport, noise audit).
+    for flat_module_name in (
+        "isaac_g1_policy.py",
+        "stance_configuration_agent.py",
+        "render_visual_qc.py",
+        "warm_render_server.py",
+        "warm_render_broker.py",
+        "g1_render_noise_audit.py",
+    ):
+        flat_module = _repo_root() / "src" / "blueprint_pipeline" / flat_module_name
+        (bundle / flat_module_name).write_bytes(flat_module.read_bytes())
     package_dst = bundle / "blueprint_pipeline"
     package_dst.mkdir(parents=True, exist_ok=True)
     (package_dst / "__init__.py").write_text("", encoding="utf-8")

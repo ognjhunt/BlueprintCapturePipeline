@@ -355,3 +355,128 @@ def test_action_record_schema() -> None:
     assert rec["root_position"] == [1.0, 2.0, 0.79]
     assert rec["policy_action"] == "accepted_direct_collision_checked_motion"
     assert rec["step"] == 3 and rec["route_segment_index"] == 0
+
+
+# ----------------------------- graded episode trace consistency -----------------------------
+
+
+def _trace_step(step, *, root, desired, sim_time_s):
+    return {
+        "step": step,
+        "sim_time_s": sim_time_s,
+        "root_position": list(root),
+        "desired_root_position": list(desired),
+    }
+
+
+def _clean_walk_trace(steps=10, dt=0.1):
+    return [
+        _trace_step(
+            i,
+            root=(0.2 * i, 0.0, 0.79),
+            desired=(0.2 * i, 0.0, 0.79),
+            sim_time_s=dt * i,
+        )
+        for i in range(steps)
+    ]
+
+
+def test_episode_trace_consistency_scores_clean_trace_high_and_graded() -> None:
+    result = P.compute_episode_trace_consistency(actions=_clean_walk_trace())
+    assert result["status"] == "scored"
+    assert result["consistency_score"] == pytest.approx(1.0)
+    assert isinstance(result["consistency_score"], float)
+    assert result["score_is_graded_not_boolean"] is True
+    assert result["temporal_consistency"] == pytest.approx(1.0)
+    assert result["tracking_consistency"] == pytest.approx(1.0)
+    assert result["smoothness_consistency"] == pytest.approx(1.0)
+    assert result["passed"] is True
+    boundary = result["claim_boundary"]
+    assert boundary["consistency_score_never_upgrades_task_success"] is True
+    assert boundary["consistency_score_is_graded_continuous_not_boolean"] is True
+
+
+def test_episode_trace_consistency_degrades_continuously_with_tracking_error() -> None:
+    scores = []
+    for offset in (0.0, 0.15, 0.40):
+        trace = [
+            _trace_step(
+                i,
+                root=(0.2 * i, offset, 0.79),
+                desired=(0.2 * i, 0.0, 0.79),
+                sim_time_s=0.1 * i,
+            )
+            for i in range(10)
+        ]
+        result = P.compute_episode_trace_consistency(actions=trace)
+        assert result["status"] == "scored"
+        scores.append(result["consistency_score"])
+    assert scores[0] > scores[1] > scores[2], scores
+    assert 0.0 < scores[1] < 1.0  # a real intermediate grade, not a boolean flip
+    assert scores == [round(s, 6) for s in scores]
+
+
+def test_episode_trace_consistency_penalizes_clock_stalls() -> None:
+    trace = _clean_walk_trace()
+    trace[5]["sim_time_s"] = trace[4]["sim_time_s"]  # stalled clock
+    result = P.compute_episode_trace_consistency(actions=trace)
+    assert result["status"] == "scored"
+    assert 0.0 < result["temporal_consistency"] < 1.0
+    assert result["consistency_score"] <= result["temporal_consistency"]
+
+
+def test_episode_trace_consistency_detects_teleport_jumps() -> None:
+    trace = _clean_walk_trace()
+    trace[6]["root_position"] = [5.0, 4.0, 0.79]  # teleport-scale jump
+    result = P.compute_episode_trace_consistency(actions=trace)
+    assert result["status"] == "scored"
+    assert result["smoothness_consistency"] < 1.0
+
+
+def test_episode_trace_consistency_static_manipulation_root_not_penalized() -> None:
+    trace = [
+        _trace_step(i, root=(1.0, 2.0, 0.79), desired=(1.0, 2.0, 0.79), sim_time_s=0.1 * i)
+        for i in range(8)
+    ]
+    result = P.compute_episode_trace_consistency(actions=trace)
+    assert result["status"] == "scored"
+    assert result["smoothness_consistency"] == pytest.approx(1.0)
+    assert result["tracking_consistency"] == pytest.approx(1.0)
+
+
+def test_episode_trace_consistency_fails_closed_on_degenerate_trace() -> None:
+    for actions in ([], [_trace_step(0, root=(0, 0, 0.79), desired=(0, 0, 0.79), sim_time_s=0.0)]):
+        result = P.compute_episode_trace_consistency(actions=actions)
+        assert result["status"] == "blocked"
+        assert result["consistency_score"] is None
+        assert result["passed"] is False
+        assert "episode_trace_missing_or_degenerate" in result["blockers"]
+
+
+def test_episode_trace_consistency_fails_closed_on_nonfinite_or_missing_fields() -> None:
+    trace = _clean_walk_trace()
+    trace[3]["root_position"] = [float("nan"), 0.0, 0.79]
+    del trace[7]["desired_root_position"]
+    result = P.compute_episode_trace_consistency(actions=trace)
+    assert result["status"] == "blocked"
+    assert "episode_trace_steps_missing_pose_or_time" in result["blockers"]
+    assert result["consistency_score"] is None
+
+
+def test_episode_trace_consistency_min_passing_score_is_strict_and_recorded() -> None:
+    trace = [
+        _trace_step(
+            i,
+            root=(0.2 * i, 0.45, 0.79),
+            desired=(0.2 * i, 0.0, 0.79),
+            sim_time_s=0.1 * i,
+        )
+        for i in range(10)
+    ]
+    result = P.compute_episode_trace_consistency(actions=trace)
+    assert result["status"] == "scored"
+    assert result["min_passing_score"] == pytest.approx(
+        P.EPISODE_TRACE_CONSISTENCY_MIN_PASSING_SCORE
+    )
+    assert result["consistency_score"] < result["min_passing_score"]
+    assert result["passed"] is False  # scored evidence, strict pass flag

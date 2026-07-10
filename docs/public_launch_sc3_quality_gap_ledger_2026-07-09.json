@@ -3995,7 +3995,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_job_orchestrator.py",
-              "sha256": "sha256:62b0acd5f6d4018518eaf0445cfb7815a3e3b807cbec6756779f55aba562185f",
+              "sha256": "sha256:f32d268c25b5845eb1b6d460d9d191fb6cd42c9121593c2ee76e88f479a2d9ae",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11390,7 +11390,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:3777a2c3dbcd02f9011b954e08df69a572354e2897f419853cd57dbfd84caaeb",
+              "sha256": "sha256:24a232050981d8922533c4c61c62d05442d2cfbb3f863103dc94c471954b2c36",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

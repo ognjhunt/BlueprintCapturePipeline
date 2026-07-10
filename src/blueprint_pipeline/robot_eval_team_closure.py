@@ -9,7 +9,6 @@ from .failure_diagnosis_contract import build_failure_diagnosis_audit
 from .robot_eval_claim_contracts import ROBOT_EVAL_JOB_CLAIM_BOUNDARY
 from .robot_eval_closure_common import (
     _artifact_paths,
-    _boolish,
     _dedupe,
     _explicitly_blocked_scenario_eval_run_records,
     _mapping,
