@@ -13,14 +13,39 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 SIGNERS = (
     (
+        "startup",
+        "BLUEPRINT_SC3_STARTUP_PRIVATE_KEY_FILE",
+        "BLUEPRINT_SC3_STARTUP_TRUSTED_PUBLIC_KEY_SHA256",
+    ),
+    (
         "task_completion",
         "BLUEPRINT_SC3_TASK_COMPLETION_PRIVATE_KEY_FILE",
         "BLUEPRINT_SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256",
     ),
     (
+        "policy",
+        "BLUEPRINT_SC3_POLICY_PRIVATE_KEY_FILE",
+        "BLUEPRINT_SC3_POLICY_TRUSTED_PUBLIC_KEY_SHA256",
+    ),
+    (
         "gear_sonic_fk",
         "BLUEPRINT_SC3_FK_EXECUTOR_PRIVATE_KEY_FILE",
         "BLUEPRINT_SC3_FK_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256",
+    ),
+    (
+        "consistency_scorer",
+        "BLUEPRINT_SC3_CONSISTENCY_SCORER_PRIVATE_KEY_FILE",
+        "BLUEPRINT_SC3_CONSISTENCY_SCORER_TRUSTED_PUBLIC_KEY_SHA256",
+    ),
+    (
+        "semantic_review",
+        "BLUEPRINT_SC3_SEMANTIC_REVIEW_PRIVATE_KEY_FILE",
+        "BLUEPRINT_SC3_SEMANTIC_REVIEW_TRUSTED_PUBLIC_KEY_SHA256",
+    ),
+    (
+        "geometry",
+        "BLUEPRINT_SC3_GEOMETRY_PRIVATE_KEY_FILE",
+        "BLUEPRINT_SC3_GEOMETRY_TRUSTED_PUBLIC_KEY_SHA256",
     ),
 )
 

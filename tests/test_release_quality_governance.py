@@ -1200,3 +1200,62 @@ def test_repository_release_quality_policies_are_machine_valid() -> None:
     assert "build_container_production_evidence.py" in ci_workflow
     assert "production_user.txt" in ci_workflow
     assert "development_user.txt" in ci_workflow
+
+
+def test_committed_bandit_triage_is_internally_consistent() -> None:
+    """The committed triage file must never carry stale-path or malformed entries.
+
+    Exact code fingerprints can only be checked by a real Bandit scan (the CI
+    sast job), but path existence, schema shape, uniqueness, dispositions, and
+    the owner-bound 90-day expiry window are all checkable hermetically.
+    """
+    from datetime import timedelta
+
+    from scripts.verify_bandit_policy import (
+        ALLOWED_DISPOSITIONS,
+        EXPECTED_SCANNER_VERSION,
+        SCHEMA_VERSION as TRIAGE_SCHEMA_VERSION,
+    )
+
+    root = Path(__file__).resolve().parents[1]
+    triage = json.loads((root / "docs" / "bandit_triage.json").read_text())
+    assert triage["schema_version"] == TRIAGE_SCHEMA_VERSION
+    assert triage["scanner_version"] == EXPECTED_SCANNER_VERSION
+    assert triage["policy"]["expired_or_orphaned_entries_block"] is True
+    assert triage["policy"]["high_findings_may_not_be_baselined"] is True
+
+    fingerprints: set[str] = set()
+    for entry in triage["entries"]:
+        fingerprint = entry["fingerprint"]
+        assert len(fingerprint) == 64 and all(c in "0123456789abcdef" for c in fingerprint)
+        assert fingerprint not in fingerprints, f"duplicate_triage_fingerprint:{fingerprint}"
+        fingerprints.add(fingerprint)
+        assert (root / entry["filename"]).is_file(), f"triaged_file_missing:{entry['filename']}"
+        assert entry["severity"] == "MEDIUM"
+        assert entry["disposition"] in ALLOWED_DISPOSITIONS
+        assert len(str(entry["owner"]).strip()) >= 3
+        assert len(str(entry["reason"]).strip()) >= 20
+        reviewed_on = date.fromisoformat(entry["reviewed_on"])
+        expires_on = date.fromisoformat(entry["expires_on"])
+        assert reviewed_on <= expires_on <= reviewed_on + timedelta(days=90)
+
+
+def test_outbound_http_call_sites_route_through_the_safe_boundary() -> None:
+    """FABLE-007 regression pin: the hardened modules must not regrow ad hoc
+    ``urllib.request.urlopen`` sites; the centralized boundary keeps exactly one."""
+    root = Path(__file__).resolve().parents[1]
+    rewired = (
+        "src/blueprint_pipeline/gpu_render_providers.py",
+        "src/blueprint_pipeline/isaac_persistent_task_completion_client.py",
+        "src/blueprint_pipeline/wam_strict_action_consistency_scorer_client.py",
+        "scripts/run_isaac_g1_kitchen_parity_eval.py",
+    )
+    for relative in rewired:
+        text = (root / relative).read_text(encoding="utf-8")
+        assert "urllib.request.urlopen(" not in text, f"ad_hoc_urlopen_reintroduced:{relative}"
+
+    boundary = (root / "src" / "blueprint_pipeline" / "safe_outbound_http.py").read_text(
+        encoding="utf-8"
+    )
+    assert boundary.count("urllib.request.build_opener(") == 1
+    assert "# nosec" not in boundary

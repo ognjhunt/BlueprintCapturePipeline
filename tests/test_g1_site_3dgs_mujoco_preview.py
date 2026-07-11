@@ -619,6 +619,9 @@ def test_route_render_artifact_and_runner_edges(monkeypatch, capsys, tmp_path: P
     g1_root.mkdir()
     (g1_root / "g1.xml").write_text("<mujoco/>", encoding="utf-8")
     monkeypatch.setattr(preview.platform, "system", lambda: "Linux")
+    # The faked Linux platform makes production code setdefault MUJOCO_GL;
+    # route it through monkeypatch so it never leaks into later tests.
+    monkeypatch.setenv("MUJOCO_GL", "osmesa")
     monkeypatch.setattr(preview, "_resolve_g1_model_root", lambda **_kwargs: g1_root)
     monkeypatch.setattr(preview, "_write_g1_xml_with_eval_cameras", lambda source, output: {"source_xml": str(source), "generated_eval_camera_xml": str(output)})
     monkeypatch.setattr(preview, "_asset_source_manifest", lambda root: {"source": str(root)})

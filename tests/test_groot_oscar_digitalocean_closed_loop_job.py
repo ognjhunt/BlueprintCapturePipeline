@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -10,11 +11,23 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import gpu_render_providers as providers
+from blueprint_pipeline import g1_kitchen_pre_allocation_identity as preallocation_identity
 from blueprint_pipeline import groot_oscar_digitalocean_closed_loop_job as J
 from blueprint_pipeline import groot_oscar_closed_loop_image as gocl
+from blueprint_pipeline.g1_kitchen_pre_allocation_identity import (
+    REGISTRY_EVIDENCE_SCHEMA_VERSION,
+)
+from blueprint_pipeline.g1_kitchen_worker_image_evidence import (
+    assemble_worker_image_runtime_evidence,
+)
+from blueprint_pipeline import groot_oscar_digitalocean_job_inputs as J_INPUTS
+from blueprint_pipeline.kitchen_attempt_lineage import build_attempt_input_manifest
 
 
-DIGEST_REF = "docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:" + "b" * 64
+IMAGE_HASH = "b" * 64
+DIGEST_REF = "docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:" + IMAGE_HASH
+SOURCE_COMMIT = "a" * 40
+DIRTY_PATCH = "f" * 64
 TASK_PROMPT = (
     "Open the dishwasher door; if the dishwasher is already open, close the dishwasher door."
 )
@@ -24,9 +37,38 @@ REAL_CONSISTENCY_COMMAND = "python -m owner_runtime.shared_model_inverse_scorer"
 @pytest.fixture(autouse=True)
 def _configure_real_consistency_scorer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
+        preallocation_identity,
+        "inspect_registry_image",
+        lambda image_ref: {
+            "schema_version": REGISTRY_EVIDENCE_SCHEMA_VERSION,
+            "source": "registry_api",
+            "image_ref": image_ref,
+            "digest": f"sha256:{IMAGE_HASH}",
+        },
+    )
+    monkeypatch.setattr(
         J,
         "DEFAULT_CONFIGURED_WAM_CONSISTENCY_COMMAND",
         REAL_CONSISTENCY_COMMAND,
+    )
+    monkeypatch.setattr(
+        preallocation_identity,
+        "build_source_tree_identity",
+        lambda _root: {
+            "source_commit": SOURCE_COMMIT,
+            "source_dirty_patch_sha256": DIRTY_PATCH,
+        },
+    )
+    monkeypatch.setattr(
+        J_INPUTS,
+        "build_source_tree_identity",
+        lambda _root: {
+            "source_commit": SOURCE_COMMIT,
+            "source_dirty_patch_sha256": DIRTY_PATCH,
+            "dirty": False,
+            "untracked_file_count": 0,
+            "identity_includes_staged_unstaged_and_untracked": True,
+        },
     )
 
 
@@ -71,9 +113,22 @@ def _completed_closed_loop_manifest(
     }
 
 
-def _inputs(tmp_path: Path) -> tuple[Path, Path]:
+def _inputs(
+    tmp_path: Path, *, task_prompt: str = TASK_PROMPT, **plan_overrides
+) -> tuple[Path, Path]:
     start_frame = tmp_path / "initial_policy_frame.png"
     start_frame.write_bytes(b"fake-png-bytes")
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps(
+            {
+                "schema_version": "kitchen_random_task_selection.v1",
+                "selected_task_id": "dishwasher_door",
+            }
+        ),
+        encoding="utf-8",
+    )
+    selection_sha = hashlib.sha256(selection.read_bytes()).hexdigest()
     route = tmp_path / "route.json"
     route.write_text(
         json.dumps(
@@ -83,15 +138,23 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
                     [1.785591, 0.575381, 0.79],
                     [2.043728, 0.575381, 0.79],
                     [2.243728, 0.575381, 0.79],
-                ]
+                ],
+                "source_selection_sha256": selection_sha,
             }
         ),
         encoding="utf-8",
     )
-    (tmp_path / "task_success_contract.json").write_text(
+    scenario = tmp_path / "scenario.json"
+    scenario.write_text(
+        json.dumps({"source_selection_sha256": selection_sha}), encoding="utf-8"
+    )
+    contract = tmp_path / "task_success_contract.json"
+    contract.write_text(
         json.dumps(
             {
                 "task_kind": "manipulation",
+                "task_id": "dishwasher_door",
+                "source_selection_sha256": selection_sha,
                 "registered_criteria": [
                     {
                         "criterion_id": "dishwasher_door_open_angle",
@@ -109,18 +172,100 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
         ),
         encoding="utf-8",
     )
+    with zipfile.ZipFile(tmp_path / "kitchen_assets.zip", "w") as archive:
+        archive.writestr("KitchenRoom.usd", "#usda 1.0")
+    plan_arguments = {
+        "env": {gocl.IMAGE_REF_ENV: DIGEST_REF, gocl.SEALED_CONFIRMED_ENV: "true"},
+        "start_frame": "/workspace/initial_policy_frame.png",
+        "route_file": "/workspace/route.json",
+        "steps": J.DEFAULT_EPISODE_MAX_STEPS,
+        "task_prompt": task_prompt,
+        "output_dir": "/workspace/closed_loop_out",
+        "min_coherent_horizon_frames": J.DEFAULT_MIN_COHERENT_HORIZON_FRAMES,
+        "min_task_adaptive_steps": J.DEFAULT_MIN_TASK_COMPLETION_STEPS,
+        "wam_consistency_command": REAL_CONSISTENCY_COMMAND,
+        "require_generated_video_success_label": False,
+        "wam_success_label_command": None,
+        "allow_wam_success_labeling": False,
+        "wam_success_label_timeout_seconds": J.DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS,
+        **plan_overrides,
+    }
+    plan = gocl.build_sealed_launch_plan(**plan_arguments)
+    bundle = J_INPUTS._write_payload_bundle(
+        payload_zip=tmp_path / "payload_bundle.zip",
+        plan=plan,
+        route_payload=json.loads(route.read_text(encoding="utf-8")),
+        seed_path=start_frame,
+        task_prompt=task_prompt,
+        seed_provenance={"source": "unit-test-seed"},
+        task_success_contract_path=contract,
+        kitchen_asset_archive_path=tmp_path / "kitchen_assets.zip",
+    )
+    canary = {
+        "status": "passed",
+        "image_digest": f"sha256:{IMAGE_HASH}",
+        "provider_allocation_id": "do-fixture-1",
+        "run_id": "test-run-1",
+        "attempt_id": "test-attempt-1",
+        "launch_nonce": "test-launch-nonce-1",
+    }
+    evidence = assemble_worker_image_runtime_evidence(
+        image_digest=f"sha256:{IMAGE_HASH}",
+        source_commit=SOURCE_COMMIT,
+        source_dirty_patch_sha256=DIRTY_PATCH,
+        build_healthcheck={
+            "status": "passed",
+            "runtime_metadata": {
+                "image_family": "isaac-eval-worker",
+                "simulator_family": "isaac_sim",
+                "simulator_major_version": 6,
+                "blueprint_pipeline_imported": True,
+                "configured_g1_asset_binding_valid": True,
+                "configured_g1_usd_exists": True,
+                "source_commit": SOURCE_COMMIT,
+                "source_dirty_patch_sha256": DIRTY_PATCH,
+            },
+        },
+        fast_canary=dict(canary),
+        review_canary={**canary, "width": 640, "height": 480},
+        teardown={"api_confirmed": True, "terminal_state": "terminated"},
+        final_inventory={"api_confirmed": True, "live_resource_count": 0},
+    )
+    assert evidence["status"] == "passed", evidence["blockers"]
+    evidence_path = tmp_path / "worker_image_runtime_evidence.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    manifest = build_attempt_input_manifest(
+        run_id="test-run-1",
+        attempt_id="test-attempt-1",
+        launch_nonce="test-launch-nonce-1",
+        provider="digitalocean",
+        artifacts={
+            "selection": selection,
+            "scenario": scenario,
+            "route": route,
+            "task_success_contract": contract,
+            "kitchen_inventory": tmp_path / "kitchen_assets.zip",
+            "bundle": bundle,
+            "worker_image_runtime_evidence": evidence_path,
+        },
+        image_digest=f"sha256:{IMAGE_HASH}",
+        source_commit=SOURCE_COMMIT,
+        source_dirty_patch_sha256=DIRTY_PATCH,
+    )
     (tmp_path / "attempt_input_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    (tmp_path / "registry_image_evidence.json").write_text(
         json.dumps(
             {
-                "schema_version": "g1_kitchen_attempt_input_manifest.v1",
-                "attempt_id": "test-attempt-1",
-                "launch_nonce": "test-launch-nonce-1",
+                "schema_version": REGISTRY_EVIDENCE_SCHEMA_VERSION,
+                "image_ref": DIGEST_REF,
+                "digest": f"sha256:{IMAGE_HASH}",
+                "source": "registry_api",
             }
         ),
         encoding="utf-8",
     )
-    with zipfile.ZipFile(tmp_path / "kitchen_assets.zip", "w") as archive:
-        archive.writestr("KitchenRoom.usd", "#usda 1.0")
     return start_frame, route
 
 
@@ -341,8 +486,14 @@ def test_prepared_mode_preserves_strict_generated_video_success_label_gate(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    start_frame, route = _inputs(tmp_path)
     command = "python -m blueprint_pipeline.wam_generated_video_success_label_openai"
+    start_frame, route = _inputs(
+        tmp_path,
+        require_generated_video_success_label=True,
+        wam_success_label_command=command,
+        allow_wam_success_labeling=True,
+        wam_success_label_timeout_seconds=123.0,
+    )
 
     monkeypatch.setattr(J, "get_render_provider", lambda _name: _PreparedOnlyProvider())
 
@@ -714,7 +865,9 @@ def test_objective_readiness_audit_fails_wrong_task_prompt(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    start_frame, route = _inputs(tmp_path)
+    start_frame, route = _inputs(
+        tmp_path, task_prompt="Open the refrigerator door."
+    )
     monkeypatch.setattr(J, "get_render_provider", lambda _name: _PreparedOnlyProvider())
     manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
         start_frame=start_frame,
@@ -1662,3 +1815,79 @@ def test_closed_loop_result_contract_blocks_when_strict_success_label_unproven()
         "required": True,
         "passed": True,
     }
+
+
+def test_paid_launch_blocks_on_identity_gate_before_capacity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    start_frame, route = _inputs(tmp_path)
+    (tmp_path / "registry_image_evidence.json").unlink()
+    monkeypatch.setattr(
+        preallocation_identity,
+        "inspect_registry_image",
+        lambda _image_ref: (_ for _ in ()).throw(RuntimeError("registry unavailable")),
+    )
+
+    class _NeverConsultedProvider(_PreparedOnlyProvider):
+        def capacity_preflight(self, request=None):
+            raise AssertionError(
+                "capacity must never be consulted while identity is unproven"
+            )
+
+    monkeypatch.setattr(
+        J, "get_render_provider", lambda _name: _NeverConsultedProvider()
+    )
+    manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
+        start_frame=start_frame,
+        route_file=route,
+        task_prompt=TASK_PROMPT,
+        out_dir=tmp_path / "job",
+        image_ref=DIGEST_REF,
+        seed_provenance={"source": "unit-test-seed"},
+        allow_paid=True,
+        max_spend_usd=10.0,
+    )
+    assert manifest["status"] == "blocked"
+    assert "pre_allocation_identity_gate_not_passed" in manifest["blockers"]
+    assert any(
+        "registry_image_live_inspection_failed" in item for item in manifest["blockers"]
+    )
+
+
+def test_paid_launch_blocks_on_stale_source_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    start_frame, route = _inputs(tmp_path)
+    monkeypatch.setattr(
+        preallocation_identity,
+        "build_source_tree_identity",
+        lambda _root: {
+            "source_commit": "0" * 40,
+            "source_dirty_patch_sha256": DIRTY_PATCH,
+        },
+    )
+
+    class _NeverConsultedProvider(_PreparedOnlyProvider):
+        def capacity_preflight(self, request=None):
+            raise AssertionError(
+                "capacity must never be consulted while identity is unproven"
+            )
+
+    monkeypatch.setattr(
+        J, "get_render_provider", lambda _name: _NeverConsultedProvider()
+    )
+    manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
+        start_frame=start_frame,
+        route_file=route,
+        task_prompt=TASK_PROMPT,
+        out_dir=tmp_path / "job",
+        image_ref=DIGEST_REF,
+        seed_provenance={"source": "unit-test-seed"},
+        allow_paid=True,
+        max_spend_usd=10.0,
+    )
+    assert manifest["status"] == "blocked"
+    assert "pre_allocation_identity_gate_not_passed" in manifest["blockers"]
+    assert any(
+        "attempt_source_commit_mismatch" in item for item in manifest["blockers"]
+    )

@@ -11,6 +11,10 @@ on:
         description: "Exact deployed candidate digest (sha256:...)."
         required: true
         type: string
+      release_id:
+        description: "Immutable release identifier bound by the signed subject."
+        required: true
+        type: string
       ci_run_id:
         description: "Successful CI run id for repository_sha."
         required: true
@@ -28,7 +32,7 @@ on:
         required: true
         type: string
       signature_artifact_name:
-        description: "Artifact containing artifact_signature.json for repository_sha/image_digest."
+        description: "Release Signature Verification artifact for repository_sha/image_digest."
         required: true
         type: string
 
@@ -36,6 +40,7 @@ permissions:
   actions: read
   contents: read
   security-events: read
+  attestations: read
 
 jobs:
   archive-base-release-evidence:
@@ -45,6 +50,7 @@ jobs:
     env:
       RELEASE_SHA: ${{ inputs.repository_sha }}
       RELEASE_IMAGE_DIGEST: ${{ inputs.image_digest }}
+      RELEASE_ID: ${{ inputs.release_id }}
       CI_RUN_ID: ${{ inputs.ci_run_id }}
       FULL_TEST_RUN_ID: ${{ inputs.full_test_run_id }}
       CODEQL_RUN_ID: ${{ inputs.codeql_run_id }}
@@ -169,13 +175,21 @@ jobs:
                   raise SystemExit(f"{name} evidence came from the wrong workflow")
           PY
 
-      - name: Validate release-bound signature proof
+      - name: Cryptographically verify release-command attestation and bindings
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          uv run python scripts/validate_release_signature_evidence.py \
-            --evidence-dir output/retention/signature-evidence \
-            --repository-sha "${RELEASE_SHA}" \
-            --image-digest "${RELEASE_IMAGE_DIGEST}" \
-            --output output/retention/signature-evidence/gate.json
+          set -euo pipefail
+          subject=output/retention/signature-evidence/release-command-attestation-subject.json
+          bundle="$(find output/retention/signature-evidence -type f -name '*.jsonl' -print -quit)"
+          test -f "${subject}"
+          test -n "${bundle}"
+          gh attestation verify "${subject}" --repo "${GITHUB_REPOSITORY}" --bundle "${bundle}"
+          uv run python scripts/validate_release_command_attestation.py \
+            --subject "${subject}" --repository-sha "${RELEASE_SHA}" \
+            --image-digest "${RELEASE_IMAGE_DIGEST}" --release-id "${RELEASE_ID}" \
+            --ci-run-id "${CI_RUN_ID}" --full-test-run-id "${FULL_TEST_RUN_ID}" \
+            --codeql-run-id "${CODEQL_RUN_ID}"
 
       - name: Download exact-commit CodeQL SARIF
         shell: bash

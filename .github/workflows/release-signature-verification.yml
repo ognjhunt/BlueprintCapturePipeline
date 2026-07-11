@@ -1,0 +1,121 @@
+name: Release Signature Verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_sha:
+        description: Exact release commit SHA
+        required: true
+        type: string
+      image_digest:
+        description: Exact release image digest
+        required: true
+        type: string
+      release_id:
+        description: Immutable GitHub release id or external release identifier
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful CI run id for repository_sha
+        required: true
+        type: string
+      full_test_run_id:
+        description: Successful Full Test Lane run id for repository_sha
+        required: true
+        type: string
+      codeql_run_id:
+        description: Successful CodeQL run id for repository_sha
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  verify-and-attest:
+    name: Verify same-SHA release evidence and sign subject
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact release SHA
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.repository_sha }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Download exact CI evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.ci_run_id }}
+          pattern: "*-${{ inputs.repository_sha }}"
+          path: output/release-signature/ci
+
+      - name: Download exact full-test evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.full_test_run_id }}
+          name: full-test-lane-${{ inputs.full_test_run_id }}
+          path: output/release-signature/full-test
+
+      - name: Verify run identity and conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.repository_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"
+          uv lock --check
+          uv sync --frozen
+          for spec in \
+            "${{ inputs.ci_run_id }}:CI:ci" \
+            "${{ inputs.full_test_run_id }}:Full Test Lane:full-test" \
+            "${{ inputs.codeql_run_id }}:CodeQL:codeql"; do
+            IFS=: read -r run_id workflow label <<<"${spec}"
+            uv run python scripts/collect_github_actions_evidence.py \
+              --repo "${GITHUB_REPOSITORY}" --run-id "${run_id}" \
+              --evidence-id "${label}" \
+              --output "output/release-signature/${label}-run.json"
+            jq -e --arg sha "${RELEASE_SHA}" --arg workflow "${workflow}" \
+              '.head_sha == $sha and .workflow_name == $workflow and .conclusion == "success"' \
+              "output/release-signature/${label}-run.json"
+          done
+
+      - name: Build deterministic release command subject
+        run: |
+          uv run python scripts/build_release_command_attestation.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --repository-sha "${{ inputs.repository_sha }}" \
+            --image-digest "${{ inputs.image_digest }}" \
+            --release-id "${{ inputs.release_id }}" \
+            --ci-run-id "${{ inputs.ci_run_id }}" \
+            --full-test-run-id "${{ inputs.full_test_run_id }}" \
+            --codeql-run-id "${{ inputs.codeql_run_id }}" \
+            --evidence-root output/release-signature \
+            --output output/release-command-attestation-subject.json
+
+      - name: Sign subject with GitHub OIDC provenance
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: output/release-command-attestation-subject.json
+
+      - name: Upload independently signed evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-signature-${{ inputs.repository_sha }}
+          path: |
+            output/release-command-attestation-subject.json
+            ${{ steps.attest.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90

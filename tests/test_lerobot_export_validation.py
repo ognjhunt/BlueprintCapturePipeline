@@ -449,9 +449,29 @@ def test_gr00t_modality_video_file_missing_blocks(tmp_path: Path) -> None:
     assert report["checks"]["video_files_present"] == "failed"
 
 
-def test_native_parquet_without_pyarrow_fails_closed(tmp_path: Path) -> None:
-    if __import__("importlib").util.find_spec("pyarrow") is not None:
-        pytest.skip("pyarrow installed; hermetic-unreadable branch not reachable")
+def test_native_parquet_without_pyarrow_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hermetic missing-pyarrow branch: import availability is controlled inside
+    the test so the fail-closed path executes deterministically (never skips),
+    even when the environment has pyarrow installed via another dependency."""
+    import importlib.util
+    import sys
+
+    import blueprint_pipeline.lerobot_export_validation as lev
+
+    real_find_spec = importlib.util.find_spec
+
+    def absent_pyarrow_find_spec(name: str, *args: object, **kwargs: object):
+        if name == "pyarrow" or name.startswith("pyarrow."):
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(lev.importlib.util, "find_spec", absent_pyarrow_find_spec)
+    # Belt and braces: any direct `import pyarrow` in the validator also fails.
+    monkeypatch.setitem(sys.modules, "pyarrow", None)
+    monkeypatch.setitem(sys.modules, "pyarrow.parquet", None)
+
     root = _lerobot_v3_fixture(tmp_path, frames_per_episode=(3,))
     # Native parquet only, no jsonl mirror: hermetic reader cannot prove anything.
     data_dir = root / "data" / "chunk-000"

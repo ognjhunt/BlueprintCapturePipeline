@@ -636,6 +636,7 @@ def test_task_completion_command_evaluator_binds_typed_measurement(
                 "artifact = Path.cwd() / 'measurement.json'",
                 "artifact.write_text(json.dumps(measurement))",
                 "payload = {**measurement, 'status': 'completed', 'tolerance': 0.2, 'passed': True,",
+                "  'episode_initial_value': 0.0, 'step_delta': 0.3, 'episode_delta': 0.3,",
                 "  'source_action_sha256': hashlib.sha256(json.dumps(request.get('action') or {}, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),",
                 "  'simulator_session_id': 'isaac-session-1', 'runtime_result_id': f'task-result-{step}',",
                 "  'persistent_simulator_state_applied': True, 'official_controller_action_applied': True,",
@@ -3677,6 +3678,7 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
             "observable_transition": "door_angle_rad_increased",
             "before_value": 0.0,
             "after_value": 0.3 if passed else 0.05,
+            "episode_initial_value": 0.0,
             "tolerance": 0.2,
             "unit": "radian",
             "source_step_index": context["step_index"],
@@ -3757,6 +3759,7 @@ def test_task_transition_measurement_artifact_must_bind_exact_content(tmp_path):
             "observable_transition": "door_angle_rad_increased",
             "before_value": 0.0,
             "after_value": 0.3,
+            "episode_initial_value": 0.0,
             "tolerance": 0.2,
             "unit": "radian",
             "source_step_index": 2,
@@ -4228,3 +4231,90 @@ def test_sealed_plan_and_cli_carry_stop_on_task_completion(tmp_path):
             plan["closed_loop_command"][plan["closed_loop_command"].index("--min-steps") + 1] == "3"
         )
         assert plan["episode_length_contract"]["min_steps_before_task_completion"] == 3
+
+
+def test_transition_verdict_uses_episode_baseline_not_step_pair(tmp_path):
+    contract = {
+        "task_kind": "manipulation",
+        "criteria": [
+            {
+                "criterion_id": "door_articulation_angle",
+                "observable_transition": "door_angle_rad_increased",
+                "comparison": "increase_at_least",
+                "tolerance": 0.35,
+                "unit": "radian",
+            }
+        ],
+    }
+
+    def validate(*, step, before, after, initial, passed, name, episode_fields=True):
+        measurement = {
+            "schema_version": "task_transition_measurement.v1",
+            "criterion_id": "door_articulation_angle",
+            "observable_transition": "door_angle_rad_increased",
+            "before_value": before,
+            "after_value": after,
+            "unit": "radian",
+            "source_step_index": step,
+        }
+        if episode_fields:
+            measurement["episode_initial_value"] = initial
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(measurement) + "\n", encoding="utf-8")
+        result = {
+            "status": "completed",
+            "criterion_id": "door_articulation_angle",
+            "observable_transition": "door_angle_rad_increased",
+            "before_value": before,
+            "after_value": after,
+            "tolerance": 0.35,
+            "unit": "radian",
+            "source_step_index": step,
+            "passed": passed,
+            "evidence_artifacts": [
+                {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            ],
+        }
+        if episode_fields:
+            result["episode_initial_value"] = initial
+            result["step_delta"] = after - before
+            result["episode_delta"] = after - initial
+        result["evaluator_attestation"] = _attest_task_completion(
+            result, tmp_path, f"episode-{name}"
+        )
+        return L._validate_task_completion_transition(
+            completion_result=result,
+            task_success_contract=contract,
+            expected_source_step_index=step,
+        )
+
+    first = validate(
+        step=0, before=0.0, after=0.2, initial=0.0, passed=False, name="step0"
+    )
+    assert first["registered_transition_passed"] is False
+    assert "task_transition_reported_verdict_mismatch" not in first[
+        "validation_blockers"
+    ]
+
+    second = validate(
+        step=1, before=0.2, after=0.4, initial=0.0, passed=True, name="step1"
+    )
+    assert second["registered_transition_passed"] is True
+
+    step_pair_only = validate(
+        step=1,
+        before=0.2,
+        after=0.4,
+        initial=0.0,
+        passed=True,
+        name="no-episode",
+        episode_fields=False,
+    )
+    assert step_pair_only["registered_transition_passed"] is False
+    assert any(
+        "episode_initial_value" in item
+        for item in step_pair_only["validation_blockers"]
+    )

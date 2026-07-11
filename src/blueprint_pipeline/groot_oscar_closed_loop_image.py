@@ -365,6 +365,7 @@ def build_sealed_launch_plan(
         "--action-skeleton-command", action_skeleton_command,
         "--task-success-contract", task_success_contract_path,
         "--task-completion-command", task_completion_command,
+        "--attempt-input-manifest", attempt_input_manifest_path,
         # Episode length is task-adaptive: --steps is the hard cap and the
         # episode ends when the target-reached criterion fires.
         "--stop-on-task-completion",

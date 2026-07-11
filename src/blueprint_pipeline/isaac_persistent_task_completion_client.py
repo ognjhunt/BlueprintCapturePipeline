@@ -14,9 +14,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from blueprint_pipeline import safe_outbound_http
+
 
 EXECUTOR_URL_ENV = "BLUEPRINT_ISAAC_TASK_EXECUTOR_URL"
 DEFAULT_EXECUTOR_URL = "http://127.0.0.1:8765/apply-and-measure"
+# The executor is an intentionally local sidecar: https anywhere, plain http
+# only on loopback (safe_outbound_http fails closed on anything else).
+_EXECUTOR_HTTP_POLICY = safe_outbound_http.loopback_service_policy()
 
 
 def call_persistent_executor(
@@ -36,8 +41,12 @@ def call_persistent_executor(
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request_obj, timeout=max(1.0, timeout_seconds)) as response:
-        raw = response.read().decode("utf-8")
+    response = safe_outbound_http.open_request(
+        request_obj,
+        policy=_EXECUTOR_HTTP_POLICY,
+        timeout_seconds=max(1.0, timeout_seconds),
+    )
+    raw = response.body.decode("utf-8")
     result = json.loads(raw)
     if not isinstance(result, Mapping):
         raise RuntimeError("persistent_isaac_task_executor_response_not_object")

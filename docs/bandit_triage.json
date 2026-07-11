@@ -15,18 +15,6 @@
     {
       "disposition": "accepted_risk",
       "expires_on": "2026-08-08",
-      "filename": "scripts/run_isaac_g1_kitchen_parity_eval.py",
-      "fingerprint": "c2467aa00fbbf6369eff93f2383918dae4e0ea816a88d1bdc9f994f35458866b",
-      "line_number": 2488,
-      "owner": "@ognjhunt",
-      "reason": "This existing URL-open site was reviewed at its exact code fingerprint after confirmed unsafe endpoints were migrated to bounded validators; remaining reachability and provenance assumptions must be re-reviewed before expiry.",
-      "reviewed_on": "2026-07-09",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-08-08",
       "filename": "scripts/run_isaac_splat_nurec_render.py",
       "fingerprint": "090227622a259e52470ee6b25d9bdece46e233086e43b50cdc540cd8faacad76",
       "line_number": 580,
@@ -395,30 +383,6 @@
       "reviewed_on": "2026-07-09",
       "severity": "MEDIUM",
       "test_id": "B310"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2026-08-08",
-      "filename": "src/blueprint_pipeline/retrieval_index_stage.py",
-      "fingerprint": "eb55f1532fd88331a5540a18095f36e6cdfe65b8a06dd6db9cdf746ee766649b",
-      "line_number": 1242,
-      "owner": "@ognjhunt",
-      "reason": "The model or snapshot load is bound to the repository's immutable revision input with remote code disabled where supported; Bandit does not follow the pinned revision kwargs at this exact site.",
-      "reviewed_on": "2026-07-09",
-      "severity": "MEDIUM",
-      "test_id": "B615"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2026-08-08",
-      "filename": "src/blueprint_pipeline/retrieval_index_stage.py",
-      "fingerprint": "29ab10b46fb3506a4acb5774e75cec8b3311039e444d8184d53fcffa360b1e42",
-      "line_number": 1247,
-      "owner": "@ognjhunt",
-      "reason": "The model or snapshot load is bound to the repository's immutable revision input with remote code disabled where supported; Bandit does not follow the pinned revision kwargs at this exact site.",
-      "reviewed_on": "2026-07-09",
-      "severity": "MEDIUM",
-      "test_id": "B615"
     },
     {
       "disposition": "accepted_risk",
@@ -813,42 +777,6 @@
       "owner": "@ognjhunt",
       "reason": "This existing URL-open site was reviewed at its exact code fingerprint after confirmed unsafe endpoints were migrated to bounded validators; remaining reachability and provenance assumptions must be re-reviewed before expiry.",
       "reviewed_on": "2026-07-09",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-08-08",
-      "filename": "src/blueprint_pipeline/gpu_render_providers.py",
-      "fingerprint": "84fda297f064e945f4e870b3b551eec0bdd04b6914f76a1a0059cac08604a783",
-      "line_number": 745,
-      "owner": "@ognjhunt",
-      "reason": "New DigitalOcean provider _do_call urlopen site added on main (40859bd): requests go to the fixed DO_API base with a bearer token, matching the file's existing accepted-risk B310 sites; re-review before expiry; line shifted by the startup-reliability P1-1 capacity-confidence change (same urlopen call, unchanged transport).",
-      "reviewed_on": "2026-07-10",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-08-08",
-      "filename": "src/blueprint_pipeline/gpu_render_providers.py",
-      "fingerprint": "aa33e0b80994285e49e199f9dfdaa5b433f6da416f70b682a0bc081c1425ed98",
-      "line_number": 170,
-      "owner": "@ognjhunt",
-      "reason": "_runpod_call urlopen shifted by main commit 40859bd insertions: requests go to the fixed RUNPOD_API base with a bearer token; re-review before expiry; line shifted by the startup-reliability P1-1 capacity-confidence change (same urlopen call, unchanged transport).",
-      "reviewed_on": "2026-07-10",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-08-08",
-      "filename": "src/blueprint_pipeline/gpu_render_providers.py",
-      "fingerprint": "27034cbef716c0f1824982a98bde2eb938d1bf876afa9a27e1196bbefe940b98",
-      "line_number": 192,
-      "owner": "@ognjhunt",
-      "reason": "New _runpod_graphql_call urlopen added on main (40859bd): read-only GraphQL query to the fixed RUNPOD_GRAPHQL_API base with a bearer token; re-review before expiry; line shifted by the startup-reliability P1-1 capacity-confidence change (same urlopen call, unchanged transport).",
-      "reviewed_on": "2026-07-10",
       "severity": "MEDIUM",
       "test_id": "B310"
     }

@@ -9,6 +9,8 @@ import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 
+from blueprint_pipeline import safe_outbound_http
+
 
 URL_ENV = "BLUEPRINT_WAM_STRICT_SCORER_URL"
 TOKEN_FILE_ENV = "BLUEPRINT_WAM_STRICT_SCORER_TOKEN_FILE"
@@ -42,10 +44,12 @@ def score_via_service(
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(
-        http_request, timeout=max(1.0, float(timeout_seconds))
-    ) as response:
-        result = json.loads(response.read().decode("utf-8"))
+    response = safe_outbound_http.open_request(
+        http_request,
+        policy=safe_outbound_http.service_endpoint_policy(url),
+        timeout_seconds=max(1.0, float(timeout_seconds)),
+    )
+    result = json.loads(response.body.decode("utf-8"))
     if not isinstance(result, Mapping):
         raise RuntimeError("strict_consistency_scorer_response_not_object")
     payload = dict(result)

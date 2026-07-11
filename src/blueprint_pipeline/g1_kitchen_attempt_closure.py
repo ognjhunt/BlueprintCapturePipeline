@@ -22,6 +22,7 @@ IDENTITY_FIELDS = (
     "attempt_id",
     "launch_nonce",
     "source_commit",
+    "source_dirty_patch_sha256",
     "image_digest",
     "bundle_digest",
     "kitchen_asset_digest",
@@ -277,7 +278,21 @@ def buyer_readout_projection(closure: Mapping[str, Any]) -> dict[str, Any]:
         for row in value.get("proof_rows", [])
         if isinstance(row, Mapping)
     }
+    verified_digests: dict[str, list[str]] = {}
+    for row in value.get("proof_rows", []):
+        if not isinstance(row, Mapping):
+            continue
+        leafs = _mapping(row.get("evidence")).get("verified_leaf_artifacts")
+        digests = [
+            str(item.get("sha256") or "")
+            for item in (leafs if isinstance(leafs, Sequence) else [])
+            if isinstance(item, Mapping) and item.get("sha256")
+        ]
+        if digests:
+            verified_digests[str(row.get("row_id") or "")] = digests
     return {
+        "identity": _mapping(value.get("identity")),
+        "verified_leaf_artifact_sha256s": verified_digests,
         "source_schema_version": value.get("schema_version"),
         "source_closure_sha256": closure_sha256(value),
         "status": "ready" if valid else "blocked",

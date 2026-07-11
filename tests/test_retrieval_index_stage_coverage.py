@@ -841,6 +841,7 @@ def test_retrieval_index_stage_remaining_edge_branches(
             assert kwargs == {
                 "revision": ris._DINOV3_MODEL_REVISION,
                 "trust_remote_code": False,
+                "local_files_only": True,
             }
             return FakeLoadedModel()
 
@@ -855,6 +856,7 @@ def test_retrieval_index_stage_remaining_edge_branches(
     assert loaded_processor["kwargs"] == {
         "revision": ris._DINOV3_MODEL_REVISION,
         "trust_remote_code": False,
+        "local_files_only": True,
     }
 
     def fail_torch_import(name, *args, **kwargs):

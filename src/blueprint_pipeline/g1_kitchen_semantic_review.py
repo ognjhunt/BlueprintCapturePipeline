@@ -16,6 +16,7 @@ COMMAND_ENV = "BLUEPRINT_G1_KITCHEN_SEMANTIC_REVIEW_COMMAND"
 ALLOW_ENV = "BLUEPRINT_ALLOW_G1_KITCHEN_SEMANTIC_REVIEW"
 INPUT_ENV = "BLUEPRINT_G1_KITCHEN_SEMANTIC_REVIEW_INPUT"
 OUTPUT_ENV = "BLUEPRINT_G1_KITCHEN_SEMANTIC_REVIEW_OUTPUT"
+ATTESTATION_OUTPUT_ENV = "BLUEPRINT_G1_KITCHEN_SEMANTIC_REVIEW_ATTESTATION_OUTPUT"
 
 
 def _sha256(path: Path) -> str:
@@ -43,18 +44,19 @@ def run_full_episode_semantic_review(
     command: str | None = None,
     allow: bool | None = None,
     timeout_seconds: float = 600.0,
+    attestation_pins: Mapping[str, Any] | None = None,
+    identity_binding: Mapping[str, Any] | None = None,
+    step_bindings: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     root = Path(scenario_dir).resolve()
     frames_dir = root / "frames"
     rows: list[dict[str, Any]] = []
     for role in ("overview", "robot_pov"):
-        for index, path in enumerate(
-            sorted(frames_dir.glob(f"{role}_[0-9][0-9][0-9][0-9].png"))
-        ):
+        for path in sorted(frames_dir.glob(f"{role}_[0-9][0-9][0-9][0-9].png")):
             rows.append(
                 {
                     "camera_role": role,
-                    "frame_index": index,
+                    "frame_index": int(path.stem.rsplit("_", 1)[-1]),
                     "path": str(path.resolve()),
                     "sha256": _sha256(path),
                 }
@@ -64,6 +66,8 @@ def run_full_episode_semantic_review(
         "expected_frame_count_per_camera": int(expected_frame_count),
         "required_camera_roles": ["overview", "robot_pov"],
         "frames": rows,
+        "identity_binding": dict(identity_binding or {}),
+        "step_bindings": [dict(item) for item in (step_bindings or [])],
         "required_overview_fields": [
             "g1_visible",
             "target_visible",
@@ -85,6 +89,7 @@ def run_full_episode_semantic_review(
     }
     request_path = root / "full_episode_semantic_review_request.json"
     raw_output_path = root / "full_episode_semantic_review_raw.json"
+    attestation_path = root / "full_episode_semantic_review_raw.attestation.json"
     request_path.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n")
     configured = str(command or os.environ.get(COMMAND_ENV) or "").strip()
     allowed = _truthy(os.environ.get(ALLOW_ENV)) if allow is None else bool(allow)
@@ -99,12 +104,14 @@ def run_full_episode_semantic_review(
     completed = None
     if not blockers:
         raw_output_path.unlink(missing_ok=True)
+        attestation_path.unlink(missing_ok=True)
         completed = subprocess.run(
             argv,
             env={
                 **os.environ,
                 INPUT_ENV: str(request_path),
                 OUTPUT_ENV: str(raw_output_path),
+                ATTESTATION_OUTPUT_ENV: str(attestation_path),
             },
             capture_output=True,
             text=True,
@@ -122,6 +129,22 @@ def run_full_episode_semantic_review(
             raw = dict(value) if isinstance(value, Mapping) else {}
         except (OSError, json.JSONDecodeError):
             blockers.append("semantic_review_command_output_invalid_json")
+    if attestation_pins is not None:
+        from .g1_kitchen_proof_row_validation import verify_leaf_attestation
+
+        try:
+            attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            attestation = {}
+        blockers.extend(
+            "semantic_review_" + blocker
+            for blocker in verify_leaf_attestation(
+                data=raw_output_path.read_bytes() if raw_output_path.is_file() else b"",
+                attestation=attestation,
+                expected_role="semantic_review",
+                pins=attestation_pins,
+            )
+        )
     if raw.get("status") != "passed":
         blockers.append("semantic_review_api_status_not_passed")
     if raw.get("abstained") is not False:
@@ -129,6 +152,12 @@ def run_full_episode_semantic_review(
     for field in ("review_runtime_id", "provider", "model"):
         if not str(raw.get(field) or "").strip():
             blockers.append(f"semantic_review_api_{field}_missing")
+    request_sha256 = _canonical_sha256(request)
+    if attestation_pins is not None:
+        if raw.get("request_sha256") != request_sha256:
+            blockers.append("semantic_review_api_request_sha256_mismatch")
+        if dict(raw.get("identity_binding") or {}) != dict(identity_binding or {}):
+            blockers.append("semantic_review_api_identity_binding_mismatch")
     reviews = raw.get("frame_reviews")
     reviews = list(reviews) if isinstance(reviews, Sequence) and not isinstance(reviews, (str, bytes)) else []
     expected_by_path = {row["path"]: row for row in rows}
@@ -161,7 +190,7 @@ def run_full_episode_semantic_review(
         "review_source": "external_semantic_review_api",
         "provider": raw.get("provider"),
         "model": raw.get("model"),
-        "request_sha256": _canonical_sha256(request),
+        "request_sha256": request_sha256,
         "response_sha256": response_sha,
         "frame_review_count": len(semantics),
         "command_result": {

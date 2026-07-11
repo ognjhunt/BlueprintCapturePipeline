@@ -2632,6 +2632,10 @@ def run_isaac_g1_kitchen_parity_job(
                             )
                             or 0
                         ),
+                        # Render-parity scenarios carry no attested action
+                        # horizon; the admission stays truthfully blocked and
+                        # closure remains the only success authority.
+                        step_bindings=None,
                     ),
                 }
             )

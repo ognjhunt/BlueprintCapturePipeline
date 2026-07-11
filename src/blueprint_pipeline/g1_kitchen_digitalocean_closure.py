@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,13 @@ from .common import utc_now_iso, write_json
 from .g1_kitchen_attempt_closure import (
     build_attempt_closure,
     buyer_readout_projection,
+)
+from .g1_kitchen_proof_row_validation import (
+    ATTESTATION_PINS_FILE_ENV,
+    load_attestation_pins,
+    transition_terminal_horizon,
+    transition_step_bindings,
+    validate_worker_proof_rows,
 )
 from .provider_reliability_manifest import (
     TEARDOWN_STATUS_SOURCE_PROVIDER_API,
@@ -25,79 +33,50 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _strict_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _read(path: str | Path) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _startup_rows(
-    *, collected_root: Path, identity: Mapping[str, Any]
-) -> dict[str, dict[str, Any]]:
-    startup_root = collected_root / "closed_loop_out" / "startup_gates"
-    summary_path = startup_root / "supervised_startup_gates.json"
-    summary = _read(summary_path) if summary_path.is_file() else {}
-    expected_nonce = str(identity.get("launch_nonce") or "")
-    expected_image = str(identity.get("image_digest") or "").removeprefix("sha256:")
-    observed_image = str(summary.get("image_digest") or "")
-    observed_image = observed_image.rsplit("@sha256:", 1)[-1].removeprefix("sha256:")
-    identity_matches = bool(
-        summary
-        and summary.get("launch_session_id") == expected_nonce
-        and observed_image == expected_image
-    )
-    gates = _mapping(summary.get("gates"))
-    specs = {
-        "fast_canary": "fast_startup_canary",
-        "review_canary": "review_renderer_canary",
-        "asset_gate": "kitchen_asset_startup_gate",
-    }
-    rows: dict[str, dict[str, Any]] = {
-        "startup": {
-            "status": "passed"
-            if summary.get("status") == "passed" and identity_matches
-            else "blocked",
-            "identity_binding": dict(identity),
-            "evidence": {
-                "summary": summary,
-                "attempt_identity_matches": identity_matches,
-            },
-            "artifact_refs": [str(summary_path)] if summary_path.is_file() else [],
-            "blockers": []
-            if summary.get("status") == "passed" and identity_matches
-            else ["attempt_bound_same_allocation_startup_proof_missing_or_invalid"],
-        }
-    }
-    for row_id, gate_id in specs.items():
-        gate = _mapping(gates.get(gate_id))
-        passed = gate.get("status") == "passed" and identity_matches
-        rows[row_id] = {
-            "status": "passed" if passed else "blocked",
-            "identity_binding": dict(identity),
-            "evidence": {"gate_id": gate_id, "gate": gate},
-            "blockers": [] if passed else [f"attempt_bound_{gate_id}_not_passed"],
-        }
-    return rows
-
-
 def _collected_media_rows(
-    *, collected_root: Path, identity: Mapping[str, Any]
+    *,
+    collected_root: Path,
+    identity: Mapping[str, Any],
+    expected_frame_count: int,
+    expected_scenario_count: int,
+    step_bindings: Sequence[Mapping[str, Any]] | None,
+    attestation_pins: Mapping[str, Any] | None,
 ) -> dict[str, dict[str, Any]]:
+    """Admit collected media against the attempt-bound horizon, never the files.
+
+    ``expected_frame_count`` and ``expected_scenario_count`` come from the
+    immutable attempt/task/executor request; equally truncated camera streams
+    therefore block instead of shrinking the horizon to whatever arrived.
+    """
     admissions: list[dict[str, Any]] = []
     for frames_dir in sorted(collected_root.rglob("frames")):
         overview = sorted(frames_dir.glob("overview_[0-9][0-9][0-9][0-9].png"))
         robot_pov = sorted(frames_dir.glob("robot_pov_[0-9][0-9][0-9][0-9].png"))
         if not overview and not robot_pov:
             continue
-        expected_count = len(overview) if len(overview) == len(robot_pov) else max(
-            len(overview), len(robot_pov)
-        )
         admissions.append(
             admit_collected_scenario_episode(
                 scenario_dir=frames_dir.parent,
-                expected_frame_count=expected_count,
+                expected_frame_count=int(expected_frame_count),
+                step_bindings=step_bindings,
+                attestation_pins=attestation_pins,
+                identity_binding=identity,
             )
         )
-    passed = bool(admissions) and all(row.get("status") == "passed" for row in admissions)
+    passed = (
+        bool(admissions)
+        and len(admissions) == int(expected_scenario_count)
+        and all(row.get("status") == "passed" for row in admissions)
+    )
     blockers = sorted(
         {
             str(blocker)
@@ -108,12 +87,21 @@ def _collected_media_rows(
     )
     if not admissions:
         blockers.append("full_ordered_episode_media_not_collected")
-    evidence = {"scenario_admissions": admissions, "scenario_count": len(admissions)}
+    if len(admissions) != int(expected_scenario_count):
+        blockers.append(
+            f"scenario_count_mismatch:{len(admissions)}!={int(expected_scenario_count)}"
+        )
+    evidence = {
+        "scenario_admissions": admissions,
+        "scenario_count": len(admissions),
+        "expected_scenario_count": int(expected_scenario_count),
+        "expected_frame_count_per_camera": int(expected_frame_count),
+    }
     common = {
         "status": "passed" if passed else "blocked",
         "identity_binding": dict(identity),
         "evidence": evidence,
-        "blockers": blockers,
+        "blockers": sorted(set(blockers)),
     }
     return {
         "robot_pov": dict(common),
@@ -170,6 +158,10 @@ def finalize_digitalocean_attempt_closure(
     launch: Mapping[str, Any],
     watch: Mapping[str, Any],
     teardown_proof: Mapping[str, Any],
+    expected_episode_steps: int,
+    expected_min_episode_steps: int = 1,
+    expected_scenario_count: int = 1,
+    attestation_pins_file: str | Path | None = None,
     resource_name_prefix: str = "blueprint-groot-oscar-closed-loop",
 ) -> dict[str, Any]:
     try:
@@ -192,6 +184,7 @@ def finalize_digitalocean_attempt_closure(
         "attempt_id": attempt_input.get("attempt_id"),
         "launch_nonce": attempt_input.get("launch_nonce"),
         "source_commit": attempt_input.get("source_commit"),
+        "source_dirty_patch_sha256": attempt_input.get("source_dirty_patch_sha256"),
         "image_digest": str(image_ref).rsplit("@sha256:", 1)[-1],
         "bundle_digest": artifact_digest("bundle"),
         "kitchen_asset_digest": artifact_digest("kitchen_inventory")
@@ -201,33 +194,71 @@ def finalize_digitalocean_attempt_closure(
         or hashlib.sha256(Path(task_success_contract_file).read_bytes()).hexdigest(),
         "provider_allocation_id": launch.get("instance_id"),
     }
-    worker_manifest = _mapping(
-        _mapping(watch.get("runner_result")).get("closed_loop_manifest")
-    )
-    raw_rows = worker_manifest.get("g1_kitchen_proof_rows")
-    if isinstance(raw_rows, Sequence) and not isinstance(raw_rows, (str, bytes)):
-        rows = {
-            str(row.get("row_id") or ""): dict(row)
-            for row in raw_rows
-            if isinstance(row, Mapping) and str(row.get("row_id") or "")
-        }
-    else:
-        rows = _mapping(raw_rows)
-    binding = dict(identity)
-    worker_manifest_sha256 = hashlib.sha256(
-        json.dumps(worker_manifest, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    for row in rows.values():
-        if not isinstance(row, dict):
-            continue
-        row["identity_binding"] = binding
-        row["evidence"] = {
-            **_mapping(row.get("evidence")),
-            "worker_manifest_sha256": worker_manifest_sha256,
-        }
     collected_root = Path(output_dir) / "closed_loop_output"
-    rows.update(_startup_rows(collected_root=collected_root, identity=identity))
-    rows.update(_collected_media_rows(collected_root=collected_root, identity=identity))
+    worker_manifest_path = (
+        collected_root / "closed_loop_out" / "oscar_isaac_closed_loop_manifest.json"
+    )
+    worker_rows: dict[str, Any] = {}
+    if worker_manifest_path.is_file():
+        try:
+            worker_manifest = _read(worker_manifest_path)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            worker_manifest = {}
+        raw_rows = worker_manifest.get("g1_kitchen_proof_rows")
+        if isinstance(raw_rows, Sequence) and not isinstance(raw_rows, (str, bytes)):
+            worker_rows = {
+                str(row.get("row_id") or ""): dict(row)
+                for row in raw_rows
+                if isinstance(row, Mapping) and str(row.get("row_id") or "")
+            }
+        else:
+            worker_rows = _mapping(raw_rows)
+    pins_source = attestation_pins_file or os.environ.get(ATTESTATION_PINS_FILE_ENV)
+    attestation_pins = load_attestation_pins(pins_source) if pins_source else None
+    validated = validate_worker_proof_rows(
+        worker_rows=worker_rows,
+        worker_manifest_path=worker_manifest_path,
+        collected_root=collected_root,
+        identity=identity,
+        attestation_pins=attestation_pins,
+    )
+    rows: dict[str, Any] = dict(validated["rows"])
+    binding = dict(identity)
+    step_bindings = transition_step_bindings(rows) or None
+    terminal_horizon = transition_terminal_horizon(rows)
+    horizon_blocker = None
+    if step_bindings is not None and (
+        terminal_horizon is None
+        or _strict_int(terminal_horizon.get("planned_max_steps"))
+        != int(expected_episode_steps)
+        or _strict_int(terminal_horizon.get("scenario_count"))
+        != int(expected_scenario_count)
+        or not int(expected_min_episode_steps)
+        <= len(step_bindings)
+        <= int(expected_episode_steps)
+    ):
+        horizon_blocker = (
+            "attested_episode_horizon_not_bound_to_immutable_request:"
+            f"steps={len(step_bindings)},planned={_mapping(terminal_horizon).get('planned_max_steps')},"
+            f"scenario_count={_mapping(terminal_horizon).get('scenario_count')}"
+        )
+        step_bindings = None
+    media_expected = (
+        len(step_bindings) if step_bindings else int(expected_episode_steps)
+    )
+    media_rows = _collected_media_rows(
+        collected_root=collected_root,
+        identity=identity,
+        expected_frame_count=media_expected,
+        expected_scenario_count=int(expected_scenario_count),
+        step_bindings=step_bindings,
+        attestation_pins=attestation_pins,
+    )
+    if horizon_blocker:
+        for row in media_rows.values():
+            row["status"] = "blocked"
+            row["blockers"] = sorted({*row.get("blockers", []), horizon_blocker})
+    rows.update(media_rows)
     rows["allocation"] = {
         "status": "passed" if launch.get("status") == "launched" else "blocked",
         "identity_binding": binding,

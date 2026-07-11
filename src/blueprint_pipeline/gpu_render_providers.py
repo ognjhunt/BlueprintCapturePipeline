@@ -32,10 +32,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from blueprint_pipeline import safe_outbound_http
+
 SCHEMA_VERSION = "gpu_render_providers.v1"
 SECRETS = Path.home() / ".blueprint-secrets"
 RUNPOD_API = "https://rest.runpod.io/v1"
 RUNPOD_GRAPHQL_API = "https://api.runpod.io/graphql"
+_RUNPOD_API_POLICY = safe_outbound_http.pinned_api_policy(RUNPOD_API)
+_RUNPOD_GRAPHQL_POLICY = safe_outbound_http.pinned_api_policy(RUNPOD_GRAPHQL_API)
 
 
 def _read_secret(name: str) -> str | None:
@@ -183,9 +187,11 @@ def _runpod_call(method: str, path: str, body: dict | None, *, key: str, timeout
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            raw = r.read().decode()
-            return r.status, (json.loads(raw) if raw.strip() else {})
+        r = safe_outbound_http.open_request(
+            req, policy=_RUNPOD_API_POLICY, timeout_seconds=timeout
+        )
+        raw = r.body.decode()
+        return r.status, (json.loads(raw) if raw.strip() else {})
     except urllib.error.HTTPError as e:
         return e.code, {"error": e.read().decode()[:400]}
     except Exception as e:  # noqa: BLE001
@@ -205,9 +211,11 @@ def _runpod_graphql_call(query: str, *, key: str, timeout: int = 60):
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
-            return response.status, json.loads(raw) if raw.strip() else {}
+        response = safe_outbound_http.open_request(
+            request, policy=_RUNPOD_GRAPHQL_POLICY, timeout_seconds=timeout
+        )
+        raw = response.body.decode("utf-8")
+        return response.status, json.loads(raw) if raw.strip() else {}
     except urllib.error.HTTPError as exc:
         return exc.code, {"error": "runpod_graphql_http_error"}
     except Exception as exc:  # noqa: BLE001
@@ -855,6 +863,9 @@ DO_SSH_KEY_IDS_FILE_ENV = "BLUEPRINT_DO_SSH_KEY_IDS_FILE"
 DEFAULT_DO_SSH_KEY_IDS_FILE = "~/.blueprint-secrets/digitalocean_ssh_key_ids"
 
 
+_DO_API_POLICY = safe_outbound_http.pinned_api_policy(DO_API)
+
+
 def _do_call(method: str, path: str, body: dict | None = None, *, token: str, timeout: int = 90):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
@@ -862,9 +873,11 @@ def _do_call(method: str, path: str, body: dict | None = None, *, token: str, ti
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            raw = r.read().decode()
-            return r.status, (json.loads(raw) if raw.strip() else {})
+        r = safe_outbound_http.open_request(
+            req, policy=_DO_API_POLICY, timeout_seconds=timeout
+        )
+        raw = r.body.decode()
+        return r.status, (json.loads(raw) if raw.strip() else {})
     except urllib.error.HTTPError as e:
         raw = ""
         try:

@@ -19,6 +19,7 @@ def _identity() -> dict:
         "attempt_id": "run-1-attempt-001",
         "launch_nonce": "nonce-1",
         "source_commit": "d1220f788",
+        "source_dirty_patch_sha256": digest,
         "image_digest": f"sha256:{digest}",
         "bundle_digest": digest,
         "kitchen_asset_digest": digest,
@@ -75,11 +76,14 @@ def test_full_closure_requires_api_teardown_and_zero_inventory() -> None:
     rows = _passing_rows(identity)
     closure = build_attempt_closure(identity=identity, proof_rows=rows)
     assert closure["status"] == "completed"
-    assert buyer_readout_projection(closure) == {
-        "source_schema_version": "g1_kitchen_attempt_closure.v1",
-        "source_closure_sha256": buyer_readout_projection(closure)[
-            "source_closure_sha256"
+    projection = buyer_readout_projection(closure)
+    assert projection == {
+        "identity": closure["identity"],
+        "verified_leaf_artifact_sha256s": projection[
+            "verified_leaf_artifact_sha256s"
         ],
+        "source_schema_version": "g1_kitchen_attempt_closure.v1",
+        "source_closure_sha256": projection["source_closure_sha256"],
         "status": "ready",
         "task_success_proven": True,
         "semantic_review_passed": True,
@@ -142,3 +146,31 @@ def test_superseded_attempt_is_terminal_blocked() -> None:
     assert closure["terminal"] is True
     assert closure["status"] == "blocked"
     assert closure["terminal_reason"].startswith("superseded_by_attempt")
+
+
+def test_buyer_projection_preserves_verified_leaf_digests() -> None:
+    from blueprint_pipeline.g1_kitchen_attempt_closure import buyer_readout_projection
+
+    closure = {
+        "schema_version": "g1_kitchen_attempt_closure.v1",
+        "status": "completed",
+        "identity": {"run_id": "run-1", "attempt_id": "attempt-1"},
+        "proof_rows": [
+            {
+                "row_id": "persistent_simulator_transition",
+                "status": "passed",
+                "evidence": {
+                    "verified_leaf_artifacts": [
+                        {"path": "a.json", "sha256": "a" * 64},
+                        {"path": "b.json", "sha256": "b" * 64},
+                    ]
+                },
+            },
+            {"row_id": "semantic_review", "status": "passed", "evidence": {}},
+        ],
+    }
+    projection = buyer_readout_projection(closure)
+    assert projection["verified_leaf_artifact_sha256s"][
+        "persistent_simulator_transition"
+    ] == ["a" * 64, "b" * 64]
+    assert projection["identity"] == closure["identity"]

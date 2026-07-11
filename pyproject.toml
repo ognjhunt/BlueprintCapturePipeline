@@ -123,6 +123,13 @@ dev = [
     "boto3>=1.34.0",
     "botocore>=1.34.0",
     "opencv-python-headless>=4.10.0",
+    # Real loopback ZMQ transport tests for the official GEAR-SONIC executor
+    # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
+    # fail-closed evidence policy rejects any skip.
+    "pyzmq>=26.0",
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "lerobot>=0.4.4,<0.5",
 ]
 
 [dependency-groups]
@@ -149,6 +156,13 @@ dev = [
     "boto3>=1.34.0",
     "botocore>=1.34.0",
     "opencv-python-headless>=4.10.0",
+    # Real loopback ZMQ transport tests for the official GEAR-SONIC executor
+    # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
+    # fail-closed evidence policy rejects any skip.
+    "pyzmq>=26.0",
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "lerobot>=0.4.4,<0.5",
 ]
 
 [project.scripts]

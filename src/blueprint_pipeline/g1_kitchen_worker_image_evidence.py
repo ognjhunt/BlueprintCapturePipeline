@@ -63,6 +63,9 @@ def validate_worker_image_runtime_evidence(
     expected_image_digest: str | None = None,
     expected_source_commit: str | None = None,
     expected_dirty_patch_sha256: str | None = None,
+    expected_run_id: str | None = None,
+    expected_attempt_id: str | None = None,
+    expected_launch_nonce: str | None = None,
 ) -> dict[str, Any]:
     evidence = dict(value) if isinstance(value, Mapping) else {}
     blockers: list[str] = []
@@ -81,6 +84,13 @@ def validate_worker_image_runtime_evidence(
     ):
         blockers.append("worker_image_evidence_dirty_patch_mismatch")
     metadata = dict(evidence.get("runtime_metadata") or {})
+    if expected_source_commit and metadata.get("source_commit") != expected_source_commit:
+        blockers.append("worker_image_runtime_metadata_source_commit_mismatch")
+    if (
+        expected_dirty_patch_sha256
+        and metadata.get("source_dirty_patch_sha256") != expected_dirty_patch_sha256
+    ):
+        blockers.append("worker_image_runtime_metadata_dirty_patch_mismatch")
     if metadata.get("image_family") != "isaac-eval-worker":
         blockers.append("worker_image_evidence_image_family_mismatch")
     if metadata.get("simulator_family") != "isaac_sim":
@@ -101,6 +111,13 @@ def validate_worker_image_runtime_evidence(
             blockers.append(f"worker_image_evidence_{name}_canary_not_passed")
         if str(canary.get("image_digest") or "").lower() != image_digest:
             blockers.append(f"worker_image_evidence_{name}_canary_digest_mismatch")
+        for field, expected_value in (
+            ("run_id", expected_run_id),
+            ("attempt_id", expected_attempt_id),
+            ("launch_nonce", expected_launch_nonce),
+        ):
+            if expected_value and str(canary.get(field) or "") != expected_value:
+                blockers.append(f"worker_image_evidence_{name}_canary_{field}_mismatch")
     for field in ("provider_allocation_id", "launch_nonce"):
         if not fast.get(field) or fast.get(field) != review.get(field):
             blockers.append(f"worker_image_evidence_same_allocation_{field}_mismatch")

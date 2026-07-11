@@ -29,14 +29,15 @@ def test_strict_scorer_client_uses_https_file_token_and_strict_request(
                 {"status": "completed", "rollout_checks": [{"rollout_id": "r1"}]}
             ).encode()
 
-    def fake_urlopen(request, timeout):
+    def fake_open(request, timeout, policy):
         assert request.full_url == "https://scorer.example/v1/score"
         assert request.headers["Authorization"] == "Bearer secret-token"
         assert json.loads(request.data) == request_payload
         assert timeout == 600.0
+        assert policy.allowed_hosts == frozenset({"scorer.example"})
         return Response()
 
-    monkeypatch.setattr(client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(client.safe_outbound_http, "_open_with_policy", fake_open)
     result = client.score_via_service(
         request_payload,
         url="https://scorer.example/v1/score",
