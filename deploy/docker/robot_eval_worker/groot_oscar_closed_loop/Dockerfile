@@ -16,6 +16,10 @@
 ARG ISAAC_SIM_BASE_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d
 FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE}
 
+# The pinned Isaac-Sim base ships USER isaac-sim (uid 1234); every layer below
+# needs root (apt, /opt installs), and the sealed worker bootstrap runs as root.
+USER root
+
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG DEBIAN_FRONTEND=noninteractive
