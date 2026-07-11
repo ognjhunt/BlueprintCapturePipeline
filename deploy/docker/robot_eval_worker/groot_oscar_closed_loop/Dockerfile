@@ -87,6 +87,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     python3-pip \
     python3-venv \
+    sudo \
   && rm -rf /var/lib/apt/lists/*
 
 # 2. Blueprint package in both the OSCAR client environment and Isaac runtime.
