@@ -1577,9 +1577,9 @@ chmod 700 /run/blueprint-secrets
 python -m blueprint_pipeline.runtime_ephemeral_trust \
   --secret-root /run/blueprint-secrets \
   --environment-file /run/blueprint-secrets/trust_env.sh \
-  --public-manifest /workspace/runtime_ephemeral_trust.json
+  --public-manifest /workspace/runtime_ephemeral_trust.json \
+  --attempt-input-manifest /workspace/attempt_input_manifest.json
 source /run/blueprint-secrets/trust_env.sh
-
 {STARTUP_GATES_SCRIPT}
 
 set +e

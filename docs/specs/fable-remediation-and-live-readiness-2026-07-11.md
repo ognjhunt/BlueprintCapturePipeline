@@ -53,9 +53,9 @@ green results from superseded heads do not count.
 
 | Input | Consumed by | Env/flag |
 |---|---|---|
-| Ed25519 attestation public-key pins (roles: startup, policy, task_transition, controller, scorer, semantic_review, geometry) | closure proof-row validation | `BLUEPRINT_G1_ATTESTATION_PUBLIC_KEY_PINS_FILE` or `attestation_pins_file=` (missing → every attested row blocks) |
+| Ed25519 attestation public-key pins (roles: startup, policy, task_transition, controller, scorer, semantic_review, geometry) | closure proof-row validation | The sealed worker publishes `runtime_ephemeral_trust.json` with base64 raw public keys, role mappings, fingerprints, and the full attempt identity. Closure discovers it from the collected archive and rejects cross-attempt reuse. An explicit `BLUEPRINT_G1_ATTESTATION_PUBLIC_KEY_PINS_FILE` or `attestation_pins_file=` remains supported for externally provisioned pins. |
 | Live Docker registry access | pre-allocation identity gate | `docker buildx imagetools inspect <digest-ref>` is executed by the gate; caller-authored registry evidence files are ignored/removed |
-| Worker-side leaf signing keys | worker emission of attested leaf artifacts | FABLE-011 external input; without them a live closure stays truthfully blocked |
+| Worker-side leaf signing keys | worker emission of attested leaf artifacts | Generated allocation-locally as mode-0600 Ed25519 keys; private material remains under `/run/blueprint-secrets`, while only attempt-bound public pins are collected. |
 
 ## 4. Live-run readiness (FABLE-008/009): blocked, with exact blockers
 
@@ -80,8 +80,6 @@ Verified on this machine at 2026-07-11:
 5. `strict_scorer_service_unconfigured` / `semantic_review_command_unconfigured`
    — without them the forward/inverse-consistency and semantic-review rows
    block, so a paid episode today cannot close as `completed`.
-6. `attestation_signing_keys_unpinned` — worker leaf attestations and the
-   closure pins (section 3) do not exist yet.
 
 Recommended order once an operator supplies the cap and keys: commit/PR →
 hosted CI + Full Test Lane green → build + push sealed image from the clean

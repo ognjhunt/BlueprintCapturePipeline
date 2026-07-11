@@ -37,6 +37,11 @@
   extras so the real ZMQ transport tests cannot skip green in the Full Test
   Lane. Fixed a cross-test `MUJOCO_GL` environment leak in
   `tests/test_g1_site_3dgs_mujoco_preview.py`.
+- Attempt-local Ed25519 trust generation now publishes the raw public keys and
+  role mappings required by host verification, bound to the complete immutable
+  attempt identity. Private keys remain mode-0600 inside the allocation;
+  closure auto-discovers the collected public-pin manifest and rejects a
+  manifest replayed from another attempt.
 - Live-run status and the exact remaining external blockers (sealed-image
   rebuild, spend cap, scorer/semantic-review services, attestation key pins,
   and protected-PR merge approval) are tracked in

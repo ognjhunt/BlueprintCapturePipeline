@@ -214,7 +214,20 @@ def finalize_digitalocean_attempt_closure(
         else:
             worker_rows = _mapping(raw_rows)
     pins_source = attestation_pins_file or os.environ.get(ATTESTATION_PINS_FILE_ENV)
+    attempt_local_pins = False
+    if not pins_source:
+        # The sealed worker publishes its attempt-local public keys alongside
+        # the signed leaves. Private keys remain mode-0600 inside the
+        # allocation; the host accepts this manifest only when it is bound to
+        # the exact immutable attempt identity reconstructed above.
+        candidate = collected_root / "runtime_ephemeral_trust.json"
+        pins_source = candidate if candidate.is_file() else None
+        attempt_local_pins = pins_source is not None
     attestation_pins = load_attestation_pins(pins_source) if pins_source else None
+    if attempt_local_pins and attestation_pins is not None and _mapping(
+        attestation_pins.get("identity_binding")
+    ) != identity:
+        attestation_pins = None
     validated = validate_worker_proof_rows(
         worker_rows=worker_rows,
         worker_manifest_path=worker_manifest_path,

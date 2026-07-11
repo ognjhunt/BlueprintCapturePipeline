@@ -214,3 +214,58 @@ def test_finalize_blocks_when_collected_worker_manifest_is_absent(
         "collected_worker_manifest_missing" in item
         for item in closure_doc["blockers"]
     )
+
+
+def test_finalize_loads_attempt_bound_worker_public_key_pins(
+    tmp_path: Path, monkeypatch
+) -> None:
+    identity = _identity()
+    pin_file = tmp_path / "closed_loop_output" / "runtime_ephemeral_trust.json"
+    _write_json(
+        pin_file,
+        {
+            "schema_version": "g1_kitchen_attestation_public_key_pins.v1",
+            "algorithm": "ed25519",
+            "identity_binding": identity,
+            "public_keys": {},
+            "roles": {},
+        },
+    )
+    observed: dict = {}
+
+    def fake_validate(**kwargs):
+        observed.update(kwargs["attestation_pins"] or {})
+        return {"rows": {}, "blockers": []}
+
+    monkeypatch.setattr(closure, "validate_worker_proof_rows", fake_validate)
+    _finalize(tmp_path, watch_rows={}, collected_rows={})
+
+    assert observed["identity_binding"] == identity
+    assert observed["schema_version"] == "g1_kitchen_attestation_public_key_pins.v1"
+
+
+def test_finalize_rejects_worker_public_key_pins_from_another_attempt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    identity = _identity()
+    pin_file = tmp_path / "closed_loop_output" / "runtime_ephemeral_trust.json"
+    _write_json(
+        pin_file,
+        {
+            "schema_version": "g1_kitchen_attestation_public_key_pins.v1",
+            "algorithm": "ed25519",
+            "identity_binding": identity | {"attempt_id": "replayed-attempt"},
+            "public_keys": {},
+            "roles": {},
+        },
+    )
+    observed: list[object] = []
+
+    def fake_validate(**kwargs):
+        observed.append(kwargs["attestation_pins"])
+        return {"rows": {}, "blockers": []}
+
+    monkeypatch.setattr(closure, "validate_worker_proof_rows", fake_validate)
+    _finalize(tmp_path, watch_rows={}, collected_rows={})
+
+    assert observed == [None]
