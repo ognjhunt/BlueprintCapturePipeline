@@ -85,6 +85,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ninja-build \
     pkg-config \
+    python3-pip \
     python3-venv \
   && rm -rf /var/lib/apt/lists/*
 
@@ -92,7 +93,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md LICENSE /opt/blueprint/blueprint-capture-pipeline/
 COPY src /opt/blueprint/blueprint-capture-pipeline/src
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_groot_oscar_main_env.txt /opt/blueprint/requirements_groot_oscar_main_env.txt
-RUN python3 -m pip install --upgrade pip uv \
+# PEP 668: the Ubuntu 24.04 base marks system python externally managed, and
+# the Debian pip cannot self-upgrade (no RECORD); install only uv and let it
+# own the /opt/oscar-venv interpreter.
+RUN python3 -m pip install --break-system-packages uv \
   && uv venv /opt/oscar-venv --python 3.10 \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install --index-url https://download.pytorch.org/whl/cu128 \
        torch==2.10.0 torchvision==0.25.0 \
