@@ -131,6 +131,11 @@ RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
   && chmod +x scripts/install_deps.sh deploy.sh \
   && scripts/install_deps.sh \
   && apt-get install -y --no-install-recommends \
+       libnvinfer-headers-dev=${TENSORRT_VERSION} \
+       libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
+       libnvinfer10=${TENSORRT_VERSION} \
+       libnvinfer-plugin10=${TENSORRT_VERSION} \
+       libnvonnxparsers10=${TENSORRT_VERSION} \
        libnvinfer-dev=${TENSORRT_VERSION} \
        libnvinfer-plugin-dev=${TENSORRT_VERSION} \
        libnvonnxparsers-dev=${TENSORRT_VERSION} \

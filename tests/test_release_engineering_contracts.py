@@ -271,8 +271,13 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     assert "TENSORRT_VERSION=10.4.0.26-1+cuda12.6" in groot_oscar
     assert "TensorRT_ROOT=/usr" in groot_oscar
     assert "libnvinfer-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-headers-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer10=${TENSORRT_VERSION}" in groot_oscar
     assert "libnvinfer-plugin-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-headers-plugin-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in groot_oscar
     assert "libnvonnxparsers-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvonnxparsers10=${TENSORRT_VERSION}" in groot_oscar
     assert "nvinfer nvinfer_plugin nvonnxparser nvparsers" in groot_oscar
     assert "nvinfer nvinfer_plugin nvonnxparser/" in groot_oscar
     assert 'revision=os.environ["SONIC_CHECKPOINT_REVISION"]' in groot_oscar
