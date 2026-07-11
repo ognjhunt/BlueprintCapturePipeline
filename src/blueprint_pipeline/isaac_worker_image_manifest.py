@@ -19,6 +19,33 @@ LARGE_LAYER_BYTES = 3_000_000_000
 _DIGEST_RE = re.compile(r"^Digest:\s*(sha256:[0-9a-f]{64})\s*$", re.MULTILINE)
 
 
+def _runnable_child_digest(raw_manifest: Mapping[str, Any]) -> str | None:
+    """Return the sole runnable linux/amd64 child of an OCI index.
+
+    Buildx adds an ``unknown/unknown`` attestation manifest beside the image
+    manifest. Layer sizing must inspect the runnable child while retaining the
+    top-level index digest as the immutable pull identity.
+    """
+    manifests = raw_manifest.get("manifests")
+    if not isinstance(manifests, list):
+        return None
+    candidates = []
+    for manifest in manifests:
+        if not isinstance(manifest, Mapping):
+            continue
+        platform = manifest.get("platform")
+        platform = platform if isinstance(platform, Mapping) else {}
+        digest = manifest.get("digest")
+        if (
+            platform.get("os") == "linux"
+            and platform.get("architecture") == "amd64"
+            and isinstance(digest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+        ):
+            candidates.append(digest)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def summarize_manifest(
     *, image_ref: str, raw_manifest: Mapping[str, Any], resolved_digest: str | None
 ) -> dict[str, Any]:
@@ -161,9 +188,31 @@ def inspect_image_manifest(
         }
     else:
         match = _DIGEST_RE.search(plain.stdout)
+        decoded = json.loads(raw.stdout)
+        child_digest = _runnable_child_digest(decoded)
+        if not isinstance(decoded.get("layers"), list) and child_digest:
+            repository = image_ref.split("@", 1)[0]
+            if "/" in repository and ":" in repository.rsplit("/", 1)[-1]:
+                repository = repository.rsplit(":", 1)[0]
+            child = subprocess.run(
+                [
+                    "docker",
+                    "buildx",
+                    "imagetools",
+                    "inspect",
+                    "--raw",
+                    f"{repository}@{child_digest}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if child.returncode == 0:
+                decoded = json.loads(child.stdout)
         payload = summarize_manifest(
             image_ref=image_ref,
-            raw_manifest=json.loads(raw.stdout),
+            raw_manifest=decoded,
             resolved_digest=match.group(1) if match else None,
         )
     output_path = Path(output_path).expanduser().resolve()
