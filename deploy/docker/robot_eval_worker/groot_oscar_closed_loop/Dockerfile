@@ -206,7 +206,16 @@ PY
 fi
 BASH
 
-# 6. Build-time healthcheck (all three environments; no GPU required).
+# 6. Bake the complete official Isaac 6 G1 asset directory. The carrier omits
+#    the asset pack; every downloaded byte is size- and digest-pinned here.
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/isaac_6_g1_assets.sha256 /opt/blueprint/isaac_6_g1_assets.sha256
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/fetch_pinned_isaac_assets.py /opt/blueprint/fetch_pinned_isaac_assets.py
+RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
+      --manifest /opt/blueprint/isaac_6_g1_assets.sha256 \
+      --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
+      --output-dir /isaac-sim/Isaac/Robots/Unitree/G1
+
+# 7. Build-time healthcheck (all three environments; no GPU required).
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
 RUN /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
 
