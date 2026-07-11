@@ -27,6 +27,7 @@ ARG GROOT_SOURCE_URL=https://github.com/NVIDIA/Isaac-GR00T.git
 ARG GROOT_SOURCE_REF=e5749287857afd97b78f1147166137de29746392
 ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
 ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
+ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
 ARG OSCAR_SOURCE_URL=https://github.com/wuzy2115/oscar-public.git
 ARG OSCAR_SOURCE_REF=4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb
 ARG BLUEPRINT_SOURCE_COMMIT
@@ -63,6 +64,7 @@ ENV PYTHONUNBUFFERED=1 \
     BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
     BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc \
+    TensorRT_ROOT=/usr \
     BLUEPRINT_GEAR_SONIC_ROBOT_MODEL=/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml \
     BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
     BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED=true \
@@ -81,6 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
     git-lfs \
+    gettext-base \
     curl \
     ca-certificates \
     ninja-build \
@@ -127,6 +130,13 @@ RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
   && cd /opt/wbc/gear_sonic_deploy \
   && chmod +x scripts/install_deps.sh deploy.sh \
   && scripts/install_deps.sh \
+  && apt-get install -y --no-install-recommends \
+       libnvinfer-dev=${TENSORRT_VERSION} \
+       libnvinfer-plugin-dev=${TENSORRT_VERSION} \
+       libnvonnxparsers-dev=${TENSORRT_VERSION} \
+  && sed -i \
+       's/nvinfer nvinfer_plugin nvonnxparser nvparsers/nvinfer nvinfer_plugin nvonnxparser/' \
+       cmake/FindTensorRT.cmake \
   && source scripts/setup_env.sh \
   && just build
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \

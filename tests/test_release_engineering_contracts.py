@@ -268,6 +268,13 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     assert "/isaac-sim/python.sh -m pip install" in groot_oscar
     assert "uv venv /opt/oscar-venv --python 3.10" in groot_oscar
     assert "git -C /opt/wbc lfs pull" in groot_oscar
+    assert "TENSORRT_VERSION=10.4.0.26-1+cuda12.6" in groot_oscar
+    assert "TensorRT_ROOT=/usr" in groot_oscar
+    assert "libnvinfer-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-plugin-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvonnxparsers-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "nvinfer nvinfer_plugin nvonnxparser nvparsers" in groot_oscar
+    assert "nvinfer nvinfer_plugin nvonnxparser/" in groot_oscar
     assert 'revision=os.environ["SONIC_CHECKPOINT_REVISION"]' in groot_oscar
     assert 'revision=os.environ["GROOT_CHECKPOINT_REVISION"]' in groot_wam
 
