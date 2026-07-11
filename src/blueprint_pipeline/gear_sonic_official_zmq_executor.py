@@ -112,11 +112,15 @@ def _zmq_pubsub_roundtrip(
     state_endpoint: str | None = None,
     state_topic: bytes = STATE_TOPIC,
     slow_joiner_grace_seconds: float = 0.3,
+    left_hand: Sequence[float] | None = None,
+    right_hand: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Real PUB/SUB roundtrip: bind the action PUB, connect the state SUB.
 
-    Stale controller states whose ``token_state`` does not match this
-    attempt's motion token are discarded; only the matching reply returns.
+    Stale controller states are discarded unless ``token_state`` matches this
+    attempt's motion token AND, when hand targets were sent, the echoed
+    ``last_left_hand_action``/``last_right_hand_action`` match them; only the
+    fully matching reply returns.
     """
 
     import msgpack  # type: ignore
@@ -155,8 +159,17 @@ def _zmq_pubsub_roundtrip(
             state = msgpack.unpackb(raw[len(state_topic):], raw=False)
             if not isinstance(state, Mapping):
                 continue
-            if _token_matches(state.get("token_state"), motion_token):
-                return dict(state)
+            if not _token_matches(state.get("token_state"), motion_token):
+                continue
+            if left_hand is not None and not _token_matches(
+                state.get("last_left_hand_action"), left_hand
+            ):
+                continue
+            if right_hand is not None and not _token_matches(
+                state.get("last_right_hand_action"), right_hand
+            ):
+                continue
+            return dict(state)
         raise TimeoutError("official_gear_sonic_matching_controller_state_timeout")
     finally:
         publisher.close()
@@ -190,6 +203,8 @@ def _zmq_roundtrip(
         command_message=build_command_message(start=True, stop=False, planner=False),
         motion_token=[float(item) for item in token.reshape(-1)],
         timeout_seconds=timeout_seconds,
+        left_hand=[float(item) for item in left_hand],
+        right_hand=[float(item) for item in right_hand],
     )
 
 
@@ -305,6 +320,17 @@ def execute(
         size=HAND_DIM,
         name="official_right_hand_target",
     )
+    # A stale or foreign controller state can echo the current motion token
+    # with a previous action's hand pose; FK must never bind such hands to
+    # this action's SHA.
+    for side, sent, echoed in (
+        ("left", left, controller_left),
+        ("right", right, controller_right),
+    ):
+        if any(abs(a - b) > 1e-6 for a, b in zip(sent, echoed)):
+            raise RuntimeError(
+                f"official_gear_sonic_controller_hand_echo_mismatch:{side}"
+            )
     names, positions, landmarks, applied_dof_mapping = fk_solver(
         model_path=model,
         body_positions=body_target,

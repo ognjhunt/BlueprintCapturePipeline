@@ -25,18 +25,31 @@ def _request(action: dict) -> dict:
     }
 
 
-def _controller_state(motion_token, **overrides) -> dict:
+def _controller_state(motion_token, left_hand=None, right_hand=None, **overrides) -> dict:
     state = {
         "token_state": motion_token,
         "body_q_target": [0.1] * 29,
         "body_q_measured": [0.0] * 29,
-        "last_left_hand_action": [0.2] * 7,
-        "last_right_hand_action": [0.3] * 7,
+        "last_left_hand_action": list(left_hand) if left_hand is not None else [0.0] * 7,
+        "last_right_hand_action": list(right_hand) if right_hand is not None else [0.0] * 7,
         "base_quat_measured": [1.0, 0.0, 0.0, 0.0],
         "ros_timestamp": 123,
     }
     state.update(overrides)
     return state
+
+
+def _echoing_transport(calls=None):
+    def transport(**kwargs):
+        if calls is not None:
+            calls.append(kwargs)
+        return _controller_state(
+            kwargs["motion_token"],
+            left_hand=kwargs["left_hand"],
+            right_hand=kwargs["right_hand"],
+        )
+
+    return transport
 
 
 def _fake_fk(**kwargs):
@@ -83,10 +96,7 @@ def test_executor_sends_78d_sonic_action_to_official_protocol_and_uses_fk(
     _, model = wbc_env
     action = {"sonic_action_chunk": [float(index) / 100 for index in range(78)]}
     calls = []
-
-    def transport(**kwargs):
-        calls.append(kwargs)
-        return _controller_state(kwargs["motion_token"])
+    transport = _echoing_transport(calls)
 
     def fk_solver(**kwargs):
         assert kwargs["model_path"] == model
@@ -252,12 +262,53 @@ def test_execute_end_to_end_with_real_fk_carries_sha_and_digest(wbc_env) -> None
     action = {"sonic_action_chunk": [0.01] * 78}
     request = _request(action)
 
-    def transport(**kwargs):
-        return _controller_state(kwargs["motion_token"])
-
-    result = _execute(request, transport=transport)
+    result = _execute(request, transport=_echoing_transport())
     assert result["source_action_sha256"] == request["source_action_sha256"]
     assert result["mapping_digest"] == contract.PROTOCOL_V4_MAPPING_DIGEST
     assert result["joint_names"] == list(contract.PROTOCOL_V4_FULL_JOINT_ORDER)
     assert len(result["joint_positions"]) == 43
     assert result["landmarks"]
+
+
+def test_executor_rejects_stale_hand_echo_before_fk(wbc_env) -> None:
+    action = {"sonic_action_chunk": [float(index) / 100 for index in range(78)]}
+
+    def stale_left(**kwargs):
+        return _controller_state(
+            kwargs["motion_token"],
+            last_left_hand_action=[9.9] * 7,
+            last_right_hand_action=list(kwargs["right_hand"]),
+        )
+
+    with pytest.raises(
+        RuntimeError, match="official_gear_sonic_controller_hand_echo_mismatch:left"
+    ):
+        _execute(_request(action), transport=stale_left, fk_solver=_fake_fk)
+
+    def stale_right(**kwargs):
+        return _controller_state(
+            kwargs["motion_token"],
+            last_left_hand_action=list(kwargs["left_hand"]),
+            last_right_hand_action=[9.9] * 7,
+        )
+
+    with pytest.raises(
+        RuntimeError, match="official_gear_sonic_controller_hand_echo_mismatch:right"
+    ):
+        _execute(_request(action), transport=stale_right, fk_solver=_fake_fk)
+
+
+def test_executor_accepts_matching_hand_echo(wbc_env) -> None:
+    action = {"sonic_action_chunk": [float(index) / 100 for index in range(78)]}
+
+    def matching(**kwargs):
+        return _controller_state(
+            kwargs["motion_token"],
+            last_left_hand_action=list(kwargs["left_hand"]),
+            last_right_hand_action=list(kwargs["right_hand"]),
+        )
+
+    result = _execute(_request(action), transport=matching, fk_solver=_fake_fk)
+    assert result["status"] == "completed"
+    assert result["joint_positions"][29:36] == action["sonic_action_chunk"][64:71]
+    assert result["joint_positions"][36:43] == action["sonic_action_chunk"][71:78]

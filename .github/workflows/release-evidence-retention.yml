@@ -181,9 +181,17 @@ jobs:
         run: |
           set -euo pipefail
           subject=output/retention/signature-evidence/release-command-attestation-subject.json
-          bundle="$(find output/retention/signature-evidence -type f -name '*.jsonl' -print -quit)"
+          bundle=output/retention/signature-evidence/release-command-attestation-bundle.json
+          if [ ! -f "${bundle}" ]; then
+            # actions/attest emits a JSON-serialized Sigstore bundle; accept
+            # .json and legacy .jsonl, never the subject itself.
+            bundle="$(find output/retention/signature-evidence -type f \
+              \( -name '*.jsonl' -o -name '*.json' \) \
+              ! -name 'release-command-attestation-subject.json' -print -quit)"
+          fi
           test -f "${subject}"
           test -n "${bundle}"
+          test -f "${bundle}"
           gh attestation verify "${subject}" --repo "${GITHUB_REPOSITORY}" --bundle "${bundle}"
           uv run python scripts/validate_release_command_attestation.py \
             --subject "${subject}" --repository-sha "${RELEASE_SHA}" \

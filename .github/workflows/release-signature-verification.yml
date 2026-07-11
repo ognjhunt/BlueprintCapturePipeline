@@ -110,12 +110,19 @@ jobs:
         with:
           subject-path: output/release-command-attestation-subject.json
 
+      - name: Stage signed evidence with a flat, name-stable layout
+        run: |
+          set -euo pipefail
+          mkdir -p output/release-signature-artifact
+          cp output/release-command-attestation-subject.json \
+            output/release-signature-artifact/release-command-attestation-subject.json
+          cp "${{ steps.attest.outputs.bundle-path }}" \
+            output/release-signature-artifact/release-command-attestation-bundle.json
+
       - name: Upload independently signed evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-signature-${{ inputs.repository_sha }}
-          path: |
-            output/release-command-attestation-subject.json
-            ${{ steps.attest.outputs.bundle-path }}
+          path: output/release-signature-artifact
           if-no-files-found: error
           retention-days: 90
