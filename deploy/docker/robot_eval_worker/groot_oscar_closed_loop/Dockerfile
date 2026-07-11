@@ -159,7 +159,10 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \
 RUN --mount=type=secret,id=hf_token,required=false <<'BASH'
 set -euo pipefail
 if [[ "${PREFETCH_CHECKPOINTS}" == "true" ]]; then
-python3 - <<'PY'
+# The system python3.12 has no huggingface_hub (it lives in the isolated
+# venvs); the oscar-venv carries it via the blueprint pipeline deps and owns
+# the checkpoint prefetch.
+/opt/oscar-venv/bin/python - <<'PY'
 import os
 from pathlib import Path
 from huggingface_hub import snapshot_download
