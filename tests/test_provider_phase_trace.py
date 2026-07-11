@@ -84,6 +84,20 @@ def test_heartbeat_before_any_phase_is_noop(tmp_path):
     assert rec.heartbeat() is None
 
 
+def test_trace_rebinds_rows_to_each_retry_without_resetting_sequence(tmp_path):
+    rec = _recorder(tmp_path)
+    rec.bind_attempt(attempt_id="run-1-attempt-01", launch_nonce="nonce-1-a01")
+    first = rec.record(T.PHASE_PRE_SPEND_INVENTORY)
+    rec.bind_attempt(attempt_id="run-1-attempt-02", launch_nonce="nonce-1-a02")
+    second = rec.record(T.PHASE_PRE_SPEND_INVENTORY)
+    assert first["attempt_id"] == "run-1-attempt-01"
+    assert first["launch_nonce"] == "nonce-1-a01"
+    assert second["attempt_id"] == "run-1-attempt-02"
+    assert second["launch_nonce"] == "nonce-1-a02"
+    assert second["sequence"] == first["sequence"] + 1
+    assert T.validate_phase_trace(rec.payload()) == []
+
+
 def test_signed_url_query_strings_are_never_persisted(tmp_path):
     rec = _recorder(tmp_path)
     with pytest.raises(T.PhaseTraceRejected):

@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 STANCE_SEARCH_SCHEMA_VERSION = "stance_configuration_search.v1"
+PRODUCTION_STANCE_GATE_AUTHORITY = "stance_configuration_agent.v1"
 
 APPROACH_MODE_DIRECT = "direct_manipulation"
 APPROACH_MODE_STAGING = "navigation_staging"

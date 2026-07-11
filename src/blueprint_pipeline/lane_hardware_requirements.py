@@ -35,6 +35,15 @@ KNOWN_GPU_VRAM_GB: dict[str, float] = {
     "NVIDIA H100 PCIe": 80.0,
     "NVIDIA H100 80GB HBM3": 80.0,
 }
+KNOWN_NO_RT_CORE_GPU_TYPES = frozenset(
+    {
+        "NVIDIA A100 80GB PCIe",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA H100 PCIe",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H200",
+    }
+)
 
 # Lane floors. min_vram_gb includes explicit headroom for activations,
 # framework overhead, and renderer contexts — a floor equal to the sum of
@@ -44,10 +53,10 @@ LANE_HARDWARE_REQUIREMENTS: dict[str, dict[str, Any]] = {
     "kitchen_g1_groot_sonic_eval": {
         "min_vram_gb": 40.0,
         "min_disk_gb": 175,
+        "requires_rtx": True,
         "recommended_gpu_type_ids": (
             "NVIDIA RTX A6000",
             "NVIDIA L40S",
-            "NVIDIA A100 80GB PCIe",
         ),
         "resident_models": {
             "oscar_2b_fp32_weights_gb": OSCAR_2B_FP32_WEIGHTS_GB,
@@ -147,6 +156,13 @@ def build_lane_hardware_contract(
         elif resolved_disk < min_disk:
             blockers.append(
                 f"container_disk_below_lane_floor:{resolved_disk:g}gb_lt_{min_disk:g}gb"
+            )
+        if (
+            requirements.get("requires_rtx") is True
+            and str(gpu_type_id or "").strip() in KNOWN_NO_RT_CORE_GPU_TYPES
+        ):
+            blockers.append(
+                f"gpu_lacks_rt_cores_for_isaac_rtx:{str(gpu_type_id).strip()}"
             )
 
     return {

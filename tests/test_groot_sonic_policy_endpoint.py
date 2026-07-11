@@ -16,7 +16,15 @@ def _fake_run_command_factory(chunks):
         calls.append(payload)
         index = min(len(calls) - 1, len(chunks) - 1)
         return (
-            {"status": "completed", "action": {"action_chunk": chunks[index]}},
+            {
+                "status": "completed",
+                "runtime_result_id": f"runtime-{index}",
+                "action": {
+                    "action_chunk": chunks[index],
+                    "action_units": ["latent"] * len(chunks[index]),
+                    "action_timing": {"control_hz": 50.0},
+                },
+            },
             0,
         )
 
@@ -27,14 +35,17 @@ def test_endpoint_projects_real_chunk_and_varies_with_observation() -> None:
     chunks = [[0.5] * 78, [-0.5] * 78]
     fake, calls = _fake_run_command_factory(chunks)
     endpoint = make_groot_sonic_zmq_policy_endpoint(
-        policy_server_url="tcp://127.0.0.1:5550", run_command=fake
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        run_command=fake,
     )
     first = endpoint({"camera_frame_path": "/a.jpg"}, [], 1)
     second = endpoint({"camera_frame_path": "/b.jpg"}, [first], 2)
     assert first["status"] == "completed"
-    assert first["policy_action"] == "learned_policy_action"
+    assert first["policy_action"] == "UNITREE_G1_SONIC"
     assert first["endpoint"] == ENDPOINT_LABEL
-    assert first["out_of_distribution_action_projection"] is True
+    assert first["out_of_distribution_action_projection"] is False
+    assert first["not_a_learned_robot_policy_action"] is False
     assert first["claim_boundary"]["task_success_proven"] is False
     assert first["root_position"] != second["root_position"]
     assert calls[0]["observation"]["camera_frame_path"] == "/a.jpg"
@@ -47,7 +58,9 @@ def test_endpoint_fails_closed_on_blocked_server() -> None:
         return ({"status": "blocked", "blockers": ["x"]}, 1)
 
     endpoint = make_groot_sonic_zmq_policy_endpoint(
-        policy_server_url="tcp://127.0.0.1:5550", run_command=fake
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        run_command=fake,
     )
     with pytest.raises(RuntimeError, match="groot_sonic_requery_blocked"):
         endpoint({}, [], 0)
@@ -58,29 +71,46 @@ def test_endpoint_fails_closed_on_empty_completed_action_chunk() -> None:
         return ({"status": "completed", "action": {"action_chunk": []}}, 0)
 
     endpoint = make_groot_sonic_zmq_policy_endpoint(
-        policy_server_url="tcp://127.0.0.1:5550", run_command=fake
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        run_command=fake,
     )
     with pytest.raises(RuntimeError, match="blocked_empty_sonic_action_chunk"):
         endpoint({"camera_frame_path": "/a.jpg"}, [], 1)
 
 
-def test_endpoint_injects_labeled_nominal_state_surrogate() -> None:
+def test_endpoint_requires_attempt_bound_initial_state_and_carries_it() -> None:
     captured = {}
 
     def fake(*, payload, **_kwargs):
         captured.update(payload["observation"])
-        return ({"status": "completed", "action": {"action_chunk": [0.1] * 78}}, 0)
+        return (
+            {
+                "status": "completed",
+                "runtime_result_id": "runtime-1",
+                "action": {"action_chunk": [0.1] * 78},
+            },
+            0,
+        )
 
     endpoint = make_groot_sonic_zmq_policy_endpoint(
-        policy_server_url="tcp://127.0.0.1:5550", run_command=fake
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"left_arm": [0.0] * 7, "projected_gravity": [0.0, 0.0, -1.0]},
+        run_command=fake,
     )
     endpoint({"camera_frame_path": "/f.jpg"}, [], 0)
     state = captured["unitree_g1_sonic_state"]
     assert len(state["left_arm"]) == 7 and len(state["projected_gravity"]) == 3
     assert captured["unitree_g1_sonic_state_source"] == (
-        "nominal_stance_proprio_surrogate_constant"
+        "attempt_bound_initial_simulator_proprioception"
     )
-    assert captured["unitree_g1_sonic_state_metadata"]["surrogate"] is True
+    assert captured["unitree_g1_sonic_state_metadata"]["surrogate"] is False
+
+    missing = make_groot_sonic_zmq_policy_endpoint(
+        policy_server_url="tcp://127.0.0.1:5550", run_command=fake
+    )
+    with pytest.raises(RuntimeError, match="proprio_missing"):
+        missing({"camera_frame_path": "/f.jpg"}, [], 0)
 
 
 def test_projection_is_deterministic_and_bounded() -> None:

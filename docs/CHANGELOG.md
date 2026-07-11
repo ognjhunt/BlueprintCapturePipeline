@@ -1,5 +1,72 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-10
+
+### User-Facing
+
+- Hardened release and launch-quality contracts across buyer claim ceilings,
+  paid-spend admission, release-evidence retention, supply-chain/source
+  governance, runtime secret handling, and critical-capability CI
+  (`src/blueprint_pipeline/buyer_package_readout.py`,
+  `docs/release_evidence_requirements.json`,
+  `docs/source_governance_policy.json`, `.github/workflows/ci.yml`,
+  `.github/workflows/critical-capability-lanes.yml`). These are fail-closed
+  repository controls and evidence requirements, not proof of a live
+  deployment, public launch, paid provider completion, or robot task success.
+- Added feedback-driven G1 stance search and strict graded episode
+  trace-consistency scoring to the Isaac parity lane
+  (`src/blueprint_pipeline/stance_configuration_agent.py`,
+  `src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py`,
+  `scripts/run_isaac_g1_kitchen_parity_eval.py`). A configured or locally
+  graded episode remains separate from live simulator articulation, calibrated
+  external consistency scoring, and physical-robot validation.
+
+### Employee-Facing
+
+- Merged Isaac startup-reliability controls: atomic canary-to-worker
+  supervision, durable machine quarantine, separate fast/review canaries,
+  provider phase tracing, spend reconciliation, content-addressed kitchen-asset
+  admission, worker-image health checks, and more honest capacity handling
+  (`src/blueprint_pipeline/isaac_startup_supervisor.py`,
+  `src/blueprint_pipeline/machine_quarantine_registry.py`,
+  `src/blueprint_pipeline/provider_phase_trace.py`,
+  `src/blueprint_pipeline/startup_spend_reconciliation.py`,
+  `src/blueprint_pipeline/kitchen_asset_startup_gate.py`). The merged controls
+  improve startup diagnosis and teardown accounting; they do not establish a
+  newly published exact-digest worker image or a successful live task episode.
+- **Uncommitted local changes:** The July 10 G1 kitchen audit/remediation wave
+  added attempt-bound closure and lineage contracts, self-identifying worker
+  image evidence, visual-mesh geometry provenance, official GEAR-SONIC
+  controller/FK adapters, a persistent Isaac task executor, strict external
+  action-consistency scorer contracts, and ordered full-episode review-media
+  admission (`docs/G1_KITCHEN_RUN_DEEP_AUDIT_2026-07-10.md`,
+  `docs/G1_KITCHEN_RUN_DEEP_AUDIT_REMEDIATION_2026-07-10.md`,
+  `src/blueprint_pipeline/g1_kitchen_attempt_closure.py`,
+  `src/blueprint_pipeline/gear_sonic_official_zmq_executor.py`,
+  `src/blueprint_pipeline/isaac_persistent_task_executor_service.py`,
+  `src/blueprint_pipeline/wam_action_consistency_contract.py`,
+  `src/blueprint_pipeline/isaac_review_media.py`). This is an mtime-bounded
+  dirty-tree snapshot and is not merged history.
+
+### Future-Agent-Facing
+
+- The committed July 10 America/Chicago window runs from `95a11a0f` through
+  merge `d1220f78`; the main feature merges are PR #66 for stance/strict trace
+  consistency and PR #67 for Isaac startup reliability. Preserve unrelated
+  dirty-tree work when continuing from this snapshot.
+- The audit's honest lane status remains
+  `local_contracts_advanced_live_end_to_end_task_success_not_proven`. The
+  strongest cited live result is an RTX A6000 startup/pixel canary; fresh
+  exact-digest canaries, live visual-mesh reach, official controller execution,
+  persistent articulation success, calibrated external scoring, and accepted
+  full-episode review media remain unproven. Physical validation is a separate
+  future claim-upgrade lane, not a sim-only closure blocker.
+- Keep raw capture/provenance and rights/privacy evidence authoritative.
+  Startup markers, image manifests, generated media, semantic-review outputs,
+  local consistency labels, readiness ledgers, and prepared bundles are
+  downstream support artifacts and cannot substitute for their corresponding
+  live runtime or semantic-success proof layers.
+
 ## 2026-07-09
 
 ### User-Facing

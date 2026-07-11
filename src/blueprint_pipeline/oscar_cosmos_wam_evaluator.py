@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from .common import ensure_dir, utc_now_iso, write_json
 from .failure_diagnosis_contract import (
     FAILURE_LABEL_PROOF_EFFECT,
@@ -64,6 +65,11 @@ from .wam_score_claim_gate import (
     apply_wam_score_claim_gate,
     evaluate_wam_calibration_anchors,
     score_wam_rollout_set_consistency,
+)
+from .wam_action_consistency_contract import (
+    bool_or_none as _bool_or_none,
+    confidence_or_none as _confidence_or_none,
+    strict_action_consistency_blockers as _strict_action_consistency_blockers,
 )
 
 
@@ -3421,7 +3427,7 @@ def _normalize_wam_success_labels(
                 "generated_world_rank_fidelity_result_proven": False,
                 "safety_or_contact_validation_proven": False,
                 "srcc_or_policy_ranking_proven": False,
-                "public_claim_upgrade_allowed": False,
+                PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
             }
         )
     for rollout_id in sorted(set(rollout_ids)):
@@ -3779,28 +3785,6 @@ def _run_wam_consistency_command(
     return payload, detail
 
 
-def _bool_or_none(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    text = _string(value).lower()
-    if text in {"true", "yes", "pass", "passed", "consistent"}:
-        return True
-    if text in {"false", "no", "fail", "failed", "inconsistent"}:
-        return False
-    return None
-
-
-def _confidence_or_none(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return max(0.0, min(1.0, float(value)))
-    try:
-        return max(0.0, min(1.0, float(_string(value))))
-    except ValueError:
-        return None
-
-
 def _normalize_wam_episode_consistency(
     *,
     command_payload: Mapping[str, Any],
@@ -3813,6 +3797,7 @@ def _normalize_wam_episode_consistency(
     visual_smoke_status: str,
     visual_rollout_useful: bool,
     command_result: Mapping[str, Any] | None = None,
+    strict_action_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     rollout_by_id = {
         _string(row.get("rollout_id")): dict(row)
@@ -3853,6 +3838,12 @@ def _normalize_wam_episode_consistency(
             blockers.append("wam_consistency_missing_visual_evidence")
         if not action_trace_evidence_used:
             blockers.append("wam_consistency_missing_action_trace_evidence")
+        strict_blockers = (
+            _strict_action_consistency_blockers(item, strict_action_contract)
+            if strict_action_contract
+            else []
+        )
+        blockers.extend(strict_blockers)
         checks.append(
             {
                 "rollout_id": rollout_id,
@@ -3879,6 +3870,9 @@ def _normalize_wam_episode_consistency(
                 else [],
                 "visual_evidence_used": visual_evidence_used,
                 "action_trace_evidence_used": action_trace_evidence_used,
+                "strict_action_aware_contract_required": bool(strict_action_contract),
+                "strict_action_aware_contract_passed": not strict_blockers,
+                "strict_action_aware_blockers": strict_blockers,
                 "label_source": _string(item.get("label_source"))
                 or _string(command_payload.get("provider"))
                 or "wam_episode_consistency_command",
@@ -3891,7 +3885,7 @@ def _normalize_wam_episode_consistency(
                 "generated_world_policy_evaluation_scope_proven": False,
                 "safety_or_contact_validation_proven": False,
                 "srcc_or_policy_ranking_proven": False,
-                "public_claim_upgrade_allowed": False,
+                PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
             }
         )
     forward_proven = bool(checks) and all(row["forward_consistent"] is True for row in checks)

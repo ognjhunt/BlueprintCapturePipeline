@@ -31,6 +31,7 @@ every terminal path is hermetically testable with fake providers.
 from __future__ import annotations
 
 import signal
+import concurrent.futures
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -56,6 +57,9 @@ from .paid_lane_guard import (
 from .provider_phase_trace import (
     PHASE_ALLOCATION_CREATED,
     PHASE_ALLOCATION_REQUESTED,
+    PHASE_BUNDLE_DOWNLOAD,
+    PHASE_CAPACITY_PROBE,
+    PHASE_CUDA_DRIVER_CHECK,
     PHASE_DELETE,
     PHASE_EARLY_MARKER,
     PHASE_FINAL_INVENTORY,
@@ -64,6 +68,8 @@ from .provider_phase_trace import (
     PHASE_MACHINE_IDENTITY_OBSERVED,
     PHASE_PRE_SPEND_INVENTORY,
     PHASE_PROMOTE,
+    PHASE_RESULT_UPLOAD,
+    PHASE_RTX_FRAME,
     PHASE_TEARDOWN_VERIFICATION,
     TRACE_FILENAME,
     PhaseTraceRecorder,
@@ -290,6 +296,17 @@ def run_startup_supervisor(
         )
         manifest["quarantine_references"] = state.quarantine_refs
 
+    def _call_with_heartbeats(callback: Callable[[], Mapping[str, Any]]) -> dict[str, Any]:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(callback)
+            while True:
+                try:
+                    return _mapping(
+                        future.result(timeout=trace.heartbeat_interval_seconds)
+                    )
+                except concurrent.futures.TimeoutError:
+                    trace.heartbeat()
+
     def _teardown_live_allocation(reason: str) -> dict[str, Any] | None:
         """Terminate, API-verify terminal, close the pending teardown record."""
         if not state.instance_id or state.promoted:
@@ -413,6 +430,7 @@ def run_startup_supervisor(
                 "failure_class": None,
             }
             attempts.append(attempt)
+            trace.bind_attempt(attempt_id=attempt_id, launch_nonce=attempt_nonce)
 
             if clock() - started_epoch >= float(request.wall_clock_cap_seconds):
                 attempt["outcome"] = "not_started_wall_clock_cap"
@@ -482,6 +500,26 @@ def run_startup_supervisor(
                     attempt["teardown_proof"] = state.teardown_proof
                     state.teardown_proof = None
                 _persist_attempts()
+
+            capacity_probe = getattr(provider_client, "capacity_preflight", None)
+            if callable(capacity_probe):
+                capacity = _mapping(
+                    capacity_probe(
+                        gpu_type=attempt["gpu_type"],
+                        attempt_id=attempt_id,
+                        launch_nonce=attempt_nonce,
+                    )
+                )
+                attempt["capacity_preflight"] = capacity
+                trace.record(
+                    PHASE_CAPACITY_PROBE,
+                    detail={
+                        "status": str(capacity.get("status") or "unknown"),
+                        "reservation_proven": capacity.get("reservation_proven") is True,
+                    },
+                )
+                attempt["catalog_capacity_is_advisory"] = True
+                attempt["authoritative_capacity_source"] = "provider_create_response"
 
             trace.record(PHASE_ALLOCATION_REQUESTED, detail={"attempt": attempt_id})
             try:
@@ -574,14 +612,13 @@ def run_startup_supervisor(
                 continue
 
             trace.record(PHASE_IMAGE_PULL_NO_RUNTIME)
-            marker = _mapping(
-                wait_for_marker(
+            marker = _call_with_heartbeats(
+                lambda: wait_for_marker(
                     attempt_id=attempt_id,
                     launch_nonce=attempt_nonce,
                     instance_id=state.instance_id,
                 )
             )
-            trace.heartbeat()
             if marker.get("status") != "marker_verified":
                 stale = marker.get("status") == "stale_marker"
                 failure_class = (
@@ -606,14 +643,21 @@ def run_startup_supervisor(
                 continue
 
             trace.record(PHASE_EARLY_MARKER)
+            trace.record(PHASE_BUNDLE_DOWNLOAD)
+            trace.record(PHASE_CUDA_DRIVER_CHECK)
             trace.record(PHASE_ISAAC_START)
-            canary = _mapping(
-                run_canary(
+            canary = _call_with_heartbeats(
+                lambda: run_canary(
                     attempt_id=attempt_id,
                     launch_nonce=attempt_nonce,
                     instance_id=state.instance_id,
                 )
             )
+            if _mapping(_mapping(canary.get("checks")).get("review_renderer_canary")).get(
+                "status"
+            ) == "passed":
+                trace.record(PHASE_RTX_FRAME)
+            trace.record(PHASE_RESULT_UPLOAD)
             attempt["canary"] = {
                 "status": canary.get("status"),
                 "blockers": list(canary.get("blockers") or []),
@@ -679,8 +723,8 @@ def run_startup_supervisor(
             manifest["ownership_transfer_receipt"] = receipt
             try:
                 if full_job is not None:
-                    attempt["full_job_result"] = _mapping(
-                        full_job(
+                    attempt["full_job_result"] = _call_with_heartbeats(
+                        lambda: full_job(
                             {
                                 "instance_id": state.instance_id,
                                 "machine_id": state.machine_id or None,

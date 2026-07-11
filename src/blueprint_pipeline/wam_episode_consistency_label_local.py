@@ -174,6 +174,8 @@ def _support_claim_boundary() -> dict[str, Any]:
         "external_validation_claimed_from_consistency": False,
         "generated_world_policy_evaluation_scope_proven": False,
         "public_claim_upgrade_allowed": False,
+        "superseded_for_strict_action_consistency": True,
+        "superseded_artifact_family": "local_cv_wam_episode_consistency_judge",
     }
 
 

@@ -187,7 +187,10 @@ def test_primary_container_and_compose_contracts_are_hardened() -> None:
     assert "USER blueprint:blueprint" in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
-    assert "DINOV3_MODEL_REVISION=ea8dc2863c51be0a264bab82070e3e8836b02d51" in dockerfile
+    assert "DINOV3_MODEL_REVISION" not in dockerfile
+    assert "facebook/dinov3-vitl16-pretrain-lvd1689m" not in dockerfile
+    assert "HF_HUB_OFFLINE=1" in dockerfile
+    assert "TRANSFORMERS_OFFLINE=1" in dockerfile
     assert "revision=revision" in dockerfile
 
     assert "target: base" not in compose
@@ -260,6 +263,11 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
         assert re.search(rf"ARG {source_ref}=[0-9a-f]{{40}}", video_to_world)
         assert f'origin "${{{source_ref}}}"' in video_to_world
     assert re.search(r"ARG WBC_SOURCE_REF=[0-9a-f]{40}", groot_oscar)
+    assert "nvcr.io/nvidia/isaac-sim:6.0.0@sha256:" in groot_oscar
+    assert "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker" in groot_oscar
+    assert "/isaac-sim/python.sh -m pip install" in groot_oscar
+    assert "uv venv /opt/oscar-venv --python 3.10" in groot_oscar
+    assert "git -C /opt/wbc lfs pull" in groot_oscar
     assert 'revision=os.environ["SONIC_CHECKPOINT_REVISION"]' in groot_oscar
     assert 'revision=os.environ["GROOT_CHECKPOINT_REVISION"]' in groot_wam
 

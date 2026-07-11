@@ -25,7 +25,8 @@ for unit in \
   blueprint-pubsub-handoff-listener.service \
   blueprint-gpu-spend-guard.service
 do
-  sudo systemd-analyze security --no-pager --threshold=4.0 "$unit"
+  # systemd's CLI uses an integer percentage: 40 corresponds to exposure 4.0.
+  sudo systemd-analyze security --no-pager --threshold=40 "$unit"
 done
 ```
 

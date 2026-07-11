@@ -84,7 +84,55 @@ def summarize_manifest(
     }
 
 
-def inspect_image_manifest(*, image_ref: str, output_path: Path) -> dict[str, Any]:
+def _inspect_local_image(image_ref: str) -> dict[str, Any] | None:
+    inspected = subprocess.run(
+        ["docker", "image", "inspect", image_ref],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if inspected.returncode != 0:
+        return None
+    decoded = json.loads(inspected.stdout)
+    if not isinstance(decoded, list) or not decoded or not isinstance(decoded[0], Mapping):
+        return None
+    image = decoded[0]
+    root_fs = image.get("RootFS") if isinstance(image.get("RootFS"), Mapping) else {}
+    layers = root_fs.get("Layers") if isinstance(root_fs, Mapping) else []
+    layers = layers if isinstance(layers, list) else []
+    config = image.get("Config") if isinstance(image.get("Config"), Mapping) else {}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "completed_local",
+        "blockers": [],
+        "image_ref": image_ref,
+        "local_image_id": image.get("Id"),
+        "resolved_digest": None,
+        "resolved_digest_ref": None,
+        "layer_count": len(layers),
+        "total_compressed_size_bytes": None,
+        "largest_layer_size_bytes": None,
+        "local_uncompressed_size_bytes": image.get("Size"),
+        "architecture": image.get("Architecture"),
+        "os": image.get("Os"),
+        "runtime_config": {
+            "user": config.get("User") if isinstance(config, Mapping) else None,
+            "entrypoint": config.get("Entrypoint") if isinstance(config, Mapping) else None,
+            "working_dir": config.get("WorkingDir") if isinstance(config, Mapping) else None,
+        },
+        "raw_secret_values_recorded": False,
+        "claim_boundary": (
+            "Local image configuration and uncompressed size only. No registry digest or "
+            "compressed-layer metadata is claimed, and this does not prove provider startup."
+        ),
+    }
+
+
+def inspect_image_manifest(
+    *, image_ref: str, output_path: Path, allow_local: bool = False
+) -> dict[str, Any]:
     raw = subprocess.run(
         ["docker", "buildx", "imagetools", "inspect", "--raw", image_ref],
         capture_output=True,
@@ -100,7 +148,8 @@ def inspect_image_manifest(*, image_ref: str, output_path: Path) -> dict[str, An
         check=False,
     )
     if raw.returncode != 0 or plain.returncode != 0:
-        payload = {
+        local_payload = _inspect_local_image(image_ref) if allow_local else None
+        payload = local_payload or {
             "schema_version": SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "status": "blocked",
@@ -127,10 +176,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--allow-local", action="store_true")
     args = parser.parse_args(argv)
-    result = inspect_image_manifest(image_ref=args.image, output_path=args.output)
+    result = inspect_image_manifest(
+        image_ref=args.image,
+        output_path=args.output,
+        allow_local=args.allow_local,
+    )
     print(json.dumps({k: result.get(k) for k in ("status", "resolved_digest_ref", "layer_count", "total_compressed_size_bytes", "largest_layer_size_bytes", "recommended_startup_no_runtime_timeout_seconds")}, sort_keys=True))
-    return 0 if result.get("status") == "completed" else 2
+    return 0 if result.get("status") in {"completed", "completed_local"} else 2
 
 
 if __name__ == "__main__":

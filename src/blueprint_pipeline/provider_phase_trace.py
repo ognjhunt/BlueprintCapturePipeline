@@ -142,6 +142,8 @@ class PhaseTraceRecorder:
         self.run_id = str(run_id).strip()
         self.attempt_id = str(attempt_id or "").strip()
         self.launch_nonce = str(launch_nonce).strip()
+        self.root_attempt_id = self.attempt_id
+        self.root_launch_nonce = self.launch_nonce
         self.provider = str(provider or "").strip() or None
         self.heartbeat_interval_seconds = max(1.0, float(heartbeat_interval_seconds))
         self._clock = clock
@@ -153,6 +155,21 @@ class PhaseTraceRecorder:
         self._allocation_id: str | None = None
 
     # -- writing ------------------------------------------------------------
+
+    def bind_attempt(self, *, attempt_id: str, launch_nonce: str) -> None:
+        """Bind subsequent rows to one concrete allocation attempt.
+
+        Sequence numbers and elapsed time remain goal-level and monotonic; only
+        the attempt identity changes between retries.
+        """
+        attempt = str(attempt_id or "").strip()
+        nonce = str(launch_nonce or "").strip()
+        if not attempt or not nonce:
+            raise PhaseTraceRejected("phase_trace_attempt_identity_missing")
+        self.attempt_id = attempt
+        self.launch_nonce = nonce
+        self._allocation_id = None
+        self._current_phase = None
 
     def record(
         self,
@@ -213,8 +230,8 @@ class PhaseTraceRecorder:
         return {
             "schema_version": SCHEMA_VERSION,
             "run_id": self.run_id,
-            "attempt_id": self.attempt_id,
-            "launch_nonce": self.launch_nonce,
+            "attempt_id": self.root_attempt_id,
+            "launch_nonce": self.root_launch_nonce,
             "provider": self.provider,
             "heartbeat_interval_seconds": self.heartbeat_interval_seconds,
             "row_count": len(self._rows),
@@ -280,8 +297,11 @@ def validate_phase_trace(payload: Mapping[str, Any]) -> list[str]:
         if not isinstance(row, Mapping):
             blockers.append("phase_trace_row_not_mapping")
             continue
-        if str(row.get("launch_nonce") or "") != nonce:
+        row_nonce = str(row.get("launch_nonce") or "")
+        if row_nonce != nonce and not row_nonce.startswith(nonce + "-a"):
             blockers.append("phase_trace_row_nonce_mismatch")
+        if not str(row.get("attempt_id") or "").strip():
+            blockers.append("phase_trace_row_attempt_id_missing")
         phase = str(row.get("phase") or "")
         if phase not in KNOWN_PHASES:
             blockers.append(f"phase_trace_unknown_phase:{phase}")

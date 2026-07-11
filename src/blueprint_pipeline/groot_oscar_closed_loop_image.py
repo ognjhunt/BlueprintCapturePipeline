@@ -52,6 +52,16 @@ DEFAULT_VISUAL_MOTION_SMOKE_COMMAND = (
 DEFAULT_WAM_CONSISTENCY_COMMAND: str | None = None
 DEFAULT_WAM_CONSISTENCY_TIMEOUT_SECONDS = 300.0
 DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS = 900.0
+DEFAULT_ACTION_SKELETON_COMMAND = (
+    "/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_controller_fk_adapter"
+)
+DEFAULT_TASK_COMPLETION_COMMAND = (
+    "/opt/oscar-venv/bin/python -m blueprint_pipeline.isaac_persistent_task_completion_client"
+)
+DEFAULT_TASK_SUCCESS_CONTRACT_PATH = "/workspace/task_success_contract.json"
+DEFAULT_INITIAL_G1_SONIC_STATE_PATH = "/workspace/initial_g1_sonic_state.json"
+DEFAULT_KITCHEN_STAGE_PATH = "/workspace/kitchen/KitchenRoom.usd"
+DEFAULT_ATTEMPT_INPUT_MANIFEST_PATH = "/workspace/attempt_input_manifest.json"
 
 # Baked-path env vars (defaults match the image layout; overridable so the same
 # wiring works whether the image was produced by the Dockerfile or by snapshot).
@@ -66,6 +76,7 @@ DEFAULT_GROOT_ROOT = "/opt/gr00t"
 DEFAULT_SONIC_CHECKPOINT = "/opt/blueprint/ckpts/sonic"
 DEFAULT_GROOT_VENV = "/opt/gr00t-venv"
 DEFAULT_WBC_ROOT = "/opt/wbc"
+DEFAULT_OSCAR_VENV_PYTHON = "/opt/oscar-venv/bin/python"
 
 POLICY_SERVER_PORT = 5550
 POLICY_SERVER_URL = f"tcp://127.0.0.1:{POLICY_SERVER_PORT}"
@@ -220,6 +231,12 @@ def build_sealed_launch_plan(
     wam_success_label_command: str | None = None,
     allow_wam_success_labeling: bool = False,
     wam_success_label_timeout_seconds: float | None = DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS,
+    action_skeleton_command: str = DEFAULT_ACTION_SKELETON_COMMAND,
+    task_completion_command: str = DEFAULT_TASK_COMPLETION_COMMAND,
+    task_success_contract_path: str = DEFAULT_TASK_SUCCESS_CONTRACT_PATH,
+    initial_g1_sonic_state_path: str = DEFAULT_INITIAL_G1_SONIC_STATE_PATH,
+    kitchen_stage_path: str = DEFAULT_KITCHEN_STAGE_PATH,
+    attempt_input_manifest_path: str = DEFAULT_ATTEMPT_INPUT_MANIFEST_PATH,
     device: str = "cuda:0",
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -244,6 +261,8 @@ def build_sealed_launch_plan(
         "policy_server_url": contract["policy_server_url"],
         "policy_server_port": contract["policy_server_port"],
         "groot_server_command": [],
+        "isaac_task_executor_command": [],
+        "gear_sonic_controller_command": [],
         "closed_loop_command": [],
         "episode_length_contract": {
             "episode_length_unit": "closed_loop_control_steps",
@@ -313,8 +332,25 @@ def build_sealed_launch_plan(
         "--device", str(device),
         "--port", str(contract["policy_server_port"]),
     ]
+    plan["isaac_task_executor_command"] = [
+        "/isaac-sim/python.sh",
+        "-m",
+        "blueprint_pipeline.isaac_persistent_task_executor_service",
+        "--stage",
+        kitchen_stage_path,
+        "--attempt-input-manifest",
+        attempt_input_manifest_path,
+        "--initial-state-output",
+        initial_g1_sonic_state_path,
+    ]
+    plan["gear_sonic_controller_command"] = [
+        "bash",
+        "-lc",
+        "cd /opt/wbc/gear_sonic_deploy && printf '\\n' | ./deploy.sh sim "
+        "--input-type zmq_manager --output-type zmq --zmq-host localhost",
+    ]
     plan["closed_loop_command"] = [
-        "python", "-m", "blueprint_pipeline.oscar_isaac_closed_loop_eval",
+        DEFAULT_OSCAR_VENV_PYTHON, "-m", "blueprint_pipeline.oscar_isaac_closed_loop_eval",
         "--start-frame", start_frame,
         "--route-file", route_file,
         "--steps", str(int(steps)),
@@ -324,12 +360,19 @@ def build_sealed_launch_plan(
         "--output-dir", output_dir,
         "--groot-sonic-policy-server-url", contract["policy_server_url"],
         "--groot-root", groot_root,
+        "--groot-policy-initial-state", initial_g1_sonic_state_path,
         "--require-fresh-learned-policy-requery",
+        "--action-skeleton-command", action_skeleton_command,
+        "--task-success-contract", task_success_contract_path,
+        "--task-completion-command", task_completion_command,
         # Episode length is task-adaptive: --steps is the hard cap and the
         # episode ends when the target-reached criterion fires.
         "--stop-on-task-completion",
         "--min-steps", str(int(min_task_adaptive_steps)),
-        "--harness-backend-kind", "fixture",
+        "--harness-backend-kind", "real_provider_probe",
+        "--require-real-perception-backend",
+        "--require-sam3-completed",
+        "--require-da3-completed",
         "--oscar-height", str(int(oscar_height)),
         "--oscar-width", str(int(oscar_width)),
         "--min-coherent-horizon-frames", str(int(min_coherent_horizon_frames)),
@@ -383,6 +426,14 @@ def build_sealed_launch_plan(
         "BLUEPRINT_OSCAR_WAM_HF_REVISION": contract["oscar_hf_revision"],
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT": groot_root,
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL": contract["policy_server_url"],
+        "BLUEPRINT_GEAR_SONIC_ROOT": DEFAULT_WBC_ROOT,
+        "BLUEPRINT_GEAR_SONIC_ROBOT_MODEL": (
+            "/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml"
+        ),
+        "BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND": (
+            f"{DEFAULT_OSCAR_VENV_PYTHON} -m "
+            "blueprint_pipeline.gear_sonic_official_zmq_executor"
+        ),
     }
     if consistency_command or allow_wam_consistency_scoring or require_forward_inverse_consistency:
         plan["env"][WAM_CONSISTENCY_GATE_ENV] = "true"

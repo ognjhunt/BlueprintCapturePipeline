@@ -128,7 +128,7 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
 
     baseline = (REPO_ROOT / "docs" / "SYSTEMD_SECURITY_BASELINE.md").read_text(encoding="utf-8")
     assert "systemd-analyze security" in baseline
-    assert "threshold=4.0" in baseline
+    assert "threshold=40" in baseline
 
 
 def test_pubsub_handoff_listener_has_repeated_deployed_runner():

@@ -39,7 +39,7 @@ def _seed_result(job_dir: Path) -> Path:
             {
                 "status": "completed",
                 "reason": "https://signed.example/private?token=do-not-retain",
-                "private_path": "/Users/runner/private/job",
+                "private_path": str(Path.home() / "private" / "job"),
             }
         ),
         encoding="utf-8",
@@ -156,7 +156,7 @@ def test_gpu_canary_converter_requires_exact_executed_result_and_teardown(
     ) as archive:
         retained = b"\n".join(archive.read(name) for name in archive.namelist())
     assert b"do-not-retain" not in retained
-    assert b"/Users/runner/private/job" not in retained
+    assert str(Path.home() / "private" / "job").encode() not in retained
     assert b"ask_contract_id" not in retained
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .common import parse_bool, utc_now_iso
+from .g1_kitchen_attempt_closure import buyer_readout_projection
 from .success_claim_contracts import CLAIM_LADDER
 
 BUYER_PACKAGE_READOUT_SCHEMA_VERSION = "buyer_package_readout.v1"
@@ -106,6 +107,11 @@ BUYER_BLOCKER_CLASS_COPY: dict[str, dict[str, str]] = {
         "headline": "Consent revocation blocks package use.",
         "body": "The package must stay blocked until takedown and downstream-use actions are resolved.",
         "next_step": "Complete the rights/privacy takedown workflow before restoring access.",
+    },
+    "g1_kitchen_attempt_closure": {
+        "headline": "G1 kitchen attempt proof is incomplete.",
+        "body": "Leaf renderer or evaluator statuses do not establish an attempt-level task result.",
+        "next_step": "Provide a completed attempt-bound closure with teardown and zero-inventory proof.",
     },
 }
 
@@ -295,6 +301,10 @@ def build_buyer_package_readout(
     gr00t_lerobot = _mapping(optional_formats.get("gr00t_lerobot"))
     handoff = _mapping(product_handoff) or _mapping(manifest.get("product_handoff"))
     ledger = _mapping(success_claim_ledger)
+    kitchen_closure = _mapping(manifest.get("g1_kitchen_attempt_closure"))
+    kitchen_closure_projection = (
+        buyer_readout_projection(kitchen_closure) if kitchen_closure else {}
+    )
     manifest_blockers = _string_list(manifest.get("blockers"))
     consent_revoked = (
         _manifest_bool(consent_evidence.get("consent_revoked"))
@@ -849,6 +859,8 @@ def build_buyer_package_readout(
         blockers.extend(f"{name}:{blocker}" for blocker in sections[name]["blockers"])
     if revocation_required:
         blockers.append("revocation_takedown:consent_revoked_takedown_required")
+    if kitchen_closure and kitchen_closure_projection.get("status") != "ready":
+        blockers.append("g1_kitchen_attempt_closure:not_completed")
 
     highest_claim = str(ledger.get("highest_truthful_claim") or "").strip()
     if highest_claim not in CLAIM_LADDER:
@@ -903,6 +915,11 @@ def build_buyer_package_readout(
             downstream_takedown_execution_ledger
         ),
         "readout_is_not_takedown_execution_proof": True,
+        "g1_kitchen_attempt_closure_present": bool(kitchen_closure),
+        "g1_kitchen_attempt_closure_projection": kitchen_closure_projection,
+        "g1_kitchen_task_success_proven": bool(
+            kitchen_closure_projection.get("task_success_proven") is True
+        ),
     }
 
     status = "buyer_readout_ready_review_required" if not blockers else (

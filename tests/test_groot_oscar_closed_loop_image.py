@@ -207,7 +207,11 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
         wam_consistency_command=REAL_CONSISTENCY_COMMAND,
     )
     cmd = plan["closed_loop_command"]
-    assert cmd[:3] == ["python", "-m", "blueprint_pipeline.oscar_isaac_closed_loop_eval"]
+    assert cmd[:3] == [
+        "/opt/oscar-venv/bin/python",
+        "-m",
+        "blueprint_pipeline.oscar_isaac_closed_loop_eval",
+    ]
     assert cmd[cmd.index("--oscar-repo") + 1] == "/opt/OSCAR"
     assert cmd[cmd.index("--checkpoint") + 1] == "/opt/blueprint/ckpts/oscar"
     assert cmd[cmd.index("--groot-root") + 1] == "/opt/gr00t"
@@ -229,6 +233,12 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     )
     assert cmd[cmd.index("--wam-consistency-timeout-seconds") + 1] == "300.0"
     assert "--require-generated-video-success-label" not in cmd
+    assert plan["gear_sonic_controller_command"][0:2] == ["bash", "-lc"]
+    assert "deploy.sh sim" in plan["gear_sonic_controller_command"][2]
+    assert plan["env"]["BLUEPRINT_GEAR_SONIC_ROOT"] == "/opt/wbc"
+    assert "gear_sonic_official_zmq_executor" in plan["env"][
+        "BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND"
+    ]
     assert plan["episode_length_contract"] == {
         "episode_length_unit": "closed_loop_control_steps",
         "stop_condition": "task_completion_or_step_cap",

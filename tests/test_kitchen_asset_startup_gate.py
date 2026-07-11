@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,14 @@ def _make_archive(archive: Path, tree: Path) -> Path:
         for member in sorted(tree.rglob("*")):
             if member.is_file():
                 tar.add(member, arcname=member.relative_to(tree).as_posix())
+    return archive
+
+
+def _make_zip_archive(archive: Path, tree: Path) -> Path:
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        for member in sorted(tree.rglob("*")):
+            if member.is_file():
+                zipped.write(member, member.relative_to(tree).as_posix())
     return archive
 
 
@@ -256,6 +265,34 @@ def test_archive_happy_path_extracts_and_verifies(tmp_path: Path) -> None:
     assert disk["free_bytes_before"] >= disk["required_bytes"]
     assert disk["free_bytes_after"] is not None
     assert result["reuse"] == {"reused": False, "reuse_reason": None}
+
+
+def test_zip_archive_happy_path_extracts_and_verifies(tmp_path: Path) -> None:
+    tree = _make_tree(tmp_path)
+    archive = _make_zip_archive(tmp_path / "kitchen.zip", tree)
+    inventory_path = _write_inventory(tmp_path / "inventory.json", tree, archive=archive)
+    out = tmp_path / "out"
+    result = gate.run_kitchen_asset_startup_gate(
+        expected_inventory_path=inventory_path, out_dir=out, archive_path=archive
+    )
+    assert result["status"] == "completed"
+    assert result["archive_safety"]["archive_format"] == "zip"
+    assert (out / "materialized" / MAIN_USD).is_file()
+
+
+def test_zip_archive_path_traversal_rejected_before_extraction(tmp_path: Path) -> None:
+    tree = _make_tree(tmp_path)
+    inventory_path = _write_inventory(tmp_path / "inventory.json", tree)
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("../escaped.txt", b"escape")
+    out = tmp_path / "out"
+    result = gate.run_kitchen_asset_startup_gate(
+        expected_inventory_path=inventory_path, out_dir=out, archive_path=archive
+    )
+    assert result["status"] == "blocked"
+    assert "kitchen_archive_path_traversal" in result["blockers"]
+    assert not (tmp_path / "escaped.txt").exists()
 
 
 def test_archive_digest_mismatch_blocks_before_extraction(tmp_path: Path) -> None:

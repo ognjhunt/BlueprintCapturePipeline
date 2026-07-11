@@ -61,7 +61,7 @@ trip transcript, native LeRobot relative-file manifest, sanitized GPU source
 bundle, container build/smoke sources, and CPU collection/JUnit files. Missing,
 oversize, stale, digest-mismatched, or envelope-only evidence fails closed.
 
-The canonical CPU full lane installs the frozen `groot-libero` extra so the
+The canonical CPU full lane installs the frozen `groot-libero-cpu` extra so the
 Torch OSCAR shim checks and native LeRobot load check execute rather than skip.
 It emits `cpu_full.json`, binding the exact repository SHA, planned/executed
 node-ID sequence and digest, per-test JUnit node-ID properties/outcomes, and

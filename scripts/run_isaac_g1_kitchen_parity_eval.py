@@ -19,6 +19,7 @@ on the worker, not locally; the non-Isaac helpers are unit-tested in the repo.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import math
@@ -5466,6 +5467,77 @@ def _find_arm_link(links: dict, *keys: str):
     return None
 
 
+_ARM_ROLE_LINK_PREFERENCES: dict[str, tuple[str, ...]] = {
+    "shoulder": ("shoulder_pitch_link", "shoulder_roll_link", "shoulder_yaw_link"),
+    "elbow": ("elbow_link",),
+    "wrist": ("wrist_yaw_link", "wrist_pitch_link", "wrist_roll_link"),
+    "hand": ("hand_palm_link", "palm_link", "hand_link"),
+}
+
+
+def _find_arm_role_link(links: Mapping[str, Any], side: str, role: str):
+    """Resolve one canonical arm link without accidentally selecting a finger or collision prim.
+
+    The official G1 USD contains many names such as ``left_hand_index_0_link``. A first substring
+    match for ``hand`` therefore selects a finger before the palm on some workers. Keep role
+    selection deterministic and distal where appropriate, then use a conservative substring
+    fallback only for USD variants whose names are less specific.
+    """
+    side_low = str(side or "").strip().lower()
+    role_low = str(role or "").strip().lower()
+    normalized = {str(name).lower(): prim for name, prim in links.items()}
+    for suffix in _ARM_ROLE_LINK_PREFERENCES.get(role_low, ()):
+        exact = f"{side_low}_{suffix}"
+        if exact in normalized:
+            return normalized[exact]
+    fallback = [
+        (name, prim)
+        for name, prim in normalized.items()
+        if side_low in name and role_low in name and "link" in name
+    ]
+    if role_low == "hand":
+        fallback = [
+            item for item in fallback
+            if not any(token in item[0] for token in ("index", "middle", "thumb", "finger"))
+        ]
+    return sorted(fallback, key=lambda item: item[0])[0][1] if fallback else None
+
+
+def _arm_link_visual_center(stage, prim) -> tuple[float, float, float] | None:
+    """Return the center of a link's rendered visual geometry in world coordinates.
+
+    Several official G1 USD builds keep articulation/link origins near the asset origin while their
+    visual meshes carry additional authored offsets. Those origins are valid articulation metadata,
+    but they are not valid review-camera or rendered-reach landmarks. Seed placement and review
+    geometry must agree with the pixels, so prefer the union of descendant ``visuals`` Gprim bounds.
+    """
+    try:
+        from pxr import Usd, UsdGeom  # type: ignore
+
+        mins: list[tuple[float, float, float]] = []
+        maxs: list[tuple[float, float, float]] = []
+        try:
+            prim_iter = Usd.PrimRange(prim, Usd.TraverseInstanceProxies())
+        except Exception:  # noqa: BLE001
+            prim_iter = Usd.PrimRange(prim)
+        for child in prim_iter:
+            path_low = str(child.GetPath()).lower()
+            if "/visuals/" not in path_low or not child.IsA(UsdGeom.Gprim):
+                continue
+            bbox = _world_bbox_for_prim(stage, str(child.GetPath()))
+            if not bbox:
+                continue
+            mins.append(tuple(float(v) for v in bbox["bbox_min_xyz"]))
+            maxs.append(tuple(float(v) for v in bbox["bbox_max_xyz"]))
+        if not mins:
+            return None
+        lower = tuple(min(point[i] for point in mins) for i in range(3))
+        upper = tuple(max(point[i] for point in maxs) for i in range(3))
+        return tuple((lower[i] + upper[i]) * 0.5 for i in range(3))
+    except Exception:  # noqa: BLE001 - callers retain explicit link-origin fallback
+        return None
+
+
 def _is_manipulation_arm_link_name(name: str, side: str) -> bool:
     """Return whether a robot link name belongs to the requested manipulation arm side."""
     low = str(name or "").lower()
@@ -5513,12 +5585,14 @@ def _pose_arm_kinematic_usd(
              if p.IsA(UsdGeom.Xformable) and "link" in p.GetName().lower()}
     posed = 0
     for side in sides:
-        shoulder = (_find_arm_link(links, side, "shoulder", "pitch")
-                    or _find_arm_link(links, side, "shoulder"))
+        shoulder = _find_arm_role_link(links, side, "shoulder")
         # Align shoulder->effector with the current reach target. The effector is not translated
         # beyond its arm span; final distance remains a measured success-gate input.
-        effector = (_find_arm_link(links, side, "hand") or _find_arm_link(links, side, "palm")
-                    or _find_arm_link(links, side, "wrist") or _find_arm_link(links, side, "elbow"))
+        effector = (
+            _find_arm_role_link(links, side, "hand")
+            or _find_arm_role_link(links, side, "wrist")
+            or _find_arm_role_link(links, side, "elbow")
+        )
         if shoulder is None or effector is None:
             continue
         xc = UsdGeom.XformCache()  # fresh cache per arm (previous arm's mutation invalidated it)
@@ -5526,7 +5600,12 @@ def _pose_arm_kinematic_usd(
         el_w = xc.GetLocalToWorldTransform(effector)
         sp = sh_w.ExtractTranslation()
         ep = el_w.ExtractTranslation()
-        shoulder_xyz = (float(sp[0]), float(sp[1]), float(sp[2]))
+        shoulder_xyz = _arm_link_visual_center(stage, shoulder) or (
+            float(sp[0]), float(sp[1]), float(sp[2])
+        )
+        effector_xyz = _arm_link_visual_center(stage, effector) or (
+            float(ep[0]), float(ep[1]), float(ep[2])
+        )
         reach_target = _manipulation_arm_target_for_reach_fraction(
             shoulder_xyz,
             target,
@@ -5535,14 +5614,14 @@ def _pose_arm_kinematic_usd(
         )
         axis, angle = arm_reach_rotation(
             shoulder_xyz,
-            (float(ep[0]), float(ep[1]), float(ep[2])),
+            effector_xyz,
             reach_target,
             reach_frac,
         )
         if angle < 1e-4:
             continue
         rot = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis), math.degrees(angle)))
-        pivot = Gf.Vec3d(sp[0], sp[1], sp[2])
+        pivot = Gf.Vec3d(*shoulder_xyz)
         # Rotate the link world transforms about the shoulder pivot (USD row-vector convention).
         m_pivot = Gf.Matrix4d().SetTranslate(-pivot) * rot * Gf.Matrix4d().SetTranslate(pivot)
         arm_link_prims = _arm_link_prims_for_side(links, side)
@@ -5573,11 +5652,14 @@ def _pose_arm_kinematic_usd(
             xf.ClearXformOpOrder()
             xf.AddTransformOp().Set(new_local)
         moved_xc = UsdGeom.XformCache()
-        moved = moved_xc.GetLocalToWorldTransform(effector).ExtractTranslation()
+        moved_origin = moved_xc.GetLocalToWorldTransform(effector).ExtractTranslation()
+        moved_xyz = _arm_link_visual_center(stage, effector) or (
+            float(moved_origin[0]), float(moved_origin[1]), float(moved_origin[2])
+        )
         moved_dist = math.sqrt(
-            (float(moved[0]) - float(ep[0])) ** 2
-            + (float(moved[1]) - float(ep[1])) ** 2
-            + (float(moved[2]) - float(ep[2])) ** 2
+            (float(moved_xyz[0]) - float(effector_xyz[0])) ** 2
+            + (float(moved_xyz[1]) - float(effector_xyz[1])) ** 2
+            + (float(moved_xyz[2]) - float(effector_xyz[2])) ** 2
         )
         if moved_dist < MANIPULATION_ARM_POSE_MIN_LINK_MOVE_M:
             continue
@@ -7205,6 +7287,150 @@ def _build_placement_validation_manifest(
     return manifest
 
 
+def _run_adaptive_task_stance_configurator_gate(
+    *,
+    stance_plan: Mapping[str, Any],
+    placement_manifest: Mapping[str, Any],
+    task_success_contract: Mapping[str, Any],
+    scenario_id: str,
+    kitchen_usd: str,
+    robot_pov_frames: Sequence[Path],
+    third_person_frames: Sequence[Path],
+    pov_geometry_records: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Bind the generic P1-5 configurator to measured Isaac placement/render evidence."""
+    try:
+        try:
+            import adaptive_task_stance_configurator as configurator  # worker bundle
+        except Exception:  # noqa: BLE001
+            from blueprint_pipeline import adaptive_task_stance_configurator as configurator
+
+        target_resolution = stance_plan.get("target_resolution")
+        affordance_resolution = stance_plan.get("affordance_resolution")
+        target_selected = (
+            target_resolution.get("selected")
+            if isinstance(target_resolution, Mapping)
+            and isinstance(target_resolution.get("selected"), Mapping)
+            else {}
+        )
+        affordance_selected = (
+            affordance_resolution.get("selected")
+            if isinstance(affordance_resolution, Mapping)
+            and isinstance(affordance_resolution.get("selected"), Mapping)
+            else {}
+        )
+        target_path = str(target_selected.get("prim_path") or "")
+        affordance_path = str(affordance_selected.get("prim_path") or "")
+        if not target_path or not affordance_path:
+            raise ValueError("adaptive_stance_resolved_target_or_affordance_missing")
+
+        kitchen_path = Path(kitchen_usd)
+        if not kitchen_path.is_file():
+            raise ValueError("adaptive_stance_kitchen_usd_missing")
+        scene_digest = "sha256:" + hashlib.sha256(kitchen_path.read_bytes()).hexdigest()
+        accepted_pose = [float(v) for v in stance_plan["accepted_pose"]]
+        accepted_yaw = float(stance_plan["accepted_yaw"])
+        intended = (
+            dict(placement_manifest.get("intended_geometry") or {})
+            if isinstance(placement_manifest, Mapping)
+            else {}
+        )
+        ground_truth = dict(placement_manifest.get("ground_truth_placement") or {})
+        upright = dict(ground_truth.get("upright_report") or {})
+        reach = dict(_selected_stance_reachability_estimate(stance_plan) or {})
+        geometry = dict(pov_geometry_records[-1]) if pov_geometry_records else {}
+        available_roles = list(geometry.get("available_arm_link_roles") or [])
+        visible_roles = list(
+            geometry.get("arm_roles_usefully_in_frame")
+            or geometry.get("arm_roles_in_frame")
+            or []
+        )
+        role_fraction = len(visible_roles) / max(1, len(available_roles))
+        target_visible = bool(geometry.get("target_in_frame"))
+        max_reach = float(
+            reach.get("required_max_seed_effector_to_affordance_m")
+            or MANIPULATION_SEED_MAX_EFFECTOR_TO_AFFORDANCE_M
+        ) + float(reach.get("approx_preselection_effector_margin_m") or 0.0)
+        floor_z = float(placement_manifest.get("floor_z") or 0.0)
+        floor_error = (accepted_pose[2] - ROBOT_PELVIS_HEIGHT_M) - floor_z
+        robot_pov = str(robot_pov_frames[0]) if robot_pov_frames else ""
+        third_person = str(third_person_frames[0]) if third_person_frames else ""
+        measurement = {
+            "floor_support_error_m": floor_error,
+            "uprightness_deg": upright.get("tilt_deg"),
+            "min_clearance_m": intended.get("min_obstacle_clearance_m"),
+            "yaw_error_rad": (
+                math.radians(float(intended["facing_error_deg"]))
+                if intended.get("facing_error_deg") is not None
+                else None
+            ),
+            "reach_distance_m": reach.get("nearest_seed_effector_to_affordance_m"),
+            "affordance_visible_fraction": 1.0 if target_visible else 0.0,
+            "robot_in_frame_fraction": role_fraction,
+            "target_in_frame_fraction": 1.0 if target_visible else 0.0,
+            "robot_pov_png": robot_pov,
+            "third_person_png": third_person,
+            "render_source": configurator.REQUIRED_RENDER_SOURCE,
+        }
+        request = {
+            "kitchen_scene_digest": scene_digest,
+            "task_id": scenario_id,
+            "completion_contract": dict(task_success_contract),
+            "target_prim_path": target_path,
+            "affordance_prim_path": affordance_path,
+            "robot_profile": {
+                "collision_radius_m": max(float(ROBOT_FOOTPRINT_HALF_EXTENT[0]), 0.01),
+                "min_reach_m": 0.0,
+                "max_reach_m": max(max_reach, 0.01),
+            },
+            "reference_pose_xyz": accepted_pose,
+            "reference_yaw_rad": accepted_yaw,
+            "camera_limits": {
+                "min_affordance_visible_fraction": 0.6,
+                "min_robot_in_frame_fraction": 0.15,
+                "min_target_in_frame_fraction": 0.15,
+            },
+            "yaw_tolerance_rad": math.radians(30.0),
+            "search_budget": {"max_candidates": 1},
+            "seed": 0,
+        }
+        return configurator.run_adaptive_stance_search(
+            request=request,
+            measure_candidate=lambda _candidate: measurement,
+            propose_next_candidate=lambda _history: {
+                "pose_xyz": accepted_pose,
+                "yaw_rad": accepted_yaw,
+                "standoff_m": float(
+                    stance_plan.get("candidates", [{}])[
+                        int(stance_plan.get("selected_candidate_index") or 0)
+                    ].get("standoff_from_target_surface_m")
+                    or max_reach
+                ),
+            },
+            out_dir=output_dir,
+        )
+    except Exception as exc:  # fail closed and persist the reason beside placement evidence
+        output_dir.mkdir(parents=True, exist_ok=True)
+        result = {
+            "schema_version": "adaptive_task_stance_configurator.v1",
+            "status": "blocked",
+            "blockers": ["adaptive_task_stance_configurator_integration_failed"],
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "provider_revalidation_required": True,
+            "claim_boundary": {
+                "local_gate_acceptance_only": True,
+                "provider_acceptance_proven": False,
+                "proves_task_success": False,
+            },
+        }
+        (output_dir / "adaptive_task_stance_configurator.json").write_text(
+            json.dumps(result, indent=2), encoding="utf-8"
+        )
+        return result
+
+
 def _placement_validation_passed_manifest(manifest: Mapping[str, Any] | None) -> bool:
     return bool(manifest and manifest.get("status") == "PASS" and not manifest.get("blockers"))
 
@@ -7414,7 +7640,18 @@ def _robot_link_mount(stage, robot_prim_path: str) -> dict[str, Any] | None:
     return None
 
 
-def _robot_arm_link_points(stage, robot_prim_path: str, *, arm: str = "right") -> dict[str, tuple[float, float, float]]:
+def _robot_arm_link_geometry_evidence(
+    stage,
+    robot_prim_path: str,
+    *,
+    arm: str = "right",
+) -> dict[str, dict[str, Any]]:
+    """Resolve canonical arm roles with link-origin and visual values side by side.
+
+    A role backed by renderable geometry never silently upgrades its link origin
+    into visual proof.  The origin remains articulation metadata; reach/framing
+    select the visual-mesh center and record the source prim and transform method.
+    """
     try:
         from pxr import Usd, UsdGeom  # type: ignore
         root = stage.GetPrimAtPath(robot_prim_path)
@@ -7423,33 +7660,56 @@ def _robot_arm_link_points(stage, robot_prim_path: str, *, arm: str = "right") -
         side = str(arm or "right").strip().lower()
         if side not in {"left", "right"}:
             side = "right"
-        wanted = {
-            "shoulder": ("shoulder",),
-            "elbow": ("elbow",),
-            "wrist": ("wrist",),
-            "hand": ("hand", "palm"),
-        }
-        out: dict[str, tuple[float, float, float]] = {}
+        links: dict[str, Any] = {}
         for prim in Usd.PrimRange(root):
             try:
-                if not prim.IsA(UsdGeom.Xformable):
-                    continue
+                if prim.IsA(UsdGeom.Xformable) and "link" in prim.GetName().lower():
+                    links[prim.GetName()] = prim
             except Exception:  # noqa: BLE001
                 continue
-            name = prim.GetName().lower()
-            if side not in name or "link" not in name:
+        out: dict[str, dict[str, Any]] = {}
+        for role in ("shoulder", "elbow", "wrist", "hand"):
+            prim = _find_arm_role_link(links, side, role)
+            if prim is None:
                 continue
-            for key, tokens in wanted.items():
-                if key in out:
-                    continue
-                if any(token in name for token in tokens):
-                    pos = _prim_world_translation(stage, prim)
-                    if pos is not None:
-                        out[key] = pos
-                    break
+            origin = _prim_world_translation(stage, prim)
+            visual = _arm_link_visual_center(stage, prim)
+            selected = visual or origin
+            if selected is None:
+                continue
+            out[role] = {
+                "role": role,
+                "source_prim_path": str(prim.GetPath()),
+                "link_origin_world_xyz": (
+                    [float(v) for v in origin] if origin is not None else None
+                ),
+                "visual_mesh_center_world_xyz": (
+                    [float(v) for v in visual] if visual is not None else None
+                ),
+                "selected_world_xyz": [float(v) for v in selected],
+                "selected_geometry_source": (
+                    "visual_mesh_world_bounds" if visual is not None else "link_origin_no_visual_gprim"
+                ),
+                "transform_provenance": (
+                    "Usd.PrimRange(TraverseInstanceProxies)+ComputeWorldBound"
+                    if visual is not None
+                    else "UsdGeom.XformCache.GetLocalToWorldTransform"
+                ),
+                "visual_geometry_required_for_live_proof": True,
+                "live_visual_geometry_proven": visual is not None,
+            }
         return out
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _robot_arm_link_points(stage, robot_prim_path: str, *, arm: str = "right") -> dict[str, tuple[float, float, float]]:
+    evidence = _robot_arm_link_geometry_evidence(stage, robot_prim_path, arm=arm)
+    return {
+        role: tuple(float(v) for v in detail["selected_world_xyz"])
+        for role, detail in evidence.items()
+        if detail.get("selected_world_xyz") is not None
+    }
 
 
 def _robot_arm_link_points_by_arm(
@@ -7726,6 +7986,10 @@ def _robot_mounted_manipulation_cam_pose(
         robot_prim_path,
         arm=reach_selection,
     )
+    arm_geometry_evidence_by_arm = {
+        side: _robot_arm_link_geometry_evidence(stage, robot_prim_path, arm=side)
+        for side in _required_manipulation_arms(reach_selection)
+    }
     if reach_selection == "both":
         arm_points = _average_arm_link_points(arm_points_by_arm)
     else:
@@ -7777,6 +8041,7 @@ def _robot_mounted_manipulation_cam_pose(
             for key, value in sorted(arm_points.items())
         },
         "arm_link_points_by_arm_xyz": arm_points_by_arm_json,
+        "arm_link_geometry_evidence_by_arm": arm_geometry_evidence_by_arm,
         **target_meta,
         **lens_meta,
         "claim_boundary": (
@@ -8650,6 +8915,59 @@ def _software_denoise_image(img):
         return img
 
 
+def _rgb_frame_integrity(data) -> dict[str, Any]:
+    """Fail closed on grossly blank/flat renderer output before it enters review evidence.
+
+    This is intentionally a corruption detector, not a semantic or aesthetic scorer. It catches the
+    observed all-black verify frame and nearly constant render-product failures while leaving normal
+    dark objects and bright kitchens to the downstream full-frame visual-quality review.
+    """
+    import numpy as np  # type: ignore
+
+    arr = np.asarray(data)
+    blockers: list[str] = []
+    if arr.ndim != 3 or arr.shape[2] not in {3, 4} or arr.shape[0] < 2 or arr.shape[1] < 2:
+        blockers.append("rgb_frame_invalid_dimensions")
+        return {
+            "schema_version": "isaac_rgb_frame_integrity.v1",
+            "status": "FAIL",
+            "blockers": blockers,
+            "shape": [int(v) for v in arr.shape],
+        }
+    rgb = arr[:, :, :3].astype("float32")
+    if not np.isfinite(rgb).all():
+        blockers.append("rgb_frame_non_finite")
+        rgb = np.nan_to_num(rgb, nan=0.0, posinf=255.0, neginf=0.0)
+    luma = rgb.mean(axis=2)
+    dark_fraction = float(np.mean(luma <= 4.0))
+    bright_fraction = float(np.mean(luma >= 251.0))
+    luma_std = float(np.std(luma))
+    p01, p99 = (float(v) for v in np.percentile(luma, [1.0, 99.0]))
+    robust_range = p99 - p01
+    if dark_fraction >= 0.995:
+        blockers.append("rgb_frame_blank_black")
+    if bright_fraction >= 0.995:
+        blockers.append("rgb_frame_blank_white")
+    if luma_std < 1.0 or robust_range < 3.0:
+        blockers.append("rgb_frame_flat_corrupt")
+    return {
+        "schema_version": "isaac_rgb_frame_integrity.v1",
+        "status": "PASS" if not blockers else "FAIL",
+        "blockers": sorted(set(blockers)),
+        "shape": [int(v) for v in arr.shape],
+        "dark_fraction": round(dark_fraction, 6),
+        "bright_fraction": round(bright_fraction, 6),
+        "luma_std": round(luma_std, 6),
+        "luma_p01": round(p01, 6),
+        "luma_p99": round(p99, 6),
+        "robust_luma_range": round(robust_range, 6),
+        "claim_boundary": (
+            "Frame-integrity statistics detect gross blank/flat renderer corruption only; they do "
+            "not prove scene semantics, placement, task success, or physical readiness."
+        ),
+    }
+
+
 def _save_rgb(annot, out_path: Path, *, software_denoise: bool = False) -> bool:
     import numpy as np  # type: ignore
     from PIL import Image  # type: ignore
@@ -8659,6 +8977,14 @@ def _save_rgb(annot, out_path: Path, *, software_denoise: bool = False) -> bool:
     arr = np.asarray(data)
     if arr.ndim == 3 and arr.shape[2] == 4:
         arr = arr[:, :, :3]
+    integrity = _rgb_frame_integrity(arr)
+    if integrity.get("status") != "PASS":
+        rejected_path = out_path.with_suffix(".integrity_rejected.json")
+        rejected_path.write_text(
+            json.dumps({**integrity, "intended_frame_path": str(out_path)}, indent=2),
+            encoding="utf-8",
+        )
+        return False
     img = Image.fromarray(arr.astype("uint8"))
     if software_denoise:
         img = _software_denoise_image(img)
@@ -11030,6 +11356,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     if dynamic_terminal_reason:
                         should_capture_step = True
                 if should_capture_step:
+                    overview_camera_mode = "static_overview"
+                    overview_camera_role = "overview"
                     cam_meta: dict[str, Any] | None = None
                     if manipulation_cam:
                         eye, tgt, cam_meta = _robot_mounted_manipulation_cam_pose(
@@ -11082,11 +11410,24 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         # light is BEYOND the arm, leaving its camera-facing side in shadow/black).
                         _add_pov_headlamp(stage, eye, effective_look_at,
                                           intensity=(fill_light_intensity if fill_light_intensity > 0 else 30000.0))
-                    if verify_annot is not None:
-                        v_eye, v_tgt = verify_cam_pose(
+                    task_third_person_pose = None
+                    if manipulation_stand and effective_look_at is not None:
+                        task_third_person_pose = verify_cam_pose(
                             decision.root_pose,
                             decision.yaw,
                             look_at=effective_look_at,
+                        )
+                        _place_camera(
+                            stage,
+                            over_cam,
+                            task_third_person_pose[0],
+                            task_third_person_pose[1],
+                        )
+                        overview_camera_mode = "task_framed_third_person"
+                        overview_camera_role = "third_person_overview"
+                    if verify_annot is not None:
+                        v_eye, v_tgt = task_third_person_pose or verify_cam_pose(
+                            decision.root_pose, decision.yaw, look_at=effective_look_at
                         )
                         _place_camera(stage, verify_cam_path, v_eye, v_tgt)  # 3rd-person: SHOW the robot
                     debug_root_path = (
@@ -11222,9 +11563,11 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                             _isaac_camera_contract(stage, over_cam, width, height),
                             over_frame_path,
                             cap,
-                            camera_role="overview",
-                            camera_mode="static_overview",
+                            camera_role=overview_camera_role,
+                            camera_mode=overview_camera_mode,
                         )
+                    else:
+                        blockers.append("overview_frame_not_saved_or_corrupt")
                     if over_ok and over_depth_annot is not None:
                         if _save_depth(
                             over_depth_annot,
@@ -11271,6 +11614,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         )
                         if groot_policy_enabled:
                             last_groot_policy_frame_path = pov_frame_path
+                    else:
+                        blockers.append("robot_pov_frame_not_saved_or_corrupt")
                     if pov_ok and segmentation and pov_seg_annots is not None:
                         seg_save = _save_segmentation(
                             pov_seg_annots,
@@ -11348,6 +11693,14 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 camera_role="third_person_verify",
                                 camera_mode="third_person_verify",
                             )
+                        else:
+                            if over_ok and overview_camera_mode == "task_framed_third_person":
+                                _log(
+                                    f"scenario {sid}: dedicated verify frame corrupt; using "
+                                    "task-framed overview RTX frame as third-person evidence"
+                                )
+                            else:
+                                blockers.append("third_person_verify_frame_not_saved_or_corrupt")
                     if topdown_enabled and stance_plan is not None and debug_root_path is not None:
                         floor_z = float(decision.root_pose[2]) - ROBOT_PELVIS_HEIGHT_M
                         if stance_plan.get("floor_z_hint") is not None:
@@ -11394,6 +11747,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                                 camera_role="placement_topdown",
                                 camera_mode="orthographic_or_topdown_debug",
                             )
+                        else:
+                            blockers.append("placement_topdown_frame_not_saved_or_corrupt")
                         placement_topdown_layout_frame_path = (
                             sdir / "frames" / f"placement_topdown_layout_{cap:04d}.png"
                         )
@@ -11496,6 +11851,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     )
                 if placement_validation_manifest is not None:
                     placement_visual_frames = sorted((sdir / "frames").glob("verify_*.png"))
+                    if not placement_visual_frames:
+                        placement_visual_frames = sorted((sdir / "frames").glob("overview_*.png"))
                     pov_visual_frames = sorted((sdir / "frames").glob("robot_pov_*.png"))
                     visual_qc = _run_task_visual_qc(
                         placement_visual_frames,
@@ -11551,6 +11908,17 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                         if pov_geometry_report.get("status") != "PASS":
                             blockers_now.add("manipulation_pov_geometry_failed")
                             blockers_now.update(pov_geometry_report.get("blockers") or [])
+                    placement_validation_manifest["stance_gate_authority"] = {
+                        "production_authority": "stance_configuration_agent.v1",
+                        "adaptive_task_stance_configurator_production_authority": False,
+                        "thresholds_and_measured_validation_outside_agent_proposal": True,
+                        "typed_rejection_feedback_bounded": True,
+                        "task_id": sid,
+                        "target_resolution": (stance_plan or {}).get("target_resolution"),
+                        "affordance_resolution": (stance_plan or {}).get(
+                            "affordance_resolution"
+                        ),
+                    }
                     placement_validation_manifest["blockers"] = sorted(blockers_now)
                     placement_validation_manifest["status"] = (
                         "PASS" if not placement_validation_manifest["blockers"] else "FAIL"

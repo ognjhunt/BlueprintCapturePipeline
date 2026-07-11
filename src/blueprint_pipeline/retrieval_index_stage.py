@@ -47,6 +47,16 @@ from .site_memory_utils import (
     visibility_cells_from_record,
     write_jsonl as _sm_write_jsonl,
 )
+from .retrieval_geometry_utils import (
+    arkit_confidence_uri as _arkit_confidence_uri,
+    arkit_depth_uri as _arkit_depth_uri,
+    euclidean as _euclidean,
+    local_to_gs_uri as _local_to_gs_uri,
+    mat_tx as _mat_tx,
+    mat_ty as _mat_ty,
+    mat_tz as _mat_tz,
+    p95 as _p95,  # noqa: F401 - retained compatibility seam for callers/tests
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2164,65 +2174,3 @@ def _retrieval_query_count(*, site_index_path: Path, records: List[Dict[str, Any
         return len(results)
     except Exception:
         return 0
-
-
-# ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-
-
-def _mat_tx(T: Any) -> float:
-    try:
-        return float(T[0][3])
-    except (TypeError, IndexError, KeyError):
-        return 0.0
-
-
-def _mat_ty(T: Any) -> float:
-    try:
-        return float(T[1][3])
-    except (TypeError, IndexError, KeyError):
-        return 0.0
-
-
-def _mat_tz(T: Any) -> float:
-    try:
-        return float(T[2][3])
-    except (TypeError, IndexError, KeyError):
-        return 0.0
-
-
-def _euclidean(
-    a: Tuple[float, float, float],
-    b: Optional[Tuple[float, float, float]],
-) -> float:
-    if b is None:
-        return float("inf")
-    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
-
-
-def _p95(values: List[float]) -> float:
-    return _sm_p95(values)
-
-
-# ---------------------------------------------------------------------------
-# GCS URI helpers
-# ---------------------------------------------------------------------------
-
-
-def _local_to_gs_uri(path: Path, ctx: LocalCaptureContext) -> Optional[str]:
-    try:
-        rel = path.relative_to(ctx.storage_root / ctx.bucket)
-        return f"gs://{ctx.bucket}/{rel.as_posix()}"
-    except ValueError:
-        return None
-
-
-def _arkit_depth_uri(frame_id: str, ctx: LocalCaptureContext) -> Optional[str]:
-    p = ctx.raw_root / "arkit" / "depth" / f"{frame_id}.png"
-    return _local_to_gs_uri(p, ctx) if p.is_file() else None
-
-
-def _arkit_confidence_uri(frame_id: str, ctx: LocalCaptureContext) -> Optional[str]:
-    p = ctx.raw_root / "arkit" / "confidence" / f"{frame_id}.png"
-    return _local_to_gs_uri(p, ctx) if p.is_file() else None

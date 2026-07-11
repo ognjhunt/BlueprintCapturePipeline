@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline import isaac_g1_kitchen_parity_job as J
+from blueprint_pipeline import isaac_review_media as review_media
 from blueprint_pipeline import paid_lane_guard
 
 import pytest
@@ -101,6 +102,46 @@ def test_prelaunch_spend_guard_budgets_all_sequential_startup_attempts() -> None
     assert guard["billable_budget_seconds"] == 7200
     assert guard["estimated_max_spend_usd"] == 2.0
     assert guard["can_launch"] is True
+
+
+def test_capacity_preflight_rate_drives_spend_estimate_not_marketplace_ceiling() -> None:
+    capacity = {
+        "status": "available",
+        "viable_size_regions": [
+            {"size": "gpu-6000adax1-48gb", "price_hourly": 1.57, "matching_regions": ["tor1"]},
+        ],
+    }
+    rate = J._capacity_preflight_hourly_rate(capacity)
+    assert rate == 1.57
+
+    guard = J._isaac_g1_prelaunch_spend_guard(
+        allow_paid=True,
+        provider_name="digitalocean",
+        max_spend_usd=1.5,
+        max_seconds=1800,
+        max_hourly_rate_usd=rate,
+        max_hourly_rate_source="provider_capacity_preflight_viable_inventory",
+        contender_count=1,
+        marker_timeout_seconds=1566,
+        startup_no_runtime_timeout_seconds=1446,
+        max_attempts=1,
+    )
+    assert guard["can_launch"] is True
+    assert guard["estimated_max_spend_usd"] == 1.4156
+    assert guard["max_hourly_rate_source"] == (
+        "provider_capacity_preflight_viable_inventory"
+    )
+
+    runpod_rate = J._capacity_preflight_hourly_rate(
+        {
+            "status": "available",
+            "viable_gpu_types": [
+                {"gpu_type_id": "NVIDIA RTX A6000", "on_demand_price_usd_per_hour": 0.49},
+                {"gpu_type_id": "NVIDIA A40", "on_demand_price_usd_per_hour": 0.44},
+            ],
+        }
+    )
+    assert runpod_rate == 0.49
 
 
 def test_cli_persists_manifest_even_when_blocked(monkeypatch, tmp_path: Path) -> None:
@@ -220,6 +261,29 @@ def test_cli_forwards_provider_race_list(monkeypatch, tmp_path: Path) -> None:
     assert captured["provider"] == "runpod,vast"
 
 
+def test_cli_forwards_supervised_startup(monkeypatch, tmp_path: Path) -> None:
+    scenarios_path = tmp_path / "scenarios.json"
+    scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_isaac_g1_kitchen_parity_job", fake_run)
+    rc = J.main(
+        [
+            "--scenarios",
+            str(scenarios_path),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--supervised-startup",
+        ]
+    )
+    assert rc == 0
+    assert captured["supervised_startup"] is True
+
+
 def test_cli_forwards_vast_max_hourly_rate(monkeypatch, tmp_path: Path) -> None:
     scenarios_path = tmp_path / "scenarios.json"
     scenarios_path.write_text(json.dumps(_SCENARIOS), encoding="utf-8")
@@ -275,6 +339,65 @@ def test_build_parity_bundle_contains_runner_policy_request_and_assets(tmp_path:
         assert required in manifest["required_files"]
     assert not any(n.endswith(".pyc") or "__pycache__" in n for n in names if n.startswith("scene_placement/"))
     assert req["steps"] == 32 and len(req["scenarios"]) == 2
+
+
+def test_supervised_bundle_and_worker_bootstrap_wire_all_startup_gates(tmp_path: Path) -> None:
+    inventory = {
+        "schema_version": "kitchen_asset_inventory_checksums.v1",
+        "main_usd": "Collected_KitchenRoom/KitchenRoom.usd",
+        "file_count": 1,
+        "total_bytes": 10,
+        "archive_sha256": None,
+        "files": [
+            {
+                "path": "Collected_KitchenRoom/KitchenRoom.usd",
+                "sha256": "a" * 64,
+                "bytes": 10,
+            }
+        ],
+    }
+    zip_path = J.build_parity_bundle(
+        scenarios=_SCENARIOS,
+        out_dir=tmp_path / "job",
+        kitchen_asset_inventory=inventory,
+    )
+    with zipfile.ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+        persisted = json.loads(archive.read("kitchen_asset_inventory_checksums.json"))
+    assert persisted == inventory
+    assert "blueprint_pipeline/isaac_review_renderer_canary.py" in names
+    assert "blueprint_pipeline/kitchen_asset_startup_gate.py" in names
+    assert "blueprint_pipeline/adaptive_task_stance_configurator.py" in names
+    assert "safe_extract_zip" in J.BOOTSTRAP
+    assert "blueprint_pipeline.isaac_worker_runtime_preflight" in J.BOOTSTRAP
+    assert "blueprint_pipeline.kitchen_asset_startup_gate" in J.BOOTSTRAP
+    assert "blueprint_pipeline.isaac_review_renderer_canary" in J.BOOTSTRAP
+    assert "supervised_startup_gates.json" in J.BOOTSTRAP
+    assert '"--archive","/workspace/kitchen_assets.zip"' in J.BOOTSTRAP
+    assert J.BOOTSTRAP.index("kitchen_passed=run_startup_gate") < J.BOOTSTRAP.index(
+        '"fast_startup_canary"'
+    )
+    assert J.BOOTSTRAP.index('"fast_startup_canary"') < J.BOOTSTRAP.index(
+        '"review_renderer_canary"'
+    )
+
+
+def test_supervised_launch_spec_binds_worker_gate_mode_and_digest(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_bundle_url.txt").write_text("https://example.test/in")
+    (job_dir / "provider_output_put_url.txt").write_text("https://example.test/out")
+    digest = "sha256:" + "b" * 64
+    spec = J.build_launch_spec(
+        job_dir,
+        image=f"registry.example/worker@{digest}",
+        policy_id="p",
+        steps=8,
+        supervised_startup=True,
+    )
+    assert spec.env["PARITY_SUPERVISED_STARTUP"] == "1"
+    assert spec.env["BLUEPRINT_WORKER_IMAGE_DIGEST"] == digest
+    assert spec.env["PYTHONPATH"] == J.WORKER_BUNDLE_DIR
 
 
 def test_kitchen_asset_layout_validation_selects_root_kitchen_room() -> None:
@@ -720,8 +843,8 @@ def test_local_mp4_repair_assembles_missing_videos_without_topdown_layout_mix(
 
         return Proc()
 
-    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
-    monkeypatch.setattr(J.subprocess, "run", fake_run)
+    monkeypatch.setattr(review_media.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(review_media.subprocess, "run", fake_run)
 
     repair = J._repair_collected_review_mp4s(
         render_out_dir=render_out,
@@ -761,8 +884,8 @@ def test_local_mp4_repair_skips_optional_missing_topdown(
 
         return Proc()
 
-    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
-    monkeypatch.setattr(J.subprocess, "run", fake_run)
+    monkeypatch.setattr(review_media.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(review_media.subprocess, "run", fake_run)
 
     repair = J._repair_collected_review_mp4s(
         render_out_dir=render_out,
@@ -1121,7 +1244,8 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
         max_spend_usd=20.0,
     )
 
-    assert m["status"] == "completed"
+    assert m["status"] == "evidence_collected_closure_required"
+    assert "g1_kitchen_attempt_closure_missing" in m["blockers"]
     assert m["launch"]["provider"] == "vast"
     assert m["launch"]["terminated_losers"] == 1
     assert captured["collect_provider"] == "vast"
@@ -1555,6 +1679,46 @@ def test_paid_runpod_large_worker_image_requires_canary_or_override(
     assert "staging" not in m
 
 
+def test_paid_runpod_split_layer_worker_image_allows_bounded_cold_start(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    image_ref = "registry.example/blueprint/isaac-eval-worker:split"
+    diagnostic_path = tmp_path / "isaac_worker_image_manifest_diagnostic.json"
+    diagnostic_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "isaac_worker_image_manifest_diagnostic.v1",
+                "status": "completed",
+                "image_ref": image_ref,
+                "layer_count": 24,
+                "total_compressed_size_bytes": 10_600_000_000,
+                "largest_layer_size_bytes": 2_420_000_000,
+                "large_image_pull_risk": True,
+                "split_layer_layout_suitable": True,
+                "recommended_startup_no_runtime_timeout_seconds": 1446,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_REF_ENV, image_ref)
+    monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV, str(diagnostic_path))
+    monkeypatch.delenv(J.ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV, raising=False)
+
+    selected, policy = J._paid_worker_image_policy(
+        image=None,
+        allow_paid=True,
+        provider_names=["runpod"],
+        cold=True,
+        warm_only=False,
+        image_startup_canary=False,
+    )
+    assert selected == image_ref
+    assert policy["status"] == "allowed"
+    assert policy["split_layer_cold_start_suitable"] is True
+    assert policy["large_runpod_image_fresh_start_allowed"] is True
+
+
 def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
     tmp_path: Path,
     monkeypatch,
@@ -1646,8 +1810,8 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
         cold_race_contenders=1,
     )
 
-    assert m["status"] == "completed"
     assert m["image_startup_canary"] is True
+    assert m["status"] == "completed"
     assert m["worker_image_policy"]["status"] == "allowed"
     assert m["worker_image_policy"]["image_startup_canary"] is True
     assert m["worker_image_policy"]["large_runpod_image_fresh_start_allowed"] is True
@@ -1729,7 +1893,8 @@ def test_paid_multi_provider_drops_vast_without_override(
         cold_race_contenders=1,
     )
 
-    assert m["status"] == "completed"
+    assert m["status"] == "evidence_collected_closure_required"
+    assert "g1_kitchen_attempt_closure_missing" in m["blockers"]
     assert m["provider"] == "runpod"
     assert m["providers"] == ["runpod"]
     assert m["provider_policy"]["status"] == "degraded"
@@ -3048,8 +3213,8 @@ def test_local_mp4_repair_labels_truncated_frame_sequences(
 
         return Proc()
 
-    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
-    monkeypatch.setattr(J.subprocess, "run", fake_run)
+    monkeypatch.setattr(review_media.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(review_media.subprocess, "run", fake_run)
 
     repair = J._repair_collected_review_mp4s(
         render_out_dir=render_out,
@@ -3091,8 +3256,8 @@ def test_local_mp4_repair_full_frame_count_still_reads_repaired(
 
         return Proc()
 
-    monkeypatch.setattr(J.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
-    monkeypatch.setattr(J.subprocess, "run", fake_run)
+    monkeypatch.setattr(review_media.shutil, "which", lambda name: "/usr/local/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(review_media.subprocess, "run", fake_run)
 
     repair = J._repair_collected_review_mp4s(
         render_out_dir=render_out,

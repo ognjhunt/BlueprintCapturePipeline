@@ -1,21 +1,10 @@
 """DigitalOcean launcher for the sealed GR00T+OSCAR closed-loop image.
 
-This is the paid execution path for the pushed ``blueprint-groot-oscar-eval``
-image. It deliberately reuses the existing provider-neutral object-store
-transport and teardown watcher: the worker uploads ``bootstrap.json`` progress
-plus a final ``isaac_runtime_result.json`` zip to a signed PUT URL, the host
-polls the signed GET URL, and the DigitalOcean droplet is destroyed with
-provider-API verification.
-
-Claim boundary: this launcher proves provider startup and closed-loop artifact
-production only when the returned manifest says so. Generated-video success,
-forward/inverse consistency, real-world task success, and physical robot
-readiness remain separate gates.
+Provider startup, semantic success, consistency, and teardown remain distinct
+proof rows; a structurally completed worker result closes none by itself.
 """
 from __future__ import annotations
 
-import argparse
-import base64
 import json
 import shlex
 import time
@@ -24,8 +13,23 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
-
 from .common import ensure_dir, utc_now_iso, write_json
+from .groot_oscar_digitalocean_job_inputs import (
+    _argv_value,
+    _b64_bytes,
+    _b64_text,
+    _episode_length_contract,
+    _int_or_none,
+    _json_b64,
+    _mapping,
+    _read_json_mapping,
+    _read_json_mapping_if_present,
+    _string,
+    _write_input_bundle,
+    _write_job_manifest,
+    build_digitalocean_job_parser,
+    runtime_contract_for_pre_spend,
+)
 from .gpu_render_providers import (
     DEFAULT_DO_GPU_SIZE,
     DO_GPU_SIZE_VRAM_MB,
@@ -34,6 +38,10 @@ from .gpu_render_providers import (
     _filter_do_size_candidates_by_gpu_ram,
     get_render_provider,
 )
+from .g1_kitchen_digitalocean_closure import (
+    finalize_digitalocean_attempt_closure,
+    teardown_proof_from_digitalocean_watch,
+)
 from .groot_oscar_closed_loop_image import (
     DEFAULT_MIN_TASK_ADAPTIVE_STEPS,
     DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS,
@@ -41,6 +49,10 @@ from .groot_oscar_closed_loop_image import (
     SEALED_CONFIRMED_ENV,
     build_sealed_launch_plan,
     sealed_image_contract,
+)
+from .groot_oscar_worker_startup_script import (
+    GEAR_SONIC_READY_SCRIPT,
+    STARTUP_GATES_SCRIPT,
 )
 from .isaac_particlefield_render_job import stage_bundle, watch_and_collect
 from .lane_hardware_requirements import build_lane_hardware_contract
@@ -53,11 +65,6 @@ from .paid_lane_guard import (
     open_pending_teardown,
     require_pre_spend_preflight,
 )
-from .provider_reliability_manifest import (
-    TEARDOWN_STATUS_SOURCE_PROVIDER_API,
-    build_teardown_proof,
-)
-
 SCHEMA_VERSION = "groot_oscar_digitalocean_closed_loop_job.v1"
 LANE = "kitchen_g1_groot_oscar_closed_loop"
 JOB_MANIFEST_FILENAME = "groot_oscar_digitalocean_closed_loop_job_manifest.json"
@@ -68,7 +75,7 @@ OBJECTIVE_READINESS_AUDIT_FILENAME = "kitchen_dishwasher_full_pipeline_readiness
 DIGITALOCEAN_CAPACITY_PROBE_FILENAME = "digitalocean_capacity_probe.json"
 DIGITALOCEAN_CAPACITY_WAIT_FILENAME = "digitalocean_capacity_wait.json"
 DEFAULT_PROVIDER = "digitalocean"
-DEFAULT_CONFIGURED_WAM_CONSISTENCY_COMMAND: str | None = None
+DEFAULT_CONFIGURED_WAM_CONSISTENCY_COMMAND: str | None = "python -m blueprint_pipeline.wam_strict_action_consistency_scorer_client"
 DEFAULT_MAX_HOURLY_RATE_USD = 3.5
 DEFAULT_CONTAINER_DISK_GB = 220
 DEFAULT_VOLUME_GB = 120
@@ -77,131 +84,7 @@ DEFAULT_EPISODE_MAX_STEPS = 48
 DEFAULT_MIN_COHERENT_HORIZON_FRAMES = 2
 DEFAULT_MIN_TASK_COMPLETION_STEPS = DEFAULT_MIN_TASK_ADAPTIVE_STEPS
 DEFAULT_MIN_GPU_RAM_MB = 48000
-WORKER_PROGRESS_STALL_PHASES = (
-    "container_bash_started",
-    "inputs_ready",
-    "healthcheck_passed",
-    "groot_server_ready",
-)
-
-
-def _episode_length_contract(
-    *,
-    steps_cap: int | None,
-    stop_on_task_completion: bool,
-    min_steps_before_task_completion: int = DEFAULT_MIN_TASK_COMPLETION_STEPS,
-    oscar_num_frames_arg: int | None = None,
-) -> dict[str, Any]:
-    return {
-        "episode_length_unit": "closed_loop_control_steps",
-        "stop_condition": "task_completion_or_step_cap",
-        "steps_cap": steps_cap,
-        "min_steps_before_task_completion": int(min_steps_before_task_completion),
-        "steps_is_safety_cap": True,
-        "stop_on_task_completion": bool(stop_on_task_completion),
-        "oscar_num_frames_arg": oscar_num_frames_arg,
-        "oscar_num_frames_scope": "per_generation_clip_not_episode_limit",
-        "episode_not_bound_to_oscar_clip_frames": bool(
-            stop_on_task_completion and steps_cap
-        ),
-    }
-
-
-def _string(value: Any) -> str:
-    return "" if value is None else str(value).strip()
-
-
-def _mapping(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _b64_bytes(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
-
-
-def _b64_text(text: str) -> str:
-    return _b64_bytes(text.encode("utf-8"))
-
-
-def _json_b64(payload: Mapping[str, Any]) -> str:
-    return _b64_text(json.dumps(dict(payload), sort_keys=True, separators=(",", ":")))
-
-
-def _write_input_bundle(
-    *,
-    bundle_zip: Path,
-    plan: Mapping[str, Any],
-    route_payload: Mapping[str, Any],
-    seed_path: Path,
-    task_prompt: str,
-    seed_provenance: Mapping[str, Any] | None = None,
-) -> Path:
-    ensure_dir(bundle_zip.parent)
-    provenance = dict(seed_provenance or {})
-    manifest = {
-        "schema_version": "groot_oscar_closed_loop_input_bundle.v1",
-        "generated_at": utc_now_iso(),
-        "seed_filename": "initial_policy_frame.png",
-        "route_filename": "route.json",
-        "seed_provenance_filename": "seed_provenance.json",
-        "task_prompt": task_prompt,
-        "sealed_launch_plan": dict(plan),
-        "seed_provenance": provenance,
-        "claim_boundary": (
-            "Input bundle stages the requested closed-loop prompt, route, and "
-            "seed frame. It is not WAM generation, manipulation success, "
-            "forward/inverse consistency, or physical robot proof."
-        ),
-    }
-    with zipfile.ZipFile(bundle_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.write(seed_path, "initial_policy_frame.png")
-        zf.writestr("route.json", json.dumps(dict(route_payload), indent=2))
-        zf.writestr("task_prompt.txt", task_prompt)
-        zf.writestr("sealed_launch_plan.json", json.dumps(dict(plan), indent=2))
-        zf.writestr("seed_provenance.json", json.dumps(provenance, indent=2))
-        zf.writestr("bundle_manifest.json", json.dumps(manifest, indent=2))
-    return bundle_zip
-
-
-def _write_job_manifest(out_dir: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
-    payload = dict(manifest)
-    write_json(out_dir / JOB_MANIFEST_FILENAME, payload)
-    return payload
-
-
-def _read_json_mapping(path: str | Path | None) -> dict[str, Any]:
-    if path is None:
-        return {}
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    return dict(payload) if isinstance(payload, Mapping) else {}
-
-
-def _read_json_mapping_if_present(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return _read_json_mapping(path)
-    except Exception:  # noqa: BLE001
-        return {}
-
-
-def _argv_value(argv: Sequence[Any], flag: str) -> str | None:
-    values = [str(item) for item in argv]
-    try:
-        idx = values.index(flag)
-    except ValueError:
-        return None
-    next_idx = idx + 1
-    if next_idx >= len(values):
-        return None
-    return values[next_idx]
-
-
-def _int_or_none(value: Any) -> int | None:
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return None
+WORKER_PROGRESS_STALL_PHASES = ("container_bash_started", "inputs_ready", "healthcheck_passed", "groot_server_ready", "isaac_task_executor_ready")
 
 
 def _paid_resume_command_payload(
@@ -744,7 +627,12 @@ def audit_prepared_closed_loop_job(prepared_dir: str | Path) -> dict[str, Any]:
     if not resume:
         blockers.append("paid_resume_command_missing_or_unreadable")
 
-    if manifest and manifest.get("status") not in {"prepared", "completed"}:
+    closure_only_blocked_live_result = bool(
+        manifest.get("status") == "blocked"
+        and _mapping(manifest.get("closed_loop_result_contract")).get("status") == "PASS"
+        and _mapping(manifest.get("g1_kitchen_attempt_closure")).get("status") == "blocked"
+    )
+    if manifest and manifest.get("status") not in {"prepared", "completed"} and not closure_only_blocked_live_result:
         blockers.append("prepared_manifest_status_not_prepared_or_completed")
     plan = _mapping(manifest.get("sealed_launch_plan")) if manifest else {}
     contract = _mapping(manifest.get("sealed_image_contract")) if manifest else {}
@@ -855,6 +743,10 @@ def audit_prepared_closed_loop_job(prepared_dir: str | Path) -> dict[str, Any]:
         "sealed_launch_plan.json",
         "seed_provenance.json",
         "bundle_manifest.json",
+        "task_success_contract.json",
+        "attempt_input_manifest.json",
+        "kitchen_asset_inventory_checksums.json",
+        "kitchen/KitchenRoom.usd",
     }
     missing_bundle_files = sorted(required_bundle_files - bundle_names)
     if missing_bundle_files:
@@ -1421,6 +1313,32 @@ def audit_kitchen_dishwasher_objective_readiness(
             remaining=semantic_remaining,
         )
     )
+    attempt_closure = _mapping(manifest.get("g1_kitchen_attempt_closure"))
+    live_attempt_observed = bool(closed_loop_run or result_contract or attempt_closure)
+    closure_status = (
+        "PASS"
+        if attempt_closure.get("schema_version") == "g1_kitchen_attempt_closure.v1"
+        and attempt_closure.get("status") == "completed"
+        else "FAIL"
+        if live_attempt_observed
+        else "PENDING"
+    )
+    requirements.append(
+        _requirement(
+            "attempt_bound_g1_kitchen_closure_completed",
+            closure_status,
+            {
+                "closure_status": attempt_closure.get("status"),
+                "closure_blockers": attempt_closure.get("blockers") or [],
+                "buyer_readout_projection": manifest.get("buyer_readout_projection"),
+            },
+            remaining=(
+                None
+                if closure_status == "PASS"
+                else "Complete every required proof row plus API teardown and zero inventory."
+            ),
+        )
+    )
     by_id = _requirement_by_id(requirements)
     local_requirement_ids = [
         "kitchen_dishwasher_open_or_close_task",
@@ -1500,6 +1418,12 @@ def build_worker_bootstrap_script(plan: Mapping[str, Any]) -> str:
         for key, value in sorted(_mapping(plan.get("env")).items())
     )
     groot_cmd = _shell_join(plan.get("groot_server_command") or [])
+    isaac_task_executor_cmd = _shell_join(
+        plan.get("isaac_task_executor_command") or []
+    )
+    gear_sonic_controller_cmd = _shell_join(
+        plan.get("gear_sonic_controller_command") or []
+    )
     closed_loop_cmd = _shell_join(plan.get("closed_loop_command") or [])
     return f"""set -euo pipefail
 mkdir -p /workspace/closed_loop_out /workspace/out
@@ -1533,6 +1457,10 @@ include = [
     workspace / "groot_oscar_image_healthcheck.json",
     workspace / "groot_oscar_image_healthcheck.stderr.log",
     workspace / "groot_server.log",
+    workspace / "gear_sonic_controller.log",
+    workspace / "isaac_task_executor.log",
+    workspace / "initial_g1_sonic_state.json",
+    workspace / "runtime_ephemeral_trust.json",
     workspace / "closed_loop_stdout.log",
     workspace / "closed_loop_stderr.log",
     workspace / "isaac_runtime_result.json",
@@ -1595,6 +1523,27 @@ upload_phase() {{
 
 upload_phase container_bash_started
 
+curl -fsSL "$BLUEPRINT_EVAL_MANIFEST_URI" -o /workspace/input_bundle.zip
+python - <<'PY'
+import os, pathlib, shutil, stat, zipfile
+root = pathlib.Path('/workspace').resolve()
+with zipfile.ZipFile('/workspace/input_bundle.zip') as archive:
+    for member in archive.infolist():
+        rel = pathlib.PurePosixPath(member.filename)
+        mode = (member.external_attr >> 16) & 0o170000
+        if rel.is_absolute() or '..' in rel.parts or stat.S_ISLNK(mode):
+            raise RuntimeError('unsafe_input_bundle_member:' + member.filename)
+        target = (root / pathlib.Path(*rel.parts)).resolve()
+        if os.path.commonpath([str(root), str(target)]) != str(root):
+            raise RuntimeError('input_bundle_member_escapes_workspace')
+        if member.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as source, open(target, 'wb') as sink:
+            shutil.copyfileobj(source, sink)
+PY
+
 python - <<'PY'
 import base64
 import os
@@ -1621,6 +1570,21 @@ Path("/workspace/seed_provenance.json").write_text(
 )
 PY
 upload_phase inputs_ready
+python -m blueprint_pipeline.g1_kitchen_bundle_compatibility \
+  --manifest /workspace/bundle_manifest.json
+
+{STARTUP_GATES_SCRIPT}
+
+# Keep runtime signing material allocation-local and out of uploaded artifacts.
+# The public-key hashes are exported to the independent verifier paths and
+# retained in the worker output so every attestation is attempt-auditable.
+mkdir -p /run/blueprint-secrets
+chmod 700 /run/blueprint-secrets
+python -m blueprint_pipeline.runtime_ephemeral_trust \
+  --secret-root /run/blueprint-secrets \
+  --environment-file /run/blueprint-secrets/trust_env.sh \
+  --public-manifest /workspace/runtime_ephemeral_trust.json
+source /run/blueprint-secrets/trust_env.sh
 
 set +e
 python3 /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --require-cuda \
@@ -1639,8 +1603,14 @@ upload_phase healthcheck_passed
 
 {groot_cmd} > /workspace/groot_server.log 2>&1 &
 GROOT_PID=$!
+{gear_sonic_controller_cmd} > /workspace/gear_sonic_controller.log 2>&1 &
+GEAR_SONIC_PID=$!
+{isaac_task_executor_cmd} > /workspace/isaac_task_executor.log 2>&1 &
+ISAAC_TASK_PID=$!
 cleanup() {{
   kill "$GROOT_PID" >/dev/null 2>&1 || true
+  kill "$GEAR_SONIC_PID" >/dev/null 2>&1 || true
+  kill "$ISAAC_TASK_PID" >/dev/null 2>&1 || true
 }}
 trap cleanup EXIT
 
@@ -1674,6 +1644,39 @@ if [ "$GROOT_READY_RC" -ne 0 ]; then
 fi
 upload_phase groot_server_ready
 
+{GEAR_SONIC_READY_SCRIPT}
+
+set +e
+python - <<'PY'
+import json
+import time
+import urllib.request
+from pathlib import Path
+
+deadline = time.time() + 900
+while time.time() < deadline:
+    if Path('/workspace/initial_g1_sonic_state.json').is_file():
+        try:
+            payload = json.loads(Path('/workspace/initial_g1_sonic_state.json').read_text())
+            if payload.get('measurement', {{}}).get('surrogate') is False:
+                break
+        except Exception:
+            pass
+    time.sleep(5)
+else:
+    raise SystemExit('persistent_isaac_task_executor_not_ready')
+PY
+ISAAC_TASK_READY_RC=$?
+set -e
+if [ "$ISAAC_TASK_READY_RC" -ne 0 ]; then
+  BLUEPRINT_CLOSED_LOOP_RC="$ISAAC_TASK_READY_RC" \
+    BLUEPRINT_WORKER_FAILURE="persistent_isaac_task_executor_not_ready" \
+    python /workspace/write_result.py
+  upload_phase runner_done
+  exit "$ISAAC_TASK_READY_RC"
+fi
+upload_phase isaac_task_executor_ready
+
 set +e
 {closed_loop_cmd} > /workspace/closed_loop_stdout.log 2> /workspace/closed_loop_stderr.log
 RC=$?
@@ -1693,6 +1696,7 @@ def build_launch_spec(
     route_payload: Mapping[str, Any],
     task_prompt: str,
     plan: Mapping[str, Any],
+    launch_nonce: str,
     seed_provenance: Mapping[str, Any] | None = None,
     container_disk_gb: int = DEFAULT_CONTAINER_DISK_GB,
     volume_gb: int = DEFAULT_VOLUME_GB,
@@ -1711,6 +1715,8 @@ def build_launch_spec(
         "BLUEPRINT_TASK_PROMPT": task_prompt,
         "BLUEPRINT_SEALED_LAUNCH_PLAN_B64": _json_b64(plan),
         "BLUEPRINT_SEED_PROVENANCE_B64": _json_b64(seed_provenance or {}),
+        "BLUEPRINT_LAUNCH_SESSION_ID": launch_nonce,
+        "BLUEPRINT_WORKER_IMAGE_DIGEST": image_ref,
         SEALED_CONFIRMED_ENV: "true",
     }
     return RenderLaunchSpec(
@@ -1764,16 +1770,6 @@ def _prelaunch_spend_guard(
             "can_launch_is_not_task_success": True,
             "no_provider_api_call_before_can_launch": True,
         },
-    }
-
-
-def _runtime_contract_for_pre_spend() -> dict[str, Any]:
-    return {
-        "startup_marker": "container_bash_started",
-        "progress_marker": "bootstrap.json",
-        "startup_timeout_seconds": 900,
-        "no_progress_timeout_seconds": 900,
-        "progress_stall_phases": list(WORKER_PROGRESS_STALL_PHASES),
     }
 
 
@@ -1857,7 +1853,9 @@ def _run_pre_spend_preflight(
                 capacity_row=capacity_row,
             ),
             image_contract=image_contract_from_ref(image_ref),
-            runtime_contract=_runtime_contract_for_pre_spend(),
+            runtime_contract=runtime_contract_for_pre_spend(
+                WORKER_PROGRESS_STALL_PHASES
+            ),
             spend_gate_open=prelaunch.get("can_launch") is True,
             hardware_contract=hardware_contract,
             record_dir=out,
@@ -1865,42 +1863,6 @@ def _run_pre_spend_preflight(
     except PreSpendPreflightBlocked as blocked_preflight:
         preflight = blocked_preflight.preflight
     return hardware_contract, preflight
-
-
-def _teardown_proof_from_watch(*, instance_id: str, watch: Mapping[str, Any]) -> dict[str, Any]:
-    teardown = _mapping(watch.get("teardown"))
-    reason = _string(watch.get("teardown_reason")).lower()
-    status = _string(teardown.get("status")).lower()
-    if status in {"stopped", "preserved", "skipped"} or reason in {
-        "left_running_by_request",
-        "runner_done_preserved_for_warm_reuse",
-    }:
-        return build_teardown_proof(
-            provider=DEFAULT_PROVIDER,
-            allocation_id=instance_id,
-            terminate_requested=False,
-            provider_terminal_status=None,
-            keep_alive_requested=True,
-            keep_alive_reason=reason or status or "kept_alive",
-        )
-    verification = _mapping(teardown.get("verification"))
-    observed_status = _string(verification.get("provider_status")).lower()
-    if verification.get("api_confirmed") is True and observed_status:
-        return build_teardown_proof(
-            provider=DEFAULT_PROVIDER,
-            allocation_id=instance_id,
-            terminate_requested=True,
-            provider_terminal_status=observed_status,
-            verified_at=utc_now_iso(),
-            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API,
-        )
-    return build_teardown_proof(
-        provider=DEFAULT_PROVIDER,
-        allocation_id=instance_id,
-        terminate_requested=True,
-        provider_terminal_status="terminated" if status == "terminated" else status or None,
-        verified_at=utc_now_iso() if status == "terminated" else None,
-    )
 
 
 def _closed_loop_result_contract(
@@ -2065,11 +2027,23 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     allow_wam_success_labeling: bool = False,
     wam_success_label_timeout_seconds: float
     | None = DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS,
+    task_success_contract_file: str | Path | None = None,
+    attempt_input_manifest_file: str | Path | None = None,
+    kitchen_asset_archive_file: str | Path | None = None,
 ) -> dict[str, Any]:
     out = Path(out_dir)
     ensure_dir(out)
     seed = Path(start_frame)
     route_path = Path(route_file)
+    if task_success_contract_file is None:
+        candidate = route_path.parent / "task_success_contract.json"
+        task_success_contract_file = candidate if candidate.is_file() else None
+    if attempt_input_manifest_file is None:
+        candidate = route_path.parent / "attempt_input_manifest.json"
+        attempt_input_manifest_file = candidate if candidate.is_file() else None
+    if kitchen_asset_archive_file is None:
+        candidate = route_path.parent / "kitchen_assets.zip"
+        kitchen_asset_archive_file = candidate if candidate.is_file() else None
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "blocked",
@@ -2100,9 +2074,39 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     if not route_path.is_file():
         manifest["blockers"].append("route_file_missing")
         return _write_job_manifest(out, manifest)
+    required_runtime_inputs = {
+        "task_success_contract_file": task_success_contract_file,
+        "attempt_input_manifest_file": attempt_input_manifest_file,
+        "kitchen_asset_archive_file": kitchen_asset_archive_file,
+    }
+    missing_runtime_inputs = [
+        name
+        for name, value in required_runtime_inputs.items()
+        if value is None or not Path(value).is_file()
+    ]
+    manifest["persistent_isaac_runtime_inputs"] = {
+        "status": "ready" if not missing_runtime_inputs else "blocked",
+        "missing": missing_runtime_inputs,
+        "required_for_paid_launch": True,
+    }
+    if allow_paid and missing_runtime_inputs:
+        manifest["blockers"].extend(
+            f"persistent_isaac_runtime_input_missing:{name}"
+            for name in missing_runtime_inputs
+        )
+        return _write_job_manifest(out, manifest)
     route_payload = json.loads(route_path.read_text(encoding="utf-8"))
     if not isinstance(route_payload, Mapping):
         manifest["blockers"].append("route_file_must_contain_json_object")
+        return _write_job_manifest(out, manifest)
+    attempt_input = (
+        _read_json_mapping(attempt_input_manifest_file)
+        if attempt_input_manifest_file is not None
+        else {}
+    )
+    launch_nonce = _string(attempt_input.get("launch_nonce"))
+    if allow_paid and not launch_nonce:
+        manifest["blockers"].append("attempt_input_manifest_launch_nonce_missing")
         return _write_job_manifest(out, manifest)
     env = {SEALED_CONFIRMED_ENV: "true"}
     if image_ref:
@@ -2195,6 +2199,9 @@ def run_groot_oscar_digitalocean_closed_loop_job(
             seed_path=seed,
             task_prompt=task_prompt,
             seed_provenance=seed_provenance,
+            task_success_contract_path=task_success_contract_file,
+            attempt_input_manifest_path=attempt_input_manifest_file,
+            kitchen_asset_archive_path=kitchen_asset_archive_file,
         )
         manifest["bundle_zip"] = str(bundle_zip)
         manifest["status"] = "prepared"
@@ -2262,6 +2269,9 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         seed_path=seed,
         task_prompt=task_prompt,
         seed_provenance=seed_provenance,
+        task_success_contract_path=task_success_contract_file,
+        attempt_input_manifest_path=attempt_input_manifest_file,
+        kitchen_asset_archive_path=kitchen_asset_archive_file,
     )
     manifest["bundle_zip"] = str(bundle_zip)
     job_dir = out / "object_store_real_run"
@@ -2278,12 +2288,17 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         route_payload=route_payload,
         task_prompt=task_prompt,
         plan=plan,
+        launch_nonce=launch_nonce,
         seed_provenance=seed_provenance,
         container_disk_gb=int(container_disk_gb),
         volume_gb=int(volume_gb),
         max_hourly_rate_usd=max_hourly_rate_usd,
     )
     request = provider.build_request(spec, job_dir)
+    if launch_nonce:
+        (job_dir / "launch_session_nonce.txt").write_text(
+            launch_nonce, encoding="utf-8"
+        )
     request["max_hourly_rate_usd"] = float(max_hourly_rate_usd)
     request["prelaunch_spend_guard"] = prelaunch
     manifest["launch_request_shape"] = {
@@ -2338,18 +2353,30 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         ),
     )
     manifest["closed_loop_result_contract"] = result_contract
-    teardown_proof = _teardown_proof_from_watch(
+    teardown_proof = teardown_proof_from_digitalocean_watch(
         instance_id=str(launch["instance_id"]),
         watch=watch,
     )
     manifest["teardown_proof"] = teardown_proof
     manifest["pending_teardown_close"] = close_pending_teardown(pending["path"], teardown_proof)
-    manifest["status"] = (
-        "completed"
-        if watch.get("status") == "completed" and result_contract.get("status") == "PASS"
-        else "blocked"
+    finalized = finalize_digitalocean_attempt_closure(
+        provider=provider,
+        output_dir=out,
+        image_ref=_string(contract.get("image_ref")),
+        attempt_input_manifest_file=attempt_input_manifest_file,
+        task_success_contract_file=task_success_contract_file,
+        kitchen_asset_archive_file=kitchen_asset_archive_file,
+        launch=launch,
+        watch=watch,
+        teardown_proof=teardown_proof,
     )
+    closure = finalized["closure"]
+    manifest["final_inventory"] = finalized["final_inventory"]
+    manifest["g1_kitchen_attempt_closure"] = closure
+    manifest["buyer_readout_projection"] = finalized["buyer_readout_projection"]
+    manifest["status"] = "completed" if closure.get("status") == "completed" else "blocked"
     if manifest["status"] != "completed":
+        manifest["blockers"].extend(closure.get("blockers") or [])
         if watch.get("status") != "completed":
             manifest["blockers"].append("closed_loop_run_not_completed")
         if result_contract.get("status") != "PASS":
@@ -2360,67 +2387,18 @@ def run_groot_oscar_digitalocean_closed_loop_job(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--audit-prepared-dir", default=None)
-    parser.add_argument("--audit-objective-dir", default=None)
-    parser.add_argument("--probe-digitalocean-capacity-dir", default=None)
-    parser.add_argument("--wait-digitalocean-capacity-dir", default=None)
-    parser.add_argument("--wait-max-attempts", type=int, default=1)
-    parser.add_argument("--wait-poll-interval-seconds", type=float, default=60.0)
-    parser.add_argument(
-        "--launch-when-capacity-available",
-        action="store_true",
-        help=(
-            "After a read-only capacity probe reports available, execute the "
-            "prepared paid launch path. Requires --allow-paid, --max-spend-usd, "
-            "and --acknowledge-digitalocean-query-approval."
-        ),
-    )
-    parser.add_argument("--materialize-paid-resume-dir", default=None)
-    parser.add_argument("--materialize-max-spend-usd", type=float, default=None)
-    parser.add_argument(
-        "--acknowledge-digitalocean-query-approval",
-        action="store_true",
-        help=(
-            "Record that executing the materialized command is allowed to query "
-            "DigitalOcean. This command still only writes a local artifact."
-        ),
-    )
-    parser.add_argument("--start-frame")
-    parser.add_argument("--route-file")
-    parser.add_argument("--task-prompt")
-    parser.add_argument("--out-dir")
-    parser.add_argument("--steps", type=int, default=DEFAULT_EPISODE_MAX_STEPS)
-    parser.add_argument("--oscar-height", type=int, default=480)
-    parser.add_argument("--oscar-width", type=int, default=640)
-    parser.add_argument(
-        "--min-coherent-horizon-frames",
-        type=int,
-        default=DEFAULT_MIN_COHERENT_HORIZON_FRAMES,
-    )
-    parser.add_argument(
-        "--min-steps",
-        type=int,
-        default=DEFAULT_MIN_TASK_COMPLETION_STEPS,
-        help="Minimum closed-loop steps before task-completion early termination may fire.",
-    )
-    parser.add_argument("--allow-paid", action="store_true")
-    parser.add_argument("--max-spend-usd", type=float, default=None)
-    parser.add_argument("--max-seconds", type=int, default=DEFAULT_MAX_SECONDS)
-    parser.add_argument("--max-hourly-rate-usd", type=float, default=DEFAULT_MAX_HOURLY_RATE_USD)
-    parser.add_argument("--container-disk-gb", type=int, default=DEFAULT_CONTAINER_DISK_GB)
-    parser.add_argument("--volume-gb", type=int, default=DEFAULT_VOLUME_GB)
-    parser.add_argument("--seed-provenance-file", default=None)
-    parser.add_argument("--key-prefix", default="blueprint/groot-oscar-closed-loop")
-    parser.add_argument("--image-ref", default=None)
-    parser.add_argument("--wam-consistency-command", default=None)
-    parser.add_argument("--require-generated-video-success-label", action="store_true")
-    parser.add_argument("--wam-success-label-command", default=None)
-    parser.add_argument("--allow-wam-success-labeling", action="store_true")
-    parser.add_argument(
-        "--wam-success-label-timeout-seconds",
-        type=float,
-        default=DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS,
+    parser = build_digitalocean_job_parser(
+        description=__doc__ or "",
+        defaults={
+            "steps": DEFAULT_EPISODE_MAX_STEPS,
+            "min_coherent_horizon_frames": DEFAULT_MIN_COHERENT_HORIZON_FRAMES,
+            "min_steps": DEFAULT_MIN_TASK_COMPLETION_STEPS,
+            "max_seconds": DEFAULT_MAX_SECONDS,
+            "max_hourly_rate_usd": DEFAULT_MAX_HOURLY_RATE_USD,
+            "container_disk_gb": DEFAULT_CONTAINER_DISK_GB,
+            "volume_gb": DEFAULT_VOLUME_GB,
+            "wam_success_label_timeout_seconds": DEFAULT_WAM_SUCCESS_LABEL_TIMEOUT_SECONDS,
+        },
     )
     args = parser.parse_args(argv)
     if args.audit_prepared_dir:
@@ -2500,6 +2478,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         wam_success_label_command=args.wam_success_label_command,
         allow_wam_success_labeling=bool(args.allow_wam_success_labeling),
         wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
+        task_success_contract_file=args.task_success_contract_file,
+        attempt_input_manifest_file=args.attempt_input_manifest_file,
+        kitchen_asset_archive_file=args.kitchen_asset_archive_file,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0 if result.get("status") in {"completed", "prepared"} else 1

@@ -203,7 +203,8 @@ def test_paid_single_provider_job_can_opt_in_to_two_cold_creates(
     assert terminated == [loser_iid]
     assert captured["collect_instance_id"] == winner_iid
     assert "contender-1-runpod" in captured["collect_job_dir"]
-    assert m["status"] == "completed"
+    assert m["status"] == "evidence_collected_closure_required"
+    assert "g1_kitchen_attempt_closure_missing" in m["blockers"]
 
 
 def test_job_signature_defaults_enable_race_and_no_runtime_guard() -> None:

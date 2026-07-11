@@ -190,6 +190,46 @@ def test_source_governance_blocks_module_cli_and_claim_growth(tmp_path: Path) ->
     assert "source_governance_review_window_exceeds_90_days" in overlong["blockers"]
 
 
+def test_source_governance_claim_budget_ignores_longer_identifier_substrings(
+    tmp_path: Path,
+) -> None:
+    module = tmp_path / "src" / "blueprint_pipeline" / "small.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "proves_public_claim_upgrade_allowed = True\n"
+        "label = 'public_claim_upgrade_allowed_elsewhere'\n",
+        encoding="utf-8",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_small.py").write_text("def test_small(): pass\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="x"\nversion="1"\n[project.scripts]\n',
+        encoding="utf-8",
+    )
+    policy = {
+        "schema_version": "blueprint.source_governance_policy.v1",
+        "policy_owner": "@source-owner",
+        "baseline_date": "2026-07-09",
+        "review_by": "2026-08-08",
+        "default_max_python_module_lines": 10,
+        "grandfathered_module_line_limits": {},
+        "max_project_scripts": 0,
+        "claim_literal_maximums": {"public_claim_upgrade_allowed": 0},
+        "characterization_tests": {},
+        "forbidden_personal_path_patterns": [
+            r"(?<![A-Za-z0-9._~:/-])/(?:Users|home)/[A-Za-z0-9._-]+/",
+        ],
+    }
+    result = validate_source_governance(
+        root=tmp_path,
+        policy=policy,
+        today=date(2026, 7, 9),
+    )
+    assert result["claim_literal_counts"]["public_claim_upgrade_allowed"] == 0
+    assert result["status"] == "passed"
+
+
 def test_source_governance_blocks_personal_absolute_paths(tmp_path: Path) -> None:
     module = tmp_path / "src" / "blueprint_pipeline" / "small.py"
     module.parent.mkdir(parents=True)
@@ -1140,7 +1180,8 @@ def test_repository_release_quality_policies_are_machine_valid() -> None:
     assert {"artifact_signature", "immutable_retention"} <= set(requirements["scopes"]["BASE"])
 
     full_lane = (root / ".github" / "workflows" / "full-test-lane.yml").read_text()
-    assert "--extra groot-libero" in full_lane
+    assert "--extra groot-libero-cpu" in full_lane
+    assert "--extra groot-libero\n" not in full_lane
     assert "scripts/build_cpu_full_lane_evidence.py" in full_lane
     assert "output/ci/cpu_full.json" in full_lane
 

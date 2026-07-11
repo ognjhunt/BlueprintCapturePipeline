@@ -9,10 +9,12 @@ fields. It never launches physical robot commands.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import sys
+import uuid
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -278,9 +280,18 @@ def _normalize_policy_server_action(action: Mapping[str, Any]) -> dict[str, Any]
     if motion_token is None and left_hand is None and right_hand is None:
         return None
     action_chunk: list[float] = []
-    for value in (motion_token, left_hand, right_hand):
+    action_units: list[str] = []
+    for field_name, value in (
+        ("motion_token", motion_token),
+        ("left_hand_joints", left_hand),
+        ("right_hand_joints", right_hand),
+    ):
         if value is not None:
-            action_chunk.extend(np.asarray(value, dtype=np.float32).reshape(-1).tolist())
+            flattened = np.asarray(value, dtype=np.float32).reshape(-1).tolist()
+            action_chunk.extend(flattened)
+            action_units.extend(
+                ["latent" if field_name == "motion_token" else "rad"] * len(flattened)
+            )
     fields = sorted(
         key
         for key, value in (
@@ -293,6 +304,9 @@ def _normalize_policy_server_action(action: Mapping[str, Any]) -> dict[str, Any]
     normalized: dict[str, Any] = {
         "action_type": "unitree_g1_sonic_latent_action_chunk",
         "action_chunk": action_chunk,
+        "action_dimension": len(action_chunk),
+        "action_units": action_units,
+        "action_timing": {"control_hz": 50.0, "sample_period_seconds": 0.02},
         "unitree_groot_n17_sonic_action_payload_present": True,
         "unitree_groot_n17_sonic_action_chunk_present": True,
         "unitree_g1_sonic_control_fields": fields,
@@ -308,6 +322,9 @@ def _normalize_policy_server_action(action: Mapping[str, Any]) -> dict[str, Any]
         normalized["hand_targets"] = hand_targets
     if not action_chunk:
         return None
+    normalized["action_values_sha256"] = hashlib.sha256(
+        json.dumps(action_chunk, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return normalized
 
 
@@ -494,6 +511,7 @@ def run_policy_server_command(
     result = {
         "schema_version": SCHEMA_VERSION,
         "status": "completed",
+        "runtime_result_id": f"groot-sonic-{uuid.uuid4().hex}",
         "policy_id": POLICY_ID,
         "selected_candidate_id": POLICY_ID,
         "unitree_groot_n17_sonic_policy_action_command_ran": True,

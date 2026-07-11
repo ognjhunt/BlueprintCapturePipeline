@@ -21,6 +21,12 @@
           {
             "criterion_id": "dishwasher_door_open_angle",
             "observable_transition": "articulation_angle_rad",
+            "articulation_prim_path_resolution": {
+              "required_target_root": "Dishwasher054",
+              "required_affordance_terms": ["door"],
+              "provider_stage_resolution_required": true,
+              "attempt_input_manifest_binding_required": true
+            },
             "comparison": "increase_at_least",
             "tolerance": 0.35,
             "unit": "rad"
@@ -48,6 +54,7 @@
           {
             "criterion_id": "microwave_door_open_angle",
             "observable_transition": "articulation_angle_rad",
+            "articulation_prim_path": "/root/Microwave017/Microwave017_Door",
             "comparison": "increase_at_least",
             "tolerance": 0.35,
             "unit": "rad"

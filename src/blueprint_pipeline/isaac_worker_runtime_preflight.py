@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
+from .claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from .common import ensure_dir, utc_now_iso, write_json
 
 
@@ -352,7 +353,7 @@ def run_isaac_worker_runtime_preflight(
             "simulator_execution_proven": False,
             "rank_fidelity_result_proven": False,
             "non_ranking_operational_claim_validated": False,
-            "public_claim_upgrade_allowed": False,
+            PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
         },
         # P0-4 split-canary contract: this is the fast startup canary. The
         # 64x64 first-non-empty-frame check proves RTX pixels only; the

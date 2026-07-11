@@ -42,6 +42,7 @@ DEFAULT_MANIFEST_PATH = (
 )
 INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"
 INTAKE_ALLOW_LEGACY_BEARER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER"
+INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV = "BLUEPRINT_LIVE_PIPELINE_ALLOW_LEGACY_WEBAPP_HMAC_WITHOUT_CLIENT_ID"
 INTAKE_MAX_CLOCK_SKEW_SECONDS_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_MAX_CLOCK_SKEW_SECONDS"
 INTAKE_WORK_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR"
 INTAKE_TRIGGER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND"
@@ -1316,6 +1317,46 @@ async def _require_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="intake signature requires timestamp, signature, and nonce headers",
             )
+        if (
+            not _string(x_blueprint_pipeline_client_id)
+            and _truthy(os.getenv(INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV))
+            and (request.method, request.url.path)
+            in {("GET", "/api/live-pipeline/intake-audit"),
+                ("POST", "/api/live-pipeline/job-requests")}
+            and shared_secret
+            and not client_secrets
+        ):
+            parsed_timestamp = _parse_timestamp(timestamp_header)
+            now = time.time()
+            if (
+                parsed_timestamp is None
+                or abs(now - parsed_timestamp) > _intake_max_clock_skew_seconds()
+                or not _valid_intake_nonce(nonce_header)
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="invalid legacy intake audit signature metadata",
+                )
+            body = await request.body()
+            expected_legacy = hmac.new(
+                shared_secret.encode("utf-8"),
+                f"{timestamp_header}.{nonce_header}.".encode("utf-8") + body,
+                "sha256",
+            ).hexdigest()
+            if not hmac.compare_digest(_strip_sha256_prefix(signature_header), expected_legacy):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="invalid legacy intake audit signature",
+                )
+            legacy_client_id = "legacy-webapp"
+            if not _claim_intake_nonce(client_id=legacy_client_id, nonce=nonce_header,
+                                       now=now, max_age_seconds=_intake_max_clock_skew_seconds()):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="replayed intake signature nonce",
+                )
+            request.state.intake_client_id = legacy_client_id
+            return legacy_client_id
         try:
             client_id = strict_identifier(
                 x_blueprint_pipeline_client_id,

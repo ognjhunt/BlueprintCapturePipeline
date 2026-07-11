@@ -636,6 +636,12 @@ def test_task_completion_command_evaluator_binds_typed_measurement(
                 "artifact = Path.cwd() / 'measurement.json'",
                 "artifact.write_text(json.dumps(measurement))",
                 "payload = {**measurement, 'status': 'completed', 'tolerance': 0.2, 'passed': True,",
+                "  'source_action_sha256': hashlib.sha256(json.dumps(request.get('action') or {}, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),",
+                "  'simulator_session_id': 'isaac-session-1', 'runtime_result_id': f'task-result-{step}',",
+                "  'persistent_simulator_state_applied': True, 'official_controller_action_applied': True,",
+                "  'simulator_backend': 'isaac', 'stage_id': 'stage-1',",
+                "  'articulation_prim_path': '/World/Microwave017/Microwave017_Door',",
+                "  'before_timestamp': '2026-07-10T12:00:00.000Z', 'after_timestamp': '2026-07-10T12:00:00.020Z',",
                 "  'evidence_artifacts': [{'path': str(artifact), 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}]}",
                 "Path(os.environ['BLUEPRINT_TASK_COMPLETION_OUTPUT']).write_text(json.dumps(payload))",
             ]
@@ -649,6 +655,7 @@ def test_task_completion_command_evaluator_binds_typed_measurement(
     result = evaluator(
         {
             "step_index": 2,
+            "action": {"action_chunk": [0.1, -0.1]},
             "task_success_contract": {
                 "task_kind": "manipulation",
                 "criteria": [
@@ -729,14 +736,20 @@ def _write_episode_consistency_command(tmp_path: Path, *, inverse_consistent: bo
     )
     command.write_text(
         f"""
+import hashlib
 import json
 import os
 from pathlib import Path
 
 request = json.loads(Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_INPUT"]).read_text(encoding="utf-8"))
-assert request["schema_version"] == "wam_episode_consistency_request.v1"
+assert request["schema_version"] == "wam_episode_consistency_request.v2"
 assert request["claim_boundary"]["scorer_is_separate_from_wam_execution_and_evaluator"] is True
 rollout = request["rollouts"][0]
+strict = request["strict_action_aware_consistency"]
+recovered = list(strict["commanded_action_vector"])
+recovered_sha256 = hashlib.sha256(
+    json.dumps(recovered, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
 payload = {{
     "schema_version": "wam_episode_consistency.command.v1",
     "status": "completed",
@@ -754,6 +767,28 @@ payload = {{
             "rationale": "The rollout was checked against action trace context.",
             "visual_evidence_used": True,
             "action_trace_evidence_used": True,
+            "commanded_action_sha256": strict["commanded_action_sha256"],
+            "recovered_action": recovered,
+            "recovered_action_sha256": recovered_sha256,
+            "per_dimension_error": [0.0] * len(recovered),
+            "per_dimension_uncertainty": [0.01] * len(recovered),
+            "calibration_identity": {{"calibration_id": "test-calibration", "sha256": "d" * 64}},
+            "threshold": {{"max_abs_error": 0.05, "unit": strict["action_unit"]}},
+            "action_timing": strict["action_timing"],
+            "action_units": strict["action_units"],
+            "controller_fk_state_sha256": strict["controller_fk_state_sha256"],
+            "generated_state_sha256": strict["generated_state_sha256"],
+            "generated_motion_sha256": strict["generated_motion_sha256"],
+            "scorer_runtime_id": "test-scorer-runtime-1",
+            "provider_output_replay_used": False,
+            "forward_result": {{"passed": True, "method": "test-forward-model"}},
+            "inverse_result": {{"passed": {inverse_consistent!r}, "method": "test-inverse-model"}},
+            "evidence_refs": [rollout["generated_video_path"]],
+            "termination_chunk": {{
+                "step_index": strict["action_timing"]["step_index"],
+                "commanded_action_sha256": strict["commanded_action_sha256"],
+                "generated_motion_sha256": strict["generated_motion_sha256"],
+            }},
         }}
     ],
 }}
@@ -839,6 +874,149 @@ output_path.write_text(json.dumps(payload), encoding="utf-8")
         encoding="utf-8",
     )
     return command
+
+
+def test_strict_action_consistency_rejects_boolean_only_scorer_response() -> None:
+    rollout = {
+        "rollout_id": "r1",
+        "scenario_eval_run_id": "s1",
+        "policy_id": "p1",
+        "generated_video_path": "/tmp/video.mp4",
+    }
+    result = L._normalize_wam_episode_consistency(
+        command_payload={
+            "status": "completed",
+            "rollout_checks": [
+                {
+                    "rollout_id": "r1",
+                    "forward_consistent": True,
+                    "inverse_consistent": True,
+                    "visual_evidence_used": True,
+                    "action_trace_evidence_used": True,
+                }
+            ],
+        },
+        rollouts=[rollout],
+        generated_at="now",
+        action_conditioned_video_rollout_generated=True,
+        action_conditioned_video_rollout_available=True,
+        provider_output_replay_used=False,
+        success_label_generated=False,
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+        strict_action_contract={
+            "commanded_action_sha256": "a" * 64,
+            "commanded_action_vector": [0.1, -0.2],
+            "action_dimension": 2,
+            "action_unit": "per_dimension",
+            "action_units": ["latent", "latent"],
+            "action_timing": {
+                "step_index": 1,
+                "sim_time_s": 0.0,
+                "control_hz": 50.0,
+                "sample_period_seconds": 0.02,
+                "unit": "s",
+            },
+            "controller_fk_state_sha256": "b" * 64,
+            "generated_state_sha256": "c" * 64,
+            "generated_motion_sha256": "d" * 64,
+        },
+    )
+    assert result["forward_inverse_consistency_proven"] is False
+    assert "wam_consistency_recovered_action_missing_wrong_dim_or_nonfinite" in result[
+        "what_is_needed_to_make_forward_inverse_consistency_true"
+    ]
+    assert result["rollout_checks"][0]["strict_action_aware_contract_passed"] is False
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_blocker"),
+    [
+        ("wrong_dimension", "wam_consistency_recovered_action_missing_wrong_dim_or_nonfinite"),
+        ("nonfinite_error", "wam_consistency_per_dimension_error_missing_wrong_dim_or_nonfinite"),
+        ("wrong_timing", "wam_consistency_action_timing_missing_or_invalid"),
+        ("wrong_unit", "wam_consistency_action_units_missing_or_mismatch"),
+    ],
+)
+def test_strict_action_consistency_rejects_malformed_numeric_contract(
+    mutation: str,
+    expected_blocker: str,
+) -> None:
+    contract = {
+        "commanded_action_sha256": "a" * 64,
+        "commanded_action_vector": [0.1, -0.2],
+        "action_dimension": 2,
+        "action_unit": "per_dimension",
+        "action_units": ["latent", "latent"],
+        "action_timing": {
+            "step_index": 1,
+            "sim_time_s": 0.02,
+            "control_hz": 50.0,
+            "sample_period_seconds": 0.02,
+            "unit": "s",
+        },
+        "controller_fk_state_sha256": "c" * 64,
+        "generated_state_sha256": "d" * 64,
+        "generated_motion_sha256": "e" * 64,
+    }
+    recovered = [0.1, -0.2]
+    check = {
+        "rollout_id": "r1",
+        "forward_consistent": True,
+        "inverse_consistent": True,
+        "visual_evidence_used": True,
+        "action_trace_evidence_used": True,
+        "commanded_action_sha256": "a" * 64,
+        "recovered_action": recovered,
+        "recovered_action_sha256": hashlib.sha256(
+            json.dumps(recovered, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "per_dimension_error": [0.0, 0.0],
+        "per_dimension_uncertainty": [0.01, 0.01],
+        "calibration_identity": {"calibration_id": "cal", "sha256": "b" * 64},
+        "threshold": {"max_abs_error": 0.05, "unit": "per_dimension"},
+        "action_timing": contract["action_timing"],
+        "action_units": contract["action_units"],
+        "controller_fk_state_sha256": contract["controller_fk_state_sha256"],
+        "generated_state_sha256": contract["generated_state_sha256"],
+        "generated_motion_sha256": contract["generated_motion_sha256"],
+        "scorer_runtime_id": "scorer-runtime-1",
+        "provider_output_replay_used": False,
+        "forward_result": {"passed": True, "method": "forward-model"},
+        "inverse_result": {"passed": True, "method": "inverse-model"},
+        "evidence_refs": ["video.mp4", "action.json"],
+        "termination_chunk": {
+            "step_index": 1,
+            "commanded_action_sha256": "a" * 64,
+            "generated_motion_sha256": contract["generated_motion_sha256"],
+        },
+    }
+    if mutation == "wrong_dimension":
+        check["recovered_action"] = [0.1]
+    elif mutation == "nonfinite_error":
+        check["per_dimension_error"] = [0.0, float("nan")]
+    elif mutation == "wrong_timing":
+        check["action_timing"] = {
+            **contract["action_timing"],
+            "sim_time_s": 0.03,
+        }
+    elif mutation == "wrong_unit":
+        check["action_units"] = ["radians", "radians"]
+
+    result = L._normalize_wam_episode_consistency(
+        command_payload={"status": "completed", "rollout_checks": [check]},
+        rollouts=[{"rollout_id": "r1", "generated_video_path": "video.mp4"}],
+        generated_at="now",
+        action_conditioned_video_rollout_generated=True,
+        action_conditioned_video_rollout_available=True,
+        provider_output_replay_used=False,
+        success_label_generated=False,
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+        strict_action_contract=contract,
+    )
+    assert result["forward_inverse_consistency_proven"] is False
+    assert expected_blocker in result["what_is_needed_to_make_forward_inverse_consistency_true"]
 
 
 def _passed_visual_smoke(**kwargs):
@@ -1253,16 +1431,19 @@ def test_closed_loop_requeries_learned_policy_on_wam_observation(tmp_path: Path)
         if line.strip()
     ]
     assert len(endpoint_calls) == manifest["steps_executed"] == 3
-    for call, row in zip(endpoint_calls, trace):
-        assert call["camera_frame_path"] == row["wam_generated_frame"]
-        assert call["camera_frame_path"] != str(start.resolve())
+    assert endpoint_calls[0]["camera_frame_path"] == str(start.resolve())
+    for call, prior_row in zip(endpoint_calls[1:], trace[:-1]):
+        assert call["camera_frame_path"] == prior_row["wam_generated_frame"]
     assert endpoint_actions[0]["root_position"] != endpoint_actions[1]["root_position"]
-    assert trace[0]["policy_action_from_wam_requery"] is False
+    assert trace[0]["policy_action_from_wam_requery"] is True
+    assert trace[0]["policy_requeried_fresh"] is True
+    assert trace[0]["policy_action_source"].endswith("initial_real_observation")
     assert trace[1]["policy_action_from_wam_requery"] is True
-    assert trace[1]["root_position"] == endpoint_actions[0]["root_position"]
-    assert trace[2]["root_position"] == endpoint_actions[1]["root_position"]
-    assert all(row["policy_requeried_on_wam_observation"] is True for row in trace)
-    assert all(row["requery_status"] == "completed" for row in trace)
+    assert trace[0]["root_position"] == endpoint_actions[0]["root_position"]
+    assert trace[1]["root_position"] == endpoint_actions[1]["root_position"]
+    assert trace[2]["root_position"] == endpoint_actions[2]["root_position"]
+    assert all(row["policy_requeried_on_wam_observation"] is True for row in trace[:-1])
+    assert all(row["requery_status"] == "completed" for row in trace[:-1])
 
 
 def test_completion_does_not_overclaim_without_learned_requery(tmp_path: Path) -> None:
@@ -1463,7 +1644,7 @@ def test_closed_loop_external_episode_consistency_stays_separate_from_task_succe
 
     for request_path in manifest["wam_episode_consistency_request_paths"]:
         request = json.loads(Path(request_path).read_text(encoding="utf-8"))
-        assert request["schema_version"] == "wam_episode_consistency_request.v1"
+        assert request["schema_version"] == "wam_episode_consistency_request.v2"
         assert request["rollouts"][0]["generated_video_path"].endswith(".mp4")
     checks = json.loads(
         Path(manifest["wam_consistency_checks_paths"][0]).read_text(encoding="utf-8")

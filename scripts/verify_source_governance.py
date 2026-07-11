@@ -169,7 +169,14 @@ def validate_source_governance(
     token_counts: dict[str, int] = {}
     source_texts = [path.read_text(encoding="utf-8") for path in sorted(source_root.rglob("*.py"))]
     for token, raw_limit in sorted(token_limits.items()):
-        count = sum(text.count(token) for text in source_texts)
+        # Count the configured claim key/identifier itself, not accidental
+        # substrings in a different identifier (for example
+        # ``proves_task_success`` must not consume a ``task_success`` budget).
+        # String keys and standalone prose mentions still count.
+        exact_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(str(token))}(?![A-Za-z0-9_])"
+        )
+        count = sum(len(exact_pattern.findall(text)) for text in source_texts)
         token_counts[token] = count
         if not isinstance(raw_limit, int) or raw_limit < 0:
             blockers.append(f"claim_literal_limit_invalid:{token}")

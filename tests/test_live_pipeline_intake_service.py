@@ -62,6 +62,22 @@ def _signed_intake_headers(
     }
 
 
+def _legacy_webapp_headers(
+    token: str, *, nonce: str, body: str = ""
+) -> dict[str, str]:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    signature = hmac.new(
+        token.encode("utf-8"),
+        f"{timestamp}.{nonce}.{body}".encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    return {
+        "x-blueprint-pipeline-timestamp": timestamp,
+        "x-blueprint-pipeline-nonce": nonce,
+        "x-blueprint-pipeline-signature": f"sha256={signature}",
+    }
+
+
 def _capture_root(tmp_path: Path) -> Path:
     capture_root = tmp_path / "storage" / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
     _write_json(
@@ -566,6 +582,60 @@ def test_live_pipeline_intake_service_accepts_signed_request_and_rejects_replay(
     assert first.status_code == 503
     assert replay.status_code == 401
     assert "replayed intake signature nonce" in replay.text
+
+
+def test_legacy_webapp_hmac_compatibility_is_explicit_scoped_and_replay_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV, "true")
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "incoming"))
+    client = TestClient(create_app())
+    headers = _legacy_webapp_headers(
+        "test-intake-token", nonce="legacy-audit-nonce-1"
+    )
+    first = client.get("/api/live-pipeline/intake-audit", headers=headers)
+    replay = client.get("/api/live-pipeline/intake-audit", headers=headers)
+    # Authentication succeeded and the endpoint executed; no audit has been
+    # staged in this isolated app, so its expected application response is 404.
+    assert first.status_code == 404
+    assert replay.status_code == 401
+    assert "replayed intake signature nonce" in replay.text
+
+    body = json.dumps({}, separators=(",", ":"))
+    post = client.post(
+        "/api/live-pipeline/job-requests",
+        content=body,
+        headers={
+            **_legacy_webapp_headers(
+                "test-intake-token", nonce="legacy-post-nonce-1", body=body
+            ),
+            "content-type": "application/json",
+        },
+    )
+    assert post.status_code != 401
+
+    # The opt-in does not authorize unrelated intake endpoints.
+    unrelated = client.post(
+        "/api/live-pipeline/capture-handoffs",
+        content=body,
+        headers={
+            **_legacy_webapp_headers(
+                "test-intake-token", nonce="legacy-post-nonce-2", body=body
+            ),
+            "content-type": "application/json",
+        },
+    )
+    assert unrelated.status_code == 401
+
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV)
+    rejected = client.get(
+        "/api/live-pipeline/intake-audit",
+        headers=_legacy_webapp_headers(
+            "test-intake-token", nonce="legacy-audit-nonce-2"
+        ),
+    )
+    assert rejected.status_code == 401
 
 
 def test_signed_nonce_replay_is_rejected_across_app_instances_and_cache_reset(

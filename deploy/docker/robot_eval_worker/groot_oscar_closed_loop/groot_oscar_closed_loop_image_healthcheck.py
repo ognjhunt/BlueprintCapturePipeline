@@ -32,6 +32,12 @@ GROOT_VENV_PYTHON = os.environ.get(
 SONIC_CHECKPOINT = os.environ.get(
     "BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT", "/opt/blueprint/ckpts/sonic"
 )
+ISAAC_PYTHON = os.environ.get("BLUEPRINT_ISAAC_PYTHON", "/isaac-sim/python.sh")
+G1_USD = os.environ.get(
+    "BLUEPRINT_ISAAC_UNITREE_G1_USD",
+    "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd",
+)
+WBC_ROOT = os.environ.get("BLUEPRINT_GEAR_SONIC_ROOT", "/opt/wbc")
 
 # Main-env modules the closed loop imports (import name : label).
 MAIN_ENV_MODULES = {
@@ -62,6 +68,14 @@ def main() -> int:
         "build_time": args.build_time,
         "raw_secret_values_recorded": False,
     }
+    source_commit = os.environ.get("BLUEPRINT_SOURCE_COMMIT", "").strip()
+    dirty_patch = os.environ.get(
+        "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256", ""
+    ).strip()
+    if not source_commit:
+        blockers.append("blueprint_source_commit_missing")
+    if len(dirty_patch) != 64:
+        blockers.append("blueprint_source_dirty_patch_sha256_missing")
 
     # --- main env: torch (from base) ---
     try:
@@ -94,6 +108,26 @@ def main() -> int:
     if not oscar_entrypoint.is_file():
         blockers.append("oscar_inference_entrypoint_missing")
 
+    # --- exact Isaac carrier and official G1/WBC assets ---
+    isaac_import = subprocess.run(
+        [ISAAC_PYTHON, "-c", "import blueprint_pipeline, isaacsim"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    isaac_imported = isaac_import.returncode == 0
+    if not isaac_imported:
+        blockers.append("isaac_python_blueprint_import_failed")
+    g1_exists = Path(G1_USD).is_file()
+    if not g1_exists:
+        blockers.append("configured_g1_usd_missing")
+    wbc_root = Path(WBC_ROOT)
+    wbc_model = wbc_root / "gear_sonic_deploy/g1/g1_29dof_with_hand.xml"
+    wbc_deploy = wbc_root / "gear_sonic_deploy/deploy.sh"
+    if not wbc_model.is_file() or not wbc_deploy.is_file():
+        blockers.append("official_gear_sonic_deployment_assets_missing")
+
     # --- GR00T env (out-of-process) ---
     payload["groot_venv_python"] = GROOT_VENV_PYTHON
     if Path(GROOT_VENV_PYTHON).exists():
@@ -121,6 +155,20 @@ def main() -> int:
 
     payload["status"] = "passed" if not blockers else "blocked"
     payload["blockers"] = blockers
+    payload["runtime_metadata"] = {
+        "image_family": os.environ.get("BLUEPRINT_WORKER_IMAGE_FAMILY"),
+        "image_variant": os.environ.get("BLUEPRINT_WORKER_IMAGE_VARIANT"),
+        "simulator_family": os.environ.get("BLUEPRINT_SIMULATOR_FRAMEWORK"),
+        "simulator_major_version": int(
+            os.environ.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "0") or 0
+        ),
+        "blueprint_pipeline_imported": isaac_imported,
+        "configured_g1_usd_exists": g1_exists,
+        "official_gear_sonic_assets_exist": wbc_model.is_file()
+        and wbc_deploy.is_file(),
+        "source_commit": source_commit,
+        "source_dirty_patch_sha256": dirty_patch,
+    }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if not blockers else 1
 

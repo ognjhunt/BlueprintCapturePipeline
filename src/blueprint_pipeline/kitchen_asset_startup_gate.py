@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import tarfile
+import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
@@ -224,6 +225,7 @@ def verify_archive_safety(archive_path: Path) -> dict[str, Any]:
     flagged: list[dict[str, Any]] = []
     member_count = 0
     archive_sha256: str | None = None
+    archive_format: str | None = None
 
     def _flag(blocker: str, member: tarfile.TarInfo, reason: str) -> None:
         blockers.add(blocker)
@@ -235,33 +237,58 @@ def verify_archive_safety(archive_path: Path) -> dict[str, Any]:
     else:
         archive_sha256 = _sha256_file(archive)
         try:
-            with tarfile.open(archive, mode="r:*") as tar:
-                for member in tar:
-                    member_count += 1
-                    if _is_unsafe_relpath(member.name):
-                        _flag(
-                            "kitchen_archive_path_traversal",
-                            member,
-                            "absolute_or_parent_traversal_name",
-                        )
-                    elif member.issym() or member.islnk():
-                        if _link_escapes(member):
+            if zipfile.is_zipfile(archive):
+                archive_format = "zip"
+                with zipfile.ZipFile(archive) as zipped:
+                    for member in zipped.infolist():
+                        member_count += 1
+                        name = str(member.filename or "")
+                        unix_mode = member.external_attr >> 16
+                        is_symlink = (unix_mode & 0o170000) == 0o120000
+                        if _is_unsafe_relpath(name):
+                            blockers.add("kitchen_archive_path_traversal")
+                            if len(flagged) < MAX_RECORDED_FAILURES:
+                                flagged.append({
+                                    "member": name,
+                                    "reason": "absolute_or_parent_traversal_name",
+                                })
+                        elif is_symlink:
+                            blockers.add("kitchen_archive_unsafe_link")
+                            if len(flagged) < MAX_RECORDED_FAILURES:
+                                flagged.append({
+                                    "member": name,
+                                    "reason": "zip_symlink_rejected",
+                                })
+            else:
+                archive_format = "tar"
+                with tarfile.open(archive, mode="r:*") as tar:
+                    for member in tar:
+                        member_count += 1
+                        if _is_unsafe_relpath(member.name):
                             _flag(
-                                "kitchen_archive_unsafe_link",
+                                "kitchen_archive_path_traversal",
                                 member,
-                                "link_target_escapes_extraction_root",
+                                "absolute_or_parent_traversal_name",
                             )
-                    elif not (member.isfile() or member.isdir()):
-                        _flag(
-                            "kitchen_archive_unsupported_member_type",
-                            member,
-                            "device_fifo_or_unknown_member",
-                        )
-        except (tarfile.TarError, OSError, EOFError):
+                        elif member.issym() or member.islnk():
+                            if _link_escapes(member):
+                                _flag(
+                                    "kitchen_archive_unsafe_link",
+                                    member,
+                                    "link_target_escapes_extraction_root",
+                                )
+                        elif not (member.isfile() or member.isdir()):
+                            _flag(
+                                "kitchen_archive_unsupported_member_type",
+                                member,
+                                "device_fifo_or_unknown_member",
+                            )
+        except (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError):
             blockers.add("kitchen_archive_unreadable")
     return {
         "archive_path": str(archive),
         "archive_sha256": archive_sha256,
+        "archive_format": archive_format,
         "member_count": member_count,
         "flagged_members": flagged,
         "blockers": sorted(blockers),
@@ -484,28 +511,53 @@ def run_kitchen_asset_startup_gate(
             except AttributeError:  # pragma: no cover - old-stdlib fallback
                 extract_kwargs = {}
             try:
-                with tarfile.open(archive, mode="r:*") as tar:
-                    for member in tar:
-                        _reject_unsafe_member(member, dest)
-                        member_target = os.path.abspath(
-                            os.path.join(str(dest), member.name)
-                        )
-                        if (
-                            os.path.commonprefix(
-                                [os.path.abspath(str(dest)), member_target]
-                            )
-                            != os.path.abspath(str(dest))
-                        ):
-                            raise tarfile.TarError(
-                                f"member_escapes_destination:{member.name}"
-                            )
-                        tar.extract(member, path=dest, **extract_kwargs)
-                        if member.isfile():
+                if safety.get("archive_format") == "zip":
+                    with zipfile.ZipFile(archive) as zipped:
+                        for member in zipped.infolist():
+                            name = str(member.filename or "")
+                            if _is_unsafe_relpath(name):
+                                raise zipfile.BadZipFile(f"unsafe_member_path:{name}")
+                            unix_mode = member.external_attr >> 16
+                            if (unix_mode & 0o170000) == 0o120000:
+                                raise zipfile.BadZipFile(f"unsafe_member_link:{name}")
+                            target = (dest / name).resolve()
+                            if not target.is_relative_to(dest.resolve()):
+                                raise zipfile.BadZipFile(
+                                    f"member_escapes_destination:{name}"
+                                )
+                            if member.is_dir():
+                                ensure_dir(target)
+                                continue
+                            ensure_dir(target.parent)
+                            with zipped.open(member) as source, target.open("wb") as sink:
+                                shutil.copyfileobj(source, sink, length=1024 * 1024)
                             files_extracted += 1
-                            bytes_extracted += member.size
+                            bytes_extracted += int(member.file_size)
                             if files_extracted % PROGRESS_RECORD_EVERY_FILES == 0:
                                 result["progress"].append(_progress_record())
-            except (tarfile.TarError, OSError) as exc:
+                else:
+                    with tarfile.open(archive, mode="r:*") as tar:
+                        for member in tar:
+                            _reject_unsafe_member(member, dest)
+                            member_target = os.path.abspath(
+                                os.path.join(str(dest), member.name)
+                            )
+                            if (
+                                os.path.commonprefix(
+                                    [os.path.abspath(str(dest)), member_target]
+                                )
+                                != os.path.abspath(str(dest))
+                            ):
+                                raise tarfile.TarError(
+                                    f"member_escapes_destination:{member.name}"
+                                )
+                            tar.extract(member, path=dest, **extract_kwargs)
+                            if member.isfile():
+                                files_extracted += 1
+                                bytes_extracted += member.size
+                                if files_extracted % PROGRESS_RECORD_EVERY_FILES == 0:
+                                    result["progress"].append(_progress_record())
+            except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
                 result["progress"].append(_progress_record())
                 result["extract_error"] = str(exc)
                 disk["free_bytes_after"] = _free_bytes(probe, out)

@@ -42,6 +42,18 @@ def test_a6000_with_disk_passes_the_oscar_groot_lane() -> None:
     assert "resolution reduction" in contract["requirements"]["notes"]
 
 
+@pytest.mark.parametrize(
+    "gpu_type",
+    ["NVIDIA A100 80GB PCIe", "NVIDIA H100 PCIe", "NVIDIA H100 80GB HBM3"],
+)
+def test_compute_only_gpu_cannot_enter_isaac_rtx_review_lane(gpu_type: str) -> None:
+    contract = build_lane_hardware_contract(
+        lane=T4_LANE, gpu_type_id=gpu_type, disk_gb=175
+    )
+    assert contract["status"] == "FAIL"
+    assert f"gpu_lacks_rt_cores_for_isaac_rtx:{gpu_type}" in contract["blockers"]
+
+
 def test_unregistered_lane_fails_closed() -> None:
     contract = build_lane_hardware_contract(
         lane="brand_new_lane", gpu_type_id="NVIDIA RTX A6000", disk_gb=200

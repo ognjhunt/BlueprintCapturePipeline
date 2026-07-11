@@ -4575,6 +4575,135 @@ def test_pov_seed_frame_quality_rejects_black_edge_occlusion(tmp_path) -> None:
     assert "manipulation_pov_edge_self_occlusion" in occ_report["blockers"]
 
 
+def test_rgb_frame_integrity_rejects_blank_frames_and_accepts_scene_content() -> None:
+    np = pytest.importorskip("numpy")
+
+    black = np.zeros((48, 64, 3), dtype=np.uint8)
+    black_report = M._rgb_frame_integrity(black)
+    assert black_report["status"] == "FAIL"
+    assert "rgb_frame_blank_black" in black_report["blockers"]
+    assert "rgb_frame_flat_corrupt" in black_report["blockers"]
+
+    white = np.full((48, 64, 3), 255, dtype=np.uint8)
+    white_report = M._rgb_frame_integrity(white)
+    assert white_report["status"] == "FAIL"
+    assert "rgb_frame_blank_white" in white_report["blockers"]
+
+    scene = np.full((48, 64, 3), 190, dtype=np.uint8)
+    scene[8:40, 18:46] = (25, 65, 110)
+    assert M._rgb_frame_integrity(scene)["status"] == "PASS"
+
+
+def test_arm_role_link_selection_prefers_palm_and_distal_wrist() -> None:
+    links = {
+        "left_hand_index_0_link": "finger",
+        "left_hand_palm_link": "palm",
+        "left_wrist_roll_link": "wrist_roll",
+        "left_wrist_yaw_link": "wrist_yaw",
+        "left_shoulder_yaw_link": "shoulder_yaw",
+        "left_shoulder_pitch_link": "shoulder_pitch",
+        "left_elbow_link": "elbow",
+    }
+    assert M._find_arm_role_link(links, "left", "hand") == "palm"
+    assert M._find_arm_role_link(links, "left", "wrist") == "wrist_yaw"
+    assert M._find_arm_role_link(links, "left", "shoulder") == "shoulder_pitch"
+    assert M._find_arm_role_link(links, "left", "elbow") == "elbow"
+
+
+def test_provider_arm_review_geometry_uses_visual_mesh_centers() -> None:
+    source = _RUNNER.read_text()
+    visual_center = source.index("def _arm_link_visual_center(")
+    visual_center_end = source.index("def _is_manipulation_arm_link_name(", visual_center)
+    assert "Usd.TraverseInstanceProxies()" in source[visual_center:visual_center_end]
+
+    arm_points = source.index("def _robot_arm_link_points(")
+    arm_points_end = source.index("def _robot_arm_link_points_by_arm(", arm_points)
+    arm_points_body = source[arm_points:arm_points_end]
+    assert "_robot_arm_link_geometry_evidence" in arm_points_body
+
+    pose = source.index("def _pose_arm_kinematic_usd(")
+    pose_end = source.index("def _capture_robot_neutral_descendant_xforms(", pose)
+    pose_body = source[pose:pose_end]
+    assert pose_body.count("_arm_link_visual_center") >= 3
+
+    evidence = source.index("def _robot_arm_link_geometry_evidence(")
+    evidence_end = source.index("def _robot_arm_link_points(", evidence)
+    evidence_body = source[evidence:evidence_end]
+    assert "_find_arm_role_link" in evidence_body
+    assert "_arm_link_visual_center" in evidence_body
+    assert '"link_origin_world_xyz"' in evidence_body
+    assert '"visual_mesh_center_world_xyz"' in evidence_body
+    assert '"source_prim_path"' in evidence_body
+    assert '"transform_provenance"' in evidence_body
+    assert '"link_origin_no_visual_gprim"' in evidence_body
+
+
+def test_manipulation_overview_is_task_framed_third_person_fallback() -> None:
+    source = _RUNNER.read_text()
+    assert 'overview_camera_mode = "task_framed_third_person"' in source
+    assert 'overview_camera_role = "third_person_overview"' in source
+    assert "dedicated verify frame corrupt; using " in source
+    assert 'glob("overview_*.png")' in source
+
+
+def test_runner_adaptive_configurator_adapter_uses_measured_isaac_evidence(tmp_path) -> None:
+    kitchen = tmp_path / "KitchenRoom.usd"
+    kitchen.write_text("#usda 1.0", encoding="utf-8")
+    pov = tmp_path / "robot_pov.png"
+    third = tmp_path / "third_person.png"
+    pov.write_bytes(b"png-pov")
+    third.write_bytes(b"png-third")
+    stance_plan = {
+        "status": "accepted",
+        "accepted_pose": [1.0, 2.0, 0.79],
+        "accepted_yaw": 0.0,
+        "floor_z_hint": 0.0,
+        "selected_candidate_index": 0,
+        "candidates": [
+            {
+                "standoff_from_target_surface_m": 0.5,
+                "reachability_estimate": {
+                    "nearest_seed_effector_to_affordance_m": 0.25,
+                    "required_max_seed_effector_to_affordance_m": 0.5,
+                    "approx_preselection_effector_margin_m": 0.1,
+                },
+            }
+        ],
+        "target_resolution": {"selected": {"prim_path": "/World/Microwave017"}},
+        "affordance_resolution": {
+            "selected": {"prim_path": "/World/Microwave017/Door"}
+        },
+    }
+    placement = {
+        "floor_z": 0.0,
+        "intended_geometry": {
+            "min_obstacle_clearance_m": 0.5,
+            "facing_error_deg": 0.0,
+        },
+        "ground_truth_placement": {"upright_report": {"tilt_deg": 0.0}},
+    }
+    result = M._run_adaptive_task_stance_configurator_gate(
+        stance_plan=stance_plan,
+        placement_manifest=placement,
+        task_success_contract={"kind": "microwave_door_articulation"},
+        scenario_id="microwave-open",
+        kitchen_usd=str(kitchen),
+        robot_pov_frames=[pov],
+        third_person_frames=[third],
+        pov_geometry_records=[
+            {
+                "target_in_frame": True,
+                "available_arm_link_roles": ["shoulder", "elbow", "wrist", "hand"],
+                "arm_roles_usefully_in_frame": ["shoulder", "elbow", "wrist", "hand"],
+            }
+        ],
+        output_dir=tmp_path / "adaptive",
+    )
+    assert result["status"] == "accepted"
+    assert result["provider_revalidation_required"] is True
+    assert (tmp_path / "adaptive" / "adaptive_task_stance_configurator.json").is_file()
+
+
 def test_follow_cam_is_behind_and_above_robot() -> None:
     eye, target = M.follow_cam_pose((0.0, 0.0, 0.79), 0.0)  # facing +X
     assert eye[0] < 0.0           # behind the robot along -X

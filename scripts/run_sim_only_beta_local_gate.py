@@ -1076,6 +1076,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN": args.token,
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE": "true",
         "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT": "true",
+        "BLUEPRINT_LIVE_PIPELINE_ALLOW_LEGACY_WEBAPP_HMAC_WITHOUT_CLIENT_ID": "true",
         "BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH": str(manifest_path),
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR": str(gate_dir / "incoming"),
         "PORT": str(port),

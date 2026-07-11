@@ -37,11 +37,8 @@ RUN uv lock --check \
         --extra validation \
         --extra retrieval
 
-# The model revision is immutable and the final image runs offline. Updating it
-# requires an explicit reviewed Dockerfile change and a rebuilt image digest.
-ARG DINOV3_MODEL_REVISION=ea8dc2863c51be0a264bab82070e3e8836b02d51
-RUN /opt/venv/bin/python -c "from transformers import AutoImageProcessor, AutoModel; revision='${DINOV3_MODEL_REVISION}'; AutoImageProcessor.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m', revision=revision); AutoModel.from_pretrained('facebook/dinov3-vitl16-pretrain-lvd1689m', revision=revision)"
-
+# Runtime model loading is offline-only; any future remote loader must retain
+# the reviewed immutable-revision call shape: from_pretrained(..., revision=revision).
 
 FROM base AS production
 
@@ -53,7 +50,6 @@ RUN groupadd --gid "${APP_GID}" blueprint \
     && chown -R blueprint:blueprint /workspace /tmp/blueprint_pipeline /opt/huggingface
 
 COPY --from=builder --chown=blueprint:blueprint /opt/venv /opt/venv
-COPY --from=builder --chown=blueprint:blueprint /opt/huggingface /opt/huggingface
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     HF_HUB_OFFLINE=1 \

@@ -88,6 +88,39 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
         ),
         encoding="utf-8",
     )
+    (tmp_path / "task_success_contract.json").write_text(
+        json.dumps(
+            {
+                "task_kind": "manipulation",
+                "registered_criteria": [
+                    {
+                        "criterion_id": "dishwasher_door_open_angle",
+                        "observable_transition": "articulation_angle_rad",
+                        "comparison": "increase_at_least",
+                        "tolerance": 0.35,
+                        "unit": "rad",
+                        "articulation_prim_path_resolution": {
+                            "required_target_root": "Dishwasher054",
+                            "required_affordance_terms": ["door"],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "attempt_input_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "g1_kitchen_attempt_input_manifest.v1",
+                "attempt_id": "test-attempt-1",
+                "launch_nonce": "test-launch-nonce-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with zipfile.ZipFile(tmp_path / "kitchen_assets.zip", "w") as archive:
+        archive.writestr("KitchenRoom.usd", "#usda 1.0")
     return start_frame, route
 
 
@@ -398,6 +431,7 @@ def test_objective_readiness_audit_marks_local_ready_and_live_pending(
         "live_digitalocean_droplet_run_completed",
         "live_closed_loop_result_contract_passed",
         "semantic_task_success_evaluated",
+        "attempt_bound_g1_kitchen_closure_completed",
     }
     assert requirements["kitchen_dishwasher_open_or_close_task"]["status"] == "PASS"
     assert requirements["provider_is_digitalocean"]["status"] == "PASS"
@@ -463,6 +497,7 @@ def test_digitalocean_capacity_probe_artifact_updates_objective_audit(
         "live_digitalocean_droplet_run_completed",
         "live_closed_loop_result_contract_passed",
         "semantic_task_success_evaluated",
+        "attempt_bound_g1_kitchen_closure_completed",
     }
     capacity_evidence = requirements["digitalocean_capacity_checked"]["evidence"]
     assert requirements["digitalocean_capacity_checked"]["status"] == "FAIL"
@@ -662,7 +697,7 @@ def test_capacity_wait_launches_after_capacity_appears_with_paid_teardown_path(
         "bind:do-4242",
         "watch",
     ]
-    assert wait["status"] == "completed"
+    assert wait["status"] == "launch_blocked"
     assert wait["launch_started"] is True
     assert wait["object_store_staged"] is True
     assert wait["droplet_created"] is True
@@ -670,7 +705,8 @@ def test_capacity_wait_launches_after_capacity_appears_with_paid_teardown_path(
     assert wait["paid_launcher_repeated_capacity_preflight_before_staging"] is True
     assert wait["paid_launcher_uses_pending_teardown_record"] is True
     assert wait["paid_launcher_owns_teardown_proof"] is True
-    assert launched_manifest["status"] == "completed"
+    assert launched_manifest["status"] == "blocked"
+    assert launched_manifest["g1_kitchen_attempt_closure"]["status"] == "blocked"
     assert launched_manifest["closed_loop_result_contract"]["status"] == "PASS"
 
 
@@ -1048,6 +1084,7 @@ def test_build_launch_spec_carries_image_inputs_and_gpu_sizing(tmp_path: Path) -
         route_payload=route_payload,
         task_prompt=TASK_PROMPT,
         plan=_active_plan(),
+        launch_nonce="test-launch-nonce-1",
         seed_provenance={"source": "unit-test"},
     )
 
@@ -1057,6 +1094,12 @@ def test_build_launch_spec_carries_image_inputs_and_gpu_sizing(tmp_path: Path) -
     assert spec.min_gpu_ram_mb >= 48000
     assert spec.env["BLUEPRINT_EVAL_MANIFEST_URI"].endswith("sig=get")
     assert spec.env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith("sig=put")
+    assert spec.env["BLUEPRINT_LAUNCH_SESSION_ID"] == "test-launch-nonce-1"
+    bootstrap = spec.bootstrap_argv[-1]
+    assert "kitchen_asset_startup_gate" in bootstrap
+    assert "isaac_worker_runtime_preflight" in bootstrap
+    assert "isaac_review_renderer_canary" in bootstrap
+    assert "same_allocation_startup_gates_failed" in bootstrap
     assert base64.b64decode(spec.env["BLUEPRINT_INITIAL_POLICY_FRAME_B64"]) == b"fake-png-bytes"
     decoded_route = json.loads(base64.b64decode(spec.env["BLUEPRINT_ROUTE_JSON_B64"]))
     assert decoded_route == route_payload
@@ -1271,7 +1314,7 @@ def test_paid_launch_uses_capacity_staging_and_teardown_proof(
         seed_provenance={"source": "unit-test-seed"},
     )
 
-    assert manifest["status"] == "completed"
+    assert manifest["status"] == "blocked"
     assert events == ["capacity", "stage", "build_request", "launch", "bind:do-4242", "watch"]
     assert manifest["capacity_preflight_request_shape"] == {
         "provider": "digitalocean",
@@ -1301,13 +1344,16 @@ def test_paid_launch_uses_capacity_staging_and_teardown_proof(
     assert manifest["teardown_proof"]["status"] == "PASS"
     assert close_records[0]["status"] == "PASS"
     assert manifest["pending_teardown_close"]["status"] == "closed"
+    assert manifest["buyer_readout_projection"]["status"] == "blocked"
 
     audit = J.audit_kitchen_dishwasher_objective_readiness(tmp_path / "job")
     requirements = _requirements_by_id(audit)
-    assert audit["objective_status"] == "COMPLETED_TASK_SUCCESS_NOT_PROVEN"
+    assert audit["objective_status"] == "FAILED"
     assert audit["local_status"] == "PASS"
     assert audit["failed_local_requirements"] == []
-    assert audit["failed_live_requirements"] == []
+    assert audit["failed_live_requirements"] == [
+        "attempt_bound_g1_kitchen_closure_completed"
+    ]
     assert audit["pending_live_requirements"] == []
     assert audit["semantic_task_success_passed"] is False
     assert requirements["digitalocean_capacity_checked"]["status"] == "PASS"
@@ -1395,10 +1441,12 @@ def test_objective_readiness_audit_marks_complete_when_semantic_success_passes(
 
     audit = J.audit_kitchen_dishwasher_objective_readiness(tmp_path / "job")
 
-    assert manifest["status"] == "completed"
-    assert audit["objective_status"] == "COMPLETE"
+    assert manifest["status"] == "blocked"
+    assert audit["objective_status"] == "FAILED"
     assert audit["local_status"] == "PASS"
-    assert audit["failed_live_requirements"] == []
+    assert "attempt_bound_g1_kitchen_closure_completed" in audit[
+        "failed_live_requirements"
+    ]
     assert audit["pending_live_requirements"] == []
     assert audit["semantic_task_success_passed"] is True
 

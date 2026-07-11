@@ -3,11 +3,8 @@
 # Sealed worker image for the GR00T N1.7 + SONIC x OSCAR-2B closed-loop eval
 # (oscar_isaac_closed_loop_eval + groot_sonic_policy_endpoint, the "T4" lane).
 #
-# Extends the digest-pinned blueprint-oscar-wam base (which already freezes the
-# hard archaeology: CUDA 12.8, cuDNN headers on CPATH, torch 2.10.0+cu128,
-# transformer-engine, OSCAR source at /opt/oscar-public + its worldsim deps) and
-# adds the last mile that used to cost 40-70 min per pod: the GR00T Python-3.10
-# venv, both model checkpoints, our package, and the osmesa/mujoco main-env deps.
+# The final carrier is Isaac Sim 6 itself. OSCAR and GR00T live in isolated
+# Python 3.10 environments so their torch pins cannot replace Isaac's runtime.
 #
 # Build context = repo root (so `src` + pyproject are COPY-able). Checkpoints are
 # fetched INSIDE the build (BuildKit secret hf_token), never from the context.
@@ -16,8 +13,8 @@
 # but for the OSCAR-in-the-loop closed loop, and bakes checkpoints for docker
 # pull + go. It proves build/runtime readiness only — not task success.
 
-ARG BASE_IMAGE=docker.io/nijelhunt/blueprint-oscar-wam@sha256:b0f3f675023d4333767d798b565fc049ac5ba788cd7041db5cac7f9784fd49b3
-FROM --platform=linux/amd64 ${BASE_IMAGE}
+ARG ISAAC_SIM_BASE_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d
+FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -26,6 +23,10 @@ ARG GROOT_SOURCE_URL=https://github.com/NVIDIA/Isaac-GR00T.git
 ARG GROOT_SOURCE_REF=e5749287857afd97b78f1147166137de29746392
 ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
 ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
+ARG OSCAR_SOURCE_URL=https://github.com/wuzy2115/oscar-public.git
+ARG OSCAR_SOURCE_REF=4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb
+ARG BLUEPRINT_SOURCE_COMMIT
+ARG BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256
 ARG SONIC_CHECKPOINT_REPO=LucaFrat/groot-bs16
 ARG SONIC_CHECKPOINT_REVISION=86b17337379926a8d8f1ad5c4580c7c33deeb49f
 ARG OSCAR_CHECKPOINT_REPO=zywu2115/OSCAR-2B
@@ -49,7 +50,17 @@ ENV PYTHONUNBUFFERED=1 \
     BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT=/opt/gr00t \
     BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT=/opt/wbc \
     BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL=tcp://127.0.0.1:5550 \
-    BLUEPRINT_WORKER_IMAGE_FAMILY=groot-oscar-closed-loop-eval \
+    BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker \
+    BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-closed-loop-eval \
+    BLUEPRINT_SIMULATOR_FRAMEWORK=isaac_sim \
+    BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6 \
+    BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh \
+    BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
+    BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
+    BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
+    BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc \
+    BLUEPRINT_GEAR_SONIC_ROBOT_MODEL=/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml \
+    BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
     BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED=true \
     SONIC_CHECKPOINT_REPO=${SONIC_CHECKPOINT_REPO} \
     OSCAR_CHECKPOINT_REPO=${OSCAR_CHECKPOINT_REPO} \
@@ -57,35 +68,58 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /workspace
 
-# 1. System packages on top of the OSCAR base. libosmesa6 is required for
-#    MUJOCO_GL=osmesa (EGL is broken on the pytorch base per the ACT/T4 runs).
+# 1. System build/runtime dependencies shared by the isolated environments.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    clang \
+    cmake \
     libosmesa6 \
     ffmpeg \
     git \
+    git-lfs \
     curl \
     ca-certificates \
+    ninja-build \
+    pkg-config \
+    python3-venv \
   && rm -rf /var/lib/apt/lists/*
 
-# 2. Expose the base's OSCAR source at the /opt/OSCAR path the closed-loop CLI
-#    expects (--oscar-repo default + PYTHONPATH).
-RUN if [[ ! -e /opt/OSCAR ]]; then ln -s /opt/oscar-public /opt/OSCAR; fi
-
-# 3. Our package + closed-loop main-env deps. Installed WITHOUT extras so the
-#    base torch 2.10.0+cu128 is never disturbed (matches run_t4.sh's line).
+# 2. Blueprint package in both the OSCAR client environment and Isaac runtime.
 COPY pyproject.toml README.md LICENSE /opt/blueprint/blueprint-capture-pipeline/
 COPY src /opt/blueprint/blueprint-capture-pipeline/src
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_groot_oscar_main_env.txt /opt/blueprint/requirements_groot_oscar_main_env.txt
-RUN python3 -m pip install --upgrade pip \
-  && python3 -m pip install -e /opt/blueprint/blueprint-capture-pipeline \
-  && python3 -m pip install -r /opt/blueprint/requirements_groot_oscar_main_env.txt
+RUN python3 -m pip install --upgrade pip uv \
+  && uv venv /opt/oscar-venv --python 3.10 \
+  && VIRTUAL_ENV=/opt/oscar-venv uv pip install --index-url https://download.pytorch.org/whl/cu128 \
+       torch==2.10.0 torchvision==0.25.0 \
+  && VIRTUAL_ENV=/opt/oscar-venv uv pip install "nvidia-cudnn-cu12>=9.10" \
+  && VIRTUAL_ENV=/opt/oscar-venv uv pip install -e /opt/blueprint/blueprint-capture-pipeline \
+  && VIRTUAL_ENV=/opt/oscar-venv uv pip install -r /opt/blueprint/requirements_groot_oscar_main_env.txt \
+  && /isaac-sim/python.sh -m pip install --no-deps -e /opt/blueprint/blueprint-capture-pipeline \
+  && /isaac-sim/python.sh -m pip install pillow cryptography
 
-# 4. GR00T runtime + its own Python-3.10 venv (Isaac-GR00T pins python==3.10.*).
-#    WBC is cloned for the endpoint lane; harmless for the T4 closed loop.
+# 3. Official pinned OSCAR source and its torch/TE-filtered dependencies.
+RUN git clone --filter=blob:none "${OSCAR_SOURCE_URL}" /opt/oscar-public \
+  && git -C /opt/oscar-public fetch --depth 1 origin "${OSCAR_SOURCE_REF}" \
+  && git -C /opt/oscar-public checkout --detach FETCH_HEAD \
+  && test "$(git -C /opt/oscar-public rev-parse HEAD)" = "${OSCAR_SOURCE_REF}" \
+  && ln -s /opt/oscar-public /opt/OSCAR \
+  && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import filter_oscar_requirements_script_text, transformer_engine_shim_script_text; Path('/tmp/filter.py').write_text(filter_oscar_requirements_script_text()); Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
+  && /opt/oscar-venv/bin/python /tmp/filter.py /opt/OSCAR/requirements.txt /tmp/oscar_requirements.txt \
+  && VIRTUAL_ENV=/opt/oscar-venv uv pip install -r /tmp/oscar_requirements.txt \
+  && /opt/oscar-venv/bin/python /tmp/te_shim.py /opt/OSCAR
+
+# 4. GR00T runtime and official GEAR-SONIC deployment stack.
 RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
   && git -C /opt/wbc fetch --depth 1 origin "${WBC_SOURCE_REF}" \
   && git -C /opt/wbc checkout --detach FETCH_HEAD \
-  && test "$(git -C /opt/wbc rev-parse HEAD)" = "${WBC_SOURCE_REF}"
+  && test "$(git -C /opt/wbc rev-parse HEAD)" = "${WBC_SOURCE_REF}" \
+  && git -C /opt/wbc lfs pull \
+  && cd /opt/wbc/gear_sonic_deploy \
+  && chmod +x scripts/install_deps.sh deploy.sh \
+  && scripts/install_deps.sh \
+  && source scripts/setup_env.sh \
+  && just build
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \
   && cd /opt/gr00t \
   && git fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
@@ -145,9 +179,9 @@ PY
 fi
 BASH
 
-# 6. Build-time healthcheck (fail-closed on the build host; no GPU required).
+# 6. Build-time healthcheck (all three environments; no GPU required).
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
-RUN python3 /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
+RUN /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
 
 RUN groupadd --gid "${APP_GID}" blueprint \
   && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \

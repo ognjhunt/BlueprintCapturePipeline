@@ -23,6 +23,8 @@ from .common import ensure_dir, utc_now_iso, write_json
 
 
 SCHEMA_VERSION = "adaptive_task_stance_configurator.v1"
+PRODUCTION_AUTHORITY = False
+ROLE = "bounded_candidate_proposal_and_support_validation_only"
 RESULT_ARTIFACT_NAME = "adaptive_task_stance_configurator.json"
 EVALUATIONS_ARTIFACT_NAME = "stance_candidate_evaluations.json"
 

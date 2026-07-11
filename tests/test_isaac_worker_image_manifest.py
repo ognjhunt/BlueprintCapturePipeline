@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
+from argparse import Namespace
 from pathlib import Path
 
-from blueprint_pipeline.isaac_worker_image_manifest import summarize_manifest
+from blueprint_pipeline.isaac_worker_image_manifest import (
+    _inspect_local_image,
+    summarize_manifest,
+)
 
 
 def test_split_image_manifest_is_digest_pinned_and_sizes_drive_startup_timeout() -> None:
@@ -41,6 +46,37 @@ def test_missing_registry_digest_fails_closed() -> None:
     assert result["status"] == "blocked"
     assert result["resolved_digest_ref"] is None
     assert result["blockers"] == ["registry_manifest_metadata_incomplete"]
+
+
+def test_local_inspection_is_explicitly_not_registry_evidence(monkeypatch) -> None:
+    payload = [
+        {
+            "Id": "sha256:" + "a" * 64,
+            "Architecture": "amd64",
+            "Os": "linux",
+            "Size": 1234,
+            "RootFS": {"Layers": ["sha256:one", "sha256:two"]},
+            "Config": {
+                "User": "blueprint:blueprint",
+                "Entrypoint": ["worker"],
+                "WorkingDir": "/workspace",
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        "blueprint_pipeline.isaac_worker_image_manifest.subprocess.run",
+        lambda *args, **kwargs: Namespace(returncode=0, stdout=json.dumps(payload)),
+    )
+
+    result = _inspect_local_image("example:versioned")
+
+    assert result is not None
+    assert result["status"] == "completed_local"
+    assert result["resolved_digest_ref"] is None
+    assert result["total_compressed_size_bytes"] is None
+    assert result["local_uncompressed_size_bytes"] == 1234
+    assert result["layer_count"] == 2
+    assert result["runtime_config"]["user"] == "blueprint:blueprint"
 
 
 def test_isaac_build_script_keeps_digest_pinned_base_default() -> None:

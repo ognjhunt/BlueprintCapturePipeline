@@ -361,7 +361,7 @@ jobs:
             systemd-analyze verify deploy/systemd/blueprint-*.service
             for unit in deploy/systemd/blueprint-*.service; do
               systemd-analyze security --offline=yes --no-pager \
-                --threshold=4.0 "${unit}"
+                --threshold=40 "${unit}"
             done
           } > output/ci/container-production/container-production-sources/systemd-security.log 2>&1
           printf '%s\n' 'systemd-security-ok' \

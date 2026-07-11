@@ -21,6 +21,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
+from .claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from .common import ensure_dir, utc_now_iso, write_json
 
 
@@ -412,7 +413,7 @@ def run_isaac_review_renderer_canary(
             "policy_execution_proven": False,
             "proves_task_success": False,
             "fast_startup_canary_is_not_review_proof": True,
-            "public_claim_upgrade_allowed": False,
+            PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
         },
         "secret_values_in_artifact": False,
     }

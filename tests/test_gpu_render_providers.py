@@ -22,6 +22,7 @@ from blueprint_pipeline.gpu_render_providers import (
     VastRenderProvider,
     get_render_provider,
     list_render_providers,
+    validate_runpod_restart_storage_contract,
 )
 
 
@@ -102,6 +103,34 @@ def test_runpod_build_request_is_pod_body(tmp_path: Path) -> None:
     assert body["containerDiskInGb"] >= 120
     assert body["env"]["BLUEPRINT_EVAL_MANIFEST_URI"].endswith("sig=A")
     assert body["cloudType"] == "SECURE"
+    assert body["env"]["BLUEPRINT_RUNPOD_CONTAINER_DISK_EPHEMERAL"] == "1"
+    assert body["env"]["BLUEPRINT_RESUMABLE_STATE_ROOT"].startswith("/workspace/")
+    assert body["blueprintStorageContract"]["persistent_volume"].startswith(
+        "survives_restart"
+    )
+
+
+def test_runpod_restart_storage_contract_requires_volume_not_container_sentinel(
+    tmp_path: Path,
+) -> None:
+    volume = tmp_path / "volume" / "sentinel"
+    volume.parent.mkdir()
+    volume.write_text("persistent", encoding="utf-8")
+    result = validate_runpod_restart_storage_contract(
+        container_disk_sentinel=tmp_path / "container" / "sentinel",
+        volume_sentinel=volume,
+    )
+    assert result["status"] == "passed"
+    container = tmp_path / "container" / "sentinel"
+    container.parent.mkdir()
+    container.write_text("stale", encoding="utf-8")
+    assert (
+        validate_runpod_restart_storage_contract(
+            container_disk_sentinel=container,
+            volume_sentinel=volume,
+        )["status"]
+        == "blocked"
+    )
 
 
 def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> None:
@@ -1834,3 +1863,52 @@ def test_digitalocean_stop_warns_droplets_bill_while_off(monkeypatch, tmp_path: 
     res = G.DigitalOceanRenderProvider().stop("4242")
     assert res["status"] == "stopped"
     assert "billing" in json.dumps(res).lower()
+
+
+def test_runpod_billable_inventory_is_api_confirmed_and_prefix_scoped(monkeypatch) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    monkeypatch.setattr(G.RunPodRenderProvider, "_key", lambda self: "secret")
+    monkeypatch.setattr(
+        G,
+        "_runpod_call",
+        lambda *args, **kwargs: (
+            200,
+            [
+                {"id": "pod-1", "name": "blueprint-isaac-g1-supervised-a", "desiredStatus": "RUNNING", "costPerHr": 0.49},
+                {"id": "pod-2", "name": "unrelated", "desiredStatus": "RUNNING", "costPerHr": 1.0},
+            ],
+        ),
+    )
+    result = G.RunPodRenderProvider().billable_inventory(
+        name_prefix="blueprint-isaac-g1-supervised"
+    )
+    assert result["api_confirmed"] is True
+    assert result["live_resource_count"] == 1
+    assert result["resources"][0]["instance_id"] == "pod-1"
+    assert result["raw_provider_response_recorded"] is False
+
+
+def test_digitalocean_billable_inventory_counts_powered_off_resources(monkeypatch) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    monkeypatch.setattr(G.DigitalOceanRenderProvider, "_token", lambda self: "secret")
+    monkeypatch.setattr(
+        G,
+        "_do_call",
+        lambda *args, **kwargs: (
+            200,
+            {
+                "droplets": [
+                    {"id": 4, "name": "blueprint-isaac-g1-supervised-a", "status": "off", "size_slug": "gpu", "region": {"slug": "tor1"}},
+                    {"id": 5, "name": "unrelated", "status": "active"},
+                ]
+            },
+        ),
+    )
+    result = G.DigitalOceanRenderProvider().billable_inventory(
+        name_prefix="blueprint-isaac-g1-supervised"
+    )
+    assert result["api_confirmed"] is True
+    assert result["live_resource_count"] == 1
+    assert result["resources"][0]["status"] == "off"

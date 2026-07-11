@@ -152,9 +152,25 @@ class GpuRenderProvider:
         """
         return {"status": "not_implemented", "provider": self.name}
 
+    def billable_inventory(self, *, name_prefix: str) -> dict:
+        """Return provider-API inventory scoped to one orchestrator name prefix.
+
+        Startup supervision must not infer zero inventory from its own process
+        memory: a prior crashed process may still own a billable resource.  A
+        provider without an authoritative list API fails closed.
+        """
+        return {
+            "status": "not_implemented",
+            "provider": self.name,
+            "name_prefix": str(name_prefix),
+            "live_resource_count": None,
+            "resources": [],
+            "api_confirmed": False,
+            "blockers": ["provider_billable_inventory_not_implemented"],
+        }
+
     def terminate(self, instance_id: str) -> dict:
-        """Permanently delete the instance (releases its disk too). Defaults to stop(); RunPod
-        overrides because a stopped pod keeps billing for its container disk."""
+        """Permanently delete the instance and provider-managed storage."""
         return self.stop(instance_id)
 
 
@@ -225,6 +241,33 @@ def _runpod_create_capacity_unavailable(status: int, response: Any) -> bool:
             "capacity unavailable",
         )
     )
+
+
+def validate_runpod_restart_storage_contract(
+    *, container_disk_sentinel: str | Path, volume_sentinel: str | Path
+) -> dict[str, Any]:
+    """Prove warm-restart state is on persistent volume, not container disk."""
+    container_path = Path(container_disk_sentinel)
+    volume_path = Path(volume_sentinel)
+    blockers: list[str] = []
+    if container_path.exists():
+        blockers.append("runpod_container_disk_sentinel_unexpectedly_survived_restart")
+    if not volume_path.is_file():
+        blockers.append("runpod_persistent_volume_sentinel_missing_after_restart")
+    return {
+        "schema_version": "runpod_restart_storage_contract.v1",
+        "status": "passed" if not blockers else "blocked",
+        "blockers": blockers,
+        "container_disk": {
+            "path": str(container_path),
+            "temporary_wiped_on_restart": not container_path.exists(),
+        },
+        "persistent_volume": {
+            "path": str(volume_path),
+            "survived_restart": volume_path.is_file(),
+        },
+        "resumable_state_must_use_persistent_volume_or_redownload": True,
+    }
 
 
 def _render_prelaunch_guard_blockers(
@@ -388,6 +431,16 @@ class RunPodRenderProvider(GpuRenderProvider):
         }
 
     def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
+        environment = dict(spec.env)
+        environment.update(
+            {
+                "BLUEPRINT_RUNPOD_CONTAINER_DISK_EPHEMERAL": "1",
+                "BLUEPRINT_RESUMABLE_STATE_ROOT": str(
+                    Path(spec.volume_mount_path) / "blueprint-resumable"
+                ),
+                "BLUEPRINT_REDOWNLOAD_BUNDLE_AFTER_RESTART": "1",
+            }
+        )
         return {
             "name": spec.name, "imageName": spec.image,
             "gpuTypeIds": list(spec.gpu_types), "gpuTypePriority": "availability",
@@ -395,8 +448,16 @@ class RunPodRenderProvider(GpuRenderProvider):
             "containerDiskInGb": spec.container_disk_gb, "volumeInGb": spec.volume_gb,
             "volumeMountPath": spec.volume_mount_path,
             "minVCPUPerGPU": spec.min_vcpu, "minRAMPerGPU": spec.min_ram_gb,
-            "env": dict(spec.env), "dockerEntrypoint": list(spec.entrypoint),
+            "env": environment, "dockerEntrypoint": list(spec.entrypoint),
             "dockerStartCmd": list(spec.bootstrap_argv),
+            "blueprintStorageContract": {
+                "container_disk": "temporary_wiped_on_restart",
+                "persistent_volume": "survives_restart_bills_while_stopped",
+                "resumable_state_root": str(
+                    Path(spec.volume_mount_path) / "blueprint-resumable"
+                ),
+                "terminal_delete_pod_and_volume_required": True,
+            },
         }
 
     def launch(
@@ -424,6 +485,7 @@ class RunPodRenderProvider(GpuRenderProvider):
         # part of RunPod's public Pod request schema.
         launch_request.pop("prelaunch_spend_guard", None)
         launch_request.pop("pending_teardown_record", None)
+        launch_request.pop("blueprintStorageContract", None)
         attempts: list[dict] = []
         if not cold and self.warm_candidates:
             upd = {k: launch_request[k] for k in (
@@ -532,9 +594,67 @@ class RunPodRenderProvider(GpuRenderProvider):
             "raw_provider_response_recorded": False,
         }
 
+    def billable_inventory(self, *, name_prefix: str) -> dict:
+        key = self._key()
+        if not key:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": str(name_prefix),
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "blockers": ["runpod_api_key_missing"],
+            }
+        status, body = _runpod_call("GET", "/pods", None, key=key, timeout=30)
+        rows = body if isinstance(body, list) else _mapping(body).get("pods")
+        if status != 200 or not isinstance(rows, list):
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": str(name_prefix),
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "blockers": ["runpod_billable_inventory_failed"],
+                "http": status,
+                "raw_provider_response_recorded": False,
+            }
+        prefix = str(name_prefix or "")
+        resources = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            name = str(row.get("name") or "")
+            if prefix and not name.startswith(prefix):
+                continue
+            resources.append(
+                {
+                    "instance_id": str(row.get("id") or ""),
+                    "name": name,
+                    "desired_status": row.get("desiredStatus"),
+                    "cost_per_hour": row.get("costPerHr"),
+                }
+            )
+        return {
+            "status": "observed",
+            "provider": self.name,
+            "name_prefix": prefix,
+            "live_resource_count": len(resources),
+            "resources": resources,
+            "api_confirmed": True,
+            "http": status,
+            "raw_provider_response_recorded": False,
+        }
+
     def terminate(self, instance_id: str) -> dict:
-        """DELETE the pod — a stopped RunPod pod still bills for its 140GB+ container disk, so
-        render pods must be deleted, not just stopped, to avoid runaway storage charges."""
+        """DELETE the terminal pod and its remaining provider-managed storage.
+
+        RunPod container disk is temporary and is wiped on restart. A persistent
+        Pod volume survives restart and incurs stopped storage cost. Terminal
+        deletion remains mandatory, but resumable state must live on the volume
+        (or be re-downloaded), never be inferred from container-disk survival.
+        """
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["runpod_api_key_missing"]}
@@ -1403,6 +1523,60 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 "instance_id": instance_id,
                 "droplet_status": (droplet or {}).get("status"),
                 "raw_provider_response_recorded": False}
+
+    def billable_inventory(self, *, name_prefix: str) -> dict:
+        token = self._token()
+        if not token:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": str(name_prefix),
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "blockers": ["digitalocean_token_missing"],
+            }
+        status, body = _do_call("GET", "/droplets?per_page=200", token=token)
+        rows = _mapping(body).get("droplets")
+        if status != 200 or not isinstance(rows, list):
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": str(name_prefix),
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "blockers": ["digitalocean_billable_inventory_failed"],
+                "http": status,
+                "raw_provider_response_recorded": False,
+            }
+        prefix = str(name_prefix or "")
+        resources = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            name = str(row.get("name") or "")
+            if prefix and not name.startswith(prefix):
+                continue
+            resources.append(
+                {
+                    "instance_id": str(row.get("id") or ""),
+                    "name": name,
+                    "status": row.get("status"),
+                    "size_slug": row.get("size_slug"),
+                    "region": _mapping(row.get("region")).get("slug"),
+                }
+            )
+        return {
+            "status": "observed",
+            "provider": self.name,
+            "name_prefix": prefix,
+            "live_resource_count": len(resources),
+            "resources": resources,
+            "api_confirmed": True,
+            "http": status,
+            "raw_provider_response_recorded": False,
+        }
 
     def stop(self, instance_id: str) -> dict:
         token = self._token()

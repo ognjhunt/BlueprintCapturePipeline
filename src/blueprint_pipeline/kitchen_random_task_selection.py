@@ -541,6 +541,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--scenario-eval-run-id")
     parser.add_argument("--scenario-artifact-name", default="selected_isaac_scenario.json")
     parser.add_argument("--invalidation", action="append", default=[])
+    parser.add_argument("--selection-id")
+    parser.add_argument("--active-from-attempt-id")
     parser.add_argument("--selection-artifact-name", default="random_task_selection.json")
     parser.add_argument(
         "--specification-artifact-name", default="selected_task_specification.json"
@@ -590,23 +592,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if not args.preflight_manifest or not args.kitchen_usd:
         parser.error("--select requires --preflight-manifest and --kitchen-usd")
-    result = select_random_task(
+    if args.seed is None or not args.active_from_attempt_id:
+        parser.error(
+            "--select requires --seed and --active-from-attempt-id so the immutable "
+            "selection generation can be attempt-bound"
+        )
+    if len(args.invalidation) > 1:
+        parser.error("one immutable selection generation accepts at most one supersession")
+    # Production automation writes only immutable selection-ID directories.  The
+    # direct Python ``select_random_task`` helper remains for local/support callers.
+    from .kitchen_attempt_lineage import (
+        activate_selection_generation,
+        create_selection_generation,
+    )
+
+    generation = create_selection_generation(
+        generations_dir=out / "selections",
         registry_path=args.registry,
         preflight_manifest_path=args.preflight_manifest,
         kitchen_usd=args.kitchen_usd,
-        out_dir=out,
         seed=args.seed,
         invalidation_paths=args.invalidation,
-        selection_artifact_name=args.selection_artifact_name,
-        specification_artifact_name=args.specification_artifact_name,
-        inventory_artifact_name=args.inventory_artifact_name,
+        selection_id=args.selection_id,
+    )
+    prior_pointer = out / "active_selection_pointer.json"
+    pointer = activate_selection_generation(
+        run_dir=out,
+        generation=generation,
+        active_from_attempt_id=args.active_from_attempt_id,
+        prior_pointer_path=prior_pointer if prior_pointer.is_file() else None,
+        invalidation_path=args.invalidation[0] if args.invalidation else None,
     )
     print(
         json.dumps(
             {
-                "status": result["status"],
-                "seed_uint64": result["seed_uint64"],
-                "selected_task_id": result["selected_task_id"],
+                "status": generation["status"],
+                "selection_id": generation["selection_id"],
+                "selection_sha256": generation["selection_sha256"],
+                "selected_task_id": generation["selected_task_id"],
+                "active_from_attempt_id": pointer["active_from_attempt_id"],
             },
             sort_keys=True,
         )

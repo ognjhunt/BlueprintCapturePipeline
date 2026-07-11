@@ -294,6 +294,18 @@ groot-libero = [
     { name = "torch" },
     { name = "torchvision" },
 ]
+groot-libero-cpu = [
+    { name = "decord", marker = "platform_machine == 'AMD64' or platform_machine == 'x86_64'" },
+    { name = "dm-tree" },
+    { name = "lerobot" },
+    { name = "ninja" },
+    { name = "peft" },
+    { name = "safetensors" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+]
 llm = [
     { name = "google-genai" },
     { name = "openai" },
@@ -345,7 +357,9 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'dev'", specifier = ">=1.34.0" },
     { name = "botocore", marker = "extra == 'dev'", specifier = ">=1.34.0" },
     { name = "cryptography", specifier = ">=46.0.5" },
+    { name = "decord", marker = "(platform_machine == 'AMD64' and extra == 'groot-libero-cpu') or (platform_machine == 'x86_64' and extra == 'groot-libero-cpu')", specifier = ">=0.6.0" },
     { name = "defusedxml", specifier = ">=0.7.1" },
+    { name = "dm-tree", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.1.8" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-auth", specifier = ">=2.0.0" },
     { name = "google-cloud-pubsub", marker = "extra == 'cloud'", specifier = ">=2.21.0" },
@@ -356,15 +370,18 @@ requires-dist = [
     { name = "json-numpy", specifier = ">=2.1.0" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23.0" },
     { name = "jsonschema", marker = "extra == 'validation'", specifier = ">=4.23.0" },
+    { name = "lerobot", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.4.4,<0.5" },
     { name = "lerobot", extras = ["groot"], marker = "extra == 'groot-libero'" },
     { name = "mujoco", marker = "extra == 'dev'", specifier = ">=3.1" },
     { name = "mujoco", marker = "extra == 'geometry'", specifier = ">=3.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = "==1.19.1" },
+    { name = "ninja", marker = "extra == 'groot-libero-cpu'", specifier = ">=1.11.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "openai", marker = "extra == 'llm'", specifier = ">=1.0.0" },
     { name = "openai-agents", marker = "extra == 'simulation-agents'", specifier = ">=0.3.0" },
     { name = "opencv-python-headless", marker = "extra == 'dev'", specifier = ">=4.10.0" },
     { name = "opencv-python-headless", marker = "extra == 'runtime'", specifier = ">=4.10.0" },
+    { name = "peft", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.14.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = "==2.10.1" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.8" },
@@ -374,11 +391,16 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
+    { name = "safetensors", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.4.0" },
+    { name = "timm", marker = "extra == 'groot-libero-cpu'", specifier = ">=1.0.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'groot-libero'", specifier = ">=2.2.0" },
+    { name = "torch", marker = "extra == 'groot-libero-cpu'", specifier = ">=2.2.0" },
     { name = "torch", marker = "extra == 'retrieval'", specifier = ">=2.2.0" },
     { name = "torchvision", marker = "extra == 'groot-libero'", specifier = ">=0.17.0" },
+    { name = "torchvision", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.17.0" },
     { name = "torchvision", marker = "extra == 'retrieval'", specifier = ">=0.17.0" },
+    { name = "transformers", marker = "extra == 'groot-libero-cpu'", specifier = ">=4.40.0" },
     { name = "transformers", marker = "extra == 'retrieval'", specifier = ">=4.40.0" },
     { name = "trimesh", marker = "extra == 'dev'", specifier = ">=4.4.0" },
     { name = "trimesh", marker = "extra == 'geometry'", specifier = ">=4.4.0" },
@@ -389,7 +411,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["cloud", "runtime", "geometry", "llm", "simulation-agents", "retrieval", "groot-libero", "validation", "dev"]
+provides-extras = ["cloud", "runtime", "geometry", "llm", "simulation-agents", "retrieval", "groot-libero", "groot-libero-cpu", "validation", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

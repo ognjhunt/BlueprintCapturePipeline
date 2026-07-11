@@ -53,6 +53,12 @@ def build_spend_reconciliation(
     provider_reported_source: str | None = None,
     stopped_disk_usd_per_hour: float | None = None,
     stopped_disk_seconds: float = 0.0,
+    container_disk_usd_per_hour: float = 0.0,
+    persistent_volume_usd_per_hour: float = 0.0,
+    network_volume_usd_per_hour: float = 0.0,
+    container_disk_seconds: float | None = None,
+    persistent_volume_seconds: float | None = None,
+    network_volume_seconds: float | None = None,
     phase_durations_seconds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """One attempt's spend picture with estimates and actuals kept apart.
@@ -71,6 +77,35 @@ def build_spend_reconciliation(
         else None
     )
     disk_seconds = _non_negative(stopped_disk_seconds, field="stopped_disk_seconds")
+    storage_rates = {
+        "container_disk_usd_per_hour": _non_negative(
+            container_disk_usd_per_hour, field="container_disk_usd_per_hour"
+        ),
+        "persistent_volume_usd_per_hour": _non_negative(
+            persistent_volume_usd_per_hour, field="persistent_volume_usd_per_hour"
+        ),
+        "network_volume_usd_per_hour": _non_negative(
+            network_volume_usd_per_hour, field="network_volume_usd_per_hour"
+        ),
+    }
+    storage_seconds = {
+        "container_disk_seconds": _non_negative(
+            elapsed if container_disk_seconds is None else container_disk_seconds,
+            field="container_disk_seconds",
+        ),
+        "persistent_volume_seconds": _non_negative(
+            elapsed + disk_seconds
+            if persistent_volume_seconds is None
+            else persistent_volume_seconds,
+            field="persistent_volume_seconds",
+        ),
+        "network_volume_seconds": _non_negative(
+            elapsed + disk_seconds
+            if network_volume_seconds is None
+            else network_volume_seconds,
+            field="network_volume_seconds",
+        ),
+    }
 
     source = str(provider_reported_source or "").strip().lower()
     actual: float | None = None
@@ -85,7 +120,19 @@ def build_spend_reconciliation(
                 "provider_reported_actual_requires_provider_billing_api_source"
             )
 
-    elapsed_upper_bound = rate * elapsed / 3600.0
+    component_costs = {
+        "compute_usd": rate * elapsed / 3600.0,
+        "container_disk_usd": storage_rates["container_disk_usd_per_hour"]
+        * storage_seconds["container_disk_seconds"]
+        / 3600.0,
+        "persistent_volume_usd": storage_rates["persistent_volume_usd_per_hour"]
+        * storage_seconds["persistent_volume_seconds"]
+        / 3600.0,
+        "network_volume_usd": storage_rates["network_volume_usd_per_hour"]
+        * storage_seconds["network_volume_seconds"]
+        / 3600.0,
+    }
+    elapsed_upper_bound = sum(component_costs.values())
     if disk_rate is not None:
         elapsed_upper_bound += disk_rate * disk_seconds / 3600.0
     durations = {
@@ -102,6 +149,11 @@ def build_spend_reconciliation(
         "provider_reported_actual_usd": actual,
         "provider_reported_actual_refused_reason": actual_refused_reason,
         "standing_stopped_disk_usd_per_hour": disk_rate,
+        "storage_rate_breakdown_usd_per_hour": storage_rates,
+        "storage_duration_breakdown_seconds": storage_seconds,
+        "cost_component_upper_bounds_usd": {
+            name: round(value, 6) for name, value in component_costs.items()
+        },
         "stopped_disk_seconds": disk_seconds,
         "billing_reconciliation": (
             BILLING_RECONCILIATION_PROVIDER_API

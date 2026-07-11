@@ -66,6 +66,26 @@ def test_stopped_disk_cost_included_in_upper_bound():
     assert result["elapsed_rate_upper_bound_usd"] == pytest.approx(0.20)
 
 
+def test_runpod_cost_components_are_accounted_separately() -> None:
+    result = S.build_spend_reconciliation(
+        provider="runpod",
+        hourly_rate_usd=1.0,
+        reserved_seconds=3600,
+        elapsed_seconds=3600,
+        stopped_disk_seconds=3600,
+        container_disk_usd_per_hour=0.1,
+        persistent_volume_usd_per_hour=0.2,
+        network_volume_usd_per_hour=0.3,
+    )
+    assert result["cost_component_upper_bounds_usd"] == {
+        "compute_usd": 1.0,
+        "container_disk_usd": 0.1,
+        "persistent_volume_usd": 0.4,
+        "network_volume_usd": 0.6,
+    }
+    assert result["elapsed_rate_upper_bound_usd"] == pytest.approx(2.1)
+
+
 def test_negative_and_invalid_inputs_rejected():
     with pytest.raises(ValueError):
         S.build_spend_reconciliation(

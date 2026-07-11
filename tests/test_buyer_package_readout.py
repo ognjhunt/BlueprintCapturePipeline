@@ -166,6 +166,24 @@ def test_complete_manifest_produces_buyer_readable_summary_without_overclaim() -
     assert "not real-world performance predictions" in markdown
 
 
+def test_g1_kitchen_readout_consumes_attempt_closure_not_leaf_statuses() -> None:
+    manifest = _complete_export_manifest()
+    manifest["g1_kitchen_attempt_closure"] = {
+        "schema_version": "g1_kitchen_attempt_closure.v1",
+        "status": "blocked",
+        "proof_rows": [
+            {"row_id": "persistent_simulator_transition", "status": "passed"}
+        ],
+    }
+    readout = build_buyer_package_readout(export_manifest=manifest)
+    assert readout["status"] == "blocked_incomplete_package"
+    assert "g1_kitchen_attempt_closure:not_completed" in readout["blockers"]
+    boundary = readout["claim_boundary"]
+    assert boundary["g1_kitchen_attempt_closure_present"] is True
+    assert boundary["g1_kitchen_task_success_proven"] is False
+    assert readout["customer_facing_status"]["all_blocker_classes_have_customer_copy"] is True
+
+
 def test_readout_projects_metric_specific_claim_eligibility_without_recomputing() -> None:
     manifest = _complete_export_manifest()
     manifest["calibration_report"] = {
@@ -328,6 +346,11 @@ def test_customer_facing_status_copy_covers_every_blocker_class() -> None:
     manifest["canonical_training_quality_pipeline"]["accepted_attempt_ids"] = []
     manifest["premium_quality_eligible"] = False
     manifest["native_training_export_eligible"] = False
+    manifest["g1_kitchen_attempt_closure"] = {
+        "schema_version": "g1_kitchen_attempt_closure.v1",
+        "status": "blocked",
+        "proof_rows": [],
+    }
 
     readout = build_buyer_package_readout(export_manifest=manifest)
     customer_status = readout["customer_facing_status"]

@@ -22,10 +22,9 @@ dynamic locomotion, not a learned policy, not readiness.
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
-import shutil
-import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -35,11 +34,28 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .common import utc_now_iso
+from .common import utc_now_iso, write_json
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
+from .g1_kitchen_bundle_compatibility import (
+    build_bundle_compatibility,
+    build_source_tree_identity,
+)
 from .isaac_g1_policy import groot_sonic_isaac_bridge_readiness
+from .isaac_g1_worker_bootstrap import (
+    BOOTSTRAP as BOOTSTRAP,
+    IMAGE_STARTUP_CANARY_BOOTSTRAP as IMAGE_STARTUP_CANARY_BOOTSTRAP,
+    docker_start_cmd,
+)
+from .isaac_supervised_startup_runtime import run_parity_startup_transaction
 from .isaac_particlefield_render_job import (
     DEFAULT_WARM_CANDIDATES, stage_bundle, watch_and_collect,
+)
+from .isaac_review_media import (
+    _float_or_none,
+    _int_or_none,
+    _probe_video_file,
+    _repair_collected_review_mp4s,
+    admit_collected_scenario_episode,
 )
 from .launch_provenance import (
     evaluate_dirty_tree_paid_launch_gate,
@@ -120,6 +136,9 @@ PARITY_BUNDLE_REQUIRED_FILES = (
     "blueprint_pipeline/__init__.py",
     "blueprint_pipeline/common.py",
     "blueprint_pipeline/isaac_worker_runtime_preflight.py",
+    "blueprint_pipeline/isaac_review_renderer_canary.py",
+    "blueprint_pipeline/kitchen_asset_startup_gate.py",
+    "blueprint_pipeline/adaptive_task_stance_configurator.py",
     "blueprint_pipeline/unitree_groot_n17_sonic_policy_runtime.py",
     "blueprint_pipeline/unitree_groot_n17_sonic_policy_server_command.py",
     "request.json",
@@ -275,6 +294,31 @@ def _inspect_kitchen_asset_url_layout(kitchen_url: str, *, timeout: int = 1800) 
                 source="reused_existing_url",
                 byte_size=len(data),
             )
+            if detail.get("status") == "PASS":
+                main_usd = str(detail["selected_kitchen_main_usd_relative"])
+                files: list[dict[str, Any]] = []
+                for info in sorted(zf.infolist(), key=lambda item: item.filename):
+                    if info.is_dir():
+                        continue
+                    digest = hashlib.sha256()
+                    with zf.open(info, "r") as source:
+                        while chunk := source.read(1024 * 1024):
+                            digest.update(chunk)
+                    files.append(
+                        {
+                            "path": info.filename,
+                            "sha256": digest.hexdigest(),
+                            "bytes": int(info.file_size),
+                        }
+                    )
+                detail["content_inventory"] = {
+                    "schema_version": "kitchen_asset_inventory_checksums.v1",
+                    "main_usd": main_usd,
+                    "file_count": len(files),
+                    "total_bytes": sum(int(item["bytes"]) for item in files),
+                    "archive_sha256": hashlib.sha256(data).hexdigest(),
+                    "files": files,
+                }
         return detail
     except urllib.error.HTTPError as exc:
         return {
@@ -317,239 +361,6 @@ def _write_launch_attempt_trace(job_dir: str | Path, trace: dict) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(trace, indent=2, default=str), encoding="utf-8")
     return out_path
-
-
-def _int_or_none(value) -> int | None:
-    try:
-        if value is None or value == "":
-            return None
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _float_or_none(value) -> float | None:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _probe_video_file(path: str | Path) -> dict:
-    """Best-effort local media metadata for collected provider videos."""
-    video_path = Path(path)
-    if not video_path.is_file():
-        return {
-            "status": "missing",
-            "path": str(video_path),
-            "blockers": ["video_file_missing"],
-        }
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        return {
-            "status": "unavailable",
-            "path": str(video_path),
-            "tool": "ffprobe",
-            "blockers": ["ffprobe_not_found"],
-        }
-    proc = subprocess.run(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            str(video_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return {
-            "status": "failed",
-            "path": str(video_path),
-            "tool": ffprobe,
-            "exit_code": proc.returncode,
-            "stderr_tail": proc.stderr[-400:],
-            "blockers": ["ffprobe_failed"],
-        }
-    try:
-        payload = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return {
-            "status": "failed",
-            "path": str(video_path),
-            "tool": ffprobe,
-            "blockers": ["ffprobe_output_not_json"],
-        }
-    streams = payload.get("streams") if isinstance(payload.get("streams"), list) else []
-    video_stream = next(
-        (
-            item
-            for item in streams
-            if isinstance(item, dict) and item.get("codec_type") == "video"
-        ),
-        {},
-    )
-    format_info = payload.get("format") if isinstance(payload.get("format"), dict) else {}
-    fps = None
-    rate = str(video_stream.get("r_frame_rate") or "").strip()
-    if "/" in rate:
-        num, den = rate.split("/", 1)
-        den_f = _float_or_none(den)
-        if den_f:
-            fps = (_float_or_none(num) or 0.0) / den_f
-    else:
-        fps = _float_or_none(rate)
-    return {
-        "status": "ready",
-        "path": str(video_path),
-        "tool": ffprobe,
-        "width": _int_or_none(video_stream.get("width")),
-        "height": _int_or_none(video_stream.get("height")),
-        "frame_count": _int_or_none(video_stream.get("nb_frames")),
-        "fps": fps,
-        "duration_seconds": (
-            _float_or_none(video_stream.get("duration"))
-            or _float_or_none(format_info.get("duration"))
-        ),
-        "codec_name": video_stream.get("codec_name") or None,
-    }
-
-
-REVIEW_MP4_FRAME_PATTERNS = {
-    "overview": "overview_[0-9][0-9][0-9][0-9].png",
-    "robot_pov": "robot_pov_[0-9][0-9][0-9][0-9].png",
-    "placement_topdown": "placement_topdown_[0-9][0-9][0-9][0-9].png",
-}
-
-REVIEW_MP4_FRAME_SEQUENCES = {
-    "overview": "overview_%04d.png",
-    "robot_pov": "robot_pov_%04d.png",
-    "placement_topdown": "placement_topdown_%04d.png",
-}
-
-
-def _ffmpeg_mp4_command(
-    *,
-    ffmpeg: str,
-    frames_sequence: str,
-    fps: int,
-    out_path: str,
-) -> list[str]:
-    return [
-        ffmpeg,
-        "-y",
-        "-framerate",
-        str(int(fps)),
-        "-start_number",
-        "0",
-        "-i",
-        frames_sequence,
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        out_path,
-    ]
-
-
-def _repair_collected_review_mp4s(
-    *,
-    render_out_dir: Path,
-    result: dict,
-    fps: int,
-    optional_videos: Sequence[str] = (),
-    expected_frame_count: int | None = None,
-) -> dict:
-    """Assemble missing collected MP4s locally when the provider image lacked ffmpeg.
-
-    When ``expected_frame_count`` is known, a repair over fewer frames is labeled
-    ``repaired_truncated`` with a blocker instead of ``repaired`` — a locally
-    assembled MP4 must never make a partially-uploaded provider render read as a
-    complete one. The truncated video is still written for human review.
-    """
-    scenarios = result.get("scenarios", []) if isinstance(result, dict) else []
-    ffmpeg = shutil.which("ffmpeg")
-    repairs: list[dict] = []
-    optional_video_set = {str(name) for name in optional_videos}
-    expected = int(expected_frame_count) if expected_frame_count else None
-    for sc in scenarios:
-        sid = sc.get("scenario_id")
-        sdir = render_out_dir / str(sid)
-        frames_dir = sdir / "frames"
-        for name, pattern in REVIEW_MP4_FRAME_PATTERNS.items():
-            out_path = sdir / f"{name}.mp4"
-            frame_paths = sorted(frames_dir.glob(pattern))
-            rec: dict = {
-                "scenario_id": sid,
-                "video": name,
-                "path": str(out_path),
-                "frame_pattern": pattern,
-                "frame_count": len(frame_paths),
-                "expected_frame_count": expected,
-            }
-            truncated = expected is not None and 0 < len(frame_paths) < expected
-            if out_path.is_file():
-                rec["status"] = "already_present"
-            elif not frame_paths:
-                if name in optional_video_set:
-                    rec["status"] = "skipped_optional"
-                    rec["optional"] = True
-                else:
-                    rec["status"] = "missing_frames"
-                    rec["blockers"] = ["video_frames_missing"]
-            elif not ffmpeg:
-                rec["status"] = "unavailable"
-                rec["blockers"] = ["local_ffmpeg_not_found"]
-            else:
-                cmd = _ffmpeg_mp4_command(
-                    ffmpeg=ffmpeg,
-                    frames_sequence=str(frames_dir / REVIEW_MP4_FRAME_SEQUENCES[name]),
-                    fps=int(fps),
-                    out_path=str(out_path),
-                )
-                proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-                rec["tool"] = ffmpeg
-                rec["exit_code"] = proc.returncode
-                if proc.returncode == 0 and out_path.is_file():
-                    if truncated:
-                        rec["status"] = "repaired_truncated"
-                        rec["blockers"] = [
-                            "mp4_repair_truncated_frames:"
-                            f"{name}:{len(frame_paths)}<{expected}"
-                        ]
-                    else:
-                        rec["status"] = "repaired"
-                else:
-                    rec["status"] = "failed"
-                    rec["blockers"] = ["local_ffmpeg_mp4_repair_failed"]
-                    rec["stderr_tail"] = proc.stderr[-500:]
-            repairs.append(rec)
-    blockers = sorted({
-        str(blocker)
-        for rec in repairs
-        for blocker in (rec.get("blockers") or [])
-    })
-    return {
-        "schema_version": "isaac_collected_review_mp4_repair.v1",
-        "status": "PASS" if not blockers else "FAIL",
-        "blockers": blockers,
-        "ffmpeg": ffmpeg,
-        "fps": int(fps),
-        "repairs": repairs,
-        "claim_boundary": (
-            "Local MP4 repair assembles already-collected provider PNG frames. It does not alter "
-            "rendered frames, task outcomes, or evaluator success labels."
-        ),
-    }
 
 
 def parity_image() -> str:
@@ -692,318 +503,6 @@ def _vast_max_hourly_rate_from_env(default: float = DEFAULT_VAST_MAX_HOURLY_RATE
     return parsed if parsed > 0 else float(default)
 
 
-# diagnostics-streaming pod bootstrap for the parity runner
-BOOTSTRAP = r'''
-import os, sys, io, time, json, zipfile, threading, subprocess, urllib.request, pathlib, shutil, signal
-OUT="/workspace/out"; BUNDLE="/workspace/bundle"
-for d in (OUT, BUNDLE): pathlib.Path(d).mkdir(parents=True, exist_ok=True)
-for p in pathlib.Path(OUT).iterdir():
-    # tee already holds runner_console.log open; unlinking it detaches the inode and the
-    # console then never reaches the output zip (every crash so far collected an empty tail).
-    if p.name == "runner_console.log": continue
-    try:
-        shutil.rmtree(p) if p.is_dir() else p.unlink()
-    except Exception: pass
-PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
-GETB=os.environ.get("BLUEPRINT_EVAL_MANIFEST_URI","")
-SESSION=os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID","")
-def putout():
-    try:
-        buf=io.BytesIO()
-        with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as z:
-            for p in pathlib.Path(OUT).rglob("*"):
-                if p.is_file():
-                    try: z.write(p, p.relative_to(OUT).as_posix())
-                    except Exception: pass
-        req=urllib.request.Request(PUT, data=buf.getvalue(), method="PUT", headers={"Content-Type":"application/zip"})
-        urllib.request.urlopen(req, timeout=180).read()
-    except Exception: pass
-def mark(ph, **k):
-    try: json.dump({"phase":ph, "launch_session_id":SESSION, **k}, open(OUT+"/bootstrap.json","w"))
-    except Exception: pass
-    putout()
-def hb():
-    while True:
-        time.sleep(25); putout()
-def fetch_bytes(url, *, phase, timeout=1800, progress_step=67108864):
-    chunks=[]; total=0; next_mark=progress_step
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        content_length=resp.headers.get("Content-Length") or resp.headers.get("content-length")
-        mark(phase+"_connected", content_length_bytes=content_length)
-        while True:
-            chunk=resp.read(4194304)
-            if not chunk: break
-            chunks.append(chunk); total += len(chunk)
-            if total >= next_mark:
-                mark(phase+"_progress", bytes_read=total, content_length_bytes=content_length)
-                next_mark = total + progress_step
-    mark(phase+"_fetched", bytes_read=total)
-    return b"".join(chunks)
-def runner_timeout_seconds():
-    raw=os.environ.get("PARITY_RUNNER_TIMEOUT_SECONDS","")
-    if not raw: return 0
-    try: return max(1, int(float(raw)))
-    except Exception: return 0
-threading.Thread(target=hb, daemon=True).start()
-try:
-    mark("bootstrap_fetching")
-    data=fetch_bytes(GETB, phase="bootstrap_fetch", timeout=600, progress_step=16777216)
-    zipfile.ZipFile(io.BytesIO(data)).extractall(BUNDLE)
-    mark("bootstrap_extracted", files=sorted(os.listdir(BUNDLE)))
-    # kitchen assets are staged separately (large, reused across iterations) and fetched into BUNDLE/kitchen
-    KURL=os.environ.get("KITCHEN_BUNDLE_URL","")
-    if KURL:
-        mark("kitchen_fetching")
-        kdir=BUNDLE+"/kitchen"; pathlib.Path(kdir).mkdir(parents=True, exist_ok=True)
-        kdata=fetch_bytes(KURL, phase="kitchen_fetch", timeout=1800)
-        mark("kitchen_extracting", bytes_read=len(kdata))
-        zipfile.ZipFile(io.BytesIO(kdata)).extractall(kdir)
-        mark("kitchen_extracted", kitchen_files=len(list(pathlib.Path(kdir).rglob("*"))))
-except Exception as exc:
-    mark("bootstrap_failed", error=repr(exc))
-    raise
-try: subprocess.call(["/isaac-sim/python.sh","-m","pip","install","-q","pillow","google-genai"])  # frame save + Gemini QC deps (best-effort)
-except Exception: pass
-try: subprocess.call(["bash","-c","command -v ffmpeg >/dev/null 2>&1 || (apt-get update -y >/dev/null 2>&1 && apt-get install -y ffmpeg >/dev/null 2>&1)"])  # mp4 assembly (best-effort)
-except Exception: pass
-cmd=["/isaac-sim/python.sh", BUNDLE+"/run_isaac_g1_kitchen_parity_eval.py",
-     "--request", BUNDLE+"/request.json", "--out-dir", OUT,
-     "--policy", os.environ.get("PARITY_POLICY","blueprint_default_walk_to_target_smoke_policy"),
-     "--steps", os.environ.get("PARITY_STEPS","64"),
-     "--width", os.environ.get("RENDER_WIDTH","1280"), "--height", os.environ.get("RENDER_HEIGHT","960"),
-     "--fps", os.environ.get("RENDER_FPS","20"),
-     "--warmup-frames", os.environ.get("RENDER_WARMUP","6"),
-     "--per-scenario-seconds", os.environ.get("PARITY_PER_SCENARIO_SECONDS","420"),
-     "--focus-radius", os.environ.get("PARITY_FOCUS_RADIUS","0"),
-     "--settle-seconds", os.environ.get("PARITY_SETTLE_SECONDS","0")]
-if os.environ.get("PARITY_GROOT_POLICY_COMMAND",""): cmd += ["--groot-policy-command", os.environ["PARITY_GROOT_POLICY_COMMAND"]]
-if os.environ.get("PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS",""): cmd += ["--groot-policy-command-timeout-seconds", os.environ["PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"]]
-if os.environ.get("PARITY_GROOT_POLICY_INITIAL_FRAME",""): cmd += ["--groot-policy-initial-frame", os.environ["PARITY_GROOT_POLICY_INITIAL_FRAME"]]
-if os.environ.get("PARITY_DYNAMIC_EPISODE_TERMINATION","")=="1": cmd.append("--dynamic-episode-termination")
-elif os.environ.get("PARITY_DYNAMIC_EPISODE_TERMINATION","")=="0": cmd.append("--no-dynamic-episode-termination")
-if os.environ.get("PARITY_EPISODE_MAX_STEPS",""): cmd += ["--episode-max-steps", os.environ["PARITY_EPISODE_MAX_STEPS"]]
-if os.environ.get("PARITY_DYNAMIC_EPISODE_CHECK_EVERY",""): cmd += ["--dynamic-episode-check-every", os.environ["PARITY_DYNAMIC_EPISODE_CHECK_EVERY"]]
-if os.environ.get("PARITY_CAPTURE_EVERY",""): cmd += ["--capture-every", os.environ["PARITY_CAPTURE_EVERY"]]
-if os.environ.get("PARITY_KEEP_OBJECTS",""): cmd += ["--keep-objects", os.environ["PARITY_KEEP_OBJECTS"]]
-if os.environ.get("PARITY_NO_PROBE","")=="1": cmd.append("--no-collision-probe")
-if os.environ.get("PARITY_CHEAP_COLLISION","")=="1": cmd.append("--cheap-collision")
-if os.environ.get("PARITY_ARTICULATED","")=="1": cmd.append("--articulated")
-if os.environ.get("PARITY_PHYSICS_ARTICULATION_DRIVE","")=="1": cmd.append("--physics-articulation-drive")
-if os.environ.get("PARITY_DYNAMIC_STANDING_CONTACT_STEPS",""): cmd += ["--dynamic-standing-contact-steps", os.environ["PARITY_DYNAMIC_STANDING_CONTACT_STEPS"]]
-if os.environ.get("PARITY_MANIPULATION_CAM","")=="1": cmd.append("--manipulation-cam")
-if os.environ.get("PARITY_MANIPULATION_LOOK_AT",""):
-    # Keep a negative leading X coordinate attached to the option.  Passing it as the next argv
-    # token makes argparse interpret values such as ``-1.59,1.47,1.24`` as another option and the
-    # paid worker exits before Isaac starts.
-    cmd += ["--manipulation-look-at=" + os.environ["PARITY_MANIPULATION_LOOK_AT"]]
-if os.environ.get("PARITY_RENDER_SUBFRAMES",""): cmd += ["--render-subframes", os.environ["PARITY_RENDER_SUBFRAMES"]]
-if os.environ.get("PARITY_NO_SOFTWARE_DENOISE","")=="1": cmd.append("--no-software-denoise")
-if os.environ.get("PARITY_MANIPULATION_REACH","")=="1": cmd.append("--manipulation-reach")
-if os.environ.get("PARITY_MANIPULATION_REACH_ARM",""): cmd += ["--manipulation-reach-arm", os.environ["PARITY_MANIPULATION_REACH_ARM"]]
-if os.environ.get("PARITY_FILL_LIGHT_INTENSITY",""): cmd += ["--fill-light-intensity", os.environ["PARITY_FILL_LIGHT_INTENSITY"]]
-if os.environ.get("PARITY_NEUTRAL_ENVIRONMENT","")=="1": cmd.append("--neutral-environment")
-if os.environ.get("PARITY_ROBOT_REVIEW_MATERIAL_OVERRIDE","")=="1": cmd.append("--robot-review-material-override")
-if os.environ.get("PARITY_ROBOT_REVIEW_MATERIAL_MODE",""): cmd += ["--robot-review-material-mode", os.environ["PARITY_ROBOT_REVIEW_MATERIAL_MODE"]]
-if os.environ.get("PARITY_COLLISION_APPROXIMATION",""): cmd += ["--collision-approximation", os.environ["PARITY_COLLISION_APPROXIMATION"]]
-if os.environ.get("PARITY_VERIFY_CAM","")=="1": cmd.append("--verify-cam")
-if os.environ.get("PARITY_MANIPULATION_STAND","")=="1": cmd.append("--manipulation-stand")
-if os.environ.get("PARITY_NO_PLACEMENT_TOPDOWN_CAPTURE","")=="1": cmd.append("--no-placement-topdown-capture")
-if os.environ.get("PARITY_KINEMATIC_ARM_POSE","")=="1": cmd.append("--kinematic-arm-pose")
-if os.environ.get("PARITY_RENDER_NOISE_AUDIT","")=="1":
-    cmd.append("--render-noise-audit")  # variant-matrix render-quality audit instead of the scenario eval
-    if os.environ.get("PARITY_AUDIT_HIGH_SPP",""): cmd += ["--audit-high-spp", os.environ["PARITY_AUDIT_HIGH_SPP"]]
-    if os.environ.get("PARITY_AUDIT_WARMUP_FRAMES",""): cmd += ["--audit-warmup-frames", os.environ["PARITY_AUDIT_WARMUP_FRAMES"]]
-    if os.environ.get("PARITY_AUDIT_BOOST_LIGHT_INTENSITY",""): cmd += ["--audit-boost-light-intensity", os.environ["PARITY_AUDIT_BOOST_LIGHT_INTENSITY"]]
-if os.environ.get("PARITY_SERVE","")=="1":
-    cmd.append("--serve")  # warm mode: boot Isaac + load scene ONCE, then serve jobs from the inbox env
-    if os.environ.get("PARITY_SERVE_IDLE_TIMEOUT",""): cmd += ["--serve-idle-timeout", os.environ["PARITY_SERVE_IDLE_TIMEOUT"]]
-    if os.environ.get("PARITY_SERVE_MAX_JOBS",""): cmd += ["--serve-max-jobs", os.environ["PARITY_SERVE_MAX_JOBS"]]
-mark("runner_starting", cmd=cmd)
-timeout=runner_timeout_seconds()
-started=time.monotonic()
-proc=subprocess.Popen(cmd, start_new_session=True)
-try:
-    rc=proc.wait(timeout=timeout if timeout > 0 else None)
-    mark("runner_done", rc=rc, elapsed_seconds=round(time.monotonic()-started,1),
-         timeout_seconds=timeout)
-except subprocess.TimeoutExpired:
-    try: os.killpg(proc.pid, signal.SIGTERM)
-    except Exception: pass
-    try:
-        rc=proc.wait(timeout=30)
-    except Exception:
-        try: os.killpg(proc.pid, signal.SIGKILL)
-        except Exception: pass
-        try: rc=proc.wait(timeout=10)
-        except Exception: rc=None
-    mark("runner_timeout", rc=rc, timeout_seconds=timeout,
-         elapsed_seconds=round(time.monotonic()-started,1), cmd=cmd)
-# Keep the container process alive after runner completion so RunPod does not restart it and
-# clobber the final output object before the parent collector observes runner_done.
-while True:
-    time.sleep(30); putout()
-'''
-
-IMAGE_STARTUP_CANARY_BOOTSTRAP = r'''
-import os, io, json, time, zipfile, pathlib, urllib.request, shutil, sys, subprocess
-from datetime import datetime, timezone
-
-OUT="/workspace/out"
-pathlib.Path(OUT).mkdir(parents=True, exist_ok=True)
-for p in pathlib.Path(OUT).iterdir():
-    try:
-        shutil.rmtree(p) if p.is_dir() else p.unlink()
-    except Exception:
-        pass
-PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
-GETB=os.environ.get("BLUEPRINT_EVAL_MANIFEST_URI","")
-SESSION=os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID","")
-
-def putout():
-    try:
-        buf=io.BytesIO()
-        with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as z:
-            for p in pathlib.Path(OUT).rglob("*"):
-                if p.is_file():
-                    try:
-                        z.write(p, p.relative_to(OUT).as_posix())
-                    except Exception:
-                        pass
-        req=urllib.request.Request(PUT, data=buf.getvalue(), method="PUT", headers={"Content-Type":"application/zip"})
-        urllib.request.urlopen(req, timeout=120).read()
-    except Exception:
-        pass
-
-def mark(phase, **extra):
-    payload={"phase":phase, "launch_session_id":SESSION, **extra}
-    pathlib.Path(OUT, "bootstrap.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    putout()
-
-CANARY_BUNDLE="/workspace/canary_bundle"
-pathlib.Path(CANARY_BUNDLE).mkdir(parents=True, exist_ok=True)
-bundle_bytes=0
-bundle_files=[]
-bundle_error=None
-try:
-    if not GETB:
-        raise RuntimeError("canary_bundle_url_missing")
-    with urllib.request.urlopen(GETB, timeout=600) as response:
-        bundle_data=response.read(134217728)
-    bundle_bytes=len(bundle_data)
-    zipfile.ZipFile(io.BytesIO(bundle_data)).extractall(CANARY_BUNDLE)
-    bundle_files=sorted(
-        p.relative_to(CANARY_BUNDLE).as_posix()
-        for p in pathlib.Path(CANARY_BUNDLE).rglob("*") if p.is_file()
-    )
-    os.environ["PYTHONPATH"]=CANARY_BUNDLE + os.pathsep + os.environ.get("PYTHONPATH","")
-except Exception as exc:
-    bundle_error=repr(exc)
-mark("runtime_preflight_starting", image_startup_canary=True,
-     bundle_bytes=bundle_bytes, bundle_file_count=len(bundle_files), bundle_error=bundle_error)
-preflight_path=pathlib.Path(OUT, "isaac_worker_runtime_preflight.json")
-preflight_cmd=[
-    "/isaac-sim/python.sh", "-m", "blueprint_pipeline.isaac_worker_runtime_preflight",
-    "--output", str(preflight_path), "--require-nvidia-smi", "--require-rtx-render",
-    "--smoke-steps", "3",
-]
-started=time.monotonic()
-try:
-    if bundle_error:
-        raise RuntimeError("canary_bundle_unavailable:" + bundle_error)
-    completed=subprocess.run(
-        preflight_cmd, capture_output=True, text=True, timeout=900, check=False,
-        env=dict(os.environ),
-    )
-    preflight_rc=completed.returncode
-    preflight_stdout=completed.stdout[-4000:]
-    preflight_stderr=completed.stderr[-4000:]
-except Exception as exc:
-    preflight_rc=124
-    preflight_stdout=""
-    preflight_stderr=repr(exc)
-try:
-    preflight=json.loads(preflight_path.read_text(encoding="utf-8"))
-except Exception as exc:
-    preflight={"status":"blocked", "blockers":["isaac_runtime_preflight_result_missing"], "error":repr(exc)}
-preflight_passed=preflight_rc == 0 and preflight.get("status") == "passed"
-workspace_disk=shutil.disk_usage("/workspace")
-canary={
-    "schema_version": "isaac_g1_parity_image_startup_canary.v2",
-    "status": "completed" if preflight_passed else "blocked",
-    "blockers": [] if preflight_passed else list(preflight.get("blockers") or ["isaac_runtime_preflight_failed"]),
-    "image_startup_canary": True,
-    "generated_at": datetime.now(timezone.utc).isoformat(),
-    "launch_session_id": SESSION,
-    "python_executable": sys.executable,
-    "python3_path": shutil.which("python3"),
-    "isaac_python_path": "/isaac-sim/python.sh" if pathlib.Path("/isaac-sim/python.sh").exists() else None,
-    "blueprint_worker_image_family": os.environ.get("BLUEPRINT_WORKER_IMAGE_FAMILY"),
-    "simulator_framework": os.environ.get("BLUEPRINT_SIMULATOR_FRAMEWORK"),
-    "image_contract_mode": "split_isaac_carrier_plus_signed_blueprint_bundle",
-    "signed_bundle_bytes": bundle_bytes,
-    "signed_bundle_file_count": len(bundle_files),
-    "signed_bundle_error": bundle_error,
-    "runtime_preflight_command": preflight_cmd,
-    "runtime_preflight_exit_code": preflight_rc,
-    "runtime_preflight_elapsed_seconds": round(time.monotonic()-started, 1),
-    "runtime_preflight_stdout_tail": preflight_stdout,
-    "runtime_preflight_stderr_tail": preflight_stderr,
-    "runtime_preflight": preflight,
-    "workspace_disk": {
-        "total_bytes": workspace_disk.total,
-        "used_bytes": workspace_disk.used,
-        "free_bytes": workspace_disk.free,
-    },
-    "claim_boundary": (
-        "This canary proves only that the selected split Isaac carrier plus signed Blueprint "
-        "bundle reached user command execution, uploaded a provider output artifact, and ran "
-        "the explicit CUDA/Isaac/64x64 RTX runtime preflight. It does not prove "
-        "kitchen scene loading, policy execution, task success, WAM quality, or robot readiness."
-    ),
-}
-pathlib.Path(OUT, "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(canary, indent=2), encoding="utf-8")
-pathlib.Path(OUT, "isaac_g1_parity_image_startup_canary.json").write_text(json.dumps(canary, indent=2), encoding="utf-8")
-mark("runner_done", rc=preflight_rc, image_startup_canary=True,
-     runtime_preflight_status=preflight.get("status"))
-while True:
-    time.sleep(30)
-    putout()
-'''
-
-_EARLY_MARKER = r'''
-import os, io, json, zipfile, pathlib, urllib.request
-OUT="/workspace/out"; pathlib.Path(OUT).mkdir(parents=True, exist_ok=True)
-SESSION=os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID","")
-json.dump({"phase":"container_bash_started","launch_session_id":SESSION}, open(OUT+"/bootstrap.json","w"))
-PUT=os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL","")
-buf=io.BytesIO()
-with zipfile.ZipFile(buf,"w") as z: z.write(OUT+"/bootstrap.json","bootstrap.json")
-try: urllib.request.urlopen(urllib.request.Request(PUT,data=buf.getvalue(),method="PUT",headers={"Content-Type":"application/zip"}),timeout=60).read()
-except Exception: pass
-'''
-
-
-def docker_start_cmd(*, image_startup_canary: bool = False) -> list[str]:
-    worker_script = IMAGE_STARTUP_CANARY_BOOTSTRAP if image_startup_canary else BOOTSTRAP
-    worker_script_name = "parity_image_startup_canary.py" if image_startup_canary else "boot.py"
-    worker_python_cmd = (
-        f'(python3 /workspace/{worker_script_name} || '
-        f'python /workspace/{worker_script_name} || '
-        f'/isaac-sim/python.sh /workspace/{worker_script_name})'
-        if image_startup_canary
-        else f"/isaac-sim/python.sh /workspace/{worker_script_name}"
-    )
-    script = (
-        "set +e\n"
-        "mkdir -p /workspace/out\n"
-        "cat > /workspace/early.py <<'EARLYEOF'\n" + _EARLY_MARKER + "\nEARLYEOF\n"
-        "(python3 /workspace/early.py 2>/dev/null || /isaac-sim/python.sh /workspace/early.py 2>/dev/null) || true\n"
-        f"cat > /workspace/{worker_script_name} <<'PYEOF'\n" + worker_script + "\nPYEOF\n"
-        f"{worker_python_cmd} 2>&1 | tee /workspace/out/runner_console.log\n"
-    )
-    return ["-lc", script]
-
-
 # ----------------------------- request + bundle -----------------------------
 
 def build_request(*, scenarios: Sequence[dict], kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
@@ -1026,6 +525,7 @@ def build_request(*, scenarios: Sequence[dict], kitchen_main_usd_relative: str =
 
 def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
                         kitchen_asset_dir: str | Path | None = None,
+                        kitchen_asset_inventory: Mapping[str, Any] | None = None,
                         kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
                         g1_usd: str = DEFAULT_G1_USD_RELATIVE,
                         policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
@@ -1055,6 +555,9 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     for module_name in (
         "common.py",
         "isaac_worker_runtime_preflight.py",
+        "isaac_review_renderer_canary.py",
+        "kitchen_asset_startup_gate.py",
+        "adaptive_task_stance_configurator.py",
         "unitree_groot_n17_sonic_policy_runtime.py",
         "unitree_groot_n17_sonic_policy_server_command.py",
     ):
@@ -1075,6 +578,11 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
                             g1_usd=g1_usd, policy_id=policy_id, steps=steps,
                             render_noise_audit_plan=render_noise_audit_plan)
     (bundle / "request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")
+    if kitchen_asset_inventory is not None:
+        write_json(
+            bundle / "kitchen_asset_inventory_checksums.json",
+            dict(kitchen_asset_inventory),
+        )
     if kitchen_asset_dir is not None:
         src = Path(kitchen_asset_dir)
         for item in src.rglob("*"):
@@ -1091,7 +599,9 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     (bundle / "bundle_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": "isaac_g1_kitchen_parity_bundle.v1",
+                "schema_version": "isaac_g1_kitchen_parity_bundle.v2",
+                "source_tree_identity": build_source_tree_identity(_repo_root()),
+                "compatibility": build_bundle_compatibility(),
                 "required_files": list(PARITY_BUNDLE_REQUIRED_FILES),
                 "files": bundle_files,
             },
@@ -1147,6 +657,7 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
                       serve_max_jobs: int | None = None,
                       vast_max_hourly_rate_usd: float | None = None,
                       image_startup_canary: bool = False,
+                      supervised_startup: bool = False,
                       runner_timeout_seconds: int = 0) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
@@ -1158,7 +669,13 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         "PARITY_POLICY": policy_id, "PARITY_STEPS": str(steps),
         "RENDER_WIDTH": str(width), "RENDER_HEIGHT": str(height), "RENDER_FPS": str(fps),
         "RENDER_WARMUP": str(warmup), "PARITY_PER_SCENARIO_SECONDS": str(per_scenario_seconds),
+        "PYTHONPATH": WORKER_BUNDLE_DIR,
     }
+    if supervised_startup:
+        env["PARITY_SUPERVISED_STARTUP"] = "1"
+        env["BLUEPRINT_WORKER_IMAGE_DIGEST"] = (
+            image.split("@", 1)[1] if "@sha256:" in image else ""
+        )
     if runner_timeout_seconds and runner_timeout_seconds > 0:
         env["PARITY_RUNNER_TIMEOUT_SECONDS"] = str(int(runner_timeout_seconds))
     if no_collision_probe:
@@ -1422,6 +939,7 @@ def _isaac_g1_prelaunch_spend_guard(
     max_spend_usd: float | None,
     max_seconds: int,
     max_hourly_rate_usd: float | None,
+    max_hourly_rate_source: str = "configured_provider_ceiling",
     contender_count: int = 1,
     marker_timeout_seconds: int = 0,
     startup_no_runtime_timeout_seconds: int = 0,
@@ -1470,6 +988,7 @@ def _isaac_g1_prelaunch_spend_guard(
         else ("env" if env_budget is not None else "missing"),
         "estimated_max_spend_usd": estimated_max_spend_usd,
         "max_hourly_rate_usd": hourly_rate,
+        "max_hourly_rate_source": str(max_hourly_rate_source),
         "max_seconds": seconds,
         "render_budget_seconds": seconds,
         "startup_budget_seconds": startup_budget_seconds,
@@ -1486,6 +1005,33 @@ def _isaac_g1_prelaunch_spend_guard(
             "no_provider_api_call_before_can_launch": True,
         },
     }
+
+
+def _capacity_preflight_hourly_rate(capacity: Mapping[str, Any] | None) -> float | None:
+    """Return the conservative rate of the provider capacity that can actually be selected.
+
+    Provider launch specs retain a marketplace ceiling for offer filtering. That ceiling is not the
+    selected machine's price and must not inflate the attempt spend estimate after a read-only
+    capacity preflight has already resolved concrete viable size/region rows.
+    """
+    if not isinstance(capacity, Mapping) or capacity.get("status") != "available":
+        return None
+    rates: list[float] = []
+    viable_rows = list(capacity.get("viable_size_regions") or [])
+    viable_rows.extend(capacity.get("viable_gpu_types") or [])
+    for row in viable_rows:
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            rate = float(
+                row.get("price_hourly")
+                or row.get("on_demand_price_usd_per_hour")
+            )
+        except (TypeError, ValueError):
+            continue
+        if rate > 0:
+            rates.append(rate)
+    return max(rates) if rates else None
 
 
 def _paid_worker_image_policy(
@@ -1513,12 +1059,21 @@ def _paid_worker_image_policy(
     if allow_paid and not configured and not direct_base_image_allowed:
         blockers.append("prebuilt_isaac_eval_worker_image_ref_missing")
     cold_start_possible = bool(cold or not warm_only)
+    split_layer_cold_start_suitable = bool(
+        image_size_diagnostic.get("split_layer_layout_suitable") is True
+        and (_int_or_none(
+            image_size_diagnostic.get("recommended_startup_no_runtime_timeout_seconds") or 0
+        ) or 0) > 0
+        and (_int_or_none(image_size_diagnostic.get("largest_layer_size_bytes")) or 0)
+        <= 3_000_000_000
+    )
     large_runpod_fresh_start = bool(
         allow_paid
         and "runpod" in {str(p).strip().lower() for p in provider_names}
         and cold_start_possible
         and image_size_diagnostic.get("large_image_pull_risk")
         and not image_startup_canary
+        and not split_layer_cold_start_suitable
         and not _env_truthy(ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV)
     )
     if large_runpod_fresh_start:
@@ -1535,7 +1090,8 @@ def _paid_worker_image_policy(
         "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
         "large_runpod_image_fresh_start_allowed": _env_truthy(
             ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV
-        ) or bool(image_startup_canary),
+        ) or bool(image_startup_canary) or split_layer_cold_start_suitable,
+        "split_layer_cold_start_suitable": split_layer_cold_start_suitable,
         "image_startup_canary": bool(image_startup_canary),
         "runpod_cold_start_possible": cold_start_possible,
         "large_runpod_image_fresh_start_override_env": ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV,
@@ -2297,6 +1853,7 @@ def run_isaac_g1_kitchen_parity_job(
     serve: bool = False, serve_idle_timeout_s: float = 1800.0,
     serve_max_jobs: int | None = None, serve_ready_timeout: int = 1800,
     image_startup_canary: bool = False,
+    supervised_startup: bool | None = None,
     groot_policy_command: str = "",
     groot_policy_command_timeout_seconds: float | None = None,
 ) -> dict:
@@ -2307,6 +1864,8 @@ def run_isaac_g1_kitchen_parity_job(
     return WITH THE POD LEFT RUNNING (no watch_and_collect / teardown). The caller drives it with a
     :class:`~blueprint_pipeline.warm_render_server.WarmPoolClient` (submit jobs / collect results) and
     is responsible for tearing it down. ``serve`` allows an empty ``scenarios`` list (jobs arrive live)."""
+    supervised_startup_requested = supervised_startup
+    supervised_startup = bool(supervised_startup) if supervised_startup is not None else False
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     requested_provider_names = _provider_names(provider)
@@ -2314,7 +1873,8 @@ def run_isaac_g1_kitchen_parity_job(
     manifest: dict = {"schema_version": SCHEMA_VERSION, "status": "blocked", "blockers": [],
                       "provider": ",".join(provider_names), "policy_id": policy_id,
                       "rendered_by": "isaac_rtx_g1_kitchen_parity",
-                      "image_startup_canary": bool(image_startup_canary)}
+                      "image_startup_canary": bool(image_startup_canary),
+                      "supervised_startup": bool(supervised_startup)}
     requested_render_settings = {
         "steps": int(steps),
         "width": int(width),
@@ -2345,6 +1905,9 @@ def run_isaac_g1_kitchen_parity_job(
         return manifest
     if not scenarios and not serve and not image_startup_canary:
         manifest["blockers"].append("no_scenarios")
+        return manifest
+    if supervised_startup and (serve or image_startup_canary or len(provider_names) != 1):
+        manifest["blockers"].append("supervised_startup_requires_single_nonserve_full_job")
         return manifest
     manifest["scenario_ids"] = [s.get("scenario_id") or s.get("id") for s in scenarios]
     git_evidence = _git_worktree_evidence()
@@ -2393,6 +1956,26 @@ def run_isaac_g1_kitchen_parity_job(
             f"{ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV}=true or "
             f"{ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV}=true only for deliberate debug runs."
         )
+        return manifest
+    if supervised_startup_requested is None:
+        diagnostic = image_policy.get("worker_image_manifest_diagnostic")
+        supervised_startup = bool(
+            allow_paid
+            and not serve
+            and not image_startup_canary
+            and len(provider_names) == 1
+            and "@sha256:" in str(selected_image or "")
+            and isinstance(diagnostic, Mapping)
+            and diagnostic.get("metadata_available_for_selected_image") is True
+        )
+        manifest["supervised_startup"] = supervised_startup
+        manifest["supervised_startup_default_selection"] = {
+            "selected": supervised_startup,
+            "requires_paid_single_provider_full_job": True,
+            "requires_digest_pinned_image_with_matching_manifest_diagnostic": True,
+        }
+    if supervised_startup and "@sha256:" not in str(selected_image or ""):
+        manifest["blockers"].append("supervised_startup_requires_digest_pinned_image")
         return manifest
     startup_timeout_policy = _effective_startup_no_runtime_timeout(
         startup_no_runtime_timeout,
@@ -2458,6 +2041,7 @@ def run_isaac_g1_kitchen_parity_job(
     race_contender_count = resolve_cold_race_contenders(cold_race_contenders)
     single_provider_cold_race = (
         not multi_provider_race
+        and not supervised_startup
         and not serve
         and not warm_only
         and prov.name == "runpod"
@@ -2466,6 +2050,7 @@ def run_isaac_g1_kitchen_parity_job(
     manifest["cold_race_contenders"] = (
         race_contender_count if single_provider_cold_race else 1
     )
+    capacity: Mapping[str, Any] | None = None
     if multi_provider_race:
         manifest["providers"] = [p.name for p in providers]
         manifest["provider_available"] = [p.available() for p in providers]
@@ -2487,8 +2072,12 @@ def run_isaac_g1_kitchen_parity_job(
     # Stage the large kitchen tree ONCE (reused across iterations); keep the code bundle tiny.
     # A caller may pass a previously-staged kitchen_url to skip the 1.2GB re-upload entirely.
     kitchen_main_usd_relative = DEFAULT_KITCHEN_MAIN_USD
+    kitchen_asset_inventory: dict[str, Any] | None = None
     if kitchen_url:
         layout = _inspect_kitchen_asset_url_layout(kitchen_url)
+        raw_inventory = layout.pop("content_inventory", None)
+        if isinstance(raw_inventory, Mapping):
+            kitchen_asset_inventory = dict(raw_inventory)
         manifest["kitchen_layout_validation"] = layout
         if layout.get("status") != "PASS":
             manifest["blockers"].append("kitchen_asset_layout_validation_failed")
@@ -2507,6 +2096,13 @@ def run_isaac_g1_kitchen_parity_job(
         kitchen_main_usd_relative = str(layout["selected_kitchen_main_usd_relative"])
         kzip = out_dir / "kitchen_assets.zip"
         _zip_dir(Path(kitchen_asset_dir), kzip)
+        from .kitchen_asset_startup_gate import build_asset_inventory
+
+        kitchen_asset_inventory = build_asset_inventory(
+            Path(kitchen_asset_dir),
+            main_usd_relpath=kitchen_main_usd_relative,
+            archive_path=kzip,
+        )
         kjob = out_dir / "kitchen_object_store"
         kstaged = stage_bundle(kzip, kjob, key_prefix=key_prefix + "/kitchen")
         manifest["kitchen_staging"] = {
@@ -2520,6 +2116,18 @@ def run_isaac_g1_kitchen_parity_job(
             return manifest
         kitchen_url = (kjob / "provider_bundle_url.txt").read_text().strip()
     manifest["kitchen_assets_shipped"] = kitchen_url is not None
+    if supervised_startup and kitchen_asset_inventory is None:
+        manifest["blockers"].append("supervised_startup_kitchen_inventory_missing")
+        return manifest
+    if kitchen_asset_inventory is not None:
+        inventory_path = out_dir / "kitchen_asset_inventory_checksums.json"
+        write_json(inventory_path, kitchen_asset_inventory)
+        manifest["kitchen_asset_inventory"] = {
+            "path": str(inventory_path),
+            "file_count": kitchen_asset_inventory.get("file_count"),
+            "total_bytes": kitchen_asset_inventory.get("total_bytes"),
+            "archive_sha256": kitchen_asset_inventory.get("archive_sha256"),
+        }
     render_noise_audit_plan = None
     if render_noise_audit:
         from .g1_render_noise_audit import build_variant_plan
@@ -2530,6 +2138,7 @@ def run_isaac_g1_kitchen_parity_job(
         ]
     bundle_zip = build_parity_bundle(scenarios=scenarios, out_dir=out_dir,
                                      kitchen_asset_dir=None,
+                                     kitchen_asset_inventory=kitchen_asset_inventory,
                                      kitchen_main_usd_relative=kitchen_main_usd_relative,
                                      g1_usd=g1_usd,
                                      policy_id=policy_id, steps=steps,
@@ -2607,6 +2216,7 @@ def run_isaac_g1_kitchen_parity_job(
                                  effective_groot_policy_command_timeout_seconds
                              ),
                              image_startup_canary=image_startup_canary,
+                             supervised_startup=supervised_startup,
                              runner_timeout_seconds=runner_timeout_seconds)
     request_body = prov.build_request(spec, job_dir)
     manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
@@ -2655,7 +2265,8 @@ def run_isaac_g1_kitchen_parity_job(
                                         "groot_policy_command_configured": bool(
                                             effective_groot_policy_command
                                         ),
-                                        "image_startup_canary": bool(image_startup_canary)}
+                                        "image_startup_canary": bool(image_startup_canary),
+                                        "supervised_startup": bool(supervised_startup)}
     if not allow_paid:
         manifest["status"] = "prepared"
         manifest["note"] = f"bundled + staged + launchable on {prov.name}; re-run with allow_paid=True to spend GPU"
@@ -2679,6 +2290,7 @@ def run_isaac_g1_kitchen_parity_job(
         if single_provider_cold_race
         else 1
     )
+    capacity_hourly_rate = _capacity_preflight_hourly_rate(capacity)
     prelaunch_spend_guard = _isaac_g1_prelaunch_spend_guard(
         allow_paid=allow_paid,
         provider_name=",".join([p.name for p in providers])
@@ -2686,7 +2298,12 @@ def run_isaac_g1_kitchen_parity_job(
         else prov.name,
         max_spend_usd=max_spend_usd,
         max_seconds=max_seconds,
-        max_hourly_rate_usd=spec.max_hourly_rate_usd,
+        max_hourly_rate_usd=capacity_hourly_rate or spec.max_hourly_rate_usd,
+        max_hourly_rate_source=(
+            "provider_capacity_preflight_viable_inventory"
+            if capacity_hourly_rate is not None
+            else "configured_provider_ceiling"
+        ),
         contender_count=prelaunch_contender_count,
         marker_timeout_seconds=effective_marker_timeout,
         startup_no_runtime_timeout_seconds=effective_startup_no_runtime_timeout,
@@ -2703,7 +2320,37 @@ def run_isaac_g1_kitchen_parity_job(
     # recommendation, so a slow pull is not mislabeled as a dead host.
     collect_job_dir = job_dir
     collect_provider = prov
-    if multi_provider_race or single_provider_cold_race:
+    supervised_watch_result: dict[str, Any] | None = None
+    if supervised_startup:
+        diagnostic = image_policy.get("worker_image_manifest_diagnostic")
+        if not isinstance(diagnostic, Mapping) or diagnostic.get(
+            "metadata_available_for_selected_image"
+        ) is not True:
+            manifest["blockers"].append(
+                "supervised_startup_worker_image_manifest_diagnostic_missing"
+            )
+            return manifest
+        supervised_request = dict(request_body)
+        supervised_request["prelaunch_spend_guard"] = prelaunch_spend_guard
+        supervised = run_parity_startup_transaction(
+            provider=prov,
+            job_dir=job_dir,
+            request_body=supervised_request,
+            out_dir=out_dir,
+            image_ref=str(selected_image),
+            image_manifest_diagnostic=diagnostic,
+            capacity=capacity,
+            max_attempts=max_attempts,
+            marker_timeout_seconds=effective_marker_timeout,
+            max_seconds=max_seconds,
+            post_marker_progress_timeout=post_marker_progress_timeout,
+            prelaunch_spend_guard=prelaunch_spend_guard,
+        )
+        manifest["startup_supervisor"] = supervised["startup_supervisor"]
+        launch = dict(supervised["launch"])
+        supervised_watch_result = supervised.get("watch")
+        manifest["launch"] = launch
+    elif multi_provider_race or single_provider_cold_race:
         if multi_provider_race:
             race_contender_providers = list(runnable_providers)
         else:
@@ -2867,10 +2514,16 @@ def run_isaac_g1_kitchen_parity_job(
             manifest["blockers"].append("warm_serve_not_ready")
         return manifest
     render_out = out_dir / "render_output"
-    result = watch_and_collect(collect_job_dir, render_out, launch["instance_id"], provider=collect_provider,
-                               max_seconds=max_seconds, preserve_instance=True,
-                               preserve_blocked_instance=not image_startup_canary,
-                               progress_timeout_seconds=post_marker_progress_timeout)
+    result = supervised_watch_result or watch_and_collect(
+        collect_job_dir,
+        render_out,
+        launch["instance_id"],
+        provider=collect_provider,
+        max_seconds=max_seconds,
+        preserve_instance=True,
+        preserve_blocked_instance=not image_startup_canary,
+        progress_timeout_seconds=post_marker_progress_timeout,
+    )
     manifest["render"] = {
         "status": result.get("status"),
         "elapsed_seconds": result.get("elapsed_seconds"),
@@ -2887,7 +2540,7 @@ def run_isaac_g1_kitchen_parity_job(
             "provider_snapshot_before_teardown"
         ),
     }
-    if pending_teardown_record:
+    if pending_teardown_record and not supervised_startup:
         proof = _teardown_proof_from_watch_result(
             provider_name=getattr(collect_provider, "name", "unknown"),
             instance_id=launch["instance_id"],
@@ -2961,6 +2614,28 @@ def run_isaac_g1_kitchen_parity_job(
             )
             or None,
         )
+        media_admissions = []
+        for scenario in parity_result.get("scenarios") or []:
+            if not isinstance(scenario, Mapping):
+                continue
+            scenario_id = str(scenario.get("scenario_id") or "").strip()
+            if not scenario_id:
+                continue
+            media_admissions.append(
+                {
+                    "scenario_id": scenario_id,
+                    **admit_collected_scenario_episode(
+                        scenario_dir=render_out / scenario_id,
+                        expected_frame_count=int(
+                            requested_render_settings.get(
+                                "expected_frame_count_per_scenario"
+                            )
+                            or 0
+                        ),
+                    ),
+                }
+            )
+        manifest["full_ordered_episode_media_admissions"] = media_admissions
     if parity_status == "completed" and image_startup_canary:
         manifest["image_startup_canary_result"] = parity_result
         manifest["status"] = "completed"
@@ -2971,7 +2646,18 @@ def run_isaac_g1_kitchen_parity_job(
             out_dir=out_dir,
             requested_render_settings=requested_render_settings,
         )
-        manifest["status"] = "completed"
+        # Renderer/provider completion is deliberately not overall attempt
+        # closure.  The authoritative g1_kitchen_attempt_closure.v1 join is
+        # written by the attempt finalizer after semantic/consistency proofs,
+        # API teardown, and final inventory are available.
+        manifest["status"] = "evidence_collected_closure_required"
+        manifest["blockers"].append("g1_kitchen_attempt_closure_missing")
+        manifest["closure_contract"] = {
+            "required_schema_version": "g1_kitchen_attempt_closure.v1",
+            "renderer_completed": True,
+            "task_success_proven": False,
+            "buyer_readout_eligible": False,
+        }
     elif runner_completed and parity_result:
         manifest["status"] = "blocked"
         for blocker in parity_result.get("blockers") or []:
@@ -3103,6 +2789,24 @@ def main(argv=None) -> int:
             "execution in the selected image, not Isaac rendering, WAM quality, or task success."
         ),
     )
+    supervised_group = ap.add_mutually_exclusive_group()
+    supervised_group.add_argument(
+        "--supervised-startup",
+        dest="supervised_startup",
+        action="store_true",
+        default=None,
+        help=(
+            "use the atomic startup supervisor and require fast runtime, kitchen asset, "
+            "and review-renderer gates on the same allocation before accepting the full job; "
+            "this is the default for paid single-provider full jobs"
+        ),
+    )
+    supervised_group.add_argument(
+        "--no-supervised-startup",
+        dest="supervised_startup",
+        action="store_false",
+        help="disable the supervisor only for an explicit legacy/debug paid launch",
+    )
     ap.add_argument("--image", default=None)
     ap.add_argument("--max-seconds", type=int, default=1500)
     ap.add_argument(
@@ -3232,6 +2936,7 @@ def main(argv=None) -> int:
         serve_max_jobs=args.serve_max_jobs,
         serve_ready_timeout=args.serve_ready_timeout,
         image_startup_canary=args.image_startup_canary,
+        supervised_startup=args.supervised_startup,
         marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
         post_marker_progress_timeout=args.post_marker_progress_timeout,
         startup_no_runtime_timeout=args.startup_no_runtime_timeout,

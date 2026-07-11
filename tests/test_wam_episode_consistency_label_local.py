@@ -125,4 +125,8 @@ def test_local_visual_motion_smoke_never_emits_forward_inverse_proof(
     assert result["forward_inverse_consistency_proven"] is False
     assert result["claim_boundary"]["artifact_is_visual_motion_smoke_only"] is True
     assert result["claim_boundary"]["visual_motion_smoke_reads_action_values"] is False
+    assert result["claim_boundary"]["superseded_for_strict_action_consistency"] is True
+    assert result["claim_boundary"]["superseded_artifact_family"] == (
+        "local_cv_wam_episode_consistency_judge"
+    )
     assert output.is_file()

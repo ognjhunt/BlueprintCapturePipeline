@@ -31,6 +31,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .closed_loop_consistency_scoring import (
+    _score_closed_loop_step_episode_consistency as _score_closed_loop_step_episode_consistency_impl,
+)
+from .g1_kitchen_attempt_closure import persistent_task_identity_rows
 from .sc3_fidelity_contracts import (
     SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256_ENV,
     validate_checkpoint_attestation,
@@ -50,7 +54,7 @@ from .oscar_official_release import (
     official_release_blockers,
     official_release_contract,
 )
-from .oscar_cosmos_wam_evaluator import (
+from .oscar_cosmos_wam_evaluator import (  # noqa: F401 - preserve test/caller seams
     WAM_CONSISTENCY_COMMAND_ENV,
     WAM_CONSISTENCY_COMMAND_OUTPUT,
     WAM_CONSISTENCY_GATE_ENV,
@@ -70,6 +74,7 @@ from .wam_backend_strategy import get_wam_backend_strategy
 from .wam_derived_observation_harness import run_wam_derived_observation_harness_step
 from .wam_generated_video_review import visual_smoke_generated_rollouts_for_review
 from .wam_provider_runtime import WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE
+from .wam_action_consistency_contract import cross_step_action_motion_replay_blockers
 
 LOOP_SCHEMA_VERSION = "oscar_isaac_closed_loop_eval.v1"
 NEXT_OBSERVATION_SELECTION_SCHEMA_VERSION = "oscar_next_observation_selection.v1"
@@ -118,6 +123,14 @@ WamGenerateNext = Callable[
 # prior action history, and step index, return the next action dict.
 PolicyEndpoint = Callable[[Mapping[str, Any], Sequence[Mapping[str, Any]], int], Mapping[str, Any]]
 TaskCompletionEvaluator = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+
+
+def _score_closed_loop_step_episode_consistency(**kwargs: Any) -> dict[str, Any]:
+    """Keep the renderer seam injectable through this module's established interface."""
+    return _score_closed_loop_step_episode_consistency_impl(
+        **kwargs,
+        visual_smoke_fn=visual_smoke_generated_rollouts_for_review,
+    )
 
 
 def _string(value: Any) -> str:
@@ -607,6 +620,26 @@ def _validate_task_completion_transition(
     registered_unit = _string(criterion.get("unit")).strip()
     if not unit or not registered_unit or unit != registered_unit:
         blockers.append("task_transition_unit_missing_or_unregistered")
+    articulation_prim_path = _string(result.get("articulation_prim_path")).strip()
+    registered_prim_path = _string(criterion.get("articulation_prim_path")).strip()
+    prim_resolution = _mapping(criterion.get("articulation_prim_path_resolution"))
+    if registered_prim_path and articulation_prim_path != registered_prim_path:
+        blockers.append("task_transition_articulation_prim_path_mismatch")
+    if prim_resolution:
+        root_term = _string(prim_resolution.get("required_target_root")).lower()
+        affordance_terms = [
+            _string(item).lower()
+            for item in prim_resolution.get("required_affordance_terms") or []
+            if _string(item).strip()
+        ]
+        path_lower = articulation_prim_path.lower()
+        if (
+            not articulation_prim_path.startswith("/")
+            or (root_term and root_term not in path_lower)
+            or (affordance_terms and not any(term in path_lower for term in affordance_terms))
+            or result.get("attempt_input_manifest_sha256") is None
+        ):
+            blockers.append("task_transition_attempt_bound_articulation_prim_path_not_resolved")
     source_step_value = result.get("source_step_index")
     source_step_index = (
         source_step_value
@@ -663,6 +696,7 @@ def _validate_task_completion_transition(
         "target_value": target_value,
         "tolerance": tolerance,
         "unit": unit or None,
+        "articulation_prim_path": articulation_prim_path or None,
         "source_step_index": source_step_index,
         "computed_transition_passed": computed_passed,
         "reported_transition_passed": reported_passed
@@ -716,6 +750,7 @@ def _action_record_from_policy_endpoint(
     base_action: Mapping[str, Any],
     endpoint_action: Mapping[str, Any],
     requery_source_step_index: int,
+    source_observation_kind: str = "wam_generated_observation",
 ) -> dict[str, Any]:
     action = dict(base_action)
     root = _xyz_list(
@@ -747,9 +782,15 @@ def _action_record_from_policy_endpoint(
         if key in endpoint_action:
             action[key] = endpoint_action.get(key)
     action["learned_policy_endpoint_action"] = dict(endpoint_action)
-    action["policy_requeried_on_generated_observation"] = True
+    action["policy_requeried_on_generated_observation"] = (
+        source_observation_kind == "wam_generated_observation"
+    )
+    action["policy_requeried_on_initial_real_observation"] = (
+        source_observation_kind == "initial_real_observation"
+    )
+    action["policy_requeried_fresh"] = True
     action["policy_requery_source_step_index"] = int(requery_source_step_index)
-    action["policy_action_source"] = "policy_endpoint_requery_on_wam_generated_observation"
+    action["policy_action_source"] = f"policy_endpoint_requery_on_{source_observation_kind}"
     return action
 
 
@@ -906,8 +947,11 @@ def make_task_completion_command_evaluator(
         raise ValueError("task_completion_command_missing")
     root = Path(work_dir).expanduser().resolve()
     ensure_dir(root)
+    persistent_simulator_session_id: str | None = None
+    seen_runtime_result_ids: set[str] = set()
 
     def evaluator(context: Mapping[str, Any]) -> Mapping[str, Any]:
+        nonlocal persistent_simulator_session_id
         step_value = context.get("step_index")
         if isinstance(step_value, bool) or not isinstance(step_value, int):
             raise ValueError("task_completion_step_index_missing_or_invalid")
@@ -947,6 +991,34 @@ def make_task_completion_command_evaluator(
         response = _mapping(payload)
         if not response:
             raise RuntimeError("task_completion_command_output_missing_or_invalid")
+        expected_action_sha256 = _canonical_sha256(_mapping(context.get("action")))
+        if _string(response.get("source_action_sha256")).strip() != expected_action_sha256:
+            raise RuntimeError("task_completion_action_sha256_mismatch")
+        session_id = _string(response.get("simulator_session_id")).strip()
+        if not session_id:
+            raise RuntimeError("task_completion_simulator_session_id_missing")
+        if persistent_simulator_session_id is None:
+            persistent_simulator_session_id = session_id
+        elif session_id != persistent_simulator_session_id:
+            raise RuntimeError("task_completion_simulator_session_changed")
+        runtime_result_id = _string(response.get("runtime_result_id")).strip()
+        if not runtime_result_id or runtime_result_id in seen_runtime_result_ids:
+            raise RuntimeError("task_completion_runtime_result_id_missing_or_replayed")
+        seen_runtime_result_ids.add(runtime_result_id)
+        if response.get("persistent_simulator_state_applied") is not True:
+            raise RuntimeError("task_completion_persistent_simulator_state_not_applied")
+        if response.get("official_controller_action_applied") is not True:
+            raise RuntimeError("task_completion_official_controller_action_not_applied")
+        if _string(response.get("simulator_backend")).lower() != "isaac":
+            raise RuntimeError("task_completion_simulator_backend_not_isaac")
+        if not _string(response.get("stage_id")).strip():
+            raise RuntimeError("task_completion_stage_id_missing")
+        if not _string(response.get("articulation_prim_path")).startswith("/"):
+            raise RuntimeError("task_completion_articulation_prim_path_invalid")
+        before_timestamp = _string(response.get("before_timestamp")).strip()
+        after_timestamp = _string(response.get("after_timestamp")).strip()
+        if not before_timestamp or not after_timestamp or before_timestamp == after_timestamp:
+            raise RuntimeError("task_completion_before_after_timestamps_invalid")
         return response
 
     return evaluator
@@ -3603,211 +3675,6 @@ def generated_clip_coherence(
     }
 
 
-def _score_closed_loop_step_episode_consistency(
-    *,
-    output_dir: Path,
-    generated_at: str,
-    step_index: int,
-    policy_id: str,
-    source_frame_path: str,
-    generated_frame_path: str,
-    wam_output: Mapping[str, Any],
-    action: Mapping[str, Any],
-    action_history: Sequence[Mapping[str, Any]],
-    task_prompts: Sequence[str],
-    wam_consistency_command: str | None,
-    allow_wam_consistency_scoring: bool,
-    timeout_seconds: float,
-) -> dict[str, Any]:
-    step_dir = output_dir / "wam_episode_consistency" / f"step_{step_index:04d}"
-    ensure_dir(step_dir)
-    generated_video = _string(wam_output.get("generated_video_path"))
-    rollouts = (
-        [
-            {
-                "rollout_id": f"oscar_isaac_closed_loop_step_{step_index:04d}",
-                "scenario_eval_run_id": f"isaac_closed_loop_step_{step_index:04d}",
-                "policy_id": policy_id,
-                "model_candidate": _string(wam_output.get("wam_backend")) or "oscar_wam",
-                "generated_video_path": generated_video,
-                "generated_frame_path": generated_frame_path,
-                "source_observation_frame_path": source_frame_path,
-                "step_index": step_index,
-            }
-        ]
-        if generated_video and Path(generated_video).expanduser().is_file()
-        else []
-    )
-    visual_smoke = visual_smoke_generated_rollouts_for_review(
-        rollouts=rollouts,
-        output_dir=step_dir / "visual_smoke",
-        generated_at=generated_at,
-        require_review_quality_profile=False,
-    )
-    visual_rollout_useful = bool(
-        _mapping(visual_smoke.get("claim_boundary")).get(
-            "visual_rollout_useful_for_task_success_review"
-        )
-    )
-    visual_smoke_path = step_dir / "wam_generated_rollout_visual_smoke.json"
-    write_json(visual_smoke_path, visual_smoke)
-    request_path = step_dir / "wam_episode_consistency_request.json"
-    output_path = step_dir / WAM_CONSISTENCY_COMMAND_OUTPUT
-    checks_path = step_dir / "wam_consistency_checks.json"
-    task_prompt = next((prompt for prompt in task_prompts if prompt), "")
-    request = {
-        "schema_version": "wam_episode_consistency_request.v1",
-        "generated_at": generated_at,
-        "status": "ready_for_external_episode_scorer"
-        if rollouts and visual_rollout_useful
-        else "blocked_generated_rollout_visual_quality"
-        if rollouts
-        else "blocked_missing_generated_rollout",
-        "source_isaac_closed_loop_output_dir": str(output_dir),
-        "generated_rollout_results": str(step_dir / "wam_generated_rollout_results.json"),
-        "generated_rollout_visual_smoke": str(visual_smoke_path),
-        "generated_rollout_visual_smoke_status": _string(visual_smoke.get("status")),
-        "generated_rollout_visually_useful_for_success_review": visual_rollout_useful,
-        "rollouts": rollouts,
-        "task_prompts": [
-            {
-                "scenario_eval_run_id": f"isaac_closed_loop_step_{step_index:04d}",
-                "task_prompt": task_prompt,
-                "task_id": "isaac_g1_oscar_per_step_closed_loop",
-            }
-        ],
-        "source_trace_paths": {
-            "source_observation_frame": source_frame_path,
-            "generated_next_observation_frame": generated_frame_path,
-            "generated_next_observation_video": generated_video or None,
-        },
-        "trace_summary": {
-            "action_row_count": len(action_history) + 1,
-            "current_step_index": step_index,
-            "current_action_type": action.get("action_type") or action.get("policy_action"),
-        },
-        "expected_output_path": str(output_path),
-        "consistency_label_contract": {
-            "required_top_level_keys": ["rollout_checks"],
-            "rollout_check_required_keys": [
-                "rollout_id",
-                "forward_consistent",
-                "inverse_consistent",
-                "confidence",
-                "rationale",
-            ],
-        },
-        "claim_boundary": {
-            "scorer_is_separate_from_wam_execution_and_evaluator": True,
-            "scorer_input_is_generated_video_and_trace_context_not_physical_robot": True,
-            "consistency_label_does_not_prove_task_success": True,
-            "consistency_label_does_not_prove_generated_world_rank_fidelity": True,
-            "raw_credentials_written_to_artifacts": False,
-        },
-    }
-    write_json(request_path, request)
-    write_json(
-        step_dir / "wam_generated_rollout_results.json",
-        {
-            "schema_version": "isaac_closed_loop_wam_generated_rollout_results.v1",
-            "generated_at": generated_at,
-            "status": "completed" if rollouts else "blocked_missing_generated_rollout",
-            "rollouts": rollouts,
-            "blockers": [] if rollouts else ["missing_generated_video_for_wam_episode_consistency"],
-            "claim_boundary": {
-                "generated_video_is_not_task_success_proof": True,
-                "generated_video_is_not_forward_inverse_consistency": True,
-            },
-        },
-    )
-
-    command = _wam_consistency_command(wam_consistency_command)
-    consistency_blockers: list[str] = []
-    command_result: dict[str, Any] | None = None
-    command_payload: dict[str, Any] = {}
-    if not rollouts:
-        consistency_blockers = ["missing_generated_video_for_wam_episode_consistency"]
-    elif not visual_rollout_useful:
-        consistency_blockers = _string_list(visual_smoke.get("blockers")) or [
-            "generated_rollout_not_visually_useful_for_consistency_proof"
-        ]
-    elif allow_wam_consistency_scoring or command:
-        if not _wam_consistency_env_truthy(WAM_CONSISTENCY_GATE_ENV):
-            consistency_blockers.append(f"missing_env_{WAM_CONSISTENCY_GATE_ENV}")
-        if not allow_wam_consistency_scoring:
-            consistency_blockers.append("missing_cli_allow_wam_consistency_scoring")
-        if not command:
-            consistency_blockers.append("missing_wam_episode_consistency_command")
-        if not consistency_blockers:
-            command_payload, command_result = _run_wam_consistency_command(
-                command=command,
-                input_path=request_path,
-                output_path=output_path,
-                timeout_seconds=timeout_seconds,
-            )
-            if command_result.get("status") != "completed":
-                consistency_blockers.extend(
-                    _string_list(command_result.get("blockers"))
-                    or ["wam_episode_consistency_command_blocked"]
-                )
-    else:
-        consistency_blockers = ["requires_external_wam_episode_consistency_scorer"]
-
-    if command_payload and not consistency_blockers:
-        consistency = _normalize_wam_episode_consistency(
-            command_payload=command_payload,
-            rollouts=rollouts,
-            generated_at=generated_at,
-            action_conditioned_video_rollout_generated=bool(rollouts),
-            action_conditioned_video_rollout_available=bool(rollouts),
-            provider_output_replay_used=False,
-            success_label_generated=False,
-            visual_smoke_status=_string(visual_smoke.get("status")),
-            visual_rollout_useful=visual_rollout_useful,
-            command_result=command_result,
-        )
-    else:
-        consistency = _unscored_wam_episode_consistency(
-            generated_at=generated_at,
-            rollouts=rollouts,
-            action_conditioned_video_rollout_generated=bool(rollouts),
-            action_conditioned_video_rollout_available=bool(rollouts),
-            provider_output_replay_used=False,
-            success_label_generated=False,
-            visual_smoke_status=_string(visual_smoke.get("status")),
-            visual_rollout_useful=visual_rollout_useful,
-            blockers=consistency_blockers,
-            blocked_reason="blocked_missing_generated_rollout"
-            if not rollouts
-            else "blocked_generated_rollout_visual_quality"
-            if not visual_rollout_useful
-            else None,
-        )
-        if command_result is not None:
-            consistency["command_result"] = command_result
-    scoring_requested = bool(allow_wam_consistency_scoring or command)
-    consistency["early_termination_recommended"] = bool(
-        scoring_requested and not consistency.get("forward_inverse_consistency_proven")
-    )
-    consistency["scoring_requested"] = scoring_requested
-    consistency["visual_smoke_path"] = str(visual_smoke_path)
-    consistency["request_path"] = str(request_path)
-    write_json(checks_path, consistency)
-    return {
-        "request": request,
-        "consistency": consistency,
-        "request_path": str(request_path),
-        "checks_path": str(checks_path),
-        "visual_smoke_path": str(visual_smoke_path),
-        "forward_inverse_consistency_proven": bool(
-            consistency.get("forward_inverse_consistency_proven")
-        ),
-        "external_episode_consistency_scorer_ran": bool(
-            consistency.get("external_episode_consistency_scorer_ran")
-        ),
-        "early_termination_recommended": bool(consistency.get("early_termination_recommended")),
-        "blockers": _wam_consistency_blockers(consistency),
-    }
 
 
 def run_oscar_isaac_closed_loop(
@@ -3922,6 +3789,35 @@ def run_oscar_isaac_closed_loop(
         allow_wam_consistency_scoring=allow_wam_consistency_scoring,
     )
 
+    # The sealed manipulation path must query GR00T on the initial real frame.
+    # Waiting until after the first WAM transition would make action zero a
+    # deterministic fixture action and poison every downstream identity binding.
+    if policy_endpoint is not None:
+        initial_observation = {
+            "schema_version": "oscar_initial_real_policy_observation.v1",
+            "frame_path": current_frame,
+            "camera_frame_path": current_frame,
+            "source_observation_frame": current_frame,
+            "observation_kind": "initial_real_observation",
+            "visual_observation": {"camera_frame_path": current_frame},
+            "task_prompt": None,
+            "route_target_xyz": list(target),
+            "generated_robot_state": {},
+        }
+        try:
+            pending_policy_endpoint_action = dict(
+                policy_endpoint(initial_observation, [], 0) or {}
+            )
+            if not pending_policy_endpoint_action:
+                raise RuntimeError("initial_policy_action_empty")
+            pending_policy_endpoint_source_step = 0
+            previous_endpoint_action_signature = _endpoint_action_signature(
+                pending_policy_endpoint_action
+            )
+            learned_policy_requery_count += 1
+        except Exception as exc:  # noqa: BLE001
+            blockers.append(f"initial_learned_policy_query_failed:{type(exc).__name__}")
+
     for step_index in range(1, bounded_steps + 1):
         # 1. policy acts
         decision = policy.step(
@@ -3937,6 +3833,11 @@ def run_oscar_isaac_closed_loop(
                 base_action=action,
                 endpoint_action=pending_policy_endpoint_action,
                 requery_source_step_index=pending_policy_endpoint_source_step or (step_index - 1),
+                source_observation_kind=(
+                    "initial_real_observation"
+                    if step_index == 1 and pending_policy_endpoint_source_step == 0
+                    else "wam_generated_observation"
+                ),
             )
             policy_action_from_wam_requery = True
             pending_policy_endpoint_action = None
@@ -3946,7 +3847,10 @@ def run_oscar_isaac_closed_loop(
             action.setdefault(
                 "policy_action_source", "isaac_g1_policy.DeterministicWalkToTargetPolicy"
             )
-        policy_requeried_fresh = bool(action.get("policy_requeried_on_generated_observation"))
+        policy_requeried_fresh = bool(
+            action.get("policy_requeried_fresh")
+            or action.get("policy_requeried_on_generated_observation")
+        )
         action_history.append(action)
 
         # 2. WAM generates the NEXT observation conditioned on the action
@@ -4064,12 +3968,24 @@ def run_oscar_isaac_closed_loop(
                 task_prompts=cleaned_target_prompts,
                 wam_consistency_command=wam_consistency_command,
                 allow_wam_consistency_scoring=allow_wam_consistency_scoring,
+                require_strict_action_aware_consistency=bool(
+                    require_forward_inverse_consistency
+                ),
                 timeout_seconds=(
                     float(wam_consistency_timeout_seconds)
                     if wam_consistency_timeout_seconds is not None
                     else float(backend_timeout_seconds)
                 ),
             )
+            replay_blockers = cross_step_action_motion_replay_blockers(
+                [*consistency_results, consistency_result]
+            )
+            if replay_blockers:
+                consistency_result["blockers"] = sorted(
+                    set(_string_list(consistency_result.get("blockers")) + replay_blockers)
+                )
+                consistency_result["forward_inverse_consistency_proven"] = False
+                consistency_result["early_termination_recommended"] = True
             consistency_results.append(consistency_result)
             consistency_early_termination = bool(
                 consistency_result.get("early_termination_recommended")
@@ -4155,7 +4071,7 @@ def run_oscar_isaac_closed_loop(
         policy_requeried_on_wam_observation = False
         policy_action_changed_vs_previous = False
         requery_status = "absent"
-        if policy_endpoint is not None:
+        if policy_endpoint is not None and step_index < bounded_steps:
             if safe_for_policy_requery:
                 try:
                     learned_action = dict(
@@ -4387,6 +4303,14 @@ def run_oscar_isaac_closed_loop(
     )
     consistency_proven_steps = sum(
         1 for row in proof_rows if row.get("forward_inverse_consistency_proven")
+    )
+    forward_consistency_proven = bool(consistency_results) and all(
+        item.get("forward_dynamics_consistency_proven") is True
+        for item in consistency_results
+    )
+    inverse_consistency_proven = bool(consistency_results) and all(
+        item.get("inverse_dynamics_consistency_proven") is True
+        for item in consistency_results
     )
     consistency_early_termination_recommended = any(
         row.get("wam_episode_consistency_early_termination_recommended") for row in proof_rows
@@ -4688,6 +4612,53 @@ def run_oscar_isaac_closed_loop(
         ),
         "raw_secret_values_recorded": False,
     }
+    manifest["g1_kitchen_proof_rows"] = {
+        **persistent_task_identity_rows(task_completion_results),
+        "controller_fk": {
+            "status": "passed"
+            if proof["fresh_actions_all_controller_fk_conditioned"]
+            and proof["fresh_action_conditioning_differentiation_proven"]
+            else "blocked",
+            "evidence": {
+                "fresh_actions_all_controller_fk_conditioned": proof[
+                    "fresh_actions_all_controller_fk_conditioned"
+                ],
+                "fresh_action_conditioning_differentiation_proven": proof[
+                    "fresh_action_conditioning_differentiation_proven"
+                ],
+                "action_conditioning_evidence": proof["action_conditioning_evidence"],
+            },
+        },
+        "persistent_simulator_transition": {
+            "status": "passed"
+            if manipulation_success_judge.get("manipulation_success_proven") is True
+            and proven_task_completion_transition
+            else "blocked",
+            "evidence": {
+                "registered_task_completion_transition": proven_task_completion_transition,
+                "task_completion_results": task_completion_results,
+            },
+        },
+        "forward_consistency": {
+            "status": "passed" if forward_consistency_proven else "blocked",
+            "evidence": {
+                "strict_external_scorer_results": consistency_results,
+            },
+        },
+        "inverse_consistency": {
+            "status": "passed" if inverse_consistency_proven else "blocked",
+            "evidence": {
+                "strict_external_scorer_results": consistency_results,
+            },
+        },
+        "semantic_review": {
+            "status": "blocked",
+            "blockers": ["full_ordered_episode_semantic_review_required_post_collection"],
+            "evidence": {
+                "generated_video_success_label_is_not_full_episode_semantic_review": True
+            },
+        },
+    }
     write_json(resolved_out / "oscar_isaac_closed_loop_manifest.json", manifest)
     return manifest
 
@@ -4821,6 +4792,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--groot-root", default=None)
     parser.add_argument(
+        "--groot-policy-initial-state",
+        default=None,
+        help="Attempt-bound JSON object containing the initial Isaac UNITREE_G1_SONIC proprioception.",
+    )
+    parser.add_argument(
         "--action-skeleton-command",
         default=None,
         help=(
@@ -4854,6 +4830,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     route_payload = json.loads(Path(args.route_file).read_text(encoding="utf-8"))
     route = list(route_payload.get("route_points") or [])
     task_success_contract: dict[str, Any] = {}
+    initial_groot_policy_state: dict[str, Any] = {}
     task_success_contract_load_blocker: str | None = None
     if args.task_success_contract:
         try:
@@ -4869,6 +4846,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             task_success_contract_load_blocker = (
                 "blocked_task_success_contract_missing_or_invalid_json"
             )
+    if args.groot_policy_initial_state:
+        try:
+            initial_groot_policy_state = _mapping(
+                json.loads(
+                    Path(args.groot_policy_initial_state)
+                    .expanduser()
+                    .read_text(encoding="utf-8")
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            initial_groot_policy_state = {}
     projected_skeleton_trace_path = materialize_projected_skeleton_trace_from_seed_geometry(
         route_payload=route_payload,
         start_frame_path=args.start_frame,
@@ -4986,6 +4974,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if strict_action_conditioning_requested and not _string(args.action_skeleton_command).strip():
         wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
             "blocked_strict_evaluation_requires_action_skeleton_controller_fk_command"
+        ]
+        wam_backend_readiness["status"] = "blocked"
+    if args.groot_sonic_policy_server_url and not initial_groot_policy_state:
+        wam_backend_readiness["blockers"] = list(wam_backend_readiness.get("blockers") or []) + [
+            "blocked_groot_policy_initial_attempt_bound_proprioception_missing"
         ]
         wam_backend_readiness["status"] = "blocked"
     if strict_learned_policy_requested and args.use_provider_command:
@@ -5238,6 +5231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         policy_endpoint = make_groot_sonic_zmq_policy_endpoint(
             policy_server_url=args.groot_sonic_policy_server_url,
             groot_root=args.groot_root,
+            sonic_state=initial_groot_policy_state,
         )
     task_completion_evaluator = (
         make_task_completion_command_evaluator(

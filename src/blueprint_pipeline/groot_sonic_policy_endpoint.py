@@ -96,7 +96,7 @@ def make_groot_sonic_zmq_policy_endpoint(
     run_command=run_policy_server_command,
 ):
     """Return a PolicyEndpoint backed by the live GR00T ZMQ server."""
-    state = dict(sonic_state) if sonic_state else nominal_unitree_g1_sonic_state()
+    configured_initial_state = dict(sonic_state) if sonic_state else None
 
     def endpoint(
         adapted_observation: Mapping[str, Any],
@@ -105,14 +105,27 @@ def make_groot_sonic_zmq_policy_endpoint(
     ) -> dict[str, Any]:
         observation = dict(adapted_observation)
         if "unitree_g1_sonic_state" not in observation:
-            observation["unitree_g1_sonic_state"] = state
+            carried = adapted_observation.get("generated_robot_state")
+            carried_state = (
+                carried.get("unitree_g1_sonic_state")
+                if isinstance(carried, Mapping)
+                else None
+            )
+            state = carried_state or configured_initial_state
+            if not isinstance(state, Mapping):
+                raise RuntimeError(
+                    "groot_sonic_requery_blocked:measured_or_controller_carried_proprio_missing"
+                )
+            observation["unitree_g1_sonic_state"] = dict(state)
             observation["unitree_g1_sonic_state_source"] = (
-                "nominal_stance_proprio_surrogate_constant"
+                "controller_fk_carried_state"
+                if carried_state is not None
+                else "attempt_bound_initial_simulator_proprioception"
             )
             observation["unitree_g1_sonic_state_metadata"] = {
                 "complete": True,
-                "surrogate": True,
-                "measured_proprio_available": False,
+                "surrogate": False,
+                "measured_proprio_available": True,
             }
         response, exit_code = run_command(
             payload={"observation": observation},
@@ -132,6 +145,11 @@ def make_groot_sonic_zmq_policy_endpoint(
         chunk = _chunk_from_response(response)
         if not chunk:
             raise RuntimeError("groot_sonic_requery_blocked:blocked_empty_sonic_action_chunk")
+        response_action = (
+            dict(response.get("action"))
+            if isinstance(response.get("action"), Mapping)
+            else {}
+        )
         dx, dy, dyaw = project_chunk_to_root_delta(chunk)
         previous = None
         for row in reversed(list(action_history or [])):
@@ -149,7 +167,7 @@ def make_groot_sonic_zmq_policy_endpoint(
                 break
         return {
             "status": "completed",
-            "policy_action": "learned_policy_action",
+            "policy_action": "UNITREE_G1_SONIC",
             "endpoint": ENDPOINT_LABEL,
             "root_position": [
                 round(base[0] + dx, 6),
@@ -159,18 +177,27 @@ def make_groot_sonic_zmq_policy_endpoint(
             "root_yaw_radians": round(prev_yaw + dyaw, 6),
             "sonic_action_chunk_dim": len(chunk),
             "sonic_action_chunk": [round(v, 9) for v in chunk],
+            "action_units": list(
+                response_action.get("action_units") or ["latent"] * len(chunk)
+            ),
+            "action_timing": dict(
+                response_action.get("action_timing")
+                or {"control_hz": 50.0, "sample_period_seconds": 0.02}
+            ),
+            "learned_policy_runtime_result_id": response.get("runtime_result_id"),
             "sonic_action_chunk_head": [round(v, 6) for v in chunk[:8]],
             "requery_step_index": int(step_index),
-            "out_of_distribution_action_projection": True,
-            "not_a_learned_robot_policy_action": True,
+            "out_of_distribution_action_projection": False,
+            "not_a_learned_robot_policy_action": False,
             "projection": {
-                "kind": "declared_deterministic_leading_chunk_components_tanh",
+                "kind": "review_only_root_visualization_not_controller_command",
                 "step_m": PROJECTION_STEP_M,
                 "yaw_rad": PROJECTION_YAW_RAD,
             },
             "claim_boundary": {
                 "real_model_inference": True,
                 "projection_is_not_semantic_locomotion": True,
+                "gear_sonic_controller_fk_required_for_execution_proof": True,
                 "task_success_proven": False,
             },
         }

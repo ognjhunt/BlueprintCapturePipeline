@@ -6,6 +6,8 @@ USER root
 
 ARG APP_UID=10001
 ARG APP_GID=10001
+ARG BLUEPRINT_SOURCE_COMMIT
+ARG BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -15,7 +17,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker \
     BLUEPRINT_SIMULATOR_FRAMEWORK=isaac_sim \
     BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh \
-    BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
+    ISAACSIM_ASSET_ROOT=https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0 \
+    BLUEPRINT_ISAAC_UNITREE_G1_USD=Isaac/Robots/Unitree/G1/g1.usd \
+    BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
+    BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
+    BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6 \
     NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,video
 
 WORKDIR /app
@@ -31,18 +37,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 
-RUN python3 -m pip install ".[cloud,validation]"
+RUN python3 -m pip install ".[cloud,validation]" \
+    && rm -rf /root/.cache/pip /tmp/pip-*
 
 # Build-time content contract. GPU/CUDA/RTX checks run in the paid startup canary, where a real
 # NVIDIA device is present.
-RUN python3 -m blueprint_pipeline.isaac_worker_image_healthcheck --build-time
+RUN mkdir -p /opt/blueprint \
+    && python3 -m blueprint_pipeline.isaac_worker_image_healthcheck \
+      --build-time --output /opt/blueprint/image_build_healthcheck.json
+RUN PYTHONPATH=/app/src /isaac-sim/python.sh -c \
+    "import blueprint_pipeline; print(blueprint_pipeline.__name__)"
 
 RUN groupadd --gid "${APP_GID}" blueprint \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
+    && chmod o+x /isaac-sim \
     && mkdir -p /workspace/outputs /tmp/blueprint_pipeline \
     && chown -R blueprint:blueprint /workspace /tmp/blueprint_pipeline
 
-ENV PYTHONPATH="/app/src:${PYTHONPATH}" \
+ENV PYTHONPATH="/app/src" \
     HOME=/home/blueprint
 
 USER blueprint:blueprint
