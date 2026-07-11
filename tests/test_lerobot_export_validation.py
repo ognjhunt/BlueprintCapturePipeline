@@ -6,10 +6,11 @@ from typing import Any, Callable
 
 import pytest
 
-from blueprint_pipeline.lerobot_export_validation import validate_lerobot_export
+from blueprint_pipeline import lerobot_export_validation as lev
 from tests.video_codec import require_video_codec_or_skip
 
 FPS = 5
+validate_lerobot_export = lev.validate_lerobot_export
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -457,8 +458,6 @@ def test_native_parquet_without_pyarrow_fails_closed(
     even when the environment has pyarrow installed via another dependency."""
     import importlib.util
     import sys
-
-    import blueprint_pipeline.lerobot_export_validation as lev
 
     real_find_spec = importlib.util.find_spec
 

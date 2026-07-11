@@ -8,6 +8,7 @@ import pytest
 
 from blueprint_pipeline import isaac_persistent_task_completion_client as client
 from blueprint_pipeline import isaac_persistent_task_executor_service as service
+from blueprint_pipeline import isaac_runtime_task_backend as backend_module
 from blueprint_pipeline.g1_proprioception_map import (
     G1_CANONICAL_DOF_GROUPS,
     validate_g1_sonic_state_dims,
@@ -17,8 +18,9 @@ from blueprint_pipeline.gear_sonic_joint_order_contract import (
     PROTOCOL_V4_FULL_JOINT_ORDER,
     PROTOCOL_V4_MAPPING_DIGEST,
 )
-from blueprint_pipeline.isaac_runtime_task_backend import IsaacPersistentTaskBackend
 from blueprint_pipeline.task_episode_baseline import canonical_task_contract_sha256
+
+IsaacPersistentTaskBackend = backend_module.IsaacPersistentTaskBackend
 
 
 CONTRACT = {
@@ -546,8 +548,6 @@ def _run_main(monkeypatch, tmp_path: Path, *, corrupt_contract_sha: bool = False
     evidence_dir.mkdir()
     backend = _MainBackend(evidence_dir)
     serve_calls: list[dict] = []
-
-    import blueprint_pipeline.isaac_runtime_task_backend as backend_module
 
     monkeypatch.setattr(backend_module, "create_backend", lambda **kwargs: backend)
     monkeypatch.setattr(service, "serve", lambda **kwargs: serve_calls.append(kwargs))

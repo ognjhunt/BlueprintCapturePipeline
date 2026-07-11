@@ -136,7 +136,6 @@ def test_frame_sidecar_from_another_action_or_session_blocks(tmp_path) -> None:
 def test_full_ordered_episode_rejects_stale_frame_and_missing_semantic_api(tmp_path) -> None:
     overview, pov = _episode(tmp_path, 2)
     overview[1].write_bytes(overview[0].read_bytes())
-    result = _admit(overview, pov, expected=2, review=False and None or None)
     result = admit_full_ordered_episode(
         camera_frames={"overview": overview, "robot_pov": pov},
         frame_semantics={
