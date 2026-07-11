@@ -2,7 +2,9 @@
 
 Source audit: `docs/specs/claude-fable-5-hardest-blockers-audit-2026-07-11.md`
 Baseline: `df030e45a4f8046c08d507df645eea31d91ea32f` (clean `main` at start of work)
-Work state at this report: one uncommitted patch series on top of `df030e45`.
+Work state at this report: published as PR #68 on
+`codex/fable-001-007-closure`; closure is evaluated against the latest PR head,
+not the original baseline or an earlier check run.
 
 Honest status: `fable_001_through_007_code_and_local_gates_closed_live_episode_not_run`.
 Nothing below claims a live episode, task success, rank fidelity, or physical
@@ -22,7 +24,10 @@ robot readiness.
 
 Supporting fixes: cross-test `MUJOCO_GL` leak in
 `tests/test_g1_site_3dgs_mujoco_preview.py`; `pyzmq` added to dev extras (and
-`uv.lock`) so ZMQ, Torch, and native LeRobot tests cannot skip green in the zero-skip Full Test Lane;
+`uv.lock`) so real ZMQ tests cannot skip green. The Full Test Lane explicitly
+selects `groot-libero-cpu` for Torch and native LeRobot coverage; those heavy
+model-worker dependencies are deliberately absent from the generic dev and
+capture-orchestrator production images;
 quality-ledger artifact digests rebound via
 `scripts/rebind_quality_gap_ledger_digests.py` (statuses untouched: still 91
 partial / 16 open / 0 closed). The original grandfathered source limits remain
@@ -40,9 +45,9 @@ unchanged; new logic was extracted into focused modules instead of raising caps.
   checks, admin enforcement, one approving review, stale/last-push approval,
   conversation resolution, linear history, force-push/deletion disabled.
 
-Hosted CI and the Full Test Lane cannot run until this patch series is
-committed and pushed; per the audit they must pass on the same SHA before any
-image build or paid attempt.
+Hosted CI and the Full Test Lane run on PR #68. Per the audit, every required
+check must pass on its latest head SHA before any image build or paid attempt;
+green results from superseded heads do not count.
 
 ## 3. New runtime contracts operators must supply
 
@@ -56,8 +61,9 @@ image build or paid attempt.
 
 Verified on this machine at 2026-07-11:
 
-1. `patch_series_uncommitted` — every fix above is uncommitted; hosted CI +
-   Full Test Lane must pass on the pushed SHA first.
+1. `hosted_same_sha_checks_required` — PR #68 is published and branch
+   protection is active, but image build remains gated until every required
+   hosted check passes on the latest PR head and the protected merge completes.
 2. `sealed_image_stale` — configured sealed ref
    `blueprint-groot-oscar-eval@sha256:aa7a7727…` is the 2026-07-07 build; it
    contains neither `df030e45` nor this patch series. The local generic image
@@ -76,9 +82,6 @@ Verified on this machine at 2026-07-11:
    block, so a paid episode today cannot close as `completed`.
 6. `attestation_signing_keys_unpinned` — worker leaf attestations and the
    closure pins (section 3) do not exist yet.
-7. `hosted_same_sha_checks_pending_patch_publish` — local Full Test Lane is
-   green and `main` protection is active, but the uncommitted patch has no
-   hosted check runs yet.
 
 Recommended order once an operator supplies the cap and keys: commit/PR →
 hosted CI + Full Test Lane green → build + push sealed image from the clean

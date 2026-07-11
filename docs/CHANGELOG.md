@@ -39,8 +39,12 @@
   `tests/test_g1_site_3dgs_mujoco_preview.py`.
 - Live-run status and the exact remaining external blockers (sealed-image
   rebuild, spend cap, scorer/semantic-review services, attestation key pins,
-  branch-protection admin actions) are tracked in
+  and protected-PR merge approval) are tracked in
   `docs/specs/fable-remediation-and-live-readiness-2026-07-11.md`.
+- The FABLE-001..007 patch series is published as PR #68. `main` branch
+  protection is enabled and was negative-tested against direct and force
+  pushes; hosted proof must come from every required check passing on the
+  latest PR head, never from a superseded run.
 
 ### Future-Agent-Facing
 
