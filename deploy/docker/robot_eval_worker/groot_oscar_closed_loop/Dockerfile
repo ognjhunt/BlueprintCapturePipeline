@@ -112,7 +112,7 @@ RUN git clone --filter=blob:none "${OSCAR_SOURCE_URL}" /opt/oscar-public \
   && git -C /opt/oscar-public checkout --detach FETCH_HEAD \
   && test "$(git -C /opt/oscar-public rev-parse HEAD)" = "${OSCAR_SOURCE_REF}" \
   && ln -s /opt/oscar-public /opt/OSCAR \
-  && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import filter_oscar_requirements_script_text, transformer_engine_shim_script_text; Path('/tmp/filter.py').write_text(filter_oscar_requirements_script_text()); Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
+  && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import filter_requirements_script_text, transformer_engine_shim_script_text; Path('/tmp/filter.py').write_text(filter_requirements_script_text()); Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
   && /opt/oscar-venv/bin/python /tmp/filter.py /opt/OSCAR/requirements.txt /tmp/oscar_requirements.txt \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install -r /tmp/oscar_requirements.txt \
   && /opt/oscar-venv/bin/python /tmp/te_shim.py /opt/OSCAR
