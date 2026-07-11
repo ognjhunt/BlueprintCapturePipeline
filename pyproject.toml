@@ -127,9 +127,6 @@ dev = [
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
     "pyzmq>=26.0",
-    "torch>=2.2.0",
-    "torchvision>=0.17.0",
-    "lerobot>=0.4.4,<0.5",
 ]
 
 [dependency-groups]
@@ -160,9 +157,6 @@ dev = [
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
     "pyzmq>=26.0",
-    "torch>=2.2.0",
-    "torchvision>=0.17.0",
-    "lerobot>=0.4.4,<0.5",
 ]
 
 [project.scripts]
