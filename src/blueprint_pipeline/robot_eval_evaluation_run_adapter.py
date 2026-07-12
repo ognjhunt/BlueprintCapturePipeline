@@ -215,7 +215,7 @@ def build_robot_eval_evaluation_run_spec(
             "max_spend_usd": budget_usd,
             "timeout_seconds": int(timeout_seconds),
         },
-        "proof_contract": {
+        "proof_contract": _mapping(request.get("evaluation_run_proof_contract")) or {
             "adapter_id": "robot_eval_proof_contract",
             "adapter_version": "1",
             "contract_id": "robot-eval-job-proof-boundary",
@@ -325,6 +325,7 @@ def robot_eval_job_request_from_evaluation_run(
             "timeout_seconds": runtime.get("timeout_seconds"),
         },
         "rights_privacy_scope": _mapping(proof.get("rights_privacy_scope")),
+        "evaluation_run_proof_contract": proof,
         "provenance": {
             "evaluation_run_id": spec.run_id,
             "evaluation_run_schema_version": EVALUATION_RUN_SCHEMA_VERSION,

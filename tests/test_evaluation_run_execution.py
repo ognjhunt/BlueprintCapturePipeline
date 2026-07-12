@@ -114,6 +114,10 @@ class _RecordingExecutor:
             "schema_version": "fixture_evaluation_run_result.v1",
             "status": self.result_status,
             "manifest_path": str(output_dir / "fixture-result.json"),
+            "evaluation_run_proof_evidence": {
+                "scenario_eval_matrix": True,
+                "policy_execution_trace": {"satisfied": True},
+            },
         }
 
 
@@ -159,6 +163,8 @@ def test_authorized_execution_resolves_adapter_and_binds_result_to_spec_digest(
     assert result.manifest["execution_started"] is True
     assert result.manifest["spec_digest"].startswith("sha256:")
     assert result.manifest["adapter_result_summary"]["status"] == "completed"
+    assert result.manifest["proof_contract_evaluation"]["status"] == "passed"
+    assert result.manifest["claim_boundary"]["public_claim_upgrade_allowed"] is True
     assert adapter.calls[0]["run_id"] == "dynamic-eval-001"
 
 
@@ -190,6 +196,31 @@ def test_unknown_or_raising_execution_adapter_fails_closed_with_terminal_artifac
     assert "sensitive provider detail" not in (
         tmp_path / "raised" / "evaluation_run_execution.json"
     ).read_text()
+
+
+def test_missing_declared_evidence_blocks_claim_upgrade_without_rewriting_runtime_status(
+    tmp_path: Path,
+) -> None:
+    adapter = _RecordingExecutor()
+
+    def incomplete_execute(**_kwargs: Any) -> Mapping[str, Any]:
+        return {"status": "completed", "evaluation_run_proof_evidence": {}}
+
+    adapter.execute = incomplete_execute  # type: ignore[method-assign]
+    result = execute_evaluation_run(
+        _spec(),
+        output_dir=tmp_path,
+        allow_execution=True,
+        execution_registry=EvaluationRunExecutionRegistry([adapter]),
+    )
+
+    assert result.manifest["status"] == "completed"
+    assert result.manifest["proof_contract_evaluation"]["status"] == "evidence_incomplete"
+    assert result.manifest["proof_contract_evaluation"]["missing_evidence"] == [
+        "scenario_eval_matrix",
+        "policy_execution_trace",
+    ]
+    assert result.manifest["claim_boundary"]["public_claim_upgrade_allowed"] is False
 
 
 def test_default_execution_registry_exposes_generic_and_kitchen_implementations() -> None:
@@ -237,6 +268,7 @@ def test_robot_eval_request_is_derived_from_six_part_spec(tmp_path: Path) -> Non
     assert request["policy_package"] == spec.policy_adapter["policy_package"]
     assert request["simulator_preference"] == "fixture"
     assert request["rights_privacy_scope"]["external_use_allowed"] is True
+    assert request["evaluation_run_proof_contract"] == dict(spec.proof_contract)
     assert request["provenance"]["source_spec_is_execution_authority"] is True
 
 

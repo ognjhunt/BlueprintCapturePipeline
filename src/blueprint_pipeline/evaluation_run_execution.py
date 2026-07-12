@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+from .claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from .common import read_json, utc_now_iso, write_json
 from .evaluation_run_contract import (
     EvaluationRunAdapterRegistry,
@@ -118,6 +119,38 @@ def _adapter_result_summary(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _proof_contract_evaluation(
+    spec: EvaluationRunSpec,
+    adapter_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate declared evidence IDs without persisting adapter evidence values."""
+
+    required = _string_list(spec.proof_contract.get("required_evidence"))
+    raw_evidence = adapter_result.get("evaluation_run_proof_evidence")
+    evidence = dict(raw_evidence) if isinstance(raw_evidence, Mapping) else {}
+    satisfied: list[str] = []
+    for evidence_id in required:
+        value = evidence.get(evidence_id)
+        if value is True or (
+            isinstance(value, Mapping) and value.get("satisfied") is True
+        ):
+            satisfied.append(evidence_id)
+    missing = [value for value in required if value not in satisfied]
+    return {
+        "contract_id": spec.proof_contract.get("contract_id"),
+        "status": "passed" if not missing else "evidence_incomplete",
+        "required_evidence": required,
+        "satisfied_evidence": satisfied,
+        "missing_evidence": missing,
+        "adapter_evidence_values_persisted": False,
+        "claim_ceiling": dict(spec.proof_contract.get("claim_ceiling") or {}),
+        "prohibited_claims": _string_list(
+            spec.proof_contract.get("prohibited_claims")
+        ),
+        PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: bool(required) and not missing,
+    }
+
+
 def execute_evaluation_run(
     value: Mapping[str, Any],
     *,
@@ -198,6 +231,7 @@ def execute_evaluation_run(
         status = "blocked" if allow_execution else "prepared"
     else:
         status = _string(adapter_result.get("status")) or "completed"
+    proof_evaluation = _proof_contract_evaluation(spec, adapter_result)
     manifest = {
         "schema_version": EVALUATION_RUN_EXECUTION_SCHEMA_VERSION,
         "generated_at": generated,
@@ -215,10 +249,14 @@ def execute_evaluation_run(
         "context_values_persisted": False,
         "blockers": sorted(set(blockers)),
         "adapter_result_summary": _adapter_result_summary(adapter_result),
+        "proof_contract_evaluation": proof_evaluation,
         "claim_boundary": {
             "compiled_spec_digest_binds_execution": True,
             "execution_manifest_alone_is_not_task_success_proof": True,
             "adapter_result_must_satisfy_proof_contract": True,
+            PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: proof_evaluation[
+                PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
+            ],
             "physical_robot_readiness_proven": False,
             "deployment_approval_proven": False,
             "raw_context_values_recorded": False,

@@ -31,6 +31,12 @@ paths, ephemeral transport credentials, and runtime gates belong in a local
 persisted. Every `evaluation_run_execution.v1` artifact binds the adapter result
 to the compiled spec digest.
 
+The execution artifact also evaluates the declared `required_evidence` IDs
+against the adapter's evidence report. Runtime completion remains separate from
+proof satisfaction: missing evidence produces `evidence_incomplete` and keeps
+`public_claim_upgrade_allowed` false without rewriting a completed simulator or
+provider status. Raw adapter evidence values are not copied into this summary.
+
 ```json
 {
   "schema_version": "evaluation_run.v1",
