@@ -329,6 +329,51 @@ def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() ->
     assert "USER blueprint:blueprint" in dockerfile
 
 
+def test_groot_oscar_runtime_user_can_execute_worker_interpreters() -> None:
+    """The runtime user must be able to execute every worker interpreter.
+
+    The 2026-07-12 GPU canary on the sealed image failed every gate with
+    rc=126: ``uv venv`` placed the managed CPython under ``/root/.local``
+    (0700 ``/root``), and the Isaac base ships ``/isaac-sim`` as
+    ``drwxr-x--- isaac-sim:isaac-sim`` — both unreachable for
+    ``USER blueprint`` (uid 10001). A root-only build-time healthcheck cannot
+    see either failure, so the Dockerfile must (a) pin the uv interpreter
+    outside ``/root``, (b) grant the runtime user the ``isaac-sim`` group, and
+    (c) run the build-time healthcheck as the runtime user.
+    """
+    dockerfile = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    uv_install_dir = re.search(r"UV_PYTHON_INSTALL_DIR=(\S+)", dockerfile)
+    assert uv_install_dir, (
+        "UV_PYTHON_INSTALL_DIR must be pinned so the uv-managed CPython the "
+        "venvs symlink to is not created under /root (untraversable by the "
+        "runtime user)"
+    )
+    target = uv_install_dir.group(1).rstrip("\\").strip()
+    assert not target.startswith("/root"), target
+    env_block_at = dockerfile.index("UV_PYTHON_INSTALL_DIR=")
+    first_venv_at = dockerfile.index("uv venv ")
+    assert env_block_at < first_venv_at, (
+        "UV_PYTHON_INSTALL_DIR must be set before any `uv venv` layer"
+    )
+
+    assert re.search(r"usermod\s+-aG\s+isaac-sim\s+blueprint", dockerfile), (
+        "the runtime user needs the isaac-sim group to traverse the "
+        "group-restricted /isaac-sim tree (drwxr-x--- isaac-sim:isaac-sim)"
+    )
+
+    assert re.search(
+        r"RUN\s+runuser\s+-u\s+blueprint\s+--\s+\S*python\S*\s+\S*"
+        r"groot_oscar_closed_loop_image_healthcheck\.py\s+--build-time",
+        dockerfile,
+    ), (
+        "the build-time healthcheck must run AS the runtime user; a root "
+        "healthcheck cannot observe runtime-user exec/traversal failures"
+    )
+
+
 def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
     tmp_path: Path,
 ) -> None:

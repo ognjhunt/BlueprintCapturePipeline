@@ -42,6 +42,7 @@ ARG APP_GID=10001
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     MUJOCO_GL=osmesa \
     PYTORCH_ALLOC_CONF=expandable_segments:True \
     HF_HOME=/opt/blueprint/hf_home \
@@ -100,6 +101,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     produces the checkpoint files.
 RUN groupadd --gid "${APP_GID}" blueprint \
   && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
+  && usermod -aG isaac-sim blueprint \
   && chown -R blueprint:blueprint /workspace
 
 # 2. Blueprint package in both the OSCAR client environment and Isaac runtime.
@@ -228,9 +230,12 @@ RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
       --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
       --output-dir /isaac-sim/Isaac/Robots/Unitree/G1
 
-# 7. Build-time healthcheck (all three environments; no GPU required).
+# 7. Build-time healthcheck (all three environments; no GPU required). It must
+#    run AS THE RUNTIME USER: the 20260712 canary (rc=126 on every gate) proved
+#    a root-only healthcheck cannot see runtime-user exec/traversal failures
+#    (uv interpreter under /root, group-restricted /isaac-sim).
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
-RUN /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
+RUN runuser -u blueprint -- /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
 
 USER blueprint:blueprint
 
