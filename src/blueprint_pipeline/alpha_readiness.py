@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
+from .consent_normalization import strict_allow_bool
 from .common import (
     optional_read_json,
     parse_bool,
@@ -897,7 +898,9 @@ def build_alpha_readiness_summary(
             or bool(quality.get("world_model_candidate"))
             or (
                 bool(quality.get("geometry_ready"))
-                and bool(rights_block.get("derived_scene_generation_allowed", False))
+                and strict_allow_bool(
+                    rights_block.get("derived_scene_generation_allowed")
+                )
             )
         )
         capture_mode_resolved = "site_world_candidate" if candidate else "qualification_only"

@@ -38,6 +38,7 @@ from .common import (
     write_json,
     write_text,
 )
+from .consent_normalization import resolve_consent_signals, strict_allow_bool
 from .ios_manifest import verify_canonical_raw_bundle_path
 from .temporal_alignment import align_frame_pose_streams
 
@@ -336,11 +337,6 @@ def _canonical_world_model_candidate(
         # Backwards compatibility: captures predating capture_mode field.
         return site_id_present and evidence_tier != "pre_screen_video"
     resolved_mode = str(capture_mode.get("resolved_mode") or "qualification_only")
-    rights_block = (
-        manifest.get("capture_rights")
-        if isinstance(manifest.get("capture_rights"), Mapping)
-        else {}
-    )
     arkit_ready = (
         arkit_poses_uri is not None
         and arkit_intrinsics_uri is not None
@@ -362,7 +358,7 @@ def _canonical_world_model_candidate(
         and resolved_mode == "site_world_candidate"
         and spatial_conditioning_ready
         and intake_complete
-        and bool(rights_block.get("derived_scene_generation_allowed", False))
+        and _derived_scene_generation_allowed(manifest)
     )
 
 
@@ -385,11 +381,6 @@ def _world_model_candidate_reasoning(
         if isinstance(capture_mode, Mapping)
         else "qualification_only"
     )
-    rights_block = (
-        manifest.get("capture_rights")
-        if isinstance(manifest.get("capture_rights"), Mapping)
-        else {}
-    )
     return [
         f"capture_mode_site_world_candidate:{resolved_mode == 'site_world_candidate'}",
         f"site_id_present:{_stable_site_id_present(manifest)}",
@@ -404,7 +395,7 @@ def _world_model_candidate_reasoning(
         f"geometry_ready:{geometry_ready}",
         f"geometry_source:{geometry_source or 'none'}",
         f"intake_complete:{intake_complete}",
-        f"derived_scene_generation_allowed:{bool(rights_block.get('derived_scene_generation_allowed', False))}",
+        f"derived_scene_generation_allowed:{_derived_scene_generation_allowed(manifest)}",
     ]
 
 
@@ -625,12 +616,9 @@ def _world_model_candidate_downgrade_reason(
         return "awaiting_geometry_stage"
     if not intake_complete:
         return "missing_complete_intake"
-    rights_block = (
-        manifest.get("capture_rights")
-        if isinstance(manifest.get("capture_rights"), Mapping)
-        else {}
-    )
-    if not bool(rights_block.get("derived_scene_generation_allowed", False)):
+    if resolve_consent_signals(manifest)["consent_revoked"]:
+        return "consent_revoked_takedown_required"
+    if not _derived_scene_generation_allowed(manifest):
         return "derived_scene_generation_not_allowed"
     return "site_world_candidate_gates_not_met"
 
@@ -692,21 +680,43 @@ def _normalized_capture_mode(
     }
 
 
+def _derived_scene_generation_allowed(manifest: Mapping[str, Any]) -> bool:
+    """Fail-closed derived-generation grant for one raw manifest.
+
+    Grants only on an explicit true flag AND no revocation signal anywhere in
+    the manifest. String tokens like "false"/"no" and wrong-typed values deny;
+    a revoked or revocation-timestamped consent overrides any allow flag.
+    """
+    rights_block = (
+        manifest.get("capture_rights")
+        if isinstance(manifest.get("capture_rights"), Mapping)
+        else {}
+    )
+    if not strict_allow_bool(rights_block.get("derived_scene_generation_allowed")):
+        return False
+    return not resolve_consent_signals(manifest)["consent_revoked"]
+
+
 def _capture_rights_block(manifest: Mapping[str, Any]) -> Dict[str, Any]:
     raw = (
         manifest.get("capture_rights")
         if isinstance(manifest.get("capture_rights"), Mapping)
         else {}
     )
+    signals = resolve_consent_signals(manifest)
     return {
-        "derived_scene_generation_allowed": bool(
-            raw.get("derived_scene_generation_allowed", False)
+        "derived_scene_generation_allowed": _derived_scene_generation_allowed(manifest),
+        "data_licensing_allowed": (
+            strict_allow_bool(raw.get("data_licensing_allowed"))
+            and not signals["consent_revoked"]
         ),
-        "data_licensing_allowed": bool(raw.get("data_licensing_allowed", False)),
-        "capture_contributor_payout_eligible": bool(
-            raw.get("capture_contributor_payout_eligible", False)
+        "capture_contributor_payout_eligible": strict_allow_bool(
+            raw.get("capture_contributor_payout_eligible")
         ),
-        "consent_status": str(raw.get("consent_status") or "unknown"),
+        "consent_status": signals["consent_status"]
+        or str(raw.get("consent_status") or "unknown"),
+        "consent_revoked": signals["consent_revoked"],
+        "consent_revoked_at": signals["consent_revoked_at"],
         "permission_document_uri": str(raw.get("permission_document_uri") or "").strip() or None,
         "consent_scope": _string_list(raw.get("consent_scope")),
         "consent_notes": _string_list(raw.get("consent_notes")),

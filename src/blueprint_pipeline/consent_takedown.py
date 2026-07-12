@@ -31,6 +31,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from .common import utc_now_iso, write_json
+from .consent_normalization import resolve_consent_signals
 from .webapp_sync import _int_env, _pipeline_sync_headers, _string_env
 
 TAKEDOWN_MANIFEST_SCHEMA_VERSION = "takedown_manifest.v1"
@@ -38,8 +39,6 @@ WEBAPP_REVOCATION_SIGNAL_SCHEMA_VERSION = "webapp_consent_revocation_signal.v1"
 DELIVERY_GATE_SCHEMA_VERSION = "consent_takedown_delivery_gate.v1"
 
 TAKEDOWN_MANIFEST_RELATIVE_PATH = "pipeline/consent_takedown/takedown_manifest.json"
-
-CONSENT_REVOKED_STATUSES = frozenset({"revoked", "withdrawn", "rescinded"})
 
 # Consent source priority mirrors post_training_data_package._consent_source_payload
 # so build-time and takedown-time reads can never disagree about the source of truth.
@@ -75,22 +74,6 @@ def _mapping(value: Any) -> Dict[str, Any]:
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _explicit_bool(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "revoked", "withdrawn", "rescinded"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "active", "documented"}:
-            return False
-    return None
-
-
-def _explicit_true(*values: Any) -> bool:
-    return any(_explicit_bool(value) is True for value in values)
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -131,43 +114,31 @@ def read_consent_state(capture_root: Path) -> Dict[str, Any]:
     """Read the authoritative consent state for one capture root.
 
     Fail-closed contract: ``state`` is ``"active"`` only when a consent source
-    exists AND it does not indicate revocation. Missing sources are ``"unknown"``.
+    exists AND it carries an explicitly active consent status AND nothing in it
+    indicates revocation. Unknown, wrong-typed, or contradictory statuses are
+    ``"unknown"`` (blocked); missing sources are ``"unknown"``.
     """
     root = Path(capture_root).expanduser()
     for relative in _CONSENT_SOURCE_RELATIVES:
         payload = _read_json(root / relative)
         if not payload:
             continue
-        nested = _mapping(
-            payload.get("capture_rights")
-            or payload.get("rights_consent")
-            or payload.get("rights")
-        )
-        source = nested or payload
-        consent_status = _string(
-            source.get("consent_status") or source.get("consentStatus")
-        )
-        consent_revoked = (
-            consent_status.lower() in CONSENT_REVOKED_STATUSES
-            or _explicit_true(source.get("consent_revoked"))
-            or _explicit_true(source.get("consentRevoked"))
-            or bool(source.get("consent_revoked_at") or source.get("consentRevokedAt"))
-        )
+        signals = resolve_consent_signals(payload)
         # raw/manifest.json and capture_descriptor.json exist for every capture;
-        # if they carry no consent fields they are not a consent source.
-        if not consent_status and not consent_revoked and relative in (
+        # if they carry no consent fields they are not a consent source. A
+        # dedicated rights_consent.json without consent fields IS a consent
+        # source — one that cannot verify consent, so it stays "unknown".
+        if not signals["has_consent_fields"] and relative in (
             "raw/manifest.json",
             "capture_descriptor.json",
         ):
             continue
         return {
-            "state": "revoked" if consent_revoked else "active",
-            "consent_revoked": consent_revoked,
-            "consent_status": consent_status or None,
-            "consent_revoked_at": _string(
-                source.get("consent_revoked_at") or source.get("consentRevokedAt")
-            )
-            or None,
+            "state": signals["state"],
+            "consent_revoked": signals["consent_revoked"],
+            "consent_status": signals["consent_status"],
+            "consent_revoked_at": signals["consent_revoked_at"],
+            "malformed_consent_fields": signals["malformed_fields"],
             "source_path": str(root / relative),
         }
     return {
@@ -175,6 +146,7 @@ def read_consent_state(capture_root: Path) -> Dict[str, Any]:
         "consent_revoked": False,
         "consent_status": None,
         "consent_revoked_at": None,
+        "malformed_consent_fields": [],
         "source_path": None,
     }
 

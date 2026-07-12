@@ -30,6 +30,7 @@ from .common import (
     write_json,
     write_text,
 )
+from .consent_normalization import resolve_consent_signals
 from .geometry_stage import build_geometry_stage_contract
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label
 from .ios_manifest import IOSManifest, load_object_index, load_raw_manifest, resolve_object_index_uri
@@ -859,20 +860,27 @@ def attach_handoff_package_paths(
 
 def _capture_rights(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     raw = metadata.get("capture_rights") if isinstance(metadata.get("capture_rights"), Mapping) else {}
+    consent_signals = resolve_consent_signals(raw)
+    consent_revoked = consent_signals["consent_revoked"]
     return {
         "derived_scene_generation_allowed": parse_bool(
             raw.get("derived_scene_generation_allowed"),
             default=False,
-        ),
+        )
+        and not consent_revoked,
         "data_licensing_allowed": parse_bool(
             raw.get("data_licensing_allowed"),
             default=False,
-        ),
+        )
+        and not consent_revoked,
         "capture_contributor_payout_eligible": parse_bool(
             raw.get("capture_contributor_payout_eligible"),
             default=False,
         ),
-        "consent_status": str(raw.get("consent_status") or "unknown"),
+        "consent_status": consent_signals["consent_status"]
+        or str(raw.get("consent_status") or "unknown"),
+        "consent_revoked": consent_revoked,
+        "consent_revoked_at": consent_signals["consent_revoked_at"],
         "permission_document_uri": str(raw.get("permission_document_uri") or "").strip() or None,
         "consent_scope": _string_list(raw.get("consent_scope")),
         "commercialization_terms": _mapping(
