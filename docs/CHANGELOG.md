@@ -1,5 +1,67 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-11
+
+### User-Facing
+
+- Closed the seven code-level blockers from
+  `docs/specs/claude-fable-5-hardest-blockers-audit-2026-07-11.md`
+  (FABLE-001..FABLE-007): the attempt closure now reconstructs every worker
+  proof row from hash-verified, Ed25519-attested leaf artifacts instead of
+  trusting worker `passed` booleans and never repairs a missing worker
+  identity; the review-media horizon is bound to the immutable attempt/task
+  request with contiguous per-camera indices, per-step action-SHA bindings,
+  and global duplicate-frame rejection; G1 proprioception uses an explicit
+  canonical DOF map instead of substring grouping; the GEAR-SONIC
+  controller-to-MuJoCo mapping is named, digest-pinned, and permutation
+  rejecting with real loopback ZMQ tests; a mandatory pre-allocation identity
+  gate compares attempt/launch/registry/worker-evidence image digests and
+  source identities before any paid capacity call; relative task success is
+  evaluated against a signed episode baseline (current minus episode initial)
+  end to end; and the Bandit findings are fixed at source through a
+  centralized fail-closed outbound-HTTP boundary plus gated, revision-pinned
+  model retrieval. All controls are fail-closed contracts; none of this is
+  proof of a live provider episode, task success, rank fidelity, or physical
+  robot readiness.
+
+### Employee-Facing
+
+- New modules: `g1_kitchen_proof_row_validation.py`,
+  `g1_kitchen_pre_allocation_identity.py`, `g1_proprioception_map.py`,
+  `task_episode_baseline.py`, `gear_sonic_joint_order_contract.py`,
+  `gear_sonic_container_smoke.py`, `safe_outbound_http.py`. The sealed
+  GR00T+OSCAR healthcheck now emits `configured_g1_asset_binding_valid` and
+  `configured_g1_usd_exists` as distinct claims through one shared
+  runtime-metadata schema validated by the real evidence assembler. The
+  hermetic pyarrow fail-closed test no longer skips. `pyzmq` joined the dev
+  extras so the real ZMQ transport tests cannot skip green in the Full Test
+  Lane. Fixed a cross-test `MUJOCO_GL` environment leak in
+  `tests/test_g1_site_3dgs_mujoco_preview.py`.
+- Attempt-local Ed25519 trust generation now publishes the raw public keys and
+  role mappings required by host verification, bound to the complete immutable
+  attempt identity. Private keys remain mode-0600 inside the allocation;
+  closure auto-discovers the collected public-pin manifest and rejects a
+  manifest replayed from another attempt.
+- Live-run status and the exact remaining external blockers (sealed-image
+  rebuild, spend cap, scorer/semantic-review services, attestation key pins,
+  and protected-PR merge approval) are tracked in
+  `docs/specs/fable-remediation-and-live-readiness-2026-07-11.md`.
+- The FABLE-001..007 patch series is published as PR #68. `main` branch
+  protection is enabled and was negative-tested against direct and force
+  pushes; hosted proof must come from every required check passing on the
+  latest PR head, never from a superseded run.
+
+### Future-Agent-Facing
+
+- Earlier entries in this file that describe work as "uncommitted local
+  changes" (July 4-8 snapshots) are historical: that work was merged in
+  `df030e45`. Read those entries as dated snapshots, never as the current
+  source state.
+- New serve/closure surfaces must emit worker rows with their own
+  `identity_binding` plus `leaf_artifacts` refs (path, sha256, size, schema,
+  Ed25519 attestation role); the host compares and validates - it never
+  injects identity or accepts a bare status boolean.
+
 ## 2026-07-10
 
 ### User-Facing

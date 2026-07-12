@@ -28,6 +28,7 @@ it returns truthy once the instance is alive.
 from __future__ import annotations
 
 import collections
+import inspect
 import io
 import json
 import math
@@ -43,6 +44,7 @@ from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
     close_pending_teardown,
+    mark_pending_teardown_ambiguous,
     open_pending_teardown,
     provider_state_from_inspect,
 )
@@ -197,6 +199,22 @@ def _resolve_launch_kwargs(launch_kwargs, provider) -> dict[str, Any]:
     return dict(value)
 
 
+def _supported_launch_kwargs(
+    provider: object, requested: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Filter signature-incompatible kwargs before the sole mutation call."""
+    signature = inspect.signature(provider.launch)
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return dict(requested), []
+    supported = set(signature.parameters)
+    accepted = {key: value for key, value in requested.items() if key in supported}
+    dropped = sorted(set(requested) - set(accepted))
+    return accepted, dropped
+
+
 def _resolve_prelaunch_guard(prelaunch_guard, provider) -> dict[str, Any]:
     """Resolve the optional fail-closed spend guard for one provider."""
     if prelaunch_guard is None:
@@ -227,6 +245,44 @@ def _guard_blockers(guard: Mapping[str, Any]) -> list[str]:
 
 def _pending_teardown_run_id(provider_name: str, idx: int) -> str:
     return f"race-{idx}-{_safe_segment(provider_name)}-{time.time_ns()}"
+
+
+def _marker_check_before_deadline(
+    marker_check: Callable[[object, dict], bool],
+    provider: object,
+    launch: dict,
+    remaining_seconds: float,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> tuple[bool, bool]:
+    """Run a read-only marker probe without letting it exceed the paid deadline."""
+    holder: dict[str, Any] = {}
+
+    def _probe() -> None:
+        try:
+            holder["value"] = bool(marker_check(provider, launch))
+        except Exception as exc:  # noqa: BLE001 - caller records probe failure
+            holder["error"] = exc
+
+    thread = threading.Thread(target=_probe, name="bounded-marker-probe", daemon=True)
+    thread.start()
+    timeout = max(0.0, float(remaining_seconds))
+    if cancel_event is None:
+        thread.join(timeout=timeout)
+    else:
+        deadline = time.monotonic() + timeout
+        while thread.is_alive():
+            if cancel_event.is_set():
+                return False, False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=min(0.05, remaining))
+    if thread.is_alive():
+        return False, True
+    if "error" in holder:
+        raise holder["error"]
+    return bool(holder.get("value")), False
 
 
 def _teardown_proof_from_provider_action(
@@ -345,6 +401,57 @@ def race_launch(
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict:
+    """Run a provider race with known-allocation cleanup on every BaseException."""
+    interrupt_state: dict[str, Any] = {}
+    try:
+        return _race_launch_impl(
+            providers,
+            request,
+            marker_check,
+            marker_timeout,
+            job_dir=job_dir,
+            cold=cold,
+            poll_interval=poll_interval,
+            circuit_breaker=circuit_breaker,
+            terminate_losers=terminate_losers,
+            launch_kwargs=launch_kwargs,
+            bundle_kind=bundle_kind,
+            readiness_marker=readiness_marker,
+            prelaunch_guard=prelaunch_guard,
+            pending_teardown_lane=pending_teardown_lane,
+            pending_teardown_max_age_seconds=pending_teardown_max_age_seconds,
+            sleep=sleep,
+            monotonic=monotonic,
+            _interrupt_state=interrupt_state,
+        )
+    except BaseException:
+        cleanup = interrupt_state.get("cleanup")
+        if callable(cleanup):
+            cleanup()
+        raise
+
+
+def _race_launch_impl(
+    providers: Sequence,
+    request,
+    marker_check: Callable[[object, dict], bool],
+    marker_timeout: float,
+    *,
+    job_dir,
+    cold: bool = False,
+    poll_interval: float = 10.0,
+    circuit_breaker: ProviderCircuitBreaker | None = None,
+    terminate_losers: bool = True,
+    launch_kwargs: Mapping[str, Any] | Callable[[object], Mapping[str, Any]] | None = None,
+    bundle_kind: str | None = None,
+    readiness_marker: str | None = None,
+    prelaunch_guard: Mapping[str, Any] | Callable[[object], Mapping[str, Any]] | None = None,
+    pending_teardown_lane: str | None = None,
+    pending_teardown_max_age_seconds: int = 7200,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    _interrupt_state: dict[str, Any] | None = None,
+) -> dict:
     """Launch on every provider at once; return the first instance to show its boot marker.
 
     Args:
@@ -430,7 +537,66 @@ def race_launch(
          "polls": 0, "elapsed_seconds": 0.0}
         for i, p in enumerate(runnable)
     ]
+    interrupt_cleanup_requested = threading.Event()
+    started_threads: list[threading.Thread] = []
     attempts = 1 if poll_interval <= 0 else max(1, math.ceil(marker_timeout / poll_interval))
+
+    def _cleanup_interrupted_contender(idx: int, provider: object) -> None:
+        """Terminate a known id owned by a race that is no longer returning a winner."""
+        rec = records[idx]
+        iid = rec.get("instance_id")
+        if not iid or rec.get("interruption_cleanup_attempted"):
+            return
+        rec["interruption_cleanup_attempted"] = True
+        rec["teardown_action"] = "terminate"
+        try:
+            rec["terminated"] = provider.terminate(iid)
+        except Exception as exc:  # noqa: BLE001 - proof remains fail-closed
+            rec["terminated"] = {
+                "status": "terminate_failed",
+                "error_type": type(exc).__name__,
+            }
+        if not rec.get("pending_teardown_record"):
+            return
+        try:
+            proof = _teardown_proof_from_provider_action(
+                provider,
+                str(iid),
+                rec.get("terminated")
+                if isinstance(rec.get("terminated"), Mapping)
+                else {},
+                "terminate",
+            )
+            rec["teardown_proof"] = proof
+        except Exception as exc:  # noqa: BLE001 - preserve the open obligation
+            rec["pending_teardown_status"] = "proof_failed"
+            rec["teardown_proof_error_type"] = type(exc).__name__
+            return
+        try:
+            closure = close_pending_teardown(rec["pending_teardown_record"], proof)
+            rec["pending_teardown_status"] = closure.get("status")
+        except Exception as exc:  # noqa: BLE001 - preserve the open obligation
+            rec["pending_teardown_status"] = "close_failed"
+            rec["pending_teardown_close_error_type"] = type(exc).__name__
+
+    def _cleanup_interrupted_race() -> None:
+        interrupt_cleanup_requested.set()
+        winner_found.set()
+        for thread in tuple(started_threads):
+            if thread.ident is None:
+                continue
+            while thread.is_alive():
+                try:
+                    thread.join(timeout=0.1)
+                except BaseException:
+                    # Keep the original interrupt pending until all known-id
+                    # cleanup has had a chance to run.
+                    continue
+        for idx, provider in enumerate(runnable):
+            _cleanup_interrupted_contender(idx, provider)
+
+    if _interrupt_state is not None:
+        _interrupt_state["cleanup"] = _cleanup_interrupted_race
 
     def _run(idx: int, provider) -> None:
         rec = records[idx]
@@ -452,7 +618,10 @@ def race_launch(
                 rec["blockers"] = blockers
                 rec["elapsed_seconds"] = round(monotonic() - started, 3)
                 return
-            kwargs = _resolve_launch_kwargs(launch_kwargs, provider)
+            requested_kwargs = _resolve_launch_kwargs(launch_kwargs, provider)
+            kwargs, unsupported_kwargs = _supported_launch_kwargs(
+                provider, requested_kwargs
+            )
             request_body = _resolve_request(request, provider, sub_dir)
             pending_record: dict[str, Any] | None = None
             if pending_teardown_lane:
@@ -467,32 +636,28 @@ def race_launch(
                 if isinstance(request_body, Mapping):
                     request_body = dict(request_body)
                     request_body["pending_teardown_record"] = pending_record["path"]
+            rec["launch_kwargs_requested"] = dict(requested_kwargs)
             rec["launch_kwargs"] = dict(kwargs)
-            try:
-                launch = provider.launch(
-                    sub_dir,
-                    request_body,
-                    cold=cold,
-                    **kwargs,
-                )
-            except TypeError as exc:
-                if not kwargs:
-                    raise
-                rec["launch_kwargs_legacy_fallback"] = repr(exc)[:200]
-                launch = provider.launch(
-                    sub_dir,
-                    request_body,
-                    cold=cold,
-                )
+            rec["launch_kwargs_unsupported"] = unsupported_kwargs
+            launch = provider.launch(
+                sub_dir,
+                request_body,
+                cold=cold,
+                **kwargs,
+            )
         except Exception as exc:  # noqa: BLE001 — a thrown launch is just a dud, not a crash
-            if rec.get("pending_teardown_record"):
-                cancel_pending_teardown(
-                    rec["pending_teardown_record"],
-                    reason="provider_launch_raised_before_allocation",
-                )
-                rec["pending_teardown_status"] = "cancelled_no_allocation"
-            rec["outcome"] = "no_capacity"
+            rec["outcome"] = "launch_ambiguous"
             rec["reason"] = ("launch_raised:" + repr(exc))[:200]
+            if rec.get("pending_teardown_record"):
+                try:
+                    mark_pending_teardown_ambiguous(
+                        rec["pending_teardown_record"],
+                        reason="provider_launch_raised_before_allocation",
+                        evidence={"error_type": type(exc).__name__},
+                    )
+                except Exception as mark_exc:  # noqa: BLE001 - in-memory state wins
+                    rec["pending_teardown_mark_error_type"] = type(mark_exc).__name__
+                rec["pending_teardown_status"] = "open_ambiguous_allocation"
             rec["elapsed_seconds"] = round(monotonic() - started, 3)
             return
         if isinstance(launch, dict):
@@ -501,40 +666,105 @@ def race_launch(
                 launch["pending_teardown_record"] = rec["pending_teardown_record"]
         rec["launch"] = launch if isinstance(launch, dict) else {"raw": repr(launch)[:200]}
         iid = launch.get("instance_id") if isinstance(launch, dict) else None
+        if iid:
+            rec["instance_id"] = str(iid)
+            rec["mode"] = launch.get("mode") if isinstance(launch, Mapping) else None
         if iid and rec.get("pending_teardown_record"):
-            bind_pending_teardown_instance(rec["pending_teardown_record"], str(iid))
-        launched = isinstance(launch, dict) and launch.get("status") == "launched" and bool(iid)
+            try:
+                bind_pending_teardown_instance(rec["pending_teardown_record"], str(iid))
+            except Exception as exc:  # noqa: BLE001 - known id remains cleanup-owned
+                rec["pending_teardown_status"] = "bind_failed"
+                rec["pending_teardown_bind_error_type"] = type(exc).__name__
+                rec["outcome"] = "partial_allocation"
+        if interrupt_cleanup_requested.is_set() and iid:
+            rec["outcome"] = "interrupted"
+            rec["reason"] = "provider_race_interrupted"
+            rec["elapsed_seconds"] = round(monotonic() - started, 3)
+            _cleanup_interrupted_contender(idx, provider)
+            return
+        launched = bool(
+            isinstance(launch, dict)
+            and launch.get("status") == "launched"
+            and iid
+            and rec.get("outcome") != "partial_allocation"
+        )
         if not launched:
+            if iid:
+                rec["outcome"] = "partial_allocation"
+                rec["reason"] = "nonlaunched_response_with_instance_id"
             if rec.get("pending_teardown_record") and not iid:
-                cancel_pending_teardown(
-                    rec["pending_teardown_record"],
-                    reason="launch_returned_no_allocation",
-                    evidence=launch if isinstance(launch, Mapping) else {},
-                )
-                rec["pending_teardown_status"] = "cancelled_no_allocation"
-            rec["outcome"] = "no_capacity"
+                if isinstance(launch, Mapping) and launch.get("allocation_created") is False:
+                    try:
+                        cancel_pending_teardown(
+                            rec["pending_teardown_record"],
+                            reason="launch_returned_explicit_no_allocation",
+                            evidence=launch,
+                        )
+                        rec["pending_teardown_status"] = "cancelled_no_allocation"
+                    except Exception as exc:  # noqa: BLE001 - block safe retry
+                        rec["pending_teardown_status"] = "cancel_failed"
+                        rec["pending_teardown_cancel_error_type"] = type(exc).__name__
+                else:
+                    rec["pending_teardown_status"] = "open_ambiguous_allocation"
+                    rec["outcome"] = "launch_ambiguous"
+                    try:
+                        mark_pending_teardown_ambiguous(
+                            rec["pending_teardown_record"],
+                            reason="launch_returned_without_explicit_no_allocation",
+                            evidence={
+                                "status": launch.get("status") if isinstance(launch, Mapping) else None,
+                                "blockers": launch.get("blockers") if isinstance(launch, Mapping) else None,
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001 - in-memory state wins
+                        rec["pending_teardown_mark_error_type"] = type(exc).__name__
+            if rec.get("outcome") not in {"launch_ambiguous", "partial_allocation"}:
+                rec["outcome"] = "no_capacity"
             blockers = launch.get("blockers") if isinstance(launch, dict) else None
             rec["reason"] = (blockers[0] if blockers else "launch_not_launched")
             rec["elapsed_seconds"] = round(monotonic() - started, 3)
             return
-        rec["instance_id"] = iid
-        rec["mode"] = launch.get("mode")
-
         # -- poll for the early boot marker --
         booted = aborted = False
+        deadline = started + max(0.0, float(marker_timeout))
         for attempt in range(attempts):
             rec["polls"] = attempt + 1
+            if interrupt_cleanup_requested.is_set():
+                aborted = True
+                rec["reason"] = "provider_race_interrupted"
+                break
             if winner_found.is_set():
                 aborted = True  # someone else already won -> stop waiting on this instance
                 break
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                rec["reason"] = "marker_wall_clock_deadline"
+                break
             try:
-                if marker_check(provider, launch):
+                marker_value, probe_timed_out = _marker_check_before_deadline(
+                    marker_check,
+                    provider,
+                    launch,
+                    remaining,
+                    cancel_event=interrupt_cleanup_requested,
+                )
+                if interrupt_cleanup_requested.is_set():
+                    aborted = True
+                    rec["reason"] = "provider_race_interrupted"
+                    break
+                if probe_timed_out:
+                    rec["reason"] = "marker_probe_deadline_exhausted"
+                    break
+                if marker_value:
                     booted = True
                     break
             except Exception as exc:  # noqa: BLE001 — a flaky probe is not a boot
                 rec["reason"] = ("marker_check_raised:" + repr(exc))[:200]
             if attempt < attempts - 1:
-                sleep(poll_interval)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                sleep(min(float(poll_interval), remaining))
         rec["elapsed_seconds"] = round(monotonic() - started, 3)
 
         # -- classify --
@@ -553,17 +783,38 @@ def race_launch(
         else:
             rec["outcome"] = "no_boot"      # launched but never showed the marker in time
             rec["reason"] = rec["reason"] or "marker_timeout"
+        if interrupt_cleanup_requested.is_set():
+            _cleanup_interrupted_contender(idx, provider)
 
     threads = [
         threading.Thread(target=_run, args=(i, p), name=f"race-{p.name}-{i}", daemon=True)
         for i, p in enumerate(runnable)
     ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()  # every launch has returned -> every instance_id is known, nothing leaks
+    for thread in threads:
+        # Register before start so an exception from Thread.start itself cannot
+        # create an untracked contender.
+        started_threads.append(thread)
+        thread.start()
+    for thread in started_threads:
+        thread.join()  # every launch has returned -> every instance_id is known, nothing leaks
+
+    for rec in records:
+        if rec.get("outcome") is None and rec.get("pending_teardown_record"):
+            rec["outcome"] = "launch_ambiguous"
+            rec["reason"] = "contender_ended_without_safe_outcome"
+            rec["pending_teardown_status"] = "open_ambiguous_allocation"
 
     winner_idx = state["winner"]
+    ambiguous_launch = any(
+        rec.get("outcome") == "launch_ambiguous" for rec in records
+    )
+    partial_allocation = any(
+        rec.get("outcome") == "partial_allocation" for rec in records
+    )
+    if ambiguous_launch or partial_allocation:
+        # A lost create response may have allocated an unknown instance. Do not
+        # promote a known winner while that competing mutation is unresolved.
+        winner_idx = None
 
     # 3) Tear down every launched loser (winner is kept for the caller to watch+collect).
     terminated = 0
@@ -574,7 +825,11 @@ def race_launch(
         if iid and terminate_losers:
             try:
                 mode = str(rec.get("mode") or "")
-                if mode.startswith("warm") and hasattr(runnable[i], "stop"):
+                if (
+                    mode.startswith("warm")
+                    and hasattr(runnable[i], "stop")
+                    and not pending_teardown_lane
+                ):
                     rec["teardown_action"] = "stop"
                     rec["stopped"] = runnable[i].stop(iid)
                 else:
@@ -595,9 +850,60 @@ def race_launch(
                     str(rec.get("teardown_action") or "terminate"),
                 )
                 rec["teardown_proof"] = proof
-                closure = close_pending_teardown(rec["pending_teardown_record"], proof)
-                rec["pending_teardown_status"] = closure.get("status")
+                try:
+                    closure = close_pending_teardown(
+                        rec["pending_teardown_record"], proof
+                    )
+                    rec["pending_teardown_status"] = closure.get("status")
+                except Exception as exc:  # noqa: BLE001 - continue all cleanup
+                    rec["pending_teardown_status"] = "close_failed"
+                    rec["pending_teardown_close_error_type"] = type(exc).__name__
             terminated += 1
+
+    loser_cleanup_failed = bool(
+        pending_teardown_lane
+        and any(
+            rec.get("pending_teardown_record")
+            and rec.get("pending_teardown_status")
+            not in {"closed", "cancelled_no_allocation"}
+            for i, rec in enumerate(records)
+            if i != winner_idx
+        )
+    )
+    if loser_cleanup_failed and winner_idx is not None:
+        # Never promote a winner while another paid contender may still bill.
+        winner_rec = records[winner_idx]
+        winner_iid = winner_rec.get("instance_id")
+        if winner_iid:
+            try:
+                winner_rec["teardown_action"] = "terminate"
+                winner_rec["terminated"] = runnable[winner_idx].terminate(winner_iid)
+            except Exception as exc:  # noqa: BLE001 - proof below remains fail-closed
+                winner_rec["terminated"] = {
+                    "status": "terminate_failed",
+                    "error_type": type(exc).__name__,
+                }
+            if winner_rec.get("pending_teardown_record"):
+                proof = _teardown_proof_from_provider_action(
+                    runnable[winner_idx],
+                    str(winner_iid),
+                    winner_rec.get("terminated") or {},
+                    "terminate",
+                )
+                winner_rec["teardown_proof"] = proof
+                try:
+                    closure = close_pending_teardown(
+                        winner_rec["pending_teardown_record"], proof
+                    )
+                    winner_rec["pending_teardown_status"] = closure.get("status")
+                except Exception as exc:  # noqa: BLE001 - cleanup remains blocked
+                    winner_rec["pending_teardown_status"] = "close_failed"
+                    winner_rec["pending_teardown_close_error_type"] = (
+                        type(exc).__name__
+                    )
+            winner_rec["outcome"] = "winner_terminated_due_unverified_loser"
+            terminated += 1
+        winner_idx = None
 
     # 4) Feed outcomes back into the breaker. A provider that booted (won OR booted_lost)
     #    is a success; one that couldn't launch or never booted is a dud. A contender merely
@@ -612,7 +918,13 @@ def race_launch(
 
     if winner_idx is None:
         blocked_reason = (
-            "prelaunch_spend_guard_not_passed"
+            "provider_launch_outcome_ambiguous"
+            if ambiguous_launch
+            else "provider_launch_returned_nonlaunched_allocation"
+            if partial_allocation
+            else "provider_race_teardown_unverified"
+            if loser_cleanup_failed
+            else "prelaunch_spend_guard_not_passed"
             if records and all(rec.get("outcome") == "prelaunch_blocked" for rec in records)
             else "all_providers_dudded"
         )
@@ -643,6 +955,18 @@ def _result(
     readiness_marker: str | None = None,
 ) -> dict:
     """Assemble the uniform race result (also the no-providers / all-dudded blocked shape)."""
+    paid_records = [
+        record for record in records if record.get("pending_teardown_record")
+    ]
+    paid_retry_safe = (
+        all(
+            record.get("pending_teardown_status")
+            in {"closed", "cancelled_no_allocation"}
+            for record in paid_records
+        )
+        if paid_records
+        else None
+    )
     if win_rec is not None:
         return {
             "schema": SCHEMA_VERSION,
@@ -659,6 +983,7 @@ def _result(
             "skipped": skipped_names,
             "terminated_losers": terminated,
             "reason": None,
+            "paid_retry_safe": paid_retry_safe,
         }
     return {
         "schema": SCHEMA_VERSION,
@@ -675,4 +1000,5 @@ def _result(
         "skipped": skipped_names,
         "terminated_losers": terminated,
         "reason": reason,
+        "paid_retry_safe": paid_retry_safe,
     }

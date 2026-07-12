@@ -55,6 +55,58 @@ def _dir_has_files(path: Path) -> bool:
     return path.is_dir() and any(path.rglob("*"))
 
 
+def compute_asset_binding(env=None) -> tuple[dict, bool]:
+    """Same asset-binding semantics as the generic worker healthcheck, fail-closed."""
+    try:
+        from blueprint_pipeline.isaac_worker_image_healthcheck import (
+            asset_binding_check,
+        )
+    except ImportError:
+        return (
+            {
+                "name": "unitree_g1_asset_binding",
+                "status": "blocked",
+                "blockers": ["blueprint_pipeline_asset_binding_check_unavailable"],
+            },
+            False,
+        )
+    return asset_binding_check(
+        runtime_env=dict(env or os.environ), path_exists=Path.exists
+    )
+
+
+def build_runtime_metadata(
+    *,
+    env,
+    isaac_imported: bool,
+    g1_exists: bool,
+    asset_binding_valid: bool,
+    official_assets_exist: bool,
+    source_commit: str,
+    dirty_patch: str,
+) -> dict:
+    """One shared runtime-metadata schema with the generic worker image.
+
+    ``configured_g1_usd_exists`` (the file is present) and
+    ``configured_g1_asset_binding_valid`` (the configured binding resolves)
+    are distinct claims and are both always emitted.
+    """
+    return {
+        "image_family": env.get("BLUEPRINT_WORKER_IMAGE_FAMILY"),
+        "image_variant": env.get("BLUEPRINT_WORKER_IMAGE_VARIANT"),
+        "simulator_family": env.get("BLUEPRINT_SIMULATOR_FRAMEWORK"),
+        "simulator_major_version": int(
+            env.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "0") or 0
+        ),
+        "blueprint_pipeline_imported": isaac_imported,
+        "configured_g1_usd_exists": g1_exists,
+        "configured_g1_asset_binding_valid": asset_binding_valid,
+        "official_gear_sonic_assets_exist": official_assets_exist,
+        "source_commit": source_commit,
+        "source_dirty_patch_sha256": dirty_patch,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-time", action="store_true")
@@ -153,22 +205,21 @@ def main() -> int:
         if not present:
             blockers.append(f"{label}_checkpoint_missing")
 
+    asset_binding, asset_binding_valid = compute_asset_binding(os.environ)
+    payload["unitree_g1_asset_binding"] = asset_binding
+    if not asset_binding_valid:
+        blockers.append("unitree_g1_asset_binding_invalid")
     payload["status"] = "passed" if not blockers else "blocked"
     payload["blockers"] = blockers
-    payload["runtime_metadata"] = {
-        "image_family": os.environ.get("BLUEPRINT_WORKER_IMAGE_FAMILY"),
-        "image_variant": os.environ.get("BLUEPRINT_WORKER_IMAGE_VARIANT"),
-        "simulator_family": os.environ.get("BLUEPRINT_SIMULATOR_FRAMEWORK"),
-        "simulator_major_version": int(
-            os.environ.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "0") or 0
-        ),
-        "blueprint_pipeline_imported": isaac_imported,
-        "configured_g1_usd_exists": g1_exists,
-        "official_gear_sonic_assets_exist": wbc_model.is_file()
-        and wbc_deploy.is_file(),
-        "source_commit": source_commit,
-        "source_dirty_patch_sha256": dirty_patch,
-    }
+    payload["runtime_metadata"] = build_runtime_metadata(
+        env=os.environ,
+        isaac_imported=isaac_imported,
+        g1_exists=g1_exists,
+        asset_binding_valid=asset_binding_valid,
+        official_assets_exist=wbc_model.is_file() and wbc_deploy.is_file(),
+        source_commit=source_commit,
+        dirty_patch=dirty_patch,
+    )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if not blockers else 1
 

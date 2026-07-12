@@ -10,6 +10,10 @@ terminal non-promoted path.
 from __future__ import annotations
 
 import json
+import os
+import signal
+import threading
+import time
 
 import pytest
 
@@ -213,6 +217,7 @@ def test_no_capacity_attempts_are_capacity_outcomes_and_retry(tmp_path):
             {
                 "status": "blocked",
                 "capacity_outcome": True,
+                "allocation_created": False,
                 "blockers": ["runpod_secure_cloud_create_capacity_unavailable"],
             },
             {"status": "launched", "instance_id": "pod-9"},
@@ -465,6 +470,79 @@ def test_unpinned_image_blocks_before_any_provider_call(tmp_path):
     assert provider.allocate_calls == []
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "blocker"),
+    [
+        (
+            "wall_clock_cap_seconds",
+            float("nan"),
+            "startup_supervisor_wall_clock_cap_invalid",
+        ),
+        (
+            "total_spend_cap_usd",
+            float("inf"),
+            "startup_supervisor_total_spend_cap_invalid",
+        ),
+        (
+            "hourly_rate_usd",
+            float("-inf"),
+            "startup_supervisor_hourly_rate_invalid",
+        ),
+        (
+            "per_attempt_reserved_seconds",
+            float("nan"),
+            "startup_supervisor_per_attempt_reserved_seconds_invalid",
+        ),
+    ],
+)
+def test_nonfinite_supervisor_caps_block_before_provider_call(
+    tmp_path, field, value, blocker
+):
+    provider = FakeProvider()
+
+    manifest = _run(tmp_path, _request(tmp_path, **{field: value}), provider)
+
+    assert manifest["status"] == "blocked"
+    assert blocker in manifest["blockers"]
+    assert provider.allocate_calls == []
+
+
+def test_provider_reported_image_digest_mismatch_terminates_and_blocks(tmp_path):
+    class _WrongImageProvider(FakeProvider):
+        def inspect(self, instance_id):
+            result = super().inspect(instance_id)
+            if result.get("http") == 200:
+                result["imageName"] = "docker.io/x/worker@sha256:" + "d" * 64
+            return result
+
+    provider = _WrongImageProvider()
+    manifest = _run(tmp_path, _request(tmp_path, max_attempts=1), provider)
+
+    assert manifest["status"] == "blocked"
+    assert "startup_supervisor_provider_image_digest_mismatch" in manifest["blockers"]
+    assert provider.terminated == ["pod-1"]
+    assert manifest["attempts"][0]["outcome"] == "provider_image_not_verified"
+
+
+def test_provider_exposed_empty_image_identity_terminates_and_blocks(tmp_path):
+    class _MissingImageProvider(FakeProvider):
+        def inspect(self, instance_id):
+            result = super().inspect(instance_id)
+            if result.get("http") == 200:
+                result["imageName"] = None
+            return result
+
+    provider = _MissingImageProvider()
+    manifest = _run(tmp_path, _request(tmp_path, max_attempts=1), provider)
+
+    assert manifest["status"] == "blocked"
+    assert (
+        "startup_supervisor_provider_image_digest_unverifiable"
+        in manifest["blockers"]
+    )
+    assert provider.terminated == ["pod-1"]
+
+
 def test_supervisor_exception_mid_attempt_still_finalizes_teardown(tmp_path):
     provider = FakeProvider()
 
@@ -481,7 +559,42 @@ def test_supervisor_exception_mid_attempt_still_finalizes_teardown(tmp_path):
     assert manifest["final_inventory"]["live_resource_count"] == 0
 
 
-def test_allocate_raising_cancels_pending_teardown_and_settles(tmp_path):
+def test_main_thread_interrupt_does_not_wait_for_blocked_callback(tmp_path):
+    provider = FakeProvider()
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+
+    def blocked_marker(**ctx):
+        callback_started.set()
+        release_callback.wait(timeout=10)
+        return {"status": "marker_verified"}
+
+    def interrupt_main():
+        assert callback_started.wait(timeout=2)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    interrupter = threading.Thread(target=interrupt_main)
+    interrupter.start()
+    started = time.monotonic()
+    try:
+        manifest = _run(
+            tmp_path,
+            _request(tmp_path),
+            provider,
+            marker=blocked_marker,
+        )
+    finally:
+        release_callback.set()
+        interrupter.join(timeout=2)
+
+    assert time.monotonic() - started < 2.0
+    assert manifest["status"] == "aborted"
+    assert "startup_supervisor_interrupted" in manifest["blockers"]
+    assert provider.terminated == ["pod-1"]
+    assert manifest["finalizer_teardown_proof"]["status"] == "PASS"
+
+
+def test_allocate_raising_keeps_ambiguous_pending_teardown_open_and_settles(tmp_path):
     class _RaisingProvider(FakeProvider):
         def allocate(self, **ctx):
             raise RuntimeError("provider api 502")
@@ -489,9 +602,12 @@ def test_allocate_raising_cancels_pending_teardown_and_settles(tmp_path):
     provider = _RaisingProvider()
     with pytest.raises(RuntimeError):
         _run(tmp_path, _request(tmp_path), provider)
-    # No allocation ever existed: the record is cancelled, not left as an
-    # unresolvable open billing alarm.
-    assert load_pending_teardowns(registry_dir=tmp_path / "teardowns") == []
+    records = load_pending_teardowns(registry_dir=tmp_path / "teardowns")
+    assert len(records) == 1
+    assert records[0]["allocation_outcome_ambiguous"] is True
+    assert records[0]["ambiguity_reason"] == (
+        "provider_allocate_raised_before_allocation"
+    )
     manifest = _artifact(tmp_path, SUP.MANIFEST_FILENAME)
     assert manifest["status"] == "aborted"
     attempt = manifest["attempts"][0]
@@ -499,6 +615,93 @@ def test_allocate_raising_cancels_pending_teardown_and_settles(tmp_path):
     assert "provider api 502" in attempt["allocation_error"]
     ledger = _artifact(tmp_path, "startup_cumulative_spend_ledger.json")
     assert ledger["attempts"][0]["settled"] is True
+
+
+def test_ambiguous_no_id_allocation_response_aborts_without_retry(tmp_path):
+    provider = FakeProvider(
+        allocate_results=[
+            {
+                "status": "blocked",
+                "blockers": ["runpod_create_outcome_ambiguous"],
+                "allocation_outcome_ambiguous": True,
+            },
+            {"status": "launched", "instance_id": "must-not-launch"},
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="provider_allocation_outcome_ambiguous"):
+        _run(tmp_path, _request(tmp_path), provider)
+
+    assert len(provider.allocate_calls) == 1
+    records = load_pending_teardowns(registry_dir=tmp_path / "teardowns")
+    assert len(records) == 1
+    assert records[0]["allocation_outcome_ambiguous"] is True
+    manifest = _artifact(tmp_path, SUP.MANIFEST_FILENAME)
+    assert "startup_supervisor_allocation_outcome_ambiguous" in manifest["blockers"]
+
+
+def test_unverified_teardown_blocks_next_supervisor_attempt(tmp_path):
+    class _UnkillableProvider(FakeProvider):
+        def terminate(self, instance_id):
+            self.terminated.append(instance_id)
+            return {"status": "terminate_failed", "http": 500}
+
+    provider = _UnkillableProvider()
+    manifest = _run(
+        tmp_path,
+        _request(tmp_path, max_attempts=3),
+        provider,
+        marker=lambda **_ctx: {"status": "marker_timeout"},
+    )
+
+    assert len(provider.allocate_calls) == 1
+    assert "startup_supervisor_teardown_unverified" in manifest["blockers"]
+    assert "startup_supervisor_teardown_unverified_before_retry" in manifest[
+        "blockers"
+    ]
+    assert len(load_pending_teardowns(registry_dir=tmp_path / "teardowns")) == 1
+
+
+def test_pending_close_error_retains_state_and_blocks_supervisor_retry(
+    tmp_path, monkeypatch
+):
+    provider = FakeProvider()
+    monkeypatch.setattr(
+        SUP,
+        "close_pending_teardown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    manifest = _run(tmp_path, _request(tmp_path, max_attempts=3), provider)
+
+    assert len(provider.allocate_calls) == 1
+    assert "startup_supervisor_teardown_unverified" in manifest["blockers"]
+    proof = manifest["finalizer_teardown_proof"]
+    assert proof["pending_teardown_status"] == "close_failed"
+    assert proof["pending_teardown_close_error_type"] == "OSError"
+
+
+def test_teardown_trace_write_failure_cannot_skip_provider_delete(
+    tmp_path, monkeypatch
+):
+    provider = FakeProvider()
+    original_record = SUP.PhaseTraceRecorder.record
+
+    def flaky_record(self, phase, **kwargs):
+        if phase == SUP.PHASE_DELETE:
+            raise OSError("trace disk full")
+        return original_record(self, phase, **kwargs)
+
+    monkeypatch.setattr(SUP.PhaseTraceRecorder, "record", flaky_record)
+
+    manifest = _run(tmp_path, _request(tmp_path, max_attempts=1), provider)
+
+    assert provider.terminated == ["pod-1"]
+    assert manifest["status"] == "blocked"
+    assert "startup_supervisor_cleanup_evidence_write_failed" in manifest["blockers"]
+    assert manifest["cleanup_evidence_errors"] == [
+        {"phase": SUP.PHASE_DELETE, "error_type": "OSError"}
+    ]
 
 
 def test_unexpected_exception_finalizes_and_reraises(tmp_path):

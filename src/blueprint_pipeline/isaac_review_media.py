@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -19,16 +20,71 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _frame_index(path: Path) -> int | None:
+    suffix = path.stem.rsplit("_", 1)[-1]
+    return int(suffix) if suffix.isdigit() else None
+
+
+def _step_binding_blockers(
+    step_bindings: Sequence[Mapping[str, Any]] | None, expected_frame_count: int
+) -> list[str]:
+    """Validate the attempt-bound per-step horizon before any frame is trusted."""
+    if step_bindings is None:
+        return ["episode_step_bindings_missing"]
+    bindings = [dict(item) for item in step_bindings]
+    blockers: list[str] = []
+    indices = [int(item.get("step_index") or 0) for item in bindings]
+    if len(bindings) != int(expected_frame_count) or indices != list(
+        range(int(expected_frame_count))
+    ):
+        blockers.append(
+            "episode_step_bindings_count_mismatch:"
+            f"{len(bindings)}!={int(expected_frame_count)}"
+        )
+    previous_after: int | None = None
+    for item in bindings:
+        for field in ("source_action_sha256", "stage_id", "simulator_session_id"):
+            if not str(item.get(field) or "").strip():
+                blockers.append(
+                    f"episode_step_binding_incomplete:{item.get('step_index')}:{field}"
+                )
+        try:
+            before = int(str(item.get("before_timestamp")))
+            after = int(str(item.get("after_timestamp")))
+        except (TypeError, ValueError):
+            blockers.append(
+                "episode_step_bindings_timestamps_not_ordered:"
+                f"{item.get('step_index')}:invalid"
+            )
+            continue
+        if after <= before or (previous_after is not None and before < previous_after):
+            blockers.append(
+                "episode_step_bindings_timestamps_not_ordered:"
+                f"{item.get('step_index')}"
+            )
+        previous_after = after
+    return blockers
+
+
 def admit_full_ordered_episode(
     *,
     camera_frames: dict[str, Sequence[str | Path]],
     frame_semantics: dict[str, dict[str, Any]],
     semantic_review: dict[str, Any] | None,
     expected_frame_count: int,
+    step_bindings: Sequence[Mapping[str, Any]] | None,
+    frame_step_bindings: Mapping[str, Mapping[str, Any]] | None,
     min_robot_occupancy: float = 0.03,
     min_target_occupancy: float = 0.01,
 ) -> dict[str, Any]:
-    """Fail-closed admission over every ordered overview and robot-POV frame."""
+    """Fail-closed admission over every ordered overview and robot-POV frame.
+
+    ``expected_frame_count`` must come from the immutable attempt/task/executor
+    manifest — never from the frames that happened to arrive. ``step_bindings``
+    carries the attested per-step action SHA / stage / session / timestamp rows,
+    and ``frame_step_bindings`` is the renderer-emitted frame-to-step sidecar;
+    both are required, so equally truncated or foreign camera streams block.
+    """
     try:
         import numpy as np  # type: ignore
         from PIL import Image  # type: ignore
@@ -42,11 +98,31 @@ def admit_full_ordered_episode(
     rows: list[dict[str, Any]] = []
     required_roles = ("overview", "robot_pov")
     role_checksums: dict[str, list[str]] = {}
+    blockers.extend(_step_binding_blockers(step_bindings, expected_frame_count))
+    bindings_by_name = (
+        {str(name): dict(value) for name, value in frame_step_bindings.items()}
+        if frame_step_bindings is not None
+        else None
+    )
+    if bindings_by_name is None:
+        blockers.append("episode_frame_step_bindings_missing")
+    steps_by_index = {
+        int(item.get("step_index")): dict(item)
+        for item in (step_bindings or [])
+        if isinstance(item.get("step_index"), int)
+        and not isinstance(item.get("step_index"), bool)
+    }
     for role in required_roles:
         paths = [Path(item) for item in camera_frames.get(role, ())]
         if len(paths) != int(expected_frame_count):
             blockers.append(
                 f"{role}:ordered_frame_count_mismatch:{len(paths)}!={int(expected_frame_count)}"
+            )
+        observed_indices = [_frame_index(path) for path in paths]
+        if paths and observed_indices != list(range(int(expected_frame_count))):
+            blockers.append(
+                f"{role}:frame_indices_not_contiguous:"
+                + ",".join(str(item) for item in observed_indices)
             )
         checksums: list[str] = []
         previous_rgb = None
@@ -97,6 +173,31 @@ def admit_full_ordered_episode(
                         if temporal_delta <= 1e-6:
                             row_blockers.append("frame_stale_checksum_or_pixels")
                     previous_rgb = rgb
+            if bindings_by_name is not None:
+                frame_binding = bindings_by_name.get(path.name)
+                if frame_binding is None:
+                    row_blockers.append("frame_step_binding_missing")
+                else:
+                    if str(frame_binding.get("sha256") or "") != checksum:
+                        row_blockers.append("frame_step_binding_sha256_mismatch")
+                    if str(frame_binding.get("camera_role") or "") != role:
+                        row_blockers.append("frame_step_binding_role_mismatch")
+                    if int(frame_binding.get("step_index", -1)) != index:
+                        row_blockers.append("frame_step_binding_index_mismatch")
+                    expected_step = steps_by_index.get(index, {})
+                    for field in (
+                        "source_action_sha256",
+                        "stage_id",
+                        "simulator_session_id",
+                        "before_timestamp",
+                        "after_timestamp",
+                    ):
+                        if (
+                            not str(expected_step.get(field) or "")
+                            or str(frame_binding.get(field) or "")
+                            != str(expected_step.get(field) or "")
+                        ):
+                            row_blockers.append(f"frame_step_binding_{field}_mismatch")
             semantics = dict(frame_semantics.get(str(path)) or {})
             if semantics.get("sha256") != checksum:
                 row_blockers.append("semantic_review_frame_sha256_mismatch")
@@ -146,7 +247,22 @@ def admit_full_ordered_episode(
             )
             blockers.extend(f"{role}:{index}:{item}" for item in row_blockers)
         role_checksums[role] = checksums
+        seen: dict[str, int] = {}
+        for index, checksum in enumerate(checksums):
+            if checksum in seen:
+                blockers.append(
+                    f"{role}:frame_duplicate_sha256_across_steps:{seen[checksum]},{index}"
+                )
+            else:
+                seen[checksum] = index
     review = dict(semantic_review or {})
+    if semantic_review is not None and int(
+        review.get("frame_review_count") or -1
+    ) != 2 * int(expected_frame_count):
+        blockers.append(
+            "semantic_review_coverage_count_mismatch:"
+            f"{review.get('frame_review_count')}!={2 * int(expected_frame_count)}"
+        )
     if (
         review.get("status") != "passed"
         or review.get("full_ordered_episode_reviewed") is not True
@@ -176,18 +292,98 @@ def admit_full_ordered_episode(
     }
 
 
+FRAME_STEP_BINDINGS_SCHEMA_VERSION = "isaac_review_frame_step_bindings.v1"
+
+
+def record_frame_step_bindings(
+    *, frames_dir: str | Path, artifacts: Sequence[Mapping[str, Any]]
+) -> Path:
+    """Persist the renderer's frame-to-step binding sidecar, merging per step."""
+    Path(frames_dir).mkdir(parents=True, exist_ok=True)
+    path = Path(frames_dir) / "frame_step_bindings.json"
+    frames: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict) and isinstance(existing.get("frames"), dict):
+                frames = dict(existing["frames"])
+        except (OSError, json.JSONDecodeError):
+            frames = {}
+    for artifact in artifacts:
+        detail = dict(artifact)
+        name = Path(str(detail.get("path") or "")).name
+        if not name:
+            continue
+        frames[name] = {
+            "camera_role": detail.get("camera_role"),
+            "step_index": int(detail.get("frame_index") or 0),
+            "sha256": detail.get("sha256"),
+            **{
+                field: detail.get(field)
+                for field in (
+                    "source_action_sha256",
+                    "simulator_session_id",
+                    "stage_id",
+                    "before_timestamp",
+                    "after_timestamp",
+                    "attempt_id",
+                    "launch_nonce",
+                )
+            },
+        }
+    path.write_text(
+        json.dumps(
+            {"schema_version": FRAME_STEP_BINDINGS_SCHEMA_VERSION, "frames": frames},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _load_frame_step_bindings(frames_dir: Path) -> dict[str, dict[str, Any]] | None:
+    path = frames_dir / "frame_step_bindings.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != FRAME_STEP_BINDINGS_SCHEMA_VERSION
+        or not isinstance(payload.get("frames"), dict)
+    ):
+        return None
+    return {str(name): dict(value) for name, value in payload["frames"].items()}
+
+
 def admit_collected_scenario_episode(
-    *, scenario_dir: str | Path, expected_frame_count: int
+    *,
+    scenario_dir: str | Path,
+    expected_frame_count: int,
+    step_bindings: Sequence[Mapping[str, Any]] | None,
+    attestation_pins: Mapping[str, Any] | None = None,
+    identity_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load worker-emitted semantic sidecars and persist collected media admission."""
     root = Path(scenario_dir)
     frames = root / "frames"
     semantics_path = root / "full_episode_frame_semantics.json"
     review_path = root / "full_episode_semantic_review.json"
-    if not semantics_path.is_file() or not review_path.is_file():
+    if (
+        attestation_pins is not None
+        or not semantics_path.is_file()
+        or not review_path.is_file()
+    ):
         run_full_episode_semantic_review(
             scenario_dir=root,
             expected_frame_count=int(expected_frame_count),
+            attestation_pins=attestation_pins,
+            identity_binding=identity_binding,
+            step_bindings=step_bindings,
         )
     try:
         raw_semantics = json.loads(semantics_path.read_text(encoding="utf-8"))
@@ -208,6 +404,8 @@ def admit_collected_scenario_episode(
         frame_semantics=semantics,
         semantic_review=review,
         expected_frame_count=int(expected_frame_count),
+        step_bindings=step_bindings,
+        frame_step_bindings=_load_frame_step_bindings(frames),
     )
     output = root / "full_ordered_episode_media_admission.json"
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")

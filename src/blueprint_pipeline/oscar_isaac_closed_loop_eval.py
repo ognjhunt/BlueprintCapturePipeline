@@ -34,7 +34,10 @@ from .common import ensure_dir, utc_now_iso, write_json
 from .closed_loop_consistency_scoring import (
     _score_closed_loop_step_episode_consistency as _score_closed_loop_step_episode_consistency_impl,
 )
-from .g1_kitchen_attempt_closure import persistent_task_identity_rows
+from .g1_kitchen_worker_proof_emission import (
+    emit_rows_from_closed_loop_state,
+    legacy_worker_proof_rows,
+)
 from .sc3_fidelity_contracts import (
     SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256_ENV,
     validate_checkpoint_attestation,
@@ -541,20 +544,21 @@ def _computed_transition_passed(
     after_value: float,
     tolerance: float,
     target_value: float | None,
+    episode_initial_value: float | None,
 ) -> bool | None:
-    if comparison == "increase_at_least":
-        return after_value - before_value >= tolerance
-    if comparison == "decrease_at_least":
-        return before_value - after_value >= tolerance
-    if comparison == "absolute_change_at_least":
-        return abs(after_value - before_value) >= tolerance
-    if comparison == "within_tolerance":
-        return bool(target_value is not None and abs(after_value - target_value) <= tolerance)
-    if comparison == "at_or_above":
-        return bool(target_value is not None and after_value >= target_value - tolerance)
-    if comparison == "at_or_below":
-        return bool(target_value is not None and after_value <= target_value + tolerance)
-    return None
+    if episode_initial_value is None:
+        return None
+    from .task_episode_baseline import evaluate_task_criterion
+    try:
+        evaluation = evaluate_task_criterion(
+            {"comparison": comparison, "tolerance": tolerance, "target_value": target_value},
+            episode_initial_value=episode_initial_value,
+            step_before=before_value,
+            step_after=after_value,
+        )
+    except ValueError:
+        return None
+    return bool(evaluation["passed"])
 
 
 def _validate_task_completion_transition(
@@ -665,6 +669,9 @@ def _validate_task_completion_transition(
         source_step_index=source_step_index,
     )
     blockers.extend(evidence_blockers)
+    episode_initial_value = _finite_float(result.get("episode_initial_value"))
+    if episode_initial_value is None:
+        blockers.append("task_transition_episode_initial_value_missing_or_nonfinite")
     computed_passed = (
         _computed_transition_passed(
             comparison=comparison,
@@ -672,6 +679,7 @@ def _validate_task_completion_transition(
             after_value=after_value,
             tolerance=tolerance,
             target_value=target_value,
+            episode_initial_value=episode_initial_value,
         )
         if comparison
         and before_value is not None
@@ -3716,6 +3724,7 @@ def run_oscar_isaac_closed_loop(
     min_steps: int = 1,
     task_success_contract: Mapping[str, Any] | None = None,
     task_completion_evaluator: TaskCompletionEvaluator | None = None,
+    attempt_input_manifest: str | Path | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     resolved_out = Path(output_dir).expanduser().resolve()
@@ -4205,6 +4214,7 @@ def run_oscar_isaac_closed_loop(
                 task_completion_evaluator(
                     {
                         "step_index": step_index,
+                        "evidence_step_index": step_index - 1,
                         "action": action,
                         "wam_output": wam_output,
                         "harness_step_record": step_record,
@@ -4612,53 +4622,19 @@ def run_oscar_isaac_closed_loop(
         ),
         "raw_secret_values_recorded": False,
     }
-    manifest["g1_kitchen_proof_rows"] = {
-        **persistent_task_identity_rows(task_completion_results),
-        "controller_fk": {
-            "status": "passed"
-            if proof["fresh_actions_all_controller_fk_conditioned"]
-            and proof["fresh_action_conditioning_differentiation_proven"]
-            else "blocked",
-            "evidence": {
-                "fresh_actions_all_controller_fk_conditioned": proof[
-                    "fresh_actions_all_controller_fk_conditioned"
-                ],
-                "fresh_action_conditioning_differentiation_proven": proof[
-                    "fresh_action_conditioning_differentiation_proven"
-                ],
-                "action_conditioning_evidence": proof["action_conditioning_evidence"],
-            },
-        },
-        "persistent_simulator_transition": {
-            "status": "passed"
-            if manipulation_success_judge.get("manipulation_success_proven") is True
-            and proven_task_completion_transition
-            else "blocked",
-            "evidence": {
-                "registered_task_completion_transition": proven_task_completion_transition,
-                "task_completion_results": task_completion_results,
-            },
-        },
-        "forward_consistency": {
-            "status": "passed" if forward_consistency_proven else "blocked",
-            "evidence": {
-                "strict_external_scorer_results": consistency_results,
-            },
-        },
-        "inverse_consistency": {
-            "status": "passed" if inverse_consistency_proven else "blocked",
-            "evidence": {
-                "strict_external_scorer_results": consistency_results,
-            },
-        },
-        "semantic_review": {
-            "status": "blocked",
-            "blockers": ["full_ordered_episode_semantic_review_required_post_collection"],
-            "evidence": {
-                "generated_video_success_label_is_not_full_episode_semantic_review": True
-            },
-        },
-    }
+    legacy_proof_rows = legacy_worker_proof_rows(
+        proof=proof,
+        task_completion_results=task_completion_results,
+        manipulation_success_judge=manipulation_success_judge,
+        proven_task_completion_transition=proven_task_completion_transition,
+        consistency_results=consistency_results,
+        forward_consistency_proven=forward_consistency_proven,
+        inverse_consistency_proven=inverse_consistency_proven,
+    )
+    if attempt_input_manifest:
+        manifest["g1_kitchen_proof_rows"] = emit_rows_from_closed_loop_state(locals())
+    else:
+        manifest["g1_kitchen_proof_rows"] = legacy_proof_rows
     write_json(resolved_out / "oscar_isaac_closed_loop_manifest.json", manifest)
     return manifest
 
@@ -4728,6 +4704,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "comparisons, tolerances, and units. Required with a manipulation "
             "--task-completion-command."
         ),
+    )
+    parser.add_argument(
+        "--attempt-input-manifest",
+        default=None,
+        help="Immutable attempt manifest used to bind and sign worker proof leaves.",
     )
     parser.add_argument(
         "--task-completion-command",
@@ -5276,6 +5257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_steps=int(args.min_steps),
         task_success_contract=task_success_contract,
         task_completion_evaluator=task_completion_evaluator,
+        attempt_input_manifest=args.attempt_input_manifest,
     )
     print(
         json.dumps(

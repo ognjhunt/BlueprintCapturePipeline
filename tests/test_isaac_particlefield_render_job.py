@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -358,7 +359,11 @@ def _patch_paid_job_pipeline(monkeypatch, tmp_path: Path, provider: _FakePaidPro
         render_job, "stage_bundle",
         lambda bundle_zip, job_dir, key_prefix="": {"status": "completed"},
     )
-    monkeypatch.setattr(render_job, "build_render_launch_spec", lambda *a, **k: object())
+    monkeypatch.setattr(
+        render_job,
+        "build_render_launch_spec",
+        lambda *a, **k: SimpleNamespace(max_hourly_rate_usd=2.0),
+    )
     monkeypatch.setattr(render_job, "get_render_provider", lambda *a, **k: provider)
 
 
@@ -409,6 +414,28 @@ def test_launch_runpod_blocks_without_budget_before_provider_lookup(
     assert "max_spend_usd_missing" in result["blockers"]
     assert result["prelaunch_spend_guard"]["can_launch"] is False
     assert result["prelaunch_spend_guard"]["budget_source"] == "missing"
+
+
+def test_launch_runpod_blocks_missing_hourly_cap_before_provider_lookup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        render_job,
+        "get_render_provider",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider lookup must not happen without a rate cap")
+        ),
+    )
+
+    result = render_job.launch_runpod(
+        tmp_path,
+        {"imageName": "img:tag"},
+        max_spend_usd=5.0,
+    )
+
+    assert result["status"] == "blocked"
+    assert "max_hourly_rate_usd_missing_or_nonfinite" in result["blockers"]
 
 
 def test_paid_run_missing_budget_fails_before_provider_launch(

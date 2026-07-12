@@ -58,6 +58,15 @@ def _asset_binding_check(
     )
 
 
+def asset_binding_check(
+    *,
+    runtime_env: Mapping[str, str],
+    path_exists: Callable[[Path], bool],
+) -> tuple[dict[str, Any], bool]:
+    """Public entry so sealed image healthchecks share one binding semantics."""
+    return _asset_binding_check(runtime_env=runtime_env, path_exists=path_exists)
+
+
 def run_image_healthcheck(
     *,
     build_time: bool,

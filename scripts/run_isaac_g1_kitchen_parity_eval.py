@@ -2476,9 +2476,35 @@ def summarize_physics_articulation_contact_reports(
 
 
 def upload_zip(out_dir: Path, put_url: str | None) -> int | None:
+    """PUT the artifact zip to ONE presigned https URL, fail-closed.
+
+    This runner ships standalone inside the worker bundle, so it cannot import
+    :mod:`blueprint_pipeline.safe_outbound_http`; it enforces the same
+    boundary inline: https-only presigned target, no credentials in the URL,
+    and every redirect rejected (a presigned object-store PUT never redirects,
+    so any redirect is treated as an escape attempt).
+    """
     if not put_url:
         return None
+    import urllib.parse
     import urllib.request
+
+    parsed = urllib.parse.urlparse(put_url)
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if scheme != "https" or not host:
+        raise RuntimeError(
+            f"upload_zip_presigned_put_scheme_not_allowed:{scheme or 'missing'}"
+        )
+    if "@" in parsed.netloc:
+        raise RuntimeError("upload_zip_presigned_put_credentials_in_url_blocked")
+
+    class _RedirectEscapeBlocked(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG002
+            raise RuntimeError(
+                f"upload_zip_presigned_put_redirect_blocked:{str(newurl)[:120]}"
+            )
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for p in out_dir.rglob("*"):
@@ -2486,7 +2512,8 @@ def upload_zip(out_dir: Path, put_url: str | None) -> int | None:
                 z.write(p, p.relative_to(out_dir).as_posix())
     req = urllib.request.Request(put_url, data=buf.getvalue(), method="PUT",
                                  headers={"Content-Type": "application/zip"})
-    with urllib.request.urlopen(req, timeout=180) as r:
+    opener = urllib.request.build_opener(_RedirectEscapeBlocked())
+    with opener.open(req, timeout=180) as r:
         return int(getattr(r, "status", 200))
 
 

@@ -30,8 +30,9 @@ every terminal path is hermetically testable with fake providers.
 
 from __future__ import annotations
 
+import math
 import signal
-import concurrent.futures
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
     close_pending_teardown,
+    mark_pending_teardown_ambiguous,
     open_pending_teardown,
     provider_state_from_inspect,
 )
@@ -106,6 +108,31 @@ class SupervisorInterrupted(RuntimeError):
     """Raised by the SIGTERM handler so the finalizer runs on the normal path."""
 
 
+def _finite_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _integer(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _image_digest_from_ref(value: Any) -> str:
+    text = str(value or "").strip()
+    if "@" not in text:
+        return ""
+    digest = text.rsplit("@", 1)[1].lower()
+    if not digest.startswith("sha256:") or len(digest) != 71:
+        return ""
+    return digest if all(char in "0123456789abcdef" for char in digest[7:]) else ""
+
+
 @dataclass(frozen=True)
 class StartupSupervisorRequest:
     """Immutable input contract for one supervised startup transaction."""
@@ -122,12 +149,19 @@ class StartupSupervisorRequest:
     hourly_rate_usd: float
     per_attempt_reserved_seconds: float
     terminal_mode: str
+    pending_teardown_max_age_seconds: int = 7200
     isaac_version: str = "6.0.0"
     stopped_disk_usd_per_hour: float | None = None
     full_job_request: Mapping[str, Any] | None = None
 
     def validation_blockers(self) -> list[str]:
         blockers: list[str] = []
+        max_attempts = _integer(self.max_attempts)
+        wall_clock_cap = _finite_float(self.wall_clock_cap_seconds)
+        spend_cap = _finite_float(self.total_spend_cap_usd)
+        hourly_rate = _finite_float(self.hourly_rate_usd)
+        reserved_seconds = _finite_float(self.per_attempt_reserved_seconds)
+        pending_max_age = _integer(self.pending_teardown_max_age_seconds)
         if not str(self.run_id or "").strip():
             blockers.append("startup_supervisor_run_id_missing")
         if not str(self.launch_nonce or "").strip():
@@ -136,26 +170,33 @@ class StartupSupervisorRequest:
             blockers.append("startup_supervisor_provider_missing")
         if not self.gpu_types:
             blockers.append("startup_supervisor_gpu_types_missing")
-        if "@sha256:" not in str(self.image_ref or ""):
+        if not _image_digest_from_ref(self.image_ref):
             blockers.append("startup_supervisor_image_not_digest_pinned")
         if not str(self.image_manifest_checksum or "").strip():
             blockers.append("startup_supervisor_image_manifest_checksum_missing")
-        if int(self.max_attempts) < 1:
+        if max_attempts is None or max_attempts < 1:
             blockers.append("startup_supervisor_max_attempts_invalid")
-        if float(self.wall_clock_cap_seconds) <= 0:
+        if wall_clock_cap is None or wall_clock_cap <= 0:
             blockers.append("startup_supervisor_wall_clock_cap_invalid")
-        if float(self.total_spend_cap_usd) <= 0:
+        if spend_cap is None or spend_cap <= 0:
             blockers.append("startup_supervisor_total_spend_cap_invalid")
-        if float(self.hourly_rate_usd) < 0:
+        if hourly_rate is None or hourly_rate < 0:
             blockers.append("startup_supervisor_hourly_rate_invalid")
+        if reserved_seconds is None or reserved_seconds <= 0:
+            blockers.append("startup_supervisor_per_attempt_reserved_seconds_invalid")
+        if pending_max_age is None or pending_max_age < 1:
+            blockers.append("startup_supervisor_pending_teardown_max_age_invalid")
+        if self.stopped_disk_usd_per_hour is not None:
+            stopped_disk_rate = _finite_float(self.stopped_disk_usd_per_hour)
+            if stopped_disk_rate is None or stopped_disk_rate < 0:
+                blockers.append("startup_supervisor_stopped_disk_rate_invalid")
         if self.terminal_mode not in VALID_TERMINAL_MODES:
             blockers.append("startup_supervisor_terminal_mode_invalid")
         return blockers
 
     @property
     def image_digest(self) -> str:
-        image = str(self.image_ref or "")
-        return image.split("@", 1)[1] if "@" in image else ""
+        return _image_digest_from_ref(self.image_ref)
 
 
 @dataclass
@@ -229,9 +270,11 @@ def run_startup_supervisor(
         "terminal_mode": request.terminal_mode,
         "isaac_version": request.isaac_version,
         "caps": {
-            "max_attempts": int(request.max_attempts),
-            "wall_clock_cap_seconds": float(request.wall_clock_cap_seconds),
-            "total_spend_cap_usd": float(request.total_spend_cap_usd),
+            "max_attempts": _integer(request.max_attempts),
+            "wall_clock_cap_seconds": _finite_float(
+                request.wall_clock_cap_seconds
+            ),
+            "total_spend_cap_usd": _finite_float(request.total_spend_cap_usd),
         },
         "attempts": [],
         "quarantine_references": [],
@@ -297,29 +340,54 @@ def run_startup_supervisor(
         manifest["quarantine_references"] = state.quarantine_refs
 
     def _call_with_heartbeats(callback: Callable[[], Mapping[str, Any]]) -> dict[str, Any]:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(callback)
-            while True:
-                try:
-                    return _mapping(
-                        future.result(timeout=trace.heartbeat_interval_seconds)
-                    )
-                except concurrent.futures.TimeoutError:
-                    trace.heartbeat()
+        holder: dict[str, Any] = {}
+        done = threading.Event()
+
+        def _run_callback() -> None:
+            try:
+                holder["result"] = callback()
+            except BaseException as exc:  # propagate on the supervisor thread
+                holder["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=_run_callback,
+            name="startup-supervisor-callback",
+            daemon=True,
+        ).start()
+        while not done.wait(timeout=trace.heartbeat_interval_seconds):
+            trace.heartbeat()
+        if "error" in holder:
+            raise holder["error"]
+        return _mapping(holder.get("result"))
 
     def _teardown_live_allocation(reason: str) -> dict[str, Any] | None:
         """Terminate, API-verify terminal, close the pending teardown record."""
         if not state.instance_id or state.promoted:
             return None
-        trace.record(PHASE_DELETE, detail={"reason": reason})
-        provider_client.terminate(state.instance_id)
+        cleanup_evidence_errors: list[dict[str, str]] = []
+
+        def _record_cleanup_phase(phase: str, *, detail: Mapping[str, Any]) -> None:
+            try:
+                trace.record(phase, detail=detail)
+            except Exception as exc:  # noqa: BLE001 - cleanup must still execute
+                cleanup_evidence_errors.append(
+                    {"phase": phase, "error_type": type(exc).__name__}
+                )
+
+        try:
+            provider_client.terminate(state.instance_id)
+        except Exception as exc:  # noqa: BLE001 - verification remains authoritative
+            manifest["teardown_request_error"] = type(exc).__name__
+        _record_cleanup_phase(PHASE_DELETE, detail={"reason": reason})
         try:
             verify = provider_state_from_inspect(
                 provider_client.inspect(state.instance_id)
             )
         except Exception:
             verify = {"provider_status": "", "api_confirmed": False, "http": 0}
-        trace.record(
+        _record_cleanup_phase(
             PHASE_TEARDOWN_VERIFICATION,
             detail={
                 "provider_status": verify["provider_status"] or None,
@@ -336,11 +404,38 @@ def run_startup_supervisor(
             if verify["api_confirmed"]
             else None,
         )
+        closure_status = "not_applicable"
         if state.pending_teardown_path:
-            closure = close_pending_teardown(state.pending_teardown_path, proof)
-            proof["pending_teardown_status"] = closure.get("status")
+            try:
+                closure = close_pending_teardown(state.pending_teardown_path, proof)
+                closure_status = str(closure.get("status") or "")
+            except Exception as exc:  # noqa: BLE001 - retain allocation state
+                closure_status = "close_failed"
+                proof["pending_teardown_close_error_type"] = type(exc).__name__
+            proof["pending_teardown_status"] = closure_status
+        if cleanup_evidence_errors:
+            proof["cleanup_evidence_errors"] = cleanup_evidence_errors
+            manifest["cleanup_evidence_errors"] = [
+                *manifest.get("cleanup_evidence_errors", []),
+                *cleanup_evidence_errors,
+            ]
+            manifest["blockers"] = sorted(
+                {
+                    *manifest["blockers"],
+                    "startup_supervisor_cleanup_evidence_write_failed",
+                }
+            )
         state.teardown_proof = proof
-        state.instance_id = ""
+        teardown_verified = bool(
+            str(proof.get("status") or "").upper() == "PASS"
+            and closure_status in {"closed", "not_applicable"}
+        )
+        if teardown_verified:
+            state.instance_id = ""
+        else:
+            manifest["blockers"] = sorted(
+                {*manifest["blockers"], "startup_supervisor_teardown_unverified"}
+            )
         return proof
 
     def _final_inventory_snapshot() -> dict[str, Any]:
@@ -440,6 +535,14 @@ def run_startup_supervisor(
                 _persist_attempts()
                 break
 
+            if state.instance_id and not state.promoted:
+                attempt["outcome"] = "blocked_previous_teardown_unverified"
+                manifest["blockers"].append(
+                    "startup_supervisor_teardown_unverified_before_retry"
+                )
+                _persist_attempts()
+                break
+
             trace.record(PHASE_PRE_SPEND_INVENTORY)
             pre_inventory = _mapping(inventory())
             attempt["pre_spend_inventory_live_count"] = int(
@@ -467,6 +570,7 @@ def run_startup_supervisor(
                 lane=SUPERVISOR_LANE,
                 run_id=attempt_id,
                 job_dir=output_dir,
+                max_age_seconds=int(request.pending_teardown_max_age_seconds),
                 registry_dir=teardown_registry_dir,
             )
             state.attempt_id = attempt_id
@@ -531,27 +635,62 @@ def run_startup_supervisor(
                     )
                 )
             except Exception as exc:
-                # No allocation id exists, so the record would otherwise stay
-                # open forever as an unresolvable billing alarm.
-                cancel_pending_teardown(
-                    pending["path"],
-                    reason="provider_allocate_raised_before_allocation",
-                )
-                state.pending_teardown_path = ""
+                # A provider can allocate and then lose the create response.
+                # Preserve the obligation until inventory reconciliation.
+                try:
+                    mark_pending_teardown_ambiguous(
+                        pending["path"],
+                        reason="provider_allocate_raised_before_allocation",
+                        evidence={"error_type": type(exc).__name__},
+                    )
+                except Exception as mark_exc:  # noqa: BLE001 - record stays open
+                    attempt["pending_teardown_mark_error_type"] = type(
+                        mark_exc
+                    ).__name__
                 attempt["allocation_error"] = "".join(
                     traceback.format_exception_only(type(exc), exc)
                 ).strip()
                 _settle("allocation_raised", "allocation_failed")
                 raise
-            if allocation.get("status") != "launched" or not allocation.get(
-                "instance_id"
-            ):
-                cancel_pending_teardown(
-                    pending["path"],
-                    reason="allocation_failed_no_instance",
-                    evidence={"blockers": allocation.get("blockers")},
-                )
-                state.pending_teardown_path = ""
+            returned_instance_id = str(allocation.get("instance_id") or "").strip()
+            if returned_instance_id:
+                state.instance_id = returned_instance_id
+                attempt["instance_id"] = state.instance_id
+                try:
+                    bind_pending_teardown_instance(pending["path"], state.instance_id)
+                except Exception as exc:  # noqa: BLE001 - known id gets teardown
+                    attempt["pending_teardown_bind_error_type"] = type(exc).__name__
+                    manifest["blockers"].append(
+                        "startup_supervisor_pending_teardown_bind_failed"
+                    )
+                    _settle("allocation_bind_failed", "allocation_failed")
+                    _teardown_live_allocation("pending_teardown_bind_failed")
+                    raise RuntimeError("provider_allocation_bind_failed")
+            if allocation.get("status") != "launched" or not returned_instance_id:
+                if returned_instance_id:
+                    attempt["allocation_blockers"] = list(
+                        allocation.get("blockers") or []
+                    )
+                    manifest["blockers"].append(
+                        "startup_supervisor_nonlaunched_allocation_returned"
+                    )
+                    _settle("partial_allocation", "allocation_failed")
+                    _teardown_live_allocation("nonlaunched_allocation_returned")
+                    raise RuntimeError("provider_nonlaunched_allocation_returned")
+                explicit_no_allocation = allocation.get("allocation_created") is False
+                if explicit_no_allocation:
+                    cancel_pending_teardown(
+                        pending["path"],
+                        reason="allocation_failed_explicit_no_instance",
+                        evidence={"blockers": allocation.get("blockers")},
+                    )
+                    state.pending_teardown_path = ""
+                else:
+                    mark_pending_teardown_ambiguous(
+                        pending["path"],
+                        reason="allocation_failed_without_explicit_no_instance",
+                        evidence={"blockers": allocation.get("blockers")},
+                    )
                 failure_class = (
                     FAILURE_CLASS_NO_CAPACITY
                     if allocation.get("capacity_outcome")
@@ -561,26 +700,49 @@ def run_startup_supervisor(
                     allocation.get("blockers") or []
                 )
                 _settle("allocation_failed", failure_class)
+                if not explicit_no_allocation:
+                    manifest["blockers"].append(
+                        "startup_supervisor_allocation_outcome_ambiguous"
+                    )
+                    raise RuntimeError("provider_allocation_outcome_ambiguous")
                 continue
 
-            state.instance_id = str(allocation["instance_id"])
-            bind_pending_teardown_instance(pending["path"], state.instance_id)
-            attempt["instance_id"] = state.instance_id
             trace.record(PHASE_ALLOCATION_CREATED, allocation_id=state.instance_id)
 
             snapshot = _mapping(provider_client.inspect(state.instance_id))
             state.machine_id = str(snapshot.get("machineId") or "").strip()
             attempt["machine_id"] = state.machine_id or None
+            provider_image_field_exposed = "imageName" in snapshot
+            provider_image_ref = str(snapshot.get("imageName") or "").strip()
+            provider_image_digest = _image_digest_from_ref(provider_image_ref)
             attempt["machine_snapshot"] = {
                 "desiredStatus": snapshot.get("desiredStatus"),
                 "runtime_present": snapshot.get("runtime_present"),
                 "public_ip_present": snapshot.get("public_ip_present"),
                 "costPerHr": snapshot.get("costPerHr"),
+                "provider_image_field_exposed": provider_image_field_exposed,
+                "provider_image_ref": provider_image_ref or None,
+                "provider_image_digest": provider_image_digest or None,
             }
             trace.record(
                 PHASE_MACHINE_IDENTITY_OBSERVED,
                 detail={"machine_id": state.machine_id or None},
             )
+
+            if provider_image_field_exposed and (
+                not provider_image_digest
+                or provider_image_digest != request.image_digest
+            ):
+                blocker = (
+                    "startup_supervisor_provider_image_digest_unverifiable"
+                    if not provider_image_digest
+                    else "startup_supervisor_provider_image_digest_mismatch"
+                )
+                manifest["blockers"].append(blocker)
+                attempt["allocation_blockers"] = [blocker]
+                _teardown_live_allocation("provider_image_digest_not_verified")
+                _settle("provider_image_not_verified", "image_identity_mismatch")
+                break
 
             if state.machine_id and request.image_digest:
                 match = find_active_quarantine(
@@ -690,10 +852,19 @@ def run_startup_supervisor(
 
             # ---- canary passed: terminal transaction -----------------------
             if request.terminal_mode == TERMINAL_MODE_TERMINATE:
-                _teardown_live_allocation("terminate_after_canary")
+                proof = _teardown_live_allocation("terminate_after_canary")
                 _settle("canary_passed_terminated", None)
-                _final_inventory_snapshot()
-                outcome_status = "passed_and_terminated"
+                final_inventory = _final_inventory_snapshot()
+                teardown_terminal = bool(
+                    proof
+                    and str(proof.get("status") or "").upper() == "PASS"
+                    and not proof.get("cleanup_evidence_errors")
+                    and not state.instance_id
+                    and final_inventory["live_resource_count"] == 0
+                )
+                outcome_status = (
+                    "passed_and_terminated" if teardown_terminal else "blocked"
+                )
                 break
 
             # promote_to_warm_job: same allocation, no second cold launch.

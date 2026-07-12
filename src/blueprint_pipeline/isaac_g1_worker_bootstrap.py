@@ -105,12 +105,37 @@ except Exception: pass
 if os.environ.get("PARITY_SUPERVISED_STARTUP","")=="1":
     image_digest=os.environ.get("BLUEPRINT_WORKER_IMAGE_DIGEST","")
     gate_rows=[]; gate_blockers=[]
+    def run_process_group_bounded(command, *, timeout, terminate_grace=5.0):
+        process=subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=dict(os.environ), start_new_session=True,
+        )
+        try:
+            stdout,stderr=process.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(command,process.returncode,stdout,stderr)
+        except subprocess.TimeoutExpired:
+            try: os.killpg(process.pid, signal.SIGTERM)
+            except Exception: pass
+            grace_deadline=time.monotonic()+max(0.0,terminate_grace)
+            try:
+                process.wait(timeout=max(0.0,terminate_grace))
+            except subprocess.TimeoutExpired: pass
+            remaining=grace_deadline-time.monotonic()
+            if remaining>0: time.sleep(remaining)
+            # Kill the group regardless of whether its leader already exited:
+            # a descendant may close the pipes, ignore TERM, and keep running.
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except Exception: pass
+            try: stdout,stderr=process.communicate(timeout=30)
+            except Exception: stdout,stderr="","process_group_kill_failed"
+            return subprocess.CompletedProcess(
+                command,124,stdout or "",(stderr or "")+"\nprocess_group_timeout"
+            )
     def run_startup_gate(gate_id, command, result_path, passed_status):
         mark(gate_id+"_starting")
         started=time.monotonic()
         try:
-            completed=subprocess.run(command, capture_output=True, text=True, timeout=1800, check=False,
-                                     env=dict(os.environ))
+            completed=run_process_group_bounded(command, timeout=1800)
             rc=completed.returncode
             stdout=completed.stdout[-4000:]; stderr=completed.stderr[-4000:]
         except Exception as exc:
@@ -245,13 +270,20 @@ try:
 except subprocess.TimeoutExpired:
     try: os.killpg(proc.pid, signal.SIGTERM)
     except Exception: pass
+    grace_deadline=time.monotonic()+30
     try:
         rc=proc.wait(timeout=30)
     except Exception:
-        try: os.killpg(proc.pid, signal.SIGKILL)
-        except Exception: pass
-        try: rc=proc.wait(timeout=10)
-        except Exception: rc=None
+        rc=None
+    # The group leader can exit on SIGTERM while a descendant ignores it.
+    # Honor the full grace window, then kill the group regardless of whether
+    # the leader was already reaped.
+    remaining=grace_deadline-time.monotonic()
+    if remaining > 0: time.sleep(remaining)
+    try: os.killpg(proc.pid, signal.SIGKILL)
+    except Exception: pass
+    try: rc=proc.wait(timeout=10)
+    except Exception: pass
     mark("runner_timeout", rc=rc, timeout_seconds=timeout,
          elapsed_seconds=round(time.monotonic()-started,1), cmd=cmd)
 # Keep the container process alive after runner completion so RunPod does not restart it and
@@ -261,7 +293,7 @@ while True:
 '''
 
 IMAGE_STARTUP_CANARY_BOOTSTRAP = r'''
-import os, io, json, time, zipfile, pathlib, urllib.request, shutil, sys, subprocess
+import os, io, json, time, zipfile, pathlib, urllib.request, shutil, sys, subprocess, signal, threading
 from datetime import datetime, timezone
 
 OUT="/workspace/out"
@@ -323,20 +355,68 @@ preflight_cmd=[
     "--smoke-steps", "3",
 ]
 started=time.monotonic()
+preflight_deadline_done=threading.Event()
+preflight_process_holder={}
+def enforce_preflight_deadline():
+    if preflight_deadline_done.wait(930):
+        return
+    process=preflight_process_holder.get("process")
+    if process is not None:
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except Exception: pass
+    timeout_result={
+        "schema_version":"isaac_g1_parity_image_startup_canary.v2",
+        "status":"blocked",
+        "blockers":["isaac_runtime_preflight_process_group_timeout"],
+        "image_startup_canary":True,
+        "generated_at":datetime.now(timezone.utc).isoformat(),
+        "launch_session_id":SESSION,
+        "runtime_preflight_exit_code":124,
+        "runtime_preflight_elapsed_seconds":round(time.monotonic()-started,1),
+        "claim_boundary":"The independent canary watchdog expired before the Isaac RTX preflight returned. This is a bounded startup failure, not simulator, task, policy, or robot-readiness proof.",
+    }
+    for evidence_path in (
+        preflight_path,
+        pathlib.Path(OUT, "isaac_g1_kitchen_parity_result.json"),
+        pathlib.Path(OUT, "isaac_g1_parity_image_startup_canary.json"),
+    ):
+        try: evidence_path.write_text(json.dumps(timeout_result, indent=2), encoding="utf-8")
+        except Exception: pass
+    try:
+        mark("runner_done", rc=124, image_startup_canary=True, runtime_preflight_status="blocked",
+             watchdog_timeout=True)
+    except Exception: pass
+    # RunPod restarts a pod when its container command exits. Keep this
+    # watchdog thread alive and continue publishing the terminal blocked
+    # artifact so one timed-out canary cannot restart itself indefinitely.
+    while True:
+        time.sleep(30)
+        putout()
+threading.Thread(target=enforce_preflight_deadline, daemon=True).start()
 try:
     if bundle_error:
         raise RuntimeError("canary_bundle_unavailable:" + bundle_error)
-    completed=subprocess.run(
-        preflight_cmd, capture_output=True, text=True, timeout=900, check=False,
-        env=dict(os.environ),
+    preflight_process=subprocess.Popen(
+        preflight_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=dict(os.environ), start_new_session=True,
     )
-    preflight_rc=completed.returncode
-    preflight_stdout=completed.stdout[-4000:]
-    preflight_stderr=completed.stderr[-4000:]
+    preflight_process_holder["process"]=preflight_process
+    try:
+        preflight_stdout,preflight_stderr=preflight_process.communicate(timeout=900)
+        preflight_rc=preflight_process.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(preflight_process.pid, signal.SIGKILL)
+        preflight_stdout,preflight_stderr=preflight_process.communicate(timeout=30)
+        preflight_rc=124
+        preflight_stderr=(preflight_stderr or "") + "\nisaac_runtime_preflight_process_group_timeout"
+    preflight_stdout=preflight_stdout[-4000:]
+    preflight_stderr=preflight_stderr[-4000:]
 except Exception as exc:
     preflight_rc=124
     preflight_stdout=""
     preflight_stderr=repr(exc)
+finally:
+    preflight_deadline_done.set()
 try:
     preflight=json.loads(preflight_path.read_text(encoding="utf-8"))
 except Exception as exc:
@@ -403,14 +483,19 @@ def docker_start_cmd(*, image_startup_canary: bool = False) -> list[str]:
     worker_script = IMAGE_STARTUP_CANARY_BOOTSTRAP if image_startup_canary else BOOTSTRAP
     worker_script_name = "parity_image_startup_canary.py" if image_startup_canary else "boot.py"
     worker_python_cmd = (
-        f'(python3 /workspace/{worker_script_name} || '
-        f'python /workspace/{worker_script_name} || '
-        f'/isaac-sim/python.sh /workspace/{worker_script_name})'
+        "if command -v python3 >/dev/null 2>&1; then "
+        f"python3 /workspace/{worker_script_name}; "
+        "elif command -v python >/dev/null 2>&1; then "
+        f"python /workspace/{worker_script_name}; "
+        "else "
+        f"/isaac-sim/python.sh /workspace/{worker_script_name}; "
+        "fi"
         if image_startup_canary
         else f"/isaac-sim/python.sh /workspace/{worker_script_name}"
     )
     script = (
         "set +e\n"
+        "set -o pipefail\n"
         "mkdir -p /workspace/out\n"
         "cat > /workspace/early.py <<'EARLYEOF'\n" + _EARLY_MARKER + "\nEARLYEOF\n"
         "(python3 /workspace/early.py 2>/dev/null || /isaac-sim/python.sh /workspace/early.py 2>/dev/null) || true\n"

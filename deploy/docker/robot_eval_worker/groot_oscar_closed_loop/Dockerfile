@@ -16,6 +16,10 @@
 ARG ISAAC_SIM_BASE_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d
 FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE}
 
+# The pinned Isaac-Sim base ships USER isaac-sim (uid 1234); every layer below
+# needs root (apt, /opt installs), and the sealed worker bootstrap runs as root.
+USER root
+
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -23,6 +27,7 @@ ARG GROOT_SOURCE_URL=https://github.com/NVIDIA/Isaac-GR00T.git
 ARG GROOT_SOURCE_REF=e5749287857afd97b78f1147166137de29746392
 ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
 ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
+ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
 ARG OSCAR_SOURCE_URL=https://github.com/wuzy2115/oscar-public.git
 ARG OSCAR_SOURCE_REF=4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb
 ARG BLUEPRINT_SOURCE_COMMIT
@@ -37,6 +42,7 @@ ARG APP_GID=10001
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     MUJOCO_GL=osmesa \
     PYTORCH_ALLOC_CONF=expandable_segments:True \
     HF_HOME=/opt/blueprint/hf_home \
@@ -59,6 +65,7 @@ ENV PYTHONUNBUFFERED=1 \
     BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
     BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc \
+    TensorRT_ROOT=/usr \
     BLUEPRINT_GEAR_SONIC_ROBOT_MODEL=/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml \
     BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
     BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED=true \
@@ -77,18 +84,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
     git-lfs \
+    gettext-base \
     curl \
     ca-certificates \
     ninja-build \
     pkg-config \
+    python3-pip \
     python3-venv \
+    sudo \
   && rm -rf /var/lib/apt/lists/*
+
+# 1b. Runtime identity, created BEFORE the checkpoint layer. OCI layers are
+#     copy-on-write: chown-ing /opt/blueprint/ckpts in a later layer would
+#     rewrite the ~8.7GB of checkpoint bytes into a duplicate layer, so the
+#     user must exist first and ownership must be set inside the layer that
+#     produces the checkpoint files.
+RUN groupadd --gid "${APP_GID}" blueprint \
+  && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
+  && usermod -aG isaac-sim blueprint \
+  && chown -R blueprint:blueprint /workspace
 
 # 2. Blueprint package in both the OSCAR client environment and Isaac runtime.
 COPY pyproject.toml README.md LICENSE /opt/blueprint/blueprint-capture-pipeline/
 COPY src /opt/blueprint/blueprint-capture-pipeline/src
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_groot_oscar_main_env.txt /opt/blueprint/requirements_groot_oscar_main_env.txt
-RUN python3 -m pip install --upgrade pip uv \
+# PEP 668: the Ubuntu 24.04 base marks system python externally managed, and
+# the Debian pip cannot self-upgrade (no RECORD); install only uv and let it
+# own the /opt/oscar-venv interpreter.
+RUN python3 -m pip install --break-system-packages uv \
   && uv venv /opt/oscar-venv --python 3.10 \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install --index-url https://download.pytorch.org/whl/cu128 \
        torch==2.10.0 torchvision==0.25.0 \
@@ -104,7 +127,7 @@ RUN git clone --filter=blob:none "${OSCAR_SOURCE_URL}" /opt/oscar-public \
   && git -C /opt/oscar-public checkout --detach FETCH_HEAD \
   && test "$(git -C /opt/oscar-public rev-parse HEAD)" = "${OSCAR_SOURCE_REF}" \
   && ln -s /opt/oscar-public /opt/OSCAR \
-  && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import filter_oscar_requirements_script_text, transformer_engine_shim_script_text; Path('/tmp/filter.py').write_text(filter_oscar_requirements_script_text()); Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
+  && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import filter_requirements_script_text, transformer_engine_shim_script_text; Path('/tmp/filter.py').write_text(filter_requirements_script_text()); Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
   && /opt/oscar-venv/bin/python /tmp/filter.py /opt/OSCAR/requirements.txt /tmp/oscar_requirements.txt \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install -r /tmp/oscar_requirements.txt \
   && /opt/oscar-venv/bin/python /tmp/te_shim.py /opt/OSCAR
@@ -118,6 +141,18 @@ RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
   && cd /opt/wbc/gear_sonic_deploy \
   && chmod +x scripts/install_deps.sh deploy.sh \
   && scripts/install_deps.sh \
+  && apt-get install -y --no-install-recommends \
+       libnvinfer-headers-dev=${TENSORRT_VERSION} \
+       libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
+       libnvinfer10=${TENSORRT_VERSION} \
+       libnvinfer-plugin10=${TENSORRT_VERSION} \
+       libnvonnxparsers10=${TENSORRT_VERSION} \
+       libnvinfer-dev=${TENSORRT_VERSION} \
+       libnvinfer-plugin-dev=${TENSORRT_VERSION} \
+       libnvonnxparsers-dev=${TENSORRT_VERSION} \
+  && sed -i \
+       's/nvinfer nvinfer_plugin nvonnxparser nvparsers/nvinfer nvinfer_plugin nvonnxparser/' \
+       cmake/FindTensorRT.cmake \
   && source scripts/setup_env.sh \
   && just build
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \
@@ -135,7 +170,10 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \
 RUN --mount=type=secret,id=hf_token,required=false <<'BASH'
 set -euo pipefail
 if [[ "${PREFETCH_CHECKPOINTS}" == "true" ]]; then
-python3 - <<'PY'
+# The system python3.12 has no huggingface_hub (it lives in the isolated
+# venvs); the oscar-venv carries it via the blueprint pipeline deps and owns
+# the checkpoint prefetch.
+/opt/oscar-venv/bin/python - <<'PY'
 import os
 from pathlib import Path
 from huggingface_hub import snapshot_download
@@ -177,16 +215,33 @@ snapshot_download(
 print("BLUEPRINT_GROOT_OSCAR_CHECKPOINTS_READY")
 PY
 fi
+# Ownership inside the producing layer: a later recursive chown would
+# duplicate every checkpoint byte in registry copy-on-write layer history.
+mkdir -p /opt/blueprint/ckpts
+chown -R blueprint:blueprint /opt/blueprint/ckpts
 BASH
 
-# 6. Build-time healthcheck (all three environments; no GPU required).
+# 6. Bake the complete official Isaac 6 G1 asset directory. The carrier omits
+#    the asset pack; every downloaded byte is size- and digest-pinned here.
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/isaac_6_g1_assets.sha256 /opt/blueprint/isaac_6_g1_assets.sha256
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/fetch_pinned_isaac_assets.py /opt/blueprint/fetch_pinned_isaac_assets.py
+RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
+      --manifest /opt/blueprint/isaac_6_g1_assets.sha256 \
+      --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
+      --output-dir /isaac-sim/Isaac/Robots/Unitree/G1
+
+# 7. Build-time healthcheck (all three environments; no GPU required). It must
+#    run AS THE RUNTIME USER: the 20260712 canary (rc=126 on every gate) proved
+#    a root-only healthcheck cannot see runtime-user exec/traversal failures
+#    (uv interpreter under /root, group-restricted /isaac-sim).
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
-RUN /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
+RUN runuser -u blueprint -- /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
 
-RUN groupadd --gid "${APP_GID}" blueprint \
-  && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
-  && chown -R blueprint:blueprint /workspace /opt/blueprint/ckpts
-
-USER blueprint:blueprint
+# Name-only USER: the explicit `USER user:group` form makes the runtime skip
+# supplementary-group resolution, which silently dropped the isaac-sim group
+# at runtime (live canary attempt 7, 2026-07-12: `id` showed only gid 10001
+# while build-time `runuser` had the group). Name-only resolves the primary
+# group from /etc/passwd AND supplementary groups from /etc/group.
+USER blueprint
 
 CMD ["bash"]

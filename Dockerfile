@@ -34,8 +34,12 @@ RUN uv lock --check \
         --extra cloud \
         --extra runtime \
         --extra llm \
-        --extra validation \
-        --extra retrieval
+        --extra validation
+
+# Retrieval/model inference is an explicitly selected legacy support lane, not
+# part of the capture-orchestrator production image.  Keep its Torch stack in
+# the `retrieval` extra so CPU production builds do not silently pull multi-GB
+# CUDA wheels; dedicated model-worker images select that extra themselves.
 
 # Runtime model loading is offline-only; any future remote loader must retain
 # the reviewed immutable-revision call shape: from_pretrained(..., revision=revision).

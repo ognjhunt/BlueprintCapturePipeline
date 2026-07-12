@@ -3,6 +3,13 @@
 STARTUP_GATES_SCRIPT = r'''
 # Prove the exact kitchen tree, fast RTX path, and review renderer on this
 # allocation before policy or task execution starts.
+if [ -z "${BLUEPRINT_PROVIDER_ALLOCATION_ID:-}" ]; then
+  BLUEPRINT_PROVIDER_ALLOCATION_ID="$(curl -fsS --max-time 5 http://169.254.169.254/metadata/v1/id)"
+  export BLUEPRINT_PROVIDER_ALLOCATION_ID
+fi
+case "$BLUEPRINT_PROVIDER_ALLOCATION_ID" in
+  ''|*[!0-9]*) echo "invalid DigitalOcean allocation identity" >&2; exit 42 ;;
+esac
 STARTUP_DIR=/workspace/closed_loop_out/startup_gates
 mkdir -p "$STARTUP_DIR/kitchen" "$STARTUP_DIR/review"
 set +e
@@ -58,6 +65,11 @@ raise SystemExit(0 if not blockers else 1)
 PY
 STARTUP_GATES_RC=$?
 set -e
+if [ "$STARTUP_GATES_RC" -eq 0 ]; then
+  python -m blueprint_pipeline.g1_kitchen_startup_proof \
+    --startup-dir "$STARTUP_DIR" \
+    --attempt-input-manifest /workspace/attempt_input_manifest.json
+fi
 if [ "$STARTUP_GATES_RC" -ne 0 ]; then
   BLUEPRINT_CLOSED_LOOP_RC="$STARTUP_GATES_RC" \
     BLUEPRINT_WORKER_FAILURE="same_allocation_startup_gates_failed" \

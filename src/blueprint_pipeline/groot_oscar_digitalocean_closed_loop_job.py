@@ -38,6 +38,8 @@ from .gpu_render_providers import (
     _filter_do_size_candidates_by_gpu_ram,
     get_render_provider,
 )
+from .g1_kitchen_pre_allocation_identity import enforce_current_checkout_pre_allocation_identity
+from .g1_kitchen_pre_allocation_identity import revalidate_attempt_artifact_bytes
 from .g1_kitchen_digitalocean_closure import (
     finalize_digitalocean_attempt_closure,
     teardown_proof_from_digitalocean_watch,
@@ -85,7 +87,6 @@ DEFAULT_MIN_COHERENT_HORIZON_FRAMES = 2
 DEFAULT_MIN_TASK_COMPLETION_STEPS = DEFAULT_MIN_TASK_ADAPTIVE_STEPS
 DEFAULT_MIN_GPU_RAM_MB = 48000
 WORKER_PROGRESS_STALL_PHASES = ("container_bash_started", "inputs_ready", "healthcheck_passed", "groot_server_ready", "isaac_task_executor_ready")
-
 
 def _paid_resume_command_payload(
     *,
@@ -198,7 +199,6 @@ def _paid_resume_command_payload(
         ),
     }
 
-
 def _write_paid_resume_command(
     out_dir: Path,
     payload: Mapping[str, Any],
@@ -206,7 +206,6 @@ def _write_paid_resume_command(
     command = dict(payload)
     write_json(out_dir / PAID_RESUME_COMMAND_FILENAME, command)
     return command
-
 
 def materialize_paid_resume_command(
     prepared_dir: str | Path,
@@ -1573,18 +1572,15 @@ upload_phase inputs_ready
 python -m blueprint_pipeline.g1_kitchen_bundle_compatibility \
   --manifest /workspace/bundle_manifest.json
 
-{STARTUP_GATES_SCRIPT}
-
-# Keep runtime signing material allocation-local and out of uploaded artifacts.
-# The public-key hashes are exported to the independent verifier paths and
-# retained in the worker output so every attestation is attempt-auditable.
 mkdir -p /run/blueprint-secrets
 chmod 700 /run/blueprint-secrets
 python -m blueprint_pipeline.runtime_ephemeral_trust \
   --secret-root /run/blueprint-secrets \
   --environment-file /run/blueprint-secrets/trust_env.sh \
-  --public-manifest /workspace/runtime_ephemeral_trust.json
+  --public-manifest /workspace/runtime_ephemeral_trust.json \
+  --attempt-input-manifest /workspace/attempt_input_manifest.json
 source /run/blueprint-secrets/trust_env.sh
+{STARTUP_GATES_SCRIPT}
 
 set +e
 python3 /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --require-cuda \
@@ -2212,6 +2208,20 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         manifest["blockers"].extend(prelaunch.get("blockers") or [])
         manifest["blockers"] = sorted(set(manifest["blockers"]))
         return _write_job_manifest(out, manifest)
+    if attempt_input_manifest_file is None:
+        manifest["blockers"].append("attempt_input_manifest_required_for_paid_launch")
+        return _write_job_manifest(out, manifest)
+    identity_gate = enforce_current_checkout_pre_allocation_identity(
+        attempt_input_manifest_file=attempt_input_manifest_file,
+        launch_image_ref=str(contract["image_ref"]),
+        repo_root=Path(__file__).resolve().parents[2],
+    )
+    manifest["pre_allocation_identity_gate"] = identity_gate
+    if identity_gate.get("status") != "PASS":
+        manifest["blockers"].append("pre_allocation_identity_gate_not_passed")
+        manifest["blockers"].extend(identity_gate.get("blockers") or [])
+        manifest["blockers"] = sorted(set(manifest["blockers"]))
+        return _write_job_manifest(out, manifest)
     capacity_request = {
         "provider": DEFAULT_PROVIDER,
         "min_gpu_ram_mb": DEFAULT_MIN_GPU_RAM_MB,
@@ -2262,6 +2272,9 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         manifest["blockers"].extend(pre_spend_preflight.get("blockers") or [])
         manifest["blockers"] = sorted(set(manifest["blockers"]))
         return _write_job_manifest(out, manifest)
+    if blockers := revalidate_attempt_artifact_bytes(attempt_input_manifest_file):
+        manifest["blockers"].extend(blockers)
+        return _write_job_manifest(out, manifest)
     bundle_zip = _write_input_bundle(
         bundle_zip=out / "groot_oscar_closed_loop_input_bundle.zip",
         plan=plan,
@@ -2311,6 +2324,9 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         "has_start_frame_payload": bool(spec.env.get("BLUEPRINT_INITIAL_POLICY_FRAME_B64")),
         "has_route_payload": bool(spec.env.get("BLUEPRINT_ROUTE_JSON_B64")),
     }
+    if blockers := revalidate_attempt_artifact_bytes(attempt_input_manifest_file):
+        manifest["blockers"].extend(blockers)
+        return _write_job_manifest(out, manifest)
     pending = open_pending_teardown(
         provider=DEFAULT_PROVIDER,
         lane=LANE,
@@ -2369,6 +2385,9 @@ def run_groot_oscar_digitalocean_closed_loop_job(
         launch=launch,
         watch=watch,
         teardown_proof=teardown_proof,
+        expected_episode_steps=int(steps),
+        expected_min_episode_steps=int(min_task_completion_steps),
+        expected_scenario_count=1,
     )
     closure = finalized["closure"]
     manifest["final_inventory"] = finalized["final_inventory"]

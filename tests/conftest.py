@@ -33,3 +33,11 @@ def _isolated_pending_teardown_registry(tmp_path_factory, monkeypatch):
     registry = tmp_path_factory.mktemp("pending-teardowns")
     monkeypatch.setenv("BLUEPRINT_PENDING_TEARDOWN_DIR", str(registry))
     return registry
+
+
+@pytest.fixture(autouse=True)
+def _isolated_paid_provider_lane_lease_dir(tmp_path_factory, monkeypatch):
+    """Paid lanes acquire an exclusive lane lease; keep tests out of ~/."""
+    lease_dir = tmp_path_factory.mktemp("paid-lane-leases")
+    monkeypatch.setenv("BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR", str(lease_dir))
+    return lease_dir

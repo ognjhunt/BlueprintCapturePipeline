@@ -123,6 +123,8 @@ def test_attempt_input_rejects_stale_task_contract_before_spend(tmp_path) -> Non
                 "image_family": "isaac-eval-worker",
                 "simulator_family": "isaac_sim",
                 "simulator_major_version": 6,
+                "source_commit": "d1220f788",
+                "source_dirty_patch_sha256": "b" * 64,
                 "blueprint_pipeline_imported": True,
                 "configured_g1_asset_binding_valid": True,
                 "configured_g1_usd_exists": False,

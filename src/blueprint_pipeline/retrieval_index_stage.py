@@ -1237,6 +1237,12 @@ def _write_placeholder_frame(output_path: Path) -> bool:
 
 _DINOV3_MODEL_ID = "facebook/dinov3-vitl16-pretrain-lvd1689m"
 _DINOV3_MODEL_REVISION = "ea8dc2863c51be0a264bab82070e3e8836b02d51"
+_HF_MODEL_DOWNLOAD_GATE_ENV = "BLUEPRINT_ALLOW_HF_MODEL_DOWNLOAD"
+
+
+def _hf_model_download_gate_on() -> bool:
+    """Hugging Face Hub network retrieval is opt-in, never implicit."""
+    return (os.getenv(_HF_MODEL_DOWNLOAD_GATE_ENV) or "").strip().lower() in {"1", "true"}
 
 
 def _load_dinov3() -> Any:
@@ -1245,19 +1251,27 @@ def _load_dinov3() -> Any:
     DINOv3 (Feb 2026, arXiv:2508.10104) trained on 1.7B images; produces 1024-d CLS embeddings.
     Preferred over DINOv2 for dense indoor scene retrieval: +6 mIoU segmentation, better
     geometric feature quality from Gram anchoring training objective.
+
+    Retrieval is download-gated, pinned to one immutable commit, and never
+    executes remote code. The ``revision`` literals below are the exact value
+    of ``_DINOV3_MODEL_REVISION`` (kept literal so the pin stays statically
+    checkable; tests/test_retrieval_index_stage_coverage.py asserts equality).
     """
     try:
+        local_files_only = not _hf_model_download_gate_on()
         import torch
         from transformers import AutoImageProcessor, AutoModel
         processor = AutoImageProcessor.from_pretrained(
             _DINOV3_MODEL_ID,
-            revision=_DINOV3_MODEL_REVISION,
+            revision="ea8dc2863c51be0a264bab82070e3e8836b02d51",
             trust_remote_code=False,
+            local_files_only=local_files_only,
         )
         model = AutoModel.from_pretrained(
             _DINOV3_MODEL_ID,
-            revision=_DINOV3_MODEL_REVISION,
+            revision="ea8dc2863c51be0a264bab82070e3e8836b02d51",
             trust_remote_code=False,
+            local_files_only=local_files_only,
         )
         model.eval()
         if torch.cuda.is_available():

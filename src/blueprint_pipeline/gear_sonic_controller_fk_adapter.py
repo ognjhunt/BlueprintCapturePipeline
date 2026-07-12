@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from .common import utc_now_iso
+from .gear_sonic_joint_order_contract import (
+    JOINT_ORDER_SCHEMA_VERSION,
+    PROTOCOL_V4_FULL_JOINT_ORDER,
+    PROTOCOL_V4_MAPPING_DIGEST,
+    validate_full_joint_order,
+)
 from .oscar_isaac_closed_loop_eval import build_sc3_runtime_attestation
 
 
@@ -146,6 +152,21 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
     joint_names = [str(item) for item in raw.get("joint_names") or []]
     if len(joint_names) != len(joint_positions) or any(not item for item in joint_names):
         raise RuntimeError("official_gear_sonic_joint_names_missing_or_dimension_mismatch")
+    if str(raw.get("joint_order_schema_version") or "") != JOINT_ORDER_SCHEMA_VERSION:
+        raise RuntimeError(
+            "official_gear_sonic_executor_joint_order_schema_missing_or_unsupported"
+        )
+    if str(raw.get("mapping_digest") or "") != PROTOCOL_V4_MAPPING_DIGEST:
+        raise RuntimeError("official_gear_sonic_executor_mapping_digest_missing_or_mismatch")
+    validate_full_joint_order(joint_names, source="executor")
+    if len(joint_positions) != len(PROTOCOL_V4_FULL_JOINT_ORDER):
+        raise RuntimeError("official_gear_sonic_executor_joint_positions_dimension_invalid")
+    applied_dof_mapping = list(raw.get("applied_dof_mapping") or [])
+    if len(applied_dof_mapping) != len(PROTOCOL_V4_FULL_JOINT_ORDER) or any(
+        not isinstance(row, Mapping) or str(row.get("joint_name") or "") != joint_names[index]
+        for index, row in enumerate(applied_dof_mapping)
+    ):
+        raise RuntimeError("official_gear_sonic_executor_applied_dof_mapping_missing_or_invalid")
     runtime_result_id = str(raw.get("runtime_result_id") or "").strip()
     if not runtime_result_id:
         raise RuntimeError("official_gear_sonic_runtime_result_id_missing")
@@ -159,6 +180,10 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
         "proxy_or_surrogate": False,
         "joint_positions": joint_positions,
         "joint_names": joint_names,
+        "joint_order_schema_version": JOINT_ORDER_SCHEMA_VERSION,
+        "mapping_digest": PROTOCOL_V4_MAPPING_DIGEST,
+        "applied_dof_mapping": applied_dof_mapping,
+        "controller_revision": str(raw.get("controller_revision") or ""),
         "proprioceptive_state": proprioceptive_state,
         "state_timestamp": raw.get("state_timestamp"),
     }
@@ -171,6 +196,8 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
         "controller_id": "nvidia/GEAR-SONIC:/opt/wbc@protocol-v4",
         "controller_sha256": controller_sha,
         "robot_model_sha256": model_sha,
+        "joint_order_schema_version": JOINT_ORDER_SCHEMA_VERSION,
+        "mapping_digest": PROTOCOL_V4_MAPPING_DIGEST,
         "controller_code_artifact": controller_ref,
         "robot_model_artifact": {"path": str(model), "sha256": model_sha},
         "landmarks": landmarks,

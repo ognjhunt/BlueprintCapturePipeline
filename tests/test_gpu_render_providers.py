@@ -103,6 +103,7 @@ def test_runpod_build_request_is_pod_body(tmp_path: Path) -> None:
     assert body["containerDiskInGb"] >= 120
     assert body["env"]["BLUEPRINT_EVAL_MANIFEST_URI"].endswith("sig=A")
     assert body["cloudType"] == "SECURE"
+    assert body["max_hourly_rate_usd"] == pytest.approx(5.0)
     assert body["env"]["BLUEPRINT_RUNPOD_CONTAINER_DISK_EPHEMERAL"] == "1"
     assert body["env"]["BLUEPRINT_RESUMABLE_STATE_ROOT"].startswith("/workspace/")
     assert body["blueprintStorageContract"]["persistent_volume"].startswith(
@@ -351,6 +352,120 @@ def test_runpod_launch_strips_internal_guard_fields_before_create(
     assert "pending_teardown_record" not in observed[0]
 
 
+def test_runpod_rechecks_and_filters_rate_cap_before_cold_create(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = RunPodRenderProvider()
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        provider,
+        "capacity_preflight",
+        lambda _request: {
+            "status": "available",
+            "viable_gpu_types": [
+                {
+                    "gpu_type_id": "NVIDIA A40",
+                    "on_demand_price_usd_per_hour": 0.44,
+                },
+                {
+                    "gpu_type_id": "NVIDIA L40S",
+                    "on_demand_price_usd_per_hour": 0.79,
+                },
+            ],
+        },
+    )
+    sent: dict[str, object] = {}
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        assert (method, path) == ("POST", "/pods")
+        sent.update(body)
+        return 201, {"id": "pod-1"}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
+    )
+    request = _guarded_runpod_request(
+        gpuTypeIds=["NVIDIA A40", "NVIDIA L40S"],
+        max_hourly_rate_usd=0.5,
+    )
+
+    result = provider.launch(tmp_path, request, cold=True)
+
+    assert result["status"] == "launched"
+    assert sent["gpuTypeIds"] == ["NVIDIA A40"]
+    assert "max_hourly_rate_usd" not in sent
+
+
+def test_runpod_blocks_when_fresh_price_cannot_meet_rate_cap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = RunPodRenderProvider()
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        provider,
+        "capacity_preflight",
+        lambda _request: {
+            "status": "available",
+            "viable_gpu_types": [
+                {
+                    "gpu_type_id": "NVIDIA L40S",
+                    "on_demand_price_usd_per_hour": 0.79,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("create must remain uncalled")
+        ),
+    )
+    request = _guarded_runpod_request(gpuTypeIds=["NVIDIA L40S"])
+    request["prelaunch_spend_guard"]["max_hourly_rate_usd"] = 0.5
+
+    result = provider.launch(tmp_path, request, cold=True)
+
+    assert result["status"] == "blocked"
+    assert result["allocation_created"] is False
+    assert result["blockers"] == ["runpod_pre_mutation_rate_cap_unverified"]
+
+
+def test_runpod_warm_rate_cap_blocks_before_start_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        assert (method, path) == ("GET", "/pods/warm-1")
+        return 200, {
+            "id": "warm-1",
+            "desiredStatus": "STOPPED",
+            "costPerHr": 0.79,
+        }
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
+    )
+    request = _guarded_runpod_request()
+    request["prelaunch_spend_guard"]["max_hourly_rate_usd"] = 0.5
+
+    result = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
+        tmp_path,
+        request,
+        cold=False,
+        allow_cold_fallback=False,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["allocation_created"] is False
+    assert result["blockers"] == [
+        "runpod_warm_hourly_rate_exceeds_spend_cap"
+    ]
+    assert calls == [("GET", "/pods/warm-1")]
+
+
 def test_runpod_launch_classifies_create_resource_500_as_capacity(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -489,6 +604,178 @@ def test_runpod_warm_update_failure_does_not_start_stale_command(tmp_path: Path,
     assert res["attempts"][0]["update_status"] == 400
     assert res["attempts"][0]["update_error"] == "invalid update"
     assert ("POST", "/pods/warm-1/start") not in calls
+
+
+@pytest.mark.parametrize(
+    ("ambiguous_path", "ambiguous_status", "expected_blocker"),
+    [
+        ("/pods/warm-1/update", 0, "runpod_warm_update_outcome_ambiguous"),
+        ("/pods/warm-1/update", 500, "runpod_warm_update_outcome_ambiguous"),
+        ("/pods/warm-1/start", 0, "runpod_warm_start_outcome_ambiguous"),
+        ("/pods/warm-1/start", 408, "runpod_warm_start_outcome_ambiguous"),
+        ("/pods/warm-1/start", 429, "runpod_warm_start_outcome_ambiguous"),
+        ("/pods/warm-1/start", 500, "runpod_warm_start_outcome_ambiguous"),
+    ],
+)
+def test_runpod_warm_mutation_lost_response_never_falls_back_to_cold_create(
+    tmp_path: Path,
+    monkeypatch,
+    ambiguous_path: str,
+    ambiguous_status: int,
+    expected_blocker: str,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        if path == "/pods/warm-1" and method == "GET":
+            return 200, {"id": "warm-1", "desiredStatus": "STOPPED"}
+        if path == ambiguous_path and method == "POST":
+            return ambiguous_status, {"error": "ambiguous mutation"}
+        if path == "/pods/warm-1/update" and method == "POST":
+            return 200, {"id": "warm-1"}
+        raise AssertionError((method, path, body))
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
+    )
+
+    result = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
+        tmp_path, _guarded_runpod_request(), cold=False
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [expected_blocker]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert "allocation_created" not in result
+    assert ("POST", "/pods") not in calls
+
+
+def test_runpod_generic_start_conflict_is_ambiguous_not_cold_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(method, path, body, *, key, timeout=90):
+        calls.append((method, path))
+        if path == "/pods/warm-1" and method == "GET":
+            return 200, {"id": "warm-1", "desiredStatus": "STOPPED"}
+        if path == "/pods/warm-1/update" and method == "POST":
+            return 200, {"id": "warm-1"}
+        if path == "/pods/warm-1/start" and method == "POST":
+            return 409, {"error": "conflict"}
+        raise AssertionError((method, path, body))
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
+    )
+
+    result = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
+        tmp_path, _guarded_runpod_request(), cold=False
+    )
+
+    assert result["blockers"] == ["runpod_warm_start_outcome_ambiguous"]
+    assert ("POST", "/pods") not in calls
+
+
+def test_runpod_warm_start_accepts_any_successful_2xx_response(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def fake_call(method, path, body, *, key, timeout=90):
+        if path == "/pods/warm-1" and method == "GET":
+            return 200, {"id": "warm-1", "desiredStatus": "STOPPED"}
+        if path == "/pods/warm-1/update" and method == "POST":
+            return 204, {}
+        if path == "/pods/warm-1/start" and method == "POST":
+            return 204, {}
+        raise AssertionError((method, path, body))
+
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
+    )
+
+    result = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
+        tmp_path, _guarded_runpod_request(), cold=False
+    )
+
+    assert result["status"] == "launched"
+    assert result["instance_id"] == "warm-1"
+    assert result["mode"] == "warm_restart"
+
+
+def test_runpod_cold_create_lost_response_is_not_explicit_no_allocation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda method, path, body, *, key, timeout=90: (
+            0,
+            {"error": "TimeoutError"},
+        ),
+    )
+
+    result = RunPodRenderProvider().launch(
+        tmp_path, _guarded_runpod_request(), cold=True
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["runpod_create_outcome_ambiguous"]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert "allocation_created" not in result
+    assert result["spend_occurred"] is None
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (201, {}),
+        (500, {"error": "internal server error"}),
+    ],
+)
+def test_runpod_no_id_without_definitive_rejection_is_ambiguous(
+    tmp_path: Path, monkeypatch, status: int, body: dict
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda method, path, request, *, key, timeout=90: (status, body),
+    )
+
+    result = RunPodRenderProvider().launch(
+        tmp_path, _guarded_runpod_request(), cold=True
+    )
+
+    assert result["blockers"] == ["runpod_create_outcome_ambiguous"]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert "allocation_created" not in result
+
+
+@pytest.mark.parametrize(
+    "malformed_id",
+    [True, 123, {"id": "pod-1"}, " pod-1", "pod/escape"],
+)
+def test_runpod_malformed_success_id_is_ambiguous(
+    tmp_path: Path, monkeypatch, malformed_id: object
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda *_args, **_kwargs: (201, {"id": malformed_id}),
+    )
+
+    result = RunPodRenderProvider().launch(
+        tmp_path, _guarded_runpod_request(), cold=True
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["runpod_create_outcome_ambiguous"]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert "instance_id" not in result
+    assert not (tmp_path / "started_pod_id.txt").exists()
 
 
 def test_runpod_teardown_404_is_already_gone_success(tmp_path: Path, monkeypatch) -> None:
@@ -1248,6 +1535,100 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
     assert create_errors and "ask expired" in str(create_errors[0].get("create_error_body"))
 
 
+@pytest.mark.parametrize("failure_kind", ["timeout", "http_500", "success_without_id"])
+def test_vast_ambiguous_create_never_tries_a_second_offer(
+    monkeypatch, tmp_path: Path, failure_kind: str
+) -> None:
+    import io
+    import urllib.error
+
+    calls: list[str] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        if method == "POST":
+            return 200, {"offers": ["raw"]}
+        calls.append(path)
+        if failure_kind == "timeout":
+            raise TimeoutError("response lost")
+        if failure_kind == "http_500":
+            raise urllib.error.HTTPError(
+                "https://vast", 500, "error", None, io.BytesIO(b"server error")
+            )
+        return 200, {}
+
+    offers = [
+        {"ask_contract_id": "ask-1", "gpu_name": "RTX", "hourly_rate_usd": 0.4},
+        {"ask_contract_id": "ask-2", "gpu_name": "RTX", "hourly_rate_usd": 0.5},
+    ]
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response",
+        lambda _response: offers,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._select_offer",
+        lambda remaining, **_kwargs: remaining[0] if remaining else None,
+    )
+
+    provider = VastRenderProvider()
+    result = provider.launch(
+        tmp_path, _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+    )
+
+    assert result["blockers"] == ["vast_create_outcome_ambiguous"]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert len(calls) == 1
+    assert "allocation_created" not in result
+
+
+@pytest.mark.parametrize(
+    "malformed_id",
+    [True, {"id": 777}, " 777", "contract-777", 0, -1],
+)
+def test_vast_malformed_success_id_is_ambiguous(
+    monkeypatch, tmp_path: Path, malformed_id: object
+) -> None:
+    calls: list[str] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        if method == "POST":
+            return 200, {"offers": ["raw"]}
+        calls.append(path)
+        return 200, {"new_contract": malformed_id}
+
+    offers = [
+        {"ask_contract_id": "ask-1", "gpu_name": "RTX", "hourly_rate_usd": 0.4},
+        {"ask_contract_id": "ask-2", "gpu_name": "RTX", "hourly_rate_usd": 0.5},
+    ]
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response",
+        lambda _response: offers,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._select_offer",
+        lambda remaining, **_kwargs: remaining[0] if remaining else None,
+    )
+
+    provider = VastRenderProvider()
+    result = provider.launch(
+        tmp_path, _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["vast_create_outcome_ambiguous"]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert calls == ["/asks/ask-1/"]
+    assert "instance_id" not in result
+    assert not (tmp_path / "started_vast_instance_id.txt").exists()
+
+
 def test_default_runpod_gpu_types_exclude_consumer_4090_pool(monkeypatch) -> None:
     """The GeForce 4090 pool produced ~10 dud nodes on 2026-07-02 (never-started
     containers, driver segfaults, wedged workers). Default to the datacenter RTX
@@ -1613,6 +1994,63 @@ def test_digitalocean_launch_creates_droplet_and_writes_id(monkeypatch, tmp_path
     assert (tmp_path / "started_do_droplet_id.txt").read_text() == "4242"
 
 
+@pytest.mark.parametrize("status", [0, 202, 500])
+def test_digitalocean_ambiguous_create_never_tries_another_region(
+    monkeypatch, tmp_path: Path, status: int
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    monkeypatch.setattr(G.DigitalOceanRenderProvider, "_token", lambda _self: "token")
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS", "123")
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        calls.append((method, path))
+        return status, {"error": "unknown create outcome"}
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    provider = G.DigitalOceanRenderProvider()
+    result = provider.launch(
+        tmp_path, _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+    )
+
+    assert result["blockers"] == ["digitalocean_create_outcome_ambiguous"]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert calls == [("POST", "/droplets")]
+    assert "allocation_created" not in result
+
+
+@pytest.mark.parametrize(
+    "malformed_id",
+    [None, True, {"id": 4242}, " 4242", "droplet-4242", 0, -1],
+)
+def test_digitalocean_malformed_success_id_is_ambiguous(
+    monkeypatch, tmp_path: Path, malformed_id: object
+) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    monkeypatch.setattr(G.DigitalOceanRenderProvider, "_token", lambda _self: "token")
+    monkeypatch.setenv("BLUEPRINT_DO_SSH_KEY_IDS", "123")
+    calls: list[tuple[str, str]] = []
+
+    def fake_call(method, path, body=None, *, token, timeout=90):
+        calls.append((method, path))
+        return 202, {"droplet": {"id": malformed_id, "status": "new"}}
+
+    monkeypatch.setattr(G, "_do_call", fake_call)
+    provider = G.DigitalOceanRenderProvider()
+    result = provider.launch(
+        tmp_path, _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["digitalocean_create_outcome_ambiguous"]
+    assert result["allocation_outcome_ambiguous"] is True
+    assert calls == [("POST", "/droplets")]
+    assert "instance_id" not in result
+    assert not (tmp_path / "started_do_droplet_id.txt").exists()
+
+
 def test_digitalocean_launch_regenerates_user_data_after_nonce_injection(
     monkeypatch,
     tmp_path: Path,
@@ -1887,6 +2325,37 @@ def test_runpod_billable_inventory_is_api_confirmed_and_prefix_scoped(monkeypatc
     assert result["live_resource_count"] == 1
     assert result["resources"][0]["instance_id"] == "pod-1"
     assert result["raw_provider_response_recorded"] is False
+
+
+def test_runpod_billable_inventory_includes_explicit_legacy_warm_candidate(monkeypatch) -> None:
+    from blueprint_pipeline import gpu_render_providers as G
+
+    monkeypatch.setattr(G.RunPodRenderProvider, "_key", lambda self: "secret")
+    monkeypatch.setattr(
+        G,
+        "_runpod_call",
+        lambda *args, **kwargs: (
+            200,
+            [
+                {
+                    "id": "legacy-warm-id",
+                    "name": "old-name-outside-current-prefix",
+                    "desiredStatus": "EXITED",
+                    "costPerHr": 0.49,
+                },
+                {"id": "unrelated", "name": "unrelated"},
+            ],
+        ),
+    )
+
+    result = G.RunPodRenderProvider(
+        warm_candidates=("legacy-warm-id",)
+    ).billable_inventory(name_prefix="blueprint-isaac-g1")
+
+    assert result["api_confirmed"] is True
+    assert result["live_resource_count"] == 1
+    assert result["resources"][0]["instance_id"] == "legacy-warm-id"
+    assert result["explicit_warm_candidate_ids_checked"] == ["legacy-warm-id"]
 
 
 def test_digitalocean_billable_inventory_counts_powered_off_resources(monkeypatch) -> None:

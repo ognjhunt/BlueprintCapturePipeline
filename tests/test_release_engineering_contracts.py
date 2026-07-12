@@ -268,8 +268,221 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     assert "/isaac-sim/python.sh -m pip install" in groot_oscar
     assert "uv venv /opt/oscar-venv --python 3.10" in groot_oscar
     assert "git -C /opt/wbc lfs pull" in groot_oscar
+    assert "TENSORRT_VERSION=10.4.0.26-1+cuda12.6" in groot_oscar
+    assert "TensorRT_ROOT=/usr" in groot_oscar
+    assert "libnvinfer-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-headers-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer10=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-plugin-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-headers-plugin-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvonnxparsers-dev=${TENSORRT_VERSION}" in groot_oscar
+    assert "libnvonnxparsers10=${TENSORRT_VERSION}" in groot_oscar
+    assert "nvinfer nvinfer_plugin nvonnxparser nvparsers" in groot_oscar
+    assert "nvinfer nvinfer_plugin nvonnxparser/" in groot_oscar
     assert 'revision=os.environ["SONIC_CHECKPOINT_REVISION"]' in groot_oscar
     assert 'revision=os.environ["GROOT_CHECKPOINT_REVISION"]' in groot_wam
+
+
+def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:
+    """The ~8.7GB checkpoint layer must not be duplicated by a later chown.
+
+    OCI layers are copy-on-write: a recursive chown of /opt/blueprint/ckpts in
+    a RUN after the checkpoint download rewrites every checkpoint byte into a
+    second ~8.7GB layer. The runtime user must exist before the checkpoint
+    layer, ownership must be set inside the layer that produces the files, and
+    no later layer may recursively chown the checkpoint tree.
+    """
+    dockerfile = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    useradd_at = dockerfile.index("useradd")
+    checkpoint_download_at = dockerfile.index("snapshot_download")
+    assert useradd_at < checkpoint_download_at, (
+        "runtime user must be created before the checkpoint layer so checkpoint "
+        "ownership can be established without a later duplicate copy-up layer"
+    )
+
+    checkpoint_layer_start = dockerfile.rindex("RUN", 0, checkpoint_download_at)
+    checkpoint_layer_end = dockerfile.index("\nBASH\n", checkpoint_download_at)
+    checkpoint_layer = dockerfile[checkpoint_layer_start:checkpoint_layer_end]
+    assert re.search(
+        r"chown\s+(-R\s+)?blueprint:blueprint\s+/opt/blueprint/ckpts", checkpoint_layer
+    ), "checkpoint ownership must be set inside the layer that produces the files"
+
+    after_checkpoint_layer = dockerfile[checkpoint_layer_end:]
+    assert not re.search(r"chown[^\n]*ckpts", after_checkpoint_layer), (
+        "no layer after the checkpoint download may chown /opt/blueprint/ckpts; "
+        "that duplicates ~8.7GB of checkpoint bytes in registry layer history"
+    )
+
+    # The runtime identity itself is preserved.
+    assert "ARG APP_UID=10001" in dockerfile
+    assert "ARG APP_GID=10001" in dockerfile
+    assert re.search(r'groupadd --gid "\$\{APP_GID\}" blueprint', dockerfile)
+    assert re.search(
+        r'useradd --uid "\$\{APP_UID\}" --gid "\$\{APP_GID\}" --create-home '
+        r"--shell /usr/sbin/nologin blueprint",
+        dockerfile,
+    )
+    assert re.search(r"^USER blueprint$", dockerfile, re.MULTILINE), (
+        "USER must be the name-only form: an explicit :group makes the "
+        "runtime skip supplementary groups, dropping isaac-sim access"
+    )
+
+
+def test_groot_oscar_runtime_user_can_execute_worker_interpreters() -> None:
+    """The runtime user must be able to execute every worker interpreter.
+
+    The 2026-07-12 GPU canary on the sealed image failed every gate with
+    rc=126: ``uv venv`` placed the managed CPython under ``/root/.local``
+    (0700 ``/root``), and the Isaac base ships ``/isaac-sim`` as
+    ``drwxr-x--- isaac-sim:isaac-sim`` — both unreachable for
+    ``USER blueprint`` (uid 10001). A root-only build-time healthcheck cannot
+    see either failure, so the Dockerfile must (a) pin the uv interpreter
+    outside ``/root``, (b) grant the runtime user the ``isaac-sim`` group, and
+    (c) run the build-time healthcheck as the runtime user.
+    """
+    dockerfile = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    uv_install_dir = re.search(r"UV_PYTHON_INSTALL_DIR=(\S+)", dockerfile)
+    assert uv_install_dir, (
+        "UV_PYTHON_INSTALL_DIR must be pinned so the uv-managed CPython the "
+        "venvs symlink to is not created under /root (untraversable by the "
+        "runtime user)"
+    )
+    target = uv_install_dir.group(1).rstrip("\\").strip()
+    assert not target.startswith("/root"), target
+    env_block_at = dockerfile.index("UV_PYTHON_INSTALL_DIR=")
+    first_venv_at = dockerfile.index("uv venv ")
+    assert env_block_at < first_venv_at, (
+        "UV_PYTHON_INSTALL_DIR must be set before any `uv venv` layer"
+    )
+
+    assert re.search(r"usermod\s+-aG\s+isaac-sim\s+blueprint", dockerfile), (
+        "the runtime user needs the isaac-sim group to traverse the "
+        "group-restricted /isaac-sim tree (drwxr-x--- isaac-sim:isaac-sim)"
+    )
+
+    assert re.search(
+        r"RUN\s+runuser\s+-u\s+blueprint\s+--\s+\S*python\S*\s+\S*"
+        r"groot_oscar_closed_loop_image_healthcheck\.py\s+--build-time",
+        dockerfile,
+    ), (
+        "the build-time healthcheck must run AS the runtime user; a root "
+        "healthcheck cannot observe runtime-user exec/traversal failures"
+    )
+
+
+def test_groot_oscar_release_push_requires_real_oci_runtime_smoke() -> None:
+    """A release push may happen only after exercising the finished image.
+
+    ``runuser`` during a Docker build resolves supplementary groups differently
+    from an OCI runtime when Dockerfile ``USER`` includes an explicit group.
+    The release script therefore has to load and run the final image before it
+    can push it.
+    """
+    script = (
+        ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
+    ).read_text(encoding="utf-8")
+
+    build_at = script.index('"${build_args[@]}"')
+    smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$image_ref"')
+    push_at = script.index('docker push "$image_ref"')
+    assert build_at < smoke_at < push_at
+    assert "build_args+=(--load)" in script
+    assert "build_args+=(--push)" not in script
+    assert 'test "$(id -un)" = blueprint' in script
+    assert 'grep -Fx isaac-sim' in script
+    assert "/isaac-sim/python.sh" in script
+    assert "/opt/oscar-venv/bin/python" in script
+    assert "/opt/gr00t-venv/bin/python" in script
+    assert "groot_oscar_closed_loop_oci_runtime_smoke_failed" in script
+    assert '"oci_runtime_smoke": {' in script
+    assert 'runtime_smoke.get("status")' in script
+    assert re.search(
+        r'if \[\[ "\$runtime_smoke_exit" -ne 0 \]\]; then.*?exit 2.*?fi'
+        r'.*?if \[\[ "\$allow_push" == "true" \]\]; then\s*'
+        r'docker push "\$image_ref"',
+        script,
+        re.DOTALL,
+    )
+
+
+def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
+    tmp_path: Path,
+) -> None:
+    script_path = ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert 'image_name="${image_ref##*/}"' in script
+    assert 'if [[ "$image_ref" != *@sha256:* ]]; then' in script
+    assert 'if [[ "$image_name" != *:* || -z "${image_name##*:}" ]]; then' in script
+    assert 'case "$image_name" in' in script
+    assert 'if [[ "$image_ref" != *:* && "$image_ref" != *@sha256:* ]]' not in script
+
+    manifest_path = tmp_path / "build-manifest.json"
+    completed = subprocess.run(
+        ["bash", str(script_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF": (
+                "registry.example:5000/blueprint/groot-oscar"
+            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
+                manifest_path
+            ),
+        },
+    )
+    assert completed.returncode == 2
+    assert "image ref must be versioned" in completed.stderr
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["blockers"] == [
+        "groot_oscar_closed_loop_image_ref_must_be_versioned"
+    ]
+
+
+def test_groot_oscar_release_push_requires_digest_pinned_base_image(
+    tmp_path: Path,
+) -> None:
+    script_path = ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert '"$base_image" =~ @sha256:[0-9a-f]{64}$' in script
+    manifest_path = tmp_path / "build-manifest.json"
+    mutable_base = "nvcr.io/nvidia/isaac-sim:6.0.0"
+    completed = subprocess.run(
+        ["bash", str(script_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF": (
+                "registry.example/blueprint/groot-oscar:20260711"
+            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BASE_IMAGE": mutable_base,
+            "BLUEPRINT_ALLOW_GROOT_OSCAR_CLOSED_LOOP_IMAGE_PUSH": "true",
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
+                manifest_path
+            ),
+        },
+    )
+
+    assert completed.returncode == 2
+    assert "release image push requires a digest-pinned base image" in completed.stderr
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["base_image"] == mutable_base
+    assert manifest["blockers"] == [
+        "groot_oscar_closed_loop_base_image_must_be_digest_pinned"
+    ]
 
 
 def test_dependabot_covers_every_dockerfile_directory() -> None:

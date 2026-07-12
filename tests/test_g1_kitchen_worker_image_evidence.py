@@ -18,6 +18,8 @@ def _evidence() -> dict:
             "image_family": "isaac-eval-worker",
             "simulator_family": "isaac_sim",
             "simulator_major_version": 6,
+            "source_commit": "abc1234",
+            "source_dirty_patch_sha256": "b" * 64,
             "blueprint_pipeline_imported": True,
             "configured_g1_asset_binding_valid": True,
             "configured_g1_usd_exists": False,
