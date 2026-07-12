@@ -437,6 +437,126 @@ def test_cli_exits_zero_on_pass(tmp_path: Path, monkeypatch, capsys) -> None:
     assert _read_json(tmp_path / "isaac_review_renderer_canary.json")["status"] == "passed"
 
 
+def test_run_canary_times_out_on_hung_renderer_backend(tmp_path: Path) -> None:
+    """A wedged renderer (2026-07-12 live A40 canary) must yield a bounded,
+    structured blocked verdict instead of hanging forever."""
+    import threading
+
+    release = threading.Event()
+
+    def _hung_backend() -> dict[str, object]:
+        release.wait(30)
+        return _fake_backend()()
+
+    try:
+        result = run_isaac_review_renderer_canary(
+            output_dir=tmp_path,
+            launch_session_id="nonce-1",
+            image_digest="sha256:abc",
+            renderer_backend=_hung_backend,
+            timeout_seconds=0.2,
+        )
+    finally:
+        release.set()
+
+    assert result["status"] == "blocked"
+    assert "review_canary_timeout_renderer_never_ready" in result["blockers"]
+    assert result["isaac_review_renderer_operational"] is False
+    timeout_info = result["renderer_phase_timeout"]
+    assert timeout_info["timed_out"] is True
+    assert timeout_info["timeout_seconds"] == 0.2
+    assert timeout_info["elapsed_seconds"] >= 0.2
+    backend_check = next(
+        check for check in result["checks"] if check["name"] == "review_renderer_backend"
+    )
+    assert backend_check["status"] == "blocked"
+    assert backend_check["reason"] == "review_canary_timeout_renderer_never_ready"
+    persisted = _read_json(tmp_path / "isaac_review_renderer_canary.json")
+    assert persisted["status"] == "blocked"
+    assert "review_canary_timeout_renderer_never_ready" in persisted["blockers"]  # type: ignore[operator]
+
+
+def test_run_canary_timeout_defaults_from_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS", "123.5")
+    result = run_isaac_review_renderer_canary(
+        output_dir=tmp_path,
+        launch_session_id="nonce-1",
+        image_digest="sha256:abc",
+        renderer_backend=_fake_backend(),
+    )
+    assert result["status"] == "passed"
+    timeout_info = result["renderer_phase_timeout"]
+    assert timeout_info["timed_out"] is False
+    assert timeout_info["timeout_seconds"] == 123.5
+    assert timeout_info["timeout_env_var"] == "BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS"
+
+
+@pytest.mark.parametrize("bad_value", ["", "not-a-number", "0", "-5"])
+def test_run_canary_timeout_invalid_env_falls_back_to_default(
+    tmp_path: Path, monkeypatch, bad_value: str
+) -> None:
+    if bad_value:
+        monkeypatch.setenv("BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS", bad_value)
+    else:
+        monkeypatch.delenv("BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS", raising=False)
+    result = run_isaac_review_renderer_canary(
+        output_dir=tmp_path,
+        launch_session_id="nonce-1",
+        image_digest="sha256:abc",
+        renderer_backend=_fake_backend(),
+    )
+    assert result["renderer_phase_timeout"]["timeout_seconds"] == 900.0
+
+
+def test_cli_hard_exits_nonzero_on_renderer_timeout(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """On timeout the CLI must guarantee process exit (the wedged native
+    renderer thread could otherwise stall interpreter shutdown forever)."""
+    import threading
+
+    release = threading.Event()
+
+    def _hung_backend() -> dict[str, object]:
+        release.wait(30)
+        return _fake_backend()()
+
+    monkeypatch.setenv("BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS", "0.2")
+    monkeypatch.setattr(
+        canary, "_resolve_renderer_backend", lambda **_kwargs: _hung_backend
+    )
+    hard_exits: list[int] = []
+
+    def _fake_hard_exit(code: int) -> None:
+        hard_exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(canary, "_hard_exit", _fake_hard_exit)
+
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            canary_main(
+                [
+                    "--output-dir",
+                    str(tmp_path),
+                    "--launch-session-id",
+                    "nonce-1",
+                    "--image-digest",
+                    "sha256:abc",
+                ]
+            )
+    finally:
+        release.set()
+
+    assert excinfo.value.code == 2
+    assert hard_exits == [2]
+    summary = json.loads(capsys.readouterr().out.strip())
+    assert summary["status"] == "blocked"
+    assert "review_canary_timeout_renderer_never_ready" in summary["blockers"]
+    persisted = _read_json(tmp_path / "isaac_review_renderer_canary.json")
+    assert persisted["status"] == "blocked"
+
+
 def test_cli_portrait_orientation_flag(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         canary,

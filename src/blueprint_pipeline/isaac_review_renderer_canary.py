@@ -15,6 +15,9 @@ import hashlib
 import json
 import os
 import struct
+import sys
+import threading
+import time
 import zlib
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -58,6 +61,37 @@ FLAT_FRAME_MAX_LUMINANCE_STD = 1.0
 SEVERE_CLIPPING_MIN_FRACTION = 0.5
 MIN_G1_PIXEL_FRACTION = 0.005
 MIN_TARGET_MARKER_PIXEL_FRACTION = 0.005
+
+# Hard wall-clock bound on the renderer/scene phase. The 2026-07-12 live A40
+# canary wedged forever (HydraEngine rtx failed creating the scene renderer,
+# then Kit spun at ~8% GPU with no exit); the review lane must convert that
+# wedge into a bounded, structured blocked verdict.
+REVIEW_CANARY_TIMEOUT_ENV_VAR = "BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS"
+DEFAULT_REVIEW_CANARY_TIMEOUT_SECONDS = 900.0
+REVIEW_CANARY_TIMEOUT_BLOCKER = "review_canary_timeout_renderer_never_ready"
+
+# Escape hatch for a wedged native renderer thread: a hung SimulationApp can
+# stall normal interpreter shutdown forever, so the CLI hard-exits after the
+# structured JSON verdict is persisted (same pattern as the image startup
+# canary watchdog in isaac_g1_worker_bootstrap).
+_hard_exit = os._exit
+
+
+def _resolve_review_canary_timeout_seconds(value: float | None = None) -> float:
+    """Explicit value wins; else the env var; garbage or <=0 fails closed to
+    the 900s default (a too-small accidental bound would mask real wedges as
+    flaky, a zero/negative bound would disable the canary entirely)."""
+
+    if value is not None:
+        return float(value)
+    raw = _string(os.environ.get(REVIEW_CANARY_TIMEOUT_ENV_VAR))
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return DEFAULT_REVIEW_CANARY_TIMEOUT_SECONDS
+    if parsed <= 0:
+        return DEFAULT_REVIEW_CANARY_TIMEOUT_SECONDS
+    return parsed
 
 
 def _string(value: Any) -> str:
@@ -264,6 +298,7 @@ def run_isaac_review_renderer_canary(
     expected_orientation: str = "landscape",
     renderer_backend: Callable[[], Mapping[str, Any]] | None = None,
     prior_frame_sha256: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run the review renderer canary and persist its artifacts.
 
@@ -275,6 +310,13 @@ def run_isaac_review_renderer_canary(
     mirroring the write-before-SimulationApp.close ordering of the fast
     startup canary).  The real Isaac backend only exists on a GPU worker, so
     ``None`` yields a blocked result instead of importing isaacsim here.
+
+    ``timeout_seconds`` bounds the renderer/scene phase (default: the
+    ``BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS`` env var, else 900s).  The
+    backend runs on a daemon thread; if it does not finish in time the canary
+    returns a blocked verdict with the
+    ``review_canary_timeout_renderer_never_ready`` blocker instead of hanging
+    forever (2026-07-12 live A40 wedge).
     """
 
     if expected_orientation not in REVIEW_FRAME_ORIENTATIONS:
@@ -298,9 +340,12 @@ def run_isaac_review_renderer_canary(
         blockers.append("review_canary_image_digest_missing")
         checks.append(_check("image_digest_binding", "blocked"))
 
+    resolved_timeout = _resolve_review_canary_timeout_seconds(timeout_seconds)
     backend_result: dict[str, Any] = {}
     backend_available = renderer_backend is not None
     backend_ok = False
+    backend_timed_out = False
+    backend_elapsed = 0.0
     if not backend_available:
         blockers.append("review_renderer_backend_unavailable")
         checks.append(
@@ -312,17 +357,44 @@ def run_isaac_review_renderer_canary(
             )
         )
     else:
-        try:
-            backend_result = dict(renderer_backend())
-            backend_ok = True
+        # Daemon thread so a wedged renderer (e.g. HydraEngine rtx failing to
+        # create a scene renderer, then Kit spinning forever) cannot pin the
+        # canary past the wall-clock bound.
+        backend_holder: dict[str, Any] = {}
+
+        def _invoke_backend() -> None:
+            try:
+                backend_holder["result"] = dict(renderer_backend())
+            except BaseException as exc:  # noqa: BLE001 - reported as verdict
+                backend_holder["error"] = exc
+
+        backend_started = time.monotonic()
+        backend_thread = threading.Thread(
+            target=_invoke_backend,
+            name="review-canary-renderer-backend",
+            daemon=True,
+        )
+        backend_thread.start()
+        backend_thread.join(resolved_timeout)
+        backend_elapsed = time.monotonic() - backend_started
+        if backend_thread.is_alive():
+            backend_timed_out = True
+            blockers.append(REVIEW_CANARY_TIMEOUT_BLOCKER)
             checks.append(
                 _check(
                     "review_renderer_backend",
-                    "passed",
-                    renderer=_string(backend_result.get("renderer")) or "unknown",
+                    "blocked",
+                    reason=REVIEW_CANARY_TIMEOUT_BLOCKER,
+                    timeout_seconds=resolved_timeout,
+                    elapsed_seconds=round(backend_elapsed, 3),
+                    note=(
+                        "renderer/scene phase never completed within the "
+                        "wall-clock bound; treating as a wedged renderer"
+                    ),
                 )
             )
-        except Exception as exc:
+        elif "error" in backend_holder:
+            exc = backend_holder["error"]
             blockers.append("review_renderer_backend_failed")
             checks.append(
                 _check(
@@ -330,6 +402,16 @@ def run_isaac_review_renderer_canary(
                     "blocked",
                     error_type=type(exc).__name__,
                     error=str(exc)[:2000],
+                )
+            )
+        else:
+            backend_result = backend_holder.get("result") or {}
+            backend_ok = True
+            checks.append(
+                _check(
+                    "review_renderer_backend",
+                    "passed",
+                    renderer=_string(backend_result.get("renderer")) or "unknown",
                 )
             )
 
@@ -391,6 +473,12 @@ def run_isaac_review_renderer_canary(
         "launch_session_id": nonce or None,
         "image_digest": digest or None,
         "expected_orientation": expected_orientation,
+        "renderer_phase_timeout": {
+            "timed_out": backend_timed_out,
+            "timeout_seconds": resolved_timeout,
+            "timeout_env_var": REVIEW_CANARY_TIMEOUT_ENV_VAR,
+            "elapsed_seconds": round(backend_elapsed, 3),
+        },
         "checks": checks,
         "blockers": blockers,
         "frame_validation": validation,
@@ -548,6 +636,13 @@ def main(argv: list[str] | None = None) -> int:
         renderer_backend=_resolve_renderer_backend(expected_orientation=args.orientation),
     )
     print(json.dumps({"status": payload["status"], "blockers": payload["blockers"]}))
+    if payload.get("renderer_phase_timeout", {}).get("timed_out"):
+        # The wedged renderer thread may never release its native resources;
+        # a normal return could stall interpreter shutdown forever. The JSON
+        # verdict and summary line are already flushed, so hard-exit.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        _hard_exit(2)
     return 0 if payload["status"] == "passed" else 2
 
 
