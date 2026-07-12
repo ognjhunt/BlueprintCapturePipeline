@@ -326,7 +326,10 @@ def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() ->
         r"--shell /usr/sbin/nologin blueprint",
         dockerfile,
     )
-    assert "USER blueprint:blueprint" in dockerfile
+    assert re.search(r"^USER blueprint$", dockerfile, re.MULTILINE), (
+        "USER must be the name-only form: an explicit :group makes the "
+        "runtime skip supplementary groups, dropping isaac-sim access"
+    )
 
 
 def test_groot_oscar_runtime_user_can_execute_worker_interpreters() -> None:

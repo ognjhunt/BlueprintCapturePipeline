@@ -237,6 +237,11 @@ RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
 RUN runuser -u blueprint -- /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
 
-USER blueprint:blueprint
+# Name-only USER: the explicit `USER user:group` form makes the runtime skip
+# supplementary-group resolution, which silently dropped the isaac-sim group
+# at runtime (live canary attempt 7, 2026-07-12: `id` showed only gid 10001
+# while build-time `runuser` had the group). Name-only resolves the primary
+# group from /etc/passwd AND supplementary groups from /etc/group.
+USER blueprint
 
 CMD ["bash"]
