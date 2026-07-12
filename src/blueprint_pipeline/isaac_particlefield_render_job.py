@@ -420,7 +420,7 @@ def launch_runpod(job_dir: Path, request: dict, *, cold: bool = False,
         allow_paid=True,
         max_spend_usd=max_spend_usd,
         max_seconds=0,
-        max_hourly_rate_usd=None,
+        max_hourly_rate_usd=request.get("max_hourly_rate_usd"),
     )
     if prelaunch_guard.get("can_launch") is not True:
         return {
@@ -745,13 +745,17 @@ def _render_pre_spend_preflight(
 
 
 def _number(value: Any) -> float | None:
+    import math
+
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
     if isinstance(value, str):
         try:
-            return float(value)
+            parsed = float(value)
+            return parsed if math.isfinite(parsed) else None
         except ValueError:
             return None
     return None
@@ -778,6 +782,10 @@ def _particlefield_prelaunch_spend_guard(
         blockers.append("max_spend_usd_missing")
     elif budget <= 0:
         blockers.append("max_spend_usd_not_positive")
+    if hourly_rate is None:
+        blockers.append("max_hourly_rate_usd_missing_or_nonfinite")
+    elif hourly_rate <= 0:
+        blockers.append("max_hourly_rate_usd_not_positive")
     if (
         budget is not None
         and budget > 0

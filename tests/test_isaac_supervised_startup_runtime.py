@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
@@ -8,6 +9,42 @@ from blueprint_pipeline import isaac_supervised_startup_runtime as R
 
 
 DIGEST = "sha256:" + "a" * 64
+
+
+def test_manifest_checksum_rejects_file_replaced_after_validation(tmp_path) -> None:
+    path = tmp_path / "diagnostic.json"
+    original = b'{"status":"completed","version":1}'
+    path.write_bytes(original)
+    diagnostic = {
+        "path": str(path),
+        "metadata_available_for_selected_image": True,
+        "diagnostic_sha256": hashlib.sha256(original).hexdigest(),
+        "diagnostic_bytes": len(original),
+    }
+    path.write_bytes(b'{"status":"completed","version":2}')
+
+    result = R.resolve_image_manifest_checksum(diagnostic)
+
+    assert result["status"] == "blocked"
+    assert "startup_image_manifest_diagnostic_identity_changed" in result["blockers"]
+
+
+def test_manifest_checksum_accepts_exact_validated_bytes(tmp_path) -> None:
+    path = tmp_path / "diagnostic.json"
+    raw = b'{"status":"completed"}'
+    path.write_bytes(raw)
+
+    result = R.resolve_image_manifest_checksum(
+        {
+            "path": str(path),
+            "metadata_available_for_selected_image": True,
+            "diagnostic_sha256": hashlib.sha256(raw).hexdigest(),
+            "diagnostic_bytes": len(raw),
+        }
+    )
+
+    assert result["status"] == "passed"
+    assert result["sha256"] == hashlib.sha256(raw).hexdigest()
 
 
 def _archive(*, nonce: str = "nonce-1", review_status: str = "passed") -> bytes:

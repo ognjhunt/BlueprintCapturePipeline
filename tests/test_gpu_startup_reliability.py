@@ -13,11 +13,18 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline import isaac_g1_kitchen_parity_job as J
+from blueprint_pipeline.paid_lane_guard import (
+    bind_pending_teardown_instance,
+    load_pending_teardowns,
+    open_pending_teardown,
+)
+from blueprint_pipeline.paid_provider_lane_lease import lease_path, read_lease
 from blueprint_pipeline.provider_race import race_launch
 from scripts import gpu_spend_guard as guard
 from scripts import run_warm_render_worker as worker
@@ -82,6 +89,9 @@ def test_same_provider_race_keeps_first_boot_and_terminates_loser(tmp_path: Path
             terminated.append(iid)
             return {"status": "terminated", "id": iid}
 
+        def inspect(self, iid):
+            return {"status": "unavailable", "http": 404, "instance_id": iid}
+
     prov = FakeProvider()
     contenders = [prov, J._ColdCreateContender(prov)]
 
@@ -138,6 +148,15 @@ def test_paid_single_provider_job_can_opt_in_to_two_cold_creates(
         def build_request(self, spec, job_dir):
             return {"provider": "runpod", "env": dict(spec.env)}
 
+        def billable_inventory(self, *, name_prefix: str):
+            return {
+                "status": "observed",
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+                "name_prefix": name_prefix,
+            }
+
         def launch(self, job_dir, request, *, cold=False, **kwargs):
             # contender threads launch concurrently: key the fake pod id off the
             # contender dir, not a shared counter
@@ -149,6 +168,9 @@ def test_paid_single_provider_job_can_opt_in_to_two_cold_creates(
         def terminate(self, iid):
             terminated.append(iid)
             return {"status": "terminated", "id": iid}
+
+        def inspect(self, iid):
+            return {"status": "unavailable", "http": 404, "instance_id": iid}
 
     # the second contender (index 1) is the one that "boots"
     def _fake_marker(job_dir, *, expected_launch_session_id=None, urlopen=None, **_k):
@@ -162,7 +184,13 @@ def test_paid_single_provider_job_can_opt_in_to_two_cold_creates(
         return {
             "status": "completed",
             "elapsed_seconds": 1,
-            "teardown": {"status": "terminated"},
+            "teardown": {
+                "status": "terminated",
+                "verification": {
+                    "api_confirmed": True,
+                    "provider_status": "not_found",
+                },
+            },
             "runner_result": {
                 "status": "completed",
                 "policy_id": "blueprint_default_walk_to_target_smoke_policy",
@@ -184,7 +212,7 @@ def test_paid_single_provider_job_can_opt_in_to_two_cold_creates(
         provider="runpod",
         allow_paid=True,
         allow_dirty_paid_launch=True,
-        max_spend_usd=20.0,
+        max_spend_usd=40.0,
         cold_race_contenders=2,
         # keeps race_launch's poll_interval (min(15, marker_timeout)) at 1s so the losing
         # contender's abort check fires immediately — hermetic-fast, same code path
@@ -240,6 +268,7 @@ def _serving_manifest(pod_id: str = "pod-serve") -> dict:
             "ready": True,
             "inbox_put_url_file": "/tmp/warm_inbox_put_url.txt",
             "output_get_url_file": "/tmp/provider_output_get_url.txt",
+            "pending_teardown_record": "/tmp/pending-warm-teardown.json",
         },
     }
 
@@ -262,10 +291,14 @@ def test_start_warm_worker_writes_expected_serve_marker(tmp_path: Path) -> None:
         serve_idle_timeout_s=1800.0,
         serve_max_jobs=None,
         serve_ready_timeout=1800,
+        worker_image_manifest_diagnostic=tmp_path / "worker-image-diagnostic.json",
         job_fn=fake_job,
     )
     assert captured["serve"] is True
     assert captured["scenarios"] == []
+    assert captured["worker_image_manifest_diagnostic"] == (
+        tmp_path / "worker-image-diagnostic.json"
+    )
     assert result["status"] == "serving"
     assert result["pod_id"] == "pod-serve"
 
@@ -275,6 +308,7 @@ def test_start_warm_worker_writes_expected_serve_marker(tmp_path: Path) -> None:
     assert marker["manifest_path"].endswith(J.JOB_MANIFEST_FILENAME)
     assert marker["heartbeat_at"]
     assert marker["lease_expires_at"] > marker["heartbeat_at"]
+    assert marker["pending_teardown_record"] == "/tmp/pending-warm-teardown.json"
     # the manifest itself is persisted for submit's URL-file lookup
     assert (tmp_path / J.JOB_MANIFEST_FILENAME).is_file()
 
@@ -359,9 +393,23 @@ def test_stop_warm_worker_terminates_and_marks_marker(tmp_path: Path) -> None:
     terminated: list[str] = []
 
     class FakeProvider:
+        name = "runpod"
+
         def terminate(self, iid):
             terminated.append(iid)
             return {"status": "terminated", "http": 200}
+
+        def inspect(self, iid):
+            return {"status": "unavailable", "http": 404, "instance_id": iid}
+
+        def billable_inventory(self, *, name_prefix: str):
+            return {
+                "status": "observed",
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+                "name_prefix": name_prefix,
+            }
 
     result = worker.stop_warm_worker(
         out_dir=tmp_path, provider_factory=lambda _name: FakeProvider()
@@ -371,6 +419,128 @@ def test_stop_warm_worker_terminates_and_marks_marker(tmp_path: Path) -> None:
     marker = worker.read_marker(tmp_path)
     assert marker["status"] == "terminated"
     assert marker["teardown"] == {"status": "terminated", "http": 200}
+    assert marker["teardown_proof"]["status"] == "PASS"
+    assert marker["pending_teardown_close"]["status"] == "not_applicable"
+    assert marker["paid_provider_lane_lease"]["release"]["all_providers_terminal"] is True
+
+
+def test_stop_warm_worker_closes_pending_and_reclaims_stale_start_lease(
+    tmp_path: Path,
+) -> None:
+    pending = open_pending_teardown(
+        provider="runpod",
+        lane=J.ISAAC_G1_KITCHEN_PARITY_LANE,
+        run_id="warm-start",
+        job_dir=tmp_path,
+    )
+    bind_pending_teardown_instance(pending["path"], "pod-serve")
+    lease_dir = Path(os.environ["BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR"])
+    stale_path = lease_path(
+        "runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir
+    )
+    stale_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "paid_provider_lane_lease.v1",
+                "provider": "runpod",
+                "lane": J.ISAAC_G1_KITCHEN_PARITY_LANE,
+                "owner_pid": 999_999_999,
+                "hostname": "",
+                "job_dir": "crashed-warm-start",
+                "started_at_epoch": 1,
+                "expires_at_epoch": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker.write_marker(
+        tmp_path,
+        {
+            "schema_version": worker.MARKER_SCHEMA_VERSION,
+            "status": "serving",
+            "provider": "runpod",
+            "pod_id": "pod-serve",
+            "manifest_path": str(tmp_path / J.JOB_MANIFEST_FILENAME),
+            "pending_teardown_record": pending["path"],
+        },
+    )
+
+    class FakeProvider:
+        name = "runpod"
+
+        def terminate(self, iid):
+            return {"status": "terminated", "http": 204, "instance_id": iid}
+
+        def inspect(self, iid):
+            return {"status": "unavailable", "http": 404, "instance_id": iid}
+
+        def billable_inventory(self, *, name_prefix: str):
+            return {
+                "status": "observed",
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+                "name_prefix": name_prefix,
+            }
+
+    result = worker.stop_warm_worker(
+        out_dir=tmp_path, provider_factory=lambda _name: FakeProvider()
+    )
+
+    assert result["status"] == "terminated"
+    assert result["pending_teardown_close"]["status"] == "closed"
+    assert load_pending_teardowns() == []
+    assert read_lease("runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir) is None
+
+
+def test_stop_warm_worker_retains_blocked_state_when_provider_is_still_live(
+    tmp_path: Path,
+) -> None:
+    worker.write_marker(
+        tmp_path,
+        {
+            "schema_version": worker.MARKER_SCHEMA_VERSION,
+            "status": "serving",
+            "provider": "runpod",
+            "pod_id": "pod-live",
+            "manifest_path": str(tmp_path / J.JOB_MANIFEST_FILENAME),
+        },
+    )
+
+    class FakeProvider:
+        name = "runpod"
+
+        def terminate(self, iid):
+            return {"status": "terminate_failed", "http": 500, "instance_id": iid}
+
+        def inspect(self, iid):
+            return {
+                "status": "observed",
+                "http": 200,
+                "instance_id": iid,
+                "desiredStatus": "RUNNING",
+                "runtime_present": True,
+            }
+
+        def billable_inventory(self, *, name_prefix: str):
+            return {
+                "status": "observed",
+                "api_confirmed": True,
+                "live_resource_count": 1,
+                "resources": [{"instance_id": "pod-live", "name": name_prefix}],
+                "name_prefix": name_prefix,
+            }
+
+    result = worker.stop_warm_worker(
+        out_dir=tmp_path, provider_factory=lambda _name: FakeProvider()
+    )
+
+    assert result["status"] == "teardown_blocked"
+    assert result["teardown_proof"]["status"] == "FAIL"
+    marker = worker.read_marker(tmp_path)
+    assert marker["status"] == "teardown_blocked"
+    assert marker["terminated_at"] is None
 
 
 # --------------------------- spend guard serve-pod tagging ---------------------------

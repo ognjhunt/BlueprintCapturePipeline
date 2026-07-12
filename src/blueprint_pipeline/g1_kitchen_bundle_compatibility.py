@@ -23,6 +23,15 @@ REQUIRED_SCHEMAS = {
 }
 
 
+#: The digest a CLEAN checkout produces: sha256(b"staged\0" + b"unstaged\0").
+#: ``source_dirty_patch_sha256`` is ALWAYS non-empty — for a clean tree it
+#: equals this constant, so a non-empty value must never be read as evidence
+#: of a dirty build. The ``dirty`` flag is the authoritative signal.
+CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256 = hashlib.sha256(
+    b"staged\0unstaged\0"
+).hexdigest()
+
+
 def _git(root: Path, *args: str) -> bytes:
     completed = subprocess.run(
         ["git", *args], cwd=root, capture_output=True, check=True
@@ -59,6 +68,51 @@ def build_source_tree_identity(repo_root: str | Path) -> dict[str, Any]:
         "dirty": bool(_git(root, "status", "--porcelain=v1", "-z")),
         "untracked_file_count": len(untracked),
         "identity_includes_staged_unstaged_and_untracked": True,
+        "canonical_clean_patch_sha256": CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+    }
+
+
+def evaluate_release_image_source_identity(
+    identity: Any,
+    *,
+    push_requested: bool,
+    allow_dirty_release_build: bool = False,
+) -> dict[str, Any]:
+    """Decide whether a source identity is eligible for a pushed release image.
+
+    A dirty worktree blocks a release push by default. The debug-only
+    ``allow_dirty_release_build`` override is recorded in the result so the
+    manifest can prove whether it was used; it must never back a proof canary
+    or evidence image.
+    """
+    detail = dict(identity) if isinstance(identity, dict) else {}
+    dirty = bool(detail.get("dirty"))
+    patch_sha = str(detail.get("source_dirty_patch_sha256") or "")
+    blockers: list[str] = []
+    override_used = bool(push_requested and dirty and allow_dirty_release_build)
+    if push_requested and dirty and not allow_dirty_release_build:
+        blockers.append("release_image_requires_clean_source_worktree")
+    return {
+        "status": "blocked" if blockers else "passed",
+        "blockers": blockers,
+        "push_requested": bool(push_requested),
+        "source_commit": detail.get("source_commit"),
+        "source_dirty_patch_sha256": patch_sha or None,
+        "source_worktree_dirty": dirty,
+        "untracked_file_count": detail.get("untracked_file_count"),
+        "identity_includes_staged_unstaged_and_untracked": bool(
+            detail.get("identity_includes_staged_unstaged_and_untracked")
+        ),
+        "canonical_clean_patch_sha256": CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+        "patch_sha256_is_canonical_clean": (
+            patch_sha == CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
+        ),
+        "dirty_build_override_used": override_used,
+        "interpretation": (
+            "source_dirty_patch_sha256 is always non-empty; for a clean checkout "
+            "it equals canonical_clean_patch_sha256. Only source_worktree_dirty "
+            "indicates a dirty build."
+        ),
     }
 
 

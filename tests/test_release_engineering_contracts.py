@@ -284,6 +284,124 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     assert 'revision=os.environ["GROOT_CHECKPOINT_REVISION"]' in groot_wam
 
 
+def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:
+    """The ~8.7GB checkpoint layer must not be duplicated by a later chown.
+
+    OCI layers are copy-on-write: a recursive chown of /opt/blueprint/ckpts in
+    a RUN after the checkpoint download rewrites every checkpoint byte into a
+    second ~8.7GB layer. The runtime user must exist before the checkpoint
+    layer, ownership must be set inside the layer that produces the files, and
+    no later layer may recursively chown the checkpoint tree.
+    """
+    dockerfile = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    useradd_at = dockerfile.index("useradd")
+    checkpoint_download_at = dockerfile.index("snapshot_download")
+    assert useradd_at < checkpoint_download_at, (
+        "runtime user must be created before the checkpoint layer so checkpoint "
+        "ownership can be established without a later duplicate copy-up layer"
+    )
+
+    checkpoint_layer_start = dockerfile.rindex("RUN", 0, checkpoint_download_at)
+    checkpoint_layer_end = dockerfile.index("\nBASH\n", checkpoint_download_at)
+    checkpoint_layer = dockerfile[checkpoint_layer_start:checkpoint_layer_end]
+    assert re.search(
+        r"chown\s+(-R\s+)?blueprint:blueprint\s+/opt/blueprint/ckpts", checkpoint_layer
+    ), "checkpoint ownership must be set inside the layer that produces the files"
+
+    after_checkpoint_layer = dockerfile[checkpoint_layer_end:]
+    assert not re.search(r"chown[^\n]*ckpts", after_checkpoint_layer), (
+        "no layer after the checkpoint download may chown /opt/blueprint/ckpts; "
+        "that duplicates ~8.7GB of checkpoint bytes in registry layer history"
+    )
+
+    # The runtime identity itself is preserved.
+    assert "ARG APP_UID=10001" in dockerfile
+    assert "ARG APP_GID=10001" in dockerfile
+    assert re.search(r'groupadd --gid "\$\{APP_GID\}" blueprint', dockerfile)
+    assert re.search(
+        r'useradd --uid "\$\{APP_UID\}" --gid "\$\{APP_GID\}" --create-home '
+        r"--shell /usr/sbin/nologin blueprint",
+        dockerfile,
+    )
+    assert "USER blueprint:blueprint" in dockerfile
+
+
+def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
+    tmp_path: Path,
+) -> None:
+    script_path = ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert 'image_name="${image_ref##*/}"' in script
+    assert 'if [[ "$image_ref" != *@sha256:* ]]; then' in script
+    assert 'if [[ "$image_name" != *:* || -z "${image_name##*:}" ]]; then' in script
+    assert 'case "$image_name" in' in script
+    assert 'if [[ "$image_ref" != *:* && "$image_ref" != *@sha256:* ]]' not in script
+
+    manifest_path = tmp_path / "build-manifest.json"
+    completed = subprocess.run(
+        ["bash", str(script_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF": (
+                "registry.example:5000/blueprint/groot-oscar"
+            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
+                manifest_path
+            ),
+        },
+    )
+    assert completed.returncode == 2
+    assert "image ref must be versioned" in completed.stderr
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["blockers"] == [
+        "groot_oscar_closed_loop_image_ref_must_be_versioned"
+    ]
+
+
+def test_groot_oscar_release_push_requires_digest_pinned_base_image(
+    tmp_path: Path,
+) -> None:
+    script_path = ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert '"$base_image" =~ @sha256:[0-9a-f]{64}$' in script
+    manifest_path = tmp_path / "build-manifest.json"
+    mutable_base = "nvcr.io/nvidia/isaac-sim:6.0.0"
+    completed = subprocess.run(
+        ["bash", str(script_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF": (
+                "registry.example/blueprint/groot-oscar:20260711"
+            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BASE_IMAGE": mutable_base,
+            "BLUEPRINT_ALLOW_GROOT_OSCAR_CLOSED_LOOP_IMAGE_PUSH": "true",
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
+                manifest_path
+            ),
+        },
+    )
+
+    assert completed.returncode == 2
+    assert "release image push requires a digest-pinned base image" in completed.stderr
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["base_image"] == mutable_base
+    assert manifest["blockers"] == [
+        "groot_oscar_closed_loop_base_image_must_be_digest_pinned"
+    ]
+
+
 def test_dependabot_covers_every_dockerfile_directory() -> None:
     config = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     dockerfiles = [ROOT / "Dockerfile"]

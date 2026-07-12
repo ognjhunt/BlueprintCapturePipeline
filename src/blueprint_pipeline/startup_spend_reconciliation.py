@@ -21,6 +21,7 @@ attempts and enforces the user's total cap before each new allocation.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -38,6 +39,8 @@ def _non_negative(value: Any, *, field: str) -> float:
         number = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"spend_reconciliation_{field}_invalid") from None
+    if not math.isfinite(number):
+        raise ValueError(f"spend_reconciliation_{field}_nonfinite")
     if number < 0:
         raise ValueError(f"spend_reconciliation_{field}_negative")
     return number

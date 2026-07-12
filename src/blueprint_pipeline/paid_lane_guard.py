@@ -284,6 +284,30 @@ def bind_pending_teardown_instance(
     return record
 
 
+def mark_pending_teardown_ambiguous(
+    record_path: str | Path,
+    *,
+    reason: str,
+    evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keep a lost-create-response obligation open for later reconciliation.
+
+    A provider request can allocate remotely and then time out locally.  With
+    no instance id, cancellation would turn that uncertainty into a silent
+    orphan; this marker preserves the open record and records why it cannot yet
+    be closed.
+    """
+    path = Path(record_path)
+    record = _read_record(path)
+    record["status"] = "open"
+    record["allocation_outcome_ambiguous"] = True
+    record["ambiguity_reason"] = str(reason or "").strip() or "provider_response_lost"
+    record["ambiguity_evidence"] = _mapping(evidence) or None
+    record["last_ambiguous_at"] = utc_now_iso()
+    write_json(path, record)
+    return record
+
+
 def close_pending_teardown(
     record_path: str | Path, teardown_proof: Mapping[str, Any]
 ) -> dict[str, Any]:

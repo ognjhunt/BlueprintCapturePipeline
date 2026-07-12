@@ -327,3 +327,132 @@ def test_sealed_healthcheck_claims_stay_distinct() -> None:
     )
     assert metadata["configured_g1_usd_exists"] is True
     assert metadata["configured_g1_asset_binding_valid"] is False
+
+
+# ---------------------------------------------------------------------------
+# Source-identity clarity for release image builds (2026-07-11): a clean tree
+# produces a NON-EMPTY canonical patch digest, and only the dirty flag may be
+# read as evidence of a dirty build.
+# ---------------------------------------------------------------------------
+
+def test_canonical_clean_patch_digest_matches_hashing_scheme() -> None:
+    from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+    )
+
+    assert CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256 == hashlib.sha256(
+        b"staged\0" + b"unstaged\0"
+    ).hexdigest()
+    # The exact value the 2026-07-11 b15624 build manifest recorded; it was a
+    # CLEAN build, not a dirty one.
+    assert CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256 == (
+        "1bcd3e1a2eac27ef549049e0162ccce08efc4d13d765f6146d1191494c365454"
+    )
+
+
+def test_clean_and_dirty_source_tree_identity_end_to_end(tmp_path: Path) -> None:
+    import subprocess
+
+    from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+        build_source_tree_identity,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.st"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+
+    clean = build_source_tree_identity(repo)
+    assert clean["dirty"] is False
+    assert clean["untracked_file_count"] == 0
+    assert clean["source_dirty_patch_sha256"] == (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
+    )
+    assert clean["canonical_clean_patch_sha256"] == (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
+    )
+
+    (repo / "b.txt").write_text("untracked\n", encoding="utf-8")
+    dirty = build_source_tree_identity(repo)
+    assert dirty["dirty"] is True
+    assert dirty["untracked_file_count"] == 1
+    assert dirty["source_dirty_patch_sha256"] != (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
+    )
+
+
+def test_release_image_source_identity_gate_accepts_clean_blocks_dirty() -> None:
+    from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+        evaluate_release_image_source_identity,
+    )
+
+    clean_identity = {
+        "source_commit": SOURCE_COMMIT,
+        "source_dirty_patch_sha256": CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+        "dirty": False,
+        "untracked_file_count": 0,
+        "identity_includes_staged_unstaged_and_untracked": True,
+    }
+    accepted = evaluate_release_image_source_identity(
+        clean_identity, push_requested=True
+    )
+    assert accepted["status"] == "passed"
+    assert accepted["source_worktree_dirty"] is False
+    assert accepted["patch_sha256_is_canonical_clean"] is True
+    assert accepted["dirty_build_override_used"] is False
+
+    dirty_identity = dict(clean_identity, dirty=True, source_dirty_patch_sha256="f" * 64)
+    rejected = evaluate_release_image_source_identity(
+        dirty_identity, push_requested=True
+    )
+    assert rejected["status"] == "blocked"
+    assert rejected["blockers"] == ["release_image_requires_clean_source_worktree"]
+    assert rejected["patch_sha256_is_canonical_clean"] is False
+
+    # Local-only (no push) dirty builds stay allowed for iteration.
+    local = evaluate_release_image_source_identity(
+        dirty_identity, push_requested=False
+    )
+    assert local["status"] == "passed"
+
+    # The debug override is explicit and recorded; never silent.
+    overridden = evaluate_release_image_source_identity(
+        dirty_identity, push_requested=True, allow_dirty_release_build=True
+    )
+    assert overridden["status"] == "passed"
+    assert overridden["dirty_build_override_used"] is True
+
+
+def test_build_script_records_full_source_identity_and_gates_dirty_push() -> None:
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "build_push_groot_oscar_closed_loop_image.sh"
+    ).read_text(encoding="utf-8")
+    assert "evaluate_release_image_source_identity" in script
+    assert "source_worktree_dirty" in script
+    assert "untracked_file_count" in script
+    assert "identity_includes_staged_unstaged_and_untracked" in script
+    assert "canonical_clean_patch_sha256" in script
+    assert "source_identity_release_gate" in script
+    assert "BLUEPRINT_ALLOW_DIRTY_GROOT_OSCAR_CLOSED_LOOP_RELEASE_BUILD" in script
+    assert '"resolved_digest_ref": registry.get("resolved_digest_ref")' in script
+    assert '"layer_count": registry.get("layer_count")' in script
+    assert '"total_compressed_size_bytes": registry.get(' in script
+    assert '"largest_layer_size_bytes": registry.get(' in script
+    assert '"registry_manifest_diagnostic": {' in script
+    assert '"build_time_healthcheck": {' in script
+    assert 'registry.get("checkpoint_ownership_copyup_detected") is False' in script
+    assert "groot_oscar_closed_loop_registry_diagnostic_command_failed" in script
+    assert 'git -C "$repo_root" archive --format=tar "$source_commit"' in script
+    assert '--metadata-file "$build_metadata_file"' in script
+    assert 'build_metadata.get("containerimage.digest")' in script
+    assert "groot_oscar_closed_loop_buildx_registry_digest_mismatch" in script
+    assert "groot_oscar_closed_loop_image_build_requires_clean_source_worktree" in script
+    assert '"local_build_completed"' in script

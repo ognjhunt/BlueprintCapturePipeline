@@ -93,6 +93,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sudo \
   && rm -rf /var/lib/apt/lists/*
 
+# 1b. Runtime identity, created BEFORE the checkpoint layer. OCI layers are
+#     copy-on-write: chown-ing /opt/blueprint/ckpts in a later layer would
+#     rewrite the ~8.7GB of checkpoint bytes into a duplicate layer, so the
+#     user must exist first and ownership must be set inside the layer that
+#     produces the checkpoint files.
+RUN groupadd --gid "${APP_GID}" blueprint \
+  && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
+  && chown -R blueprint:blueprint /workspace
+
 # 2. Blueprint package in both the OSCAR client environment and Isaac runtime.
 COPY pyproject.toml README.md LICENSE /opt/blueprint/blueprint-capture-pipeline/
 COPY src /opt/blueprint/blueprint-capture-pipeline/src
@@ -204,6 +213,10 @@ snapshot_download(
 print("BLUEPRINT_GROOT_OSCAR_CHECKPOINTS_READY")
 PY
 fi
+# Ownership inside the producing layer: a later recursive chown would
+# duplicate every checkpoint byte in registry copy-on-write layer history.
+mkdir -p /opt/blueprint/ckpts
+chown -R blueprint:blueprint /opt/blueprint/ckpts
 BASH
 
 # 6. Bake the complete official Isaac 6 G1 asset directory. The carrier omits
@@ -218,10 +231,6 @@ RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
 # 7. Build-time healthcheck (all three environments; no GPU required).
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
 RUN /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
-
-RUN groupadd --gid "${APP_GID}" blueprint \
-  && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
-  && chown -R blueprint:blueprint /workspace /opt/blueprint/ckpts
 
 USER blueprint:blueprint
 

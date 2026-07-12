@@ -1,8 +1,14 @@
 """Hermetic tests for the Isaac G1 kitchen MuJoCo-parity job (no GPU spend, no network)."""
 from __future__ import annotations
 
+import ast
 import io
 import json
+import os
+import signal
+import subprocess
+import sys
+import time
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -28,7 +34,17 @@ def _set_test_worker_image(monkeypatch) -> None:
         J.ISAAC_WORKER_IMAGE_REF_ENV,
         "registry.example/blueprint/isaac-eval-worker:test",
     )
-    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "10.0")
+    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "100.0")
+
+
+def _empty_billable_inventory(name_prefix: str) -> dict:
+    return {
+        "status": "observed",
+        "api_confirmed": True,
+        "live_resource_count": 0,
+        "resources": [],
+        "name_prefix": name_prefix,
+    }
 
 
 def test_build_request_shapes_worker_paths() -> None:
@@ -81,15 +97,15 @@ def test_image_manifest_floor_prevents_premature_large_pull_teardown() -> None:
         0,
         {"recommended_startup_no_runtime_timeout_seconds": 1446},
     )
-    assert disabled["effective_seconds"] == 0
-    assert disabled["disabled"] is True
+    assert disabled["effective_seconds"] == 1446
+    assert disabled["disabled"] is False
 
 
 def test_prelaunch_spend_guard_budgets_all_sequential_startup_attempts() -> None:
     guard = J._isaac_g1_prelaunch_spend_guard(
         allow_paid=True,
         provider_name="runpod",
-        max_spend_usd=2.0,
+        max_spend_usd=4.5,
         max_seconds=3600,
         max_hourly_rate_usd=1.0,
         contender_count=1,
@@ -97,11 +113,55 @@ def test_prelaunch_spend_guard_budgets_all_sequential_startup_attempts() -> None
         startup_no_runtime_timeout_seconds=1200,
         max_attempts=3,
     )
-    assert guard["startup_budget_seconds"] == 3600
+    assert guard["startup_budget_seconds"] == 9000
     assert guard["render_budget_seconds"] == 3600
-    assert guard["billable_budget_seconds"] == 7200
-    assert guard["estimated_max_spend_usd"] == 2.0
+    assert guard["cleanup_budget_seconds"] == 3600
+    assert guard["billable_budget_seconds"] == 16200
+    assert guard["estimated_max_spend_usd"] == 4.5
     assert guard["can_launch"] is True
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_prelaunch_spend_guard_rejects_nonfinite_budget(nonfinite: float) -> None:
+    guard = J._isaac_g1_prelaunch_spend_guard(
+        allow_paid=True,
+        provider_name="runpod",
+        max_spend_usd=nonfinite,
+        max_seconds=60,
+        max_hourly_rate_usd=1.0,
+    )
+
+    assert guard["can_launch"] is False
+    assert "isaac_g1_max_spend_usd_must_be_finite" in guard["blockers"]
+
+
+def test_prelaunch_spend_guard_rejects_nonfinite_env_budget(monkeypatch) -> None:
+    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "nan")
+
+    guard = J._isaac_g1_prelaunch_spend_guard(
+        allow_paid=True,
+        provider_name="runpod",
+        max_spend_usd=None,
+        max_seconds=60,
+        max_hourly_rate_usd=1.0,
+    )
+
+    assert guard["can_launch"] is False
+    assert guard["budget_source"] == "env"
+    assert "isaac_g1_max_spend_usd_must_be_finite" in guard["blockers"]
+
+
+def test_prelaunch_spend_guard_rejects_nonfinite_hourly_rate() -> None:
+    guard = J._isaac_g1_prelaunch_spend_guard(
+        allow_paid=True,
+        provider_name="runpod",
+        max_spend_usd=5.0,
+        max_seconds=60,
+        max_hourly_rate_usd=float("inf"),
+    )
+
+    assert guard["can_launch"] is False
+    assert "isaac_g1_max_hourly_rate_must_be_finite_positive" in guard["blockers"]
 
 
 def test_capacity_preflight_rate_drives_spend_estimate_not_marketplace_ceiling() -> None:
@@ -117,7 +177,7 @@ def test_capacity_preflight_rate_drives_spend_estimate_not_marketplace_ceiling()
     guard = J._isaac_g1_prelaunch_spend_guard(
         allow_paid=True,
         provider_name="digitalocean",
-        max_spend_usd=1.5,
+        max_spend_usd=3.0,
         max_seconds=1800,
         max_hourly_rate_usd=rate,
         max_hourly_rate_source="provider_capacity_preflight_viable_inventory",
@@ -127,7 +187,7 @@ def test_capacity_preflight_rate_drives_spend_estimate_not_marketplace_ceiling()
         max_attempts=1,
     )
     assert guard["can_launch"] is True
-    assert guard["estimated_max_spend_usd"] == 1.4156
+    assert guard["estimated_max_spend_usd"] == 2.9359
     assert guard["max_hourly_rate_source"] == (
         "provider_capacity_preflight_viable_inventory"
     )
@@ -541,6 +601,8 @@ def test_docker_start_cmd_runs_parity_runner() -> None:
     assert "PARITY_RUNNER_TIMEOUT_SECONDS" in body
     assert "subprocess.Popen(cmd, start_new_session=True)" in body
     assert "os.killpg(proc.pid, signal.SIGTERM)" in body
+    assert "os.killpg(proc.pid, signal.SIGKILL)" in body
+    assert "kill the group regardless of whether" in body
     assert 'mark("runner_done", rc=rc' in body
     assert 'mark("runner_timeout"' in body
     assert "while True:" in body and "putout()" in body
@@ -564,7 +626,8 @@ def test_docker_start_cmd_can_run_image_startup_canary() -> None:
     assert "isaac_runtime_preflight_process_group_timeout" in body
     assert "preflight_deadline_done.wait(930)" in body
     assert 'mark("runner_done", rc=124' in body
-    assert "os._exit(124)" in body
+    assert "os._exit(124)" not in body
+    assert "one timed-out canary cannot restart itself indefinitely" in body
     assert "split_isaac_carrier_plus_signed_blueprint_bundle" in body
     assert "BLUEPRINT_EVAL_MANIFEST_URI" in body
     assert "canary_bundle" in body
@@ -573,6 +636,74 @@ def test_docker_start_cmd_can_run_image_startup_canary() -> None:
     assert "python3 /workspace/parity_image_startup_canary.py" in body
     assert "python /workspace/parity_image_startup_canary.py" in body
     assert "/isaac-sim/python.sh /workspace/parity_image_startup_canary.py" in body
+    assert "elif command -v python" in body
+    assert "parity_image_startup_canary.py || python" not in body
+    assert "set -o pipefail" in body
+
+
+def test_supervised_gate_timeout_kills_descendant_process_group(tmp_path: Path) -> None:
+    module = ast.parse(J.BOOTSTRAP)
+    function = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "run_process_group_bounded"
+    )
+    namespace = {
+        "os": os,
+        "signal": signal,
+        "subprocess": subprocess,
+        "time": time,
+    }
+    exec(
+        compile(
+            ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+            "bootstrap_process_group_helper.py",
+            "exec",
+        ),
+        namespace,
+    )
+    child_pid_path = tmp_path / "child-process-id.txt"
+    parent_script = (
+        "import os,signal,subprocess,sys,time;"
+        "child=subprocess.Popen([sys.executable,'-c',"
+        "'import os,signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        "null=os.open(os.devnull,os.O_RDWR);os.dup2(null,1);os.dup2(null,2);time.sleep(60)']);"
+        f"open({str(child_pid_path)!r},'w').write(str(child.pid));"
+        "time.sleep(60)"
+    )
+
+    started = time.monotonic()
+    completed = namespace["run_process_group_bounded"](
+        [sys.executable, "-c", parent_script],
+        timeout=1.0,
+        terminate_grace=0.2,
+    )
+
+    assert completed.returncode == 124
+    assert "process_group_timeout" in completed.stderr
+    assert time.monotonic() - started < 5.0
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+    child_alive = True
+    for _ in range(20):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            child_alive = False
+            break
+        time.sleep(0.05)
+    if child_alive:
+        os.kill(child_pid, signal.SIGKILL)
+    assert child_alive is False
+
+
+def test_canary_watchdog_kills_before_best_effort_evidence_writes() -> None:
+    body = J.IMAGE_STARTUP_CANARY_BOOTSTRAP
+    deadline = body.index("def enforce_preflight_deadline")
+    kill = body.index("os.killpg(process.pid, signal.SIGKILL)", deadline)
+    evidence = body.index("for evidence_path in (", deadline)
+    assert kill < evidence
+    assert "except Exception: pass" in body[evidence : evidence + 1000]
     assert "run_isaac_g1_kitchen_parity_eval.py" not in body
     assert 'mark("runner_done", rc=preflight_rc, image_startup_canary=True' in body
 
@@ -1175,6 +1306,9 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
             self.requests.append(body)
             return body
 
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            return _empty_billable_inventory(name_prefix)
+
     fake_providers = {"runpod": _FakeProvider("runpod"), "vast": _FakeProvider("vast")}
     monkeypatch.setattr(
         J,
@@ -1218,6 +1352,7 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
         }
 
     def _fake_watch(job_dir, render_out, instance_id, *, provider=None, max_seconds=0,
+                    stop_on_success=True,
                     preserve_instance=False, preserve_blocked_instance=True,
                     progress_timeout_seconds=0):
         captured["collect_job_dir"] = Path(job_dir)
@@ -1225,10 +1360,17 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
         captured["collect_instance_id"] = instance_id
         captured["progress_timeout_seconds"] = progress_timeout_seconds
         captured["preserve_blocked_instance"] = preserve_blocked_instance
+        captured["stop_on_success"] = stop_on_success
         return {
             "status": "completed",
             "elapsed_seconds": 1,
-            "teardown": {"status": "preserved"},
+            "teardown": {
+                "status": "terminated",
+                "verification": {
+                    "api_confirmed": True,
+                    "provider_status": "not_found",
+                },
+            },
             "runner_result": {
                 "status": "completed",
                 "policy_id": "blueprint_default_walk_to_target_smoke_policy",
@@ -1247,7 +1389,7 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
         provider="runpod,vast",
         allow_paid=True,
         allow_dirty_paid_launch=True,
-        max_spend_usd=20.0,
+        max_spend_usd=100.0,
     )
 
     assert m["status"] == "evidence_collected_closure_required"
@@ -1258,6 +1400,7 @@ def test_paid_multi_provider_uses_race_winner_for_collect(tmp_path: Path, monkey
     assert captured["collect_instance_id"] == "vast-iid"
     assert captured["collect_job_dir"].name == "contender-1-vast"
     assert captured["progress_timeout_seconds"] == 360
+    assert captured["stop_on_success"] is False
 
 
 def test_paid_launch_blocks_before_provider_call_without_max_spend(
@@ -1648,7 +1791,9 @@ def test_paid_runpod_large_worker_image_requires_canary_or_override(
                 "layer_count": 2,
                 "total_compressed_size_bytes": 10_900_000_000,
                 "largest_layer_size_bytes": 10_600_000_000,
+                "layers_over_1gb": 1,
                 "large_image_pull_risk": True,
+                "split_layer_layout_suitable": False,
             }
         ),
         encoding="utf-8",
@@ -1729,25 +1874,32 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    image_ref = "registry.example/blueprint/isaac-eval-worker:2026-07-01"
+    digest = "sha256:" + "c" * 64
+    image_ref = f"registry.example/blueprint/isaac-eval-worker@{digest}"
     diagnostic_path = tmp_path / "isaac_worker_image_manifest_diagnostic.json"
     diagnostic_path.write_text(
         json.dumps(
             {
-                "schema_version": "isaac_worker_image_manifest_diagnostic.v1",
+                "schema_version": "isaac_worker_image_manifest_diagnostic.v2",
                 "status": "completed",
-                "image_ref": image_ref,
+                "image_ref": "registry.example/blueprint/isaac-eval-worker:2026-07-01",
+                "resolved_digest": digest,
+                "resolved_digest_ref": image_ref,
+                "runnable_platform": "linux/amd64",
                 "layer_count": 2,
                 "total_compressed_size_bytes": 10_900_000_000,
                 "largest_layer_size_bytes": 10_600_000_000,
+                "layers_over_1gb": 1,
                 "large_image_pull_risk": True,
+                "split_layer_layout_suitable": False,
+                "recommended_startup_no_runtime_timeout_seconds": 1482,
             }
         ),
         encoding="utf-8",
     )
     monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_REF_ENV, image_ref)
     monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV, str(diagnostic_path))
-    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "10.0")
+    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "100.0")
     monkeypatch.setattr(
         J,
         "_git_worktree_evidence",
@@ -1776,6 +1928,15 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
         def build_request(self, spec, job_dir):
             return {"env": dict(spec.env), "dockerStartCmd": spec.bootstrap_argv}
 
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            return {
+                "status": "observed",
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+                "name_prefix": name_prefix,
+            }
+
     captured: dict = {}
 
     def _fake_launch(provider_obj, job_dir, request, **_kwargs):
@@ -1790,7 +1951,13 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
         return {
             "status": "completed",
             "elapsed_seconds": 1,
-            "teardown": {"status": "stopped"},
+            "teardown": {
+                "status": "terminated",
+                "verification": {
+                    "api_confirmed": True,
+                    "provider_status": "not_found",
+                },
+            },
             "runner_result_source": "isaac_g1_kitchen_parity_result.json",
             "last_bootstrap": {"phase": "runner_done", "image_startup_canary": True},
             "timed_out_without_runner_done": False,
@@ -1812,8 +1979,10 @@ def test_paid_image_startup_canary_bypasses_large_image_block_without_harness(
         provider="runpod",
         allow_paid=True,
         allow_dirty_paid_launch=True,
+        image=image_ref,
         image_startup_canary=True,
         cold_race_contenders=1,
+        worker_image_manifest_diagnostic=diagnostic_path,
     )
 
     assert m["image_startup_canary"] is True
@@ -1862,6 +2031,9 @@ def test_paid_multi_provider_drops_vast_without_override(
         def build_request(self, spec, job_dir):
             return {"env": dict(spec.env), "provider": self.name}
 
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            return _empty_billable_inventory(name_prefix)
+
     providers = {"runpod": _FakeProvider("runpod"), "vast": _FakeProvider("vast")}
     captured: dict = {}
 
@@ -1875,7 +2047,13 @@ def test_paid_multi_provider_drops_vast_without_override(
         return {
             "status": "completed",
             "elapsed_seconds": 1,
-            "teardown": {"status": "terminated"},
+            "teardown": {
+                "status": "terminated",
+                "verification": {
+                    "api_confirmed": True,
+                    "provider_status": "not_found",
+                },
+            },
             "runner_result": {
                 "status": "completed",
                 "policy_id": "blueprint_default_walk_to_target_smoke_policy",
@@ -1937,6 +2115,9 @@ def test_paid_job_surfaces_blocked_parity_result_without_runtime_blocker(
         def build_request(self, spec, job_dir):
             return {"env": dict(spec.env), "image": spec.image}
 
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            return _empty_billable_inventory(name_prefix)
+
     monkeypatch.setattr(J, "stage_bundle", _fake_stage)
     monkeypatch.setattr(J, "get_render_provider", lambda name, warm_candidates=(): _FakeProvider())
     monkeypatch.setattr(
@@ -1954,7 +2135,13 @@ def test_paid_job_surfaces_blocked_parity_result_without_runtime_blocker(
         lambda *_args, **_kwargs: {
             "status": "blocked",
             "elapsed_seconds": 1,
-            "teardown": {"status": "stopped"},
+            "teardown": {
+                "status": "terminated",
+                "verification": {
+                    "api_confirmed": True,
+                    "provider_status": "not_found",
+                },
+            },
             "runner_result_source": "isaac_g1_kitchen_parity_result.json",
             "last_bootstrap": {"phase": "runner_done", "rc": 0},
             "timed_out_without_runner_done": False,
@@ -1987,6 +2174,102 @@ def test_paid_job_surfaces_blocked_parity_result_without_runtime_blocker(
     assert "isaac_parity_result_blocked" in m["blockers"]
     assert "isaac_runtime_did_not_complete" not in m["blockers"]
     assert "harness" not in m
+
+
+def test_paid_direct_launch_exception_after_known_id_terminates_allocation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _set_test_worker_image(monkeypatch)
+    monkeypatch.setattr(
+        J,
+        "_git_worktree_evidence",
+        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
+    )
+
+    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
+        job_dir.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        ):
+            (job_dir / name).write_text("https://example.test/artifact", encoding="utf-8")
+        return {"status": "completed", "manifest": {}}
+
+    class _Provider:
+        name = "runpod"
+
+        def __init__(self):
+            self.terminated: list[str] = []
+
+        def available(self):
+            return {"provider": self.name, "available": True}
+
+        def build_request(self, spec, job_dir):
+            return {"imageName": spec.image, "env": dict(spec.env)}
+
+        def billable_inventory(self, *, name_prefix):
+            return _empty_billable_inventory(name_prefix)
+
+        def terminate(self, instance_id):
+            self.terminated.append(instance_id)
+            return {"status": "terminated", "http": 204}
+
+        def inspect(self, instance_id):
+            return {"status": "unavailable", "http": 404}
+
+    provider = _Provider()
+
+    def _raise_after_id(provider_obj, job_dir, request, **kwargs):
+        kwargs["owned_allocation_sink"].update(
+            {"provider": provider_obj, "instance_id": "pod-owned", "pending_teardown_record": ""}
+        )
+        raise OSError("trace disk full")
+
+    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
+    monkeypatch.setattr(J, "get_render_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(J, "launch_with_marker_retry", _raise_after_id)
+
+    with pytest.raises(OSError, match="trace disk full"):
+        J.run_isaac_g1_kitchen_parity_job(
+            scenarios=_SCENARIOS,
+            out_dir=tmp_path / "job",
+            provider="runpod",
+            allow_paid=True,
+            allow_dirty_paid_launch=True,
+            max_spend_usd=100.0,
+            cold_race_contenders=1,
+        )
+
+    assert provider.terminated == ["pod-owned"]
+
+    monkeypatch.setattr(
+        J,
+        "launch_with_marker_retry",
+        lambda *_args, **_kwargs: {
+            "status": "launched",
+            "instance_id": "pod-watch",
+            "mode": "cold_create_marker_verified",
+        },
+    )
+    monkeypatch.setattr(
+        J,
+        "watch_and_collect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        J.run_isaac_g1_kitchen_parity_job(
+            scenarios=_SCENARIOS,
+            out_dir=tmp_path / "watch-job",
+            provider="runpod",
+            allow_paid=True,
+            allow_dirty_paid_launch=True,
+            max_spend_usd=100.0,
+            cold_race_contenders=1,
+        )
+
+    assert provider.terminated == ["pod-owned", "pod-watch"]
 
 
 def test_paid_launch_blocks_dirty_worktree_before_staging(tmp_path: Path, monkeypatch) -> None:
@@ -2310,7 +2593,11 @@ def test_launch_with_marker_retry_cancels_pending_teardown_without_allocation(
         name = "runpod"
 
         def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
-            return {"status": "blocked", "blockers": ["no_capacity"]}
+            return {
+                "status": "blocked",
+                "blockers": ["no_capacity"],
+                "allocation_created": False,
+            }
 
     guard = {
         "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
@@ -2333,8 +2620,81 @@ def test_launch_with_marker_retry_cancels_pending_teardown_without_allocation(
     assert len(records) == 1
     record = records[0]
     assert record["status"] == "cancelled_no_allocation"
-    assert record["cancel_reason"] == "launch_returned_no_allocation"
+    assert record["cancel_reason"] == "launch_returned_explicit_no_allocation"
     assert record["cancel_evidence"]["blockers"] == ["no_capacity"]
+
+
+def test_launch_with_marker_retry_keeps_lost_create_response_open(
+    tmp_path: Path,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+
+    class _LostCreateResponseProvider:
+        name = "runpod"
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            raise TimeoutError("provider create response lost")
+
+    guard = {
+        "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
+        "status": "ready",
+        "can_launch": True,
+        "blockers": [],
+    }
+
+    with pytest.raises(TimeoutError):
+        J.launch_with_marker_retry(
+            _LostCreateResponseProvider(),
+            jd,
+            {"img": "x"},
+            max_attempts=1,
+            prelaunch_guard=guard,
+        )
+
+    records = paid_lane_guard.load_pending_teardowns()
+    assert len(records) == 1
+    assert records[0]["allocation_outcome_ambiguous"] is True
+    assert records[0]["ambiguity_reason"] == (
+        "provider_launch_raised_before_allocation"
+    )
+
+
+def test_launch_with_marker_retry_does_not_retry_ambiguous_no_id_response(
+    tmp_path: Path,
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+
+    class _AmbiguousResponseProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            self.calls += 1
+            return {
+                "status": "blocked",
+                "blockers": ["runpod_create_outcome_ambiguous"],
+                "allocation_outcome_ambiguous": True,
+            }
+
+    provider = _AmbiguousResponseProvider()
+    result = J.launch_with_marker_retry(
+        provider,
+        jd,
+        {"img": "x"},
+        max_attempts=3,
+        prelaunch_guard={"can_launch": True, "blockers": []},
+    )
+
+    assert result["status"] == "blocked"
+    assert "provider_launch_outcome_ambiguous" in result["blockers"]
+    assert provider.calls == 1
+    records = paid_lane_guard.load_pending_teardowns()
+    assert len(records) == 1
+    assert records[0]["allocation_outcome_ambiguous"] is True
 
 
 def test_launch_with_marker_retry_closes_pending_teardown_on_api_proof(
@@ -2397,6 +2757,68 @@ def test_launch_with_marker_retry_closes_pending_teardown_on_api_proof(
     assert record["lane"] == J.ISAAC_G1_KITCHEN_PARITY_LANE
     assert record["instance_id"] == "pod0"
     assert record["teardown_proof"]["status"] == "PASS"
+
+
+def test_launch_with_marker_retry_never_retries_until_teardown_is_proven(
+    tmp_path: Path, monkeypatch
+) -> None:
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text(
+        "https://spaces.example/out.zip?sig=A"
+    )
+
+    class _UnkillableProvider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.launch_calls = 0
+
+        def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
+            self.launch_calls += 1
+            return {
+                "status": "launched",
+                "instance_id": f"pod-{self.launch_calls}",
+                "mode": "cold_create",
+            }
+
+        def terminate(self, instance_id):
+            return {"status": "terminate_failed", "http": 500}
+
+        def inspect(self, instance_id):
+            return {
+                "status": "observed",
+                "http": 200,
+                "desiredStatus": "RUNNING",
+                "runtime_present": True,
+            }
+
+    provider = _UnkillableProvider()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(
+        J.time, "sleep", lambda seconds: clock.__setitem__("t", clock["t"] + seconds)
+    )
+    monkeypatch.setattr(
+        J.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("not ready")),
+    )
+
+    result = J.launch_with_marker_retry(
+        provider,
+        jd,
+        {"img": "x"},
+        max_attempts=3,
+        marker_timeout=2,
+        poll=1,
+        prelaunch_guard={"can_launch": True, "blockers": []},
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["provider_teardown_unverified_before_retry"]
+    assert provider.launch_calls == 1
+    assert len(paid_lane_guard.load_pending_teardowns()) == 1
 
 
 def test_launch_with_marker_retry_terminates_pre_runtime_stall(
@@ -2516,7 +2938,7 @@ def test_launch_with_marker_retry_quarantines_repeated_bad_machine_without_secon
     assert res["status"] == "blocked"
     assert provider.terminated == ["pod0", "pod1"]
     assert res["attempts"][0]["elapsed_seconds"] == 3.0
-    assert res["attempts"][1]["elapsed_seconds"] == 1.0
+    assert res["attempts"][1]["elapsed_seconds"] == 0.0
     assert res["attempts"][1]["result"] == "quarantined_machine_terminated"
     assert res["attempts"][1]["quarantined_machine_snapshot"]["machineId"] == "machine-repeated"
     assert "provider_repeated_quarantined_machine" in res["blockers"]
@@ -2660,7 +3082,7 @@ def test_launch_with_marker_retry_seeds_quarantine_from_durable_registry(
     attempt = res["attempts"][0]
     # Quarantine fired on the first poll, far before the 30s startup timeout.
     assert attempt["result"] == "quarantined_machine_terminated"
-    assert attempt["elapsed_seconds"] == 1.0
+    assert attempt["elapsed_seconds"] == 0.0
     assert "provider_repeated_quarantined_machine" in res["blockers"]
     trace = json.loads((jd / J.LAUNCH_ATTEMPT_TRACE_FILENAME).read_text(encoding="utf-8"))
     assert trace["durable_quarantine_machine_ids"] == ["machine-dead"]
@@ -2739,6 +3161,7 @@ def test_launch_with_marker_retry_blocks_warm_only_without_marker_poll(
             return {
                 "status": "blocked",
                 "blockers": ["warm_restart_failed_cold_fallback_disabled"],
+                "allocation_created": False,
                 "attempts": [{"pod_id": "stale-warm"}],
             }
 
@@ -2805,6 +3228,9 @@ def test_job_warm_only_blocks_without_cold_spend(tmp_path: Path, monkeypatch) ->
         def build_request(self, spec, job_dir):
             return {"env": dict(spec.env), "image": spec.image}
 
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            return _empty_billable_inventory(name_prefix)
+
         def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
             self.launch_calls.append((cold, allow_cold_fallback))
             return {
@@ -2863,10 +3289,14 @@ def test_job_reports_provider_capacity_without_flaky_launch_label(
         def build_request(self, spec, job_dir):
             return {"image": spec.image}
 
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            return _empty_billable_inventory(name_prefix)
+
         def launch(self, job_dir, request, *, cold=False, allow_cold_fallback=True):
             return {
                 "status": "blocked",
                 "blockers": ["digitalocean_gpu_size_region_unavailable"],
+                "allocation_created": False,
             }
 
     provider = _CapacityBlockedProvider()
@@ -2921,6 +3351,9 @@ def _install_fake_warm_serve_stack(monkeypatch, tmp_path: Path, *, ready: bool):
         def build_request(self, spec, job_dir):
             return {"env": dict(spec.env), "image": spec.image}
 
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            return _empty_billable_inventory(name_prefix)
+
         def terminate(self, instance_id):
             self.terminated.append(instance_id)
             return {"status": "terminated", "instance_id": instance_id}
@@ -2973,7 +3406,7 @@ def _install_fake_warm_serve_stack(monkeypatch, tmp_path: Path, *, ready: bool):
     return provider
 
 
-def test_job_warm_serve_ready_leaves_pod_running_for_client(
+def test_paid_warm_serve_blocks_without_bounded_teardown_supervisor(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2988,12 +3421,15 @@ def test_job_warm_serve_ready_leaves_pod_running_for_client(
         serve_max_jobs=3,
     )
 
-    assert m["status"] == "serving"
-    assert m["warm_serve"]["ready"] is True
+    assert m["status"] == "blocked"
+    assert "paid_warm_serve_requires_bounded_provider_teardown_supervisor" in m[
+        "blockers"
+    ]
+    assert m["warm_serve_spend_policy"]["status"] == "blocked"
     assert provider.terminated == []
 
 
-def test_job_warm_serve_not_ready_terminates_pod(
+def test_paid_warm_serve_block_occurs_before_any_provider_allocation(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -3008,9 +3444,10 @@ def test_job_warm_serve_not_ready_terminates_pod(
     )
 
     assert m["status"] == "blocked"
-    assert "warm_serve_not_ready" in m["blockers"]
-    assert provider.terminated == ["serve-pod-1"]
-    assert m["warm_serve"]["not_ready_teardown"]["status"] == "terminated"
+    assert "paid_warm_serve_requires_bounded_provider_teardown_supervisor" in m[
+        "blockers"
+    ]
+    assert provider.terminated == []
 
 
 def test_await_warm_serve_ready_requires_matching_launch_session(

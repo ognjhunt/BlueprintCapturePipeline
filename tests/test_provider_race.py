@@ -19,6 +19,8 @@ import time
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import paid_lane_guard
 from blueprint_pipeline.provider_race import (
     ProviderCircuitBreaker,
@@ -59,7 +61,11 @@ class FakeProvider:
         self.last_request = request
         assert isinstance(job_dir, Path)  # racer must hand each contender a real dir
         if not self._launches:
-            return {"status": "blocked", "blockers": list(self._launch_blockers)}
+            return {
+                "status": "blocked",
+                "blockers": list(self._launch_blockers),
+                "allocation_created": False,
+            }
         return {"status": "launched", "instance_id": f"{self.name}-iid",
                 "mode": "fake_cold", "attempts": []}
 
@@ -509,7 +515,272 @@ def test_race_cancels_pending_teardown_when_launch_returns_no_allocation(
     records = paid_lane_guard.load_pending_teardowns(include_closed=True)
     assert len(records) == 1
     assert records[0]["status"] == "cancelled_no_allocation"
-    assert records[0]["cancel_reason"] == "launch_returned_no_allocation"
+    assert records[0]["cancel_reason"] == "launch_returned_explicit_no_allocation"
+
+
+def test_race_blocks_known_winner_when_competing_create_response_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    class LostResponseProvider(FakeProvider):
+        def launch(self, job_dir, request, *, cold=False):
+            self.launch_calls += 1
+            raise TimeoutError("create response lost")
+
+    ambiguous = LostResponseProvider("ambiguous")
+    healthy = FakeProvider("healthy", boots=True, marker_after=1)
+
+    result = race_launch(
+        [ambiguous, healthy],
+        request={"spec": 1},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        prelaunch_guard={"can_launch": True, "blockers": []},
+        pending_teardown_lane="isaac_g1_kitchen_parity",
+        sleep=_NO_SLEEP,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "provider_launch_outcome_ambiguous"
+    assert healthy.terminate_calls == ["healthy-iid"]
+    records = paid_lane_guard.load_pending_teardowns()
+    assert len(records) == 1
+    assert records[0]["allocation_outcome_ambiguous"] is True
+    assert records[0]["ambiguity_reason"] == (
+        "provider_launch_raised_before_allocation"
+    )
+
+
+def test_internal_type_error_after_allocation_is_never_retried(
+    tmp_path: Path,
+) -> None:
+    class TypeErrorAfterAllocation(FakeProvider):
+        def __init__(self, name):
+            super().__init__(name)
+            self.remote_allocations: list[str] = []
+
+        def launch(self, job_dir, request, *, cold=False, **kwargs):
+            self.launch_calls += 1
+            self.remote_allocations.append(f"unknown-{self.launch_calls}")
+            raise TypeError("response parser failed after allocation")
+
+    ambiguous = TypeErrorAfterAllocation("ambiguous")
+    healthy = FakeProvider("healthy", boots=True, marker_after=1)
+
+    result = race_launch(
+        [ambiguous, healthy],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        launch_kwargs={"allow_cold_fallback": False},
+        prelaunch_guard={"can_launch": True, "blockers": []},
+        pending_teardown_lane="isaac_g1_kitchen_parity",
+        sleep=_NO_SLEEP,
+    )
+
+    assert result["status"] == "blocked"
+    assert ambiguous.launch_calls == 1
+    assert ambiguous.remote_allocations == ["unknown-1"]
+    assert healthy.terminate_calls == ["healthy-iid"]
+    records = paid_lane_guard.load_pending_teardowns()
+    assert len(records) == 1
+    assert records[0]["allocation_outcome_ambiguous"] is True
+
+
+def test_race_terminates_winner_and_blocks_when_loser_teardown_is_unverified(
+    tmp_path: Path,
+) -> None:
+    class UnkillableLoser(FakeProvider):
+        def terminate(self, instance_id):
+            self.terminate_calls.append(instance_id)
+            return {"status": "terminate_failed", "http": 500}
+
+        def inspect(self, instance_id):
+            return {
+                "status": "observed",
+                "http": 200,
+                "desiredStatus": "RUNNING",
+            }
+
+    healthy = FakeProvider("healthy", boots=True, marker_after=1)
+    loser = UnkillableLoser("loser", boots=False)
+
+    result = race_launch(
+        [healthy, loser],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        prelaunch_guard={"can_launch": True, "blockers": []},
+        pending_teardown_lane="isaac_g1_kitchen_parity",
+        sleep=_NO_SLEEP,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "provider_race_teardown_unverified"
+    assert result["paid_retry_safe"] is False
+    assert healthy.terminate_calls == ["healthy-iid"]
+    assert loser.terminate_calls == ["loser-iid"]
+    open_records = paid_lane_guard.load_pending_teardowns()
+    assert len(open_records) == 1
+    assert open_records[0]["instance_id"] == "loser-iid"
+
+
+def test_race_marker_probe_cannot_exceed_absolute_wall_clock_deadline(
+    tmp_path: Path,
+) -> None:
+    provider = FakeProvider("slow", boots=True)
+    calls = 0
+
+    def slow_marker(_provider, _launch):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.2)
+        return True
+
+    started = time.monotonic()
+    result = race_launch(
+        [provider],
+        request={},
+        marker_check=slow_marker,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result["status"] == "blocked"
+    assert elapsed < 0.15
+    assert calls == 1
+
+    calls = 0
+    race_launch(
+        [FakeProvider("zero")],
+        request={},
+        marker_check=slow_marker,
+        marker_timeout=0,
+        job_dir=tmp_path / "zero",
+        poll_interval=0.01,
+    )
+    assert calls == 0
+
+
+def test_pending_close_error_does_not_skip_remaining_race_cleanup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    winner = FakeProvider("winner", boots=True, marker_after=1)
+    loser = FakeProvider("loser", boots=False)
+    monkeypatch.setattr(
+        "blueprint_pipeline.provider_race.close_pending_teardown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    result = race_launch(
+        [winner, loser],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+        prelaunch_guard={"can_launch": True, "blockers": []},
+        pending_teardown_lane="isaac_g1_kitchen_parity",
+        sleep=_NO_SLEEP,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "provider_race_teardown_unverified"
+    assert winner.terminate_calls == ["winner-iid"]
+    assert loser.terminate_calls == ["loser-iid"]
+    assert all(
+        record["pending_teardown_status"] == "close_failed"
+        for record in result["contenders"]
+    )
+
+
+def test_interrupt_cleans_id_returned_after_coordinator_interrupt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    release_launch = threading.Event()
+
+    class LateIdProvider(FakeProvider):
+        def launch(self, job_dir, request, *, cold=False):
+            self.launch_calls += 1
+            self.launch_cold = cold
+            self.last_request = request
+            assert release_launch.wait(timeout=2)
+            return {
+                "status": "launched",
+                "instance_id": "late-iid",
+                "mode": "fake_cold",
+            }
+
+    provider = LateIdProvider("late", boots=False)
+    real_join = threading.Thread.join
+    main_thread = threading.current_thread()
+    coordinator_joins = 0
+
+    def interrupt_then_release(self, timeout=None):
+        nonlocal coordinator_joins
+        if threading.current_thread() is main_thread and self.name.startswith("race-"):
+            coordinator_joins += 1
+            if coordinator_joins == 1:
+                raise KeyboardInterrupt
+            release_launch.set()
+        return real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", interrupt_then_release)
+
+    with pytest.raises(KeyboardInterrupt):
+        race_launch(
+            [provider],
+            request={},
+            marker_check=_marker_check,
+            marker_timeout=1,
+            job_dir=tmp_path,
+            poll_interval=0.01,
+            prelaunch_guard={"can_launch": True, "blockers": []},
+            pending_teardown_lane="isaac_g1_kitchen_parity",
+            sleep=_NO_SLEEP,
+        )
+
+    assert release_launch.is_set()
+    assert provider.terminate_calls == ["late-iid"]
+    assert paid_lane_guard.load_pending_teardowns() == []
+
+
+def test_interrupt_during_normal_loser_cleanup_terminates_every_known_id(
+    tmp_path: Path,
+) -> None:
+    class InterruptOnceProvider(FakeProvider):
+        def terminate(self, instance_id):
+            self.terminate_calls.append(instance_id)
+            if len(self.terminate_calls) == 1:
+                raise KeyboardInterrupt
+            return {"status": "terminated", "http": 204, "instance_id": instance_id}
+
+    winner = FakeProvider("winner", boots=True, marker_after=1)
+    loser = InterruptOnceProvider("loser", boots=False)
+
+    with pytest.raises(KeyboardInterrupt):
+        race_launch(
+            [winner, loser],
+            request={},
+            marker_check=_marker_check,
+            marker_timeout=0.05,
+            job_dir=tmp_path,
+            poll_interval=0.01,
+            prelaunch_guard={"can_launch": True, "blockers": []},
+            pending_teardown_lane="isaac_g1_kitchen_parity",
+            sleep=_NO_SLEEP,
+        )
+
+    assert winner.terminate_calls == ["winner-iid"]
+    assert loser.terminate_calls == ["loser-iid", "loser-iid"]
+    assert paid_lane_guard.load_pending_teardowns() == []
 
 
 def test_race_forwards_launch_kwargs_to_capable_provider(tmp_path: Path):
@@ -584,8 +855,13 @@ def test_race_launch_kwargs_are_compatible_with_legacy_cold_only_provider(tmp_pa
 
     assert res["status"] == "launched"
     assert legacy.launch_calls == 1
-    assert res["contenders"][0]["launch_kwargs"] == {"allow_cold_fallback": False}
-    assert "launch_kwargs_legacy_fallback" in res["contenders"][0]
+    assert res["contenders"][0]["launch_kwargs_requested"] == {
+        "allow_cold_fallback": False
+    }
+    assert res["contenders"][0]["launch_kwargs"] == {}
+    assert res["contenders"][0]["launch_kwargs_unsupported"] == [
+        "allow_cold_fallback"
+    ]
 
 
 def test_race_stops_warm_loser_instead_of_terminating(tmp_path: Path):
@@ -671,7 +947,7 @@ def test_race_terminate_losers_false_keeps_instances_but_reports_them(tmp_path: 
     assert reported["loser"]["instance_id"] == "loser-iid"   # but still surfaced
 
 
-def test_race_treats_launch_exception_as_a_dud_not_a_crash(tmp_path: Path):
+def test_race_blocks_when_create_response_is_ambiguous(tmp_path: Path):
     class Boom(FakeProvider):
         def launch(self, job_dir, request, *, cold=False):
             raise RuntimeError("provider api exploded")
@@ -682,7 +958,9 @@ def test_race_treats_launch_exception_as_a_dud_not_a_crash(tmp_path: Path):
         [boom, fast], request={}, marker_check=_marker_check,
         marker_timeout=1, job_dir=tmp_path, poll_interval=0.01, sleep=_NO_SLEEP,
     )
-    assert res["provider"] == "fast"                         # the crash didn't sink the race
+    assert res["status"] == "blocked"
+    assert res["reason"] == "provider_launch_outcome_ambiguous"
+    assert fast.terminate_calls == ["fast-iid"]
     boom_rec = next(c for c in res["contenders"] if c["provider"] == "boom")
     assert boom_rec["instance_id"] is None
     assert "launch_raised" in (boom_rec.get("reason") or "")

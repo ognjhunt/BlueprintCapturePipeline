@@ -99,6 +99,33 @@ def test_negative_and_invalid_inputs_rejected():
         )
 
 
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "field",
+    ["hourly_rate_usd", "reserved_seconds", "elapsed_seconds"],
+)
+def test_reconciliation_rejects_nonfinite_inputs(field, nonfinite):
+    values = {
+        "hourly_rate_usd": 1.0,
+        "reserved_seconds": 1.0,
+        "elapsed_seconds": 1.0,
+    }
+    values[field] = nonfinite
+
+    with pytest.raises(ValueError, match="nonfinite"):
+        S.build_spend_reconciliation(provider="runpod", **values)
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_ledger_rejects_nonfinite_cap_and_reservations(tmp_path, nonfinite):
+    with pytest.raises(ValueError, match="nonfinite"):
+        S.CumulativeSpendLedger(tmp_path / "bad-ledger.json", total_cap_usd=nonfinite)
+
+    ledger = S.CumulativeSpendLedger(tmp_path / "ledger.json", total_cap_usd=1.0)
+    with pytest.raises(ValueError, match="nonfinite"):
+        ledger.admit(attempt_id="a1", reserved_usd=nonfinite)
+
+
 def test_ledger_admits_until_cap_and_counts_failed_attempts(tmp_path):
     ledger = S.CumulativeSpendLedger(tmp_path / "ledger.json", total_cap_usd=1.0)
     ledger.admit(attempt_id="a1", reserved_usd=0.4)

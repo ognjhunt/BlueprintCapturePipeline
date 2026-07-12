@@ -73,6 +73,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         allow_dirty_paid_launch=args.allow_dirty_paid_launch,
         cold=args.cold,
         image=args.image,
+        worker_image_manifest_diagnostic=args.worker_image_manifest_diagnostic,
         max_seconds=args.max_seconds,
         marker_timeout=args.marker_timeout,
         width=args.width,
@@ -153,6 +154,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="race N simultaneous cold creates and keep the first boot marker "
                              "(default 2 via the parity job; 1 disables)")
     launch.add_argument("--image", default=None)
+    launch.add_argument("--worker-image-manifest-diagnostic", default=None,
+                        help="registry manifest diagnostic JSON for the selected "
+                             "worker image (required to match paid digest-pinned "
+                             "launches and paid image-startup canaries)")
     launch.add_argument("--max-seconds", type=int, default=2400)
     launch.add_argument("--marker-timeout", type=int, default=900)
     launch.add_argument("--width", type=int, default=1280)

@@ -36,9 +36,20 @@ def resolve_image_manifest_checksum(
         blockers.append("startup_image_manifest_diagnostic_not_for_selected_image")
     if path is None or not path.is_file():
         blockers.append("startup_image_manifest_diagnostic_file_missing")
+    expected_digest = str(detail.get("diagnostic_sha256") or "").strip()
+    expected_bytes = detail.get("diagnostic_bytes")
+    if len(expected_digest) != 64:
+        blockers.append("startup_image_manifest_diagnostic_identity_missing")
     digest = ""
     if not blockers and path is not None:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            blockers.append("startup_image_manifest_diagnostic_file_unreadable")
+        else:
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest != expected_digest or len(raw) != expected_bytes:
+                blockers.append("startup_image_manifest_diagnostic_identity_changed")
     return {
         "status": "passed" if not blockers else "blocked",
         "path": str(path) if path is not None else None,
@@ -453,12 +464,13 @@ def run_parity_startup_transaction(
     spend_cap = float(prelaunch_spend_guard.get("requested_budget_usd") or 0.0)
     reserved_seconds = float(
         prelaunch_spend_guard.get("render_budget_seconds") or 0.0
-    ) + min(
-        float(prelaunch_spend_guard.get("marker_timeout_seconds") or 0.0),
-        float(
-            prelaunch_spend_guard.get("startup_no_runtime_timeout_seconds") or 0.0
+    ) + float(
+        prelaunch_spend_guard.get("startup_budget_per_attempt_seconds") or 0.0
+    ) + float(
+        prelaunch_spend_guard.get(
+            "teardown_reconciliation_grace_per_attempt_seconds"
         )
-        or float(prelaunch_spend_guard.get("marker_timeout_seconds") or 0.0),
+        or 0.0
     )
     result_holder: dict[str, Any] = {}
 
@@ -503,6 +515,7 @@ def run_parity_startup_transaction(
             instance_id,
             provider=provider,
             max_seconds=max_seconds,
+            stop_on_success=False,
             preserve_instance=False,
             preserve_blocked_instance=False,
             progress_timeout_seconds=post_marker_progress_timeout,
@@ -540,6 +553,9 @@ def run_parity_startup_transaction(
         hourly_rate_usd=hourly_rate,
         per_attempt_reserved_seconds=max(1.0, reserved_seconds),
         terminal_mode=TERMINAL_MODE_PROMOTE,
+        pending_teardown_max_age_seconds=max(
+            7200, int(reserved_seconds * max(1, int(max_attempts)) + 1800)
+        ),
         full_job_request={"job": "isaac_g1_kitchen_parity"},
     )
     supervisor_out = out_dir / "startup_supervisor"
@@ -556,7 +572,10 @@ def run_parity_startup_transaction(
         },
         full_job=full_job,
         quarantine_registry_dir=out_dir / "machine_quarantine",
-        teardown_registry_dir=out_dir / "pending_teardowns",
+        # Supervised descendants share the process-independent global registry
+        # with the parent paid-lane lease.  A job-local registry would hide an
+        # open child teardown obligation from subsequent agents.
+        teardown_registry_dir=None,
     )
     receipt = supervisor.get("ownership_transfer_receipt") or {}
     launch = {

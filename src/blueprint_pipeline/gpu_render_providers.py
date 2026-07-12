@@ -26,6 +26,7 @@ Secrets are file-based under ``~/.blueprint-secrets`` and never logged.
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -232,6 +233,51 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def _record_started_id(path: Path, instance_id: str) -> dict[str, Any]:
+    try:
+        path.write_text(str(instance_id), encoding="utf-8")
+        return {"status": "recorded", "path": str(path)}
+    except OSError as exc:
+        # The provider allocation is already known. Never hide its id merely
+        # because local evidence persistence failed.
+        return {
+            "status": "write_failed",
+            "path": str(path),
+            "error_type": type(exc).__name__,
+        }
+
+
+def _normalize_provider_instance_id(
+    value: Any, *, numeric_only: bool = False
+) -> str | None:
+    """Accept only provider IDs whose wire type and shape are trustworthy.
+
+    Stringifying a bool, mapping, or other malformed success value can produce
+    a fake ID whose later 404 incorrectly looks like teardown proof. RunPod
+    IDs are opaque URL-safe strings; Vast and DigitalOcean IDs are positive
+    integers (or their canonical decimal string representation).
+    """
+    if type(value) is int:
+        if not numeric_only or value <= 0:
+            return None
+        return str(value)
+    if type(value) is not str:
+        return None
+    candidate = value.strip()
+    if candidate != value or not candidate or len(candidate) > 256:
+        return None
+    if numeric_only:
+        if not candidate.isascii() or not candidate.isdigit():
+            return None
+        return candidate if int(candidate) > 0 else None
+    if not candidate.isascii() or any(
+        not (character.isalnum() or character in "-_.")
+        for character in candidate
+    ):
+        return None
+    return candidate
+
+
 def _runpod_render_prelaunch_guard_blockers(request: Mapping[str, Any]) -> list[str]:
     return _render_prelaunch_guard_blockers(request, provider_name="runpod")
 
@@ -247,6 +293,25 @@ def _runpod_create_capacity_unavailable(status: int, response: Any) -> bool:
             "no available machine",
             "insufficient capacity",
             "capacity unavailable",
+        )
+    )
+
+
+def _runpod_mutation_definitively_rejected(status: int, response: Any) -> bool:
+    """Return true only when the provider explicitly says no mutation occurred."""
+    if status in {401, 403, 404}:
+        return True
+    if status not in {400, 409, 422}:
+        return False
+    error = str(_mapping(response).get("error") or "").lower()
+    return any(
+        marker in error
+        for marker in (
+            "not startable",
+            "invalid update",
+            "invalid request",
+            "does not exist",
+            "not found",
         )
     )
 
@@ -456,6 +521,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             "containerDiskInGb": spec.container_disk_gb, "volumeInGb": spec.volume_gb,
             "volumeMountPath": spec.volume_mount_path,
             "minVCPUPerGPU": spec.min_vcpu, "minRAMPerGPU": spec.min_ram_gb,
+            "max_hourly_rate_usd": spec.max_hourly_rate_usd,
             "env": environment, "dockerEntrypoint": list(spec.entrypoint),
             "dockerStartCmd": list(spec.bootstrap_argv),
             "blueprintStorageContract": {
@@ -489,11 +555,17 @@ class RunPodRenderProvider(GpuRenderProvider):
                 or None,
             }
         launch_request = dict(request)
+        rate_cap = _positive_float(
+            _mapping(request.get("prelaunch_spend_guard")).get(
+                "max_hourly_rate_usd"
+            )
+        ) or _positive_float(request.get("max_hourly_rate_usd"))
         # Internal admission/cleanup evidence is consumed locally and is not
         # part of RunPod's public Pod request schema.
         launch_request.pop("prelaunch_spend_guard", None)
         launch_request.pop("pending_teardown_record", None)
         launch_request.pop("blueprintStorageContract", None)
+        launch_request.pop("max_hourly_rate_usd", None)
         attempts: list[dict] = []
         if not cold and self.warm_candidates:
             upd = {k: launch_request[k] for k in (
@@ -505,16 +577,43 @@ class RunPodRenderProvider(GpuRenderProvider):
                 attempt["get_status"] = s
                 if isinstance(get_body, dict):
                     attempt["desiredStatus"] = get_body.get("desiredStatus")
+                    if get_body.get("costPerHr") is not None:
+                        attempt["costPerHr"] = get_body.get("costPerHr")
                     if get_body.get("error"):
                         attempt["get_error"] = get_body.get("error")
                 if s != 200:
                     attempts.append(attempt)
                     continue
+                if rate_cap is not None:
+                    observed_rate = _positive_float(
+                        _mapping(get_body).get("costPerHr")
+                    )
+                    if observed_rate is None or observed_rate > rate_cap:
+                        attempt["rate_cap_status"] = "blocked"
+                        attempt["rate_cap_usd_per_hour"] = rate_cap
+                        attempt["rate_cap_blocker"] = (
+                            "runpod_warm_hourly_rate_unverifiable"
+                            if observed_rate is None
+                            else "runpod_warm_hourly_rate_exceeds_spend_cap"
+                        )
+                        attempts.append(attempt)
+                        continue
                 us, update_body = _runpod_call("POST", f"/pods/{pid}/update", upd, key=key)
                 attempt["update_status"] = us
                 if isinstance(update_body, dict) and update_body.get("error"):
                     attempt["update_error"] = update_body.get("error")
-                if us not in (200, 201, 204):
+                if not (200 <= us < 300) and not _runpod_mutation_definitively_rejected(
+                    us, update_body
+                ):
+                    attempts.append(attempt)
+                    return {
+                        "status": "blocked",
+                        "blockers": ["runpod_warm_update_outcome_ambiguous"],
+                        "instance_id": pid,
+                        "attempts": attempts,
+                        "allocation_outcome_ambiguous": True,
+                    }
+                if not (200 <= us < 300):
                     attempts.append(attempt)
                     continue
                 ss, start_body = _runpod_call("POST", f"/pods/{pid}/start", {}, key=key)
@@ -525,26 +624,101 @@ class RunPodRenderProvider(GpuRenderProvider):
                     if start_body.get("error"):
                         attempt["start_error"] = start_body.get("error")
                 attempts.append(attempt)
-                if ss in (200, 201):
-                    (job_dir / "started_pod_id.txt").write_text(pid)
+                if not (200 <= ss < 300) and not _runpod_mutation_definitively_rejected(
+                    ss, start_body
+                ):
+                    return {
+                        "status": "blocked",
+                        "blockers": ["runpod_warm_start_outcome_ambiguous"],
+                        "instance_id": pid,
+                        "attempts": attempts,
+                        "allocation_outcome_ambiguous": True,
+                    }
+                if 200 <= ss < 300:
+                    started_id_record = _record_started_id(
+                        job_dir / "started_pod_id.txt", pid
+                    )
                     return {"status": "launched", "instance_id": pid,
-                            "mode": "warm_restart", "attempts": attempts}
+                            "mode": "warm_restart", "attempts": attempts,
+                            "started_id_record": started_id_record}
         if not cold and self.warm_candidates and not allow_cold_fallback:
+            rate_blockers = [
+                str(attempt.get("rate_cap_blocker"))
+                for attempt in attempts
+                if attempt.get("rate_cap_blocker")
+            ]
             return {
                 "status": "blocked",
-                "blockers": ["warm_restart_failed_cold_fallback_disabled"],
+                "blockers": rate_blockers
+                or ["warm_restart_failed_cold_fallback_disabled"],
                 "attempts": attempts,
+                "allocation_created": False,
             }
+        if rate_cap is not None:
+            rate_preflight = self.capacity_preflight(launch_request)
+            rows = [
+                row
+                for row in rate_preflight.get("viable_gpu_types", [])
+                if isinstance(row, Mapping)
+                and (_positive_float(row.get("on_demand_price_usd_per_hour")) or math.inf)
+                <= rate_cap
+            ]
+            eligible_ids = [
+                str(row.get("gpu_type_id"))
+                for row in rows
+                if str(row.get("gpu_type_id") or "").strip()
+            ]
+            attempts.append(
+                {
+                    "pre_mutation_rate_cap_status": (
+                        "passed" if eligible_ids else "blocked"
+                    ),
+                    "rate_cap_usd_per_hour": rate_cap,
+                    "eligible_gpu_type_ids": eligible_ids,
+                    "capacity_status": rate_preflight.get("status"),
+                }
+            )
+            if not eligible_ids:
+                return {
+                    "status": "blocked",
+                    "blockers": ["runpod_pre_mutation_rate_cap_unverified"],
+                    "attempts": attempts,
+                    "allocation_created": False,
+                    "rate_preflight": rate_preflight,
+                }
+            launch_request["gpuTypeIds"] = eligible_ids
         s, r = _runpod_call("POST", "/pods", launch_request, key=key)
-        pid = r.get("id") if isinstance(r, dict) else None
+        pid = _normalize_provider_instance_id(
+            r.get("id") if isinstance(r, dict) else None
+        )
         attempts.append({"cold_create_status": s, "pod_id": pid,
                          "error": r.get("error") if isinstance(r, dict) else None})
         if pid:
-            (job_dir / "started_pod_id.txt").write_text(pid)
+            started_id_record = _record_started_id(job_dir / "started_pod_id.txt", pid)
             return {"status": "launched", "instance_id": pid,
-                    "mode": "cold_create", "attempts": attempts}
-        blockers = ["no_pod_started"]
+                    "mode": "cold_create", "attempts": attempts,
+                    "started_id_record": started_id_record}
+        if s == 0:
+            return {
+                "status": "blocked",
+                "blockers": ["runpod_create_outcome_ambiguous"],
+                "attempts": attempts,
+                "allocation_outcome_ambiguous": True,
+                "spend_occurred": None,
+            }
         capacity_outcome = _runpod_create_capacity_unavailable(s, r)
+        explicit_rejection = bool(
+            capacity_outcome or s in {400, 401, 403, 404, 409, 422, 429}
+        )
+        if not explicit_rejection:
+            return {
+                "status": "blocked",
+                "blockers": ["runpod_create_outcome_ambiguous"],
+                "attempts": attempts,
+                "allocation_outcome_ambiguous": True,
+                "spend_occurred": None,
+            }
+        blockers = ["no_pod_started"]
         if capacity_outcome:
             blockers.insert(0, "runpod_secure_cloud_create_capacity_unavailable")
         return {
@@ -629,16 +803,21 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "raw_provider_response_recorded": False,
             }
         prefix = str(name_prefix or "")
+        warm_candidate_ids = {
+            str(candidate).strip() for candidate in self.warm_candidates
+            if str(candidate).strip()
+        }
         resources = []
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
             name = str(row.get("name") or "")
-            if prefix and not name.startswith(prefix):
+            instance_id = str(row.get("id") or "")
+            if prefix and not name.startswith(prefix) and instance_id not in warm_candidate_ids:
                 continue
             resources.append(
                 {
-                    "instance_id": str(row.get("id") or ""),
+                    "instance_id": instance_id,
                     "name": name,
                     "desired_status": row.get("desiredStatus"),
                     "cost_per_hour": row.get("costPerHr"),
@@ -648,6 +827,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             "status": "observed",
             "provider": self.name,
             "name_prefix": prefix,
+            "explicit_warm_candidate_ids_checked": sorted(warm_candidate_ids),
             "live_resource_count": len(resources),
             "resources": resources,
             "api_confirmed": True,
@@ -771,27 +951,54 @@ class VastRenderProvider(GpuRenderProvider):
                 attempts.append({"create_http_status": e.code, "ask_id": ask_id,
                                  "create_error_body": body,
                                  "gpu_name": offer.get("gpu_name")})
+                if e.code not in {400, 404, 409, 422}:
+                    return {
+                        "status": "blocked",
+                        "blockers": ["vast_create_outcome_ambiguous"],
+                        "attempts": attempts,
+                        "allocation_outcome_ambiguous": True,
+                    }
                 last_blocker = f"vast_create_http_error:{e.code}"
                 continue
             except Exception as e:  # noqa: BLE001
                 attempts.append({"create_error": repr(e)[:200], "ask_id": ask_id})
-                last_blocker = "vast_create_failed"
-                continue
+                return {
+                    "status": "blocked",
+                    "blockers": ["vast_create_outcome_ambiguous"],
+                    "attempts": attempts,
+                    "allocation_outcome_ambiguous": True,
+                }
             iid = None
             if isinstance(cresp, dict):
                 for k in ("new_contract", "instance_id", "id"):
-                    if cresp.get(k):
-                        iid = str(cresp[k])
+                    iid = _normalize_provider_instance_id(
+                        cresp.get(k), numeric_only=True
+                    )
+                    if iid:
                         break
             attempts.append({"create_status": cs, "instance_id": iid,
                              "gpu_name": offer.get("gpu_name"),
                              "hourly_rate_usd": offer.get("hourly_rate_usd")})
             if iid:
-                (job_dir / "started_vast_instance_id.txt").write_text(iid)
+                started_id_record = _record_started_id(
+                    job_dir / "started_vast_instance_id.txt", iid
+                )
                 return {"status": "launched", "instance_id": iid, "mode": "vast_on_demand",
-                        "attempts": attempts}
+                        "attempts": attempts, "started_id_record": started_id_record}
+            if cs not in {400, 404, 409, 422}:
+                return {
+                    "status": "blocked",
+                    "blockers": ["vast_create_outcome_ambiguous"],
+                    "attempts": attempts,
+                    "allocation_outcome_ambiguous": True,
+                }
             last_blocker = "vast_instance_not_created"
-        return {"status": "blocked", "blockers": [last_blocker], "attempts": attempts}
+        return {
+            "status": "blocked",
+            "blockers": [last_blocker],
+            "attempts": attempts,
+            "allocation_created": False,
+        }
 
     def stop(self, instance_id: str) -> dict:
         # Vast has no warm-preserving stopped state here: DELETE /instances destroys
@@ -978,11 +1185,13 @@ def _do_region_candidates(initial: str) -> list[str]:
 
 
 def _positive_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
-    return parsed if parsed > 0 else None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None
 
 
 def _positive_int(value: Any) -> int | None:
@@ -1475,9 +1684,14 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             for region in _do_region_candidates(initial_region):
                 attempt_request = dict(launch_request, size=size, region=region)
                 s, body = _do_call("POST", "/droplets", attempt_request, token=token)
-                if s in (201, 202) and isinstance(body, dict) and body.get("droplet"):
-                    iid = str(body["droplet"].get("id"))
-                    (Path(job_dir) / "started_do_droplet_id.txt").write_text(iid)
+                droplet = _mapping(_mapping(body).get("droplet"))
+                iid = _normalize_provider_instance_id(
+                    droplet.get("id"), numeric_only=True
+                )
+                if s in (201, 202) and iid:
+                    started_id_record = _record_started_id(
+                        Path(job_dir) / "started_do_droplet_id.txt", iid
+                    )
                     create_attempts.append({
                         "create_status": s,
                         "droplet_id": iid,
@@ -1493,6 +1707,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                         "gpu_ram_policy": gpu_ram_policy,
                         "render_capability_policy": render_capability_policy,
                         "attempts": create_attempts,
+                        "started_id_record": started_id_record,
                     }
                 attempt = {
                     "create_status": s,
@@ -1505,6 +1720,21 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 if isinstance(body, dict) and body.get("error"):
                     attempt["error"] = str(body.get("error"))[:300]
                 create_attempts.append(attempt)
+                ambiguous_create = bool(
+                    not attempt["retryable_region_capacity_error"]
+                    and (s == 0 or 200 <= s < 300 or s >= 500)
+                )
+                if ambiguous_create:
+                    return {
+                        "status": "blocked",
+                        "blockers": ["digitalocean_create_outcome_ambiguous"],
+                        "attempts": create_attempts,
+                        "allocation_outcome_ambiguous": True,
+                        "budget_policy": budget_policy,
+                        "gpu_ram_policy": gpu_ram_policy,
+                        "render_capability_policy": render_capability_policy,
+                        "ssh_key_configuration": ssh_key_detail,
+                    }
                 if not attempt["retryable_region_capacity_error"]:
                     return {
                         "status": "blocked",
@@ -1514,6 +1744,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                         "gpu_ram_policy": gpu_ram_policy,
                         "render_capability_policy": render_capability_policy,
                         "ssh_key_configuration": ssh_key_detail,
+                        "allocation_created": False,
                     }
         return {
             "status": "blocked",
@@ -1523,6 +1754,7 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             "gpu_ram_policy": gpu_ram_policy,
             "render_capability_policy": render_capability_policy,
             "ssh_key_configuration": ssh_key_detail,
+            "allocation_created": False,
         }
 
     def inspect(self, instance_id: str) -> dict:

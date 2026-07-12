@@ -35,10 +35,17 @@ for candidate in (str(SRC_DIR), str(REPO_ROOT)):
         sys.path.insert(0, candidate)
 
 from blueprint_pipeline.isaac_g1_kitchen_parity_job import (  # noqa: E402
+    ISAAC_G1_KITCHEN_PARITY_LANE,
+    ISAAC_G1_KITCHEN_PARITY_RESOURCE_PREFIX,
     JOB_MANIFEST_FILENAME,
+    _teardown_proof_from_attempt,
     run_isaac_g1_kitchen_parity_job,
 )
 from blueprint_pipeline.common import write_json  # noqa: E402
+from blueprint_pipeline.paid_lane_guard import close_pending_teardown  # noqa: E402
+from blueprint_pipeline.paid_provider_lane_lease import (  # noqa: E402
+    PaidProviderLaneLeaseSet,
+)
 from blueprint_pipeline.warm_render_server import submit_warm_render_batch  # noqa: E402
 
 WARM_SERVE_MARKER_FILENAME = "warm_serve_pod.json"
@@ -103,6 +110,7 @@ def start_warm_worker(
     serve_max_jobs: int | None,
     serve_ready_timeout: int,
     image: str | None = None,
+    worker_image_manifest_diagnostic: str | Path | None = None,
     job_fn: Callable[..., dict] = run_isaac_g1_kitchen_parity_job,
 ) -> dict[str, Any]:
     """Launch the serve pod and record it as an expected warm worker."""
@@ -116,6 +124,7 @@ def start_warm_worker(
         provider=provider,
         allow_paid=allow_paid,
         image=image,
+        worker_image_manifest_diagnostic=worker_image_manifest_diagnostic,
         marker_timeout=marker_timeout,
         warm_candidates=tuple(warm_candidates or ()),
         serve=True,
@@ -140,6 +149,7 @@ def start_warm_worker(
             "started_at": _utc_now_iso(),
             **_lease_fields(float(serve_idle_timeout_s) + 300.0),
             "manifest_path": str(manifest_path),
+            "pending_teardown_record": warm_serve.get("pending_teardown_record"),
             "broker_base_url_file": warm_serve.get("broker_base_url_file"),
             "broker_token_file": warm_serve.get("broker_token_file"),
             "transport": "durable_warm_render_broker",
@@ -221,14 +231,74 @@ def stop_warm_worker(
         from blueprint_pipeline.gpu_render_providers import get_render_provider
         provider_factory = get_render_provider
     provider = provider_factory(provider_name)
-    teardown = provider.terminate(pod_id)
-    marker["status"] = "terminated"
-    marker["terminated_at"] = _utc_now_iso()
-    marker["heartbeat_at"] = marker["terminated_at"]
-    marker["lease_expires_at"] = marker["terminated_at"]
+    try:
+        teardown = provider.terminate(pod_id)
+    except Exception as exc:  # noqa: BLE001 - retain a retryable blocked marker
+        teardown = {
+            "status": "terminate_failed",
+            "error_type": type(exc).__name__,
+            "raw_provider_response_recorded": False,
+        }
+    proof = _teardown_proof_from_attempt(
+        provider=provider,
+        instance_id=pod_id,
+        teardown=teardown if isinstance(teardown, dict) else {},
+        action="terminate",
+    )
+    pending_path = str(marker.get("pending_teardown_record") or "")
+    pending_close = {"status": "not_applicable"}
+    if pending_path:
+        try:
+            pending_close = close_pending_teardown(pending_path, proof)
+        except Exception as exc:  # noqa: BLE001 - a failed close keeps the lane blocked
+            pending_close = {
+                "status": "close_failed",
+                "error_type": type(exc).__name__,
+            }
+    lease_set = PaidProviderLaneLeaseSet(
+        providers={provider_name: provider},
+        lane=ISAAC_G1_KITCHEN_PARITY_LANE,
+        job_dir=str(Path(out_dir) / "warm_stop"),
+        resource_name_prefix=ISAAC_G1_KITCHEN_PARITY_RESOURCE_PREFIX,
+    )
+    lease_acquire = lease_set.acquire()
+    lease_release = (
+        lease_set.release("warm_serve_terminal_stop", provider_mutation_started=True)
+        if lease_acquire.get("status") == "acquired"
+        else None
+    )
+    lease_released = bool(
+        lease_release
+        and lease_release.get("results")
+        and all(
+            item.get("status") in {"released", "already_released"}
+            for item in lease_release["results"]
+        )
+    )
+    pending_closed = pending_close.get("status") in {"closed", "not_applicable"}
+    terminal = bool(
+        str(proof.get("status") or "").upper() == "PASS"
+        and pending_closed
+        and lease_released
+    )
+    completed_at = _utc_now_iso()
+    marker["status"] = "terminated" if terminal else "teardown_blocked"
+    marker["terminated_at"] = completed_at if terminal else None
+    marker["heartbeat_at"] = completed_at
+    marker["lease_expires_at"] = completed_at
     marker["teardown"] = teardown
+    marker["teardown_proof"] = proof
+    marker["pending_teardown_close"] = pending_close
+    marker["paid_provider_lane_lease"] = lease_set.summary
     write_marker(out_dir, marker)
-    return {"status": "terminated", "pod_id": pod_id, "teardown": teardown}
+    return {
+        "status": marker["status"],
+        "pod_id": pod_id,
+        "teardown": teardown,
+        "teardown_proof": proof,
+        "pending_teardown_close": pending_close,
+        "paid_provider_lane_lease": lease_set.summary,
+    }
 
 
 def worker_status(
@@ -264,10 +334,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     start.add_argument("--provider", default="runpod")
     start.add_argument("--allow-paid", action="store_true")
     start.add_argument("--image", default=None)
+    start.add_argument(
+        "--worker-image-manifest-diagnostic",
+        default=None,
+        help=(
+            "registry manifest diagnostic JSON for the exact digest-pinned worker image; "
+            "required for paid digest-pinned starts"
+        ),
+    )
     start.add_argument("--warm-candidate", action="append", default=[])
     start.add_argument("--marker-timeout", type=int, default=900)
     start.add_argument("--serve-idle-timeout", type=float, default=1800.0,
-                       help="pod exits by itself after this many idle seconds (cost ceiling)")
+                       help=("runner idle bound only; paid serve additionally requires a "
+                             "provider teardown supervisor"))
     start.add_argument("--serve-max-jobs", type=int, default=None)
     start.add_argument("--serve-ready-timeout", type=int, default=1800)
 
@@ -296,6 +375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider=args.provider,
             allow_paid=args.allow_paid,
             image=args.image,
+            worker_image_manifest_diagnostic=args.worker_image_manifest_diagnostic,
             warm_candidates=args.warm_candidate,
             marker_timeout=args.marker_timeout,
             serve_idle_timeout_s=args.serve_idle_timeout,
