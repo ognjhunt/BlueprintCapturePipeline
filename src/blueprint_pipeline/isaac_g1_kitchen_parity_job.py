@@ -34,7 +34,11 @@ from typing import Any, Mapping, Sequence
 
 from .common import write_json
 from .evaluation_run import compile_evaluation_run
-from .g1_kitchen_evaluation_run_adapter import build_g1_kitchen_evaluation_run_spec
+from .evaluation_run_execution import execute_evaluation_run
+from .g1_kitchen_evaluation_run_adapter import (
+    build_g1_kitchen_cli_evaluation_run,
+    build_g1_kitchen_evaluation_run_spec,
+)
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .g1_kitchen_bundle_compatibility import (
     build_bundle_compatibility,
@@ -1573,6 +1577,7 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
 
 def run_isaac_g1_kitchen_parity_job(
     *, scenarios: Sequence[dict], out_dir: str | Path, kitchen_asset_dir: str | Path | None = None,
+    evaluation_run_id: str | None = None,
     kitchen_url: str | None = None,
     g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
     steps: int = 64, provider: str = DEFAULT_ISAAC_REVIEW_PROVIDER, allow_paid: bool = False,
@@ -1619,7 +1624,6 @@ def run_isaac_g1_kitchen_parity_job(
     worker_image_manifest_diagnostic: str | Path | None = None,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan.
-
     Warm serve mode (``serve=True``): presign a job-inbox channel, launch ONE pod with ``--serve``
     (boots Isaac + loads the scene once, then polls the inbox), wait for its readiness marker, and
     return WITH THE POD LEFT RUNNING (no watch_and_collect / teardown). The caller drives it with a
@@ -1890,7 +1894,7 @@ def run_isaac_g1_kitchen_parity_job(
             "archive_sha256": kitchen_asset_inventory.get("archive_sha256"),
         }
     evaluation_run_spec = build_g1_kitchen_evaluation_run_spec(
-        out_dir=out_dir, scenarios=scenarios, kitchen_uri=kitchen_url,
+        out_dir=out_dir, run_id=evaluation_run_id, scenarios=scenarios, kitchen_uri=kitchen_url,
         kitchen_main_usd_relative=kitchen_main_usd_relative,
         kitchen_asset_inventory=kitchen_asset_inventory, g1_usd=g1_usd,
         policy_id=policy_id, providers=provider_names, selected_image=selected_image,
@@ -2867,56 +2871,28 @@ def main(argv=None) -> int:
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
         scenarios = scenarios.get("scenarios", [])
-    m = run_isaac_g1_kitchen_parity_job(
-        scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
-        kitchen_url=args.kitchen_url,
-        g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
-        width=args.width, height=args.height, fps=args.fps,
-        groot_policy_command=args.groot_policy_command,
-        groot_policy_command_timeout_seconds=args.groot_policy_command_timeout_seconds,
-        allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,
-        cold=args.cold, image=args.image, max_seconds=args.max_seconds,
-        worker_image_manifest_diagnostic=args.worker_image_manifest_diagnostic,
-        max_spend_usd=args.max_spend_usd,
-        container_disk_gb=args.container_disk_gb, volume_gb=args.volume_gb,
-        warm_candidates=tuple(args.warm_candidate or ()),
-        warm_only=args.warm_only,
-        serve=args.serve,
-        serve_idle_timeout_s=args.serve_idle_timeout,
-        serve_max_jobs=args.serve_max_jobs,
-        serve_ready_timeout=args.serve_ready_timeout,
-        image_startup_canary=args.image_startup_canary,
-        supervised_startup=args.supervised_startup,
-        marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
-        post_marker_progress_timeout=args.post_marker_progress_timeout,
-        startup_no_runtime_timeout=args.startup_no_runtime_timeout,
-        cold_race_contenders=args.cold_race_contenders,
-        vast_max_hourly_rate_usd=args.vast_max_hourly_rate,
-        warmup=args.warmup,
-        articulated=args.articulated, cheap_collision=args.cheap_collision,
-        physics_articulation_drive=args.physics_articulation_drive,
-        dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
-        settle_seconds=args.settle_seconds, focus_radius=args.focus_radius,
-        keep_objects=args.keep_objects, per_scenario_seconds=args.per_scenario_seconds,
-        manipulation_cam=args.manipulation_cam,
-        manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
-        manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
-        dynamic_episode_termination=not args.no_dynamic_episode_termination,
-        episode_max_steps=args.episode_max_steps,
-        dynamic_episode_check_every=args.dynamic_episode_check_every,
-        capture_every=args.capture_every,
-        fill_light_intensity=args.fill_light_intensity,
-        neutral_environment=args.neutral_environment,
-        robot_review_material_override=args.robot_review_material_override,
-        robot_review_material_mode=args.robot_review_material_mode,
-        kinematic_arm_pose=args.kinematic_arm_pose,
-        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
-        manipulation_stand=args.manipulation_stand,
-        placement_topdown_capture=not args.no_placement_topdown_capture,
-        render_noise_audit=args.render_noise_audit,
-        audit_high_spp=args.audit_high_spp,
-        audit_warmup_frames=args.audit_warmup_frames,
-        audit_boost_light_intensity=args.audit_boost_light_intensity)
+    evaluation_spec, execution_context = build_g1_kitchen_cli_evaluation_run(
+        args,
+        scenarios=scenarios,
+    )
+    execution = execute_evaluation_run(
+        evaluation_spec,
+        output_dir=args.out_dir,
+        allow_execution=True,
+        context=execution_context,
+    )
+    m = dict(execution.adapter_result or execution.manifest)
+    m["evaluation_run_execution"] = {
+        key: execution.manifest.get(key)
+        for key in (
+            "status",
+            "run_id",
+            "spec_digest",
+            "execution_adapter_id",
+            "execution_started",
+            "blockers",
+        )
+    }
     _write_job_manifest(args.out_dir, m)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared", "serving") else 1

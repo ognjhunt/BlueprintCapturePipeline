@@ -370,7 +370,8 @@ def _runtime_profile_errors(spec: EvaluationRunSpec) -> list[str]:
     max_spend = value.get("max_spend_usd")
     if max_spend is not None:
         try:
-            if float(max_spend) <= 0:
+            # Zero is an explicit no-spend ceiling for local/fixture runs.
+            if float(max_spend) < 0:
                 raise ValueError
         except (TypeError, ValueError):
             errors.append("runtime_provider_profile.max_spend_usd:invalid")
@@ -551,4 +552,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

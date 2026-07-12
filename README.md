@@ -160,6 +160,8 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/job_request.json`
 - `robot_eval_jobs/<job_id>/evaluation_run_spec.json`
 - `robot_eval_jobs/<job_id>/evaluation_run_plan.json`
+- `evaluation_run_execution.json` when the canonical Evaluation Run execution authority is used
+- `evaluation_runs/<run_id>/evaluation_run_{spec,plan,execution}.json` for legacy robot-eval inputs translated through the canonical authority
 - `robot_eval_jobs/<job_id>/job_validation.json`
 - `robot_eval_jobs/<job_id>/job_plan.json`
 - `robot_eval_jobs/<job_id>/agent_orchestration_plan.json`

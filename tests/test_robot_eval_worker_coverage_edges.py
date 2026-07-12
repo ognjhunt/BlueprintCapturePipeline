@@ -565,7 +565,9 @@ def test_robot_eval_worker_main_and_selected_runtime_paths(
             "manifest_path": str(fake_result_job / "job_run_manifest.json"),
         }
 
-    monkeypatch.setattr(rew, "build_robot_eval_job", fake_build_robot_eval_job)
+    monkeypatch.setattr(
+        rew, "execute_legacy_robot_eval_request_as_evaluation_run", fake_build_robot_eval_job
+    )
     startup_mod = types.ModuleType("blueprint_pipeline.robot_eval_startup_architecture_audit")
     startup_mod.build_robot_eval_startup_architecture_audit = lambda **kwargs: {
         "status": "passed",
@@ -649,7 +651,9 @@ def test_robot_eval_worker_failure_fallback_and_finalizer_upload_edges(
     def raising_build(**kwargs: object) -> dict[str, object]:
         raise RuntimeError("orchestrator failed")
 
-    monkeypatch.setattr(rew, "build_robot_eval_job", raising_build)
+    monkeypatch.setattr(
+        rew, "execute_legacy_robot_eval_request_as_evaluation_run", raising_build
+    )
     runtime = rew.run_robot_eval_worker(
         manifest_uri=str(manifest_path),
         work_dir=tmp_path / "worker-orchestrator-failed",
@@ -679,7 +683,9 @@ def test_robot_eval_worker_failure_fallback_and_finalizer_upload_edges(
         "blueprint_pipeline.robot_eval_startup_architecture_audit",
         startup_mod,
     )
-    monkeypatch.setattr(rew, "build_robot_eval_job", blocked_build)
+    monkeypatch.setattr(
+        rew, "execute_legacy_robot_eval_request_as_evaluation_run", blocked_build
+    )
     _write_json(
         manifest_path,
         {
@@ -712,7 +718,9 @@ def test_robot_eval_worker_failure_fallback_and_finalizer_upload_edges(
             "manifest_path": str(job_upload_dir / "job_run_manifest.json"),
         }
 
-    monkeypatch.setattr(rew, "build_robot_eval_job", completed_build)
+    monkeypatch.setattr(
+        rew, "execute_legacy_robot_eval_request_as_evaluation_run", completed_build
+    )
     monkeypatch.setattr(
         rew,
         "_copy_artifacts",

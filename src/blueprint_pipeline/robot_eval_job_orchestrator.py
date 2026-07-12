@@ -80,7 +80,11 @@ from .robot_eval_job_request_contract import (
     ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
     ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
 )
-from .robot_eval_evaluation_run_adapter import build_robot_eval_evaluation_run_spec
+from .robot_eval_evaluation_run_adapter import (
+    build_robot_eval_evaluation_run_spec,
+    execute_legacy_robot_eval_request_as_evaluation_run,
+    execute_robot_eval_cli_evaluation_run,
+)
 from .scene_asset_preflight import build_scene_asset_preflight
 from .security_controls import contained_path, strict_identifier
 from .simulation_automation import build_simulation_automation
@@ -9917,7 +9921,7 @@ def run_robot_eval_job_request_inbox(
             queued_dir = job_queue_root / job_id
             ensure_dir(queued_dir)
             write_json(queued_dir / "job_request.json", request)
-            result = build_robot_eval_job(
+            result = execute_legacy_robot_eval_request_as_evaluation_run(
                 capture_root=request_context.capture_root,
                 job_request=request,
                 job_id=job_id,
@@ -10152,6 +10156,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--job-request", default=None, help="Robot eval job request JSON")
     parser.add_argument("--job-id", default=None, help="Deterministic job id")
     parser.add_argument(
+        "--evaluation-run-spec",
+        default=None,
+        help="Authoritative evaluation_run.v1 JSON; mutually exclusive with legacy requests",
+    )
+    parser.add_argument("--evaluation-run-output-dir", default=None)
+    parser.add_argument(
         "--job-request-inbox",
         default=None,
         help="Directory of robot_eval_job_request.v1 JSON files to run automatically",
@@ -10293,6 +10303,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         simulator_commands = _parse_simulator_commands(args.simulator_command)
         policy_execution_commands = _parse_policy_execution_commands(args.policy_execution_command)
         wam_provider_commands = parse_wam_provider_commands(args.wam_provider_command)
+        if args.evaluation_run_spec:
+            if args.job_request or args.job_id or args.job_request_inbox:
+                raise ValueError(
+                    "--evaluation-run-spec is mutually exclusive with legacy request inputs"
+                )
+            execution = execute_robot_eval_cli_evaluation_run(
+                args,
+                agent_adapter=_agent_adapter_from_mode(
+                    args.agent_mode,
+                    allow_live_operator=args.allow_live_agent_operator,
+                ),
+                simulator_commands=simulator_commands,
+                policy_execution_commands=policy_execution_commands,
+                wam_provider_commands=wam_provider_commands,
+            )
+            result = dict(execution.adapter_result or execution.manifest)
+            print(f"[robot-eval-job] evaluation_run={execution.manifest['spec_digest']}")
+            print(f"[robot-eval-job] status={result['status']}")
+            return _robot_eval_exit_code(result)
         if args.job_request_inbox:
             result = run_robot_eval_job_request_inbox(
                 capture_root=args.capture_root,
@@ -10347,7 +10376,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise ValueError(
                 "--job-request and --job-id are required unless --job-request-inbox is provided"
             )
-        result = build_robot_eval_job(
+        result = execute_legacy_robot_eval_request_as_evaluation_run(
             capture_root=args.capture_root,
             job_request=args.job_request,
             job_id=args.job_id,

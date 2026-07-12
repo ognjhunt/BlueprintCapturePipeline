@@ -22,10 +22,10 @@ from .logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .preflight_capture import build_capture_preflight_report
-from .robot_eval_job_orchestrator import (
-    build_robot_eval_job,
-    run_robot_eval_job_request_inbox,
+from .robot_eval_evaluation_run_adapter import (
+    execute_legacy_robot_eval_request_as_evaluation_run,
 )
+from .robot_eval_job_orchestrator import run_robot_eval_job_request_inbox
 from .synthesis.cosmos_benchmark import run_cosmos_zero_shot_validation_lane
 
 
@@ -826,7 +826,7 @@ def run_end_to_end(
     robot_eval_provider_runtime = None
     if robot_eval_job_request:
         def _robot_eval_job_stage() -> dict[str, Any]:
-            return build_robot_eval_job(
+            return execute_legacy_robot_eval_request_as_evaluation_run(
                 capture_root=context.capture_root,
                 job_request=robot_eval_job_request,
                 job_id=_robot_eval_job_id(

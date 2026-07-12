@@ -16,6 +16,21 @@ an `evaluation_run_plan.v1` artifact before a scene is executed. Compilation
 is side-effect free: it does not stage an asset, launch a provider, invoke a
 policy, or upgrade a proof claim.
 
+Execution goes through the separately gated authority:
+
+```bash
+blueprint-run-evaluation-run \
+  --spec evaluation_run_spec.json \
+  --output-dir output/evaluation-run
+```
+
+That command compiles only. `--allow-execution` is required before it resolves
+and invokes the runtime profile's `execution_adapter_id`. Local materialization
+paths, ephemeral transport credentials, and runtime gates belong in a local
+`--context` JSON file; context values are passed to the adapter but never
+persisted. Every `evaluation_run_execution.v1` artifact binds the adapter result
+to the compiled spec digest.
+
 ```json
 {
   "schema_version": "evaluation_run.v1",
@@ -52,9 +67,9 @@ policy, or upgrade a proof claim.
   "runtime_provider_profile": {
     "adapter_id": "isaac_provider_runtime",
     "adapter_version": "1",
-    "execution_adapter_id": "isaac_generic_evaluation",
+    "execution_adapter_id": "robot_eval_job_orchestrator",
     "profile_id": "isaac-a40",
-    "providers": ["runpod", "vast"],
+    "providers": ["runpod"],
     "simulator": "isaac_sim",
     "max_spend_usd": 2.0
   },
@@ -82,6 +97,27 @@ IDs fail closed. A new robot, policy, scene format, runtime, or proof adapter is
 added by registering an `EvaluationRunAdapterDescriptor`; the compiler itself
 does not change. The built-in registry contains multiple implementations at
 each seam so these are real variation points rather than speculative wrappers.
+
+Runtime dispatch resolves independently through
+`EvaluationRunExecutionRegistry`. The built-in implementations are the generic
+robot-eval orchestrator and the backward-compatible G1/kitchen executor. New
+execution implementations register at that seam without changing the compiler.
+
+## Public execution paths
+
+`blueprint-run-evaluation-run` is the canonical execution command. The
+installed `blueprint-run-robot-eval-job`, robot-eval request inbox, provider
+input preparation, worker, `blueprint-run-e2e`, and real-policy-family harness
+remain supported compatibility inputs. Each translates its legacy request into
+the six-part spec and invokes the same execution authority before the low-level
+robot-eval implementation runs. The low-level `build_robot_eval_job` function
+is an implementation port used by `RobotEvalEvaluationRunExecutor`; it is not a
+separate public contract.
+
+`blueprint-isaac-g1-kitchen-parity` follows the same rule: its CLI arguments are
+translated into an Evaluation Run, and the registered kitchen compatibility
+executor invokes the historical job implementation. Kitchen names remain only
+in that adapter and its evidence artifacts.
 
 ## Proof rule
 

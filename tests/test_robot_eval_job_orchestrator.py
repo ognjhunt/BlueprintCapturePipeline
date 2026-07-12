@@ -20,6 +20,7 @@ from blueprint_pipeline import robot_eval_provider_input_setup as provider_input
 from blueprint_pipeline import robot_eval_job_orchestrator as orchestrator_module
 from blueprint_pipeline import robot_eval_worker as robot_eval_worker_module
 from blueprint_pipeline.evaluation_prep_stage import robot_eval_job_evaluation_prep_surface
+from blueprint_pipeline.evaluation_run_execution import execute_evaluation_run
 from blueprint_pipeline.live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from blueprint_pipeline.post_training_data_package import build_post_training_data_package_export
 from blueprint_pipeline.robot_eval_execution import (
@@ -43,6 +44,9 @@ from blueprint_pipeline.robot_eval_job_orchestrator import (
     build_robot_eval_job,
     resolve_simulator_selection_policy,
     run_robot_eval_job_request_inbox,
+)
+from blueprint_pipeline.robot_eval_evaluation_run_adapter import (
+    build_robot_eval_evaluation_run_spec,
 )
 from blueprint_pipeline.robot_eval_provider_input_setup import (
     prepare_robot_eval_provider_inputs,
@@ -1939,6 +1943,8 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert data_package_export["export_policy"]["deployment_outcome_intake_included"] is True
     assert data_package_export["export_policy"]["live_eval_closure_included"] is True
     assert data_package_export["export_policy"]["robot_eval_report_included"] is True
+
+
     assert data_package_export["claim_boundary"]["rank_fidelity_result_proven"] is False
     assert live_closure["status"] == "local_artifacts_ready_live_external_blocked"
     assert live_closure["repo_local_artifacts_ready"] is True
@@ -1985,6 +1991,98 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert archive_manifest["status"] == "blocked_identity_signing"
     assert archive_manifest["archive"] is None
     assert archive_manifest["identity_signature_present"] is False
+
+
+def test_evaluation_run_is_authoritative_front_door_for_generic_fixture_execution(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request = _full_job_request(capture_root)
+    spec = build_robot_eval_evaluation_run_spec(
+        job_id="job-evaluation-run-authority",
+        request=request,
+        capture_root=capture_root,
+        scene_preflight={},
+        scenario_eval_matrix={
+            "schema_version": "robot_eval_scenario_eval_matrix.v1",
+            "runs": [
+                {
+                    "scenario_eval_run_id": "run-place-return-in-bin",
+                    "scenario_id": "scenario_place_return_in_bin_mobile",
+                    "task_id": "place_return_in_bin",
+                }
+            ],
+        },
+        policy_manifest={
+            "schema_version": "robot_eval_policy_package_manifest.v1",
+            "selected_modalities": ["sim_controller_plugin"],
+        },
+        provisioner="fixture_local",
+        simulator="fixture",
+        budget_usd=5.0,
+        timeout_seconds=30,
+    )
+
+    result = execute_evaluation_run(
+        spec,
+        output_dir=tmp_path / "evaluation-run-authority",
+        allow_execution=True,
+        context={"capture_root": str(capture_root)},
+    )
+
+    assert result.manifest["status"] == "fixture_evaluation_completed"
+    assert result.manifest["execution_adapter_id"] == "robot_eval_job_orchestrator"
+    assert result.manifest["execution_started"] is True
+    assert result.adapter_result["source_spec_is_execution_authority"] is True
+    child_job_dir = Path(str(result.adapter_result["job_dir"]))
+    derived_request = _read_json(child_job_dir / "job_request.json")
+    assert derived_request["provenance"]["source_spec_is_execution_authority"] is True
+    assert derived_request["provenance"]["evaluation_run_spec_digest"] == (
+        result.manifest["spec_digest"]
+    )
+    assert derived_request["requested_tasks"][0]["task_id"] == "place_return_in_bin"
+    assert (tmp_path / "evaluation-run-authority" / "evaluation_run_execution.json").is_file()
+
+
+def test_robot_eval_cli_routes_authoritative_spec_through_evaluation_run_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = tmp_path / "evaluation-run.json"
+    _write_json(spec_path, {"schema_version": "evaluation_run.v1"})
+    captured: dict[str, object] = {}
+
+    def _fake_execute(args, **kwargs):
+        captured["spec"] = args.evaluation_run_spec
+        captured["output"] = args.evaluation_run_output_dir
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            manifest={"spec_digest": "sha256:" + "a" * 64, "status": "completed"},
+            adapter_result={"status": "fixture_evaluation_completed"},
+        )
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "execute_robot_eval_cli_evaluation_run",
+        _fake_execute,
+    )
+
+    exit_code = orchestrator_module.main(
+        [
+            "--capture-root",
+            str(tmp_path / "capture"),
+            "--evaluation-run-spec",
+            str(spec_path),
+            "--evaluation-run-output-dir",
+            str(tmp_path / "output"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["spec"] == str(spec_path)
+    assert captured["output"] == str(tmp_path / "output")
 
 
 def test_robot_eval_job_blocks_unknown_requested_scenario_id(
@@ -8119,7 +8217,11 @@ def test_robot_eval_inbox_blocked_result_is_unprocessed_and_retries_after_restor
             "manifest_path": str(manifest_path),
         }
 
-    monkeypatch.setattr(orchestrator_module, "build_robot_eval_job", blocked_build)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "execute_legacy_robot_eval_request_as_evaluation_run",
+        blocked_build,
+    )
     first = run_robot_eval_job_request_inbox(
         capture_root=capture_root,
         inbox_dir=inbox_dir,
@@ -8142,7 +8244,11 @@ def test_robot_eval_inbox_blocked_result_is_unprocessed_and_retries_after_restor
             "manifest_path": str(manifest_path),
         }
 
-    monkeypatch.setattr(orchestrator_module, "build_robot_eval_job", completed_build)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "execute_legacy_robot_eval_request_as_evaluation_run",
+        completed_build,
+    )
     second = run_robot_eval_job_request_inbox(
         capture_root=capture_root,
         inbox_dir=inbox_dir,
@@ -8179,7 +8285,11 @@ def test_robot_eval_inbox_lock_prevents_concurrent_duplicate_execution(
             "manifest_path": str(manifest_path),
         }
 
-    monkeypatch.setattr(orchestrator_module, "build_robot_eval_job", slow_build)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "execute_legacy_robot_eval_request_as_evaluation_run",
+        slow_build,
+    )
 
     def consume() -> None:
         results.append(
@@ -8216,7 +8326,7 @@ def test_robot_eval_inbox_detects_request_replaced_during_snapshot(
     calls: list[str] = []
     monkeypatch.setattr(
         orchestrator_module,
-        "build_robot_eval_job",
+        "execute_legacy_robot_eval_request_as_evaluation_run",
         lambda **_kwargs: calls.append("build") or {},
     )
 
@@ -8247,7 +8357,7 @@ def test_robot_eval_cli_maps_blocked_and_terminal_results_to_queue_exit_codes(
     }
     monkeypatch.setattr(
         orchestrator_module,
-        "build_robot_eval_job",
+        "execute_legacy_robot_eval_request_as_evaluation_run",
         lambda **_kwargs: dict(result),
     )
     argv = [
@@ -8268,7 +8378,7 @@ def test_robot_eval_cli_maps_blocked_and_terminal_results_to_queue_exit_codes(
 
     monkeypatch.setattr(
         orchestrator_module,
-        "build_robot_eval_job",
+        "execute_legacy_robot_eval_request_as_evaluation_run",
         infrastructure_failure,
     )
     assert orchestrator_module.main(argv) == 70

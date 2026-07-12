@@ -532,7 +532,11 @@ def test_robot_eval_job_build_guards_and_inbox_dedupe(tmp_path: Path, monkeypatc
         _write_json(manifest_path, {"job_id": job_id, "status": "completed"})
         return {"status": "completed", "job_dir": str(job_dir), "manifest_path": str(manifest_path)}
 
-    monkeypatch.setattr(rejo, "build_robot_eval_job", fake_build_robot_eval_job)
+    monkeypatch.setattr(
+        rejo,
+        "execute_legacy_robot_eval_request_as_evaluation_run",
+        fake_build_robot_eval_job,
+    )
     manifest = rejo.run_robot_eval_job_request_inbox(capture_root=capture_root, inbox_dir=inbox)
     assert manifest["processed_count"] == 2
     assert manifest["superseded_request_count"] == 1
@@ -672,7 +676,11 @@ def test_robot_eval_job_command_training_evaluation_projection_and_cli_edges(
     assert rejo._agent_adapter_from_mode("agents-sdk", allow_live_operator=True).__class__.__name__ == "AgentsSdkRobotEvalJobAdapter"
     assert rejo._agent_adapter_from_mode("none", allow_live_operator=False) is None
 
-    monkeypatch.setattr(rejo, "build_robot_eval_job", lambda **_kwargs: {"manifest_path": "/tmp/manifest.json", "status": "completed"})
+    monkeypatch.setattr(
+        rejo,
+        "execute_legacy_robot_eval_request_as_evaluation_run",
+        lambda **_kwargs: {"manifest_path": "/tmp/manifest.json", "status": "completed"},
+    )
     assert rejo.main(["--capture-root", str(tmp_path), "--job-request", str(tmp_path / "request.json"), "--job-id", "job"]) == 0
     assert "manifest=" in capsys.readouterr().out
     monkeypatch.setattr(rejo, "run_robot_eval_job_request_inbox", lambda **_kwargs: {"status": "completed", "processed_count": 2})
