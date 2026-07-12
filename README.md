@@ -12,6 +12,7 @@ AI and engineer orientation maps live under [`docs/architecture/`](docs/architec
 - [`source-of-truth-map.md`](docs/architecture/source-of-truth-map.md)
 - [`command-safety-matrix.md`](docs/architecture/command-safety-matrix.md)
 - [`refactor-hotspots.md`](docs/architecture/refactor-hotspots.md)
+- [`evaluation-run-interface.md`](docs/architecture/evaluation-run-interface.md)
 
 Robot-team buyers: what a Task Evaluation Run / Post-Training Data Package
 contains, how to verify it, and its claim boundaries are documented in
@@ -157,6 +158,8 @@ Artifact families and advisory downstream outputs:
 - `scene_wam_policy_episode_packet/capture_derived_robot_pov_synthesis/<task_robot_profile>/capture_derived_robot_pov_source_qa.json`
 - `scene_wam_policy_episode_packet/capture_derived_robot_pov_synthesis/<task_robot_profile>/capture_derived_robot_pov_recapture_guidance.json`
 - `robot_eval_jobs/<job_id>/job_request.json`
+- `robot_eval_jobs/<job_id>/evaluation_run_spec.json`
+- `robot_eval_jobs/<job_id>/evaluation_run_plan.json`
 - `robot_eval_jobs/<job_id>/job_validation.json`
 - `robot_eval_jobs/<job_id>/job_plan.json`
 - `robot_eval_jobs/<job_id>/agent_orchestration_plan.json`

@@ -1656,6 +1656,8 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     required_outputs = {
         "job_request.json",
         "job_validation.json",
+        "evaluation_run_spec.json",
+        "evaluation_run_plan.json",
         "job_plan.json",
         "agent_orchestration_plan.json",
         "scheduler_decision.json",
@@ -1706,6 +1708,9 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert not (job_dir / "blocked_manifest.json").exists()
 
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    evaluation_run_spec = _read_json(job_dir / "evaluation_run_spec.json")
+    evaluation_run_plan = _read_json(job_dir / "evaluation_run_plan.json")
+    job_plan = _read_json(job_dir / "job_plan.json")
     startup_audit = _read_json(job_dir / "startup_architecture_audit.json")
     validation = _read_json(job_dir / "job_validation.json")
     provisioning = _read_json(job_dir / "gpu_provisioning_result.json")
@@ -1729,6 +1734,18 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     archive_manifest = _read_json(job_dir / "archive_manifest.json")
 
     assert validation["status"] == "passed"
+    assert evaluation_run_plan["status"] == "prepared"
+    assert evaluation_run_spec["schema_version"] == "evaluation_run.v1"
+    assert set(evaluation_run_plan["component_bindings"]) == {
+        "scene_bundle",
+        "robot_adapter",
+        "task_scenario_pack",
+        "policy_adapter",
+        "runtime_provider_profile",
+        "proof_contract",
+    }
+    assert job_plan["evaluation_run"]["spec_digest"] == evaluation_run_plan["spec_digest"]
+    assert validation["evaluation_run_contract"]["status"] == "prepared"
     assert provisioning["status"] == "allocated"
     assert provisioning["provider"] == "fixture_local"
     assert simulator_result["status"] == "completed"
@@ -1912,6 +1929,12 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     )
     assert data_package_export["included_artifacts"]["robot_eval_report_markdown"] == (
         "robot_eval_report.md"
+    )
+    assert data_package_export["included_artifacts"]["evaluation_run_spec"] == (
+        "evaluation_run_spec.json"
+    )
+    assert data_package_export["included_artifacts"]["evaluation_run_plan"] == (
+        "evaluation_run_plan.json"
     )
     assert data_package_export["export_policy"]["deployment_outcome_intake_included"] is True
     assert data_package_export["export_policy"]["live_eval_closure_included"] is True

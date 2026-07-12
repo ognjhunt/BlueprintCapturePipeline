@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import write_json
+from .evaluation_run import compile_evaluation_run
+from .g1_kitchen_evaluation_run_adapter import build_g1_kitchen_evaluation_run_spec
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .g1_kitchen_bundle_compatibility import (
     build_bundle_compatibility,
@@ -1973,6 +1975,33 @@ def run_isaac_g1_kitchen_parity_job(
             "total_bytes": kitchen_asset_inventory.get("total_bytes"),
             "archive_sha256": kitchen_asset_inventory.get("archive_sha256"),
         }
+    evaluation_run_spec = build_g1_kitchen_evaluation_run_spec(
+        out_dir=out_dir, scenarios=scenarios, kitchen_uri=kitchen_url,
+        kitchen_main_usd_relative=kitchen_main_usd_relative,
+        kitchen_asset_inventory=kitchen_asset_inventory, g1_usd=g1_usd,
+        policy_id=policy_id, providers=provider_names, selected_image=selected_image,
+        allow_paid=allow_paid, max_spend_usd=max_spend_usd,
+        image_startup_canary=image_startup_canary, serve=serve,
+        requested_render_settings=requested_render_settings,
+    )
+    evaluation_run_plan = compile_evaluation_run(
+        evaluation_run_spec,
+        output_dir=out_dir / "evaluation_run",
+    )
+    manifest["evaluation_run"] = {
+        "status": evaluation_run_plan["status"],
+        "schema_version": evaluation_run_plan["schema_version"],
+        "run_id": evaluation_run_plan["run_id"],
+        "spec_digest": evaluation_run_plan["spec_digest"],
+        "component_bindings": evaluation_run_plan["component_bindings"],
+        "artifacts": evaluation_run_plan.get("artifacts", {}),
+        "warnings": evaluation_run_plan["validation"]["warnings"],
+        "claim_boundary": evaluation_run_plan["claim_boundary"],
+    }
+    if evaluation_run_plan["status"] != "prepared":
+        manifest["blockers"].append("evaluation_run_contract_blocked")
+        manifest["evaluation_run"]["errors"] = evaluation_run_plan["validation"]["errors"]
+        return manifest
     render_noise_audit_plan = None
     if render_noise_audit:
         from .g1_render_noise_audit import build_variant_plan

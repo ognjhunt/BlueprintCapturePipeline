@@ -1247,6 +1247,20 @@ def test_job_prepared_plan_without_spend(tmp_path: Path, monkeypatch) -> None:
     assert m["launch_request_shape"]["robot_review_material_override"] is True
     assert m["scenario_ids"] == ["entry_to_sink", "narrow_passage_to_sink"]
     assert "git_evidence" in m
+    assert m["evaluation_run"]["status"] == "prepared"
+    assert set(m["evaluation_run"]["component_bindings"]) == {
+        "scene_bundle",
+        "robot_adapter",
+        "task_scenario_pack",
+        "policy_adapter",
+        "runtime_provider_profile",
+        "proof_contract",
+    }
+    evaluation_run_spec = json.loads(
+        (tmp_path / "job" / "evaluation_run" / "evaluation_run_spec.json").read_text()
+    )
+    assert evaluation_run_spec["scene_bundle"]["identity_status"] == "legacy_unverified"
+    assert evaluation_run_spec["metadata"]["scene_specific_name_is_not_platform_contract"]
 
 
 def test_job_prepared_multi_provider_plan_without_spend(tmp_path: Path, monkeypatch) -> None:

@@ -5312,11 +5312,12 @@ def _build_post_training_data_package_export(
     )
     ensure_dir(resolved_output_dir)
     generated_at = utc_now_iso()
-
     included_artifacts: Dict[str, str] = {}
     if resolved_job_dir:
         for key, name in (
             ("job_request", "job_request.json"),
+            ("evaluation_run_spec", "evaluation_run_spec.json"),
+            ("evaluation_run_plan", "evaluation_run_plan.json"),
             ("normalized_attempt_trace", "normalized_attempt_trace.json"),
             ("failure_labels", "failure_labels.json"),
             ("policy_package_manifest", "policy_package_manifest.json"),
@@ -5531,7 +5532,6 @@ def _build_post_training_data_package_export(
         value = _pipeline_artifact(pipeline_dir, relative_path)
         if value:
             included_artifacts[key] = _relative_to(resolved_output_dir, pipeline_dir / value)
-
     for key, relative_path in (
         ("clip_curation_manifest", "derived/clip_curation/clip_curation_manifest.json"),
         ("clip_rejection_manifest", "derived/clip_curation/clip_rejection_manifest.json"),
