@@ -261,7 +261,7 @@ while True:
 '''
 
 IMAGE_STARTUP_CANARY_BOOTSTRAP = r'''
-import os, io, json, time, zipfile, pathlib, urllib.request, shutil, sys, subprocess
+import os, io, json, time, zipfile, pathlib, urllib.request, shutil, sys, subprocess, signal, threading
 from datetime import datetime, timezone
 
 OUT="/workspace/out"
@@ -323,20 +323,57 @@ preflight_cmd=[
     "--smoke-steps", "3",
 ]
 started=time.monotonic()
+preflight_deadline_done=threading.Event()
+preflight_process_holder={}
+def enforce_preflight_deadline():
+    if preflight_deadline_done.wait(930):
+        return
+    timeout_result={
+        "schema_version":"isaac_g1_parity_image_startup_canary.v2",
+        "status":"blocked",
+        "blockers":["isaac_runtime_preflight_process_group_timeout"],
+        "image_startup_canary":True,
+        "generated_at":datetime.now(timezone.utc).isoformat(),
+        "launch_session_id":SESSION,
+        "runtime_preflight_exit_code":124,
+        "runtime_preflight_elapsed_seconds":round(time.monotonic()-started,1),
+        "claim_boundary":"The independent canary watchdog expired before the Isaac RTX preflight returned. This is a bounded startup failure, not simulator, task, policy, or robot-readiness proof.",
+    }
+    preflight_path.write_text(json.dumps(timeout_result, indent=2), encoding="utf-8")
+    pathlib.Path(OUT, "isaac_g1_kitchen_parity_result.json").write_text(json.dumps(timeout_result, indent=2), encoding="utf-8")
+    pathlib.Path(OUT, "isaac_g1_parity_image_startup_canary.json").write_text(json.dumps(timeout_result, indent=2), encoding="utf-8")
+    mark("runner_done", rc=124, image_startup_canary=True, runtime_preflight_status="blocked",
+         watchdog_timeout=True)
+    process=preflight_process_holder.get("process")
+    if process is not None:
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except Exception: pass
+    os._exit(124)
+threading.Thread(target=enforce_preflight_deadline, daemon=True).start()
 try:
     if bundle_error:
         raise RuntimeError("canary_bundle_unavailable:" + bundle_error)
-    completed=subprocess.run(
-        preflight_cmd, capture_output=True, text=True, timeout=900, check=False,
-        env=dict(os.environ),
+    preflight_process=subprocess.Popen(
+        preflight_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=dict(os.environ), start_new_session=True,
     )
-    preflight_rc=completed.returncode
-    preflight_stdout=completed.stdout[-4000:]
-    preflight_stderr=completed.stderr[-4000:]
+    preflight_process_holder["process"]=preflight_process
+    try:
+        preflight_stdout,preflight_stderr=preflight_process.communicate(timeout=900)
+        preflight_rc=preflight_process.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(preflight_process.pid, signal.SIGKILL)
+        preflight_stdout,preflight_stderr=preflight_process.communicate(timeout=30)
+        preflight_rc=124
+        preflight_stderr=(preflight_stderr or "") + "\nisaac_runtime_preflight_process_group_timeout"
+    preflight_stdout=preflight_stdout[-4000:]
+    preflight_stderr=preflight_stderr[-4000:]
 except Exception as exc:
     preflight_rc=124
     preflight_stdout=""
     preflight_stderr=repr(exc)
+finally:
+    preflight_deadline_done.set()
 try:
     preflight=json.loads(preflight_path.read_text(encoding="utf-8"))
 except Exception as exc:

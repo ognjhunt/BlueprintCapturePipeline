@@ -559,6 +559,12 @@ def test_docker_start_cmd_can_run_image_startup_canary() -> None:
     assert "parity_image_startup_canary.py" in body
     assert "isaac_g1_parity_image_startup_canary.v2" in body
     assert "blueprint_pipeline.isaac_worker_runtime_preflight" in body
+    assert "start_new_session=True" in body
+    assert "os.killpg(preflight_process.pid, signal.SIGKILL)" in body
+    assert "isaac_runtime_preflight_process_group_timeout" in body
+    assert "preflight_deadline_done.wait(930)" in body
+    assert 'mark("runner_done", rc=124' in body
+    assert "os._exit(124)" in body
     assert "split_isaac_carrier_plus_signed_blueprint_bundle" in body
     assert "BLUEPRINT_EVAL_MANIFEST_URI" in body
     assert "canary_bundle" in body
