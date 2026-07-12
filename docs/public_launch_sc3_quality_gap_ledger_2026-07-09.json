@@ -5384,7 +5384,7 @@
             {
               "artifact_id": "REL-09-AC-01-EV-01",
               "path": "Dockerfile",
-              "sha256": "sha256:5549a218b828edcce617028a33169aa93f5a4d3712a26ed9e6c5b700daab7ccf",
+              "sha256": "sha256:95c1c32b9fcd381955f36b4d7d0606d4daf22283eb1146f2891db177cc3fb88a",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
