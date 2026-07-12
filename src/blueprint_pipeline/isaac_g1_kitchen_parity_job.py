@@ -32,24 +32,36 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .common import utc_now_iso, write_json
+from .common import write_json
+from .evaluation_run import compile_evaluation_run
+from .g1_kitchen_evaluation_run_adapter import build_g1_kitchen_evaluation_run_spec
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .g1_kitchen_bundle_compatibility import (
     build_bundle_compatibility,
     build_source_tree_identity,
 )
 from .isaac_g1_policy import groot_sonic_isaac_bridge_readiness
+from .isaac_g1_spend_guard import (
+    capacity_preflight_hourly_rate as _capacity_preflight_hourly_rate,
+    isaac_g1_prelaunch_spend_guard as _isaac_g1_prelaunch_spend_guard,
+)
 from .isaac_g1_worker_bootstrap import (
     BOOTSTRAP as BOOTSTRAP,
     IMAGE_STARTUP_CANARY_BOOTSTRAP as IMAGE_STARTUP_CANARY_BOOTSTRAP,
     docker_start_cmd,
 )
 from .isaac_supervised_startup_runtime import run_parity_startup_transaction
+from .worker_image_diagnostic_gate import (
+    DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC as DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC,
+    ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV as ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV,
+    effective_startup_no_runtime_timeout as _effective_startup_no_runtime_timeout,
+    isaac_worker_image_size_diagnostic as _isaac_worker_image_size_diagnostic,
+    worker_image_diagnostic_paid_validation as _worker_image_diagnostic_paid_validation,
+)
 from .isaac_particlefield_render_job import (
     DEFAULT_WARM_CANDIDATES, stage_bundle, watch_and_collect,
 )
 from .isaac_review_media import (
-    _float_or_none,
     _int_or_none,
     _probe_video_file,
     _repair_collected_review_mp4s,
@@ -64,14 +76,23 @@ from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
     close_pending_teardown,
+    mark_pending_teardown_ambiguous,
     open_pending_teardown,
-    provider_state_from_inspect,
+)
+from .paid_provider_lane_lease import (
+    PaidProviderLaneLeaseSet,
+    paid_launch_pending_teardown_max_age as _paid_launch_pending_teardown_max_age,
+)
+from .paid_provider_allocation_lifecycle import (
+    adopt_launch_result as _adopt_paid_launch_result,
+    apply_lifecycle_gate as _apply_paid_lifecycle_gate,
+    block_unbounded_paid_serve as _block_unbounded_paid_serve,
+    finalize_known_allocation as _finalize_paid_allocation,
+    settle_watch_lifecycle as _settle_paid_watch_lifecycle,
+    teardown_proof_from_attempt as _teardown_proof_from_attempt,
+    teardown_proof_from_watch_result as _teardown_proof_from_watch_result,
 )
 from .provider_race import boot_marker_present, race_launch
-from .provider_reliability_manifest import (
-    TEARDOWN_STATUS_SOURCE_PROVIDER_API,
-    build_teardown_proof,
-)
 from .security_controls import (
     exact_https_origin,
     fetch_bounded_https,
@@ -90,6 +111,7 @@ JOB_MANIFEST_FILENAME = _G1_KITCHEN_PACK.proof.job_manifest_filename
 LAUNCH_ATTEMPT_TRACE_FILENAME = _G1_KITCHEN_PACK.proof.launch_attempt_trace_filename
 WORKER_BUNDLE_DIR = _G1_KITCHEN_PACK.scene.worker_bundle_dir
 ISAAC_G1_KITCHEN_PARITY_LANE = _G1_KITCHEN_PACK.runtime.lane_id
+ISAAC_G1_KITCHEN_PARITY_RESOURCE_PREFIX = "blueprint-isaac-g1"
 PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset({
     "digitalocean_gpu_size_region_unavailable",
     "digitalocean_gpu_size_not_rtx_capable",
@@ -341,67 +363,6 @@ def _configured_isaac_worker_image_ref() -> dict:
         "image_ref_file": str(image_ref_file),
         "image_ref_file_present": False,
         "raw_secret_values_recorded": False,
-    }
-
-
-def _isaac_worker_image_size_diagnostic(image_ref: str) -> dict:
-    explicit = _string(os.getenv(ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV))
-    selected = explicit or DEFAULT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC
-    path = Path(selected).expanduser()
-    base = {
-        "env_var": ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC_ENV,
-        "path": str(path),
-        "path_source": "env" if explicit else "default_output_path",
-        "path_present": path.is_file(),
-        "raw_secret_values_recorded": False,
-    }
-    if not path.is_file():
-        return {
-            **base,
-            "status": "missing",
-            "metadata_available_for_selected_image": False,
-        }
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        return {
-            **base,
-            "status": "unreadable",
-            "metadata_available_for_selected_image": False,
-            "error_type": type(exc).__name__,
-        }
-    manifest = dict(payload) if isinstance(payload, dict) else {}
-    manifest_image_ref = _string(manifest.get("image_ref"))
-    resolved_digest_ref = _string(manifest.get("resolved_digest_ref"))
-    matching_refs = {ref for ref in (manifest_image_ref, resolved_digest_ref) if ref}
-    if matching_refs and image_ref and image_ref not in matching_refs:
-        return {
-            **base,
-            "status": "ignored_image_ref_mismatch",
-            "metadata_available_for_selected_image": False,
-            "manifest_image_ref": manifest_image_ref,
-            "selected_image_ref": image_ref,
-        }
-    return {
-        **base,
-        "status": _string(manifest.get("status")) or "completed",
-        "metadata_available_for_selected_image": True,
-        "image_ref": manifest_image_ref or image_ref,
-        "resolved_digest": manifest.get("resolved_digest"),
-        "resolved_digest_ref": resolved_digest_ref or None,
-        "layer_count": manifest.get("layer_count"),
-        "total_compressed_size_bytes": manifest.get("total_compressed_size_bytes"),
-        "largest_layer_size_bytes": manifest.get("largest_layer_size_bytes"),
-        "large_image_pull_risk": bool(manifest.get("large_image_pull_risk")),
-        "split_layer_layout_suitable": bool(manifest.get("split_layer_layout_suitable")),
-        "recommended_startup_no_runtime_timeout_seconds": manifest.get(
-            "recommended_startup_no_runtime_timeout_seconds"
-        ),
-        "proof_boundary": (
-            "Worker image manifest metadata only. This does not prove container "
-            "startup, Isaac Sim execution, rendered RGB quality, WAM quality, or "
-            "robot readiness."
-        ),
     }
 
 
@@ -824,136 +785,6 @@ def _apply_paid_provider_policy(provider_names: Sequence[str], *, allow_paid: bo
     return filtered, policy
 
 
-def _effective_startup_no_runtime_timeout(
-    requested_seconds: int,
-    image_size_diagnostic: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    requested = max(0, int(requested_seconds or 0))
-    raw_recommended = (
-        image_size_diagnostic.get("recommended_startup_no_runtime_timeout_seconds")
-        if isinstance(image_size_diagnostic, Mapping)
-        else None
-    )
-    try:
-        recommended = max(0, int(raw_recommended or 0))
-    except (TypeError, ValueError):
-        recommended = 0
-    effective = 0 if requested == 0 else max(requested, recommended)
-    return {
-        "requested_seconds": requested,
-        "image_manifest_recommended_seconds": recommended or None,
-        "effective_seconds": effective,
-        "raised_to_image_manifest_floor": bool(effective > requested),
-        "disabled": requested == 0,
-        "claim_boundary": (
-            "This timeout protects large-image startup from premature teardown. It does not prove "
-            "the provider host, CUDA runtime, Isaac, rendering, or task execution is healthy."
-        ),
-    }
-
-
-def _isaac_g1_prelaunch_spend_guard(
-    *,
-    allow_paid: bool,
-    provider_name: str,
-    max_spend_usd: float | None,
-    max_seconds: int,
-    max_hourly_rate_usd: float | None,
-    max_hourly_rate_source: str = "configured_provider_ceiling",
-    contender_count: int = 1,
-    marker_timeout_seconds: int = 0,
-    startup_no_runtime_timeout_seconds: int = 0,
-    max_attempts: int = 1,
-) -> dict:
-    env_budget = _float_or_none(os.getenv(ISAAC_G1_MAX_SPEND_USD_ENV))
-    requested_budget = max_spend_usd if max_spend_usd is not None else env_budget
-    hourly_rate = (
-        float(max_hourly_rate_usd)
-        if max_hourly_rate_usd is not None and max_hourly_rate_usd > 0
-        else DEFAULT_VAST_MAX_HOURLY_RATE_USD
-    )
-    seconds = max(0, int(max_seconds or 0))
-    contenders = max(1, int(contender_count or 1))
-    per_attempt_startup_seconds = min(
-        max(0, int(marker_timeout_seconds or 0)),
-        max(0, int(startup_no_runtime_timeout_seconds or 0))
-        or max(0, int(marker_timeout_seconds or 0)),
-    )
-    startup_budget_seconds = per_attempt_startup_seconds * max(1, int(max_attempts or 1))
-    billable_budget_seconds = seconds + startup_budget_seconds
-    estimated_max_spend_usd = round(
-        (hourly_rate * (billable_budget_seconds / 3600.0)) * contenders,
-        4,
-    )
-    blockers: list[str] = []
-    if not allow_paid:
-        blockers.append("paid_launch_not_requested")
-    if requested_budget is None:
-        blockers.append("isaac_g1_max_spend_usd_missing")
-    elif requested_budget <= 0:
-        blockers.append("isaac_g1_max_spend_usd_must_be_positive")
-    elif estimated_max_spend_usd > float(requested_budget):
-        blockers.append("isaac_g1_estimated_spend_exceeds_budget")
-    can_launch = bool(allow_paid and not blockers)
-    return {
-        "schema_version": "isaac_g1_kitchen_parity_prelaunch_spend_guard.v1",
-        "status": "passed" if can_launch else "blocked",
-        "provider": provider_name,
-        "allow_paid": bool(allow_paid),
-        "required_before_provider_launch": True,
-        "can_launch": can_launch,
-        "requested_budget_usd": requested_budget,
-        "budget_source": "argument"
-        if max_spend_usd is not None
-        else ("env" if env_budget is not None else "missing"),
-        "estimated_max_spend_usd": estimated_max_spend_usd,
-        "max_hourly_rate_usd": hourly_rate,
-        "max_hourly_rate_source": str(max_hourly_rate_source),
-        "max_seconds": seconds,
-        "render_budget_seconds": seconds,
-        "startup_budget_seconds": startup_budget_seconds,
-        "billable_budget_seconds": billable_budget_seconds,
-        "marker_timeout_seconds": int(marker_timeout_seconds or 0),
-        "startup_no_runtime_timeout_seconds": int(startup_no_runtime_timeout_seconds or 0),
-        "max_attempts": max(1, int(max_attempts or 1)),
-        "contender_count": contenders,
-        "blockers": blockers,
-        "claim_boundary": {
-            "spend_guard_only": True,
-            "can_launch_is_not_provider_success": True,
-            "can_launch_is_not_task_success": True,
-            "no_provider_api_call_before_can_launch": True,
-        },
-    }
-
-
-def _capacity_preflight_hourly_rate(capacity: Mapping[str, Any] | None) -> float | None:
-    """Return the conservative rate of the provider capacity that can actually be selected.
-
-    Provider launch specs retain a marketplace ceiling for offer filtering. That ceiling is not the
-    selected machine's price and must not inflate the attempt spend estimate after a read-only
-    capacity preflight has already resolved concrete viable size/region rows.
-    """
-    if not isinstance(capacity, Mapping) or capacity.get("status") != "available":
-        return None
-    rates: list[float] = []
-    viable_rows = list(capacity.get("viable_size_regions") or [])
-    viable_rows.extend(capacity.get("viable_gpu_types") or [])
-    for row in viable_rows:
-        if not isinstance(row, Mapping):
-            continue
-        try:
-            rate = float(
-                row.get("price_hourly")
-                or row.get("on_demand_price_usd_per_hour")
-            )
-        except (TypeError, ValueError):
-            continue
-        if rate > 0:
-            rates.append(rate)
-    return max(rates) if rates else None
-
-
 def _paid_worker_image_policy(
     *,
     image: str | None,
@@ -962,6 +793,7 @@ def _paid_worker_image_policy(
     cold: bool,
     warm_only: bool,
     image_startup_canary: bool,
+    worker_image_manifest_diagnostic: str | Path | None = None,
 ) -> tuple[str, dict]:
     cli_image = _string(image)
     image_config = _configured_isaac_worker_image_ref()
@@ -974,8 +806,16 @@ def _paid_worker_image_policy(
         selected_image = _string(image_config.get("image_ref")) or DEFAULT_PARITY_IMAGE_REF
         configured = bool(image_config.get("configured"))
         source = image_config.get("source") or "default_historical_parity_image"
-    image_size_diagnostic = _isaac_worker_image_size_diagnostic(selected_image)
-    blockers: list[str] = []
+    image_size_diagnostic = _isaac_worker_image_size_diagnostic(
+        selected_image, explicit_path=worker_image_manifest_diagnostic
+    )
+    diagnostic_validation = _worker_image_diagnostic_paid_validation(
+        selected_image=selected_image,
+        diagnostic=image_size_diagnostic,
+        allow_paid=allow_paid,
+        image_startup_canary=image_startup_canary,
+    )
+    blockers: list[str] = list(diagnostic_validation["blockers"])
     if allow_paid and not configured and not direct_base_image_allowed:
         blockers.append("prebuilt_isaac_eval_worker_image_ref_missing")
     cold_start_possible = bool(cold or not warm_only)
@@ -1006,6 +846,7 @@ def _paid_worker_image_policy(
         "worker_image_ref_file": image_config.get("image_ref_file"),
         "worker_image_ref_file_present": bool(image_config.get("image_ref_file_present")),
         "worker_image_manifest_diagnostic": image_size_diagnostic,
+        "worker_image_diagnostic_validation": diagnostic_validation,
         "direct_isaac_base_image_runpod_allowed": direct_base_image_allowed,
         "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
         "large_runpod_image_fresh_start_allowed": _env_truthy(
@@ -1214,111 +1055,6 @@ def _launch_failure_blockers(attempts: Sequence[dict]) -> list[str]:
     return final_blockers
 
 
-def _paid_launch_pending_teardown_max_age(
-    *,
-    marker_timeout: int,
-    startup_no_runtime_timeout: int,
-    max_attempts: int,
-) -> int:
-    per_attempt = max(
-        int(marker_timeout or 0),
-        int(startup_no_runtime_timeout or 0),
-        60,
-    )
-    return max(300, per_attempt * max(1, int(max_attempts or 1)) + 1800)
-
-
-def _teardown_proof_from_attempt(
-    *,
-    provider: Any,
-    instance_id: str,
-    teardown: Mapping[str, Any],
-    action: str,
-    generated_at: str | None = None,
-) -> dict[str, Any]:
-    provider_name = _string(getattr(provider, "name", "")) or "unknown"
-    status = _string(teardown.get("status")).lower()
-    action_text = _string(action).lower()
-    if action_text == "stop":
-        return build_teardown_proof(
-            provider=provider_name,
-            allocation_id=instance_id,
-            terminate_requested=False,
-            provider_terminal_status=None,
-            keep_alive_requested=True,
-            keep_alive_reason=status or "stopped_for_warm_reuse",
-        )
-    verification: dict[str, Any] = {}
-    if hasattr(provider, "inspect"):
-        try:
-            verification = provider_state_from_inspect(provider.inspect(instance_id))
-        except Exception as exc:  # noqa: BLE001 - failed verification is evidence, not a crash
-            verification = {
-                "api_confirmed": False,
-                "provider_status": "",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }
-    observed_status = _string(verification.get("provider_status")).lower()
-    if verification.get("api_confirmed") is True and observed_status:
-        return build_teardown_proof(
-            provider=provider_name,
-            allocation_id=instance_id,
-            terminate_requested=True,
-            provider_terminal_status=observed_status,
-            verified_at=generated_at or utc_now_iso(),
-            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API,
-        )
-    return build_teardown_proof(
-        provider=provider_name,
-        allocation_id=instance_id,
-        terminate_requested=True,
-        provider_terminal_status="terminated" if status == "terminated" else status or None,
-        verified_at=generated_at or utc_now_iso() if status == "terminated" else None,
-    )
-
-
-def _teardown_proof_from_watch_result(
-    *,
-    provider_name: str,
-    instance_id: str,
-    watch: Mapping[str, Any],
-) -> dict[str, Any]:
-    teardown = _mapping(watch.get("teardown"))
-    reason = _string(watch.get("teardown_reason")).lower()
-    status = _string(teardown.get("status")).lower()
-    if status in {"stopped", "preserved", "skipped"} or reason in {
-        "left_running_by_request",
-        "runner_done_preserved_for_warm_reuse",
-    }:
-        return build_teardown_proof(
-            provider=provider_name,
-            allocation_id=instance_id,
-            terminate_requested=False,
-            provider_terminal_status=None,
-            keep_alive_requested=True,
-            keep_alive_reason=reason or status or "kept_alive",
-        )
-    verification = _mapping(teardown.get("verification"))
-    observed_status = _string(verification.get("provider_status")).lower()
-    if verification.get("api_confirmed") is True and observed_status:
-        return build_teardown_proof(
-            provider=provider_name,
-            allocation_id=instance_id,
-            terminate_requested=True,
-            provider_terminal_status=observed_status,
-            verified_at=utc_now_iso(),
-            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API,
-        )
-    return build_teardown_proof(
-        provider=provider_name,
-        allocation_id=instance_id,
-        terminate_requested=True,
-        provider_terminal_status="terminated" if status == "terminated" else status or None,
-        verified_at=utc_now_iso() if status == "terminated" else None,
-    )
-
-
 class _ColdCreateContender:
     """Provider proxy for same-provider cold-create racing."""
 
@@ -1351,7 +1087,9 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                              cold: bool = True,
                              allow_cold_fallback: bool = True,
                              startup_no_runtime_timeout: int = 0,
-                             prelaunch_guard: dict | None = None) -> dict:
+                             max_runtime_seconds: int = 0,
+                             prelaunch_guard: dict | None = None,
+                             owned_allocation_sink: dict[str, Any] | None = None) -> dict:
     """Launch a pod, then wait for its container's early heartbeat (``bootstrap.json`` on the
     output URL). RunPod cold pods are ~50% flaky — created + billing but the container never runs.
     If no marker appears within ``marker_timeout``, terminate that pod and retry, so we never pay
@@ -1441,6 +1179,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                     marker_timeout=int(marker_timeout),
                     startup_no_runtime_timeout=int(startup_no_runtime_timeout),
                     max_attempts=int(max_attempts),
+                    max_seconds=int(max_runtime_seconds),
                 ),
             )
             request_for_launch["pending_teardown_record"] = pending_teardown["path"]
@@ -1451,29 +1190,96 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                 cold=cold,
                 allow_cold_fallback=allow_cold_fallback,
             )
-        except Exception:
+        except Exception as exc:
             if pending_teardown:
-                cancel_pending_teardown(
-                    pending_teardown["path"],
-                    reason="provider_launch_raised_before_allocation",
-                )
+                try:
+                    mark_pending_teardown_ambiguous(
+                        pending_teardown["path"],
+                        reason="provider_launch_raised_before_allocation",
+                        evidence={"error_type": type(exc).__name__},
+                    )
+                except Exception:
+                    pass
             raise
-        if pending_teardown:
-            launch["pending_teardown_record"] = pending_teardown["path"]
-            if launch.get("instance_id"):
-                bind_pending_teardown_instance(
-                    pending_teardown["path"], str(launch["instance_id"])
-                )
-        if launch.get("status") != "launched":
-            if pending_teardown and not launch.get("instance_id"):
-                cancel_pending_teardown(
-                    pending_teardown["path"],
-                    reason="launch_returned_no_allocation",
-                    evidence=launch,
-                )
-            attempts.append({"attempt": attempt, "result": "launch_call_failed", "detail": launch})
-            trace["status"] = "launch_call_failed"
+        pending_path = pending_teardown["path"] if pending_teardown else ""
+        if pending_path:
+            launch["pending_teardown_record"] = pending_path
+        returned_instance_id = _string(launch.get("instance_id"))
+        if returned_instance_id and owned_allocation_sink is not None:
+            owned_allocation_sink.clear()
+            owned_allocation_sink.update(
+                {
+                    "provider": prov,
+                    "instance_id": returned_instance_id,
+                    "pending_teardown_record": pending_path,
+                }
+            )
+        ownership = _adopt_paid_launch_result(
+            provider_obj=prov,
+            launch=launch,
+            pending_path=pending_path,
+            bind_pending=bind_pending_teardown_instance,
+            close_pending=close_pending_teardown,
+            teardown_proof_builder=_teardown_proof_from_attempt,
+        )
+        if ownership.get("instance_id") and not ownership.get("ready"):
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "result": "partial_allocation_cleanup_attempted",
+                    "detail": launch,
+                }
+            )
+            trace["status"] = "partial_allocation_retry_blocked"
             _write_launch_attempt_trace(job_dir, trace)
+            return {
+                "status": "blocked",
+                "blockers": ["provider_launch_returned_nonlaunched_allocation"],
+                "attempts": attempts,
+                "partial_allocation_cleanup": ownership,
+                "pending_teardown_record": pending_path or None,
+                "attempt_trace_path": str(trace_path),
+            }
+        if launch.get("status") != "launched":
+            allocation_outcome_ambiguous = False
+            if pending_teardown and not launch.get("instance_id"):
+                if launch.get("allocation_created") is False:
+                    cancel_pending_teardown(
+                        pending_teardown["path"],
+                        reason="launch_returned_explicit_no_allocation",
+                        evidence=launch,
+                    )
+                else:
+                    allocation_outcome_ambiguous = True
+                    try:
+                        mark_pending_teardown_ambiguous(
+                            pending_teardown["path"],
+                            reason="launch_returned_without_explicit_no_allocation",
+                            evidence={"status": launch.get("status"), "blockers": launch.get("blockers")},
+                        )
+                    except Exception:
+                        pass
+            launch_result = (
+                "launch_outcome_ambiguous"
+                if allocation_outcome_ambiguous
+                else "launch_call_failed"
+            )
+            attempts.append({"attempt": attempt, "result": launch_result, "detail": launch})
+            trace["status"] = launch_result
+            _write_launch_attempt_trace(job_dir, trace)
+            if allocation_outcome_ambiguous:
+                return {
+                    "status": "blocked",
+                    "blockers": sorted(
+                        {
+                            "provider_launch_outcome_ambiguous",
+                            *(str(item) for item in (launch.get("blockers") or [])),
+                        }
+                    ),
+                    "attempts": attempts,
+                    "pending_teardown_record": pending_teardown["path"],
+                    "attempt_trace_path": str(trace_path),
+                }
             blockers = {str(b) for b in (launch.get("blockers") or [])}
             if "warm_restart_failed_cold_fallback_disabled" in blockers:
                 return {
@@ -1499,14 +1305,18 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         trace["status"] = "waiting_for_marker"
         _write_launch_attempt_trace(job_dir, trace)
         t0 = time.time()
+        marker_deadline = t0 + max(0, marker_timeout)
         marker_seen = False
         startup_no_runtime = False
         repeated_quarantined_machine = False
-        while time.time() - t0 < marker_timeout:
-            time.sleep(poll)
+        while time.time() < marker_deadline:
+            remaining = marker_deadline - time.time()
+            if remaining <= 0:
+                break
             marker_seen = boot_marker_present(
                 job_dir,
                 expected_launch_session_id=launch_session_id,
+                timeout=max(0.1, min(60.0, remaining)),
                 urlopen=urllib.request.urlopen,
             )
             if marker_seen:
@@ -1572,6 +1382,9 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                                 # protects this run.
                                 pass
                     break
+            remaining = marker_deadline - time.time()
+            if remaining > 0:
+                time.sleep(min(float(poll), remaining))
         attempt_record["elapsed_seconds"] = round(time.time() - t0, 1)
         attempt_record["marker_seen"] = marker_seen
         if marker_seen:
@@ -1582,8 +1395,17 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
             return {"status": "launched", "instance_id": iid, "mode": f"{mode}_marker_verified",
                     "attempts": attempts, "attempt_trace_path": str(trace_path),
                     "pending_teardown_record": launch.get("pending_teardown_record")}
-        if str(launch.get("mode") or "").startswith("warm"):
-            teardown = prov.stop(iid)
+        if (
+            str(launch.get("mode") or "").startswith("warm")
+            and not launch.get("pending_teardown_record")
+        ):
+            try:
+                teardown = prov.stop(iid)
+            except Exception as exc:  # noqa: BLE001 - inspect below is authoritative
+                teardown = {
+                    "status": "stop_failed",
+                    "error_type": type(exc).__name__,
+                }
             attempt_record["teardown"] = teardown
             attempt_record["teardown_action"] = "stop"
             attempt_record["result"] = (
@@ -1596,7 +1418,13 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                 )
             )
         else:
-            teardown = prov.terminate(iid)  # flaky cold pod (billing but not running) -> kill and retry
+            try:
+                teardown = prov.terminate(iid)
+            except Exception as exc:  # noqa: BLE001 - inspect below is authoritative
+                teardown = {
+                    "status": "terminate_failed",
+                    "error_type": type(exc).__name__,
+                }
             attempt_record["teardown"] = teardown
             attempt_record["teardown_action"] = "terminate"
             attempt_record["result"] = (
@@ -1621,6 +1449,23 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                 proof,
             )
             attempt_record["pending_teardown_status"] = closure.get("status")
+            if (
+                str(proof.get("status") or "").upper() != "PASS"
+                or closure.get("status") != "closed"
+            ):
+                attempt_record["result"] = "teardown_unverified_retry_blocked"
+                trace["status"] = attempt_record["result"]
+                trace["blockers"] = ["provider_teardown_unverified_before_retry"]
+                _write_launch_attempt_trace(job_dir, trace)
+                return {
+                    "status": "blocked",
+                    "blockers": ["provider_teardown_unverified_before_retry"],
+                    "attempts": attempts,
+                    "pending_teardown_record": launch.get(
+                        "pending_teardown_record"
+                    ),
+                    "attempt_trace_path": str(trace_path),
+                }
         trace["status"] = attempt_record["result"]
         _write_launch_attempt_trace(job_dir, trace)
     trace["status"] = "blocked"
@@ -1773,6 +1618,7 @@ def run_isaac_g1_kitchen_parity_job(
     supervised_startup: bool | None = None,
     groot_policy_command: str = "",
     groot_policy_command_timeout_seconds: float | None = None,
+    worker_image_manifest_diagnostic: str | Path | None = None,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan.
 
@@ -1802,6 +1648,8 @@ def run_isaac_g1_kitchen_parity_job(
         "expected_frame_count_per_scenario": int(steps),
     }
     manifest["requested_render_settings"] = requested_render_settings
+    if allow_paid and serve:
+        return _block_unbounded_paid_serve(manifest)
     configured_warm_candidates = tuple(
         c.strip()
         for c in (os.getenv("BLUEPRINT_RUNPOD_WARM_CANDIDATES") or "").split(",")
@@ -1859,6 +1707,7 @@ def run_isaac_g1_kitchen_parity_job(
         cold=cold,
         warm_only=warm_only,
         image_startup_canary=image_startup_canary,
+        worker_image_manifest_diagnostic=worker_image_manifest_diagnostic,
     )
     manifest["worker_image_policy"] = image_policy
     if image_policy.get("status") == "blocked":
@@ -2042,6 +1891,33 @@ def run_isaac_g1_kitchen_parity_job(
             "total_bytes": kitchen_asset_inventory.get("total_bytes"),
             "archive_sha256": kitchen_asset_inventory.get("archive_sha256"),
         }
+    evaluation_run_spec = build_g1_kitchen_evaluation_run_spec(
+        out_dir=out_dir, scenarios=scenarios, kitchen_uri=kitchen_url,
+        kitchen_main_usd_relative=kitchen_main_usd_relative,
+        kitchen_asset_inventory=kitchen_asset_inventory, g1_usd=g1_usd,
+        policy_id=policy_id, providers=provider_names, selected_image=selected_image,
+        allow_paid=allow_paid, max_spend_usd=max_spend_usd,
+        image_startup_canary=image_startup_canary, serve=serve,
+        requested_render_settings=requested_render_settings,
+    )
+    evaluation_run_plan = compile_evaluation_run(
+        evaluation_run_spec,
+        output_dir=out_dir / "evaluation_run",
+    )
+    manifest["evaluation_run"] = {
+        "status": evaluation_run_plan["status"],
+        "schema_version": evaluation_run_plan["schema_version"],
+        "run_id": evaluation_run_plan["run_id"],
+        "spec_digest": evaluation_run_plan["spec_digest"],
+        "component_bindings": evaluation_run_plan["component_bindings"],
+        "artifacts": evaluation_run_plan.get("artifacts", {}),
+        "warnings": evaluation_run_plan["validation"]["warnings"],
+        "claim_boundary": evaluation_run_plan["claim_boundary"],
+    }
+    if evaluation_run_plan["status"] != "prepared":
+        manifest["blockers"].append("evaluation_run_contract_blocked")
+        manifest["evaluation_run"]["errors"] = evaluation_run_plan["validation"]["errors"]
+        return manifest
     render_noise_audit_plan = None
     if render_noise_audit:
         from .g1_render_noise_audit import build_variant_plan
@@ -2214,7 +2090,7 @@ def run_isaac_g1_kitchen_parity_job(
         max_seconds=max_seconds,
         max_hourly_rate_usd=capacity_hourly_rate or spec.max_hourly_rate_usd,
         max_hourly_rate_source=(
-            "provider_capacity_preflight_viable_inventory"
+            "provider_adapter_pre_mutation_verified_ceiling"
             if capacity_hourly_rate is not None
             else "configured_provider_ceiling"
         ),
@@ -2229,9 +2105,28 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["blockers"].extend(prelaunch_spend_guard.get("blockers") or [])
         manifest["blockers"] = sorted(set(manifest["blockers"]))
         return manifest
-    # Cold Isaac image pulls are sized from the selected registry manifest when that diagnostic is
-    # available.  The effective pre-runtime timeout above is never shorter than the measured-image
-    # recommendation, so a slow pull is not mislabeled as a dead host.
+    request_body["max_hourly_rate_usd"] = prelaunch_spend_guard[
+        "max_hourly_rate_usd"
+    ]
+    lease_provider_objects = {
+        str(p.name): p
+        for p in (list(runnable_providers) if multi_provider_race else [prov])
+    }
+    lease_set = PaidProviderLaneLeaseSet(
+        providers=lease_provider_objects,
+        lane=ISAAC_G1_KITCHEN_PARITY_LANE,
+        job_dir=str(job_dir),
+        resource_name_prefix=ISAAC_G1_KITCHEN_PARITY_RESOURCE_PREFIX,
+    )
+    lease_summary = lease_set.acquire()
+    manifest["paid_provider_lane_lease"] = lease_summary
+    if lease_summary.get("status") != "acquired":
+        manifest["blockers"].extend(lease_summary.get("blockers") or [])
+        manifest["blockers"] = sorted(set(manifest["blockers"]))
+        return manifest
+
+    _release_lane_leases = lease_set.release
+
     collect_job_dir = job_dir
     collect_provider = prov
     supervised_watch_result: dict[str, Any] | None = None
@@ -2243,23 +2138,34 @@ def run_isaac_g1_kitchen_parity_job(
             manifest["blockers"].append(
                 "supervised_startup_worker_image_manifest_diagnostic_missing"
             )
+            _release_lane_leases(
+                "blocked_before_any_provider_mutation",
+                provider_mutation_started=False,
+            )
             return manifest
         supervised_request = dict(request_body)
         supervised_request["prelaunch_spend_guard"] = prelaunch_spend_guard
-        supervised = run_parity_startup_transaction(
-            provider=prov,
-            job_dir=job_dir,
-            request_body=supervised_request,
-            out_dir=out_dir,
-            image_ref=str(selected_image),
-            image_manifest_diagnostic=diagnostic,
-            capacity=capacity,
-            max_attempts=max_attempts,
-            marker_timeout_seconds=effective_marker_timeout,
-            max_seconds=max_seconds,
-            post_marker_progress_timeout=post_marker_progress_timeout,
-            prelaunch_spend_guard=prelaunch_spend_guard,
-        )
+        try:
+            supervised = run_parity_startup_transaction(
+                provider=prov,
+                job_dir=job_dir,
+                request_body=supervised_request,
+                out_dir=out_dir,
+                image_ref=str(selected_image),
+                image_manifest_diagnostic=diagnostic,
+                capacity=capacity,
+                max_attempts=max_attempts,
+                marker_timeout_seconds=effective_marker_timeout,
+                max_seconds=max_seconds,
+                post_marker_progress_timeout=post_marker_progress_timeout,
+                prelaunch_spend_guard=prelaunch_spend_guard,
+            )
+        except Exception:
+            _release_lane_leases(
+                "supervised_startup_raised",
+                provider_mutation_started=True,
+            )
+            raise
         manifest["startup_supervisor"] = supervised["startup_supervisor"]
         launch = dict(supervised["launch"])
         supervised_watch_result = supervised.get("watch")
@@ -2295,6 +2201,9 @@ def run_isaac_g1_kitchen_parity_job(
                 encoding="utf-8",
             )
             body = provider_obj.build_request(spec, contender_job_dir)
+            body["max_hourly_rate_usd"] = prelaunch_spend_guard[
+                "max_hourly_rate_usd"
+            ]
             request_for_launch = _request_with_launch_session_nonce(body, launch_session_id)
             request_for_launch["prelaunch_spend_guard"] = prelaunch_spend_guard
             return request_for_launch
@@ -2317,24 +2226,39 @@ def run_isaac_g1_kitchen_parity_job(
         race_rounds = 0
         for _race_round in range(max(1, int(max_attempts))):
             race_rounds += 1
-            race = race_launch(
-                race_contender_providers,
-                _race_request,
-                marker_check=_race_marker_check,
-                marker_timeout=effective_marker_timeout,
-                job_dir=job_dir,
-                cold=cold,
-                poll_interval=max(1.0, min(15.0, float(effective_marker_timeout))),
-                launch_kwargs=lambda _p: {"allow_cold_fallback": not warm_only},
-                prelaunch_guard=prelaunch_spend_guard,
-                pending_teardown_lane=ISAAC_G1_KITCHEN_PARITY_LANE,
-                pending_teardown_max_age_seconds=_paid_launch_pending_teardown_max_age(
-                    marker_timeout=int(effective_marker_timeout),
-                    startup_no_runtime_timeout=int(effective_startup_no_runtime_timeout),
-                    max_attempts=int(max_attempts),
-                ),
-            )
+            try:
+                race = race_launch(
+                    race_contender_providers,
+                    _race_request,
+                    marker_check=_race_marker_check,
+                    marker_timeout=effective_marker_timeout,
+                    job_dir=job_dir,
+                    cold=cold,
+                    poll_interval=max(1.0, min(15.0, float(effective_marker_timeout))),
+                    launch_kwargs=lambda _p: {"allow_cold_fallback": not warm_only},
+                    prelaunch_guard=prelaunch_spend_guard,
+                    pending_teardown_lane=ISAAC_G1_KITCHEN_PARITY_LANE,
+                    pending_teardown_max_age_seconds=_paid_launch_pending_teardown_max_age(
+                        marker_timeout=int(effective_marker_timeout),
+                        startup_no_runtime_timeout=int(
+                            effective_startup_no_runtime_timeout
+                        ),
+                        max_attempts=int(max_attempts),
+                        max_seconds=int(max_seconds),
+                    ),
+                )
+            except Exception:
+                _release_lane_leases(
+                    "provider_race_raised",
+                    provider_mutation_started=True,
+                )
+                raise
             if race.get("status") == "launched":
+                break
+            if (
+                race.get("paid_retry_safe") is not True
+                or race.get("reason") != "all_providers_dudded"
+            ):
                 break
         manifest["race_rounds"] = race_rounds
         manifest["race_staging"] = race_stage_records
@@ -2354,15 +2278,44 @@ def run_isaac_g1_kitchen_parity_job(
         else:
             launch = race
     else:
-        launch = launch_with_marker_retry(prov, job_dir, request_body,
-                                          marker_timeout=effective_marker_timeout,
-                                          max_attempts=max_attempts,
-                                          cold=cold,
-                                          allow_cold_fallback=not warm_only,
-                                          startup_no_runtime_timeout=(
-                                              effective_startup_no_runtime_timeout
-                                          ),
-                                          prelaunch_guard=prelaunch_spend_guard)
+        direct_owned_allocation: dict[str, Any] = {}
+        try:
+            launch = launch_with_marker_retry(
+                prov,
+                job_dir,
+                request_body,
+                marker_timeout=effective_marker_timeout,
+                max_attempts=max_attempts,
+                cold=cold,
+                allow_cold_fallback=not warm_only,
+                startup_no_runtime_timeout=effective_startup_no_runtime_timeout,
+                max_runtime_seconds=max_seconds,
+                prelaunch_guard=prelaunch_spend_guard,
+                owned_allocation_sink=direct_owned_allocation,
+            )
+        except BaseException:
+            if direct_owned_allocation.get("instance_id"):
+                try:
+                    manifest["launch_exception_cleanup"] = _finalize_paid_allocation(
+                        provider_obj=direct_owned_allocation["provider"],
+                        instance_id=str(direct_owned_allocation["instance_id"]),
+                        pending_path=_string(
+                            direct_owned_allocation.get("pending_teardown_record")
+                        ),
+                        reason="exception_after_known_provider_allocation",
+                        teardown_proof_builder=_teardown_proof_from_attempt,
+                        close_pending=close_pending_teardown,
+                        release_lane=_release_lane_leases,
+                    )
+                except BaseException as cleanup_exc:
+                    manifest["launch_exception_cleanup_error_type"] = type(
+                        cleanup_exc
+                    ).__name__
+            _release_lane_leases(
+                "provider_launch_raised",
+                provider_mutation_started=True,
+            )
+            raise
         manifest["launch"] = launch
     if launch.get("status") != "launched":
         for blocker in launch.get("blockers") or []:
@@ -2379,6 +2332,10 @@ def run_isaac_g1_kitchen_parity_job(
         )
         if failed_launch_blocker not in manifest["blockers"]:
             manifest["blockers"].append(failed_launch_blocker)
+        _release_lane_leases(
+            "launch_failed_all_attempts_closed",
+            provider_mutation_started=True,
+        )
         return manifest
     pending_teardown_record = _string(launch.get("pending_teardown_record"))
     if pending_teardown_record:
@@ -2387,8 +2344,25 @@ def run_isaac_g1_kitchen_parity_job(
         # Warm pod: leave it RUNNING. Wait for the serve-ready marker, then hand the caller the inbox
         # PUT + output GET urls for its WarmPoolClient. NO watch_and_collect / teardown here — the warm
         # pod must stay alive across the caller's live job submissions; the caller tears it down.
-        ready = _await_warm_serve_ready(job_dir, instance_id=launch["instance_id"],
-                                        timeout_s=serve_ready_timeout)
+        try:
+            ready = _await_warm_serve_ready(
+                job_dir,
+                instance_id=launch["instance_id"],
+                timeout_s=serve_ready_timeout,
+            )
+        except Exception as exc:
+            manifest["warm_serve_exception_cleanup"] = _finalize_paid_allocation(
+                provider_obj=prov,
+                instance_id=str(launch["instance_id"]),
+                pending_path=pending_teardown_record,
+                reason="warm_serve_readiness_raised",
+                teardown_proof_builder=_teardown_proof_from_attempt,
+                close_pending=close_pending_teardown,
+                release_lane=_release_lane_leases,
+            )
+            manifest["blockers"].append("warm_serve_readiness_raised")
+            manifest["error_type"] = type(exc).__name__
+            return manifest
         manifest["warm_serve"] = {
             "instance_id": launch["instance_id"],
             "ready": bool(ready.get("ready")),
@@ -2402,6 +2376,11 @@ def run_isaac_g1_kitchen_parity_job(
             manifest["warm_serve"]["pending_teardown_record"] = pending_teardown_record
         if ready.get("ready"):
             manifest["status"] = "serving"
+            # Pod intentionally left running; the lease stays held so no
+            # second agent mutates the lane underneath the live serve pod.
+            lease_summary["retained"] = {
+                "reason": "warm_serve_pod_intentionally_left_running",
+            }
         else:
             try:
                 teardown = prov.terminate(launch["instance_id"])
@@ -2421,23 +2400,60 @@ def run_isaac_g1_kitchen_parity_job(
                     action="terminate",
                 )
                 manifest["warm_serve"]["not_ready_teardown_proof"] = proof
-                closure = close_pending_teardown(pending_teardown_record, proof)
+                try:
+                    closure = close_pending_teardown(pending_teardown_record, proof)
+                except Exception:
+                    _release_lane_leases(
+                        "warm_serve_pending_teardown_close_raised",
+                        provider_mutation_started=True,
+                    )
+                    raise
                 manifest["warm_serve"]["pending_teardown_status"] = closure.get(
                     "status"
                 )
             manifest["blockers"].append("warm_serve_not_ready")
+            _release_lane_leases(
+                "warm_serve_not_ready_terminated",
+                provider_mutation_started=True,
+            )
         return manifest
     render_out = out_dir / "render_output"
-    result = supervised_watch_result or watch_and_collect(
-        collect_job_dir,
-        render_out,
-        launch["instance_id"],
-        provider=collect_provider,
-        max_seconds=max_seconds,
-        preserve_instance=True,
-        preserve_blocked_instance=not image_startup_canary,
-        progress_timeout_seconds=post_marker_progress_timeout,
-    )
+    try:
+        result = supervised_watch_result or watch_and_collect(
+            collect_job_dir,
+            render_out,
+            launch["instance_id"],
+            provider=collect_provider,
+            max_seconds=max_seconds,
+            stop_on_success=False,
+            preserve_instance=False,
+            preserve_blocked_instance=False,
+            progress_timeout_seconds=post_marker_progress_timeout,
+        )
+    except BaseException as exc:
+        try:
+            manifest["watch_exception_cleanup"] = _finalize_paid_allocation(
+                provider_obj=collect_provider,
+                instance_id=str(launch["instance_id"]),
+                pending_path=pending_teardown_record,
+                reason="watch_and_collect_raised",
+                teardown_proof_builder=_teardown_proof_from_attempt,
+                close_pending=close_pending_teardown,
+                release_lane=_release_lane_leases,
+            )
+        except BaseException as cleanup_exc:
+            manifest["watch_exception_cleanup_error_type"] = type(
+                cleanup_exc
+            ).__name__
+            _release_lane_leases(
+                "watch_exception_cleanup_raised",
+                provider_mutation_started=True,
+            )
+        if not isinstance(exc, Exception):
+            raise
+        manifest["blockers"].append("watch_and_collect_raised")
+        manifest["error_type"] = type(exc).__name__
+        return manifest
     manifest["render"] = {
         "status": result.get("status"),
         "elapsed_seconds": result.get("elapsed_seconds"),
@@ -2454,16 +2470,23 @@ def run_isaac_g1_kitchen_parity_job(
             "provider_snapshot_before_teardown"
         ),
     }
-    if pending_teardown_record and not supervised_startup:
-        proof = _teardown_proof_from_watch_result(
-            provider_name=getattr(collect_provider, "name", "unknown"),
-            instance_id=launch["instance_id"],
-            watch=result,
-        )
-        closure = close_pending_teardown(pending_teardown_record, proof)
-        manifest["render"]["teardown_proof"] = proof
+    paid_lifecycle = _settle_paid_watch_lifecycle(
+        provider_name=str(getattr(collect_provider, "name", "unknown")),
+        instance_id=str(launch["instance_id"]),
+        watch=result,
+        pending_path=pending_teardown_record,
+        supervised_startup=bool(supervised_startup),
+        watch_proof_builder=_teardown_proof_from_watch_result,
+        close_pending=close_pending_teardown,
+        release_lane=_release_lane_leases,
+    )
+    if paid_lifecycle.get("teardown_proof") is not None:
+        manifest["render"]["teardown_proof"] = paid_lifecycle["teardown_proof"]
         manifest["render"]["pending_teardown_record"] = pending_teardown_record
-        manifest["render"]["pending_teardown_status"] = closure.get("status")
+        manifest["render"]["pending_teardown_status"] = paid_lifecycle[
+            "pending_teardown_close"
+        ].get("status")
+    manifest["paid_lifecycle"] = paid_lifecycle
     if render_noise_audit:
         audit_worker_result: dict = {}
         try:
@@ -2499,7 +2522,7 @@ def run_isaac_g1_kitchen_parity_job(
                     manifest["blockers"].append(blocker)
             if "render_noise_audit_blocked" not in manifest["blockers"]:
                 manifest["blockers"].append("render_noise_audit_blocked")
-        return manifest
+        return _apply_paid_lifecycle_gate(manifest, paid_lifecycle)
     parity_result = result.get("runner_result") or {}
     try:
         parity_result = json.loads((render_out / "isaac_g1_kitchen_parity_result.json").read_text())
@@ -2589,7 +2612,7 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["blockers"].append("isaac_runner_completed_without_result")
     else:
         manifest["blockers"].append("isaac_runtime_did_not_complete")
-    return manifest
+    return _apply_paid_lifecycle_gate(manifest, paid_lifecycle)
 
 
 def main(argv=None) -> int:
@@ -2726,6 +2749,16 @@ def main(argv=None) -> int:
         help="disable the supervisor only for an explicit legacy/debug paid launch",
     )
     ap.add_argument("--image", default=None)
+    ap.add_argument(
+        "--worker-image-manifest-diagnostic",
+        default=None,
+        help=(
+            "path to the registry manifest diagnostic JSON for the selected worker image "
+            "(isaac_worker_image_manifest_diagnostic.v2). Required to match the exact "
+            "selected digest for paid digest-pinned launches and paid image-startup "
+            "canaries; its measured size drives the startup-no-runtime timeout floor"
+        ),
+    )
     ap.add_argument("--max-seconds", type=int, default=1500)
     ap.add_argument(
         "--max-spend-usd",
@@ -2845,6 +2878,7 @@ def main(argv=None) -> int:
         groot_policy_command_timeout_seconds=args.groot_policy_command_timeout_seconds,
         allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,
         cold=args.cold, image=args.image, max_seconds=args.max_seconds,
+        worker_image_manifest_diagnostic=args.worker_image_manifest_diagnostic,
         max_spend_usd=args.max_spend_usd,
         container_disk_gb=args.container_disk_gb, volume_gb=args.volume_gb,
         warm_candidates=tuple(args.warm_candidate or ()),

@@ -25,6 +25,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+# The manifest compiler is kept beside the pack-oriented spec API because the
+# two contracts intentionally serve different callers. Re-export its stable
+# entrypoints here so existing robot-eval and G1 adapters retain the original
+# ``blueprint_pipeline.evaluation_run`` import surface.
+from .evaluation_run_contract import (
+    DEFAULT_EVALUATION_RUN_ADAPTERS,
+    EVALUATION_RUN_COMPONENTS,
+    EVALUATION_RUN_MODES,
+    EVALUATION_RUN_PLAN_SCHEMA_VERSION,
+    EVALUATION_RUN_SCHEMA_VERSION,
+    EvaluationRunAdapterDescriptor,
+    EvaluationRunAdapterRegistry,
+    compile_evaluation_run,
+    default_evaluation_run_adapter_registry,
+    validate_evaluation_run_spec,
+)
+
 SPEC_SCHEMA_VERSION = "evaluation_run_spec.v1"
 
 _VERSIONED_SCHEMA_RE = re.compile(r"\.v\d+$")
