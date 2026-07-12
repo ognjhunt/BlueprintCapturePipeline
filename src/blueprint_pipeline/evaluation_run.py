@@ -21,7 +21,7 @@ import io
 import json
 import re
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -29,18 +29,20 @@ from typing import Any, Mapping, Sequence
 # two contracts intentionally serve different callers. Re-export its stable
 # entrypoints here so existing robot-eval and G1 adapters retain the original
 # ``blueprint_pipeline.evaluation_run`` import surface.
-from .evaluation_run_contract import (
-    DEFAULT_EVALUATION_RUN_ADAPTERS,
-    EVALUATION_RUN_COMPONENTS,
-    EVALUATION_RUN_MODES,
-    EVALUATION_RUN_PLAN_SCHEMA_VERSION,
-    EVALUATION_RUN_SCHEMA_VERSION,
-    EvaluationRunAdapterDescriptor,
-    EvaluationRunAdapterRegistry,
-    compile_evaluation_run,
-    default_evaluation_run_adapter_registry,
-    validate_evaluation_run_spec,
+from . import evaluation_run_contract as _contract
+
+DEFAULT_EVALUATION_RUN_ADAPTERS = _contract.DEFAULT_EVALUATION_RUN_ADAPTERS
+EVALUATION_RUN_COMPONENTS = _contract.EVALUATION_RUN_COMPONENTS
+EVALUATION_RUN_MODES = _contract.EVALUATION_RUN_MODES
+EVALUATION_RUN_PLAN_SCHEMA_VERSION = _contract.EVALUATION_RUN_PLAN_SCHEMA_VERSION
+EVALUATION_RUN_SCHEMA_VERSION = _contract.EVALUATION_RUN_SCHEMA_VERSION
+EvaluationRunAdapterDescriptor = _contract.EvaluationRunAdapterDescriptor
+EvaluationRunAdapterRegistry = _contract.EvaluationRunAdapterRegistry
+compile_evaluation_run = _contract.compile_evaluation_run
+default_evaluation_run_adapter_registry = (
+    _contract.default_evaluation_run_adapter_registry
 )
+validate_evaluation_run_spec = _contract.validate_evaluation_run_spec
 
 SPEC_SCHEMA_VERSION = "evaluation_run_spec.v1"
 

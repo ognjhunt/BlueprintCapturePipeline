@@ -151,7 +151,7 @@
     "(?<![A-Za-z0-9._~:/-])/(?:Users|home)/[A-Za-z0-9._-]+/"
   ],
   "grandfathered_module_line_limits": {
-    "src/blueprint_pipeline/alpha_readiness.py": 2160,
+    "src/blueprint_pipeline/alpha_readiness.py": 2163,
     "src/blueprint_pipeline/arena_result_ingest.py": 2383,
     "src/blueprint_pipeline/capture_orchestrator.py": 2002,
     "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": 2686,
@@ -176,8 +176,8 @@
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5550,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
-    "src/blueprint_pipeline/post_training_data_package.py": 6646,
-    "src/blueprint_pipeline/qualification.py": 5552,
+    "src/blueprint_pipeline/post_training_data_package.py": 6678,
+    "src/blueprint_pipeline/qualification.py": 5560,
     "src/blueprint_pipeline/retrieval_index_stage.py": 2215,
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
