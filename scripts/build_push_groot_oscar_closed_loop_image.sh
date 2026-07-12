@@ -22,6 +22,7 @@ prefetch_checkpoints="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_PREFETCH_CHECKPOINTS:-
 hf_token_file="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_HF_TOKEN_FILE:-${HF_TOKEN_FILE:-$HOME/.blueprint-secrets/hf_token}}"
 manifest_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_image_manifest.json}"
 registry_manifest_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_REGISTRY_MANIFEST_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_registry_manifest_diagnostic.json}"
+runtime_smoke_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_RUNTIME_SMOKE_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_runtime_smoke.json}"
 min_free_gib="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_MIN_FREE_GIB:-120}"
 allow_dirty_release_build="${BLUEPRINT_ALLOW_DIRTY_GROOT_OSCAR_CLOSED_LOOP_RELEASE_BUILD:-false}"
 source_identity_json="$(
@@ -189,14 +190,78 @@ build_args=(
   -f "$dockerfile"
   -t "$image_ref"
 )
-if [[ "$allow_push" == "true" ]]; then
-  build_args+=(--push)
-else
-  build_args+=(--load)
-fi
+# Always load the finished image into the local Docker engine. Release images
+# must pass the real OCI runtime-user contract below before any registry push;
+# Dockerfile RUN/runuser checks do not reproduce container USER/group handling.
+build_args+=(--load)
 build_args+=("${secret_args[@]}" "$build_context_dir")
 
 "${build_args[@]}"
+
+runtime_smoke_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+runtime_smoke_stdout="$(mktemp "${TMPDIR:-/tmp}/blueprint-groot-oscar-runtime-smoke.XXXXXX")"
+runtime_smoke_stderr="${runtime_smoke_stdout}.stderr"
+runtime_smoke_exit=0
+docker run --rm --entrypoint /bin/bash "$image_ref" -lc '
+  set -euo pipefail
+  test "$(id -un)" = blueprint
+  id -nG | tr " " "\n" | grep -Fx isaac-sim
+  for interpreter in \
+    /isaac-sim/python.sh \
+    /opt/oscar-venv/bin/python \
+    /opt/gr00t-venv/bin/python; do
+    test -x "$interpreter"
+    "$interpreter" -c "import os; assert os.geteuid() == 10001"
+  done
+  /opt/oscar-venv/bin/python \
+    /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
+' >"$runtime_smoke_stdout" 2>"$runtime_smoke_stderr" || runtime_smoke_exit=$?
+
+python3 - "$runtime_smoke_output" "$image_ref" "$runtime_smoke_started_at" \
+  "$runtime_smoke_exit" "$runtime_smoke_stdout" "$runtime_smoke_stderr" <<'PY'
+import hashlib, json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+out = Path(sys.argv[1]).expanduser()
+stdout = Path(sys.argv[5]).read_bytes()
+stderr = Path(sys.argv[6]).read_bytes()
+exit_code = int(sys.argv[4])
+payload = {
+    "schema_version": "groot_oscar_closed_loop_runtime_smoke.v1",
+    "started_at": sys.argv[3],
+    "completed_at": datetime.now(timezone.utc).isoformat(),
+    "status": "passed" if exit_code == 0 else "failed",
+    "image_ref": sys.argv[2],
+    "exit_code": exit_code,
+    "checks": [
+        "oci_configured_user_is_blueprint",
+        "oci_runtime_resolves_isaac_sim_supplementary_group",
+        "isaac_interpreter_executes_as_uid_10001",
+        "oscar_interpreter_executes_as_uid_10001",
+        "groot_interpreter_executes_as_uid_10001",
+        "sealed_worker_build_time_healthcheck_as_oci_runtime_user",
+    ],
+    "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+    "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+    "stdout_bytes": len(stdout),
+    "stderr_bytes": len(stderr),
+    "raw_secret_values_recorded": False,
+}
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+rm -f "$runtime_smoke_stdout" "$runtime_smoke_stderr"
+
+if [[ "$runtime_smoke_exit" -ne 0 ]]; then
+  write_manifest "blocked" '["groot_oscar_closed_loop_oci_runtime_smoke_failed"]' >/dev/null
+  echo "finished image failed OCI runtime-user smoke; refusing registry push" >&2
+  exit 2
+fi
+
+if [[ "$allow_push" == "true" ]]; then
+  docker push "$image_ref"
+fi
 
 registry_diagnostic_exit=0
 if [[ "$allow_push" == "true" ]]; then
@@ -211,7 +276,7 @@ source_identity_after_json="$(
     "$repo_root"
 )"
 
-python3 - "$manifest_output" "$image_ref" "$platform" "$base_image" "$groot_ref" "$prefetch_checkpoints" "$allow_push" "$source_identity_json" "$source_identity_gate_json" "$registry_manifest_output" "$registry_diagnostic_exit" "$build_metadata_file" "$source_identity_after_json" <<'PY'
+python3 - "$manifest_output" "$image_ref" "$platform" "$base_image" "$groot_ref" "$prefetch_checkpoints" "$allow_push" "$source_identity_json" "$source_identity_gate_json" "$registry_manifest_output" "$registry_diagnostic_exit" "$build_metadata_file" "$source_identity_after_json" "$runtime_smoke_output" <<'PY'
 import hashlib, json, re, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -224,6 +289,7 @@ registry_path = Path(sys.argv[10]).expanduser().resolve()
 registry_diagnostic_exit = int(sys.argv[11])
 metadata_path = Path(sys.argv[12]).expanduser().resolve()
 identity_after = json.loads(sys.argv[13])
+runtime_smoke_path = Path(sys.argv[14]).expanduser().resolve()
 pushed = sys.argv[7].lower() == "true"
 try:
     metadata_bytes = metadata_path.read_bytes()
@@ -242,6 +308,12 @@ try:
 except (OSError, UnicodeDecodeError, json.JSONDecodeError):
     registry_bytes = b""
     registry = {}
+try:
+    runtime_smoke_bytes = runtime_smoke_path.read_bytes()
+    runtime_smoke = json.loads(runtime_smoke_bytes.decode("utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    runtime_smoke_bytes = b""
+    runtime_smoke = {}
 exact_inspect_ref = str(registry.get("resolved_digest_ref") or "")
 inspect = (
     subprocess.run(
@@ -344,6 +416,14 @@ payload = {
             "/opt/oscar-venv/bin/python "
             "/opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time"
         ),
+    },
+    "oci_runtime_smoke": {
+        "path": str(runtime_smoke_path),
+        "sha256": hashlib.sha256(runtime_smoke_bytes).hexdigest()
+        if runtime_smoke_bytes else None,
+        "bytes": len(runtime_smoke_bytes),
+        "status": runtime_smoke.get("status"),
+        "checks": runtime_smoke.get("checks", []),
     },
     "blockers": blockers,
     "raw_secret_values_recorded": False,

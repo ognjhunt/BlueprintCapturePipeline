@@ -377,6 +377,41 @@ def test_groot_oscar_runtime_user_can_execute_worker_interpreters() -> None:
     )
 
 
+def test_groot_oscar_release_push_requires_real_oci_runtime_smoke() -> None:
+    """A release push may happen only after exercising the finished image.
+
+    ``runuser`` during a Docker build resolves supplementary groups differently
+    from an OCI runtime when Dockerfile ``USER`` includes an explicit group.
+    The release script therefore has to load and run the final image before it
+    can push it.
+    """
+    script = (
+        ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
+    ).read_text(encoding="utf-8")
+
+    build_at = script.index('"${build_args[@]}"')
+    smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$image_ref"')
+    push_at = script.index('docker push "$image_ref"')
+    assert build_at < smoke_at < push_at
+    assert "build_args+=(--load)" in script
+    assert "build_args+=(--push)" not in script
+    assert 'test "$(id -un)" = blueprint' in script
+    assert 'grep -Fx isaac-sim' in script
+    assert "/isaac-sim/python.sh" in script
+    assert "/opt/oscar-venv/bin/python" in script
+    assert "/opt/gr00t-venv/bin/python" in script
+    assert "groot_oscar_closed_loop_oci_runtime_smoke_failed" in script
+    assert '"oci_runtime_smoke": {' in script
+    assert 'runtime_smoke.get("status")' in script
+    assert re.search(
+        r'if \[\[ "\$runtime_smoke_exit" -ne 0 \]\]; then.*?exit 2.*?fi'
+        r'.*?if \[\[ "\$allow_push" == "true" \]\]; then\s*'
+        r'docker push "\$image_ref"',
+        script,
+        re.DOTALL,
+    )
+
+
 def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
     tmp_path: Path,
 ) -> None:
