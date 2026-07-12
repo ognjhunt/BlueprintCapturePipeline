@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 import pytest
 
-from blueprint_pipeline.evaluation_run import EvaluationRunSpec
+from blueprint_pipeline.evaluation_run_contract import EvaluationRunSpec
 from blueprint_pipeline.evaluation_run_execution import (
     EvaluationRunExecutionRegistry,
     default_evaluation_run_execution_registry,
