@@ -39,6 +39,17 @@ G1_USD = os.environ.get(
 )
 WBC_ROOT = os.environ.get("BLUEPRINT_GEAR_SONIC_ROOT", "/opt/wbc")
 
+# IMGFIX-004: the Isaac 6 kit creates DerivedDataCache under kit/cache and
+# documents/ under kit/data at renderer startup. The 2026-07-12 live A40
+# canary wedged because the base image ships these writable only by uid 1234.
+# The healthcheck runs as the runtime user (build step 7), so a real
+# create/delete probe here fails the BUILD instead of wedging a paid pod.
+ISAAC_KIT_RUNTIME_WRITE_DIRS = (
+    "/isaac-sim/kit/cache",
+    "/isaac-sim/kit/data",
+    "/isaac-sim/kit/logs",
+)
+
 # Main-env modules the closed loop imports (import name : label).
 MAIN_ENV_MODULES = {
     "blueprint_pipeline": "blueprint_pipeline",
@@ -53,6 +64,23 @@ MAIN_ENV_MODULES = {
 
 def _dir_has_files(path: Path) -> bool:
     return path.is_dir() and any(path.rglob("*"))
+
+
+def _dir_writable_by_current_user(path: Path) -> bool:
+    """Real create/delete probe: os.access lies under CAP_DAC_OVERRIDE/ACLs."""
+    if not path.is_dir():
+        return False
+    probe = path / f".blueprint_write_probe_{os.getpid()}"
+    try:
+        with open(probe, "x", encoding="utf-8") as handle:
+            handle.write("probe")
+    except OSError:
+        return False
+    try:
+        probe.unlink()
+    except OSError:
+        pass
+    return True
 
 
 def compute_asset_binding(env=None) -> tuple[dict, bool]:
@@ -204,6 +232,14 @@ def main() -> int:
         payload[f"{label}_checkpoint_path"] = path
         if not present:
             blockers.append(f"{label}_checkpoint_missing")
+
+    # --- IMGFIX-004: kit runtime dirs writable by the executing (runtime) user ---
+    payload["isaac_kit_runtime_write_dirs"] = {}
+    for kit_dir in ISAAC_KIT_RUNTIME_WRITE_DIRS:
+        writable = _dir_writable_by_current_user(Path(kit_dir))
+        payload["isaac_kit_runtime_write_dirs"][kit_dir] = writable
+        if not writable:
+            blockers.append(f"isaac_kit_dir_not_writable:{kit_dir}")
 
     asset_binding, asset_binding_valid = compute_asset_binding(os.environ)
     payload["unitree_g1_asset_binding"] = asset_binding
