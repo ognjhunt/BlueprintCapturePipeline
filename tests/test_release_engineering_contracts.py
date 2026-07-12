@@ -326,7 +326,90 @@ def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() ->
         r"--shell /usr/sbin/nologin blueprint",
         dockerfile,
     )
-    assert "USER blueprint:blueprint" in dockerfile
+    assert re.search(r"^USER blueprint$", dockerfile, re.MULTILINE), (
+        "USER must be the name-only form: an explicit :group makes the "
+        "runtime skip supplementary groups, dropping isaac-sim access"
+    )
+
+
+def test_groot_oscar_runtime_user_can_execute_worker_interpreters() -> None:
+    """The runtime user must be able to execute every worker interpreter.
+
+    The 2026-07-12 GPU canary on the sealed image failed every gate with
+    rc=126: ``uv venv`` placed the managed CPython under ``/root/.local``
+    (0700 ``/root``), and the Isaac base ships ``/isaac-sim`` as
+    ``drwxr-x--- isaac-sim:isaac-sim`` — both unreachable for
+    ``USER blueprint`` (uid 10001). A root-only build-time healthcheck cannot
+    see either failure, so the Dockerfile must (a) pin the uv interpreter
+    outside ``/root``, (b) grant the runtime user the ``isaac-sim`` group, and
+    (c) run the build-time healthcheck as the runtime user.
+    """
+    dockerfile = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    uv_install_dir = re.search(r"UV_PYTHON_INSTALL_DIR=(\S+)", dockerfile)
+    assert uv_install_dir, (
+        "UV_PYTHON_INSTALL_DIR must be pinned so the uv-managed CPython the "
+        "venvs symlink to is not created under /root (untraversable by the "
+        "runtime user)"
+    )
+    target = uv_install_dir.group(1).rstrip("\\").strip()
+    assert not target.startswith("/root"), target
+    env_block_at = dockerfile.index("UV_PYTHON_INSTALL_DIR=")
+    first_venv_at = dockerfile.index("uv venv ")
+    assert env_block_at < first_venv_at, (
+        "UV_PYTHON_INSTALL_DIR must be set before any `uv venv` layer"
+    )
+
+    assert re.search(r"usermod\s+-aG\s+isaac-sim\s+blueprint", dockerfile), (
+        "the runtime user needs the isaac-sim group to traverse the "
+        "group-restricted /isaac-sim tree (drwxr-x--- isaac-sim:isaac-sim)"
+    )
+
+    assert re.search(
+        r"RUN\s+runuser\s+-u\s+blueprint\s+--\s+\S*python\S*\s+\S*"
+        r"groot_oscar_closed_loop_image_healthcheck\.py\s+--build-time",
+        dockerfile,
+    ), (
+        "the build-time healthcheck must run AS the runtime user; a root "
+        "healthcheck cannot observe runtime-user exec/traversal failures"
+    )
+
+
+def test_groot_oscar_release_push_requires_real_oci_runtime_smoke() -> None:
+    """A release push may happen only after exercising the finished image.
+
+    ``runuser`` during a Docker build resolves supplementary groups differently
+    from an OCI runtime when Dockerfile ``USER`` includes an explicit group.
+    The release script therefore has to load and run the final image before it
+    can push it.
+    """
+    script = (
+        ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
+    ).read_text(encoding="utf-8")
+
+    build_at = script.index('"${build_args[@]}"')
+    smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$image_ref"')
+    push_at = script.index('docker push "$image_ref"')
+    assert build_at < smoke_at < push_at
+    assert "build_args+=(--load)" in script
+    assert "build_args+=(--push)" not in script
+    assert 'test "$(id -un)" = blueprint' in script
+    assert 'grep -Fx isaac-sim' in script
+    assert "/isaac-sim/python.sh" in script
+    assert "/opt/oscar-venv/bin/python" in script
+    assert "/opt/gr00t-venv/bin/python" in script
+    assert "groot_oscar_closed_loop_oci_runtime_smoke_failed" in script
+    assert '"oci_runtime_smoke": {' in script
+    assert 'runtime_smoke.get("status")' in script
+    assert re.search(
+        r'if \[\[ "\$runtime_smoke_exit" -ne 0 \]\]; then.*?exit 2.*?fi'
+        r'.*?if \[\[ "\$allow_push" == "true" \]\]; then\s*'
+        r'docker push "\$image_ref"',
+        script,
+        re.DOTALL,
+    )
 
 
 def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
