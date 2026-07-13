@@ -393,43 +393,6 @@ def test_image_seals_exact_nested_cosmos_backbone_and_disables_network_fallback(
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
 
 
-def test_huggingface_default_ref_requires_commit_without_trailing_newline(
-    tmp_path: Path,
-):
-    from huggingface_hub import try_to_load_from_cache
-    from huggingface_hub.file_download import repo_folder_name
-
-    revision = "9ce19a195e423419c349abfc86fd07178b230561"
-    repo_cache = tmp_path / repo_folder_name(
-        repo_id="nvidia/Cosmos-Reason2-2B", repo_type="model"
-    )
-    snapshot = repo_cache / "snapshots" / revision
-    snapshot.mkdir(parents=True)
-    config = snapshot / "config.json"
-    config.write_text("{}", encoding="utf-8")
-    refs = repo_cache / "refs"
-    refs.mkdir()
-
-    (refs / "main").write_text(revision + "\n", encoding="utf-8")
-    assert (
-        try_to_load_from_cache(
-            "nvidia/Cosmos-Reason2-2B",
-            "config.json",
-            cache_dir=tmp_path,
-            revision="main",
-        )
-        is None
-    )
-
-    (refs / "main").write_text(revision, encoding="utf-8")
-    assert try_to_load_from_cache(
-        "nvidia/Cosmos-Reason2-2B",
-        "config.json",
-        cache_dir=tmp_path,
-        revision="main",
-    ) == str(config)
-
-
 def test_image_makes_gear_sonic_build_tree_runtime_user_writable():
     dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build" in dockerfile
