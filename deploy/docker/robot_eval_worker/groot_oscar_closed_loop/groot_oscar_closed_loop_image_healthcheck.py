@@ -198,9 +198,13 @@ def main() -> int:
             ISAAC_PYTHON,
             "-c",
             (
-                "import blueprint_pipeline, isaacsim; "
+                "import blueprint_pipeline; "
+                "from isaacsim import SimulationApp; "
+                "app = SimulationApp({'headless': True}); "
                 "from isaacsim.core.prims import SingleArticulation; "
-                "import blueprint_pipeline.isaac_runtime_task_backend"
+                "import blueprint_pipeline.isaac_runtime_task_backend; "
+                "print('BLUEPRINT_ISAAC_6_ARTICULATION_API_OK'); "
+                "app.close()"
             ),
         ],
         capture_output=True,
@@ -210,6 +214,8 @@ def main() -> int:
     )
     isaac_imported = isaac_import.returncode == 0
     if not isaac_imported:
+        payload["isaac_python_import_stdout_tail"] = isaac_import.stdout[-1000:]
+        payload["isaac_python_import_stderr_tail"] = isaac_import.stderr[-2000:]
         blockers.append("isaac_python_blueprint_import_failed")
     g1_exists = Path(G1_USD).is_file()
     if not g1_exists:
