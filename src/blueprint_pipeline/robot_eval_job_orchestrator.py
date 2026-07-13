@@ -46,6 +46,7 @@ from .action_normalization import build_action_normalization_from_trace
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
+from .evaluation_run import compile_evaluation_run
 from .failure_diagnosis_contract import (
     FAILURE_LABEL_PROOF_EFFECT,
     dedupe as _dedupe_refs,
@@ -78,6 +79,11 @@ from .robot_eval_dataset import build_real_site_robot_eval_dataset
 from .robot_eval_job_request_contract import (
     ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
     ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
+)
+from .robot_eval_evaluation_run_adapter import (
+    build_robot_eval_evaluation_run_spec,
+    execute_legacy_robot_eval_request_as_evaluation_run,
+    execute_robot_eval_cli_evaluation_run,
 )
 from .scene_asset_preflight import build_scene_asset_preflight
 from .security_controls import contained_path, strict_identifier
@@ -7721,6 +7727,7 @@ def _job_plan(
     simulator: str,
     job_dir: Path,
     generated_at: str,
+    evaluation_run_plan: Mapping[str, Any],
 ) -> Dict[str, Any]:
     return {
         "schema_version": JOB_PLAN_SCHEMA_VERSION,
@@ -7731,9 +7738,17 @@ def _job_plan(
         "provisioner": provisioner,
         "simulator": simulator,
         "job_dir": str(job_dir),
+        "evaluation_run": {
+            "status": evaluation_run_plan.get("status"),
+            "schema_version": evaluation_run_plan.get("schema_version"),
+            "spec_digest": evaluation_run_plan.get("spec_digest"),
+            "plan_path": "evaluation_run_plan.json",
+            "spec_path": "evaluation_run_spec.json",
+        },
         "state_machine": [
             "request_loaded",
             "validation",
+            "evaluation_run_contract",
             "agent_orchestration_plan",
             "scheduler_decision",
             "worker_launch_plan",
@@ -7975,6 +7990,48 @@ def build_robot_eval_job(
         pipeline_dir=pipeline_dir,
     )
     _write_job_json(job_dir, "job_validation.json", validation)
+    evaluation_run_spec = build_robot_eval_evaluation_run_spec(
+        job_id=job_id,
+        request=request,
+        capture_root=context.capture_root,
+        scene_preflight=scene_preflight,
+        scenario_eval_matrix=scenario_eval_matrix,
+        policy_manifest=policy_manifest,
+        provisioner=provisioner,
+        simulator=simulator,
+        budget_usd=budget_usd,
+        timeout_seconds=timeout_seconds,
+    )
+    evaluation_run_plan = compile_evaluation_run(
+        evaluation_run_spec,
+        output_dir=job_dir,
+        generated_at=generated_at,
+    )
+    validation["evaluation_run_contract"] = {
+        "status": evaluation_run_plan["status"],
+        "schema_version": evaluation_run_plan["schema_version"],
+        "spec_digest": evaluation_run_plan["spec_digest"],
+        "component_bindings": evaluation_run_plan["component_bindings"],
+        "warnings": evaluation_run_plan["validation"]["warnings"],
+        "plan_path": "evaluation_run_plan.json",
+        "spec_path": "evaluation_run_spec.json",
+    }
+    if evaluation_run_plan["status"] != "prepared":
+        validation["status"] = "blocked"
+        validation["blockers"] = _dedupe(
+            [
+                *_string_list(validation.get("blockers")),
+                "evaluation_run_contract_blocked",
+                *[
+                    f"evaluation_run:{error}"
+                    for error in evaluation_run_plan["validation"]["errors"]
+                ],
+            ]
+        )
+        validation["evaluation_run_contract"]["errors"] = evaluation_run_plan[
+            "validation"
+        ]["errors"]
+    _write_job_json(job_dir, "job_validation.json", validation)
     robot_pov_manifest = build_robot_pov_observation_bundle(
         capture_root=context.capture_root,
         job_dir=job_dir,
@@ -8034,6 +8091,7 @@ def build_robot_eval_job(
         "owner_gpu_cpu_preflight": owner_gpu_cpu_preflight,
         "simulation_automation": simulation_automation,
         "scenario_eval_matrix": scenario_eval_matrix,
+        "evaluation_run_plan": evaluation_run_plan,
         "robot_pov_observation_manifest": robot_pov_manifest,
         "policy_execution_manifest": _mapping(policy_execution.get("manifest")),
         "policy_execution_trace": _mapping(policy_execution.get("trace")),
@@ -8053,6 +8111,7 @@ def build_robot_eval_job(
         simulator=simulator,
         job_dir=job_dir,
         generated_at=generated_at,
+        evaluation_run_plan=evaluation_run_plan,
     )
     _write_job_json(job_dir, "job_plan.json", job_plan)
 
@@ -8852,6 +8911,10 @@ def build_robot_eval_job(
         "cpu_simulator_preflight_status": cpu_preflight.get("status"),
         "simulation_automation_status": simulation_automation.get("status"),
         "validation_status": validation.get("status"),
+        "evaluation_run_status": evaluation_run_plan.get("status"),
+        "evaluation_run_spec_digest": evaluation_run_plan.get("spec_digest"),
+        "evaluation_run_spec_path": "evaluation_run_spec.json",
+        "evaluation_run_plan_path": "evaluation_run_plan.json",
         "scheduler_decision_status": scheduler_decision.get("status"),
         "scheduler_decision_path": "scheduler_decision.json",
         "worker_launch_plan_status": worker_launch_plan.get("status"),
@@ -9858,7 +9921,7 @@ def run_robot_eval_job_request_inbox(
             queued_dir = job_queue_root / job_id
             ensure_dir(queued_dir)
             write_json(queued_dir / "job_request.json", request)
-            result = build_robot_eval_job(
+            result = execute_legacy_robot_eval_request_as_evaluation_run(
                 capture_root=request_context.capture_root,
                 job_request=request,
                 job_id=job_id,
@@ -10093,6 +10156,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--job-request", default=None, help="Robot eval job request JSON")
     parser.add_argument("--job-id", default=None, help="Deterministic job id")
     parser.add_argument(
+        "--evaluation-run-spec",
+        default=None,
+        help="Authoritative evaluation_run.v1 JSON; mutually exclusive with legacy requests",
+    )
+    parser.add_argument("--evaluation-run-output-dir", default=None)
+    parser.add_argument(
         "--job-request-inbox",
         default=None,
         help="Directory of robot_eval_job_request.v1 JSON files to run automatically",
@@ -10234,6 +10303,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         simulator_commands = _parse_simulator_commands(args.simulator_command)
         policy_execution_commands = _parse_policy_execution_commands(args.policy_execution_command)
         wam_provider_commands = parse_wam_provider_commands(args.wam_provider_command)
+        if args.evaluation_run_spec:
+            if args.job_request or args.job_id or args.job_request_inbox:
+                raise ValueError(
+                    "--evaluation-run-spec is mutually exclusive with legacy request inputs"
+                )
+            execution = execute_robot_eval_cli_evaluation_run(
+                args,
+                agent_adapter=_agent_adapter_from_mode(
+                    args.agent_mode,
+                    allow_live_operator=args.allow_live_agent_operator,
+                ),
+                simulator_commands=simulator_commands,
+                policy_execution_commands=policy_execution_commands,
+                wam_provider_commands=wam_provider_commands,
+            )
+            result = dict(execution.adapter_result or execution.manifest)
+            print(f"[robot-eval-job] evaluation_run={execution.manifest['spec_digest']}")
+            print(f"[robot-eval-job] status={result['status']}")
+            return _robot_eval_exit_code(result)
         if args.job_request_inbox:
             result = run_robot_eval_job_request_inbox(
                 capture_root=args.capture_root,
@@ -10288,7 +10376,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise ValueError(
                 "--job-request and --job-id are required unless --job-request-inbox is provided"
             )
-        result = build_robot_eval_job(
+        result = execute_legacy_robot_eval_request_as_evaluation_run(
             capture_root=args.capture_root,
             job_request=args.job_request,
             job_id=args.job_id,

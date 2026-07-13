@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping, Sequence
 
 from .common import parse_bool, utc_now_iso
+from .consent_normalization import (
+    resolve_consent_signals,
+    restrictive_scope_list,
+    strict_allow_bool,
+)
 
 
 def _string_list(value: object) -> list[str]:
@@ -47,7 +52,6 @@ def _mapping(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-CONSENT_REVOKED_STATUSES = frozenset({"revoked", "withdrawn", "rescinded"})
 KNOWN_CONSENT_USE_CLASSES = frozenset(
     {
         "derived_generation",
@@ -168,10 +172,10 @@ def build_rights_provenance_review(
     rights = dict(rights_summary or {})
     privacy = dict(privacy_processing or {})
     provenance = dict(provenance_summary or {})
-    consent_status = str(rights.get("consent_status") or "unknown").strip().lower()
-    derived_generation_allowed = parse_bool(
-        rights.get("derived_scene_generation_allowed"),
-        default=False,
+    consent_signals = resolve_consent_signals(rights)
+    consent_status = consent_signals["consent_status"] or "unknown"
+    derived_generation_allowed = strict_allow_bool(
+        rights.get("derived_scene_generation_allowed")
     )
     permission_document_uri = str(rights.get("permission_document_uri") or "").strip()
     lawful_basis_uri = _lawful_basis_attestation_uri(rights)
@@ -202,12 +206,10 @@ def build_rights_provenance_review(
     )
 
     # Revoked consent is an absolute stop: no downstream artifact may clear,
-    # regardless of what the packet allowed before revocation.
-    consent_revoked = (
-        consent_status in CONSENT_REVOKED_STATUSES
-        or parse_bool(rights.get("consent_revoked"), default=False)
-        or bool(str(rights.get("consent_revoked_at") or "").strip())
-    )
+    # regardless of what the packet allowed before revocation. The resolver
+    # covers both key spellings and nested rights blocks, so a revocation
+    # expressed as consentRevoked/consentRevokedAt cannot be missed.
+    consent_revoked = consent_signals["consent_revoked"]
 
     # A "documented" consent claim without the document itself is an incomplete
     # rights packet, not documented consent — it must not clear.
@@ -230,7 +232,9 @@ def build_rights_provenance_review(
     # is for (e.g. "robot_evaluation", "model_training", "derived_generation"),
     # an explicit consent_scope that omits that class is a "no" and blocks; an
     # unspecified scope cannot silently grant it and requires review.
-    consent_scope = [item.lower() for item in _string_list(rights.get("consent_scope"))]
+    consent_scope = restrictive_scope_list(
+        rights.get("consent_scope"), rights.get("consentScope")
+    )
     consent_use_classes = [
         item for item in consent_scope if item in KNOWN_CONSENT_USE_CLASSES
     ]

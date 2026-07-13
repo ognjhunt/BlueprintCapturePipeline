@@ -1,5 +1,26 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-12
+
+### User-Facing
+
+- Introduced the general Evaluation Run spec
+  (`src/blueprint_pipeline/evaluation_run.py`): one fail-closed composition of
+  scene bundle + robot adapter + task/scenario pack + policy adapter +
+  runtime/provider profile + proof contract (`evaluation_run_spec.v1`), with a
+  pack registry, strict manifest round-trip, generic scene-asset layout/zip
+  inspection, a generic runner-request builder, and a CLI
+  (`python -m blueprint_pipeline.evaluation_run --list-packs / --pack / --spec-json`).
+  The historical G1 kitchen lane is now the built-in `g1_kitchen` pack: the
+  kitchen parity job single-sources its scene/robot/policy/runtime/proof
+  identifiers from the pack and delegates its asset inspectors and runner
+  request to the generic engine, byte-identical to the legacy evidence schemas
+  (`kitchen_asset_layout_validation.v1`, `isaac_g1_kitchen_parity_request.v1`,
+  etc.). A second built-in `g1_warehouse` pack (claim boundary:
+  `pack_definition_only`, no GPU run claimed) proves a second site flows
+  through the same engine as pure configuration. Design + migration path:
+  `docs/specs/evaluation-run-pack-architecture-2026-07-12.md`.
+
 ## 2026-07-11
 
 ### User-Facing
@@ -23,6 +44,13 @@
   model retrieval. All controls are fail-closed contracts; none of this is
   proof of a live provider episode, task success, rank fidelity, or physical
   robot readiness.
+- Hardened the sealed Isaac 6 / G1 worker image path: the build now installs
+  the pinned TensorRT closure, uses the OSCAR virtual-environment interpreter
+  for checkpoint prefetch, bakes digest-pinned Isaac assets, inspects runnable
+  child manifests when a registry tag resolves to an OCI image index, and
+  bounds descendant processes during canary shutdown. These changes improve
+  image reproducibility and failure containment; they do not prove that the
+  rebuilt image was published or that a live provider episode succeeded.
 
 ### Employee-Facing
 
@@ -50,6 +78,18 @@
   protection is enabled and was negative-tested against direct and force
   pushes; hosted proof must come from every required check passing on the
   latest PR head, never from a superseded run.
+- Release workflows now retain and verify command-attestation artifacts, and
+  the quality-gap ledger was rebound to committed source bytes after the
+  release/image dependency changes. Worker-image evidence inspection now
+  follows OCI index children to the runnable manifest instead of treating an
+  index descriptor as the final image configuration.
+- **Uncommitted local work (July 11):** a shared fail-closed consent normalizer
+  is wired across materialization, qualification, takedown, PTDP, readiness,
+  and proof-contract surfaces, with cross-surface hostile-input invariants in
+  `tests/test_consent_rights_cross_surface_invariants.py`. Malformed,
+  contradictory, or revoked consent can only downgrade grants. The associated
+  ledger digests are worktree bindings and must be rebound to committed bytes
+  before they can support release evidence.
 
 ### Future-Agent-Facing
 
@@ -61,6 +101,10 @@
   `identity_binding` plus `leaf_artifacts` refs (path, sha256, size, schema,
   Ed25519 attestation role); the host compares and validates - it never
   injects identity or accepts a bare status boolean.
+- `docs/specs/fable-live-run-handoff-2026-07-11.md` is an uncommitted operator
+  handoff, not provider proof. It records the sealed-image digest and the
+  remaining paid-run setup, while explicitly preserving blocked external
+  scorer, semantic-review, and attestation-pin rows.
 
 ## 2026-07-10
 

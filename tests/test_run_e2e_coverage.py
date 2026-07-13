@@ -357,7 +357,11 @@ def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
             "status": "blocked",
         }
 
-    monkeypatch.setattr(run_e2e, "build_robot_eval_job", fake_build_robot_eval_job)
+    monkeypatch.setattr(
+        run_e2e,
+        "execute_legacy_robot_eval_request_as_evaluation_run",
+        fake_build_robot_eval_job,
+    )
 
     result = run_e2e.run_end_to_end(
         capture_root=str(capture_root),

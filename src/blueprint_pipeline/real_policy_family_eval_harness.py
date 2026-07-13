@@ -44,6 +44,9 @@ from .noise_degraded_policy_command_adapter import (
     canonical_delta_ee_action_bounds_contract,
 )
 from .policy_ranking_ladder import build_known_ordering_policy_ladder
+from .robot_eval_evaluation_run_adapter import (
+    execute_legacy_robot_eval_request_as_evaluation_run,
+)
 
 HARNESS_MANIFEST_SCHEMA_VERSION = "real_policy_family_eval_harness_manifest.v1"
 FAMILY_REGISTRY_SCHEMA_VERSION = "real_policy_family_registry.v1"
@@ -642,8 +645,6 @@ def run_real_policy_family_eval(
     timeout_seconds: int = 600,
     python_executable: str | None = None,
 ) -> dict[str, Any]:
-    from .robot_eval_job_orchestrator import build_robot_eval_job
-
     generated_at = utc_now_iso()
     family = _mapping(family_config)
     family_id = _string(family.get("family_id")) or "unnamed_policy_family"
@@ -694,7 +695,7 @@ def run_real_policy_family_eval(
     try:
         for name, value in env_overrides.items():
             os.environ[name] = value
-        result = build_robot_eval_job(
+        result = execute_legacy_robot_eval_request_as_evaluation_run(
             capture_root=capture_path,
             job_request=request,
             job_id=job_id,

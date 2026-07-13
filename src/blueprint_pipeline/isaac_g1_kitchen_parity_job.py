@@ -21,8 +21,6 @@ dynamic locomotion, not a learned policy, not readiness.
 """
 from __future__ import annotations
 
-import io
-import hashlib
 import json
 import os
 import time
@@ -35,6 +33,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import write_json
+from .evaluation_run import compile_evaluation_run
+from .evaluation_run_execution import execute_evaluation_run
+from .g1_kitchen_evaluation_run_adapter import (
+    build_g1_kitchen_cli_evaluation_run,
+    build_g1_kitchen_evaluation_run_spec,
+)
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .g1_kitchen_bundle_compatibility import (
     build_bundle_compatibility,
@@ -98,12 +102,19 @@ from .security_controls import (
     fetch_bounded_https,
     origins_from_env,
 )
+from . import evaluation_run
 
-SCHEMA_VERSION = "isaac_g1_kitchen_parity_job.v1"
-JOB_MANIFEST_FILENAME = "isaac_g1_kitchen_parity_job_manifest.json"
-LAUNCH_ATTEMPT_TRACE_FILENAME = "isaac_g1_kitchen_parity_launch_attempts.json"
-WORKER_BUNDLE_DIR = "/workspace/bundle"
-ISAAC_G1_KITCHEN_PARITY_LANE = "isaac_g1_kitchen_parity"
+# This job is the g1_kitchen evaluation pack driven through the (still
+# kitchen-named) orchestration engine below. Scene/robot/policy/runtime/proof
+# identifiers are single-sourced from the pack; the engine machinery
+# (launch_with_marker_retry, spend guards, teardown proofs) is scene-agnostic.
+_G1_KITCHEN_PACK = evaluation_run.get_evaluation_pack("g1_kitchen")
+
+SCHEMA_VERSION = _G1_KITCHEN_PACK.proof.job_schema
+JOB_MANIFEST_FILENAME = _G1_KITCHEN_PACK.proof.job_manifest_filename
+LAUNCH_ATTEMPT_TRACE_FILENAME = _G1_KITCHEN_PACK.proof.launch_attempt_trace_filename
+WORKER_BUNDLE_DIR = _G1_KITCHEN_PACK.scene.worker_bundle_dir
+ISAAC_G1_KITCHEN_PARITY_LANE = _G1_KITCHEN_PACK.runtime.lane_id
 ISAAC_G1_KITCHEN_PARITY_RESOURCE_PREFIX = "blueprint-isaac-g1"
 PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset({
     "digitalocean_gpu_size_region_unavailable",
@@ -111,32 +122,34 @@ PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset({
     "digitalocean_gpu_size_below_min_vram",
     "runpod_secure_cloud_create_capacity_unavailable",
 })
-DEFAULT_G1_USD_RELATIVE = "Isaac/Robots/Unitree/G1/g1.usd"
-DEFAULT_KITCHEN_MAIN_USD = "Collected_KitchenRoom/KitchenRoom.usd"
-ISAAC_REVIEW_MIN_GPU_RAM_MB = 48000
-DEFAULT_ISAAC_REVIEW_PROVIDER = "digitalocean"
+DEFAULT_G1_USD_RELATIVE = _G1_KITCHEN_PACK.robot.robot_usd_relative
+DEFAULT_KITCHEN_MAIN_USD = _G1_KITCHEN_PACK.scene.main_usd_relative
+ISAAC_REVIEW_MIN_GPU_RAM_MB = _G1_KITCHEN_PACK.runtime.min_gpu_ram_mb
+DEFAULT_ISAAC_REVIEW_PROVIDER = _G1_KITCHEN_PACK.runtime.default_providers[0]
 DEFAULT_VAST_MAX_HOURLY_RATE_USD = 5.0
 ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV = "BLUEPRINT_ALLOW_UNSTABLE_VAST_ISAAC_RENDER"
-ISAAC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF"
-ISAAC_WORKER_IMAGE_REF_FILE_ENV = "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF_FILE"
-ROBOT_EVAL_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
-DEFAULT_ISAAC_WORKER_IMAGE_REF_FILE = "~/.blueprint-secrets/isaac_eval_worker_image_ref"
+ISAAC_WORKER_IMAGE_REF_ENV = _G1_KITCHEN_PACK.runtime.image_ref_env
+ISAAC_WORKER_IMAGE_REF_FILE_ENV = _G1_KITCHEN_PACK.runtime.image_ref_file_env
+ROBOT_EVAL_WORKER_IMAGE_REF_ENV = _G1_KITCHEN_PACK.runtime.fallback_image_ref_env
+DEFAULT_ISAAC_WORKER_IMAGE_REF_FILE = _G1_KITCHEN_PACK.runtime.default_image_ref_file
 ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV = "BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD"
-DEFAULT_PARITY_IMAGE_REF = "docker.io/nijelhunt/blueprint-isaac-eval-worker:20260626-faststart-amd64"
+DEFAULT_PARITY_IMAGE_REF = _G1_KITCHEN_PACK.runtime.default_image_ref
 ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV = "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START"
 COLD_RACE_CONTENDERS_ENV = "BLUEPRINT_COLD_RACE_CONTENDERS"
 DEFAULT_COLD_RACE_CONTENDERS = 1
-DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = 900
+DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = (
+    _G1_KITCHEN_PACK.runtime.default_startup_no_runtime_timeout_seconds
+)
 PROVIDER_ARTIFACT_ALLOWED_ORIGINS_ENV = (
     "BLUEPRINT_PROVIDER_ARTIFACT_ALLOWED_ORIGINS"
 )
-MAX_KITCHEN_ASSET_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_KITCHEN_ASSET_ARCHIVE_BYTES = _G1_KITCHEN_PACK.scene.max_asset_archive_bytes
 MAX_WARM_READINESS_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
-ISAAC_G1_MAX_SPEND_USD_ENV = "BLUEPRINT_ISAAC_G1_MAX_SPEND_USD"
+ISAAC_G1_MAX_SPEND_USD_ENV = _G1_KITCHEN_PACK.runtime.max_spend_env
 ISAAC_G1_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND"
-UNITREE_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"
-UNITREE_GROOT_POLICY_SERVER_URL_ENV = "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL"
-ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_RUNTIME_MODE"
+UNITREE_GROOT_POLICY_COMMAND_ENV = _G1_KITCHEN_PACK.policy.policy_command_env
+UNITREE_GROOT_POLICY_SERVER_URL_ENV = _G1_KITCHEN_PACK.policy.policy_server_url_env
+ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV = _G1_KITCHEN_PACK.policy.policy_runtime_mode_env
 ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV = (
     "BLUEPRINT_ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED"
 )
@@ -203,74 +216,16 @@ def _inspect_kitchen_asset_namelist(
     byte_size: int | None = None,
 ) -> dict:
     """Validate a staged kitchen asset zip/tree before a GPU worker tries to open it."""
-    files = sorted(
-        {
-            str(name).lstrip("/")
-            for name in names
-            if str(name).strip() and not str(name).endswith("/")
-        }
+    return evaluation_run.inspect_scene_asset_namelist(
+        names,
+        scene=_G1_KITCHEN_PACK.scene,
+        source=source,
+        byte_size=byte_size,
     )
-    candidates = [DEFAULT_KITCHEN_MAIN_USD, "KitchenRoom.usd"]
-    selected = next((candidate for candidate in candidates if candidate in files), "")
-    if not selected:
-        kitchen_room_files = sorted(
-            (name for name in files if name.endswith("/KitchenRoom.usd") or name == "KitchenRoom.usd"),
-            key=lambda name: (len(Path(name).parts), name),
-        )
-        selected = kitchen_room_files[0] if kitchen_room_files else ""
-    blockers: list[str] = []
-    if not files:
-        blockers.append("kitchen_asset_empty")
-    if not selected:
-        blockers.append("kitchen_main_usd_missing")
-    layout = "unknown"
-    if selected == DEFAULT_KITCHEN_MAIN_USD:
-        layout = "collected_kitchen_room"
-    elif selected == "KitchenRoom.usd":
-        layout = "root_kitchen_room"
-    elif selected:
-        layout = "nested_kitchen_room"
-    return {
-        "schema_version": "kitchen_asset_layout_validation.v1",
-        "status": "PASS" if not blockers else "FAIL",
-        "source": source,
-        "blockers": blockers,
-        "file_count": len(files),
-        "zip_bytes": byte_size,
-        "selected_kitchen_main_usd_relative": selected or None,
-        "expected_worker_kitchen_usd": (
-            f"{WORKER_BUNDLE_DIR}/kitchen/{selected}" if selected else None
-        ),
-        "layout": layout,
-        "sample_files": files[:40],
-        "raw_url_values_recorded": False,
-        "claim_boundary": (
-            "Kitchen asset layout validation proves only that the staged asset bundle contains "
-            "a usable KitchenRoom.usd path for the worker request. It does not prove Isaac can "
-            "render the scene, task success, WAM quality, physical reach, safety, or deployment readiness."
-        ),
-    }
 
 
 def _inspect_kitchen_asset_dir_layout(path: str | Path) -> dict:
-    root = Path(path)
-    if not root.is_dir():
-        return {
-            "schema_version": "kitchen_asset_layout_validation.v1",
-            "status": "FAIL",
-            "source": "local_asset_dir",
-            "blockers": ["kitchen_asset_dir_missing"],
-            "path": str(root),
-            "raw_url_values_recorded": False,
-        }
-    names = [
-        item.relative_to(root).as_posix()
-        for item in root.rglob("*")
-        if item.is_file()
-    ]
-    detail = _inspect_kitchen_asset_namelist(names, source="local_asset_dir")
-    detail["path"] = str(root)
-    return detail
+    return evaluation_run.inspect_scene_asset_dir_layout(path, scene=_G1_KITCHEN_PACK.scene)
 
 
 def _fetch_provider_artifact_bytes(
@@ -306,38 +261,11 @@ def _inspect_kitchen_asset_url_layout(kitchen_url: str, *, timeout: int = 1800) 
             timeout=timeout,
             max_bytes=MAX_KITCHEN_ASSET_ARCHIVE_BYTES,
         )
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            detail = _inspect_kitchen_asset_namelist(
-                zf.namelist(),
-                source="reused_existing_url",
-                byte_size=len(data),
-            )
-            if detail.get("status") == "PASS":
-                main_usd = str(detail["selected_kitchen_main_usd_relative"])
-                files: list[dict[str, Any]] = []
-                for info in sorted(zf.infolist(), key=lambda item: item.filename):
-                    if info.is_dir():
-                        continue
-                    digest = hashlib.sha256()
-                    with zf.open(info, "r") as source:
-                        while chunk := source.read(1024 * 1024):
-                            digest.update(chunk)
-                    files.append(
-                        {
-                            "path": info.filename,
-                            "sha256": digest.hexdigest(),
-                            "bytes": int(info.file_size),
-                        }
-                    )
-                detail["content_inventory"] = {
-                    "schema_version": "kitchen_asset_inventory_checksums.v1",
-                    "main_usd": main_usd,
-                    "file_count": len(files),
-                    "total_bytes": sum(int(item["bytes"]) for item in files),
-                    "archive_sha256": hashlib.sha256(data).hexdigest(),
-                    "files": files,
-                }
-        return detail
+        return evaluation_run.inspect_scene_asset_zip(
+            data,
+            scene=_G1_KITCHEN_PACK.scene,
+            source="reused_existing_url",
+        )
     except urllib.error.HTTPError as exc:
         return {
             "schema_version": "kitchen_asset_layout_validation.v1",
@@ -467,17 +395,15 @@ def build_request(*, scenarios: Sequence[dict], kitchen_main_usd_relative: str =
                   render_noise_audit_plan: dict | None = None) -> dict:
     """The runner's request.json. kitchen_usd is the worker-absolute path inside the extracted
     bundle; g1_usd is a relative Isaac asset path resolved against the assets root on the worker."""
-    request = {
-        "schema_version": "isaac_g1_kitchen_parity_request.v1",
-        "kitchen_usd": f"{WORKER_BUNDLE_DIR}/kitchen/{kitchen_main_usd_relative}",
-        "g1_usd": g1_usd,
-        "policy_id": policy_id,
-        "steps": steps,
-        "scenarios": list(scenarios),
-    }
-    if render_noise_audit_plan is not None:
-        request["render_noise_audit"] = dict(render_noise_audit_plan)
-    return request
+    return evaluation_run.build_runner_request(
+        _G1_KITCHEN_PACK,
+        scenarios=scenarios,
+        steps=steps,
+        policy_id=policy_id,
+        scene_main_usd_relative=kitchen_main_usd_relative,
+        robot_usd_relative=g1_usd,
+        render_noise_audit_plan=render_noise_audit_plan,
+    )
 
 
 def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
@@ -952,12 +878,9 @@ def _groot_sonic_policy_runtime_policy(
     effective_groot_policy_command: str,
     effective_groot_policy_command_timeout_seconds: float,
 ) -> dict:
-    requested = str(policy_id).strip() in {
-        "groot_sonic",
-        "groot",
-        "groot_n17_sonic",
-        "unitree_groot_n17_sonic_policy",
-    }
+    requested = str(policy_id).strip() in set(
+        _G1_KITCHEN_PACK.policy.remote_runtime_policy_ids
+    )
     command_configured = bool(_string(effective_groot_policy_command))
     server_url_configured = bool(_string(os.getenv(UNITREE_GROOT_POLICY_SERVER_URL_ENV)))
     runtime_mode = _string(os.getenv(ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV)).lower()
@@ -1654,6 +1577,7 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
 
 def run_isaac_g1_kitchen_parity_job(
     *, scenarios: Sequence[dict], out_dir: str | Path, kitchen_asset_dir: str | Path | None = None,
+    evaluation_run_id: str | None = None,
     kitchen_url: str | None = None,
     g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
     steps: int = 64, provider: str = DEFAULT_ISAAC_REVIEW_PROVIDER, allow_paid: bool = False,
@@ -1700,7 +1624,6 @@ def run_isaac_g1_kitchen_parity_job(
     worker_image_manifest_diagnostic: str | Path | None = None,
 ) -> dict:
     """Full parity job. Without ``allow_paid`` it bundles + stages and returns a launchable plan.
-
     Warm serve mode (``serve=True``): presign a job-inbox channel, launch ONE pod with ``--serve``
     (boots Isaac + loads the scene once, then polls the inbox), wait for its readiness marker, and
     return WITH THE POD LEFT RUNNING (no watch_and_collect / teardown). The caller drives it with a
@@ -1855,12 +1778,9 @@ def run_isaac_g1_kitchen_parity_job(
         and groot_policy_command_timeout_seconds > 0
         else float(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV, "120") or 120)
     )
-    groot_policy_requested = str(policy_id).strip() in {
-        "groot_sonic",
-        "groot",
-        "groot_n17_sonic",
-        "unitree_groot_n17_sonic_policy",
-    }
+    groot_policy_requested = str(policy_id).strip() in set(
+        _G1_KITCHEN_PACK.policy.remote_runtime_policy_ids
+    )
     if not image_startup_canary and groot_policy_requested:
         manifest["policy_runtime_policy"] = _groot_sonic_policy_runtime_policy(
             policy_id=policy_id,
@@ -1973,6 +1893,33 @@ def run_isaac_g1_kitchen_parity_job(
             "total_bytes": kitchen_asset_inventory.get("total_bytes"),
             "archive_sha256": kitchen_asset_inventory.get("archive_sha256"),
         }
+    evaluation_run_spec = build_g1_kitchen_evaluation_run_spec(
+        out_dir=out_dir, run_id=evaluation_run_id, scenarios=scenarios, kitchen_uri=kitchen_url,
+        kitchen_main_usd_relative=kitchen_main_usd_relative,
+        kitchen_asset_inventory=kitchen_asset_inventory, g1_usd=g1_usd,
+        policy_id=policy_id, providers=provider_names, selected_image=selected_image,
+        allow_paid=allow_paid, max_spend_usd=max_spend_usd,
+        image_startup_canary=image_startup_canary, serve=serve,
+        requested_render_settings=requested_render_settings,
+    )
+    evaluation_run_plan = compile_evaluation_run(
+        evaluation_run_spec,
+        output_dir=out_dir / "evaluation_run",
+    )
+    manifest["evaluation_run"] = {
+        "status": evaluation_run_plan["status"],
+        "schema_version": evaluation_run_plan["schema_version"],
+        "run_id": evaluation_run_plan["run_id"],
+        "spec_digest": evaluation_run_plan["spec_digest"],
+        "component_bindings": evaluation_run_plan["component_bindings"],
+        "artifacts": evaluation_run_plan.get("artifacts", {}),
+        "warnings": evaluation_run_plan["validation"]["warnings"],
+        "claim_boundary": evaluation_run_plan["claim_boundary"],
+    }
+    if evaluation_run_plan["status"] != "prepared":
+        manifest["blockers"].append("evaluation_run_contract_blocked")
+        manifest["evaluation_run"]["errors"] = evaluation_run_plan["validation"]["errors"]
+        return manifest
     render_noise_audit_plan = None
     if render_noise_audit:
         from .g1_render_noise_audit import build_variant_plan
@@ -2924,56 +2871,28 @@ def main(argv=None) -> int:
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):
         scenarios = scenarios.get("scenarios", [])
-    m = run_isaac_g1_kitchen_parity_job(
-        scenarios=scenarios, out_dir=args.out_dir, kitchen_asset_dir=args.kitchen_asset_dir,
-        kitchen_url=args.kitchen_url,
-        g1_usd=args.g1_usd, policy_id=args.policy, steps=args.steps, provider=args.provider,
-        width=args.width, height=args.height, fps=args.fps,
-        groot_policy_command=args.groot_policy_command,
-        groot_policy_command_timeout_seconds=args.groot_policy_command_timeout_seconds,
-        allow_paid=args.allow_paid, allow_dirty_paid_launch=args.allow_dirty_paid_launch,
-        cold=args.cold, image=args.image, max_seconds=args.max_seconds,
-        worker_image_manifest_diagnostic=args.worker_image_manifest_diagnostic,
-        max_spend_usd=args.max_spend_usd,
-        container_disk_gb=args.container_disk_gb, volume_gb=args.volume_gb,
-        warm_candidates=tuple(args.warm_candidate or ()),
-        warm_only=args.warm_only,
-        serve=args.serve,
-        serve_idle_timeout_s=args.serve_idle_timeout,
-        serve_max_jobs=args.serve_max_jobs,
-        serve_ready_timeout=args.serve_ready_timeout,
-        image_startup_canary=args.image_startup_canary,
-        supervised_startup=args.supervised_startup,
-        marker_timeout=args.marker_timeout, max_attempts=args.max_attempts,
-        post_marker_progress_timeout=args.post_marker_progress_timeout,
-        startup_no_runtime_timeout=args.startup_no_runtime_timeout,
-        cold_race_contenders=args.cold_race_contenders,
-        vast_max_hourly_rate_usd=args.vast_max_hourly_rate,
-        warmup=args.warmup,
-        articulated=args.articulated, cheap_collision=args.cheap_collision,
-        physics_articulation_drive=args.physics_articulation_drive,
-        dynamic_standing_contact_steps=args.dynamic_standing_contact_steps,
-        settle_seconds=args.settle_seconds, focus_radius=args.focus_radius,
-        keep_objects=args.keep_objects, per_scenario_seconds=args.per_scenario_seconds,
-        manipulation_cam=args.manipulation_cam,
-        manipulation_look_at=args.manipulation_look_at, render_subframes=args.render_subframes,
-        manipulation_reach=args.manipulation_reach, manipulation_reach_arm=args.manipulation_reach_arm,
-        dynamic_episode_termination=not args.no_dynamic_episode_termination,
-        episode_max_steps=args.episode_max_steps,
-        dynamic_episode_check_every=args.dynamic_episode_check_every,
-        capture_every=args.capture_every,
-        fill_light_intensity=args.fill_light_intensity,
-        neutral_environment=args.neutral_environment,
-        robot_review_material_override=args.robot_review_material_override,
-        robot_review_material_mode=args.robot_review_material_mode,
-        kinematic_arm_pose=args.kinematic_arm_pose,
-        collision_approximation=args.collision_approximation, verify_cam=args.verify_cam,
-        manipulation_stand=args.manipulation_stand,
-        placement_topdown_capture=not args.no_placement_topdown_capture,
-        render_noise_audit=args.render_noise_audit,
-        audit_high_spp=args.audit_high_spp,
-        audit_warmup_frames=args.audit_warmup_frames,
-        audit_boost_light_intensity=args.audit_boost_light_intensity)
+    evaluation_spec, execution_context = build_g1_kitchen_cli_evaluation_run(
+        args,
+        scenarios=scenarios,
+    )
+    execution = execute_evaluation_run(
+        evaluation_spec,
+        output_dir=args.out_dir,
+        allow_execution=True,
+        context=execution_context,
+    )
+    m = dict(execution.adapter_result or execution.manifest)
+    m["evaluation_run_execution"] = {
+        key: execution.manifest.get(key)
+        for key in (
+            "status",
+            "run_id",
+            "spec_digest",
+            "execution_adapter_id",
+            "execution_started",
+            "blockers",
+        )
+    }
     _write_job_manifest(args.out_dir, m)
     print(json.dumps(m, indent=2, default=str))
     return 0 if m.get("status") in ("completed", "prepared", "serving") else 1

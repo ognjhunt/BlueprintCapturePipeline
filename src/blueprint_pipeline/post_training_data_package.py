@@ -17,6 +17,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .consent_normalization import (
+    CONSENT_ACTIVE_STATUSES,
+    CONSENT_REVOKED_STATUSES,
+    resolve_consent_signals,
+)
 from .canonical_training_quality_pipeline import (
     CANONICAL_PIPELINE_SCHEMA_VERSION,
     CANONICAL_PIPELINE_SIGNATURE_DOMAIN,
@@ -463,7 +468,26 @@ def _consent_source_payload(capture_root: Path) -> Dict[str, Any]:
                 or payload.get("rights_consent")
                 or payload.get("rights")
             )
-            return nested or payload
+            source = dict(nested or payload)
+            # A revocation or status contradiction anywhere in the payload
+            # (top level or a different nested block, either key spelling)
+            # must survive the unwrap — nesting can never shadow a revocation.
+            signals = resolve_consent_signals(payload)
+            if signals["consent_revoked"]:
+                source["consent_revoked"] = True
+                if signals["consent_revoked_at"] and not source.get(
+                    "consent_revoked_at"
+                ):
+                    source["consent_revoked_at"] = signals["consent_revoked_at"]
+            elif signals["state"] == "unknown" and signals["has_consent_fields"]:
+                forced_status = signals["consent_status"]
+                if forced_status is None or forced_status in CONSENT_ACTIVE_STATUSES:
+                    # Unknown state despite an active-looking status token means
+                    # a malformed or contradictory companion field; the status
+                    # must not read as a clean grant downstream.
+                    forced_status = "unverifiable"
+                source["consent_status"] = forced_status
+            return source
     return {}
 
 
@@ -710,12 +734,18 @@ def _build_consent_evidence_record(
         rights_packet.get("consent_status"),
     )
     consent_status_normalized = consent_status.lower() if consent_status else ""
+    record_revoked = any(
+        resolve_consent_signals(record)["consent_revoked"]
+        or str(record.get("status") or "").strip().lower() in CONSENT_REVOKED_STATUSES
+        for record in records
+    )
     consent_revoked = (
-        consent_status_normalized in {"revoked", "withdrawn", "rescinded"}
+        consent_status_normalized in CONSENT_REVOKED_STATUSES
         or _explicit_true(source.get("consent_revoked"))
         or _explicit_true(source.get("consentRevoked"))
         or bool(source.get("consent_revoked_at") or source.get("consentRevokedAt"))
         or _explicit_true(rights_packet.get("consent_revoked"))
+        or record_revoked
     )
     consent_revoked_at = _first_string(
         source.get("consent_revoked_at"),
@@ -1706,7 +1736,9 @@ def _live_closure_gate_reference(
     return {
         "gate_id": gate_id,
         "present": bool(gate),
-        "passed": bool(gate.get("passed")),
+        # Strict boolean: the closure manifest is untrusted input, and a
+        # string like "false" must never read as a passed gate.
+        "passed": gate.get("passed") is True,
         "blockers": _string_list(gate.get("blockers")),
         "evidence_keys": sorted(evidence),
     }
@@ -1719,7 +1751,7 @@ def _gate_blockers(
 ) -> List[str]:
     if not gate_reference.get("present"):
         return [f"{gate_id}_gate_missing"]
-    if gate_reference.get("passed"):
+    if gate_reference.get("passed") is True:
         return []
     blockers = _string_list(gate_reference.get("blockers"))
     if not blockers:
@@ -5312,11 +5344,12 @@ def _build_post_training_data_package_export(
     )
     ensure_dir(resolved_output_dir)
     generated_at = utc_now_iso()
-
     included_artifacts: Dict[str, str] = {}
     if resolved_job_dir:
         for key, name in (
             ("job_request", "job_request.json"),
+            ("evaluation_run_spec", "evaluation_run_spec.json"),
+            ("evaluation_run_plan", "evaluation_run_plan.json"),
             ("normalized_attempt_trace", "normalized_attempt_trace.json"),
             ("failure_labels", "failure_labels.json"),
             ("policy_package_manifest", "policy_package_manifest.json"),
@@ -5531,7 +5564,6 @@ def _build_post_training_data_package_export(
         value = _pipeline_artifact(pipeline_dir, relative_path)
         if value:
             included_artifacts[key] = _relative_to(resolved_output_dir, pipeline_dir / value)
-
     for key, relative_path in (
         ("clip_curation_manifest", "derived/clip_curation/clip_curation_manifest.json"),
         ("clip_rejection_manifest", "derived/clip_curation/clip_rejection_manifest.json"),

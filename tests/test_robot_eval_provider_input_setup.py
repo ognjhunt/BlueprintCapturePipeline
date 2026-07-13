@@ -614,7 +614,11 @@ def test_prepare_provider_inputs_uses_job_builder_uploads_and_status_boundaries(
             "post_upload_validation": {"status": "validated", "blockers": []},
         }
 
-    monkeypatch.setattr(setup, "build_robot_eval_job", fake_build_robot_eval_job)
+    monkeypatch.setattr(
+        setup,
+        "execute_legacy_robot_eval_request_as_evaluation_run",
+        fake_build_robot_eval_job,
+    )
     monkeypatch.setattr(setup, "upload_file", fake_upload_file)
     ready = setup.prepare_robot_eval_provider_inputs(
         capture_root=capture_root,

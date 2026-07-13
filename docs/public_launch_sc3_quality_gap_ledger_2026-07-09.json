@@ -959,7 +959,7 @@
             {
               "artifact_id": "DATA-01-AC-01-EV-02",
               "path": "src/blueprint_pipeline/materialization.py",
-              "sha256": "sha256:e59b154f282f10a5fb49b766621b7c74b08575edc67a74f79742e3b354c09106",
+              "sha256": "sha256:fdfe200b89065d03e85336ac07ab673147aca340f98658dad8f6f644b7bc4eae",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1463,7 +1463,7 @@
             {
               "artifact_id": "DATA-05-AC-01-EV-02",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:f772acedd98428962309efae3c5c94b9f85dbcac8174f81090a42623b8387299",
+              "sha256": "sha256:02586653859f755be7c01ee97ffeee95e70374b62a19682565f01ed730e1e72d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1582,7 +1582,7 @@
             {
               "artifact_id": "DATA-06-AC-01-EV-01",
               "path": "src/blueprint_pipeline/qualification.py",
-              "sha256": "sha256:0d6946daa257edfd7b2fa2b49c03cacbe54668511a094b8bcef987eae47c7720",
+              "sha256": "sha256:d5e92bcfd62632bba7b2a029f0846ebd942211613af6ca15531371beec69250f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1731,7 +1731,7 @@
             {
               "artifact_id": "DATA-07-AC-01-EV-02",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:f772acedd98428962309efae3c5c94b9f85dbcac8174f81090a42623b8387299",
+              "sha256": "sha256:02586653859f755be7c01ee97ffeee95e70374b62a19682565f01ed730e1e72d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1848,7 +1848,7 @@
             {
               "artifact_id": "DATA-08-AC-01-EV-01",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:f772acedd98428962309efae3c5c94b9f85dbcac8174f81090a42623b8387299",
+              "sha256": "sha256:02586653859f755be7c01ee97ffeee95e70374b62a19682565f01ed730e1e72d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3995,7 +3995,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_job_orchestrator.py",
-              "sha256": "sha256:f32d268c25b5845eb1b6d460d9d191fb6cd42c9121593c2ee76e88f479a2d9ae",
+              "sha256": "sha256:39638bbb1a8cdee8f8d6f768c9ae6a798b263779d3ae05dfdbb39241276694c1",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4011,7 +4011,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-02",
               "path": "tests/test_robot_eval_job_orchestrator.py",
-              "sha256": "sha256:07ae5469e98e7426b240cfb67a68c335903be1862c3704badf4f153d53d79840",
+              "sha256": "sha256:e5754bcf531c924bd702f8c9113d0b6c5d233dfd4957009e4417229fc45136c7",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4115,7 +4115,7 @@
             {
               "artifact_id": "RUN-05-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_worker.py",
-              "sha256": "sha256:b9b2d96e03f668269e1182b3d3073328431391bda368f66d22532d40738de8fe",
+              "sha256": "sha256:42b0251ce73c5af5d2017d40b00009e5adce652cc73c37c110a3069415cc89c5",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5384,7 +5384,7 @@
             {
               "artifact_id": "REL-09-AC-01-EV-01",
               "path": "Dockerfile",
-              "sha256": "sha256:5549a218b828edcce617028a33169aa93f5a4d3712a26ed9e6c5b700daab7ccf",
+              "sha256": "sha256:95c1c32b9fcd381955f36b4d7d0606d4daf22283eb1146f2891db177cc3fb88a",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -6060,7 +6060,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:844b18d2f8bf82addcc930fe9bc3cb47856c7dde34c0082653e4ab002850ae76",
+              "sha256": "sha256:90db643d23d691fa92690c8153585d39dbe96671a1d7291f49bda1c71416aa9e",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7022,7 +7022,7 @@
             {
               "artifact_id": "DATA-17-AC-01-EV-01",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:f772acedd98428962309efae3c5c94b9f85dbcac8174f81090a42623b8387299",
+              "sha256": "sha256:02586653859f755be7c01ee97ffeee95e70374b62a19682565f01ed730e1e72d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7155,7 +7155,7 @@
             {
               "artifact_id": "DATA-18-AC-01-EV-01",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:f772acedd98428962309efae3c5c94b9f85dbcac8174f81090a42623b8387299",
+              "sha256": "sha256:02586653859f755be7c01ee97ffeee95e70374b62a19682565f01ed730e1e72d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7520,7 +7520,7 @@
             {
               "artifact_id": "DATA-21-AC-01-EV-01",
               "path": "src/blueprint_pipeline/materialization.py",
-              "sha256": "sha256:e59b154f282f10a5fb49b766621b7c74b08575edc67a74f79742e3b354c09106",
+              "sha256": "sha256:fdfe200b89065d03e85336ac07ab673147aca340f98658dad8f6f644b7bc4eae",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11012,7 +11012,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:c03cd3f512d0ed6dd264a4320bc026e5347fa784a94ce6ea987ed14b50d03325",
+              "sha256": "sha256:9e923b95d0b4c4a6d643ab981516f4835ac087f8695269ea1e61be8543035d8e",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11390,7 +11390,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:1e0a0c98107103bd28b0413e65350c17fc9ebc35ff258b499a6863c63c3be6a9",
+              "sha256": "sha256:df7f932858421802dd09d6120d6751f43dc635338632d1a56e6b76796fcd89c9",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

@@ -88,6 +88,8 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "job_request_source.json",
         "job_request_enrichment_manifest.json",
         "job_validation.json",
+        "evaluation_run_spec.json",
+        "evaluation_run_plan.json",
         "job_plan.json",
         "agent_orchestration_plan.json",
         "scheduler_decision.json",
