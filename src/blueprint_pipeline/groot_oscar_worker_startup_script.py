@@ -84,13 +84,17 @@ upload_phase startup_gates_passed
 GEAR_SONIC_READY_SCRIPT = r'''
 set +e
 /opt/oscar-venv/bin/python - <<'PY'
-import msgpack, time, zmq
+import os, msgpack, time, zmq
 ctx = zmq.Context(); sub = ctx.socket(zmq.SUB)
 sub.setsockopt_string(zmq.SUBSCRIBE, 'robot_config')
 sub.connect('tcp://127.0.0.1:5557')
 deadline = time.time() + 900
 try:
     while time.time() < deadline:
+        try:
+            os.kill(int(os.environ['GEAR_SONIC_PID']), 0)
+        except (OSError, ValueError):
+            raise SystemExit('official_gear_sonic_controller_exited_before_ready')
         if sub.poll(1000, zmq.POLLIN):
             raw = sub.recv()
             payload = msgpack.unpackb(raw[len(b'robot_config'):], raw=False)

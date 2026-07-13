@@ -1277,6 +1277,13 @@ def test_worker_bootstrap_runs_healthcheck_groot_and_task_adaptive_closed_loop()
     assert "--oscar-width 640" in script
     assert "--oscar-height 240" not in script
     assert ".replace(" not in script
+    assert '"Content-Type: application/zip"' in script
+    assert "SECRET_ROOT=/workspace/.runtime-secrets" in script
+    assert "/run/blueprint-secrets" not in script
+    assert "export GROOT_PID GEAR_SONIC_PID ISAAC_TASK_PID" in script
+    assert "groot_policy_server_exited_before_ready" in script
+    assert "official_gear_sonic_controller_exited_before_ready" in script
+    assert "persistent_isaac_task_executor_exited_before_ready" in script
 
 
 def test_paid_missing_budget_blocks_before_capacity_preflight_or_staging(

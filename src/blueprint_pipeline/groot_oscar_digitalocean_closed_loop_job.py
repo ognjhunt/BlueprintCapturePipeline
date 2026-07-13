@@ -1493,7 +1493,7 @@ with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.write(path, path.relative_to(workspace).as_posix())
 put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "")
 if put_url:
-    subprocess.run(["curl", "-fsS", "-X", "PUT", "--upload-file", str(zip_path), put_url], check=False)
+    subprocess.run(["curl", "-fsS", "-X", "PUT", "-H", "Content-Type: application/zip", "--upload-file", str(zip_path), put_url], check=False)
 PY
 
 cat > /workspace/write_result.py <<'PY'
@@ -1590,14 +1590,13 @@ upload_phase inputs_ready
 python -m blueprint_pipeline.g1_kitchen_bundle_compatibility \
   --manifest /workspace/bundle_manifest.json
 
-mkdir -p /run/blueprint-secrets
-chmod 700 /run/blueprint-secrets
+SECRET_ROOT=/workspace/.runtime-secrets; mkdir -p "$SECRET_ROOT" && chmod 700 "$SECRET_ROOT"
 python -m blueprint_pipeline.runtime_ephemeral_trust \
-  --secret-root /run/blueprint-secrets \
-  --environment-file /run/blueprint-secrets/trust_env.sh \
+  --secret-root "$SECRET_ROOT" \
+  --environment-file "$SECRET_ROOT/trust_env.sh" \
   --public-manifest /workspace/runtime_ephemeral_trust.json \
   --attempt-input-manifest /workspace/attempt_input_manifest.json
-source /run/blueprint-secrets/trust_env.sh
+source "$SECRET_ROOT/trust_env.sh"
 {STARTUP_GATES_SCRIPT}
 
 set +e
@@ -1621,6 +1620,7 @@ GROOT_PID=$!
 GEAR_SONIC_PID=$!
 {isaac_task_executor_cmd} > /workspace/isaac_task_executor.log 2>&1 &
 ISAAC_TASK_PID=$!
+export GROOT_PID GEAR_SONIC_PID ISAAC_TASK_PID
 cleanup() {{
   kill "$GROOT_PID" >/dev/null 2>&1 || true
   kill "$GEAR_SONIC_PID" >/dev/null 2>&1 || true
@@ -1630,11 +1630,12 @@ trap cleanup EXIT
 
 set +e
 python - <<'PY'
-import socket
-import time
-
+import os, socket, time
+from pathlib import Path
 deadline = time.time() + 900
 while time.time() < deadline:
+    if not Path(f'/proc/{{os.environ["GROOT_PID"]}}').exists():
+        raise SystemExit("groot_policy_server_exited_before_ready")
     sock = socket.socket()
     sock.settimeout(2)
     try:
@@ -1662,13 +1663,12 @@ upload_phase groot_server_ready
 
 set +e
 python - <<'PY'
-import json
-import time
-import urllib.request
+import json, os, time, urllib.request
 from pathlib import Path
-
 deadline = time.time() + 900
 while time.time() < deadline:
+    if not Path(f"/proc/{{os.environ['ISAAC_TASK_PID']}}").exists():
+        raise SystemExit('persistent_isaac_task_executor_exited_before_ready')
     if Path('/workspace/initial_g1_sonic_state.json').is_file():
         try:
             payload = json.loads(Path('/workspace/initial_g1_sonic_state.json').read_text())

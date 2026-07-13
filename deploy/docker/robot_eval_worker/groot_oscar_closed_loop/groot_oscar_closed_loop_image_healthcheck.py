@@ -38,6 +38,10 @@ G1_USD = os.environ.get(
     "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd",
 )
 WBC_ROOT = os.environ.get("BLUEPRINT_GEAR_SONIC_ROOT", "/opt/wbc")
+COSMOS_BACKBONE_REPO = os.environ.get(
+    "COSMOS_BACKBONE_REPO", "nvidia/Cosmos-Reason2-2B"
+)
+COSMOS_BACKBONE_REVISION = os.environ.get("COSMOS_BACKBONE_REVISION", "")
 
 # IMGFIX-004: the Isaac 6 kit creates DerivedDataCache under kit/cache and
 # documents/ under kit/data at renderer startup. The 2026-07-12 live A40
@@ -190,7 +194,15 @@ def main() -> int:
 
     # --- exact Isaac carrier and official G1/WBC assets ---
     isaac_import = subprocess.run(
-        [ISAAC_PYTHON, "-c", "import blueprint_pipeline, isaacsim"],
+        [
+            ISAAC_PYTHON,
+            "-c",
+            (
+                "import blueprint_pipeline, isaacsim; "
+                "from isaacsim.core.prims import SingleArticulation; "
+                "import blueprint_pipeline.isaac_runtime_task_backend"
+            ),
+        ],
         capture_output=True,
         text=True,
         timeout=300,
@@ -207,6 +219,10 @@ def main() -> int:
     wbc_deploy = wbc_root / "gear_sonic_deploy/deploy.sh"
     if not wbc_model.is_file() or not wbc_deploy.is_file():
         blockers.append("official_gear_sonic_deployment_assets_missing")
+    wbc_build = wbc_root / "gear_sonic_deploy/build"
+    payload["gear_sonic_build_tree_writable"] = _dir_writable_by_current_user(wbc_build)
+    if not payload["gear_sonic_build_tree_writable"]:
+        blockers.append("official_gear_sonic_build_tree_not_writable")
 
     # --- GR00T env (out-of-process) ---
     payload["groot_venv_python"] = GROOT_VENV_PYTHON
@@ -232,6 +248,26 @@ def main() -> int:
         payload[f"{label}_checkpoint_path"] = path
         if not present:
             blockers.append(f"{label}_checkpoint_missing")
+
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        cosmos_config = try_to_load_from_cache(
+            COSMOS_BACKBONE_REPO,
+            "config.json",
+            revision=COSMOS_BACKBONE_REVISION,
+        )
+        cosmos_cached = isinstance(cosmos_config, str) and Path(cosmos_config).is_file()
+    except Exception as exc:  # pragma: no cover - image-only path
+        payload["cosmos_backbone_cache_error_type"] = type(exc).__name__
+        cosmos_cached = False
+    payload["cosmos_backbone_repo"] = COSMOS_BACKBONE_REPO
+    payload["cosmos_backbone_revision"] = COSMOS_BACKBONE_REVISION
+    payload["cosmos_backbone_config_cached"] = cosmos_cached
+    if not COSMOS_BACKBONE_REVISION:
+        blockers.append("cosmos_backbone_revision_missing")
+    if not cosmos_cached:
+        blockers.append("cosmos_backbone_not_sealed_in_hf_cache")
 
     # --- IMGFIX-004: kit runtime dirs writable by the executing (runtime) user ---
     payload["isaac_kit_runtime_write_dirs"] = {}
