@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .common import read_json
+from .common import read_json, write_json
 from .evaluation_run_contract import EVALUATION_RUN_SCHEMA_VERSION, EvaluationRunSpec
 
 
@@ -486,7 +486,8 @@ def execute_legacy_robot_eval_request_as_evaluation_run(
 ) -> Mapping[str, Any]:
     """Route a legacy request through the canonical six-part execution authority."""
 
-    from .evaluation_run_execution import execute_evaluation_run
+    from .evaluation_run import compile_evaluation_run
+    from .robot_eval_job_orchestrator import build_robot_eval_job
 
     request = (
         dict(job_request)
@@ -504,61 +505,113 @@ def execute_legacy_robot_eval_request_as_evaluation_run(
     authoritative_timeout = int(
         request_budget.get("timeout_seconds") or timeout_seconds
     )
+    request = {
+        **request,
+        "provenance": {
+            **_mapping(request.get("provenance")),
+            "evaluation_run_id": job_id,
+            "evaluation_run_schema_version": EVALUATION_RUN_SCHEMA_VERSION,
+            "source_spec_is_execution_authority": True,
+        },
+    }
+    commands = dict(wam_provider_commands or {})
+    if wam_provider_command and evaluation_substrate:
+        commands.setdefault(evaluation_substrate, wam_provider_command)
+    # Let the legacy builder resolve dataset-card task expansion and write its
+    # structured blocked/completed artifacts before compiling the canonical
+    # Evaluation Run mirror. Compiling from an empty matrix here used to block
+    # valid task-only requests before that enrichment could happen.
+    result = build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request,
+        job_id=job_id,
+        agent_adapter=agent_adapter,
+        provisioner=provisioner,
+        simulator=simulator,
+        evaluation_substrate=evaluation_substrate,
+        allow_wam_provider=allow_wam_provider,
+        wam_provider_commands=commands,
+        wam_artifact_output_uri=wam_artifact_output_uri,
+        wam_provider_max_retries=wam_provider_max_retries,
+        wam_provider_timeout_seconds=wam_provider_timeout_seconds,
+        allow_gpu_provisioning=allow_gpu_provisioning,
+        allow_simulator_execution=allow_simulator_execution,
+        allowed_simulators=allowed_simulators,
+        simulator_commands=simulator_commands,
+        allow_cpu_simulator_preflight=allow_cpu_simulator_preflight,
+        cpu_preflight_backends=cpu_preflight_backends,
+        cpu_preflight_smoke_steps=cpu_preflight_smoke_steps,
+        allow_cpu_preflight_render=allow_cpu_preflight_render,
+        allow_training=allow_training,
+        training_command=training_command,
+        allow_policy_execution=allow_policy_execution,
+        policy_execution_commands=policy_execution_commands,
+        timeout_seconds=authoritative_timeout,
+        budget_usd=authoritative_budget,
+        arena_results_dir=arena_results_dir,
+        arena_scenario_count=arena_scenario_count,
+        arena_shard_size=arena_shard_size,
+        arena_num_envs=arena_num_envs,
+        arena_retry_budget=arena_retry_budget,
+        allow_rollout_vision_labeling=allow_rollout_vision_labeling,
+        vision_labeling_command=vision_labeling_command,
+        allow_delivery_upload=allow_delivery_upload,
+        delivery_command=delivery_command,
+        arena_operator_mode=arena_operator_mode,
+        allow_live_agents_sdk=allow_live_agents_sdk,
+        allow_live_codex_sdk=allow_live_codex_sdk,
+    )
+    job_dir = Path(_string(result.get("job_dir"))) if result.get("job_dir") else None
+    execution_root = Path(
+        output_dir
+        or Path(capture_root).expanduser() / "pipeline" / "evaluation_runs" / job_id
+    )
+    enriched_request = request
+    scene_preflight: Mapping[str, Any] = {}
+    scenario_matrix: Mapping[str, Any] = {}
+    policy_manifest: Mapping[str, Any] = {}
+    if job_dir:
+        for name, target in (
+            ("job_request.json", "request"),
+            ("scene_asset_preflight.json", "scene"),
+            ("scenario_eval_matrix.json", "matrix"),
+            ("policy_package_manifest.json", "policy"),
+        ):
+            path = job_dir / name
+            if not path.is_file():
+                continue
+            value = read_json(path)
+            if target == "request":
+                enriched_request = value
+            elif target == "scene":
+                scene_preflight = value
+            elif target == "matrix":
+                scenario_matrix = value
+            else:
+                policy_manifest = value
     spec = build_robot_eval_evaluation_run_spec(
         job_id=job_id,
-        request=request,
+        request=enriched_request,
         capture_root=capture_root,
-        scene_preflight={},
-        scenario_eval_matrix={},
-        policy_manifest={},
+        scene_preflight=scene_preflight,
+        scenario_eval_matrix=scenario_matrix,
+        policy_manifest=policy_manifest,
         provisioner=provisioner,
         simulator=simulator,
         budget_usd=authoritative_budget,
         timeout_seconds=authoritative_timeout,
     )
-    commands = dict(wam_provider_commands or {})
-    if wam_provider_command and evaluation_substrate:
-        commands.setdefault(evaluation_substrate, wam_provider_command)
-    gates = {
-        "agent_adapter": agent_adapter,
-        "allow_wam_provider": allow_wam_provider,
-        "wam_provider_commands": commands,
-        "wam_artifact_output_uri": wam_artifact_output_uri,
-        "wam_provider_max_retries": wam_provider_max_retries,
-        "wam_provider_timeout_seconds": wam_provider_timeout_seconds,
-        "allow_gpu_provisioning": allow_gpu_provisioning,
-        "allow_simulator_execution": allow_simulator_execution,
-        "allowed_simulators": list(allowed_simulators),
-        "simulator_commands": dict(simulator_commands or {}),
-        "allow_cpu_simulator_preflight": allow_cpu_simulator_preflight,
-        "cpu_preflight_backends": list(cpu_preflight_backends),
-        "cpu_preflight_smoke_steps": cpu_preflight_smoke_steps,
-        "allow_cpu_preflight_render": allow_cpu_preflight_render,
-        "allow_training": allow_training,
-        "training_command": training_command,
-        "allow_policy_execution": allow_policy_execution,
-        "policy_execution_commands": dict(policy_execution_commands or {}),
-        "arena_results_dir": str(arena_results_dir) if arena_results_dir else None,
-        "arena_scenario_count": arena_scenario_count,
-        "arena_shard_size": arena_shard_size,
-        "arena_num_envs": arena_num_envs,
-        "arena_retry_budget": arena_retry_budget,
-        "allow_rollout_vision_labeling": allow_rollout_vision_labeling,
-        "vision_labeling_command": vision_labeling_command,
-        "allow_delivery_upload": allow_delivery_upload,
-        "delivery_command": delivery_command,
-        "arena_operator_mode": arena_operator_mode,
-        "allow_live_agents_sdk": allow_live_agents_sdk,
-        "allow_live_codex_sdk": allow_live_codex_sdk,
-    }
-    execution_root = Path(output_dir or Path(capture_root).expanduser() / "pipeline" / "evaluation_runs" / job_id)
-    execution = execute_evaluation_run(
-        spec,
-        output_dir=execution_root,
-        allow_execution=True,
-        context={"capture_root": str(Path(capture_root).expanduser()), "gates": gates},
+    compile_evaluation_run(spec, output_dir=execution_root)
+    write_json(
+        execution_root / "evaluation_run_execution.json",
+        {
+            "schema_version": "evaluation_run_execution.v1",
+            "run_id": job_id,
+            "status": result.get("status") or "blocked",
+            "adapter_result": dict(result),
+        },
     )
-    return dict(execution.adapter_result or execution.manifest)
+    return dict(result)
 
 
 def execute_robot_eval_cli_evaluation_run(

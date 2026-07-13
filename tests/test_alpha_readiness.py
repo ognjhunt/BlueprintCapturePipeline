@@ -5,6 +5,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
 from blueprint_pipeline.alpha_readiness import (
@@ -1185,3 +1186,58 @@ def test_android_alpha_readiness_is_internal_until_operator_evidence(monkeypatch
         "Do not market this source as externally launch-ready" in claim
         for claim in launch_gate_summary["launch_claims"]["not_justified"]
     )
+
+
+# --- legacy capture_mode fallback must normalize capture-rights booleans ---
+
+_RIGHTS_MISSING = object()
+_RIGHTS_COERCION_FORMS = [
+    pytest.param(False, False, id="bool-false"),
+    pytest.param("false", False, id="str-false"),
+    pytest.param("0", False, id="str-zero"),
+    pytest.param("no", False, id="str-no"),
+    pytest.param("off", False, id="str-off"),
+    pytest.param("", False, id="empty-str"),
+    pytest.param(_RIGHTS_MISSING, False, id="missing"),
+    pytest.param(True, True, id="bool-true"),
+    pytest.param("true", True, id="str-true"),
+    pytest.param("1", True, id="str-one"),
+    pytest.param("yes", True, id="str-yes"),
+    pytest.param("on", True, id="str-on"),
+]
+
+
+def _legacy_descriptor_capture_root(tmp_path: Path, rights_value: object) -> Path:
+    # A descriptor without capture_mode exercises the legacy inference path
+    # in build_alpha_readiness_summary; geometry_ready is the only other gate.
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    rights: dict[str, object] = {}
+    if rights_value is not _RIGHTS_MISSING:
+        rights["derived_scene_generation_allowed"] = rights_value
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene-1",
+                "capture_id": "capture-1",
+                "capture_source": "meta_glasses",
+                "raw_prefix_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw",
+                "frames_index_uri": "gs://bucket/scenes/scene-1/captures/capture-1/frames.jsonl",
+                "quality": {"geometry_ready": True},
+                "metadata": {"capture_rights": rights},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return capture_root
+
+
+@pytest.mark.parametrize(("rights_value", "expected"), _RIGHTS_COERCION_FORMS)
+def test_legacy_capture_mode_fallback_normalizes_rights_boolean(
+    tmp_path: Path, rights_value: object, expected: bool
+) -> None:
+    capture_root = _legacy_descriptor_capture_root(tmp_path, rights_value)
+    summary = build_alpha_readiness_summary(capture_root=capture_root, env={})
+    expected_mode = "site_world_candidate" if expected else "qualification_only"
+    assert summary["capture_mode"] == expected_mode

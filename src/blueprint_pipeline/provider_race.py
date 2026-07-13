@@ -544,10 +544,15 @@ def _race_launch_impl(
     def _cleanup_interrupted_contender(idx: int, provider: object) -> None:
         """Terminate a known id owned by a race that is no longer returning a winner."""
         rec = records[idx]
-        iid = rec.get("instance_id")
-        if not iid or rec.get("interruption_cleanup_attempted"):
-            return
-        rec["interruption_cleanup_attempted"] = True
+        # A contender thread and the coordinator can both enter interrupt
+        # cleanup. Claim the teardown once under the shared race lock before
+        # making the provider call, otherwise the same paid instance can be
+        # terminated twice depending on thread scheduling.
+        with winner_lock:
+            iid = rec.get("instance_id")
+            if not iid or rec.get("interruption_cleanup_attempted"):
+                return
+            rec["interruption_cleanup_attempted"] = True
         rec["teardown_action"] = "terminate"
         try:
             rec["terminated"] = provider.terminate(iid)

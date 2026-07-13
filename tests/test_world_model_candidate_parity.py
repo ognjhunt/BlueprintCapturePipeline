@@ -4,7 +4,15 @@ import json
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
+import blueprint_pipeline.geometry_stage as geometry_stage
+import blueprint_pipeline.materialization as materialization
+from blueprint_pipeline.alpha_readiness import build_alpha_readiness_summary
+from blueprint_pipeline.capture_bridge import CaptureDescriptor
+from blueprint_pipeline.local_capture import LocalCaptureContext
 from blueprint_pipeline.materialization import materialize_capture_bundle
+from blueprint_pipeline.qualification import _should_run_default_geometry_stage
 
 
 def _rehash_raw_bundle(raw_root: Path) -> None:
@@ -480,3 +488,141 @@ def test_pessimistic_manifest_alignment_cannot_downgrade_valid_join_capture(
     assert payload["metadata"]["scene_memory_capture"]["world_model_candidate"] is True
     assert materialized["qa_report"]["scene_memory_readiness"]["world_model_candidate"] is True
     assert payload["metadata"]["capture_mode"]["resolved_mode"] == "site_world_candidate"
+
+
+# --- rights-boolean normalization parity across every consuming surface ---
+
+_RIGHTS_MISSING = object()
+_RIGHTS_COERCION_FORMS = [
+    pytest.param(False, False, id="bool-false"),
+    pytest.param("false", False, id="str-false"),
+    pytest.param("0", False, id="str-zero"),
+    pytest.param("no", False, id="str-no"),
+    pytest.param("off", False, id="str-off"),
+    pytest.param("", False, id="empty-str"),
+    pytest.param(_RIGHTS_MISSING, False, id="missing"),
+    pytest.param(True, True, id="bool-true"),
+    pytest.param("true", True, id="str-true"),
+    pytest.param("1", True, id="str-one"),
+    pytest.param("yes", True, id="str-yes"),
+    pytest.param("on", True, id="str-on"),
+]
+
+_DESCRIPTOR_BASE = {
+    "schema_version": "v1",
+    "scene_id": "scene-parity",
+    "capture_id": "capture-parity",
+    "capture_source": "meta_glasses",
+    "raw_prefix_uri": "gs://bucket/scenes/scene-parity/captures/capture-parity/raw",
+    "frames_index_uri": "gs://bucket/scenes/scene-parity/captures/capture-parity/frames.jsonl",
+}
+
+
+def _rights_mapping(rights_value: object) -> dict[str, object]:
+    if rights_value is _RIGHTS_MISSING:
+        return {}
+    return {"derived_scene_generation_allowed": rights_value}
+
+
+@pytest.mark.parametrize(("rights_value", "expected"), _RIGHTS_COERCION_FORMS)
+def test_rights_boolean_normalization_agrees_across_surfaces(
+    tmp_path: Path, rights_value: object, expected: bool
+) -> None:
+    rights = _rights_mapping(rights_value)
+    manifest = {
+        "site_identity": {"site_id": "site-parity"},
+        "capture_mode": {
+            "requested_mode": "site_world_candidate",
+            "resolved_mode": "site_world_candidate",
+        },
+        "capture_rights": rights,
+    }
+
+    # 1. Canonical candidacy.
+    candidate = materialization._canonical_world_model_candidate(
+        manifest=manifest,
+        arkit_poses_uri="gs://bucket/poses",
+        arkit_intrinsics_uri="gs://bucket/intrinsics",
+        arkit_depth_prefix_uri="gs://bucket/depth",
+        intake_complete=True,
+        evidence_tier="qualified_metric_capture",
+        capture_source="iphone",
+        pose_match_rate=0.95,
+        p95_pose_delta_sec=0.02,
+        geometry_ready=True,
+        geometry_source="arkit",
+    )
+    assert candidate is expected
+
+    # 2. Normalized rights projection.
+    block = materialization._capture_rights_block(manifest)
+    assert block["derived_scene_generation_allowed"] is expected
+
+    # 3. Geometry descriptor patching.
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-parity" / "captures" / "capture-parity"
+    geometry_root = capture_root / "pipeline" / "geometry"
+    geometry_root.mkdir(parents=True)
+    context = LocalCaptureContext(
+        capture_root=capture_root,
+        raw_root=capture_root / "raw",
+        pipeline_root=capture_root / "pipeline",
+        descriptor_path=capture_root / "capture_descriptor.json",
+        raw_complete_path=capture_root / "raw" / "raw_complete.json",
+        storage_root=tmp_path / "bucket",
+        bucket="bucket",
+        scene_id="scene-parity",
+        capture_id="capture-parity",
+    )
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            **_DESCRIPTOR_BASE,
+            "metadata": {
+                "capture_mode": {"requested_mode": "site_world_candidate"},
+                "capture_rights": rights,
+            },
+        }
+    )
+    geometry_stage._patch_descriptor_with_geometry(
+        context=context,
+        descriptor=descriptor,
+        geometry_source="video_to_world",
+        ready_for_world_model=True,
+        contract_ready_for_world_model=True,
+        internal_fallback_ready=False,
+        geometry_live_ready=True,
+        external_market_ready=True,
+        site_faithful_market_ready=False,
+        provider_native_result=True,
+        fallback_used=False,
+        fallback_kind=None,
+        launch_blockers=[],
+        coordinate_frame_session_id="session-parity",
+        summary_path=geometry_root / "geometry_summary.json",
+        manifest_path=geometry_root / "geometry_manifest.json",
+    )
+    patched = json.loads(context.descriptor_path.read_text(encoding="utf-8"))
+    assert patched["world_model_candidate"] is expected
+
+    # 4. Legacy alpha-readiness capture_mode inference.
+    alpha_root = tmp_path / "alpha-capture"
+    alpha_root.mkdir()
+    (alpha_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                **_DESCRIPTOR_BASE,
+                "quality": {"geometry_ready": True},
+                "metadata": {"capture_rights": rights},
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = build_alpha_readiness_summary(capture_root=alpha_root, env={})
+    assert summary["capture_mode"] == (
+        "site_world_candidate" if expected else "qualification_only"
+    )
+
+    # 5. Default geometry-stage routing.
+    routing_descriptor = CaptureDescriptor.from_dict(
+        {**_DESCRIPTOR_BASE, "metadata": {"capture_rights": rights}}
+    )
+    assert _should_run_default_geometry_stage(routing_descriptor) is expected

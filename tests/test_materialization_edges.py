@@ -614,3 +614,136 @@ def test_build_records_reuses_candidacy_consistently(tmp_path: Path) -> None:
     # capture_mode lives in metadata; readiness candidate is exposed in qa_report.
     assert "capture_mode" in descriptor["metadata"]
     assert "world_model_candidate" in qa_report["scene_memory_readiness"]
+
+
+# --- capture-rights boolean normalization (fail-closed) ---
+
+_RIGHTS_MISSING = object()
+_RIGHTS_FALSE_FORMS = [
+    pytest.param(False, id="bool-false"),
+    pytest.param("false", id="str-false"),
+    pytest.param("0", id="str-zero"),
+    pytest.param("no", id="str-no"),
+    pytest.param("off", id="str-off"),
+    pytest.param("", id="empty-str"),
+    pytest.param(_RIGHTS_MISSING, id="missing"),
+]
+_RIGHTS_TRUE_FORMS = [
+    pytest.param(True, id="bool-true"),
+    pytest.param("true", id="str-true"),
+    pytest.param("1", id="str-one"),
+    pytest.param("yes", id="str-yes"),
+    pytest.param("on", id="str-on"),
+]
+
+
+def _rights_manifest(rights_value: Any) -> dict[str, Any]:
+    rights: dict[str, Any] = {}
+    if rights_value is not _RIGHTS_MISSING:
+        rights["derived_scene_generation_allowed"] = rights_value
+    return {
+        "site_identity": {"site_id": "site-1"},
+        "capture_mode": {
+            "requested_mode": "site_world_candidate",
+            "resolved_mode": "site_world_candidate",
+        },
+        "capture_rights": rights,
+    }
+
+
+_RIGHTS_SIDECARS: dict[str, Any] = {
+    "arkit_poses_uri": "gs://bucket/poses",
+    "arkit_intrinsics_uri": "gs://bucket/intrinsics",
+    "arkit_depth_prefix_uri": "gs://bucket/depth",
+    "arkit_geometry_ready": True,
+    "geometry_source": "arkit",
+    "pose_match_rate": 0.95,
+    "p95_pose_delta_sec": 0.02,
+}
+
+
+def _rights_candidate(manifest: dict[str, Any]) -> bool:
+    return m._canonical_world_model_candidate(
+        manifest=manifest,
+        arkit_poses_uri=_RIGHTS_SIDECARS["arkit_poses_uri"],
+        arkit_intrinsics_uri=_RIGHTS_SIDECARS["arkit_intrinsics_uri"],
+        arkit_depth_prefix_uri=_RIGHTS_SIDECARS["arkit_depth_prefix_uri"],
+        intake_complete=True,
+        evidence_tier="qualified_metric_capture",
+        capture_source="iphone",
+        pose_match_rate=0.95,
+        p95_pose_delta_sec=0.02,
+        geometry_ready=True,
+        geometry_source="arkit",
+    )
+
+
+def _rights_decision(manifest: dict[str, Any]) -> m.WorldModelCandidacyDecision:
+    return m._compute_world_model_candidacy_decision(
+        manifest=manifest,
+        sidecars=_RIGHTS_SIDECARS,
+        intake_complete=True,
+        evidence_tier="qualified_metric_capture",
+        source="iphone",
+    )
+
+
+@pytest.mark.parametrize("rights_value", _RIGHTS_FALSE_FORMS)
+def test_world_model_candidacy_fails_closed_for_non_true_rights_forms(rights_value: Any) -> None:
+    manifest = _rights_manifest(rights_value)
+    assert _rights_candidate(manifest) is False
+    decision = _rights_decision(manifest)
+    assert decision.candidate is False
+    assert decision.resolved_mode == "qualification_only"
+    assert decision.downgrade_reason == "derived_scene_generation_not_allowed"
+    assert "derived_scene_generation_allowed:False" in decision.reasoning
+
+
+@pytest.mark.parametrize("rights_value", _RIGHTS_TRUE_FORMS)
+def test_world_model_candidacy_accepts_explicit_true_rights_forms(rights_value: Any) -> None:
+    manifest = _rights_manifest(rights_value)
+    assert _rights_candidate(manifest) is True
+    decision = _rights_decision(manifest)
+    assert decision.candidate is True
+    assert decision.resolved_mode == "site_world_candidate"
+    assert decision.downgrade_reason is None
+    assert "derived_scene_generation_allowed:True" in decision.reasoning
+
+
+@pytest.mark.parametrize(
+    ("rights_value", "expected"),
+    [*[pytest.param(p.values[0], False, id=p.id) for p in _RIGHTS_FALSE_FORMS],
+     *[pytest.param(p.values[0], True, id=p.id) for p in _RIGHTS_TRUE_FORMS]],
+)
+def test_capture_rights_block_normalizes_every_rights_flag(rights_value: Any, expected: bool) -> None:
+    raw: dict[str, Any] = {}
+    if rights_value is not _RIGHTS_MISSING:
+        raw = {
+            "derived_scene_generation_allowed": rights_value,
+            "data_licensing_allowed": rights_value,
+            "capture_contributor_payout_eligible": rights_value,
+        }
+    block = m._capture_rights_block({"capture_rights": raw})
+    assert block["derived_scene_generation_allowed"] is expected
+    assert block["data_licensing_allowed"] is expected
+    assert block["capture_contributor_payout_eligible"] is expected
+
+
+def test_candidacy_decision_sha_unchanged_for_canonical_boolean_rights() -> None:
+    # Golden fingerprints captured before the string-truthiness fix: canonical
+    # JSON boolean inputs (and a missing rights block) must hash identically
+    # after normalization so recorded decisions stay verifiable.
+    assert (
+        _rights_decision(_rights_manifest(True)).decision_sha256
+        == "01fff26e283a24de47d77df38928fb7977fa252344ccd1de74984dac670581d1"
+    )
+    assert (
+        _rights_decision(_rights_manifest(False)).decision_sha256
+        == "18f42119d5a8453e3b987774e3c042e29eb7432a79d5d306f1a3494b101b9ddf"
+    )
+    missing_block = _rights_manifest(_RIGHTS_MISSING)
+    del missing_block["capture_rights"]
+    assert (
+        _rights_decision(missing_block).decision_sha256
+        == "18f42119d5a8453e3b987774e3c042e29eb7432a79d5d306f1a3494b101b9ddf"
+    )

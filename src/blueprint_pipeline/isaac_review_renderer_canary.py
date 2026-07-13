@@ -15,6 +15,9 @@ import hashlib
 import json
 import os
 import struct
+import sys
+import threading
+import time
 import zlib
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -58,6 +61,40 @@ FLAT_FRAME_MAX_LUMINANCE_STD = 1.0
 SEVERE_CLIPPING_MIN_FRACTION = 0.5
 MIN_G1_PIXEL_FRACTION = 0.005
 MIN_TARGET_MARKER_PIXEL_FRACTION = 0.005
+
+# Hard wall-clock bound on the renderer/scene phase. The 2026-07-12 live A40
+# canary wedged forever (HydraEngine rtx failed creating the scene renderer,
+# then Kit spun at ~8% GPU with no exit); the review lane must convert that
+# wedge into a bounded, structured blocked verdict.
+REVIEW_CANARY_TIMEOUT_ENV_VAR = "BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS"
+DEFAULT_REVIEW_CANARY_TIMEOUT_SECONDS = 900.0
+REVIEW_CANARY_TIMEOUT_BLOCKER = "review_canary_timeout_renderer_never_ready"
+
+# Escape hatch for a wedged native renderer AND the claim-integrity guard for
+# non-passed verdicts: a hung/partially-initialized SimulationApp can stall
+# normal interpreter shutdown forever, and on the 2026-07-12 live A40 run Kit
+# shutdown machinery clobbered the CLI's nonzero return into exit 0 despite a
+# persisted blocked verdict. os._exit bypasses atexit/Kit shutdown entirely
+# (same pattern as the image startup canary watchdog in
+# isaac_g1_worker_bootstrap). Injectable for tests.
+_hard_exit = os._exit
+
+
+def _resolve_review_canary_timeout_seconds(value: float | None = None) -> float:
+    """Explicit value wins; else the env var; garbage or <=0 fails closed to
+    the 900s default (a too-small accidental bound would mask real wedges as
+    flaky, a zero/negative bound would disable the canary entirely)."""
+
+    if value is not None:
+        return float(value)
+    raw = _string(os.environ.get(REVIEW_CANARY_TIMEOUT_ENV_VAR))
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return DEFAULT_REVIEW_CANARY_TIMEOUT_SECONDS
+    if parsed <= 0:
+        return DEFAULT_REVIEW_CANARY_TIMEOUT_SECONDS
+    return parsed
 
 
 def _string(value: Any) -> str:
@@ -264,6 +301,7 @@ def run_isaac_review_renderer_canary(
     expected_orientation: str = "landscape",
     renderer_backend: Callable[[], Mapping[str, Any]] | None = None,
     prior_frame_sha256: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run the review renderer canary and persist its artifacts.
 
@@ -275,6 +313,18 @@ def run_isaac_review_renderer_canary(
     mirroring the write-before-SimulationApp.close ordering of the fast
     startup canary).  The real Isaac backend only exists on a GPU worker, so
     ``None`` yields a blocked result instead of importing isaacsim here.
+
+    ``timeout_seconds`` bounds the renderer/scene phase (default: the
+    ``BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS`` env var, else 900s).  The
+    backend runs on the CALLING (main) thread: Isaac's SimulationApp installs
+    POSIX signal handlers via ``signal.signal``, which raises ``ValueError:
+    signal only works in main thread of the main interpreter`` on any worker
+    thread (2026-07-12 live A40 regression).  A small daemon watchdog thread
+    enforces the wall-clock bound instead: when the deadline passes without
+    completion it persists the structured blocked verdict with the
+    ``review_canary_timeout_renderer_never_ready`` blocker and then hard-exits
+    via the injectable ``_hard_exit`` (a wedged native renderer on the main
+    thread cannot be joined or unloaded).
     """
 
     if expected_orientation not in REVIEW_FRAME_ORIENTATIONS:
@@ -298,9 +348,72 @@ def run_isaac_review_renderer_canary(
         blockers.append("review_canary_image_digest_missing")
         checks.append(_check("image_digest_binding", "blocked"))
 
+    resolved_timeout = _resolve_review_canary_timeout_seconds(timeout_seconds)
+    result_json_path = out_dir / RESULT_JSON_FILENAME
+
+    def _build_payload(
+        *,
+        payload_checks: list[dict[str, Any]],
+        payload_blockers: list[str],
+        timed_out: bool,
+        elapsed_seconds: float,
+        validation: dict[str, Any] | None = None,
+        frame_png_path: Path | None = None,
+        contact_sheet_path: Path | None = None,
+        png_encoder: str | None = None,
+        frame_count: int = 0,
+    ) -> dict[str, Any]:
+        deduped = list(dict.fromkeys(payload_blockers))
+        operational = not deduped
+        return {
+            "schema_version": ISAAC_REVIEW_RENDERER_CANARY_SCHEMA_VERSION,
+            "generated_at": generated_at,
+            "status": "passed" if operational else "blocked",
+            "simulator": "isaac",
+            "canary": "review_renderer",
+            "contract": REVIEW_RENDERER_CANARY_CONTRACT,
+            "launch_session_id": nonce or None,
+            "image_digest": digest or None,
+            "expected_orientation": expected_orientation,
+            "renderer_phase_timeout": {
+                "timed_out": timed_out,
+                "timeout_seconds": resolved_timeout,
+                "timeout_env_var": REVIEW_CANARY_TIMEOUT_ENV_VAR,
+                "elapsed_seconds": round(elapsed_seconds, 3),
+            },
+            "checks": payload_checks,
+            "blockers": deduped,
+            "frame_validation": validation,
+            "artifacts": {
+                "result_json": str(result_json_path),
+                "frame_png": str(frame_png_path) if frame_png_path else None,
+                "contact_sheet_png": (
+                    str(contact_sheet_path) if contact_sheet_path else None
+                ),
+                "png_encoder": png_encoder,
+                "frame_count": frame_count,
+                "bound_launch_session_id": nonce or None,
+                "bound_image_digest": digest or None,
+            },
+            "isaac_review_renderer_operational": operational,
+            "fast_startup_canary_is_not_review_proof": True,
+            "claim_boundary": {
+                "isaac_review_renderer_operational_claim_source": (
+                    "isaac_review_renderer_canary_only"
+                ),
+                "kitchen_scene_placement_proven": False,
+                "policy_execution_proven": False,
+                "proves_task_success": False,
+                "fast_startup_canary_is_not_review_proof": True,
+                PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
+            },
+            "secret_values_in_artifact": False,
+        }
+
     backend_result: dict[str, Any] = {}
     backend_available = renderer_backend is not None
     backend_ok = False
+    backend_elapsed = 0.0
     if not backend_available:
         blockers.append("review_renderer_backend_unavailable")
         checks.append(
@@ -312,24 +425,95 @@ def run_isaac_review_renderer_canary(
             )
         )
     else:
+        # Watchdog on a daemon thread; renderer on the MAIN thread. A wedged
+        # renderer (e.g. HydraEngine rtx failing to create a scene renderer,
+        # then Kit spinning forever) pins the main thread, so the watchdog
+        # persists the bounded verdict and hard-exits the process.
+        backend_done = threading.Event()
+        watchdog_fired = threading.Event()
+        watchdog_payload: dict[str, Any] = {}
+        backend_started = time.monotonic()
+
+        def _watchdog() -> None:
+            if backend_done.wait(resolved_timeout):
+                return
+            elapsed = time.monotonic() - backend_started
+            timeout_payload = _build_payload(
+                payload_checks=list(checks)
+                + [
+                    _check(
+                        "review_renderer_backend",
+                        "blocked",
+                        reason=REVIEW_CANARY_TIMEOUT_BLOCKER,
+                        timeout_seconds=resolved_timeout,
+                        elapsed_seconds=round(elapsed, 3),
+                        note=(
+                            "renderer/scene phase never completed within the "
+                            "wall-clock bound; treating as a wedged renderer"
+                        ),
+                    )
+                ],
+                payload_blockers=list(blockers) + [REVIEW_CANARY_TIMEOUT_BLOCKER],
+                timed_out=True,
+                elapsed_seconds=elapsed,
+            )
+            watchdog_payload.update(timeout_payload)
+            try:
+                write_json(result_json_path, timeout_payload)
+                print(
+                    json.dumps(
+                        {
+                            "status": timeout_payload["status"],
+                            "blockers": timeout_payload["blockers"],
+                        }
+                    )
+                )
+            finally:
+                watchdog_fired.set()
+                sys.stdout.flush()
+                sys.stderr.flush()
+                # The wedged renderer pins the main thread and may never
+                # release native resources; only a hard exit is guaranteed.
+                _hard_exit(2)
+
+        threading.Thread(
+            target=_watchdog,
+            name="review-canary-timeout-watchdog",
+            daemon=True,
+        ).start()
+        backend_error: BaseException | None = None
+        invoked: dict[str, Any] = {}
         try:
-            backend_result = dict(renderer_backend())
+            # MAIN thread on purpose: SimulationApp calls signal.signal, which
+            # only works on the main thread of the main interpreter.
+            invoked = dict(renderer_backend())
+        except BaseException as exc:  # noqa: BLE001 - reported as verdict
+            backend_error = exc
+        backend_elapsed = time.monotonic() - backend_started
+        backend_done.set()
+        if watchdog_fired.is_set():
+            # Only reachable when the injectable _hard_exit did not terminate
+            # the process (tests). The watchdog-persisted timeout verdict is
+            # the verdict of record; do not overwrite it with a late result.
+            return dict(watchdog_payload)
+        if backend_error is not None:
+            blockers.append("review_renderer_backend_failed")
+            checks.append(
+                _check(
+                    "review_renderer_backend",
+                    "blocked",
+                    error_type=type(backend_error).__name__,
+                    error=str(backend_error)[:2000],
+                )
+            )
+        else:
+            backend_result = invoked
             backend_ok = True
             checks.append(
                 _check(
                     "review_renderer_backend",
                     "passed",
                     renderer=_string(backend_result.get("renderer")) or "unknown",
-                )
-            )
-        except Exception as exc:
-            blockers.append("review_renderer_backend_failed")
-            checks.append(
-                _check(
-                    "review_renderer_backend",
-                    "blocked",
-                    error_type=type(exc).__name__,
-                    error=str(exc)[:2000],
                 )
             )
 
@@ -378,45 +562,17 @@ def run_isaac_review_renderer_canary(
             contact_sheet_path = out_dir / CONTACT_SHEET_PNG_FILENAME
             _write_png(contact_sheet_path, _contact_sheet(frames))
 
-    blockers = list(dict.fromkeys(blockers))
-    operational = not blockers
-    result_json_path = out_dir / RESULT_JSON_FILENAME
-    payload: dict[str, Any] = {
-        "schema_version": ISAAC_REVIEW_RENDERER_CANARY_SCHEMA_VERSION,
-        "generated_at": generated_at,
-        "status": "passed" if operational else "blocked",
-        "simulator": "isaac",
-        "canary": "review_renderer",
-        "contract": REVIEW_RENDERER_CANARY_CONTRACT,
-        "launch_session_id": nonce or None,
-        "image_digest": digest or None,
-        "expected_orientation": expected_orientation,
-        "checks": checks,
-        "blockers": blockers,
-        "frame_validation": validation,
-        "artifacts": {
-            "result_json": str(result_json_path),
-            "frame_png": str(frame_png_path) if frame_png_path else None,
-            "contact_sheet_png": str(contact_sheet_path) if contact_sheet_path else None,
-            "png_encoder": png_encoder,
-            "frame_count": len(frames),
-            "bound_launch_session_id": nonce or None,
-            "bound_image_digest": digest or None,
-        },
-        "isaac_review_renderer_operational": operational,
-        "fast_startup_canary_is_not_review_proof": True,
-        "claim_boundary": {
-            "isaac_review_renderer_operational_claim_source": (
-                "isaac_review_renderer_canary_only"
-            ),
-            "kitchen_scene_placement_proven": False,
-            "policy_execution_proven": False,
-            "proves_task_success": False,
-            "fast_startup_canary_is_not_review_proof": True,
-            PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
-        },
-        "secret_values_in_artifact": False,
-    }
+    payload = _build_payload(
+        payload_checks=checks,
+        payload_blockers=blockers,
+        timed_out=False,
+        elapsed_seconds=backend_elapsed,
+        validation=validation,
+        frame_png_path=frame_png_path,
+        contact_sheet_path=contact_sheet_path,
+        png_encoder=png_encoder,
+        frame_count=len(frames),
+    )
     write_json(result_json_path, payload)
     close_callable = backend_result.get("close")
     if callable(close_callable):
@@ -548,7 +704,17 @@ def main(argv: list[str] | None = None) -> int:
         renderer_backend=_resolve_renderer_backend(expected_orientation=args.orientation),
     )
     print(json.dumps({"status": payload["status"], "blockers": payload["blockers"]}))
-    return 0 if payload["status"] == "passed" else 2
+    if payload["status"] == "passed":
+        return 0
+    # Claim-integrity guard: a non-passed verdict must be impossible to pair
+    # with exit code 0. On the 2026-07-12 live A40 run the canary persisted a
+    # blocked verdict yet the process exited 0 (Kit shutdown machinery
+    # clobbered the normal return path after the failed SimulationApp init),
+    # so bypass interpreter/atexit shutdown entirely with a hard exit.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    _hard_exit(2)
+    return 2  # pragma: no cover - reachable only with a stubbed _hard_exit
 
 
 if __name__ == "__main__":  # pragma: no cover

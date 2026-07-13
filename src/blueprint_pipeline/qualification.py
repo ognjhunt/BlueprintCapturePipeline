@@ -2682,7 +2682,7 @@ def _should_run_default_geometry_stage(descriptor: CaptureDescriptor) -> bool:
         if isinstance(descriptor.metadata.get("capture_rights"), Mapping)
         else {}
     )
-    return bool(capture_rights.get("derived_scene_generation_allowed", False))
+    return parse_bool(capture_rights.get("derived_scene_generation_allowed"), default=False)
 
 
 def _requested_downstream_lanes(
