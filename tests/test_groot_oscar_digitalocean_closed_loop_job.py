@@ -321,6 +321,182 @@ class _PreparedOnlyProvider:
         raise AssertionError("prepared mode must not query DigitalOcean capacity")
 
 
+def _worker_image_manifest_diagnostic(tmp_path: Path) -> Path:
+    """Write a completed registry manifest diagnostic bound to DIGEST_REF."""
+    path = tmp_path / "isaac_worker_image_manifest_diagnostic.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "isaac_worker_image_manifest_diagnostic.v2",
+                "status": "completed",
+                "image_ref": "docker.io/nijelhunt/blueprint-groot-oscar-eval:20260712",
+                "resolved_digest": f"sha256:{IMAGE_HASH}",
+                "resolved_digest_ref": DIGEST_REF,
+                "runnable_platform": "linux/amd64",
+                "layer_count": 35,
+                "total_compressed_size_bytes": 50_455_509_186,
+                "largest_layer_size_bytes": 10_585_790_213,
+                "layers_over_1gb": 4,
+                "large_image_pull_risk": True,
+                "split_layer_layout_suitable": False,
+                "recommended_startup_no_runtime_timeout_seconds": 1800,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_paid_launch_fails_closed_without_cli_worker_image_manifest_diagnostic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A paid digest-pinned launch must fail closed unless the registry
+    manifest diagnostic is bound explicitly via the CLI argument; an env-var
+    or default-path diagnostic is not evidence for the exact selected image
+    (path_source must be cli_argument, same contract as the parity lane)."""
+    start_frame, route = _inputs(tmp_path)
+
+    class _NeverConsultedProvider(_PreparedOnlyProvider):
+        def capacity_preflight(self, request=None):
+            raise AssertionError(
+                "diagnostic gate must block before capacity is consulted"
+            )
+
+    monkeypatch.setattr(
+        J, "get_render_provider", lambda _name: _NeverConsultedProvider()
+    )
+    monkeypatch.setattr(
+        J,
+        "stage_bundle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("diagnostic gate must block before staging")
+        ),
+    )
+    # Even a valid diagnostic bound via env var must not satisfy the paid
+    # gate: only the explicit CLI argument binding counts.
+    monkeypatch.setenv(
+        "BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_DIAGNOSTIC",
+        str(_worker_image_manifest_diagnostic(tmp_path)),
+    )
+
+    manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
+        start_frame=start_frame,
+        route_file=route,
+        task_prompt=TASK_PROMPT,
+        out_dir=tmp_path / "job",
+        image_ref=DIGEST_REF,
+        allow_paid=True,
+        max_spend_usd=10.0,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "worker_image_diagnostic_explicit_path_required" in manifest["blockers"]
+    validation = manifest["worker_image_diagnostic_validation"]
+    assert validation["required"] is True
+    assert validation["status"] == "blocked"
+    assert validation["digest_pinned_image"] is True
+    assert manifest["worker_image_manifest_diagnostic"]["path_source"] == "env"
+    assert "provider_capacity_preflight" not in manifest
+    assert "staging" not in manifest
+
+
+def test_paid_launch_accepts_cli_worker_image_manifest_diagnostic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The CLI-bound diagnostic satisfies the fail-closed gate; the run then
+    proceeds to the next paid gate (spend guard here, since no budget is
+    given) instead of blocking on the diagnostic."""
+    start_frame, route = _inputs(tmp_path)
+    monkeypatch.setattr(J, "get_render_provider", lambda _name: _PreparedOnlyProvider())
+
+    manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
+        start_frame=start_frame,
+        route_file=route,
+        task_prompt=TASK_PROMPT,
+        out_dir=tmp_path / "job",
+        image_ref=DIGEST_REF,
+        allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
+    )
+
+    assert manifest["status"] == "blocked"
+    validation = manifest["worker_image_diagnostic_validation"]
+    assert validation["status"] == "passed"
+    assert validation["blockers"] == []
+    diagnostic = manifest["worker_image_manifest_diagnostic"]
+    assert diagnostic["path_source"] == "cli_argument"
+    assert diagnostic["metadata_available_for_selected_image"] is True
+    assert not any(
+        blocker.startswith("worker_image_diagnostic")
+        for blocker in manifest["blockers"]
+    )
+    assert "groot_oscar_closed_loop_prelaunch_spend_guard_not_passed" in manifest[
+        "blockers"
+    ]
+    resume_command = json.loads(
+        (tmp_path / "job" / J.PAID_RESUME_COMMAND_FILENAME).read_text(encoding="utf-8")
+    )
+    assert resume_command["argv"][
+        resume_command["argv"].index("--worker-image-manifest-diagnostic") + 1
+    ] == str(_worker_image_manifest_diagnostic(tmp_path))
+
+
+def test_prepared_mode_records_diagnostic_gate_as_not_required(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    start_frame, route = _inputs(tmp_path)
+    monkeypatch.setattr(J, "get_render_provider", lambda _name: _PreparedOnlyProvider())
+
+    manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
+        start_frame=start_frame,
+        route_file=route,
+        task_prompt=TASK_PROMPT,
+        out_dir=tmp_path / "job",
+        image_ref=DIGEST_REF,
+        seed_provenance={"source": "unit-test-seed"},
+    )
+
+    assert manifest["status"] == "prepared"
+    assert manifest["worker_image_diagnostic_validation"]["required"] is False
+    assert manifest["worker_image_diagnostic_validation"]["status"] == "not_required"
+
+
+def test_cli_worker_image_manifest_diagnostic_flag_threads_to_job(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    diagnostic_path = _worker_image_manifest_diagnostic(tmp_path)
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs) -> dict:
+        captured.update(kwargs)
+        return {"status": "prepared"}
+
+    monkeypatch.setattr(J, "run_groot_oscar_digitalocean_closed_loop_job", _capture)
+
+    exit_code = J.main(
+        [
+            "--start-frame",
+            str(tmp_path / "frame.png"),
+            "--route-file",
+            str(tmp_path / "route.json"),
+            "--task-prompt",
+            TASK_PROMPT,
+            "--out-dir",
+            str(tmp_path / "job"),
+            "--worker-image-manifest-diagnostic",
+            str(diagnostic_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["worker_image_manifest_diagnostic"] == str(diagnostic_path)
+
+
 def test_prepared_mode_writes_bundle_and_manifest_without_capacity_or_staging(
     tmp_path: Path,
     monkeypatch,
@@ -737,6 +913,7 @@ def test_capacity_wait_launches_after_capacity_appears_with_paid_teardown_path(
         task_prompt=TASK_PROMPT,
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         seed_provenance={"source": "unit-test-seed"},
     )
     events: list[str] = []
@@ -1124,6 +1301,7 @@ def test_paid_missing_budget_blocks_before_capacity_preflight_or_staging(
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
     )
 
     assert manifest["status"] == "blocked"
@@ -1163,6 +1341,7 @@ def test_paid_capacity_preflight_blocks_before_staging(tmp_path: Path, monkeypat
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
     )
 
@@ -1206,6 +1385,7 @@ def test_paid_capacity_preflight_unknown_blocks_before_staging(
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
     )
 
@@ -1340,6 +1520,7 @@ def test_paid_launcher_blocks_20gb_capacity_row_before_staging(
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
     )
 
@@ -1461,6 +1642,7 @@ def test_paid_launch_uses_capacity_staging_and_teardown_proof(
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
         max_seconds=600,
         key_prefix="blueprint/test-groot-oscar",
@@ -1587,6 +1769,7 @@ def test_objective_readiness_audit_marks_complete_when_semantic_success_passes(
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
         max_seconds=600,
         seed_provenance={"source": "unit-test-seed"},
@@ -1674,6 +1857,7 @@ def test_paid_launch_blocks_when_collected_closed_loop_contract_regresses(
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
         max_seconds=600,
     )
@@ -1753,6 +1937,7 @@ def test_paid_launch_blocks_without_forward_inverse_consistency_proof(
         out_dir=tmp_path / "job",
         image_ref=DIGEST_REF,
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
         max_seconds=600,
     )
@@ -1845,6 +2030,7 @@ def test_paid_launch_blocks_on_identity_gate_before_capacity(
         image_ref=DIGEST_REF,
         seed_provenance={"source": "unit-test-seed"},
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
     )
     assert manifest["status"] == "blocked"
@@ -1884,6 +2070,7 @@ def test_paid_launch_blocks_on_stale_source_identity(
         image_ref=DIGEST_REF,
         seed_provenance={"source": "unit-test-seed"},
         allow_paid=True,
+        worker_image_manifest_diagnostic=_worker_image_manifest_diagnostic(tmp_path),
         max_spend_usd=10.0,
     )
     assert manifest["status"] == "blocked"

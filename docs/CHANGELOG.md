@@ -4,22 +4,59 @@
 
 ### User-Facing
 
-- Introduced the general Evaluation Run spec
-  (`src/blueprint_pipeline/evaluation_run.py`): one fail-closed composition of
-  scene bundle + robot adapter + task/scenario pack + policy adapter +
-  runtime/provider profile + proof contract (`evaluation_run_spec.v1`), with a
-  pack registry, strict manifest round-trip, generic scene-asset layout/zip
-  inspection, a generic runner-request builder, and a CLI
-  (`python -m blueprint_pipeline.evaluation_run --list-packs / --pack / --spec-json`).
-  The historical G1 kitchen lane is now the built-in `g1_kitchen` pack: the
-  kitchen parity job single-sources its scene/robot/policy/runtime/proof
-  identifiers from the pack and delegates its asset inspectors and runner
-  request to the generic engine, byte-identical to the legacy evidence schemas
-  (`kitchen_asset_layout_validation.v1`, `isaac_g1_kitchen_parity_request.v1`,
-  etc.). A second built-in `g1_warehouse` pack (claim boundary:
-  `pack_definition_only`, no GPU run claimed) proves a second site flows
-  through the same engine as pure configuration. Design + migration path:
-  `docs/specs/evaluation-run-pack-architecture-2026-07-12.md`.
+- Introduced provider-neutral Evaluation Runs as one fail-closed composition of
+  scene bundle, robot adapter, task/scenario pack, policy adapter,
+  runtime/provider profile, and proof contract (`evaluation_run.v1`). The
+  compiler is side-effect free; execution requires `--allow-execution`, and
+  runtime completion remains separate from required-evidence satisfaction and
+  public claim upgrades (`src/blueprint_pipeline/evaluation_run_contract.py`,
+  `src/blueprint_pipeline/evaluation_run_execution.py`,
+  `docs/architecture/evaluation-run-interface.md`).
+- Published the shared consent normalizer across materialization,
+  qualification, takedown, Post-Training Data Packages, readiness, and proof
+  contracts. Malformed, contradictory, or revoked consent fails closed and can
+  only downgrade grants (`src/blueprint_pipeline/consent_normalization.py`,
+  `tests/test_consent_rights_cross_surface_invariants.py`).
+
+### Employee-Facing
+
+- Generalized the historical G1 kitchen lane behind a pack registry and stable
+  adapter/execution seams while preserving its legacy schemas and entrypoints.
+  `g1_warehouse` is a configuration-only second pack; no GPU run or task
+  success is claimed. The final compatibility fix preserves dataset-card task
+  enrichment before compiling the canonical mirror and points
+  `blueprint-compile-evaluation-run` at the correct contract CLI
+  (`src/blueprint_pipeline/evaluation_run.py`,
+  `src/blueprint_pipeline/robot_eval_evaluation_run_adapter.py`,
+  `docs/specs/evaluation-run-pack-architecture-2026-07-12.md`).
+- Merged PR #68's FABLE-001..007 integrity controls and subsequent sealed-image
+  lifecycle fixes, including runtime-user interpreter access, supplementary
+  Isaac group resolution, and a pre-push OCI runtime smoke gate. These are
+  fail-closed release/runtime controls, not live episode or semantic-success
+  proof (`deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile`,
+  `scripts/build_push_groot_oscar_closed_loop_image.sh`).
+- **Local runtime evidence (not committed):** July 12 America/Chicago artifacts
+  record an initial exact-image canary failure caused by runtime-user
+  permission defects, followed by a DigitalOcean fast startup and
+  review-renderer canary pass for exact image digest `sha256:fd722b07...f975`,
+  with API-confirmed teardown and zero final live resources
+  (`output/groot_oscar_live_episode_20260712/canary_root_cause_imgfix.json`,
+  `output/groot_oscar_live_episode_20260712/worker_image_runtime_evidence_fd722b07_final.json`).
+  The passing artifact binds a source snapshot plus dirty-patch digest and
+  explicitly leaves task success, semantic success, and physical-robot
+  readiness unproven.
+
+### Future-Agent-Facing
+
+- The committed July 12 window runs from merge `dbdbe95a` through
+  `dbf787c3`. The worktree was clean at the July 13 review; the local runtime
+  artifacts above are ignored support evidence, not committed source or a
+  substitute for provider episode closure.
+- Keep `evaluation_run_plan.v1` compilation, provider/runtime completion,
+  required-evidence satisfaction, semantic task success, and public claim
+  upgrades as separate proof layers. Preserve the legacy robot-eval and G1
+  kitchen adapters until callers have migrated to the canonical six-part
+  interface.
 
 ## 2026-07-11
 

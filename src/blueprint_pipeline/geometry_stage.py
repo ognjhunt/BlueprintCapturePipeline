@@ -15,7 +15,7 @@ import numpy as np
 
 from .capture_bridge import CaptureDescriptor
 from .camera_geometry_validation import validate_camera_intrinsics, validate_se3_matrix
-from .common import PipelineError, ensure_dir, utc_now_iso, write_json
+from .common import PipelineError, ensure_dir, parse_bool, utc_now_iso, write_json
 from .geometry_da3 import run_da3_provider
 from .launch_proof_policy import synthetic_geometry_allowed
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
@@ -1218,7 +1218,7 @@ def _patch_descriptor_with_geometry(
         if isinstance(metadata.get("capture_rights"), Mapping)
         else {}
     )
-    derived_allowed = bool(rights.get("derived_scene_generation_allowed", False))
+    derived_allowed = parse_bool(rights.get("derived_scene_generation_allowed"), default=False)
     capture_mode = (
         dict(metadata.get("capture_mode"))
         if isinstance(metadata.get("capture_mode"), Mapping)

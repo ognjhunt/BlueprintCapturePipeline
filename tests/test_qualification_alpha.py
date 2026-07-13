@@ -14,6 +14,7 @@ from blueprint_pipeline.materialization import materialize_capture_bundle
 from blueprint_pipeline.qualification import (
     _requested_downstream_lanes,
     _rights_review_required_use_classes,
+    _should_run_default_geometry_stage,
 )
 
 
@@ -1034,3 +1035,46 @@ def test_bad_video_review_forces_recapture_and_lower_world_model_fit(monkeypatch
     assert recapture["recommendations"]
     assert qualification["readiness_state"] == "not_ready_yet"
     assert rights_review["status"] in {"blocked", "needs_review"}
+
+
+# --- default geometry-stage routing must normalize capture-rights booleans ---
+
+_RIGHTS_MISSING = object()
+_RIGHTS_COERCION_FORMS = [
+    pytest.param(False, False, id="bool-false"),
+    pytest.param("false", False, id="str-false"),
+    pytest.param("0", False, id="str-zero"),
+    pytest.param("no", False, id="str-no"),
+    pytest.param("off", False, id="str-off"),
+    pytest.param("", False, id="empty-str"),
+    pytest.param(_RIGHTS_MISSING, False, id="missing"),
+    pytest.param(True, True, id="bool-true"),
+    pytest.param("true", True, id="str-true"),
+    pytest.param("1", True, id="str-one"),
+    pytest.param("yes", True, id="str-yes"),
+    pytest.param("on", True, id="str-on"),
+]
+
+
+def _rights_descriptor(rights_value: object) -> CaptureDescriptor:
+    rights: dict[str, object] = {}
+    if rights_value is not _RIGHTS_MISSING:
+        rights["derived_scene_generation_allowed"] = rights_value
+    return CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "capture_source": "meta_glasses",
+            "raw_prefix_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene-1/captures/capture-1/frames.jsonl",
+            "metadata": {"capture_rights": rights},
+        }
+    )
+
+
+@pytest.mark.parametrize(("rights_value", "expected"), _RIGHTS_COERCION_FORMS)
+def test_default_geometry_stage_routing_normalizes_rights_boolean(
+    rights_value: object, expected: bool
+) -> None:
+    assert _should_run_default_geometry_stage(_rights_descriptor(rights_value)) is expected

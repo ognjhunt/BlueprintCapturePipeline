@@ -34,6 +34,7 @@ from blueprint_pipeline.geometry_stage import (  # noqa: E402
     assess_geometry_scale,
     build_geometry_stage_contract,
 )
+from blueprint_pipeline.local_capture import LocalCaptureContext  # noqa: E402
 from blueprint_pipeline.materialization import materialize_capture_bundle  # noqa: E402
 
 
@@ -1058,3 +1059,89 @@ def test_geometry_export_gate_blocks_synthetic_in_production(monkeypatch) -> Non
 
     clean = geometry_export_gate({"fallback_used": False}, env={"BLUEPRINT_LAUNCH_PROOF_MODE": "production"})
     assert clean["export_allowed_by"] == "provider_geometry"
+
+
+# --- capture-rights boolean normalization in the geometry descriptor patch ---
+
+_RIGHTS_MISSING = object()
+_RIGHTS_COERCION_FORMS = [
+    pytest.param(False, False, id="bool-false"),
+    pytest.param("false", False, id="str-false"),
+    pytest.param("0", False, id="str-zero"),
+    pytest.param("no", False, id="str-no"),
+    pytest.param("off", False, id="str-off"),
+    pytest.param("", False, id="empty-str"),
+    pytest.param(_RIGHTS_MISSING, False, id="missing"),
+    pytest.param(True, True, id="bool-true"),
+    pytest.param("true", True, id="str-true"),
+    pytest.param("1", True, id="str-one"),
+    pytest.param("yes", True, id="str-yes"),
+    pytest.param("on", True, id="str-on"),
+]
+
+
+def _patched_descriptor_payload(tmp_path: Path, rights_value: object) -> dict:
+    capture_root = tmp_path / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    geometry_root = capture_root / "pipeline" / "geometry"
+    geometry_root.mkdir(parents=True)
+    context = LocalCaptureContext(
+        capture_root=capture_root,
+        raw_root=capture_root / "raw",
+        pipeline_root=capture_root / "pipeline",
+        descriptor_path=capture_root / "capture_descriptor.json",
+        raw_complete_path=capture_root / "raw" / "raw_complete.json",
+        storage_root=tmp_path / "bucket",
+        bucket="bucket",
+        scene_id="scene-1",
+        capture_id="capture-1",
+    )
+    rights: dict[str, object] = {}
+    if rights_value is not _RIGHTS_MISSING:
+        rights["derived_scene_generation_allowed"] = rights_value
+    descriptor = CaptureDescriptor.from_dict(
+        {
+            "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "capture_source": "meta_glasses",
+            "raw_prefix_uri": "gs://bucket/scenes/scene-1/captures/capture-1/raw",
+            "frames_index_uri": "gs://bucket/scenes/scene-1/captures/capture-1/frames.jsonl",
+            "metadata": {
+                "capture_mode": {"requested_mode": "site_world_candidate"},
+                "capture_rights": rights,
+            },
+        }
+    )
+    geometry_stage._patch_descriptor_with_geometry(
+        context=context,
+        descriptor=descriptor,
+        geometry_source="video_to_world",
+        ready_for_world_model=True,
+        contract_ready_for_world_model=True,
+        internal_fallback_ready=False,
+        geometry_live_ready=True,
+        external_market_ready=True,
+        site_faithful_market_ready=False,
+        provider_native_result=True,
+        fallback_used=False,
+        fallback_kind=None,
+        launch_blockers=[],
+        coordinate_frame_session_id="session-1",
+        summary_path=geometry_root / "geometry_summary.json",
+        manifest_path=geometry_root / "geometry_manifest.json",
+    )
+    return json.loads(context.descriptor_path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(("rights_value", "expected"), _RIGHTS_COERCION_FORMS)
+def test_geometry_patch_normalizes_derived_scene_generation_rights(
+    tmp_path: Path, rights_value: object, expected: bool
+) -> None:
+    payload = _patched_descriptor_payload(tmp_path, rights_value)
+    assert payload["world_model_candidate"] is expected
+    assert payload["quality"]["world_model_candidate"] is expected
+    smc = payload["metadata"]["scene_memory_capture"]
+    assert smc["world_model_candidate"] is expected
+    assert f"derived_scene_generation_allowed:{expected}" in smc["world_model_candidate_reasoning"]
+    expected_mode = "site_world_candidate" if expected else "qualification_only"
+    assert payload["metadata"]["capture_mode"]["resolved_mode"] == expected_mode
