@@ -46,9 +46,7 @@ class IsaacPersistentTaskBackend:
         self.app = SimulationApp({"headless": bool(headless)})
         import omni.timeline  # type: ignore
         import omni.usd  # type: ignore
-        from omni.isaac.dynamic_control import _dynamic_control  # type: ignore
 
-        self.dc = _dynamic_control.acquire_dynamic_control_interface()
         self.timeline = omni.timeline.get_timeline_interface()
         self.stage_path = str(Path(stage_path).expanduser().resolve())
         self.robot_prim_path = str(robot_prim_path)
@@ -66,8 +64,9 @@ class IsaacPersistentTaskBackend:
         self.timeline.play()
         for _ in range(8):
             self.app.update()
-        self.robot_handle = self.dc.get_articulation(self.robot_prim_path)
-        if not self.robot_handle:
+        self._articulations: dict[str, Any] = {}
+        self.robot = self._articulation(self.robot_prim_path)
+        if not bool(getattr(self.robot, "handles_initialized", False)):
             raise RuntimeError("persistent_isaac_robot_articulation_not_found")
         from .isaac_task_review_renderer import IsaacTaskReviewRenderer
 
@@ -78,18 +77,42 @@ class IsaacPersistentTaskBackend:
             output_dir=self.evidence_dir,
         )
 
+    def _articulation(self, prim_path: str):
+        cached = self._articulations.get(prim_path)
+        if cached is not None:
+            return cached
+        from isaacsim.core.prims import SingleArticulation  # type: ignore
+
+        articulation = SingleArticulation(
+            prim_path=prim_path,
+            name=f"blueprint_articulation_{len(self._articulations)}",
+        )
+        articulation.initialize()
+        if not bool(getattr(articulation, "handles_initialized", False)):
+            raise RuntimeError(f"persistent_isaac_articulation_not_initialized:{prim_path}")
+        self._articulations[prim_path] = articulation
+        return articulation
+
     def _articulation_and_dof(self, prim_path: str):
         parts = [part for part in str(prim_path).split("/") if part]
         dof_name = parts[-1]
         candidates = ["/" + "/".join(parts[:index]) for index in range(len(parts) - 1, 0, -1)]
         for root in candidates:
-            articulation = self.dc.get_articulation(root)
-            if not articulation:
+            try:
+                articulation = self._articulation(root)
+                dof_index = int(articulation.get_dof_index(dof_name))
+            except Exception:  # noqa: BLE001 - candidate roots are probed fail-closed
                 continue
-            dof = self.dc.find_articulation_dof(articulation, dof_name)
-            if dof:
-                return articulation, dof
+            if dof_index >= 0:
+                return articulation, dof_index
         raise RuntimeError(f"persistent_isaac_task_dof_not_found:{prim_path}")
+
+    @staticmethod
+    def _dof_position(articulation: Any, dof_index: int) -> float:
+        positions = articulation.get_joint_positions(joint_indices=[int(dof_index)])
+        if positions is None or len(positions) != 1:
+            raise RuntimeError("persistent_isaac_joint_position_unavailable")
+        return float(positions[0])
 
     def _resolve_task_prim(self, criterion: Mapping[str, Any]) -> str:
         exact = str(criterion.get("articulation_prim_path") or "").strip()
@@ -133,23 +156,29 @@ class IsaacPersistentTaskBackend:
             raise RuntimeError("persistent_isaac_controller_joint_mapping_invalid") from exc
         if len(names) != len(positions) or len(names) != len(PROTOCOL_V4_FULL_JOINT_ORDER):
             raise RuntimeError("persistent_isaac_controller_joint_state_invalid")
-        for name, position in zip(names, positions):
-            dof = self.dc.find_articulation_dof(self.robot_handle, name)
-            if not dof:
+        joint_indices = []
+        for name in names:
+            try:
+                joint_index = int(self.robot.get_dof_index(name))
+            except Exception as exc:  # noqa: BLE001 - normalize Isaac lookup errors
+                raise RuntimeError(f"persistent_isaac_robot_dof_missing:{name}") from exc
+            if joint_index < 0:
                 raise RuntimeError(f"persistent_isaac_robot_dof_missing:{name}")
-            self.dc.set_dof_position_target(dof, position)
+            joint_indices.append(joint_index)
+        import numpy as np
+        from isaacsim.core.utils.types import ArticulationAction  # type: ignore
+
+        self.robot.apply_action(
+            ArticulationAction(
+                joint_positions=np.asarray(positions, dtype=np.float32),
+                joint_indices=np.asarray(joint_indices, dtype=np.int64),
+            )
+        )
 
     def _live_projected_gravity(self) -> list[float]:
         """Measure base orientation and express world gravity in the base frame."""
-        root_body = self.dc.get_articulation_root_body(self.robot_handle)
-        pose = self.dc.get_rigid_body_pose(root_body)
-        rotation = pose.r
-        x, y, z, w = (
-            float(rotation.x),
-            float(rotation.y),
-            float(rotation.z),
-            float(rotation.w),
-        )
+        _, rotation = self.robot.get_world_pose()
+        w, x, y, z = (float(value) for value in rotation)
         norm = math.sqrt(x * x + y * y + z * z + w * w)
         if not math.isfinite(norm) or norm <= 0:
             raise RuntimeError("persistent_isaac_base_orientation_invalid")
@@ -186,11 +215,11 @@ class IsaacPersistentTaskBackend:
         contract = dict(task_success_contract or {})
         criterion = self._single_registered_criterion(contract)
         prim_path = self._resolve_task_prim(criterion)
-        _, task_dof = self._articulation_and_dof(prim_path)
+        task_articulation, task_dof = self._articulation_and_dof(prim_path)
         for _ in range(max(1, int(settle_steps))):
             self.app.update()
         baseline = build_task_episode_baseline(
-            episode_initial_value=float(self.dc.get_dof_position(task_dof)),
+            episode_initial_value=self._dof_position(task_articulation, task_dof),
             attempt_id=str(attempt_id),
             launch_nonce=str(launch_nonce),
             simulator_session_id=self.session_id,
@@ -226,10 +255,15 @@ class IsaacPersistentTaskBackend:
         from .isaac_live_geometry_validation import build_live_geometry_results
 
         try:
-            root_body = self.dc.get_articulation_root_body(self.robot_handle)
-            pose = self.dc.get_rigid_body_pose(root_body)
-            robot_xyz = [float(pose.p.x), float(pose.p.y), float(pose.p.z)]
-            quat = [float(pose.r.x), float(pose.r.y), float(pose.r.z), float(pose.r.w)]
+            position, orientation = self.robot.get_world_pose()
+            robot_xyz = [float(value) for value in position]
+            # Isaac Core returns WXYZ; the geometry validator consumes XYZW.
+            quat = [
+                float(orientation[1]),
+                float(orientation[2]),
+                float(orientation[3]),
+                float(orientation[0]),
+            ]
             renderer = self.review_renderer
             target_xyz = renderer._center(target_prim_path)
             import omni.physx  # type: ignore
@@ -296,7 +330,7 @@ class IsaacPersistentTaskBackend:
         contract = dict(request.get("task_success_contract") or {})
         criterion = self._single_registered_criterion(contract)
         prim_path = self._resolve_task_prim(criterion)
-        _, task_dof = self._articulation_and_dof(prim_path)
+        task_articulation, task_dof = self._articulation_and_dof(prim_path)
         baseline = getattr(self, "episode_baseline", None)
         baseline_blockers = verify_task_episode_baseline(
             baseline,
@@ -315,11 +349,11 @@ class IsaacPersistentTaskBackend:
             raise RuntimeError("persistent_isaac_episode_baseline_attestation_missing")
         episode_initial = float(baseline["episode_initial_value"])
         before_timestamp = time.time_ns()
-        before = float(self.dc.get_dof_position(task_dof))
+        before = self._dof_position(task_articulation, task_dof)
         self._apply_controller_state(state)
         for _ in range(max(1, int(request.get("physics_steps_per_action") or 4))):
             self.app.update()
-        after = float(self.dc.get_dof_position(task_dof))
+        after = self._dof_position(task_articulation, task_dof)
         after_timestamp = time.time_ns()
         step = int(request.get("step_index") or 0)
         evidence_step = int(request.get("evidence_step_index", step))
@@ -399,16 +433,14 @@ class IsaacPersistentTaskBackend:
 
     def initial_policy_state(self) -> dict[str, Any]:
         """Return attempt-bound proprioception measured from the live articulation."""
-        count = int(self.dc.get_articulation_dof_count(self.robot_handle))
-        observed: list[dict[str, Any]] = []
-        for index in range(count):
-            dof = self.dc.get_articulation_dof(self.robot_handle, index)
-            observed.append(
-                {
-                    "name": str(self.dc.get_dof_name(dof)),
-                    "position": float(self.dc.get_dof_position(dof)),
-                }
-            )
+        names = list(self.robot.dof_names or [])
+        positions = self.robot.get_joint_positions()
+        if positions is None or len(names) != len(positions):
+            raise RuntimeError("persistent_isaac_initial_proprioception_unavailable")
+        observed = [
+            {"name": str(name), "position": float(position)}
+            for name, position in zip(names, positions, strict=True)
+        ]
         resolution = resolve_g1_proprioception_map(observed, require_hands=True)
         if resolution["status"] != "passed":
             raise RuntimeError(

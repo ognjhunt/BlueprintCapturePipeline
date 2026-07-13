@@ -51,31 +51,43 @@ def _signing_key_file(tmp_path: Path) -> Path:
     return key_file
 
 
-class _DC:
+class _RuntimeState:
     def __init__(self):
         self.task_value = 0.0
         self.robot_target = 0.0
 
-    def get_articulation(self, path):
-        return "robot" if path == "/World/G1" else "task"
-
-    def find_articulation_dof(self, articulation, name):
-        return f"{articulation}:{name}"
-
-    def get_dof_position(self, dof):
-        return self.task_value if dof.startswith("task:") else self.robot_target
-
-    def set_dof_position_target(self, dof, value):
-        assert dof.startswith("robot:")
-        self.robot_target = value
-
-
 class _App:
-    def __init__(self, dc):
-        self.dc = dc
+    def __init__(self, state):
+        self.state = state
 
     def update(self):
-        self.dc.task_value += abs(self.dc.robot_target) * 0.05
+        self.state.task_value += abs(self.state.robot_target) * 0.05
+
+
+class _Articulation:
+    def __init__(self, state: _RuntimeState, names: list[str], *, task: bool = False):
+        self.state = state
+        self.dof_names = list(names)
+        self.task = task
+
+    def get_dof_index(self, name):
+        try:
+            return self.dof_names.index(name)
+        except ValueError:
+            return -1
+
+    def get_joint_positions(self, joint_indices=None):
+        values = (
+            [self.state.task_value]
+            if self.task
+            else [0.01 * index for index in range(len(self.dof_names))]
+        )
+        if joint_indices is None:
+            return values
+        return [values[int(index)] for index in joint_indices]
+
+    def get_world_pose(self):
+        return [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
 
 
 class _ReviewRenderer:
@@ -96,9 +108,14 @@ class _ReviewRenderer:
 
 def _hermetic_backend(tmp_path: Path) -> IsaacPersistentTaskBackend:
     backend = IsaacPersistentTaskBackend.__new__(IsaacPersistentTaskBackend)
-    backend.dc = _DC()
-    backend.app = _App(backend.dc)
-    backend.robot_handle = "robot"
+    state = _RuntimeState()
+    backend.app = _App(state)
+    backend.robot = _Articulation(state, _full_g1_dof_names())
+    task = _Articulation(state, ["Microwave017_Door"], task=True)
+    backend._articulation_and_dof = lambda _path: (task, 0)
+    backend._apply_controller_state = lambda controller_state: setattr(
+        state, "robot_target", float(controller_state["joint_positions"][0])
+    )
     backend.evidence_dir = tmp_path
     backend.session_id = "persistent-session-1"
     backend.stage_id = "stage-1"
@@ -311,40 +328,6 @@ def test_backend_blocks_changed_target_prim(tmp_path: Path):
         backend.apply_and_measure(_request(0, 0.5, contract=changed))
 
 
-class _ProprioDC:
-    def __init__(self, names):
-        self.names = list(names)
-
-    def get_articulation_dof_count(self, handle):
-        return len(self.names)
-
-    def get_articulation_dof(self, handle, index):
-        return index
-
-    def get_dof_name(self, dof):
-        return self.names[dof]
-
-    def get_dof_position(self, dof):
-        return 0.01 * dof
-
-    def get_articulation_root_body(self, handle):
-        return f"{handle}:root"
-
-    def get_rigid_body_pose(self, body):
-        del body
-
-        class Rotation:
-            x = 0.0
-            y = 0.0
-            z = 0.0
-            w = 1.0
-
-        class Pose:
-            r = Rotation()
-
-        return Pose()
-
-
 def _full_g1_dof_names() -> list[str]:
     return [name for names in G1_CANONICAL_DOF_GROUPS.values() for name in names]
 
@@ -353,7 +336,6 @@ def test_initial_policy_state_maps_full_g1_inventory_and_passes_dims_contract(
     tmp_path: Path,
 ):
     backend = _hermetic_backend(tmp_path)
-    backend.dc = _ProprioDC(_full_g1_dof_names())
     state = backend.initial_policy_state()
     assert validate_g1_sonic_state_dims(state) == []
     assert state["left_leg"] == [pytest.approx(0.01 * index) for index in range(6)]
@@ -372,7 +354,7 @@ def test_initial_policy_state_maps_full_g1_inventory_and_passes_dims_contract(
 def test_initial_policy_state_blocks_on_missing_required_dof(tmp_path: Path):
     names = [name for name in _full_g1_dof_names() if name != "right_wrist_yaw_joint"]
     backend = _hermetic_backend(tmp_path)
-    backend.dc = _ProprioDC(names)
+    backend.robot = _Articulation(_RuntimeState(), names)
     with pytest.raises(
         RuntimeError,
         match=r"persistent_isaac_initial_proprio_mapping_blocked:"
@@ -383,7 +365,9 @@ def test_initial_policy_state_blocks_on_missing_required_dof(tmp_path: Path):
 
 def test_initial_policy_state_blocks_on_duplicate_dof(tmp_path: Path):
     backend = _hermetic_backend(tmp_path)
-    backend.dc = _ProprioDC(_full_g1_dof_names() + ["left_hip_pitch_joint"])
+    backend.robot = _Articulation(
+        _RuntimeState(), _full_g1_dof_names() + ["left_hip_pitch_joint"]
+    )
     with pytest.raises(
         RuntimeError,
         match="g1_proprioception_observed_dof_duplicate:left_hip_pitch_joint",

@@ -34,6 +34,8 @@ ARG BLUEPRINT_SOURCE_COMMIT
 ARG BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256
 ARG SONIC_CHECKPOINT_REPO=LucaFrat/groot-bs16
 ARG SONIC_CHECKPOINT_REVISION=86b17337379926a8d8f1ad5c4580c7c33deeb49f
+ARG COSMOS_BACKBONE_REPO=nvidia/Cosmos-Reason2-2B
+ARG COSMOS_BACKBONE_REVISION=9ce19a195e423419c349abfc86fd07178b230561
 ARG OSCAR_CHECKPOINT_REPO=zywu2115/OSCAR-2B
 ARG OSCAR_CHECKPOINT_REVISION=c9781ffa7dd8556d862d7d9f338a2ea008a58ca6
 ARG PREFETCH_CHECKPOINTS=true
@@ -70,6 +72,8 @@ ENV PYTHONUNBUFFERED=1 \
     BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
     BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED=true \
     SONIC_CHECKPOINT_REPO=${SONIC_CHECKPOINT_REPO} \
+    COSMOS_BACKBONE_REPO=${COSMOS_BACKBONE_REPO} \
+    COSMOS_BACKBONE_REVISION=${COSMOS_BACKBONE_REVISION} \
     OSCAR_CHECKPOINT_REPO=${OSCAR_CHECKPOINT_REPO} \
     OSCAR_CHECKPOINT_REVISION=${OSCAR_CHECKPOINT_REVISION}
 
@@ -163,7 +167,8 @@ RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
        's/nvinfer nvinfer_plugin nvonnxparser nvparsers/nvinfer nvinfer_plugin nvonnxparser/' \
        cmake/FindTensorRT.cmake \
   && source scripts/setup_env.sh \
-  && just build
+  && just build \
+  && chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \
   && cd /opt/gr00t \
   && git fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
@@ -213,6 +218,25 @@ snapshot_download(
     token=token,
 )
 
+# The SONIC checkpoint config resolves this gated VLM by repository id during
+# model construction. Seal its immutable revision into HF_HOME so the worker
+# never needs a runtime token or network download.
+cosmos_snapshot = Path(snapshot_download(
+    repo_id=os.environ["COSMOS_BACKBONE_REPO"],
+    revision=os.environ["COSMOS_BACKBONE_REVISION"],
+    token=token,
+))
+cosmos_revision = os.environ["COSMOS_BACKBONE_REVISION"]
+if cosmos_snapshot.name != cosmos_revision:
+    raise RuntimeError(
+        f"Cosmos snapshot mismatch: expected {cosmos_revision}, got {cosmos_snapshot.name}"
+    )
+# GR00T resolves the nested repo without forwarding a revision. Bind that
+# default lookup to the immutable commit before the image enters offline mode.
+cosmos_refs = cosmos_snapshot.parent.parent / "refs"
+cosmos_refs.mkdir(parents=True, exist_ok=True)
+(cosmos_refs / "main").write_text(cosmos_revision + "\n", encoding="utf-8")
+
 oscar = Path("/opt/blueprint/ckpts/oscar")
 oscar.mkdir(parents=True, exist_ok=True)
 snapshot_download(
@@ -228,7 +252,13 @@ fi
 # duplicate every checkpoint byte in registry copy-on-write layer history.
 mkdir -p /opt/blueprint/ckpts
 chown -R blueprint:blueprint /opt/blueprint/ckpts
+chown -R blueprint:blueprint /opt/blueprint/hf_home
 BASH
+
+# Release workers resolve every model from the sealed cache. A missing nested
+# backbone therefore fails locally instead of silently reaching the network.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 # 6. Bake the complete official Isaac 6 G1 asset directory. The carrier omits
 #    the asset pack; every downloaded byte is size- and digest-pinned here.

@@ -9,6 +9,7 @@ then the closed-loop CLI pointed at baked OSCAR paths).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +20,7 @@ from blueprint_pipeline.oscar_official_release import OFFICIAL_OSCAR_HF_REVISION
 VERSIONED_REF = "docker.io/nijelhunt/blueprint-groot-oscar-eval:20260706-cu128-amd64"
 DIGEST_REF = "docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:" + "a" * 64
 REAL_CONSISTENCY_COMMAND = "python -m owner_runtime.shared_model_inverse_scorer"
+IMAGE_ROOT = Path("deploy/docker/robot_eval_worker/groot_oscar_closed_loop")
 
 
 # --------------------------------------------------------------------------- #
@@ -374,6 +376,43 @@ def test_snapshot_plan_lists_all_baked_trees_and_markers():
     assert plan["image_env"]["MUJOCO_GL"] == "osmesa"
     assert plan["raw_secret_values_recorded"] is False
     assert plan["claim_boundary"]
+
+
+def test_image_seals_exact_nested_cosmos_backbone_and_disables_network_fallback():
+    dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COSMOS_BACKBONE_REPO=nvidia/Cosmos-Reason2-2B" in dockerfile
+    assert (
+        "COSMOS_BACKBONE_REVISION=9ce19a195e423419c349abfc86fd07178b230561"
+        in dockerfile
+    )
+    assert 'repo_id=os.environ["COSMOS_BACKBONE_REPO"]' in dockerfile
+    assert 'revision=os.environ["COSMOS_BACKBONE_REVISION"]' in dockerfile
+    assert '(cosmos_refs / "main").write_text(cosmos_revision' in dockerfile
+    assert "HF_HUB_OFFLINE=1" in dockerfile
+    assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+
+
+def test_image_makes_gear_sonic_build_tree_runtime_user_writable():
+    dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build" in dockerfile
+
+
+def test_image_healthcheck_enforces_runtime_service_dependencies():
+    healthcheck = (IMAGE_ROOT / "groot_oscar_closed_loop_image_healthcheck.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SingleArticulation" in healthcheck
+    assert "official_gear_sonic_build_tree_not_writable" in healthcheck
+    assert "cosmos_backbone_not_sealed_in_hf_cache" in healthcheck
+    assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
+
+
+def test_isaac_backend_uses_supported_isaac_6_articulation_api():
+    backend = Path("src/blueprint_pipeline/isaac_runtime_task_backend.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from isaacsim.core.prims import SingleArticulation" in backend
+    assert "omni.isaac.dynamic_control" not in backend
 
 
 # --------------------------------------------------------------------------- #
