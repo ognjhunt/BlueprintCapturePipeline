@@ -64,6 +64,16 @@ def build_digitalocean_job_parser(
     parser.add_argument("--kitchen-asset-archive-file", default=None)
     parser.add_argument("--key-prefix", default="blueprint/groot-oscar-closed-loop")
     parser.add_argument("--image-ref", default=None)
+    parser.add_argument(
+        "--worker-image-manifest-diagnostic",
+        default=None,
+        help=(
+            "Path to the registry manifest diagnostic for the exact selected "
+            "worker image (isaac_worker_image_manifest_diagnostic.v2). Paid "
+            "launches of a digest-pinned image fail closed unless this explicit "
+            "CLI binding is present and matches the selected digest."
+        ),
+    )
     parser.add_argument("--wam-consistency-command", default=None)
     parser.add_argument("--require-generated-video-success-label", action="store_true")
     parser.add_argument("--wam-success-label-command", default=None)

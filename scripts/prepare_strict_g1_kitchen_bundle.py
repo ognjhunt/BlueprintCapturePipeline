@@ -57,6 +57,16 @@ def main() -> int:
     parser.add_argument("--provider", default="digitalocean")
     parser.add_argument("--articulation-prim-path")
     parser.add_argument("--steps", type=int, default=48)
+    parser.add_argument(
+        "--worker-image-manifest-diagnostic",
+        type=Path,
+        default=None,
+        help=(
+            "Registry manifest diagnostic for the exact --image-ref digest; "
+            "threaded into the prepared resume command so the paid relaunch "
+            "can pass the fail-closed worker-image diagnostic gate."
+        ),
+    )
     args = parser.parse_args()
 
     out = args.out_dir.resolve()
@@ -183,6 +193,7 @@ def main() -> int:
         out_dir=out / "prepared_job",
         steps=args.steps,
         image_ref=args.image_ref,
+        worker_image_manifest_diagnostic=args.worker_image_manifest_diagnostic,
         wam_consistency_command=DEFAULT_CONFIGURED_WAM_CONSISTENCY_COMMAND,
         seed_provenance={
             "source": "historical_provider_frame_for_preparation_only",

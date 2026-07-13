@@ -391,24 +391,112 @@ def test_builtin_png_writer_used_when_pillow_unavailable(
     assert frame_bytes.endswith(b"IEND\xaeB`\x82")
 
 
-def test_cli_exits_two_when_backend_unavailable(tmp_path: Path, monkeypatch) -> None:
+def test_cli_hard_exits_two_when_backend_unavailable(tmp_path: Path, monkeypatch) -> None:
+    """A blocked verdict must hard-exit nonzero: the normal return path can be
+    clobbered to exit 0 by Kit shutdown machinery (2026-07-12 live A40 run)."""
     monkeypatch.setitem(sys.modules, "isaacsim", None)
+    hard_exits: list[int] = []
 
-    exit_code = canary_main(
-        [
-            "--output-dir",
-            str(tmp_path),
-            "--launch-session-id",
-            "nonce-1",
-            "--image-digest",
-            "sha256:abc",
-        ]
-    )
+    def _fake_hard_exit(code: int) -> None:
+        hard_exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(canary, "_hard_exit", _fake_hard_exit)
+
+    with pytest.raises(SystemExit) as excinfo:
+        canary_main(
+            [
+                "--output-dir",
+                str(tmp_path),
+                "--launch-session-id",
+                "nonce-1",
+                "--image-digest",
+                "sha256:abc",
+            ]
+        )
 
     persisted = _read_json(tmp_path / "isaac_review_renderer_canary.json")
-    assert exit_code == 2
+    assert excinfo.value.code == 2
+    assert hard_exits == [2]
     assert persisted["status"] == "blocked"
     assert "review_renderer_backend_unavailable" in persisted["blockers"]  # type: ignore[operator]
+
+
+def test_cli_hard_exits_nonzero_on_blocked_non_timeout_verdict(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Regression for the 2026-07-12 live A40 claim-integrity bug: the canary
+    persisted `blocked: review_renderer_backend_failed` yet the CLI exited 0
+    (rc_summary review_rc=0). Any non-passed verdict must exit nonzero via the
+    injectable hard-exit, immune to Kit atexit shutdown clobbering."""
+
+    def _boom_backend() -> dict[str, object]:
+        raise ValueError("signal only works in main thread of the main interpreter")
+
+    monkeypatch.setattr(
+        canary, "_resolve_renderer_backend", lambda **_kwargs: _boom_backend
+    )
+    hard_exits: list[int] = []
+
+    def _fake_hard_exit(code: int) -> None:
+        hard_exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(canary, "_hard_exit", _fake_hard_exit)
+
+    with pytest.raises(SystemExit) as excinfo:
+        canary_main(
+            [
+                "--output-dir",
+                str(tmp_path),
+                "--launch-session-id",
+                "nonce-1",
+                "--image-digest",
+                "sha256:abc",
+            ]
+        )
+
+    assert excinfo.value.code == 2
+    assert hard_exits == [2]
+    summary = json.loads(capsys.readouterr().out.strip())
+    assert summary["status"] == "blocked"
+    assert "review_renderer_backend_failed" in summary["blockers"]
+    persisted = _read_json(tmp_path / "isaac_review_renderer_canary.json")
+    assert persisted["status"] == "blocked"
+    assert "review_renderer_backend_failed" in persisted["blockers"]  # type: ignore[operator]
+    timeout_info = persisted["renderer_phase_timeout"]  # type: ignore[index]
+    assert timeout_info["timed_out"] is False
+
+
+def test_renderer_backend_runs_on_main_thread(tmp_path: Path) -> None:
+    """Regression for the 2026-07-12 live A40 failure: Isaac's SimulationApp
+    calls signal.signal, which raises `ValueError: signal only works in main
+    thread of the main interpreter` on any worker thread. The backend must
+    therefore execute on the main thread; only the watchdog may be a thread."""
+    import signal
+    import threading
+
+    seen: dict[str, object] = {}
+
+    def _backend() -> dict[str, object]:
+        seen["is_main_thread"] = threading.current_thread() is threading.main_thread()
+        # Same probe Isaac performs during SimulationApp startup; raises
+        # ValueError when invoked off the main thread.
+        signal.signal(signal.SIGTERM, signal.getsignal(signal.SIGTERM))
+        seen["signal_signal_ok"] = True
+        return _fake_backend()()
+
+    result = run_isaac_review_renderer_canary(
+        output_dir=tmp_path,
+        launch_session_id="nonce-1",
+        image_digest="sha256:abc",
+        renderer_backend=_backend,
+    )
+
+    assert seen["is_main_thread"] is True
+    assert seen["signal_signal_ok"] is True
+    assert result["status"] == "passed"
+    assert result["blockers"] == []
 
 
 def test_cli_exits_zero_on_pass(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -437,28 +525,39 @@ def test_cli_exits_zero_on_pass(tmp_path: Path, monkeypatch, capsys) -> None:
     assert _read_json(tmp_path / "isaac_review_renderer_canary.json")["status"] == "passed"
 
 
-def test_run_canary_times_out_on_hung_renderer_backend(tmp_path: Path) -> None:
+def test_run_canary_times_out_on_hung_renderer_backend(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A wedged renderer (2026-07-12 live A40 canary) must yield a bounded,
-    structured blocked verdict instead of hanging forever."""
+    structured blocked verdict persisted by the watchdog thread, followed by a
+    hard exit (the backend holds the main thread, so only the watchdog can
+    guarantee process death)."""
     import threading
 
     release = threading.Event()
+    hard_exits: list[int] = []
+
+    def _fake_hard_exit(code: int) -> None:
+        # The real _hard_exit is os._exit(2). In tests it releases the hung
+        # backend instead so the run can return the persisted timeout verdict.
+        hard_exits.append(code)
+        release.set()
+
+    monkeypatch.setattr(canary, "_hard_exit", _fake_hard_exit)
 
     def _hung_backend() -> dict[str, object]:
         release.wait(30)
         return _fake_backend()()
 
-    try:
-        result = run_isaac_review_renderer_canary(
-            output_dir=tmp_path,
-            launch_session_id="nonce-1",
-            image_digest="sha256:abc",
-            renderer_backend=_hung_backend,
-            timeout_seconds=0.2,
-        )
-    finally:
-        release.set()
+    result = run_isaac_review_renderer_canary(
+        output_dir=tmp_path,
+        launch_session_id="nonce-1",
+        image_digest="sha256:abc",
+        renderer_backend=_hung_backend,
+        timeout_seconds=0.2,
+    )
 
+    assert hard_exits == [2]
     assert result["status"] == "blocked"
     assert "review_canary_timeout_renderer_never_ready" in result["blockers"]
     assert result["isaac_review_renderer_operational"] is False
@@ -474,6 +573,7 @@ def test_run_canary_times_out_on_hung_renderer_backend(tmp_path: Path) -> None:
     persisted = _read_json(tmp_path / "isaac_review_renderer_canary.json")
     assert persisted["status"] == "blocked"
     assert "review_canary_timeout_renderer_never_ready" in persisted["blockers"]  # type: ignore[operator]
+    assert persisted["renderer_phase_timeout"]["timed_out"] is True  # type: ignore[index]
 
 
 def test_run_canary_timeout_defaults_from_env(tmp_path: Path, monkeypatch) -> None:
@@ -511,8 +611,10 @@ def test_run_canary_timeout_invalid_env_falls_back_to_default(
 def test_cli_hard_exits_nonzero_on_renderer_timeout(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    """On timeout the CLI must guarantee process exit (the wedged native
-    renderer thread could otherwise stall interpreter shutdown forever)."""
+    """On timeout the watchdog persists the verdict and hard-exits; the wedged
+    native renderer holds the main thread, so the watchdog is the only path to
+    guaranteed process exit. With a stubbed _hard_exit the main() exit-code
+    guard must still refuse to exit 0."""
     import threading
 
     release = threading.Event()
@@ -529,6 +631,9 @@ def test_cli_hard_exits_nonzero_on_renderer_timeout(
 
     def _fake_hard_exit(code: int) -> None:
         hard_exits.append(code)
+        release.set()
+        # SystemExit raised on the watchdog thread is swallowed by threading;
+        # raised on the main thread it terminates main() like os._exit would.
         raise SystemExit(code)
 
     monkeypatch.setattr(canary, "_hard_exit", _fake_hard_exit)
@@ -549,12 +654,22 @@ def test_cli_hard_exits_nonzero_on_renderer_timeout(
         release.set()
 
     assert excinfo.value.code == 2
-    assert hard_exits == [2]
-    summary = json.loads(capsys.readouterr().out.strip())
-    assert summary["status"] == "blocked"
-    assert "review_canary_timeout_renderer_never_ready" in summary["blockers"]
+    # Watchdog hard-exit on timeout, then the main() nonzero-exit guard.
+    assert hard_exits == [2, 2]
+    summaries = [
+        json.loads(line)
+        for line in capsys.readouterr().out.strip().splitlines()
+        if line.strip()
+    ]
+    assert summaries
+    assert all(summary["status"] == "blocked" for summary in summaries)
+    assert any(
+        "review_canary_timeout_renderer_never_ready" in summary["blockers"]
+        for summary in summaries
+    )
     persisted = _read_json(tmp_path / "isaac_review_renderer_canary.json")
     assert persisted["status"] == "blocked"
+    assert persisted["renderer_phase_timeout"]["timed_out"] is True  # type: ignore[index]
 
 
 def test_cli_portrait_orientation_flag(tmp_path: Path, monkeypatch) -> None:
