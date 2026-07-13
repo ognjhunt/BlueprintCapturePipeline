@@ -58,6 +58,10 @@ from .groot_oscar_worker_startup_script import (
 )
 from .isaac_particlefield_render_job import stage_bundle, watch_and_collect
 from .lane_hardware_requirements import build_lane_hardware_contract
+from .worker_image_diagnostic_gate import (
+    isaac_worker_image_size_diagnostic,
+    worker_image_diagnostic_paid_validation,
+)
 from .paid_lane_guard import (
     PreSpendPreflightBlocked,
     bind_pending_teardown_instance,
@@ -107,6 +111,7 @@ def _paid_resume_command_payload(
     volume_gb: int,
     seed_provenance_file: str | Path | None,
     key_prefix: str,
+    worker_image_manifest_diagnostic: str | Path | None = None,
     wam_consistency_command: str | None = None,
     require_generated_video_success_label: bool = False,
     wam_success_label_command: str | None = None,
@@ -159,6 +164,13 @@ def _paid_resume_command_payload(
     ]
     if seed_provenance_file:
         argv.extend(["--seed-provenance-file", str(seed_provenance_file)])
+    if worker_image_manifest_diagnostic:
+        argv.extend(
+            [
+                "--worker-image-manifest-diagnostic",
+                str(worker_image_manifest_diagnostic),
+            ]
+        )
     if wam_consistency_command:
         argv.extend(["--wam-consistency-command", str(wam_consistency_command)])
     if require_generated_video_success_label:
@@ -427,6 +439,7 @@ def _launch_prepared_from_materialized_command(
         manifest=manifest,
     )
     seed_provenance_file = _argv_value(argv, "--seed-provenance-file")
+    manifest_diagnostic_arg = _argv_value(argv, "--worker-image-manifest-diagnostic")
     timeout = _float_or_none(_argv_value(argv, "--wam-success-label-timeout-seconds"))
     return run_groot_oscar_digitalocean_closed_loop_job(
         start_frame=_resolve_resume_path(_argv_value(argv, "--start-frame"), prepared_dir),
@@ -457,6 +470,11 @@ def _launch_prepared_from_materialized_command(
         seed_provenance_file=seed_provenance_file,
         key_prefix=str(_argv_value(argv, "--key-prefix")),
         image_ref=str(_argv_value(argv, "--image-ref")),
+        worker_image_manifest_diagnostic=(
+            _resolve_resume_path(manifest_diagnostic_arg, prepared_dir)
+            if manifest_diagnostic_arg
+            else None
+        ),
         require_generated_video_success_label=(
             "--require-generated-video-success-label" in argv
         ),
@@ -2017,6 +2035,7 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     seed_provenance_file: str | Path | None = None,
     key_prefix: str = "blueprint/groot-oscar-closed-loop",
     image_ref: str | None = None,
+    worker_image_manifest_diagnostic: str | Path | None = None,
     wam_consistency_command: str | None = None,
     require_generated_video_success_label: bool = False,
     wam_success_label_command: str | None = None,
@@ -2112,6 +2131,27 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     if contract.get("sealed_active") is not True:
         manifest["blockers"].extend(contract.get("blockers") or ["sealed_image_not_active"])
         return _write_job_manifest(out, manifest)
+    # Fail-closed registry-diagnostic gate (same contract as the parity lane):
+    # a paid launch of the digest-pinned sealed image must bind the manifest
+    # diagnostic for exactly that digest via the explicit CLI argument
+    # (path_source == "cli_argument") so the evidence-derived startup-timeout
+    # floor is enforceable. Blocks before any capacity query, staging, or
+    # provider create.
+    image_size_diagnostic = isaac_worker_image_size_diagnostic(
+        str(contract["image_ref"]),
+        explicit_path=worker_image_manifest_diagnostic,
+    )
+    diagnostic_validation = worker_image_diagnostic_paid_validation(
+        selected_image=str(contract["image_ref"]),
+        diagnostic=image_size_diagnostic,
+        allow_paid=allow_paid,
+        image_startup_canary=False,
+    )
+    manifest["worker_image_manifest_diagnostic"] = image_size_diagnostic
+    manifest["worker_image_diagnostic_validation"] = diagnostic_validation
+    if diagnostic_validation["blockers"]:
+        manifest["blockers"].extend(diagnostic_validation["blockers"])
+        return _write_job_manifest(out, manifest)
     resolved_wam_consistency_command = (
         str(wam_consistency_command).strip()
         if wam_consistency_command is not None
@@ -2160,6 +2200,7 @@ def run_groot_oscar_digitalocean_closed_loop_job(
             volume_gb=int(volume_gb),
             seed_provenance_file=seed_provenance_file,
             key_prefix=key_prefix,
+            worker_image_manifest_diagnostic=worker_image_manifest_diagnostic,
             wam_consistency_command=resolved_wam_consistency_command or None,
             require_generated_video_success_label=bool(
                 require_generated_video_success_label
@@ -2490,6 +2531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed_provenance_file=args.seed_provenance_file,
         key_prefix=args.key_prefix,
         image_ref=args.image_ref,
+        worker_image_manifest_diagnostic=args.worker_image_manifest_diagnostic,
         wam_consistency_command=args.wam_consistency_command,
         require_generated_video_success_label=bool(
             args.require_generated_video_success_label

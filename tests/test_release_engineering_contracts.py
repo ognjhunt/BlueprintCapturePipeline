@@ -377,6 +377,114 @@ def test_groot_oscar_runtime_user_can_execute_worker_interpreters() -> None:
     )
 
 
+def test_groot_oscar_runtime_user_can_write_isaac_kit_runtime_dirs() -> None:
+    """IMGFIX-004: the review render lane needs writable kit cache/data/logs.
+
+    The 2026-07-12 live A40 canary on image c107af2a wedged inside
+    ``isaac_review_renderer_canary``: the Isaac base ships
+    ``/isaac-sim/kit/cache`` and ``/isaac-sim/kit/data`` group-readable but not
+    group-writable, so ``USER blueprint`` (uid 10001, supplementary group
+    isaac-sim) could not create ``kit/cache/DerivedDataCache`` or
+    ``kit/data/documents/...`` and HydraEngine rtx failed creating the scene
+    renderer. The fix must be SURGICAL: a non-recursive chown/chmod of exactly
+    those directories (created if absent) in a root layer before
+    ``USER blueprint``. A recursive chown/chmod of /isaac-sim would copy-up
+    the multi-GB tree into a duplicate registry layer (the
+    checkpoint_ownership_copyup discipline applies to the Isaac tree too).
+    """
+    dockerfile = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    kit_dirs = (
+        "/isaac-sim/kit/cache",
+        "/isaac-sim/kit/data",
+        "/isaac-sim/kit/logs",
+    )
+    for kit_dir in kit_dirs:
+        pattern = re.escape(kit_dir)
+        assert re.search(rf"mkdir\s+-p[^\n]*{pattern}", dockerfile), (
+            f"{kit_dir} must be created if absent so the write grant below "
+            "cannot silently no-op on a base-image change"
+        )
+        assert re.search(rf"chown\s+blueprint:isaac-sim[^\n]*{pattern}", dockerfile), (
+            f"{kit_dir} must be chowned (non-recursively) to the runtime user; "
+            "the Isaac 6 kit creates DerivedDataCache/documents directly under "
+            "these roots at renderer startup"
+        )
+        assert re.search(rf"chmod\s+0775[^\n]*{pattern}", dockerfile), (
+            f"{kit_dir} must stay group-writable for the isaac-sim group"
+        )
+
+    grant_at = dockerfile.index("chown blueprint:isaac-sim")
+    user_at = dockerfile.rindex("\nUSER blueprint")
+    assert grant_at < user_at, (
+        "the kit-dir write grant must happen in a root layer before USER blueprint"
+    )
+    healthcheck_at = dockerfile.index("groot_oscar_closed_loop_image_healthcheck.py --build-time")
+    assert grant_at < healthcheck_at, (
+        "the write grant must precede the runtime-user build-time healthcheck "
+        "so the healthcheck can verify writability"
+    )
+
+    assert not re.search(r"ch(?:own|mod)\s+-[a-zA-Z]*R[a-zA-Z]*\s+[^\n]*/isaac-sim", dockerfile), (
+        "never recursively chown/chmod under /isaac-sim: registry copy-up "
+        "would duplicate the multi-GB Isaac tree in layer history"
+    )
+
+    healthcheck = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
+        / "groot_oscar_closed_loop_image_healthcheck.py"
+    ).read_text(encoding="utf-8")
+    for kit_dir in kit_dirs:
+        assert kit_dir in healthcheck, (
+            f"the runtime-user healthcheck must probe writability of {kit_dir}; "
+            "a wedge-at-runtime regression must fail the build instead"
+        )
+    assert "_dir_writable_by_current_user" in healthcheck
+    assert "isaac_kit_dir_not_writable" in healthcheck
+
+
+def test_groot_oscar_healthcheck_kit_dir_writability_probe() -> None:
+    """The healthcheck writability probe must be a real create/delete probe."""
+    import importlib.util
+
+    path = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
+        / "groot_oscar_closed_loop_image_healthcheck.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "groot_oscar_closed_loop_image_healthcheck_probe", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        writable_dir = Path(tmp) / "writable"
+        writable_dir.mkdir()
+        assert module._dir_writable_by_current_user(writable_dir) is True
+        assert not list(writable_dir.iterdir()), "probe must clean up after itself"
+
+        missing_dir = Path(tmp) / "missing"
+        assert module._dir_writable_by_current_user(missing_dir) is False
+
+        readonly_dir = Path(tmp) / "readonly"
+        readonly_dir.mkdir()
+        readonly_dir.chmod(0o555)
+        try:
+            if os.access(readonly_dir, os.W_OK):  # root can write anywhere
+                import pytest
+
+                pytest.skip("running as a user that bypasses directory modes")
+            assert module._dir_writable_by_current_user(readonly_dir) is False
+        finally:
+            readonly_dir.chmod(0o755)
+
+
 def test_groot_oscar_release_push_requires_real_oci_runtime_smoke() -> None:
     """A release push may happen only after exercising the finished image.
 

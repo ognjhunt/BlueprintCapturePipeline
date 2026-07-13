@@ -99,10 +99,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     rewrite the ~8.7GB of checkpoint bytes into a duplicate layer, so the
 #     user must exist first and ownership must be set inside the layer that
 #     produces the checkpoint files.
+#     IMGFIX-004: the Isaac 6 kit creates DerivedDataCache under kit/cache and
+#     documents/ under kit/data at renderer startup; the base image ships them
+#     writable only by uid 1234 (isaac-sim), so the review renderer wedged for
+#     USER blueprint (live A40 canary, 2026-07-12). Grant write SURGICALLY:
+#     non-recursive chown/chmod of exactly these directories. NEVER recurse
+#     into /isaac-sim — registry copy-up would duplicate the multi-GB tree.
 RUN groupadd --gid "${APP_GID}" blueprint \
   && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
   && usermod -aG isaac-sim blueprint \
-  && chown -R blueprint:blueprint /workspace
+  && chown -R blueprint:blueprint /workspace \
+  && mkdir -p /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
+  && chown blueprint:isaac-sim /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
+  && chmod 0775 /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs
 
 # 2. Blueprint package in both the OSCAR client environment and Isaac runtime.
 COPY pyproject.toml README.md LICENSE /opt/blueprint/blueprint-capture-pipeline/
