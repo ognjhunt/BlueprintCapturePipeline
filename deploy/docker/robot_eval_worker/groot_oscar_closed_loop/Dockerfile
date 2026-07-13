@@ -221,11 +221,21 @@ snapshot_download(
 # The SONIC checkpoint config resolves this gated VLM by repository id during
 # model construction. Seal its immutable revision into HF_HOME so the worker
 # never needs a runtime token or network download.
-snapshot_download(
+cosmos_snapshot = Path(snapshot_download(
     repo_id=os.environ["COSMOS_BACKBONE_REPO"],
     revision=os.environ["COSMOS_BACKBONE_REVISION"],
     token=token,
-)
+))
+cosmos_revision = os.environ["COSMOS_BACKBONE_REVISION"]
+if cosmos_snapshot.name != cosmos_revision:
+    raise RuntimeError(
+        f"Cosmos snapshot mismatch: expected {cosmos_revision}, got {cosmos_snapshot.name}"
+    )
+# GR00T resolves the nested repo without forwarding a revision. Bind that
+# default lookup to the immutable commit before the image enters offline mode.
+cosmos_refs = cosmos_snapshot.parent.parent / "refs"
+cosmos_refs.mkdir(parents=True, exist_ok=True)
+(cosmos_refs / "main").write_text(cosmos_revision + "\n", encoding="utf-8")
 
 oscar = Path("/opt/blueprint/ckpts/oscar")
 oscar.mkdir(parents=True, exist_ok=True)

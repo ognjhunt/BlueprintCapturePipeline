@@ -387,6 +387,7 @@ def test_image_seals_exact_nested_cosmos_backbone_and_disables_network_fallback(
     )
     assert 'repo_id=os.environ["COSMOS_BACKBONE_REPO"]' in dockerfile
     assert 'revision=os.environ["COSMOS_BACKBONE_REVISION"]' in dockerfile
+    assert '(cosmos_refs / "main").write_text(cosmos_revision' in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
 
@@ -403,6 +404,7 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "SingleArticulation" in healthcheck
     assert "official_gear_sonic_build_tree_not_writable" in healthcheck
     assert "cosmos_backbone_not_sealed_in_hf_cache" in healthcheck
+    assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
 
 
 def test_isaac_backend_uses_supported_isaac_6_articulation_api():

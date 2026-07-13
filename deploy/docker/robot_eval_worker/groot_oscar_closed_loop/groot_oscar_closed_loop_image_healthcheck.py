@@ -258,16 +258,31 @@ def main() -> int:
             revision=COSMOS_BACKBONE_REVISION,
         )
         cosmos_cached = isinstance(cosmos_config, str) and Path(cosmos_config).is_file()
+        cosmos_default_config = try_to_load_from_cache(
+            COSMOS_BACKBONE_REPO,
+            "config.json",
+            revision="main",
+        )
+        cosmos_default_is_pinned = (
+            cosmos_cached
+            and isinstance(cosmos_default_config, str)
+            and Path(cosmos_default_config).is_file()
+            and Path(cosmos_default_config).resolve() == Path(cosmos_config).resolve()
+        )
     except Exception as exc:  # pragma: no cover - image-only path
         payload["cosmos_backbone_cache_error_type"] = type(exc).__name__
         cosmos_cached = False
+        cosmos_default_is_pinned = False
     payload["cosmos_backbone_repo"] = COSMOS_BACKBONE_REPO
     payload["cosmos_backbone_revision"] = COSMOS_BACKBONE_REVISION
     payload["cosmos_backbone_config_cached"] = cosmos_cached
+    payload["cosmos_backbone_default_ref_pinned"] = cosmos_default_is_pinned
     if not COSMOS_BACKBONE_REVISION:
         blockers.append("cosmos_backbone_revision_missing")
     if not cosmos_cached:
         blockers.append("cosmos_backbone_not_sealed_in_hf_cache")
+    if not cosmos_default_is_pinned:
+        blockers.append("cosmos_backbone_default_ref_not_pinned")
 
     # --- IMGFIX-004: kit runtime dirs writable by the executing (runtime) user ---
     payload["isaac_kit_runtime_write_dirs"] = {}
