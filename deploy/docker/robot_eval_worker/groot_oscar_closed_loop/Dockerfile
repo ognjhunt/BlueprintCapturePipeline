@@ -235,7 +235,10 @@ if cosmos_snapshot.name != cosmos_revision:
 # default lookup to the immutable commit before the image enters offline mode.
 cosmos_refs = cosmos_snapshot.parent.parent / "refs"
 cosmos_refs.mkdir(parents=True, exist_ok=True)
-(cosmos_refs / "main").write_text(cosmos_revision + "\n", encoding="utf-8")
+# huggingface_hub reads refs verbatim (without stripping whitespace) before
+# using the value as a snapshots/<commit> directory name. A trailing newline
+# therefore makes an otherwise valid immutable ref impossible to resolve.
+(cosmos_refs / "main").write_text(cosmos_revision, encoding="utf-8")
 
 oscar = Path("/opt/blueprint/ckpts/oscar")
 oscar.mkdir(parents=True, exist_ok=True)

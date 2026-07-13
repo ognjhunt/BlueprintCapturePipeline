@@ -388,8 +388,46 @@ def test_image_seals_exact_nested_cosmos_backbone_and_disables_network_fallback(
     assert 'repo_id=os.environ["COSMOS_BACKBONE_REPO"]' in dockerfile
     assert 'revision=os.environ["COSMOS_BACKBONE_REVISION"]' in dockerfile
     assert '(cosmos_refs / "main").write_text(cosmos_revision' in dockerfile
+    assert 'write_text(cosmos_revision + "\\n"' not in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+
+
+def test_huggingface_default_ref_requires_commit_without_trailing_newline(
+    tmp_path: Path,
+):
+    from huggingface_hub import try_to_load_from_cache
+    from huggingface_hub.file_download import repo_folder_name
+
+    revision = "9ce19a195e423419c349abfc86fd07178b230561"
+    repo_cache = tmp_path / repo_folder_name(
+        repo_id="nvidia/Cosmos-Reason2-2B", repo_type="model"
+    )
+    snapshot = repo_cache / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    config = snapshot / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    refs = repo_cache / "refs"
+    refs.mkdir()
+
+    (refs / "main").write_text(revision + "\n", encoding="utf-8")
+    assert (
+        try_to_load_from_cache(
+            "nvidia/Cosmos-Reason2-2B",
+            "config.json",
+            cache_dir=tmp_path,
+            revision="main",
+        )
+        is None
+    )
+
+    (refs / "main").write_text(revision, encoding="utf-8")
+    assert try_to_load_from_cache(
+        "nvidia/Cosmos-Reason2-2B",
+        "config.json",
+        cache_dir=tmp_path,
+        revision="main",
+    ) == str(config)
 
 
 def test_image_makes_gear_sonic_build_tree_runtime_user_writable():
@@ -402,9 +440,14 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
         encoding="utf-8"
     )
     assert "SingleArticulation" in healthcheck
+    assert "from isaacsim import SimulationApp" in healthcheck
+    assert "app = SimulationApp({'headless': True})" in healthcheck
+    assert "app.close()" in healthcheck
     assert "official_gear_sonic_build_tree_not_writable" in healthcheck
     assert "cosmos_backbone_not_sealed_in_hf_cache" in healthcheck
     assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
+    assert 'payload["isaac_python_import_stdout_tail"]' in healthcheck
+    assert 'payload["isaac_python_import_stderr_tail"]' in healthcheck
 
 
 def test_isaac_backend_uses_supported_isaac_6_articulation_api():
