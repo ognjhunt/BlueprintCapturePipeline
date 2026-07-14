@@ -23,6 +23,7 @@ FROM ${ISAAC_SIM_BASE_IMAGE} AS robot-env-builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GROOT_SOURCE_URL GROOT_SOURCE_REF OSCAR_SOURCE_URL OSCAR_SOURCE_REF
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 RUN apt-get update && apt-get install -y --no-install-recommends git python3-pip python3-venv ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
   && python3 -m pip install --break-system-packages --no-cache-dir uv
@@ -142,6 +143,7 @@ RUN apt-get update \
   && chown blueprint:isaac-sim /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
   && chmod 0775 /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/robot-venv /opt/robot-venv
+COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/oscar-runtime /opt/OSCAR
 COPY --from=wbc-builder --chown=blueprint:blueprint /opt/wbc-runtime /opt/wbc
 COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime

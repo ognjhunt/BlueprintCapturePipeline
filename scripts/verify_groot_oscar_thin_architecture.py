@@ -66,6 +66,8 @@ def verify() -> list[str]:
         "sha256:b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e",
         "test ! -d third_party/cppzmq/.git",
         "uv venv /opt/robot-venv --python 3.10 --seed",
+        "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
+        "COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python",
         "install -m 0755 target/release/g1_deploy_onnx_ref",
         "cp -a /opt/onnxruntime/lib/libonnxruntime.so*",
         "test ! -d /opt/wbc/gear_sonic_deploy/build",
