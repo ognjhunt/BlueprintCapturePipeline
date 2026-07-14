@@ -649,7 +649,7 @@ class CampaignMachine:
         state.setdefault("blockers", [])
         if blocker not in state["blockers"]:
             state["blockers"].append(blocker)
-        self._write(self.state_path, state)
+        self._write_best_effort(self.state_path, state)
         try:
             self._teardown(state, allocation_key=allocation_key)
         except Exception as exc:
@@ -663,7 +663,7 @@ class CampaignMachine:
                 "exception": f"{type(exc).__name__}:{exc}",
             }
             state["final_inventory"] = None
-        self._write(self.state_path, state)
+        self._write_best_effort(self.state_path, state)
         return state
 
     @staticmethod

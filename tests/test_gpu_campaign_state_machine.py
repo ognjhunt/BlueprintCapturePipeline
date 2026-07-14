@@ -983,3 +983,30 @@ def test_nonserializable_stage_result_cannot_preempt_teardown(tmp_path):
     assert any(
         item.startswith("state_persistence_exception:TypeError") for item in result["blockers"]
     )
+
+
+def test_resumed_emergency_teardown_survives_read_only_state_file(tmp_path, monkeypatch):
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    machine = CampaignMachine(
+        config=config(), adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 1000.0
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+
+    resumed = CampaignMachine(
+        config=config(source_sha="invalid"), adapter=provider, state_dir=tmp_path
+    )
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("read only")
+
+    monkeypatch.setattr(resumed, "_write", fail_write)
+    result = resumed.run()
+
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+    assert any(
+        item.startswith("state_persistence_exception:OSError") for item in result["blockers"]
+    )
