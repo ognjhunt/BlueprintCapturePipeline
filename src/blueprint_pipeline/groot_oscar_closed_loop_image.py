@@ -69,6 +69,9 @@ OSCAR_REPO_ENV = "BLUEPRINT_GROOT_OSCAR_OSCAR_REPO"
 OSCAR_CHECKPOINT_ENV = "BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT"
 GROOT_ROOT_ENV = "BLUEPRINT_GROOT_OSCAR_GROOT_ROOT"
 SONIC_CHECKPOINT_ENV = "BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT"
+UNITREE_G1_USD_ENV = "BLUEPRINT_ISAAC_UNITREE_G1_USD"
+GEAR_SONIC_CHECKPOINT_REPO_ENV = "GEAR_SONIC_CHECKPOINT_REPO"
+GEAR_SONIC_CHECKPOINT_REVISION_ENV = "GEAR_SONIC_CHECKPOINT_REVISION"
 
 DEFAULT_OSCAR_REPO = "/opt/OSCAR"
 DEFAULT_OSCAR_CHECKPOINT = "/opt/blueprint/ckpts/oscar"
@@ -76,6 +79,11 @@ DEFAULT_GROOT_ROOT = "/opt/gr00t"
 DEFAULT_SONIC_CHECKPOINT = "/opt/blueprint/ckpts/sonic"
 DEFAULT_GROOT_VENV = "/opt/gr00t-venv"
 DEFAULT_WBC_ROOT = "/opt/wbc"
+DEFAULT_UNITREE_G1_USD = "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd"
+OFFICIAL_GEAR_SONIC_CHECKPOINT_REPO = "nvidia/GEAR-SONIC"
+OFFICIAL_GEAR_SONIC_CHECKPOINT_REVISION = (
+    "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+)
 DEFAULT_OSCAR_VENV_PYTHON = "/opt/oscar-venv/bin/python"
 
 POLICY_SERVER_PORT = 5550
@@ -196,6 +204,15 @@ def sealed_image_contract(env: Mapping[str, str] | None = None) -> dict[str, Any
         "groot_root": _string(env.get(GROOT_ROOT_ENV)) or DEFAULT_GROOT_ROOT,
         "groot_venv": DEFAULT_GROOT_VENV,
         "sonic_checkpoint": _string(env.get(SONIC_CHECKPOINT_ENV)) or DEFAULT_SONIC_CHECKPOINT,
+        "unitree_g1_usd": _string(env.get(UNITREE_G1_USD_ENV)) or DEFAULT_UNITREE_G1_USD,
+        "gear_sonic_checkpoint_repo": (
+            _string(env.get(GEAR_SONIC_CHECKPOINT_REPO_ENV))
+            or OFFICIAL_GEAR_SONIC_CHECKPOINT_REPO
+        ),
+        "gear_sonic_checkpoint_revision": (
+            _string(env.get(GEAR_SONIC_CHECKPOINT_REVISION_ENV))
+            or OFFICIAL_GEAR_SONIC_CHECKPOINT_REVISION
+        ),
         "policy_server_url": POLICY_SERVER_URL,
         "policy_server_port": POLICY_SERVER_PORT,
         "oscar_hf_revision": OFFICIAL_OSCAR_HF_REVISION,
@@ -338,6 +355,10 @@ def build_sealed_launch_plan(
         "blueprint_pipeline.isaac_persistent_task_executor_service",
         "--stage",
         kitchen_stage_path,
+        "--g1-usd",
+        contract["unitree_g1_usd"],
+        "--route-file",
+        route_file,
         "--attempt-input-manifest",
         attempt_input_manifest_path,
         "--initial-state-output",
@@ -428,6 +449,8 @@ def build_sealed_launch_plan(
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT": groot_root,
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL": contract["policy_server_url"],
         "BLUEPRINT_GEAR_SONIC_ROOT": DEFAULT_WBC_ROOT,
+        GEAR_SONIC_CHECKPOINT_REPO_ENV: contract["gear_sonic_checkpoint_repo"],
+        GEAR_SONIC_CHECKPOINT_REVISION_ENV: contract["gear_sonic_checkpoint_revision"],
         "BLUEPRINT_GEAR_SONIC_ROBOT_MODEL": (
             "/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml"
         ),
@@ -484,6 +507,10 @@ def build_snapshot_layer_plan(env: Mapping[str, str] | None = None) -> dict[str,
             "PYTORCH_ALLOC_CONF": "expandable_segments:True",
             "PYTHONPATH": contract["oscar_repo"],
             "BLUEPRINT_OSCAR_WAM_HF_REVISION": contract["oscar_hf_revision"],
+            GEAR_SONIC_CHECKPOINT_REPO_ENV: contract["gear_sonic_checkpoint_repo"],
+            GEAR_SONIC_CHECKPOINT_REVISION_ENV: contract[
+                "gear_sonic_checkpoint_revision"
+            ],
             "BLUEPRINT_WORKER_IMAGE_FAMILY": "groot-oscar-closed-loop-eval",
         },
         "raw_secret_values_recorded": False,

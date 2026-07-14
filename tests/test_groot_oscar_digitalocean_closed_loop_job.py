@@ -139,6 +139,7 @@ def _inputs(
                     [2.043728, 0.575381, 0.79],
                     [2.243728, 0.575381, 0.79],
                 ],
+                "accepted_stance_yaw_rad": 3.141593,
                 "source_selection_sha256": selection_sha,
             }
         ),
@@ -462,6 +463,46 @@ def test_prepared_mode_records_diagnostic_gate_as_not_required(
     assert manifest["status"] == "prepared"
     assert manifest["worker_image_diagnostic_validation"]["required"] is False
     assert manifest["worker_image_diagnostic_validation"]["status"] == "not_required"
+
+
+def test_route_without_attempt_bound_yaw_blocks_before_provider_or_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    start_frame, route = _inputs(tmp_path)
+    route_payload = json.loads(route.read_text(encoding="utf-8"))
+    route_payload.pop("accepted_stance_yaw_rad")
+    route.write_text(json.dumps(route_payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        J,
+        "get_render_provider",
+        lambda _name: (_ for _ in ()).throw(
+            AssertionError("invalid route must block before provider lookup")
+        ),
+    )
+    monkeypatch.setattr(
+        J,
+        "stage_bundle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid route must block before staging")
+        ),
+    )
+
+    manifest = J.run_groot_oscar_digitalocean_closed_loop_job(
+        start_frame=start_frame,
+        route_file=route,
+        task_prompt=TASK_PROMPT,
+        out_dir=tmp_path / "job",
+        image_ref=DIGEST_REF,
+        allow_paid=True,
+        max_spend_usd=10.0,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["blockers"] == ["persistent_isaac_route_start_pose_invalid"]
+    assert "provider_capacity_preflight" not in manifest
+    assert "staging" not in manifest
 
 
 def test_cli_worker_image_manifest_diagnostic_flag_threads_to_job(

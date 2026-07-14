@@ -136,6 +136,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", required=True)
     parser.add_argument("--robot-prim-path", default="/World/G1")
+    parser.add_argument(
+        "--g1-usd",
+        default=os.environ.get(
+            "BLUEPRINT_ISAAC_UNITREE_G1_USD",
+            "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd",
+        ),
+    )
+    parser.add_argument("--route-file", required=True)
     parser.add_argument("--evidence-dir", default="/workspace/closed_loop_out/isaac_task_state")
     parser.add_argument("--initial-state-output", default="/workspace/initial_g1_sonic_state.json")
     parser.add_argument("--attempt-input-manifest", required=True)
@@ -162,6 +170,8 @@ def main() -> int:
         stage_path=args.stage,
         robot_prim_path=args.robot_prim_path,
         evidence_dir=args.evidence_dir,
+        g1_usd_path=args.g1_usd,
+        route_file=args.route_file,
     )
     initial = backend.initial_policy_state()
     Path(args.initial_state_output).write_text(

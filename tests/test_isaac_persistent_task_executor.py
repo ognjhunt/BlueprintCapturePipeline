@@ -530,6 +530,16 @@ def _run_main(monkeypatch, tmp_path: Path, *, corrupt_contract_sha: bool = False
         attempt_path.write_text(json.dumps(manifest), encoding="utf-8")
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
+    route_file = tmp_path / "route.json"
+    route_file.write_text(
+        json.dumps(
+            {
+                "route_points": [[-1.2, 1.4, 0.84]],
+                "accepted_stance_yaw_rad": 3.141593,
+            }
+        ),
+        encoding="utf-8",
+    )
     backend = _MainBackend(evidence_dir)
     serve_calls: list[dict] = []
 
@@ -545,6 +555,8 @@ def _run_main(monkeypatch, tmp_path: Path, *, corrupt_contract_sha: bool = False
             "isaac_persistent_task_executor_service",
             "--stage",
             str(tmp_path / "stage.usd"),
+            "--route-file",
+            str(route_file),
             "--evidence-dir",
             str(evidence_dir),
             "--initial-state-output",
@@ -585,3 +597,40 @@ def test_main_captures_signed_episode_baseline_before_serving(monkeypatch, tmp_p
 def test_main_blocks_on_task_contract_sha_mismatch(monkeypatch, tmp_path: Path):
     with pytest.raises(SystemExit, match="persistent_isaac_task_contract_sha256_mismatch"):
         _run_main(monkeypatch, tmp_path, corrupt_contract_sha=True)
+
+
+def test_compose_g1_for_episode_reuses_proven_route_stance(tmp_path: Path):
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdPhysics
+
+    g1_asset = tmp_path / "g1.usda"
+    asset_stage = Usd.Stage.CreateNew(str(g1_asset))
+    asset_robot = asset_stage.DefinePrim("/G1", "Xform")
+    UsdPhysics.ArticulationRootAPI.Apply(asset_robot)
+    asset_stage.SetDefaultPrim(asset_robot)
+    asset_stage.GetRootLayer().Save()
+
+    stage = Usd.Stage.CreateNew(str(tmp_path / "kitchen.usda"))
+    stage.DefinePrim("/World", "Xform")
+    route = tmp_path / "route.json"
+    route.write_text(
+        json.dumps(
+            {
+                "route_points": [[-1.229635, 1.471274, 0.84]],
+                "accepted_stance_yaw_rad": 3.141593,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = backend_module.compose_g1_for_episode(
+        stage,
+        robot_prim_path="/World/G1",
+        g1_usd_path=g1_asset,
+        route_file=route,
+    )
+    assert result["status"] == "passed"
+    assert result["robot_was_already_present"] is False
+    assert result["start_pose_xyz"] == [-1.229635, 1.471274, 0.84]
+    assert stage.GetPrimAtPath("/World/G1").IsValid()
+    assert result["articulation_root_paths"]

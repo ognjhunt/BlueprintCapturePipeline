@@ -6,6 +6,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -482,6 +483,29 @@ def _read_json_mapping(path: str | Path | None) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def validate_persistent_isaac_route_start_pose(
+    route_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the robot pose needed before a paid persistent executor starts."""
+    route_points = list(route_payload.get("route_points") or [])
+    try:
+        start_pose = [float(value) for value in route_points[0]]
+        start_yaw = float(route_payload.get("accepted_stance_yaw_rad"))
+    except (IndexError, TypeError, ValueError):
+        return {"status": "blocked", "blockers": ["persistent_isaac_route_start_pose_invalid"]}
+    if len(start_pose) != 3 or not all(
+        math.isfinite(value) for value in [*start_pose, start_yaw]
+    ):
+        return {"status": "blocked", "blockers": ["persistent_isaac_route_start_pose_invalid"]}
+    return {
+        "status": "passed",
+        "blockers": [],
+        "xyz": start_pose,
+        "yaw_rad": start_yaw,
+        "validated_before_paid_provider_mutation": True,
+    }
+
+
 def _read_json_mapping_if_present(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -506,5 +530,12 @@ def _argv_value(argv: Sequence[Any], flag: str) -> str | None:
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(str(value))
     except (TypeError, ValueError):
         return None

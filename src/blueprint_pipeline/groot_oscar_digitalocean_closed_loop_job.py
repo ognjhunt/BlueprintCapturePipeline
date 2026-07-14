@@ -13,13 +13,14 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
 from .common import ensure_dir, utc_now_iso, write_json
 from .groot_oscar_digitalocean_job_inputs import (
     _argv_value,
     _b64_bytes,
     _b64_text,
     _episode_length_contract,
-    _int_or_none,
+    _float_or_none, _int_or_none,
     _json_b64,
     _mapping,
     _read_json_mapping,
@@ -29,6 +30,7 @@ from .groot_oscar_digitalocean_job_inputs import (
     _write_job_manifest,
     build_digitalocean_job_parser,
     runtime_contract_for_pre_spend,
+    validate_persistent_isaac_route_start_pose,
 )
 from .gpu_render_providers import (
     DEFAULT_DO_GPU_SIZE,
@@ -341,13 +343,6 @@ def _resolve_resume_path(value: Any, prepared_dir: Path) -> Path:
     if path.is_absolute() or path.exists():
         return path
     return prepared_dir / path
-
-
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(str(value))
-    except (TypeError, ValueError):
-        return None
 
 
 def _seed_provenance_from_resume(
@@ -2114,6 +2109,11 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     if not isinstance(route_payload, Mapping):
         manifest["blockers"].append("route_file_must_contain_json_object")
         return _write_job_manifest(out, manifest)
+    robot_start_pose = validate_persistent_isaac_route_start_pose(route_payload)
+    if robot_start_pose["blockers"]:
+        manifest["blockers"].extend(robot_start_pose["blockers"])
+        return _write_job_manifest(out, manifest)
+    manifest["persistent_isaac_robot_start_pose"] = robot_start_pose
     attempt_input = (
         _read_json_mapping(attempt_input_manifest_file)
         if attempt_input_manifest_file is not None

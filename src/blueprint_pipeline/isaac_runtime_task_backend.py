@@ -32,6 +32,74 @@ from .task_episode_baseline import (
 )
 
 
+def load_robot_start_pose(route_file: str | Path) -> tuple[list[float], float]:
+    """Load the attempt-bound stance used by the proven kitchen runner."""
+    path = Path(route_file).expanduser().resolve()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    points = list(payload.get("route_points") or [])
+    if not points or len(points[0]) != 3:
+        raise RuntimeError("persistent_isaac_route_start_pose_missing")
+    pose = [float(value) for value in points[0]]
+    yaw = float(payload.get("accepted_stance_yaw_rad"))
+    if not all(math.isfinite(value) for value in [*pose, yaw]):
+        raise RuntimeError("persistent_isaac_route_start_pose_invalid")
+    return pose, yaw
+
+
+def compose_g1_for_episode(
+    stage: Any,
+    *,
+    robot_prim_path: str,
+    g1_usd_path: str | Path,
+    route_file: str | Path,
+) -> dict[str, Any]:
+    """Compose and place G1 exactly once when the raw kitchen lacks it."""
+    from pxr import Gf, UsdGeom, UsdPhysics  # type: ignore
+
+    asset = Path(g1_usd_path).expanduser().resolve()
+    if not asset.is_file():
+        raise RuntimeError("persistent_isaac_g1_asset_missing")
+    existing = stage.GetPrimAtPath(robot_prim_path)
+    existing_valid = bool(existing and existing.IsValid())
+    if not existing_valid:
+        robot = stage.DefinePrim(robot_prim_path, "Xform")
+        robot.GetReferences().AddReference(str(asset))
+        stage.Load(robot_prim_path)
+    robot = stage.GetPrimAtPath(robot_prim_path)
+    if not robot or not robot.IsValid():
+        raise RuntimeError("persistent_isaac_g1_composition_failed")
+
+    pose, yaw = load_robot_start_pose(route_file)
+    xform = UsdGeom.Xformable(robot)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(*pose))
+    xform.AddRotateZOp().Set(math.degrees(yaw))
+
+    articulation_roots = [
+        str(prim.GetPath())
+        for prim in stage.Traverse()
+        if str(prim.GetPath()).startswith(robot_prim_path)
+        and prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
+    if not articulation_roots:
+        raise RuntimeError("persistent_isaac_g1_articulation_missing_after_composition")
+    return {
+        "schema_version": "persistent_isaac_g1_composition.v1",
+        "status": "passed",
+        "robot_prim_path": robot_prim_path,
+        "g1_usd_path": str(asset),
+        "route_file": str(Path(route_file).expanduser().resolve()),
+        "start_pose_xyz": pose,
+        "start_yaw_rad": yaw,
+        "robot_was_already_present": existing_valid,
+        "articulation_root_paths": articulation_roots,
+        "claim_boundary": (
+            "Composition proves a controllable G1 is present at the attempt-bound stance; "
+            "it does not prove policy actions or task success."
+        ),
+    }
+
+
 class IsaacPersistentTaskBackend:
     def __init__(
         self,
@@ -39,6 +107,8 @@ class IsaacPersistentTaskBackend:
         stage_path: str,
         robot_prim_path: str,
         evidence_dir: str | Path,
+        g1_usd_path: str | Path,
+        route_file: str | Path,
         headless: bool = True,
     ) -> None:
         from isaacsim import SimulationApp  # type: ignore
@@ -61,6 +131,16 @@ class IsaacPersistentTaskBackend:
         self.stage_id = hashlib.sha256(Path(self.stage_path).read_bytes()).hexdigest()
         omni.usd.get_context().open_stage(self.stage_path)
         self.stage = omni.usd.get_context().get_stage()
+        self.robot_composition = compose_g1_for_episode(
+            self.stage,
+            robot_prim_path=self.robot_prim_path,
+            g1_usd_path=g1_usd_path,
+            route_file=route_file,
+        )
+        (self.evidence_dir / "robot_stage_composition.json").write_text(
+            json.dumps(self.robot_composition, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         self.timeline.play()
         for _ in range(8):
             self.app.update()

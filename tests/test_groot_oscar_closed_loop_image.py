@@ -238,6 +238,10 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert plan["gear_sonic_controller_command"][0:2] == ["bash", "-lc"]
     assert "deploy.sh sim" in plan["gear_sonic_controller_command"][2]
     assert plan["env"]["BLUEPRINT_GEAR_SONIC_ROOT"] == "/opt/wbc"
+    assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == "nvidia/GEAR-SONIC"
+    assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (
+        "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+    )
     assert "gear_sonic_official_zmq_executor" in plan["env"][
         "BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND"
     ]
@@ -374,6 +378,12 @@ def test_snapshot_plan_lists_all_baked_trees_and_markers():
     # sealed markers must be written into the image env
     assert plan["image_env"][gocl.SEALED_CONFIRMED_ENV] == "true"
     assert plan["image_env"]["MUJOCO_GL"] == "osmesa"
+    assert plan["image_env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == (
+        "nvidia/GEAR-SONIC"
+    )
+    assert plan["image_env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (
+        "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+    )
     assert plan["raw_secret_values_recorded"] is False
     assert plan["claim_boundary"]
 
@@ -391,6 +401,34 @@ def test_image_seals_exact_nested_cosmos_backbone_and_disables_network_fallback(
     assert 'write_text(cosmos_revision + "\\n"' not in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+    assert 'sonic_config["model_name"] = str(cosmos_local)' in dockerfile
+    assert 'sonic_config["blueprint_model_revision"] = cosmos_revision' in dockerfile
+
+
+def test_image_seals_the_exact_gear_sonic_deploy_models():
+    dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC" in dockerfile
+    assert (
+        "GEAR_SONIC_CHECKPOINT_REVISION=5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+        in dockerfile
+    )
+    for required in (
+        "policy/release/model_encoder.onnx",
+        "policy/release/model_decoder.onnx",
+        "policy/release/observation_config.yaml",
+        "planner/target_vel/V2/planner_sonic.onnx",
+    ):
+        assert required in dockerfile
+    assert 'revision=os.environ["GEAR_SONIC_CHECKPOINT_REVISION"]' in dockerfile
+
+
+def test_snapshot_carrier_stamps_the_exact_gear_sonic_revision():
+    script = Path("scripts/snapshot_groot_oscar_eval_pod.sh").read_text(encoding="utf-8")
+    assert "export GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC" in script
+    assert (
+        "export GEAR_SONIC_CHECKPOINT_REVISION="
+        "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+    ) in script
 
 
 def test_image_makes_gear_sonic_build_tree_runtime_user_writable():
@@ -409,6 +447,10 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "official_gear_sonic_build_tree_not_writable" in healthcheck
     assert "cosmos_backbone_not_sealed_in_hf_cache" in healthcheck
     assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
+    assert "groot_nested_processor_not_offline_constructible" in healthcheck
+    assert "model_encoder.onnx" in healthcheck
+    assert "model_decoder.onnx" in healthcheck
+    assert "planner_sonic.onnx" in healthcheck
     assert 'payload["isaac_python_import_stdout_tail"]' in healthcheck
     assert 'payload["isaac_python_import_stderr_tail"]' in healthcheck
 
@@ -419,6 +461,21 @@ def test_isaac_backend_uses_supported_isaac_6_articulation_api():
     )
     assert "from isaacsim.core.prims import SingleArticulation" in backend
     assert "omni.isaac.dynamic_control" not in backend
+
+
+def test_persistent_executor_composes_g1_using_the_episode_route():
+    plan = gocl.build_sealed_launch_plan(
+        env=_active_env(),
+        start_frame="/w/frame.png",
+        route_file="/w/route.json",
+        steps=3,
+        task_prompt="open the microwave",
+        output_dir="/w/out",
+        wam_consistency_command="python -m strict_scorer",
+    )
+    command = plan["isaac_task_executor_command"]
+    assert command[command.index("--g1-usd") + 1] == gocl.DEFAULT_UNITREE_G1_USD
+    assert command[command.index("--route-file") + 1] == "/w/route.json"
 
 
 # --------------------------------------------------------------------------- #

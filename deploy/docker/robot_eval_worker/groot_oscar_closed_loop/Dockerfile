@@ -27,6 +27,8 @@ ARG GROOT_SOURCE_URL=https://github.com/NVIDIA/Isaac-GR00T.git
 ARG GROOT_SOURCE_REF=e5749287857afd97b78f1147166137de29746392
 ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
 ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
+ARG GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC
+ARG GEAR_SONIC_CHECKPOINT_REVISION=5e22ddc69abcea2a9aafc40536b14c232d3f9d7f
 ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
 ARG OSCAR_SOURCE_URL=https://github.com/wuzy2115/oscar-public.git
 ARG OSCAR_SOURCE_REF=4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb
@@ -67,6 +69,8 @@ ENV PYTHONUNBUFFERED=1 \
     BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
     BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc \
+    GEAR_SONIC_CHECKPOINT_REPO=${GEAR_SONIC_CHECKPOINT_REPO} \
+    GEAR_SONIC_CHECKPOINT_REVISION=${GEAR_SONIC_CHECKPOINT_REVISION} \
     TensorRT_ROOT=/usr \
     BLUEPRINT_GEAR_SONIC_ROBOT_MODEL=/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml \
     BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
@@ -190,7 +194,7 @@ if [[ "${PREFETCH_CHECKPOINTS}" == "true" ]]; then
 /opt/oscar-venv/bin/python - <<'PY'
 import os
 from pathlib import Path
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 token = None
 secret = Path("/run/secrets/hf_token")
@@ -240,6 +244,50 @@ cosmos_refs.mkdir(parents=True, exist_ok=True)
 # therefore makes an otherwise valid immutable ref impossible to resolve.
 (cosmos_refs / "main").write_text(cosmos_revision, encoding="utf-8")
 
+# The upstream WBC source commit intentionally does not contain deployment
+# checkpoints; its documented setup downloads them from nvidia/GEAR-SONIC.
+# Seal the exact immutable revision and exact files that deploy.sh opens.
+gear_root = Path("/opt/wbc/gear_sonic_deploy")
+gear_files = {
+    "model_encoder.onnx": gear_root / "policy/release/model_encoder.onnx",
+    "model_decoder.onnx": gear_root / "policy/release/model_decoder.onnx",
+    "observation_config.yaml": gear_root / "policy/release/observation_config.yaml",
+    "planner_sonic.onnx": gear_root / "planner/target_vel/V2/planner_sonic.onnx",
+}
+for remote_name, destination in gear_files.items():
+    cached = hf_hub_download(
+        repo_id=os.environ["GEAR_SONIC_CHECKPOINT_REPO"],
+        revision=os.environ["GEAR_SONIC_CHECKPOINT_REVISION"],
+        filename=remote_name,
+        token=token,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(Path(cached).read_bytes())
+    if destination.stat().st_size <= 0:
+        raise RuntimeError(f"empty GEAR-SONIC deployment asset: {remote_name}")
+
+# GR00T's config names the nested backbone by repository id. Transformers
+# 4.57 calls model_info() while patching tokenizer regexes even when every
+# file is cached, which fails correctly under HF_HUB_OFFLINE=1. Bind the
+# config to a stable local symlink so full processor construction is offline.
+cosmos_local = Path("/opt/blueprint/models/cosmos-reason2-2b")
+cosmos_local.parent.mkdir(parents=True, exist_ok=True)
+cosmos_local.symlink_to(cosmos_snapshot)
+sonic_config_path = sonic / "config.json"
+sonic_config = __import__("json").loads(sonic_config_path.read_text(encoding="utf-8"))
+original_model_name = sonic_config.get("model_name")
+if original_model_name != os.environ["COSMOS_BACKBONE_REPO"]:
+    raise RuntimeError(
+        f"unexpected SONIC nested model: {original_model_name!r}"
+    )
+sonic_config["blueprint_original_model_name"] = original_model_name
+sonic_config["blueprint_model_revision"] = cosmos_revision
+sonic_config["model_name"] = str(cosmos_local)
+sonic_config_path.write_text(
+    __import__("json").dumps(sonic_config, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+
 oscar = Path("/opt/blueprint/ckpts/oscar")
 oscar.mkdir(parents=True, exist_ok=True)
 snapshot_download(
@@ -256,6 +304,9 @@ fi
 mkdir -p /opt/blueprint/ckpts
 chown -R blueprint:blueprint /opt/blueprint/ckpts
 chown -R blueprint:blueprint /opt/blueprint/hf_home
+chown -R blueprint:blueprint /opt/blueprint/models
+chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/policy/release
+chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/planner/target_vel/V2
 BASH
 
 # Release workers resolve every model from the sealed cache. A missing nested
