@@ -320,6 +320,95 @@ def _delete_and_verify(*, token: str, droplet_id: str) -> dict[str, Any]:
     }
 
 
+def _reconcile_ambiguous_create(
+    *,
+    token: str,
+    name: str,
+    region: str,
+    attempts: int = 7,
+    sleeper: Any = time.sleep,
+) -> dict[str, Any]:
+    """Find and delete an accepted create whose response may have been lost."""
+
+    observations: list[dict[str, Any]] = []
+    deleted_ids: set[str] = set()
+    final_exact_match_count: int | None = None
+    inventory_verified = False
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            sleeper(5)
+        try:
+            http_status, payload = _request(
+                token=token,
+                method="GET",
+                path=f"/droplets?tag_name={urllib.parse.quote(BUILDER_TAG)}&per_page=200",
+            )
+        except Exception as exc:  # noqa: BLE001 - mutation outcome must be reconciled
+            observations.append(
+                {
+                    "attempt": attempt + 1,
+                    "inventory_http_status": None,
+                    "transport_error_type": type(exc).__name__,
+                }
+            )
+            inventory_verified = False
+            continue
+        rows = payload.get("droplets", []) if isinstance(payload, Mapping) else []
+        exact_matches = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and row.get("name") == name
+            and isinstance(row.get("region"), Mapping)
+            and row["region"].get("slug") == region
+            and BUILDER_TAG in (row.get("tags") or [])
+            and TEARDOWN_TAG in (row.get("tags") or [])
+        ]
+        observations.append(
+            {
+                "attempt": attempt + 1,
+                "inventory_http_status": http_status,
+                "exact_match_count": len(exact_matches),
+            }
+        )
+        if http_status != 200:
+            inventory_verified = False
+            continue
+        inventory_verified = True
+        final_exact_match_count = len(exact_matches)
+        for row in exact_matches:
+            droplet_id = str(row.get("id") or "").strip()
+            if not droplet_id or droplet_id in deleted_ids:
+                continue
+            deleted_ids.add(droplet_id)
+            try:
+                deletion = _delete_and_verify(token=token, droplet_id=droplet_id)
+            except Exception as exc:  # noqa: BLE001 - preserve teardown uncertainty
+                deletion = {
+                    "provider_absence_confirmed": False,
+                    "error_type": type(exc).__name__,
+                }
+            observations.append(
+                {
+                    "attempt": attempt + 1,
+                    "reconciled_droplet_id": droplet_id,
+                    "deletion": deletion,
+                }
+            )
+    absence_confirmed = bool(inventory_verified and final_exact_match_count == 0)
+    return {
+        "schema_version": "groot_oscar_digitalocean_create_reconciliation.v1",
+        "status": "provider_terminal" if absence_confirmed else "teardown_unverified",
+        "name": name,
+        "region": region,
+        "tag": BUILDER_TAG,
+        "attempts": observations,
+        "reconciled_droplet_ids": sorted(deleted_ids),
+        "provider_absence_confirmed": absence_confirmed,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def watchdog(*, state_path: Path, token_file: Path) -> int:
     state = _load_object(state_path)
     output = state_path.parent
@@ -456,15 +545,21 @@ def run_builder(
         name=name, region=region, ssh_key_id=ssh_key_id, user_data=user_data
     )
     started = time.time()
-    create_http, create_response = _request(
-        token=token, method="POST", path="/droplets", payload=create_payload
-    )
+    create_error_type: str | None = None
+    try:
+        create_http, create_response = _request(
+            token=token, method="POST", path="/droplets", payload=create_payload
+        )
+    except Exception as exc:  # noqa: BLE001 - a lost create response is ambiguous
+        create_http, create_response = 0, {}
+        create_error_type = type(exc).__name__
     droplet = create_response.get("droplet") if isinstance(create_response, dict) else None
     droplet_id = str((droplet or {}).get("id") or "")
     write_json(
         output / "create_result.json",
         {
             "http_status": create_http,
+            "transport_error_type": create_error_type,
             "droplet_id": droplet_id or None,
             "name": name,
             "region": region,
@@ -473,11 +568,44 @@ def run_builder(
             "raw_secret_values_recorded": False,
         },
     )
-    if create_http not in {200, 201, 202} or not droplet_id:
+    create_succeeded = create_http in {200, 201, 202} and bool(droplet_id)
+    definitive_rejection = (
+        400 <= create_http < 500 and create_http not in {408, 409, 425, 429}
+    )
+    if not create_succeeded and not definitive_rejection:
+        reconciliation = _reconcile_ambiguous_create(
+            token=token,
+            name=name,
+            region=region,
+        )
+        write_json(output / "ambiguous_create_reconciliation.json", reconciliation)
+        absence_confirmed = reconciliation["provider_absence_confirmed"] is True
         result = {
-            **_blocked_result(["digitalocean_builder_create_failed"]),
-            "status": "create_failed_no_allocation_id",
+            **_blocked_result(
+                [
+                    (
+                        "digitalocean_builder_ambiguous_create_reconciled"
+                        if absence_confirmed
+                        else "digitalocean_builder_ambiguous_create_teardown_unverified"
+                    )
+                ]
+            ),
+            "status": (
+                "ambiguous_create_reconciled_no_allocation"
+                if absence_confirmed
+                else "ambiguous_create_teardown_unverified"
+            ),
             "provider_mutation_performed": True,
+            "provider_absence_confirmed": absence_confirmed,
+        }
+        write_json(output / "builder_run_result.json", result)
+        return result
+    if not create_succeeded:
+        result = {
+            **_blocked_result(["digitalocean_builder_create_rejected"]),
+            "status": "create_rejected_no_allocation",
+            "provider_mutation_performed": True,
+            "provider_absence_confirmed": True,
         }
         write_json(output / "builder_run_result.json", result)
         return result

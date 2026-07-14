@@ -22,6 +22,23 @@ def test_measures_only_layers_above_cached_foundation() -> None:
     assert result["release_delta_compressed_size_bytes"] == 500
 
 
+def test_reads_native_registry_diagnostic_layer_size_field() -> None:
+    foundation = {
+        **_diagnostic("foundation@sha256:" + "a" * 64, []),
+        "layers": [{"digest": "sha256:base", "size": 20_000}],
+    }
+    release = {
+        **_diagnostic("release@sha256:" + "b" * 64, []),
+        "layers": [
+            {"digest": "sha256:base", "size": 20_000},
+            {"digest": "sha256:code", "size": 500},
+        ],
+    }
+    result = build_thin_release_contract(release, foundation, max_release_bytes=1_000)
+    assert result["status"] == "passed"
+    assert result["release_delta_compressed_size_bytes"] == 500
+
+
 def test_rejects_release_that_does_not_extend_exact_foundation() -> None:
     foundation = _diagnostic("foundation@sha256:" + "a" * 64, [("sha256:base", 20_000)])
     release = _diagnostic("release@sha256:" + "b" * 64, [("sha256:other", 500)])

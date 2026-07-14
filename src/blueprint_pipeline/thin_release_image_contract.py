@@ -18,7 +18,11 @@ def _layer_rows(payload: Mapping[str, Any]) -> list[tuple[str, int]]:
         if not isinstance(item, Mapping):
             continue
         digest = item.get("digest")
-        size = item.get("size_bytes")
+        # Registry diagnostics use OCI's native ``size`` field. Keep accepting
+        # the older normalized name for already-recorded local evidence.
+        size = item.get("size")
+        if type(size) is not int:
+            size = item.get("size_bytes")
         if isinstance(digest, str) and type(size) is int:
             rows.append((digest, size))
     return rows

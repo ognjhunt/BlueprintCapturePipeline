@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
+THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
 LEGACY_BUILD_SCRIPTS = (
     ROOT / "scripts/build_push_groot_oscar_foundation_image.sh",
@@ -44,6 +45,7 @@ def verify() -> list[str]:
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
+    thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
     runbook = RUNBOOK.read_text(encoding="utf-8")
 
     if "run_builder(" not in canonical or "run_canary(" not in canonical:
@@ -78,6 +80,12 @@ def verify() -> list[str]:
         blockers.append("cpu_build_missing_live_execution_admission")
     if "require_paid_resource_admission" not in cpu_calls.get("run_builder", set()):
         blockers.append("cpu_allocator_bypasses_shared_admission")
+    if "_reconcile_ambiguous_create" not in cpu_calls.get("run_builder", set()):
+        blockers.append("cpu_ambiguous_create_reconciliation_missing")
+    if "ambiguous_create_reconciliation.json" not in cpu:
+        blockers.append("cpu_ambiguous_create_evidence_missing")
+    if 'item.get("size")' not in thin_release:
+        blockers.append("thin_release_native_registry_layer_size_missing")
     gpu_calls = _function_calls(GPU_ADAPTER)
     if "run_runpod_provider_adapter" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")

@@ -8,6 +8,7 @@ import pytest
 from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     BUILDER_TAG,
     TEARDOWN_TAG,
+    _reconcile_ambiguous_create,
     build_cloud_init,
     build_droplet_payload,
     known_hosts_line,
@@ -17,6 +18,74 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     run_builder,
     verify_packet_tarball,
 )
+
+
+def test_ambiguous_create_reconciliation_deletes_exact_name_tag_match(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    inventories = [
+        {
+            "droplets": [
+                {
+                    "id": 123,
+                    "name": "blueprint-groot-oscar-thin-aaaaaaaa",
+                    "region": {"slug": "sfo3"},
+                    "tags": [BUILDER_TAG, TEARDOWN_TAG],
+                },
+                {
+                    "id": 999,
+                    "name": "unrelated",
+                    "region": {"slug": "sfo3"},
+                    "tags": [BUILDER_TAG, TEARDOWN_TAG],
+                },
+            ]
+        },
+        {"droplets": []},
+    ]
+
+    def fake_request(*, token, method, path, payload=None):
+        del token, payload
+        calls.append((method, path))
+        return 200, inventories.pop(0)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._request",
+        fake_request,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._delete_and_verify",
+        lambda **_kwargs: {"provider_absence_confirmed": True},
+    )
+    result = _reconcile_ambiguous_create(
+        token="secret",
+        name="blueprint-groot-oscar-thin-aaaaaaaa",
+        region="sfo3",
+        attempts=2,
+        sleeper=lambda _seconds: None,
+    )
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["reconciled_droplet_ids"] == ["123"]
+    assert all(method == "GET" for method, _path in calls)
+
+
+def test_ambiguous_create_reconciliation_fails_closed_when_inventory_unverified(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._request",
+        lambda **_kwargs: (503, {}),
+    )
+    result = _reconcile_ambiguous_create(
+        token="secret",
+        name="blueprint-groot-oscar-thin-aaaaaaaa",
+        region="sfo3",
+        attempts=2,
+        sleeper=lambda _seconds: None,
+    )
+    assert result["status"] == "teardown_unverified"
+    assert result["provider_absence_confirmed"] is False
 
 
 def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
