@@ -536,6 +536,46 @@ def test_same_allocation_canary_adopts_inventory_without_allocating(tmp_path):
     assert not any(call[0] == "allocate" for call in provider.calls)
 
 
+def test_same_allocation_canary_checkpoints_owned_id_before_inventory_rpc(tmp_path):
+    cfg = config(
+        reuse_validated_same_allocation_canary=True,
+        canary_handoff={
+            "schema_version": "same_allocation_canary_handoff.v1",
+            "source_sha": "5" * 40,
+            "image_digest": "sha256:" + "7" * 64,
+            "allocation_key": "blueprint-g4",
+            "allocation_id": "vm-1",
+            "launch_nonce": "nonce-1",
+            "teardown_owner": "owner-1",
+            "provider_started_at_epoch_seconds": 1000.0,
+            "runtime_health_passed": True,
+            "review_media_valid": True,
+            "allocation_still_owned": True,
+            "teardown_requested": False,
+        },
+    )
+
+    class CheckpointAwareProvider(FakeProvider):
+        first_inventory_saw_checkpoint = False
+
+        def inventory(self, allocation_key):
+            if not self.calls:
+                persisted = json.loads((tmp_path / "campaign_state.json").read_text())
+                self.first_inventory_saw_checkpoint = persisted["allocation_id"] == "vm-1"
+            return super().inventory(allocation_key)
+
+    provider = CheckpointAwareProvider(live=[{"allocation_id": "vm-1"}])
+    result = CampaignMachine(
+        config=cfg,
+        adapter=provider,
+        state_dir=tmp_path,
+        wall_clock=lambda: 1001.0,
+    ).run()
+
+    assert result["status"] == "completed"
+    assert provider.first_inventory_saw_checkpoint is True
+
+
 def test_same_allocation_canary_blocks_if_handoff_is_not_in_inventory(tmp_path):
     cfg = config(
         reuse_validated_same_allocation_canary=True,
@@ -555,7 +595,12 @@ def test_same_allocation_canary_blocks_if_handoff_is_not_in_inventory(tmp_path):
         },
     )
     provider = FakeProvider()
-    result = CampaignMachine(config=cfg, adapter=provider, state_dir=tmp_path).run()
+    result = CampaignMachine(
+        config=cfg,
+        adapter=provider,
+        state_dir=tmp_path,
+        wall_clock=lambda: 1001.0,
+    ).run()
     assert result["status"] == "blocked"
     assert "same_allocation_handoff_inventory_mismatch" in result["blockers"]
     assert not any(call[0] == "allocate" for call in provider.calls)

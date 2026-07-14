@@ -700,7 +700,6 @@ class CampaignMachine:
             return state
         try:
             if not state.get("allocation_id"):
-                inventory = list(self.adapter.inventory(self.config.allocation_key))
                 if self.config.reuse_validated_same_allocation_canary:
                     handoff = self.config.canary_handoff or {}
                     allocation_id = str(handoff.get("allocation_id") or "").strip()
@@ -722,6 +721,13 @@ class CampaignMachine:
                     state["allocation_mutation_pending"] = False
                     state["provider_started_at_epoch_seconds"] = provider_started_at
                     self._checkpoint(state, "allocation", allocation)
+                    inventory = list(
+                        self._call_with_deadline(
+                            self._authorized_stage_deadline_seconds(state, "host_ready"),
+                            self.adapter.inventory,
+                            self.config.allocation_key,
+                        )
+                    )
                     inventory_ids = {
                         str(item.get("allocation_id") or item.get("id") or "").strip()
                         for item in inventory
@@ -729,6 +735,7 @@ class CampaignMachine:
                     if inventory_ids != {allocation_id}:
                         raise CampaignBlocked("same_allocation_handoff_inventory_mismatch")
                 else:
+                    inventory = list(self.adapter.inventory(self.config.allocation_key))
                     if inventory:
                         raise CampaignBlocked("duplicate_paid_allocation_detected")
                     # Record the conservative lifetime baseline before the paid
