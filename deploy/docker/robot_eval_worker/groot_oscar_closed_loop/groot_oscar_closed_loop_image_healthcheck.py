@@ -38,6 +38,12 @@ G1_USD = os.environ.get(
     "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd",
 )
 WBC_ROOT = os.environ.get("BLUEPRINT_GEAR_SONIC_ROOT", "/opt/wbc")
+GEAR_SONIC_CHECKPOINT_REPO = os.environ.get(
+    "GEAR_SONIC_CHECKPOINT_REPO", "nvidia/GEAR-SONIC"
+)
+GEAR_SONIC_CHECKPOINT_REVISION = os.environ.get(
+    "GEAR_SONIC_CHECKPOINT_REVISION", ""
+)
 COSMOS_BACKBONE_REPO = os.environ.get(
     "COSMOS_BACKBONE_REPO", "nvidia/Cosmos-Reason2-2B"
 )
@@ -221,9 +227,28 @@ def main() -> int:
     if not g1_exists:
         blockers.append("configured_g1_usd_missing")
     wbc_root = Path(WBC_ROOT)
-    wbc_model = wbc_root / "gear_sonic_deploy/g1/g1_29dof_with_hand.xml"
-    wbc_deploy = wbc_root / "gear_sonic_deploy/deploy.sh"
-    if not wbc_model.is_file() or not wbc_deploy.is_file():
+    required_wbc_assets = {
+        "robot_model": wbc_root / "gear_sonic_deploy/g1/g1_29dof_with_hand.xml",
+        "deploy_script": wbc_root / "gear_sonic_deploy/deploy.sh",
+        "policy_encoder": wbc_root
+        / "gear_sonic_deploy/policy/release/model_encoder.onnx",
+        "policy_decoder": wbc_root
+        / "gear_sonic_deploy/policy/release/model_decoder.onnx",
+        "observation_config": wbc_root
+        / "gear_sonic_deploy/policy/release/observation_config.yaml",
+        "planner": wbc_root
+        / "gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx",
+    }
+    wbc_asset_checks = {
+        label: path.is_file() and path.stat().st_size > 0
+        for label, path in required_wbc_assets.items()
+    }
+    payload["gear_sonic_checkpoint_repo"] = GEAR_SONIC_CHECKPOINT_REPO
+    payload["gear_sonic_checkpoint_revision"] = GEAR_SONIC_CHECKPOINT_REVISION
+    payload["gear_sonic_deployment_assets"] = wbc_asset_checks
+    if not GEAR_SONIC_CHECKPOINT_REVISION:
+        blockers.append("gear_sonic_checkpoint_revision_missing")
+    if not all(wbc_asset_checks.values()):
         blockers.append("official_gear_sonic_deployment_assets_missing")
     wbc_build = wbc_root / "gear_sonic_deploy/build"
     payload["gear_sonic_build_tree_writable"] = _dir_writable_by_current_user(wbc_build)
@@ -243,6 +268,33 @@ def main() -> int:
         if proc.returncode != 0:
             payload["groot_import_stderr_tail"] = proc.stderr[-500:]
             blockers.append("groot_policy_not_importable")
+
+        processor_proc = subprocess.run(
+            [
+                GROOT_VENV_PYTHON,
+                "-c",
+                (
+                    "import json; from pathlib import Path; "
+                    "from transformers import Qwen3VLProcessor; "
+                    f"cfg=json.loads(Path({SONIC_CHECKPOINT!r}, 'config.json').read_text()); "
+                    "p=Path(cfg['model_name']); "
+                    "assert p.is_absolute() and p.is_dir(); "
+                    "Qwen3VLProcessor.from_pretrained(str(p), local_files_only=True); "
+                    "print('BLUEPRINT_OFFLINE_COSMOS_PROCESSOR_OK')"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
+        )
+        payload["groot_nested_processor_offline_constructible"] = (
+            processor_proc.returncode == 0
+        )
+        if processor_proc.returncode != 0:
+            payload["groot_nested_processor_stderr_tail"] = processor_proc.stderr[-1000:]
+            blockers.append("groot_nested_processor_not_offline_constructible")
     else:
         payload["groot_policy_importable"] = False
         blockers.append("groot_venv_python_missing")
@@ -309,7 +361,7 @@ def main() -> int:
         isaac_imported=isaac_imported,
         g1_exists=g1_exists,
         asset_binding_valid=asset_binding_valid,
-        official_assets_exist=wbc_model.is_file() and wbc_deploy.is_file(),
+        official_assets_exist=all(wbc_asset_checks.values()),
         source_commit=source_commit,
         dirty_patch=dirty_patch,
     )

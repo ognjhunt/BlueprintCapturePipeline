@@ -69,6 +69,7 @@ OSCAR_REPO_ENV = "BLUEPRINT_GROOT_OSCAR_OSCAR_REPO"
 OSCAR_CHECKPOINT_ENV = "BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT"
 GROOT_ROOT_ENV = "BLUEPRINT_GROOT_OSCAR_GROOT_ROOT"
 SONIC_CHECKPOINT_ENV = "BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT"
+UNITREE_G1_USD_ENV = "BLUEPRINT_ISAAC_UNITREE_G1_USD"
 
 DEFAULT_OSCAR_REPO = "/opt/OSCAR"
 DEFAULT_OSCAR_CHECKPOINT = "/opt/blueprint/ckpts/oscar"
@@ -76,6 +77,7 @@ DEFAULT_GROOT_ROOT = "/opt/gr00t"
 DEFAULT_SONIC_CHECKPOINT = "/opt/blueprint/ckpts/sonic"
 DEFAULT_GROOT_VENV = "/opt/gr00t-venv"
 DEFAULT_WBC_ROOT = "/opt/wbc"
+DEFAULT_UNITREE_G1_USD = "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd"
 DEFAULT_OSCAR_VENV_PYTHON = "/opt/oscar-venv/bin/python"
 
 POLICY_SERVER_PORT = 5550
@@ -196,6 +198,7 @@ def sealed_image_contract(env: Mapping[str, str] | None = None) -> dict[str, Any
         "groot_root": _string(env.get(GROOT_ROOT_ENV)) or DEFAULT_GROOT_ROOT,
         "groot_venv": DEFAULT_GROOT_VENV,
         "sonic_checkpoint": _string(env.get(SONIC_CHECKPOINT_ENV)) or DEFAULT_SONIC_CHECKPOINT,
+        "unitree_g1_usd": _string(env.get(UNITREE_G1_USD_ENV)) or DEFAULT_UNITREE_G1_USD,
         "policy_server_url": POLICY_SERVER_URL,
         "policy_server_port": POLICY_SERVER_PORT,
         "oscar_hf_revision": OFFICIAL_OSCAR_HF_REVISION,
@@ -338,6 +341,10 @@ def build_sealed_launch_plan(
         "blueprint_pipeline.isaac_persistent_task_executor_service",
         "--stage",
         kitchen_stage_path,
+        "--g1-usd",
+        contract["unitree_g1_usd"],
+        "--route-file",
+        route_file,
         "--attempt-input-manifest",
         attempt_input_manifest_path,
         "--initial-state-output",
