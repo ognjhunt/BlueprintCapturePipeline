@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -138,6 +139,11 @@ def _read_secret(path: Path) -> str:
 def _request(
     *, token: str, method: str, path: str, payload: Mapping[str, Any] | None = None
 ) -> tuple[int, dict[str, Any]]:
+    parsed_path = urllib.parse.urlsplit(path)
+    if not path.startswith("/") or parsed_path.scheme or parsed_path.netloc or parsed_path.fragment:
+        raise ValueError("digitalocean_api_path_must_be_relative")
+    if method not in {"DELETE", "GET", "POST"}:
+        raise ValueError("digitalocean_api_method_not_allowed")
     body = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
         DO_API + path,
@@ -149,7 +155,8 @@ def _request(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        # URL is bound above to the constant DigitalOcean API origin.
+        with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310
             raw = response.read()
             parsed = json.loads(raw) if raw else {}
             return int(response.status), parsed if isinstance(parsed, dict) else {}

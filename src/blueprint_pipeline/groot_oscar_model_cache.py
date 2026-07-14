@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ GEAR_FILES = (
     "observation_config.yaml",
     "planner_sonic.onnx",
 )
+_IMMUTABLE_HF_REVISION = re.compile(r"[0-9a-f]{40}")
 
 
 def _sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -181,10 +183,18 @@ def activate_model_cache(root: Path) -> dict[str, Any]:
         return verification
     root = root.expanduser().resolve()
     links = {
-        root / "gear_sonic/model_encoder.onnx": Path("/opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx"),
-        root / "gear_sonic/model_decoder.onnx": Path("/opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx"),
-        root / "gear_sonic/observation_config.yaml": Path("/opt/wbc/gear_sonic_deploy/policy/release/observation_config.yaml"),
-        root / "gear_sonic/planner_sonic.onnx": Path("/opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"),
+        root / "gear_sonic/model_encoder.onnx": Path(
+            "/opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx"
+        ),
+        root / "gear_sonic/model_decoder.onnx": Path(
+            "/opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx"
+        ),
+        root / "gear_sonic/observation_config.yaml": Path(
+            "/opt/wbc/gear_sonic_deploy/policy/release/observation_config.yaml"
+        ),
+        root / "gear_sonic/planner_sonic.onnx": Path(
+            "/opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"
+        ),
     }
     for source, destination in links.items():
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -205,29 +215,49 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
     root = root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     pins = {name: (repo, revision) for name, repo, revision in MODEL_PINS}
-    snapshot_download(
-        repo_id=pins["sonic"][0], revision=pins["sonic"][1],
-        local_dir=str(root / "sonic"),
-        ignore_patterns=["checkpoint-*", "checkpoint-*/*"], token=token,
+    invalid_pins = sorted(
+        name
+        for name, (_, revision) in pins.items()
+        if _IMMUTABLE_HF_REVISION.fullmatch(revision) is None
     )
-    cosmos_source = Path(snapshot_download(
-        repo_id=pins["cosmos"][0], revision=pins["cosmos"][1], token=token,
-    ))
+    if invalid_pins:
+        raise RuntimeError("model_cache_revisions_must_be_commit_shas:" + ",".join(invalid_pins))
+    # Each revision is validated as an immutable commit SHA above.
+    snapshot_download(  # nosec B615
+        repo_id=pins["sonic"][0],
+        revision=pins["sonic"][1],
+        local_dir=str(root / "sonic"),
+        ignore_patterns=["checkpoint-*", "checkpoint-*/*"],
+        token=token,
+    )
+    cosmos_source = Path(
+        snapshot_download(  # nosec B615
+            repo_id=pins["cosmos"][0],
+            revision=pins["cosmos"][1],
+            token=token,
+        )
+    )
     cosmos = root / "cosmos"
     if cosmos.exists():
         shutil.rmtree(cosmos)
     shutil.copytree(cosmos_source, cosmos, symlinks=False)
-    snapshot_download(
-        repo_id=pins["oscar"][0], revision=pins["oscar"][1],
-        local_dir=str(root / "oscar"), token=token,
+    snapshot_download(  # nosec B615
+        repo_id=pins["oscar"][0],
+        revision=pins["oscar"][1],
+        local_dir=str(root / "oscar"),
+        token=token,
     )
     gear = root / "gear_sonic"
     gear.mkdir(parents=True, exist_ok=True)
     for filename in GEAR_FILES:
-        source = Path(hf_hub_download(
-            repo_id=pins["gear_sonic"][0], revision=pins["gear_sonic"][1],
-            filename=filename, token=token,
-        ))
+        source = Path(
+            hf_hub_download(  # nosec B615
+                repo_id=pins["gear_sonic"][0],
+                revision=pins["gear_sonic"][1],
+                filename=filename,
+                token=token,
+            )
+        )
         shutil.copyfile(source, gear / filename)
 
     sonic_config_path = root / "sonic" / "config.json"
@@ -255,7 +285,12 @@ def _token_from_file(path: str) -> str | None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "verify", "manifest", "activate"))
-    parser.add_argument("--root", default=os.environ.get("BLUEPRINT_GROOT_OSCAR_MODEL_CACHE", "/models/blueprint-groot-oscar-v1"))
+    parser.add_argument(
+        "--root",
+        default=os.environ.get(
+            "BLUEPRINT_GROOT_OSCAR_MODEL_CACHE", "/models/blueprint-groot-oscar-v1"
+        ),
+    )
     parser.add_argument("--manifest")
     parser.add_argument("--token-file", default=os.environ.get("HF_TOKEN_FILE", ""))
     parser.add_argument("--out")
