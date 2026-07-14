@@ -450,6 +450,9 @@ def test_wbc_compiler_toolchain_is_confined_to_disposable_builder_stage():
     assert "scripts/install_deps.sh" not in runtime
     assert "libnvinfer-dev=${TENSORRT_VERSION}" not in runtime
     assert "COPY --from=gear_sonic_builder" in runtime
+    assert "COPY --from=gear_sonic_builder /opt/wbc/gear_sonic /opt/wbc/gear_sonic" in runtime
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in runtime
+    assert "from gear_sonic.utils.teleop.zmq.zmq_planner_sender import" in runtime
     assert "/opt/wbc/.blueprint-source-revision" in builder
     assert "COPY --from=gear_sonic_builder /opt/wbc/.blueprint-source-revision" in runtime
     assert 'cat /opt/wbc/.blueprint-source-revision' in runtime

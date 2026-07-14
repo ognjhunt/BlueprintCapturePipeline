@@ -97,7 +97,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTORCH_ALLOC_CONF=expandable_segments:True \
     HF_HOME=/opt/blueprint/hf_home \
     BLUEPRINT_OSCAR_WAM_HF_REVISION=c9781ffa7dd8556d862d7d9f338a2ea008a58ca6 \
-    PYTHONPATH=/opt/OSCAR \
+    PYTHONPATH=/opt/wbc:/opt/OSCAR \
     BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR \
     BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT=/opt/blueprint/ckpts/oscar \
     BLUEPRINT_GROOT_OSCAR_GROOT_ROOT=/opt/gr00t \
@@ -180,6 +180,7 @@ RUN groupadd --gid "${APP_GID}" blueprint \
 # Copy only the compiled GEAR runtime closure from the disposable builder. Do
 # not copy nvcc, CUDA headers/static archives, apt state, or WBC git objects.
 COPY --from=gear_sonic_builder /opt/wbc/gear_sonic_deploy /opt/wbc/gear_sonic_deploy
+COPY --from=gear_sonic_builder /opt/wbc/gear_sonic /opt/wbc/gear_sonic
 COPY --from=gear_sonic_builder /opt/wbc/.blueprint-source-revision /opt/wbc/.blueprint-source-revision
 COPY --from=gear_sonic_builder /opt/onnxruntime /opt/onnxruntime
 COPY --from=gear_sonic_builder /usr/local/bin/just /usr/local/bin/just
@@ -204,6 +205,7 @@ RUN python3 -m pip install --break-system-packages uv \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install "nvidia-cudnn-cu12>=9.10" \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install -e /opt/blueprint/blueprint-capture-pipeline \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install -r /opt/blueprint/requirements_groot_oscar_main_env.txt \
+  && /opt/oscar-venv/bin/python -c "from gear_sonic.utils.teleop.zmq.zmq_planner_sender import build_command_message, pack_pose_message; assert callable(build_command_message) and callable(pack_pose_message)" \
   && /isaac-sim/python.sh -m pip install --no-deps -e /opt/blueprint/blueprint-capture-pipeline \
   && /isaac-sim/python.sh -m pip install pillow cryptography
 

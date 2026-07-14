@@ -166,6 +166,30 @@ def test_full_run_checkpoints_and_tears_down(tmp_path):
     assert manifest["config_sha256"]
 
 
+def test_allocation_rpc_is_bounded_by_paid_lifetime(tmp_path, monkeypatch):
+    observed: list[tuple[float, str]] = []
+    original = CampaignMachine._call_with_deadline
+
+    def record_deadline(timeout_seconds, operation, *args):
+        observed.append((timeout_seconds, operation.__name__))
+        return original(timeout_seconds, operation, *args)
+
+    monkeypatch.setattr(
+        CampaignMachine,
+        "_call_with_deadline",
+        staticmethod(record_deadline),
+    )
+    result = CampaignMachine(
+        config=config(max_provider_seconds=123),
+        adapter=FakeProvider(),
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    ).run()
+
+    assert result["status"] == "completed"
+    assert (123.0, "allocate") in observed
+
+
 def test_smoke_failure_blocks_episodes_and_still_tears_down(tmp_path):
     provider = FakeProvider(fail_stage="smoke")
     result = CampaignMachine(

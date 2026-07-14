@@ -721,7 +721,13 @@ class CampaignMachine:
                     provider_started_at = float(self.wall_clock())
                     state["allocation_mutation_pending"] = True
                     self._write(self.state_path, state)
-                    allocation = dict(self.adapter.allocate(self.config.payload()))
+                    allocation = dict(
+                        self._call_with_deadline(
+                            float(self.config.max_provider_seconds),
+                            self.adapter.allocate,
+                            self.config.payload(),
+                        )
+                    )
                     allocation_id = str(
                         allocation.get("allocation_id") or allocation.get("id") or ""
                     ).strip()
