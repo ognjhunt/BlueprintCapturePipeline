@@ -1513,7 +1513,6 @@ def _await_warm_serve_ready(
                     except Exception:  # noqa: BLE001
                         bootstrap_detail = {}
                         bootstrap_session = ""
-                        pass
                 if "warm_serve_ready.json" in names:
                     detail = {}
                     try:

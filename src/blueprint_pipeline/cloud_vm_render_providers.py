@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -419,7 +420,9 @@ class GCPRenderProvider(GpuRenderProvider):
             metric_id = str(quota_metric)
             if not metric_id.startswith("compute.googleapis.com/"):
                 metric_id = "compute.googleapis.com/" + metric_id.lower()
-            encoded_metric = metric_id.replace("/", "%2F")
+            # Quote the complete path component. Replacing only slashes leaves
+            # other URL metacharacters available to alter the request target.
+            encoded_metric = urllib.parse.quote(metric_id, safe="")
             service_usage_http, metric_payload = self._service_usage_call(
                 f"/projects/{project}/services/compute.googleapis.com/"
                 f"consumerQuotaMetrics/{encoded_metric}?view=FULL"

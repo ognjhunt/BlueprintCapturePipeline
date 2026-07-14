@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -146,7 +147,7 @@ def test_complete_campaign_has_four_terminal_attempts_and_honest_status(tmp_path
 def test_customer_path_has_no_provider_dependency():
     import blueprint_pipeline.production_gpu_campaign_control_plane as module
 
-    source = open(module.__file__, encoding="utf-8").read()
+    source = Path(module.__file__).read_text(encoding="utf-8")
     assert "gpu_render_providers" not in source
     assert "runpod_provider_adapter" not in source
     assert "boto3" not in source
