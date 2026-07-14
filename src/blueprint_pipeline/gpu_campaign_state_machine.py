@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import fcntl
+import queue
 import re
 import signal
 import threading
@@ -447,7 +448,27 @@ class CampaignMachine:
         if timeout_seconds <= 0:
             raise CampaignBlocked("campaign_teardown_deadline_exceeded")
         if threading.current_thread() is not threading.main_thread():
-            raise CampaignBlocked("campaign_teardown_deadline_requires_main_thread")
+            # Signal timers are restricted to Python's main thread. Controllers
+            # hosted by a service still need bounded teardown, so isolate the
+            # provider call in a daemon thread. A late delete remains safe and
+            # useful; the controller returns blocked/ambiguous at the deadline.
+            outcome: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+            def invoke() -> None:
+                try:
+                    outcome.put(("result", operation(*args)))
+                except BaseException as exc:
+                    outcome.put(("error", exc))
+
+            worker = threading.Thread(target=invoke, daemon=True)
+            worker.start()
+            worker.join(timeout_seconds)
+            if worker.is_alive():
+                raise CampaignBlocked("campaign_teardown_deadline_exceeded")
+            kind, value = outcome.get_nowait()
+            if kind == "error":
+                raise value
+            return value
         previous_handler = signal.getsignal(signal.SIGALRM)
         previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
         started = time.monotonic()

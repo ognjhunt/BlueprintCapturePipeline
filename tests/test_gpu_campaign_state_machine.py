@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import threading
 import time
 
 import pytest
@@ -243,6 +244,22 @@ def test_teardown_ambiguity_remains_blocked(tmp_path):
 def test_teardown_call_is_actually_interrupted_at_deadline():
     with pytest.raises(CampaignBlocked, match="teardown_deadline_exceeded"):
         CampaignMachine._call_with_deadline(0.01, time.sleep, 0.2)
+
+
+def test_teardown_deadline_is_bounded_off_main_thread():
+    outcome = []
+
+    def invoke():
+        try:
+            CampaignMachine._call_with_deadline(0.01, time.sleep, 0.2)
+        except CampaignBlocked as exc:
+            outcome.append(str(exc))
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    worker.join(0.2)
+    assert not worker.is_alive()
+    assert outcome == ["campaign_teardown_deadline_exceeded"]
 
 
 def test_teardown_timeout_is_checkpointed_as_billing_ambiguous(tmp_path, monkeypatch):
