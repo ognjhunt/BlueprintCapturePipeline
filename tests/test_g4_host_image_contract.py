@@ -9,6 +9,10 @@ def test_packer_host_is_date_pinned_and_preloads_only_exact_worker_closure():
     install = (ROOT / "install-pinned-host.sh").read_text()
     assert "source_image" in template
     assert "source_image_family" not in template
+    assert "[a-z0-9-]+-v[0-9]{8}" in template
+    assert 'source_image_project_id = ["ubuntu-os-cloud"]' in template
+    assert 'scopes                  = ["https://www.googleapis.com/auth/cloud-platform"]' in template
+    assert 'blueprint-managed = "true"' in template
     assert "nvidia_driver_sha256" in template
     assert "nvidia_container_toolkit_version" in template
     assert 'default = "1.19.1-1"' in template
