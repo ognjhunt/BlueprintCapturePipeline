@@ -1,3 +1,6 @@
+import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -9,6 +12,7 @@ from blueprint_pipeline.groot_oscar_runpod_model_volume import (
     _matching_resources,
     build_model_volume_admission,
     launch_detached,
+    watchdog,
 )
 from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
@@ -161,3 +165,38 @@ def test_model_volume_detached_launch_is_single_supervisor(
     assert launched["status"] == "supervisor_started"
     with pytest.raises(ValueError, match="already_has_supervisor"):
         launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])
+
+
+def test_model_volume_watchdog_emits_nonce_bound_armed_handoff(tmp_path: Path) -> None:
+    state = tmp_path / "watchdog_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "deadline_epoch": time.time() + 120,
+                "pod_name_prefix": "blueprint-groot-oscar-canary-model-test",
+                "volume_name": "blueprint-groot-oscar-models-test",
+                "watchdog_nonce": "nonce-for-test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "watchdog_handoff.json").write_text("{}", encoding="utf-8")
+    assert watchdog(state_path=state) == 0
+    armed = json.loads((tmp_path / "watchdog_armed.json").read_text())
+    assert armed["status"] == "armed"
+    assert armed["pid"] == os.getpid()
+    assert armed["watchdog_nonce"] == "nonce-for-test"
+
+
+def test_model_volume_requires_armed_handoff_before_paid_admission() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+    ).read_text(encoding="utf-8")
+    run_source = source[
+        source.index("def run_model_volume(") : source.index("def launch_detached(")
+    ]
+    assert run_source.index('armed_path = output / "watchdog_armed.json"') < run_source.index(
+        "require_paid_resource_admission("
+    )
+    assert "watchdog_armed_before_allocation=watchdog_armed" in run_source

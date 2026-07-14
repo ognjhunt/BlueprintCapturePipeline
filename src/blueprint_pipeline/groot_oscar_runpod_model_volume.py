@@ -212,6 +212,19 @@ def watchdog(*, state_path: Path) -> int:
     state = json.loads(state_path.read_text(encoding="utf-8"))
     root = state_path.parent
     deadline = float(state["deadline_epoch"])
+    write_json(
+        root / "watchdog_armed.json",
+        {
+            "schema_version": WATCHDOG_SCHEMA_VERSION,
+            "status": "armed",
+            "pid": os.getpid(),
+            "deadline_epoch": deadline,
+            "pod_name_prefix": state.get("pod_name_prefix"),
+            "volume_name": state.get("volume_name"),
+            "watchdog_nonce": state.get("watchdog_nonce"),
+            "raw_secret_values_recorded": False,
+        },
+    )
     handoff = root / "watchdog_handoff.json"
     while time.time() < deadline:
         if handoff.is_file():
@@ -371,6 +384,7 @@ def run_model_volume(
         in (selected.get("capacity_allowed_cuda_versions") or [])
     )
     deadline = time.time() + hard_ttl_seconds
+    watchdog_nonce = secrets.token_hex(16)
     state_path = output / "watchdog_state.json"
     write_json(
         state_path,
@@ -378,24 +392,56 @@ def run_model_volume(
             "deadline_epoch": deadline,
             "pod_name_prefix": pod_prefix,
             "volume_name": volume_name,
+            "watchdog_nonce": watchdog_nonce,
         },
     )
-    with (output / "watchdog.log").open("ab") as log:
-        watch = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "blueprint_pipeline.groot_oscar_runpod_model_volume",
-                "watchdog",
-                "--state",
-                str(state_path),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    (output / "watchdog.pid").write_text(f"{watch.pid}\n", encoding="utf-8")
+    watchdog_armed = False
+    stale_watchdog_state = any(
+        (output / name).exists()
+        for name in ("watchdog_armed.json", "watchdog_handoff.json", "watchdog.pid")
+    )
+    if not stale_watchdog_state:
+        try:
+            with (output / "watchdog.log").open("ab") as log:
+                watch = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+                        "watchdog",
+                        "--state",
+                        str(state_path),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            (output / "watchdog.pid").write_text(f"{watch.pid}\n", encoding="utf-8")
+            armed_path = output / "watchdog_armed.json"
+            watchdog_start_deadline = time.time() + 10
+            while time.time() < watchdog_start_deadline:
+                if armed_path.is_file() and watch.poll() is None:
+                    try:
+                        armed = json.loads(armed_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        armed = {}
+                    watchdog_armed = bool(
+                        isinstance(armed, Mapping)
+                        and armed.get("schema_version") == WATCHDOG_SCHEMA_VERSION
+                        and armed.get("status") == "armed"
+                        and armed.get("pid") == watch.pid
+                        and armed.get("watchdog_nonce") == watchdog_nonce
+                        and armed.get("pod_name_prefix") == pod_prefix
+                        and armed.get("volume_name") == volume_name
+                    )
+                    if watchdog_armed:
+                        break
+                if watch.poll() is not None:
+                    break
+                time.sleep(0.05)
+        except Exception:  # noqa: BLE001 - admission remains blocked without handoff
+            watchdog_armed = False
     admission = build_model_volume_admission(
         release_image_ref=release_image_ref,
         data_center_id=data_center_id,
@@ -411,7 +457,7 @@ def run_model_volume(
             inventory_verified and not existing_pods and not existing_volumes
         ),
         paid_mutation_authorized=allow_paid,
-        watchdog_armed_before_allocation=watch.poll() is None,
+        watchdog_armed_before_allocation=watchdog_armed,
     )
     write_json(output / "model_volume_admission.json", admission)
     try:
