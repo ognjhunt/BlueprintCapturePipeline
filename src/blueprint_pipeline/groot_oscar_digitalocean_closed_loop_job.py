@@ -6,7 +6,6 @@ proof rows; a structurally completed worker result closes none by itself.
 from __future__ import annotations
 
 import json
-import math
 import shlex
 import time
 import uuid
@@ -21,7 +20,7 @@ from .groot_oscar_digitalocean_job_inputs import (
     _b64_bytes,
     _b64_text,
     _episode_length_contract,
-    _int_or_none,
+    _float_or_none, _int_or_none,
     _json_b64,
     _mapping,
     _read_json_mapping,
@@ -31,6 +30,7 @@ from .groot_oscar_digitalocean_job_inputs import (
     _write_job_manifest,
     build_digitalocean_job_parser,
     runtime_contract_for_pre_spend,
+    validate_persistent_isaac_route_start_pose,
 )
 from .gpu_render_providers import (
     DEFAULT_DO_GPU_SIZE,
@@ -343,13 +343,6 @@ def _resolve_resume_path(value: Any, prepared_dir: Path) -> Path:
     if path.is_absolute() or path.exists():
         return path
     return prepared_dir / path
-
-
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(str(value))
-    except (TypeError, ValueError):
-        return None
 
 
 def _seed_provenance_from_resume(
@@ -2116,24 +2109,11 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     if not isinstance(route_payload, Mapping):
         manifest["blockers"].append("route_file_must_contain_json_object")
         return _write_job_manifest(out, manifest)
-    route_points = list(route_payload.get("route_points") or [])
-    try:
-        start_pose = [float(value) for value in route_points[0]]
-        start_yaw = float(route_payload.get("accepted_stance_yaw_rad"))
-    except (IndexError, TypeError, ValueError):
-        manifest["blockers"].append("persistent_isaac_route_start_pose_invalid")
+    robot_start_pose = validate_persistent_isaac_route_start_pose(route_payload)
+    if robot_start_pose["blockers"]:
+        manifest["blockers"].extend(robot_start_pose["blockers"])
         return _write_job_manifest(out, manifest)
-    if len(start_pose) != 3 or not all(
-        math.isfinite(value) for value in [*start_pose, start_yaw]
-    ):
-        manifest["blockers"].append("persistent_isaac_route_start_pose_invalid")
-        return _write_job_manifest(out, manifest)
-    manifest["persistent_isaac_robot_start_pose"] = {
-        "status": "passed",
-        "xyz": start_pose,
-        "yaw_rad": start_yaw,
-        "validated_before_paid_provider_mutation": True,
-    }
+    manifest["persistent_isaac_robot_start_pose"] = robot_start_pose
     attempt_input = (
         _read_json_mapping(attempt_input_manifest_file)
         if attempt_input_manifest_file is not None
