@@ -363,8 +363,15 @@ class CampaignMachine:
     def _teardown(self, state: dict[str, Any]) -> None:
         allocation_id = str(state.get("allocation_id") or "")
         if not allocation_id:
-            state["teardown"] = {"status": "not_required", "billing_stopped": True}
-            state["final_inventory"] = list(self.adapter.inventory(self.config.allocation_key))
+            final_inventory = list(self.adapter.inventory(self.config.allocation_key))
+            state["teardown"] = {
+                "status": "not_required" if not final_inventory else "blocked",
+                "billing_stopped": not final_inventory,
+                "teardown_owner": self.teardown_owner,
+            }
+            state["final_inventory"] = final_inventory
+            if final_inventory and "provider_final_inventory_not_zero" not in state["blockers"]:
+                state["blockers"].append("provider_final_inventory_not_zero")
             self._write(self.state_path, state)
             return
         teardown = dict(self.adapter.terminate(allocation_id))
@@ -407,7 +414,23 @@ class CampaignMachine:
         if blockers:
             raise CampaignBlocked(",".join(blockers))
         state, _ = self._load()
-        if state.get("status") in {"completed", "blocked"}:
+        if state.get("status") == "completed":
+            return state
+        if state.get("status") == "blocked":
+            teardown = state.get("teardown") or {}
+            if teardown.get("status") in {"passed", "not_required"}:
+                return state
+            try:
+                self._teardown(state)
+            except Exception as exc:
+                state["teardown"] = {
+                    "status": "blocked",
+                    "billing_stopped": False,
+                    "teardown_owner": self.teardown_owner,
+                    "exception": f"{type(exc).__name__}:{exc}",
+                }
+                state["final_inventory"] = None
+            self._write(self.state_path, state)
             return state
         started = self.clock()
         try:
@@ -486,7 +509,7 @@ class CampaignMachine:
                 self._checkpoint(state, stage, result)
                 if self.clock() - started > self.config.max_provider_seconds:
                     raise CampaignBlocked("campaign_provider_lifetime_exceeded")
-            state["status"] = "completed"
+            state["status"] = "teardown_pending"
         except Exception as exc:  # fail closed, including provider ambiguity
             state["status"] = "blocked"
             blocker = (
@@ -496,8 +519,22 @@ class CampaignMachine:
                 state["blockers"].append(blocker)
         finally:
             self._write(self.state_path, state)
-            self._teardown(state)
-            if state["teardown"]["status"] != "passed":
+            try:
+                self._teardown(state)
+            except Exception as exc:
+                blocker = f"provider_teardown_exception:{type(exc).__name__}:{exc}"
+                if blocker not in state["blockers"]:
+                    state["blockers"].append(blocker)
+                state["teardown"] = {
+                    "status": "blocked",
+                    "billing_stopped": False,
+                    "teardown_owner": self.teardown_owner,
+                    "exception": f"{type(exc).__name__}:{exc}",
+                }
+                state["final_inventory"] = None
+            if state["teardown"]["status"] == "passed" and state["status"] == "teardown_pending":
+                state["status"] = "completed"
+            elif state["teardown"]["status"] != "passed":
                 state["status"] = "blocked"
             self._write(self.state_path, state)
         return state

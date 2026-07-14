@@ -153,6 +153,16 @@ def test_executor_rejects_unpinned_installed_controller_revision(wbc_env) -> Non
         )
 
 
+def test_sealed_revision_marker_replaces_runtime_git_history(wbc_env) -> None:
+    root, _ = wbc_env
+    marker = root / executor.SEALED_REVISION_FILE
+    marker.write_text(contract.PINNED_WBC_SOURCE_REVISION + "\n", encoding="utf-8")
+    assert executor._pinned_controller_revision(root) == contract.PINNED_WBC_SOURCE_REVISION
+    marker.write_text("0" * 40 + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="controller_revision_mismatch"):
+        executor._pinned_controller_revision(root)
+
+
 def test_executor_validates_live_isaac_articulation_joints(wbc_env) -> None:
     action = {"sonic_action_chunk": [0.0] * 78}
 

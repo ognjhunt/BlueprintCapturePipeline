@@ -38,6 +38,7 @@ G1_USD = os.environ.get(
     "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd",
 )
 WBC_ROOT = os.environ.get("BLUEPRINT_GEAR_SONIC_ROOT", "/opt/wbc")
+WBC_SOURCE_REVISION = os.environ.get("BLUEPRINT_GEAR_SONIC_SOURCE_REVISION", "")
 GEAR_SONIC_CHECKPOINT_REPO = os.environ.get(
     "GEAR_SONIC_CHECKPOINT_REPO", "nvidia/GEAR-SONIC"
 )
@@ -246,7 +247,17 @@ def main() -> int:
     }
     payload["gear_sonic_checkpoint_repo"] = GEAR_SONIC_CHECKPOINT_REPO
     payload["gear_sonic_checkpoint_revision"] = GEAR_SONIC_CHECKPOINT_REVISION
+    revision_marker = wbc_root / ".blueprint-source-revision"
+    sealed_wbc_revision = (
+        revision_marker.read_text(encoding="utf-8").strip().lower()
+        if revision_marker.is_file()
+        else ""
+    )
+    payload["gear_sonic_source_revision"] = sealed_wbc_revision
+    payload["gear_sonic_source_revision_marker"] = str(revision_marker)
     payload["gear_sonic_deployment_assets"] = wbc_asset_checks
+    if not WBC_SOURCE_REVISION or sealed_wbc_revision != WBC_SOURCE_REVISION.lower():
+        blockers.append("official_gear_sonic_source_revision_mismatch")
     if not GEAR_SONIC_CHECKPOINT_REVISION:
         blockers.append("gear_sonic_checkpoint_revision_missing")
     if not all(wbc_asset_checks.values()):

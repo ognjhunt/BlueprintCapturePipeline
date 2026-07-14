@@ -181,6 +181,9 @@ def test_duplicate_allocation_is_refused_before_mutation(tmp_path):
     ).run()
     assert result["status"] == "blocked"
     assert "duplicate_paid_allocation_detected" in result["blockers"]
+    assert result["teardown"]["status"] == "blocked"
+    assert result["teardown"]["billing_stopped"] is False
+    assert "provider_final_inventory_not_zero" in result["blockers"]
     assert not any(call[0] == "allocate" for call in provider.calls)
 
 
@@ -202,6 +205,35 @@ def test_teardown_ambiguity_remains_blocked(tmp_path):
     ).run()
     assert result["status"] == "blocked"
     assert "provider_teardown_ambiguous" in result["blockers"]
+
+
+def test_teardown_exception_never_persists_false_completion_and_is_retried(tmp_path):
+    class RaisingTeardownProvider(FakeProvider):
+        should_raise = True
+
+        def terminate(self, allocation_id):
+            self.calls.append(("terminate", allocation_id))
+            if self.should_raise:
+                raise ConnectionError("provider_api_disconnected")
+            self.live = []
+            return {"status": "delete_requested"}
+
+    provider = RaisingTeardownProvider()
+    machine = CampaignMachine(
+        config=config(), adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    )
+    first = machine.run()
+    assert first["status"] == "blocked"
+    assert first["teardown"]["status"] == "blocked"
+    assert first["teardown"]["billing_stopped"] is False
+    provider.should_raise = False
+    retried = CampaignMachine(
+        config=config(), adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    ).run()
+    assert retried["status"] == "blocked"
+    assert retried["teardown"]["status"] == "passed"
+    assert retried["teardown"]["billing_stopped"] is True
+    assert provider.calls.count(("terminate", "vm-1")) == 2
 
 
 def test_resume_rejects_different_teardown_owner(tmp_path):

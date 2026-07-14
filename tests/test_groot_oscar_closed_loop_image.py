@@ -450,6 +450,10 @@ def test_wbc_compiler_toolchain_is_confined_to_disposable_builder_stage():
     assert "scripts/install_deps.sh" not in runtime
     assert "libnvinfer-dev=${TENSORRT_VERSION}" not in runtime
     assert "COPY --from=gear_sonic_builder" in runtime
+    assert "/opt/wbc/.blueprint-source-revision" in builder
+    assert "COPY --from=gear_sonic_builder /opt/wbc/.blueprint-source-revision" in runtime
+    assert 'cat /opt/wbc/.blueprint-source-revision' in runtime
+    assert "COPY --from=gear_sonic_builder /opt/wbc/.git" not in runtime
     assert "libcudart.so* /usr/local/lib/" in runtime
     assert "ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in runtime
     assert "grep -F 'not found'" in runtime
@@ -467,6 +471,8 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "cosmos_backbone_not_sealed_in_hf_cache" in healthcheck
     assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
     assert "groot_nested_processor_not_offline_constructible" in healthcheck
+    assert "official_gear_sonic_source_revision_mismatch" in healthcheck
+    assert 'wbc_root / ".blueprint-source-revision"' in healthcheck
     assert "model_encoder.onnx" in healthcheck
     assert "model_decoder.onnx" in healthcheck
     assert "planner_sonic.onnx" in healthcheck

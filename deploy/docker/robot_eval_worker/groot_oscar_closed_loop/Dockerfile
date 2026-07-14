@@ -36,6 +36,8 @@ RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
   && git -C /opt/wbc fetch --depth 1 origin "${WBC_SOURCE_REF}" \
   && git -C /opt/wbc checkout --detach FETCH_HEAD \
   && test "$(git -C /opt/wbc rev-parse HEAD)" = "${WBC_SOURCE_REF}" \
+  && printf '%s\n' "${WBC_SOURCE_REF}" > /opt/wbc/.blueprint-source-revision \
+  && chmod 0444 /opt/wbc/.blueprint-source-revision \
   && git -C /opt/wbc lfs pull \
   && cd /opt/wbc/gear_sonic_deploy \
   && chmod +x scripts/install_deps.sh deploy.sh \
@@ -113,6 +115,7 @@ ENV PYTHONUNBUFFERED=1 \
     BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
     BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc \
+    BLUEPRINT_GEAR_SONIC_SOURCE_REVISION=${WBC_SOURCE_REF} \
     GEAR_SONIC_CHECKPOINT_REPO=${GEAR_SONIC_CHECKPOINT_REPO} \
     GEAR_SONIC_CHECKPOINT_REVISION=${GEAR_SONIC_CHECKPOINT_REVISION} \
     TensorRT_ROOT=/usr \
@@ -177,10 +180,12 @@ RUN groupadd --gid "${APP_GID}" blueprint \
 # Copy only the compiled GEAR runtime closure from the disposable builder. Do
 # not copy nvcc, CUDA headers/static archives, apt state, or WBC git objects.
 COPY --from=gear_sonic_builder /opt/wbc/gear_sonic_deploy /opt/wbc/gear_sonic_deploy
+COPY --from=gear_sonic_builder /opt/wbc/.blueprint-source-revision /opt/wbc/.blueprint-source-revision
 COPY --from=gear_sonic_builder /opt/onnxruntime /opt/onnxruntime
 COPY --from=gear_sonic_builder /usr/local/bin/just /usr/local/bin/just
 COPY --from=gear_sonic_builder /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcudart.so* /usr/local/lib/
 RUN ldconfig \
+  && test "$(cat /opt/wbc/.blueprint-source-revision)" = "${WBC_SOURCE_REF}" \
   && test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref \
   && ! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found' \
   && chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build
