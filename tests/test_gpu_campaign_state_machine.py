@@ -116,6 +116,19 @@ def test_large_image_requires_exact_preallocation_residency_evidence(tmp_path):
         ).run()
 
 
+def test_campaign_requires_at_least_one_full_episode_seed_before_allocation(tmp_path):
+    provider = FakeProvider()
+
+    with pytest.raises(CampaignBlocked, match="campaign_episode_seeds_missing"):
+        CampaignMachine(
+            config=config(episode_seeds=()),
+            adapter=provider,
+            state_dir=tmp_path,
+        ).run()
+
+    assert not any(call[0] == "allocate" for call in provider.calls)
+
+
 def test_registry_availability_is_not_preloaded_image_evidence():
     cfg = config()
     blockers = validate_preloaded_image_evidence(

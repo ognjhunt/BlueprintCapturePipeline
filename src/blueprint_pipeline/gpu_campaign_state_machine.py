@@ -131,7 +131,11 @@ class CampaignConfig:
             blockers.append("stage_deadlines_incomplete")
         if any(int(value) <= 0 for value in self.stage_deadlines_seconds.values()):
             blockers.append("stage_deadline_invalid")
-        if len(set((self.smoke_seed, *self.episode_seeds))) != 1 + len(self.episode_seeds):
+        if not self.episode_seeds:
+            blockers.append("campaign_episode_seeds_missing")
+        elif len(set((self.smoke_seed, *self.episode_seeds))) != 1 + len(
+            self.episode_seeds
+        ):
             blockers.append("campaign_seeds_not_independent")
         if self.reuse_validated_same_allocation_canary:
             blockers.extend(validate_same_allocation_canary_handoff(self, self.canary_handoff))
