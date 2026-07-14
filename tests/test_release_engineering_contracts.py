@@ -550,10 +550,8 @@ def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
         },
     )
     assert completed.returncode == 2
-    assert "image ref must be versioned" in completed.stderr
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["blockers"] == [
-        "groot_oscar_closed_loop_image_ref_must_be_versioned"
-    ]
+    assert "legacy build path disabled" in completed.stderr
+    assert not manifest_path.exists()
 
 
 def test_groot_oscar_release_push_requires_digest_pinned_base_image(
@@ -585,12 +583,8 @@ def test_groot_oscar_release_push_requires_digest_pinned_base_image(
     )
 
     assert completed.returncode == 2
-    assert "release image push requires a digest-pinned base image" in completed.stderr
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["base_image"] == mutable_base
-    assert manifest["blockers"] == [
-        "groot_oscar_closed_loop_base_image_must_be_digest_pinned"
-    ]
+    assert "legacy build path disabled" in completed.stderr
+    assert not manifest_path.exists()
 
 
 def test_dependabot_covers_every_dockerfile_directory() -> None:

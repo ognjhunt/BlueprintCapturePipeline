@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tarfile
@@ -27,17 +28,33 @@ def _repo(tmp_path: Path) -> Path:
         "def build_thin_release_contract(*a, **k): return {'status':'passed'}\n",
         encoding="utf-8",
     )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=root, check=True)
     return root
 
 
+def _head(root: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
     result = prepare_remote_build_packet(
         output_dir=tmp_path / "out",
-        repo_root=_repo(tmp_path),
+        repo_root=root,
         foundation_ref="registry.example/blueprint/foundation:20260714",
         release_ref="registry.example/blueprint/release:20260714",
-        source_commit="a" * 40,
-        source_patch_sha256="b" * 64,
+        source_commit=_head(root),
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
         source_worktree_dirty=False,
         generated_at="2026-07-14T00:00:00+00:00",
     )
@@ -81,13 +98,14 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
 
 
 def test_packet_refuses_dirty_source_and_unstable_refs(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
     result = prepare_remote_build_packet(
         output_dir=tmp_path / "out",
-        repo_root=_repo(tmp_path),
+        repo_root=root,
         foundation_ref="registry.example/foundation:latest",
         release_ref="registry.example/release:dev",
-        source_commit="a" * 40,
-        source_patch_sha256="b" * 64,
+        source_commit=_head(root),
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
         source_worktree_dirty=True,
     )
     assert result["status"] == "blocked"
@@ -95,6 +113,23 @@ def test_packet_refuses_dirty_source_and_unstable_refs(tmp_path: Path) -> None:
     assert "foundation_image_ref_refuses_unstable_tag" in result["blockers"]
     assert "release_image_ref_refuses_unstable_tag" in result["blockers"]
     assert Path(result["tarball_path"]).is_file()
+
+
+def test_packet_refuses_commit_that_only_matches_head_prefix(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    head = _head(root)
+    mistyped = head[:8] + ("0" if head[8] != "0" else "1") + head[9:]
+    result = prepare_remote_build_packet(
+        output_dir=tmp_path / "out",
+        repo_root=root,
+        foundation_ref="registry.example/foundation:versioned",
+        release_ref="registry.example/release:versioned",
+        source_commit=mistyped,
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
+        source_worktree_dirty=False,
+    )
+    assert result["status"] == "blocked"
+    assert "source_commit_not_exact_head" in result["blockers"]
 
 
 def test_packet_reports_missing_required_context(tmp_path: Path) -> None:
@@ -105,8 +140,8 @@ def test_packet_reports_missing_required_context(tmp_path: Path) -> None:
         repo_root=root,
         foundation_ref="registry.example/foundation:versioned",
         release_ref="registry.example/release:versioned",
-        source_commit="a" * 40,
-        source_patch_sha256="b" * 64,
+        source_commit=_head(root),
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
         source_worktree_dirty=False,
     )
     assert result["status"] == "blocked"

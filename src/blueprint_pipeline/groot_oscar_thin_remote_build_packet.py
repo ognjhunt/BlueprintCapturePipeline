@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,12 +173,40 @@ def prepare_remote_build_packet(
         *_versioned_ref_blockers(foundation_ref, "foundation"),
         *_versioned_ref_blockers(release_ref, "release"),
     ]
-    if source_worktree_dirty:
+    actual_commit = ""
+    actual_dirty = True
+    try:
+        actual_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        actual_dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.CalledProcessError):
+        blockers.append("source_git_identity_unavailable")
+    if source_commit != actual_commit:
+        blockers.append("source_commit_not_exact_head")
+    if source_worktree_dirty != actual_dirty:
+        blockers.append("source_worktree_dirty_claim_mismatch")
+    if source_worktree_dirty or actual_dirty:
         blockers.append("remote_release_packet_requires_clean_source_worktree")
     if len(source_commit) != 40:
         blockers.append("source_commit_invalid")
+    clean_patch_sha256 = hashlib.sha256(b"").hexdigest()
     if len(source_patch_sha256) != 64:
         blockers.append("source_patch_sha256_invalid")
+    elif not actual_dirty and source_patch_sha256 != clean_patch_sha256:
+        blockers.append("source_patch_sha256_not_clean_tree_digest")
 
     rows: list[dict[str, Any]] = []
     for source, relative in _context_sources(root):
