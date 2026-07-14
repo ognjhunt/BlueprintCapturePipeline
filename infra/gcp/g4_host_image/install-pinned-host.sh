@@ -4,9 +4,38 @@ set -euo pipefail
 : "${NVIDIA_DRIVER_URL:?required}"
 : "${NVIDIA_DRIVER_SHA256:?required}"
 : "${NVIDIA_CONTAINER_TOOLKIT_VERSION:?required}"
+: "${WORKER_IMAGE_DIGEST_REF:?required}"
+: "${WORKER_SOURCE_SHA:?required}"
+
+if [[ ! "$WORKER_IMAGE_DIGEST_REF" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "WORKER_IMAGE_DIGEST_REF must be immutable" >&2
+  exit 2
+fi
+if [[ ! "$WORKER_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "WORKER_SOURCE_SHA must be a full lowercase git SHA" >&2
+  exit 2
+fi
+
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  "linux-headers-$(uname -r)" \
+  build-essential \
+  ca-certificates \
+  curl \
+  dkms \
+  gnupg
 
 driver=/tmp/nvidia-driver.run
-curl --fail --location --proto '=https' --tlsv1.2 "$NVIDIA_DRIVER_URL" -o "$driver"
+driver_curl_args=(--fail --location --proto '=https' --tlsv1.2)
+if [[ "$NVIDIA_DRIVER_URL" == https://storage.googleapis.com/gce-nvidia-vgpu-drivers/* ]]; then
+  metadata_token="$(curl --fail --silent --show-error \
+    -H 'Metadata-Flavor: Google' \
+    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+  driver_curl_args+=(-H "Authorization: Bearer $metadata_token")
+fi
+curl "${driver_curl_args[@]}" "$NVIDIA_DRIVER_URL" -o "$driver"
+unset metadata_token driver_curl_args
 printf '%s  %s\n' "$NVIDIA_DRIVER_SHA256" "$driver" | sha256sum --check --strict
 chmod 0700 "$driver"
 sudo "$driver" --silent --dkms
@@ -19,7 +48,6 @@ curl --fail --location --proto '=https' --tlsv1.2 \
   https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
   | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
   | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
-sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   docker.io \
   "nvidia-container-toolkit=${NVIDIA_CONTAINER_TOOLKIT_VERSION}" \
@@ -28,6 +56,15 @@ sudo apt-get install -y --no-install-recommends \
   "libnvidia-container1=${NVIDIA_CONTAINER_TOOLKIT_VERSION}"
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl enable docker
+sudo systemctl start docker
+
+# Keep the exact worker closure in Docker's content-addressed store. No files
+# from the image are copied onto the host filesystem or installed independently.
+sudo docker pull "$WORKER_IMAGE_DIGEST_REF"
+sudo docker image inspect "$WORKER_IMAGE_DIGEST_REF" >/dev/null
+resolved_digest="${WORKER_IMAGE_DIGEST_REF##*@}"
+sudo docker image inspect --format '{{join .RepoDigests "\n"}}' "$WORKER_IMAGE_DIGEST_REF" \
+  | grep -Fx -- "$WORKER_IMAGE_DIGEST_REF" >/dev/null
 
 sudo install -D -m 0755 /tmp/blueprint-g4-host-self-test.sh \
   /usr/local/sbin/blueprint-g4-host-self-test
@@ -47,9 +84,10 @@ WantedBy=multi-user.target
 UNIT
 sudo systemctl enable blueprint-g4-host-self-test.service
 
-# The host closure contains only driver/container infrastructure. Application,
-# model, task, and capture bytes remain exclusively in immutable worker images
-# or explicitly hashed runtime bundles.
 sudo mkdir -p /etc/blueprint
-printf '%s\n' 'application_or_model_code_baked=false' \
-  | sudo tee /etc/blueprint/host-image-contract >/dev/null
+sudo tee /etc/blueprint/host-image-contract >/dev/null <<EOF
+application_or_model_code_outside_worker_image=false
+preloaded_worker_image_ref=$WORKER_IMAGE_DIGEST_REF
+preloaded_worker_image_digest=$resolved_digest
+worker_source_sha=$WORKER_SOURCE_SHA
+EOF

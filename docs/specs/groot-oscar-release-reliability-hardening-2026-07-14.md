@@ -41,12 +41,14 @@ the GPU image. Evidence is retained for 90 days.
 ## Pinned GCP host image
 
 `infra/gcp/g4_host_image/g4-host.pkr.hcl` requires an exact date-pinned Ubuntu
-image, an exact NVIDIA vGPU driver URL plus SHA-256, and an exact NVIDIA
-container-toolkit package version. The image configures Docker's NVIDIA runtime
-and installs a boot-time self-test. The self-test records driver, GPU, Docker,
-and toolkit identity. Application, model, task, capture, and policy bytes are
-explicitly forbidden from the host image and remain in the worker-image or
-hashed job-bundle contracts.
+image, an exact NVIDIA vGPU driver URL plus SHA-256, an exact NVIDIA
+container-toolkit package version, one exact worker digest, and its protected-main
+source SHA. The worker closure is preloaded only into Docker's content-addressed
+store; its files are never independently installed onto the host. The image
+configures Docker's NVIDIA runtime and installs a boot-time self-test. The
+self-test records driver, GPU, Docker, toolkit, source, and locally resolved
+worker-digest identity. Application, model, task, capture, and policy files are
+forbidden outside the immutable worker-image or hashed job-bundle contracts.
 
 The Packer manifest is the immutable machine-image identity input for campaign
 configuration. A host image is not considered ready until a real G4 boot has
