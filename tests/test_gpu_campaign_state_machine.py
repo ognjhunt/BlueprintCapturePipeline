@@ -719,6 +719,15 @@ def test_smoke_evidence_rejects_surrogate_actions_and_missing_steps():
     assert "smoke_action_sources_not_real" in blockers
 
 
+@pytest.mark.parametrize("action_sources", ["surrogate_fixture", b"fixture", 123, {}])
+def test_smoke_evidence_rejects_scalar_or_nonsequence_action_sources(action_sources):
+    result = FakeProvider().run_stage("vm-1", "smoke", deadline_seconds=300, config={}) | {
+        "action_sources": action_sources
+    }
+
+    assert "smoke_action_sources_not_real" in validate_smoke_result(result)
+
+
 def test_stage_deadline_is_enforced_even_if_adapter_reports_passed(tmp_path):
     class Clock:
         now = 0.0

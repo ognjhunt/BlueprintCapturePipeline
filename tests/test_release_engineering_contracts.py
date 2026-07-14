@@ -90,6 +90,18 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "full-test-lane-executed.json" in workflow
 
 
+def test_groot_oscar_disk_admission_measures_every_write_filesystem() -> None:
+    script = (ROOT / "scripts" / "build_push_groot_oscar_closed_loop_image.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "docker info --format '{{.DockerRootDir}}'" in script
+    assert 'build_temp_root="${TMPDIR:-/tmp}"' in script
+    assert '("source_and_evidence", "docker_buildkit", "build_and_scan_temp")' in script
+    assert "shutil.disk_usage(path).free" in script
+    assert 'evidence["limiting_storage_path"]' in script
+
+
 def test_full_lane_collection_verifier_requires_exact_nodeids(tmp_path: Path) -> None:
     nodeids = ["tests/test_one.py::test_a", "tests/test_two.py::test_b"]
 
@@ -493,7 +505,9 @@ def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> Non
     publish_at = script.index('"${publish_build_args[@]}"')
     digest_at = script.index('runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"')
     binding_at = script.index('published_config_digest="$(python3')
-    binding_check_at = script.index('if [[ "$published_config_digest" != "$smoked_local_image_id" ]]')
+    binding_check_at = script.index(
+        'if [[ "$published_config_digest" != "$smoked_local_image_id" ]]'
+    )
     registry_scan_at = script.index('syft "registry:${exact_digest_ref}"')
     provenance_gate_at = script.index("validate_buildkit_provenance_binding(")
     identity_recheck_at = script.index('source_identity_after_json="$(')

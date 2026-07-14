@@ -324,7 +324,14 @@ def validate_smoke_result(result: Mapping[str, Any]) -> list[str]:
             blockers.append(f"smoke_{evidence_field}_not_proven")
     if int(result.get("learned_policy_action_count") or 0) < 3:
         blockers.append("smoke_learned_policy_actions_below_three")
-    sources = [str(source).lower() for source in result.get("action_sources") or []]
+    raw_sources = result.get("action_sources")
+    sources = (
+        [source.lower() for source in raw_sources]
+        if isinstance(raw_sources, Sequence)
+        and not isinstance(raw_sources, (str, bytes))
+        and all(isinstance(source, str) and source.strip() for source in raw_sources)
+        else []
+    )
     if not sources or any("surrogate" in source or "fixture" in source for source in sources):
         blockers.append("smoke_action_sources_not_real")
     return blockers

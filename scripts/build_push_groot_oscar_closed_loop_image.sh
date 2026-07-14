@@ -176,26 +176,46 @@ fi
 docker info >/dev/null
 
 if [[ "${BLUEPRINT_SKIP_GROOT_OSCAR_CLOSED_LOOP_DISK_CHECK:-false}" != "true" ]]; then
-  disk_check_free_kib="$(df -Pk "$repo_root" | awk 'NR==2 {print $4}')"
-  disk_check_required_kib="$(PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 - \
-    "$disk_admission_output" "$disk_check_free_kib" "$expected_compressed_gib" \
-    "$expected_unpacked_gib" <<'PY'
-import json, sys
+  docker_root_dir="$(docker info --format '{{.DockerRootDir}}')"
+  build_temp_root="${TMPDIR:-/tmp}"
+  read -r disk_check_free_kib disk_check_required_kib < <(\
+    PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 - \
+    "$disk_admission_output" "$expected_compressed_gib" "$expected_unpacked_gib" \
+    "$repo_root" "$docker_root_dir" "$build_temp_root" <<'PY'
+import json, shutil, sys
 from pathlib import Path
 from blueprint_pipeline.groot_oscar_release_hardening import DiskAdmission
 
 gib = 1024 ** 3
+storage_paths = []
+for role, raw_path in zip(
+    ("source_and_evidence", "docker_buildkit", "build_and_scan_temp"),
+    sys.argv[4:7],
+    strict=True,
+):
+    path = Path(raw_path).expanduser().resolve()
+    available = shutil.disk_usage(path).free
+    storage_paths.append(
+        {"role": role, "path": str(path), "available_bytes": available}
+    )
+limiting = min(storage_paths, key=lambda item: item["available_bytes"])
 evidence = DiskAdmission(
-    available_bytes=int(sys.argv[2]) * 1024,
-    image_compressed_bytes=int(float(sys.argv[3]) * gib),
-    image_unpacked_bytes=int(float(sys.argv[4]) * gib),
+    available_bytes=int(limiting["available_bytes"]),
+    image_compressed_bytes=int(float(sys.argv[2]) * gib),
+    image_unpacked_bytes=int(float(sys.argv[3]) * gib),
 ).evidence()
+evidence["storage_paths"] = storage_paths
+evidence["limiting_storage_role"] = limiting["role"]
+evidence["limiting_storage_path"] = limiting["path"]
 path = Path(sys.argv[1]).expanduser().resolve()
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-print((int(evidence["required_bytes"]) + 1023) // 1024)
+print(
+    int(limiting["available_bytes"]) // 1024,
+    (int(evidence["required_bytes"]) + 1023) // 1024,
+)
 PY
-)"
+  )
   legacy_required_kib=$((min_free_gib * 1024 * 1024))
   if [[ "$legacy_required_kib" -gt "$disk_check_required_kib" ]]; then
     disk_check_required_kib="$legacy_required_kib"
