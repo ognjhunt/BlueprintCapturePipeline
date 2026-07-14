@@ -43,3 +43,11 @@ def test_release_image_uses_runtime_only_wbc_multistage_closure():
     assert "AS gear_sonic_builder" in dockerfile
     assert "AS runtime" in dockerfile
     assert "COPY --from=gear_sonic_builder /opt/wbc/gear_sonic_deploy" in dockerfile
+
+
+def test_oscar_checkpoint_override_is_the_runtime_provenance_revision():
+    dockerfile = Path(
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "ARG OSCAR_CHECKPOINT_REVISION=" in dockerfile
+    assert "BLUEPRINT_OSCAR_WAM_HF_REVISION=${OSCAR_CHECKPOINT_REVISION}" in dockerfile

@@ -1104,3 +1104,22 @@ def test_resumed_emergency_teardown_survives_read_only_state_file(tmp_path, monk
     assert any(
         item.startswith("state_persistence_exception:OSError") for item in result["blockers"]
     )
+
+
+def test_pending_create_resume_never_starts_second_allocation(tmp_path):
+    provider = FakeProvider()
+    machine = CampaignMachine(
+        config=config(), adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    )
+    state, _ = machine._load()
+    state["allocation_mutation_pending"] = True
+    machine._write(machine.state_path, state)
+
+    result = CampaignMachine(
+        config=config(), adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    ).run()
+
+    assert not any(call[0] == "allocate" for call in provider.calls)
+    assert result["status"] == "blocked"
+    assert "provider_allocation_mutation_pending_requires_teardown" in result["blockers"]
+    assert result["teardown"]["billing_stopped"] is False

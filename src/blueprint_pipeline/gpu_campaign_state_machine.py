@@ -913,6 +913,10 @@ class CampaignMachine:
                     inventory = list(self.adapter.inventory(self.config.allocation_key))
                     if inventory:
                         raise CampaignBlocked("duplicate_paid_allocation_detected")
+                    if state.get("allocation_mutation_pending") is True:
+                        raise CampaignBlocked(
+                            "provider_allocation_mutation_pending_requires_teardown"
+                        )
                     if (
                         threading.current_thread() is not threading.main_thread()
                         and getattr(
