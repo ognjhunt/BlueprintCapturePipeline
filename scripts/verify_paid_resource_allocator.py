@@ -85,6 +85,13 @@ def verify() -> list[str]:
         blockers.append("release_workflow_live_prerequisite_refresh_missing")
     elif "--live" not in workflow[prerequisite_index:allocator_index]:
         blockers.append("release_workflow_live_prerequisite_refresh_not_live")
+    for unsafe_expression in (
+        "--foundation-ref '${{ inputs.foundation_image_ref }}'",
+        "--release-ref '${{ inputs.release_image_ref }}'",
+        'expected_source_commit":"${{ inputs.source_ref }}',
+    ):
+        if unsafe_expression in workflow:
+            blockers.append("release_workflow_dispatch_input_reaches_shell_parser")
 
     cpu_calls = _function_calls(CPU_ADAPTER)
     if "_request" not in cpu_calls.get("run_builder", set()):
@@ -129,6 +136,11 @@ def verify() -> list[str]:
         blockers.append("gpu_allocator_bypasses_shared_admission")
     if 'mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE' not in gpu:
         blockers.append("gpu_canary_dry_run_mode_differs_from_execution")
+    runpod_adapter = (
+        ROOT / "src/blueprint_pipeline/runpod_provider_adapter.py"
+    ).read_text(encoding="utf-8")
+    if '"dockerEntrypoint": ["/opt/blueprint/thin_release_entrypoint.sh"]' not in runpod_adapter:
+        blockers.append("gpu_canary_bypasses_thin_release_entrypoint")
     return sorted(set(blockers))
 
 

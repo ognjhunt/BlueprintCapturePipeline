@@ -38,9 +38,11 @@ jobs:
 
       - name: Verify exact clean amd64 build host
         shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ inputs.source_ref }}"
+          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
           test -z "$(git status --porcelain)"
           test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
@@ -54,15 +56,19 @@ jobs:
 
       - name: Prepare immutable build packet
         shell: bash
+        env:
+          FOUNDATION_IMAGE_REF: ${{ inputs.foundation_image_ref }}
+          RELEASE_IMAGE_REF: ${{ inputs.release_image_ref }}
+          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
           empty_sha="$(python3 -c 'import hashlib; print(hashlib.sha256(b"").hexdigest())')"
           python3 -m blueprint_pipeline.groot_oscar_thin_remote_build_packet \
             --output-dir "$RUNNER_TEMP/groot-oscar-packet" \
             --repo-root "$GITHUB_WORKSPACE" \
-            --foundation-ref '${{ inputs.foundation_image_ref }}' \
-            --release-ref '${{ inputs.release_image_ref }}' \
-            --source-commit '${{ inputs.source_ref }}' \
+            --foundation-ref "$FOUNDATION_IMAGE_REF" \
+            --release-ref "$RELEASE_IMAGE_REF" \
+            --source-commit "$SOURCE_REF" \
             --source-patch-sha256 "$empty_sha"
 
       - name: Admit build plane before registry mutation
@@ -70,6 +76,7 @@ jobs:
         env:
           REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
           install -d -m 700 "$RUNNER_TEMP/registry-secrets"
@@ -79,9 +86,26 @@ jobs:
           test -s "$RUNNER_TEMP/registry-secrets/username"
           test -s "$RUNNER_TEMP/registry-secrets/password"
           free_bytes="$(python3 -c 'import os; print(os.statvfs(os.environ["RUNNER_TEMP"]).f_bavail * os.statvfs(os.environ["RUNNER_TEMP"]).f_frsize)')"
-          cat > "$RUNNER_TEMP/builder.json" <<JSON
-          {"provider":"github_actions","purpose":"image_build","platform":"linux/amd64","docker_daemon_verified":true,"docker_buildx_verified":true,"free_disk_bytes":$free_bytes,"registry_push_auth_file_verified":true,"independent_teardown_watchdog":true,"expected_source_commit":"${{ inputs.source_ref }}"}
-          JSON
+          FREE_BYTES="$free_bytes" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "provider": "github_actions",
+              "purpose": "image_build",
+              "platform": "linux/amd64",
+              "docker_daemon_verified": True,
+              "docker_buildx_verified": True,
+              "free_disk_bytes": int(os.environ["FREE_BYTES"]),
+              "registry_push_auth_file_verified": True,
+              "independent_teardown_watchdog": True,
+              "expected_source_commit": os.environ["SOURCE_REF"],
+          }
+          Path(os.environ["RUNNER_TEMP"], "builder.json").write_text(
+              json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
           cat > "$RUNNER_TEMP/build-spend.json" <<JSON
           {"paid_mutation_authorized":true,"max_spend_usd":1,"hard_ttl_seconds":7200,"one_resource_limit":true,"independent_teardown_watchdog":true}
           JSON
