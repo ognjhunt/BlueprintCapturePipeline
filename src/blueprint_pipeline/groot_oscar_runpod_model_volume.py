@@ -371,6 +371,8 @@ def run_model_volume(
     verification: dict[str, Any] = {}
     manifest: dict[str, Any] = {}
     error_type: str | None = None
+    provider_failure: dict[str, Any] = {}
+    compute_started = False
     try:
         volume_http, volume_response = _runpod_call(
             "POST",
@@ -381,6 +383,14 @@ def run_model_volume(
         )
         volume_id = _extract_id(_mapping(volume_response))
         if volume_http not in {200, 201} or not volume_id:
+            provider_failure = {
+                "operation": "create_network_volume",
+                "http_status": volume_http,
+                "provider_error": str(_mapping(volume_response).get("error") or "")[:1000]
+                or None,
+                "allocation_created": bool(volume_id),
+                "spend_occurred": False if not volume_id else None,
+            }
             raise RuntimeError("runpod_network_volume_create_failed_or_ambiguous")
         get_http, volume_row = _runpod_call(
             "GET", f"/networkvolumes/{volume_id}", None, key=key, timeout=30
@@ -431,7 +441,16 @@ def run_model_volume(
         )
         pod_id = _extract_id(_mapping(pod_response))
         if pod_http not in {200, 201} or not pod_id:
+            provider_failure = {
+                "operation": "create_preparation_pod",
+                "http_status": pod_http,
+                "provider_error": str(_mapping(pod_response).get("error") or "")[:1000]
+                or None,
+                "allocation_created": bool(pod_id),
+                "spend_occurred": False if not pod_id else None,
+            }
             raise RuntimeError("runpod_model_volume_pod_create_failed_or_ambiguous")
+        compute_started = True
         write_json(
             output / "preparation_pod.json",
             {
@@ -469,7 +488,12 @@ def run_model_volume(
         error_type = type(exc).__name__
         write_json(
             output / "model_volume_error.json",
-            {"error_type": error_type, "error": str(exc), "raw_secret_values_recorded": False},
+            {
+                "error_type": error_type,
+                "error": str(exc),
+                "provider_failure": provider_failure or None,
+                "raw_secret_values_recorded": False,
+            },
         )
     finally:
         if pod_id:
@@ -488,13 +512,26 @@ def run_model_volume(
                 )
             for item in volume_ids:
                 volume_teardown = _delete_volume(key=key, volume_id=item)
-        if success and pod_teardown.get("provider_absence_confirmed") is True:
+        final_pods, final_volumes = _matching_resources(
+            key=key, pod_prefix=pod_prefix, volume_name=volume_name
+        )
+        cleanup_terminal = not final_pods and (
+            success or not final_volumes
+        )
+        if cleanup_terminal and (
+            not pod_id or pod_teardown.get("provider_absence_confirmed") is True
+        ):
             write_json(
                 output / "watchdog_handoff.json",
                 {
-                    "status": "verified_volume_handed_to_gpu_canary",
-                    "volume_id": volume_id,
-                    "preparation_pod_absence_confirmed": True,
+                    "status": (
+                        "verified_volume_handed_to_gpu_canary"
+                        if success
+                        else "failure_cleanup_provider_terminal"
+                    ),
+                    "volume_id": volume_id or None,
+                    "preparation_pod_absence_confirmed": not final_pods,
+                    "failure_volume_absence_confirmed": not final_volumes,
                 },
             )
     elapsed = max(0.0, time.time() - started)
@@ -515,7 +552,9 @@ def run_model_volume(
         "preparation_pod_teardown": pod_teardown,
         "failure_volume_teardown": volume_teardown,
         "elapsed_seconds": elapsed,
-        "maximum_compute_spend_usd": hourly_rate * elapsed / 3600,
+        "maximum_compute_spend_usd": (
+            hourly_rate * elapsed / 3600 if compute_started else 0.0
+        ),
         "error_type": error_type,
         "raw_secret_values_recorded": False,
     }

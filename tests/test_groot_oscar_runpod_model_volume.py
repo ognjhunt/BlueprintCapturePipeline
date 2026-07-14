@@ -63,3 +63,12 @@ def test_model_volume_admission_rejects_cost_above_cap() -> None:
     admission = _admission(max_spend_usd=0.10)
     assert admission["status"] == "blocked"
     assert "model_volume_ttl_cost_exceeds_max_spend" in admission["blockers"]
+
+
+def test_model_volume_admission_allows_explicitly_bounded_higher_rate() -> None:
+    admission = _admission(
+        gpu_type_id="NVIDIA L40S",
+        hourly_rate_usd=0.99,
+        max_spend_usd=0.75,
+    )
+    assert admission["status"] == "admitted"
