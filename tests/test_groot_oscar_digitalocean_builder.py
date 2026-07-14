@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     live_machine_probe_command,
     parse_live_machine_probe,
     run_builder,
+    verify_packet_tarball,
 )
 
 
@@ -139,6 +141,21 @@ def test_live_machine_probe_rejects_catalog_or_requested_configuration() -> None
     )
     assert evidence["status"] == "blocked"
     assert "live_machine_observation_source_invalid" in evidence["blockers"]
+
+
+def test_builder_verifies_transfer_archive_digest_before_allocation(
+    tmp_path: Path,
+) -> None:
+    tarball = tmp_path / "packet.tar.gz"
+    tarball.write_bytes(b"checksum-bound-packet")
+    digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+    packet = {"tarball_path": str(tarball), "tarball_sha256": digest}
+    assert verify_packet_tarball(packet)["status"] == "verified"
+
+    tarball.write_bytes(b"substituted-packet")
+    result = verify_packet_tarball(packet)
+    assert result["status"] == "blocked"
+    assert "digitalocean_builder_packet_tarball_digest_mismatch" in result["blockers"]
 
 
 def test_run_builder_is_dry_and_does_not_read_secrets_without_paid_gate(

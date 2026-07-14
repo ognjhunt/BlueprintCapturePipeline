@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import platform
@@ -42,6 +43,36 @@ DO_API = "https://api.digitalocean.com/v2"
 BUILDER_TAG = "blueprint-groot-oscar-builder"
 TEARDOWN_TAG = "auto-teardown-required"
 READINESS_TIMEOUT_SECONDS = 15 * 60
+
+
+def verify_packet_tarball(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify the exact transfer archive before any paid builder allocation."""
+
+    path = Path(str(packet.get("tarball_path") or "")).expanduser().resolve()
+    declared = str(packet.get("tarball_sha256") or "").strip()
+    blockers: list[str] = []
+    if len(declared) != 64 or any(char not in "0123456789abcdef" for char in declared):
+        blockers.append("digitalocean_builder_packet_tarball_digest_invalid")
+    observed = ""
+    if not path.is_file():
+        blockers.append("digitalocean_builder_packet_tarball_missing")
+    else:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        observed = digest.hexdigest()
+        if declared and observed != declared:
+            blockers.append("digitalocean_builder_packet_tarball_digest_mismatch")
+    return {
+        "schema_version": "groot_oscar_builder_packet_tarball_verification.v1",
+        "status": "verified" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "tarball_path": str(path),
+        "declared_sha256": declared or None,
+        "observed_sha256": observed or None,
+        "raw_secret_values_recorded": False,
+    }
 
 
 def live_machine_probe_command(*, mount_path: str = "/") -> str:
@@ -381,6 +412,11 @@ def run_builder(
     admission = build_build_plane_admission(packet=packet, builder=builder, spend=spend)
     write_json(output / "build_plane_admission.json", admission)
     blockers = list(admission["blockers"])
+    packet_tarball_verification = verify_packet_tarball(packet)
+    write_json(
+        output / "packet_tarball_verification.json", packet_tarball_verification
+    )
+    blockers.extend(packet_tarball_verification["blockers"])
     if not allow_paid:
         blockers.append("digitalocean_builder_allow_paid_flag_missing")
     if blockers:
@@ -546,9 +582,10 @@ def run_builder(
         if execution_admission["status"] != "admitted":
             raise RuntimeError("digitalocean_builder_execution_admission_blocked")
 
-        packet_tarball = Path(str(packet["tarball_path"])).expanduser().resolve()
-        if not packet_tarball.is_file():
-            raise RuntimeError("digitalocean_builder_packet_tarball_missing")
+        packet_tarball = Path(packet_tarball_verification["tarball_path"])
+        packet_tarball_sha256 = str(
+            packet_tarball_verification["observed_sha256"] or ""
+        )
         subprocess.run(
             [
                 "scp",
@@ -569,6 +606,9 @@ def run_builder(
                 "install -m 600 /root/blueprint-build/docker_pat /root/.blueprint-secrets/docker_pat",
                 "rm -f /root/blueprint-build/docker_username /root/blueprint-build/docker_pat",
                 "mkdir -p /root/blueprint-build/run",
+                "printf '%s  %s\\n' "
+                f"{shlex.quote(packet_tarball_sha256)} "
+                f"{shlex.quote(remote_tarball)} | sha256sum -c -",
                 f"tar -xzf {shlex.quote(remote_tarball)} -C /root/blueprint-build/run",
                 "cd /root/blueprint-build/run/groot_oscar_thin_remote_build",
                 "BLUEPRINT_REMOTE_IMAGE_BUILD_DOCKER_LOGIN=true ./remote_build_groot_oscar_thin_images.sh",
