@@ -108,8 +108,9 @@ def build_cloud_init(
     if shutdown_minutes <= 0 or shutdown_minutes > 120:
         raise ValueError("shutdown_minutes_must_be_between_1_and_120")
     return f"""#cloud-config
+ssh_deletekeys: false
 bootcmd:
-  - [bash, -c, "printf '%s' '{host_private_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key && chmod 600 /etc/ssh/ssh_host_ed25519_key && printf '%s' '{host_public_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key.pub && chmod 644 /etc/ssh/ssh_host_ed25519_key.pub && rm -f /etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub && systemctl restart ssh"]
+  - [bash, -c, "printf '%s' '{host_private_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key && chmod 600 /etc/ssh/ssh_host_ed25519_key && printf '%s' '{host_public_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key.pub && chmod 644 /etc/ssh/ssh_host_ed25519_key.pub && rm -f /etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub"]
 package_update: true
 packages:
   - ca-certificates
