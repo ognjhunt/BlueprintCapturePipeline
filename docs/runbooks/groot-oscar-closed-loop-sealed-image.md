@@ -1,6 +1,12 @@
 # Runbook: sealed `blueprint-groot-oscar-eval` image
 
-Turns the 40-70 min/pod hand-bootstrap of the GR00T x OSCAR closed-loop lane
+> Legacy monolithic packaging path. New releases should use
+> [`groot-oscar-thin-release.md`](groot-oscar-thin-release.md): cached Isaac and
+> robot-runtime foundation, external checksum-verified model volume, and a thin
+> Blueprint code release. Keep this runbook only for reproducing and auditing
+> already-published monolithic digests.
+
+Turns the historical 40-70 min/pod hand-bootstrap of the GR00T x OSCAR closed-loop lane
 (`oscar_isaac_closed_loop_eval` + `groot_sonic_policy_endpoint`) into
 `docker pull` + go. Design: `docs/superpowers/specs/2026-07-06-groot-oscar-eval-worker-image-design.md`.
 

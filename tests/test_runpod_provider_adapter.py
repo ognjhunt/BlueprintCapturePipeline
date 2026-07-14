@@ -524,6 +524,9 @@ def test_runpod_adapter_uses_provider_gpu_priority_and_cache_env(
             "policy_files": "/cache/policies",
             "converted_scenes": "/cache/scenes",
             "worker_deps": "/cache/deps",
+            "groot_oscar_models": (
+                "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
+            ),
         }
     }
     _write_json(request_path, request)
@@ -541,6 +544,9 @@ def test_runpod_adapter_uses_provider_gpu_priority_and_cache_env(
     assert pod["env"]["BLUEPRINT_POLICY_CACHE"] == "/cache/policies"
     assert pod["env"]["BLUEPRINT_CONVERTED_SCENE_CACHE"] == "/cache/scenes"
     assert pod["env"]["BLUEPRINT_WORKER_DEPS_CACHE"] == "/cache/deps"
+    assert pod["env"]["BLUEPRINT_GROOT_OSCAR_MODEL_CACHE"] == (
+        "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
+    )
 
 
 def test_runpod_adapter_forwards_declared_plaintext_env_values(tmp_path: Path) -> None:

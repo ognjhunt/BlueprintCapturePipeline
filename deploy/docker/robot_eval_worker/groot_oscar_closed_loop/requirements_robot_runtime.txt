@@ -1,0 +1,10 @@
+# Shared OSCAR + GR00T client environment.  One torch/CUDA stack is installed
+# in the foundation image; dependency resolution must pass `pip check` before
+# the image is publishable.
+mujoco
+pillow
+pyzmq
+msgpack
+msgpack-numpy
+imageio
+huggingface_hub

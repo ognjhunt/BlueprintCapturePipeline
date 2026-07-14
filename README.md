@@ -26,6 +26,9 @@ The current customer-facing lane uses RunPod Secure active workers, an exact
 cached worker digest, same-session readiness evidence, and an atomically leased
 warm pool; see
 [`docs/runbooks/production-gpu-startup-and-warm-pool.md`](docs/runbooks/production-gpu-startup-and-warm-pool.md).
+The durable image layout separates a cached Isaac/robot foundation, an external
+checksum-verified model volume, and a thin Blueprint release; see
+[`docs/runbooks/groot-oscar-thin-release.md`](docs/runbooks/groot-oscar-thin-release.md).
 The production reliability golden path, campaign state machine, artifact
 contract, SLOs, ownership, and promotion rules are defined in
 [`docs/PRODUCTION_GPU_RELIABILITY_OPERATING_MODEL.md`](docs/PRODUCTION_GPU_RELIABILITY_OPERATING_MODEL.md).

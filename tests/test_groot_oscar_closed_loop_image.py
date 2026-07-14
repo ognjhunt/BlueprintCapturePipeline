@@ -174,7 +174,7 @@ def test_launch_plan_blocked_when_not_sealed(tmp_path):
     assert plan["blockers"]
 
 
-def test_launch_plan_groot_server_command_uses_baked_venv_and_checkpoint():
+def test_launch_plan_groot_server_command_uses_shared_runtime_and_checkpoint():
     plan = gocl.build_sealed_launch_plan(
         env=_active_env(),
         start_frame="/w/frame.png",
@@ -187,8 +187,11 @@ def test_launch_plan_groot_server_command_uses_baked_venv_and_checkpoint():
     )
     assert plan["sealed_active"] is True
     cmd = plan["groot_server_command"]
-    assert cmd[0] == "/opt/gr00t/.venv/bin/python"
-    assert cmd[1] == "/opt/gr00t/gr00t/eval/run_gr00t_server.py"
+    assert cmd[:3] == [
+        "/opt/gr00t-venv/bin/python",
+        "-m",
+        "gr00t.eval.run_gr00t_server",
+    ]
     assert "--model-path" in cmd
     assert cmd[cmd.index("--model-path") + 1] == "/opt/blueprint/ckpts/sonic"
     assert cmd[cmd.index("--embodiment-tag") + 1] == "UNITREE_G1_SONIC"
@@ -236,7 +239,10 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert cmd[cmd.index("--wam-consistency-timeout-seconds") + 1] == "300.0"
     assert "--require-generated-video-success-label" not in cmd
     assert plan["gear_sonic_controller_command"][0:2] == ["bash", "-lc"]
-    assert "deploy.sh sim" in plan["gear_sonic_controller_command"][2]
+    assert "target/release/g1_deploy_onnx_ref" in plan[
+        "gear_sonic_controller_command"
+    ][2]
+    assert "just build" not in plan["gear_sonic_controller_command"][2]
     assert plan["env"]["BLUEPRINT_GEAR_SONIC_ROOT"] == "/opt/wbc"
     assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == "nvidia/GEAR-SONIC"
     assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (

@@ -68,6 +68,7 @@ DEFAULT_ATTEMPT_INPUT_MANIFEST_PATH = "/workspace/attempt_input_manifest.json"
 OSCAR_REPO_ENV = "BLUEPRINT_GROOT_OSCAR_OSCAR_REPO"
 OSCAR_CHECKPOINT_ENV = "BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT"
 GROOT_ROOT_ENV = "BLUEPRINT_GROOT_OSCAR_GROOT_ROOT"
+GROOT_VENV_PYTHON_ENV = "BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON"
 SONIC_CHECKPOINT_ENV = "BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT"
 UNITREE_G1_USD_ENV = "BLUEPRINT_ISAAC_UNITREE_G1_USD"
 GEAR_SONIC_CHECKPOINT_REPO_ENV = "GEAR_SONIC_CHECKPOINT_REPO"
@@ -203,6 +204,8 @@ def sealed_image_contract(env: Mapping[str, str] | None = None) -> dict[str, Any
         "oscar_checkpoint": _string(env.get(OSCAR_CHECKPOINT_ENV)) or DEFAULT_OSCAR_CHECKPOINT,
         "groot_root": _string(env.get(GROOT_ROOT_ENV)) or DEFAULT_GROOT_ROOT,
         "groot_venv": DEFAULT_GROOT_VENV,
+        "groot_venv_python": _string(env.get(GROOT_VENV_PYTHON_ENV))
+        or f"{DEFAULT_GROOT_VENV}/bin/python",
         "sonic_checkpoint": _string(env.get(SONIC_CHECKPOINT_ENV)) or DEFAULT_SONIC_CHECKPOINT,
         "unitree_g1_usd": _string(env.get(UNITREE_G1_USD_ENV)) or DEFAULT_UNITREE_G1_USD,
         "gear_sonic_checkpoint_repo": (
@@ -342,8 +345,8 @@ def build_sealed_launch_plan(
     groot_root = contract["groot_root"]
     oscar_repo = contract["oscar_repo"]
     plan["groot_server_command"] = [
-        f"{groot_root}/.venv/bin/python",
-        f"{groot_root}/gr00t/eval/run_gr00t_server.py",
+        contract["groot_venv_python"],
+        "-m", "gr00t.eval.run_gr00t_server",
         "--model-path", contract["sonic_checkpoint"],
         "--embodiment-tag", SONIC_EMBODIMENT_TAG,
         "--device", str(device),
@@ -367,8 +370,14 @@ def build_sealed_launch_plan(
     plan["gear_sonic_controller_command"] = [
         "bash",
         "-lc",
-        "cd /opt/wbc/gear_sonic_deploy && printf '\\n' | ./deploy.sh sim "
-        "--input-type zmq_manager --output-type zmq --zmq-host localhost",
+        "cd /opt/wbc/gear_sonic_deploy && source scripts/setup_env.sh && exec "
+        "./target/release/g1_deploy_onnx_ref lo "
+        "policy/release/model_decoder.onnx reference/example "
+        "--obs-config policy/release/observation_config.yaml "
+        "--encoder-file policy/release/model_encoder.onnx "
+        "--planner-file planner/target_vel/V2/planner_sonic.onnx "
+        "--input-type zmq_manager --output-type zmq --zmq-host localhost "
+        "--disable-crc-check",
     ]
     plan["closed_loop_command"] = [
         DEFAULT_OSCAR_VENV_PYTHON, "-m", "blueprint_pipeline.oscar_isaac_closed_loop_eval",

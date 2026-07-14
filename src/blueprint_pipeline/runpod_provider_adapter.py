@@ -942,6 +942,10 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
         "policy_files": "BLUEPRINT_POLICY_CACHE",
         "converted_scenes": "BLUEPRINT_CONVERTED_SCENE_CACHE",
         "worker_deps": "BLUEPRINT_WORKER_DEPS_CACHE",
+        # RunPod exposes its persistent network volume at /workspace. Thin
+        # GR00T+OSCAR releases point this at a pre-populated subdirectory;
+        # the image entrypoint verifies the immutable byte manifest offline.
+        "groot_oscar_models": "BLUEPRINT_GROOT_OSCAR_MODEL_CACHE",
     }
     for cache_key, env_name in cache_env_by_key.items():
         value = _string(cache_paths.get(cache_key))

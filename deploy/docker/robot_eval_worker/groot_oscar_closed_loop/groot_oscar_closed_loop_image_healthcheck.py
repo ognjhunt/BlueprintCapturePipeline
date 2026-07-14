@@ -230,7 +230,8 @@ def main() -> int:
     wbc_root = Path(WBC_ROOT)
     required_wbc_assets = {
         "robot_model": wbc_root / "gear_sonic_deploy/g1/g1_29dof_with_hand.xml",
-        "deploy_script": wbc_root / "gear_sonic_deploy/deploy.sh",
+        "runtime_binary": wbc_root
+        / "gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
         "policy_encoder": wbc_root
         / "gear_sonic_deploy/policy/release/model_encoder.onnx",
         "policy_decoder": wbc_root

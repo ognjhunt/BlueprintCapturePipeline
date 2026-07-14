@@ -107,12 +107,26 @@ test -f /etc/blueprint/worker-image-ref
 test "$(cat /etc/blueprint/worker-image-ref)" = {image}
 docker image inspect {image} >/dev/null
 python3 - <<'PY'
-import json, subprocess
+import json, pathlib, subprocess
 argv = json.load(open('/root/blueprint_argv.json'))
+worker_env = dict(
+    line.rstrip('\n').split('=', 1)
+    for line in open('/root/blueprint_worker.env', encoding='utf-8')
+    if '=' in line
+)
 cmd = ['docker', 'run', '-d', '--gpus', 'all', '--name', 'blueprint-worker',
        '--env-file', '/root/blueprint_worker.env', '-v', '/workspace:/workspace',
        '--workdir', '/workspace', '--shm-size=8g', '--entrypoint', {entrypoint},
-       {image}, *argv]
+]
+if worker_env.get('BLUEPRINT_GROOT_OSCAR_MODEL_CACHE'):
+    model_root = pathlib.Path('/var/lib/blueprint/models')
+    container_cache = pathlib.PurePosixPath(worker_env['BLUEPRINT_GROOT_OSCAR_MODEL_CACHE'])
+    try: cache_relative = container_cache.relative_to('/models')
+    except ValueError: raise RuntimeError('container_external_model_cache_must_be_under_models')
+    if not (model_root / cache_relative / 'groot_oscar_model_cache_manifest.json').is_file():
+        raise RuntimeError('host_external_model_cache_manifest_missing')
+    cmd.extend(['-v', str(model_root) + ':/models:ro'])
+cmd.extend([{image}, *argv])
 subprocess.check_call(cmd)
 PY
 """

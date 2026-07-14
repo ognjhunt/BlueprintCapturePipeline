@@ -64,6 +64,14 @@ def _sha256_file(path: Path) -> str:
 
 
 def _pinned_controller_revision(root: Path) -> str:
+    marker = root / ".blueprint-source-revision"
+    if marker.is_file():
+        revision = marker.read_text(encoding="utf-8").strip().lower()
+        if revision != PINNED_WBC_SOURCE_REVISION:
+            raise RuntimeError("official_gear_sonic_controller_revision_mismatch")
+        return revision
+    # Legacy monolithic images retain the repository. Thin foundations use the
+    # immutable marker above and intentionally contain neither Git nor .git.
     completed = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=root,
