@@ -298,6 +298,8 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert foundation.count("libnvinfer10=${TENSORRT_VERSION}") == 2
     assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in foundation
     assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation
+    assert "uv venv /opt/robot-venv --python 3.10 --seed" in foundation
+    assert foundation.count("/opt/robot-venv/bin/python -m pip check") == 2
 
 
 def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:

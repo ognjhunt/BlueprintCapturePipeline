@@ -36,7 +36,7 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && git -C /tmp/oscar fetch --depth 1 origin "${OSCAR_SOURCE_REF}" \
   && git -C /tmp/oscar checkout --detach FETCH_HEAD \
   && test "$(git -C /tmp/oscar rev-parse HEAD)" = "${OSCAR_SOURCE_REF}" \
-  && uv venv /opt/robot-venv --python 3.10 \
+  && uv venv /opt/robot-venv --python 3.10 --seed \
   && VIRTUAL_ENV=/opt/robot-venv uv pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.10.0 torchvision==0.25.0 \
   && VIRTUAL_ENV=/opt/robot-venv uv pip install "nvidia-cudnn-cu12>=9.10" -r /tmp/requirements_robot_runtime.txt \
   && VIRTUAL_ENV=/opt/robot-venv uv pip install /tmp/gr00t \
