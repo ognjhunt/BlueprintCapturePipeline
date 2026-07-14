@@ -485,6 +485,20 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
     if not droplet_id and (not name or not region):
         raise ValueError("watchdog_allocation_identity_missing")
     deadline = float(state["deadline_epoch"])
+    write_json(
+        output / "watchdog_armed.json",
+        {
+            "schema_version": WATCHDOG_SCHEMA_VERSION,
+            "status": "armed",
+            "pid": os.getpid(),
+            "deadline_epoch": deadline,
+            "droplet_id": droplet_id or None,
+            "name": name or None,
+            "region": region or None,
+            "watchdog_nonce": state.get("watchdog_nonce"),
+            "raw_secret_values_recorded": False,
+        },
+    )
     cancelled = output / "watchdog_cancelled"
     while time.time() < deadline:
         if cancelled.is_file():
@@ -624,6 +638,7 @@ def run_builder(
         name=name, region=region, ssh_key_id=ssh_key_id, user_data=user_data
     )
     started = time.time()
+    watchdog_nonce = os.urandom(16).hex()
     state_path = output / "allocation_state.json"
     write_json(
         state_path,
@@ -634,6 +649,7 @@ def run_builder(
             "deadline_epoch": started + ttl,
             "source_commit": packet["source_commit"],
             "maximum_spend_usd": maximum_cost,
+            "watchdog_nonce": watchdog_nonce,
         },
     )
     watchdog_log = (output / "watchdog.log").open("ab")
@@ -653,6 +669,31 @@ def run_builder(
         start_new_session=True,
     )
     (output / "watchdog.pid").write_text(f"{watchdog_process.pid}\n", encoding="utf-8")
+    watchdog_armed_path = output / "watchdog_armed.json"
+    watchdog_start_deadline = time.time() + 10
+    watchdog_armed = False
+    while time.time() < watchdog_start_deadline:
+        if watchdog_armed_path.is_file() and watchdog_process.poll() is None:
+            try:
+                armed = _load_object(watchdog_armed_path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                armed = {}
+            watchdog_armed = bool(
+                armed.get("schema_version") == WATCHDOG_SCHEMA_VERSION
+                and armed.get("status") == "armed"
+                and armed.get("pid") == watchdog_process.pid
+                and armed.get("watchdog_nonce") == watchdog_nonce
+                and armed.get("name") == name
+                and armed.get("region") == region
+            )
+            if watchdog_armed:
+                break
+        if watchdog_process.poll() is not None:
+            break
+        time.sleep(0.05)
+    if not watchdog_armed or watchdog_process.poll() is not None:
+        (output / "watchdog_cancelled").touch()
+        raise RuntimeError("digitalocean_builder_watchdog_not_armed_before_create")
     create_error_type: str | None = None
     try:
         create_http, create_response = _request(
@@ -730,6 +771,7 @@ def run_builder(
             "deadline_epoch": started + ttl,
             "source_commit": packet["source_commit"],
             "maximum_spend_usd": maximum_cost,
+            "watchdog_nonce": watchdog_nonce,
         },
     )
     build_exit: int | None = None

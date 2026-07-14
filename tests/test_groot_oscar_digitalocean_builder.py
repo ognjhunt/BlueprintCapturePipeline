@@ -78,6 +78,9 @@ def test_digitalocean_watchdog_persists_teardown_transport_error(
     )
     assert watchdog(state_path=state, token_file=token_file) == 2
     persisted = json.loads((tmp_path / "watchdog_result.json").read_text())
+    armed = json.loads((tmp_path / "watchdog_armed.json").read_text())
+    assert armed["status"] == "armed"
+    assert armed["droplet_id"] == "123"
     assert persisted["status"] == "teardown_unverified"
     assert persisted["teardown_error_type"] == "TimeoutError"
     assert "secret response" not in json.dumps(persisted)
@@ -96,6 +99,7 @@ def test_digitalocean_watchdog_reconciles_precreate_identity(
                 "name": "blueprint-groot-oscar-thin-aaaaaaaa",
                 "region": "sfo3",
                 "deadline_epoch": 0,
+                "watchdog_nonce": "nonce-for-test",
             }
         ),
         encoding="utf-8",
@@ -118,6 +122,8 @@ def test_digitalocean_watchdog_reconciles_precreate_identity(
         "name": "blueprint-groot-oscar-thin-aaaaaaaa",
         "region": "sfo3",
     }
+    armed = json.loads((tmp_path / "watchdog_armed.json").read_text())
+    assert armed["watchdog_nonce"] == "nonce-for-test"
 
 
 def test_builder_arms_watchdog_before_provider_create() -> None:
@@ -129,6 +135,9 @@ def test_builder_arms_watchdog_before_provider_create() -> None:
     assert run_source.index("watchdog_process = subprocess.Popen(") < run_source.index(
         'method="POST", path="/droplets"'
     )
+    assert run_source.index(
+        'watchdog_armed_path = output / "watchdog_armed.json"'
+    ) < run_source.index('method="POST", path="/droplets"')
 
 
 def test_ambiguous_create_reconciliation_deletes_exact_name_tag_match(
