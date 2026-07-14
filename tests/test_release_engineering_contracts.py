@@ -63,9 +63,7 @@ def test_uv_lock_and_frozen_exports_are_release_contracts() -> None:
             assert "uv sync --frozen" in text, workflow
 
     for workflow_name in ("sim-only-local-gate.yml", "python-compatibility.yml"):
-        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
-            encoding="utf-8"
-        )
+        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
         assert '"uv.lock"' in workflow
 
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -78,9 +76,7 @@ def test_uv_lock_and_frozen_exports_are_release_contracts() -> None:
 
 
 def test_full_lane_has_no_free_form_test_reduction_input() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "full-test-lane.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github" / "workflows" / "full-test-lane.yml").read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
     assert "pytest_args" not in workflow
@@ -220,9 +216,7 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
 
     for dockerfile_path in dockerfiles:
         text = dockerfile_path.read_text(encoding="utf-8")
-        defaults = dict(
-            re.findall(r"^ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", text, re.MULTILINE)
-        )
+        defaults = dict(re.findall(r"^ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", text, re.MULTILINE))
         from_lines = re.findall(r"^FROM\s+(.+)$", text, re.MULTILINE)
         stage_names = {
             match.group(1)
@@ -239,12 +233,8 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
             resolved = defaults.get(variable.group(1), "") if variable else image
             assert digest_pattern.search(resolved), (dockerfile_path, from_line, resolved)
 
-    deepprivacy = (ROOT / "deploy/docker/deepprivacy2/Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    video_to_world = (ROOT / "deploy/docker/video_to_world/Dockerfile").read_text(
-        encoding="utf-8"
-    )
+    deepprivacy = (ROOT / "deploy/docker/deepprivacy2/Dockerfile").read_text(encoding="utf-8")
+    video_to_world = (ROOT / "deploy/docker/video_to_world/Dockerfile").read_text(encoding="utf-8")
     groot_oscar = (
         ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
     ).read_text(encoding="utf-8")
@@ -253,7 +243,7 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     ).read_text(encoding="utf-8")
 
     assert "DEEPPRIVACY2_SOURCE_REF=" in deepprivacy
-    assert 'checkout --detach FETCH_HEAD' in deepprivacy
+    assert "checkout --detach FETCH_HEAD" in deepprivacy
     assert "git clone --branch main" not in video_to_world
     for source_ref in (
         "VIDEO_TO_WORLD_SOURCE_REF",
@@ -485,26 +475,27 @@ def test_groot_oscar_healthcheck_kit_dir_writability_probe() -> None:
             readonly_dir.chmod(0o755)
 
 
-def test_groot_oscar_release_push_requires_real_oci_runtime_smoke() -> None:
-    """A release push may happen only after exercising the finished image.
+def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> None:
+    """Release acceptance requires exercising the finished immutable image.
 
     ``runuser`` during a Docker build resolves supplementary groups differently
     from an OCI runtime when Dockerfile ``USER`` includes an explicit group.
-    The release script therefore has to load and run the final image before it
-    can push it.
+    The attested release path therefore pushes once, resolves the resulting
+    digest, and runs that exact immutable image before accepting the release.
+    A local investigation remains a ``--load`` build and smokes its local tag.
     """
-    script = (
-        ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
-    ).read_text(encoding="utf-8")
+    script = (ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh").read_text(
+        encoding="utf-8"
+    )
 
     build_at = script.index('"${build_args[@]}"')
-    smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$image_ref"')
-    push_at = script.index('docker push "$image_ref"')
-    assert build_at < smoke_at < push_at
+    digest_at = script.index('runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"')
+    smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$runtime_image_ref"')
+    assert build_at < digest_at < smoke_at
     assert "build_args+=(--load)" in script
-    assert "build_args+=(--push)" not in script
+    assert "build_args+=(--push --attest type=sbom --provenance mode=max)" in script
     assert 'test "$(id -un)" = blueprint' in script
-    assert 'grep -Fx isaac-sim' in script
+    assert "grep -Fx isaac-sim" in script
     assert "/isaac-sim/python.sh" in script
     assert "/opt/oscar-venv/bin/python" in script
     assert "/opt/gr00t-venv/bin/python" in script
@@ -514,7 +505,7 @@ def test_groot_oscar_release_push_requires_real_oci_runtime_smoke() -> None:
     assert re.search(
         r'if \[\[ "\$runtime_smoke_exit" -ne 0 \]\]; then.*?exit 2.*?fi'
         r'.*?if \[\[ "\$allow_push" == "true" \]\]; then\s*'
-        r'docker push "\$image_ref"',
+        r"PYTHONPATH=",
         script,
         re.DOTALL,
     )
@@ -544,9 +535,7 @@ def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
             "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF": (
                 "registry.example:5000/blueprint/groot-oscar"
             ),
-            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
-                manifest_path
-            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(manifest_path),
         },
     )
     assert completed.returncode == 2
@@ -578,9 +567,7 @@ def test_groot_oscar_release_push_requires_digest_pinned_base_image(
             ),
             "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BASE_IMAGE": mutable_base,
             "BLUEPRINT_ALLOW_GROOT_OSCAR_CLOSED_LOOP_IMAGE_PUSH": "true",
-            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
-                manifest_path
-            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(manifest_path),
         },
     )
 
@@ -588,9 +575,7 @@ def test_groot_oscar_release_push_requires_digest_pinned_base_image(
     assert "release image push requires a digest-pinned base image" in completed.stderr
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["base_image"] == mutable_base
-    assert manifest["blockers"] == [
-        "groot_oscar_closed_loop_base_image_must_be_digest_pinned"
-    ]
+    assert manifest["blockers"] == ["groot_oscar_closed_loop_base_image_must_be_digest_pinned"]
 
 
 def test_dependabot_covers_every_dockerfile_directory() -> None:
@@ -598,9 +583,7 @@ def test_dependabot_covers_every_dockerfile_directory() -> None:
     dockerfiles = [ROOT / "Dockerfile"]
     dockerfiles.extend(sorted((ROOT / "deploy" / "docker").rglob("Dockerfile")))
     dockerfile_directories = {
-        f"/{path.parent.relative_to(ROOT).as_posix()}"
-        if path.parent != ROOT
-        else "/"
+        f"/{path.parent.relative_to(ROOT).as_posix()}" if path.parent != ROOT else "/"
         for path in dockerfiles
     }
 

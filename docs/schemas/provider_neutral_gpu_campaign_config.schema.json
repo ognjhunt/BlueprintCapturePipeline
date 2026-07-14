@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/provider_neutral_gpu_campaign_config.v1.json",
+  "title": "Provider-neutral paid GPU campaign config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "campaign_id", "allocation_key", "source_sha", "image_digest",
+    "hourly_rate_usd", "max_provider_seconds", "spend_authorization_usd",
+    "prior_exposure_usd", "smoke_seed", "episode_seeds", "stage_deadlines_seconds",
+    "reuse_validated_same_allocation_canary", "canary_handoff"
+  ],
+  "properties": {
+    "schema_version": {"const": "provider_neutral_gpu_campaign_config.v1"},
+    "campaign_id": {"type": "string", "minLength": 1},
+    "allocation_key": {"type": "string", "minLength": 1},
+    "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "image_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0},
+    "max_provider_seconds": {"type": "integer", "minimum": 1},
+    "spend_authorization_usd": {"type": "number", "minimum": 0},
+    "prior_exposure_usd": {"type": "number", "minimum": 0},
+    "smoke_seed": {"type": "integer"},
+    "episode_seeds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer"}},
+    "stage_deadlines_seconds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_ready", "image_ready", "runtime_health", "canary", "smoke", "episodes", "artifact_retrieval", "teardown"],
+      "properties": {
+        "host_ready": {"type": "integer", "minimum": 1},
+        "image_ready": {"type": "integer", "minimum": 1},
+        "runtime_health": {"type": "integer", "minimum": 1},
+        "canary": {"type": "integer", "minimum": 1},
+        "smoke": {"type": "integer", "minimum": 1},
+        "episodes": {"type": "integer", "minimum": 1},
+        "artifact_retrieval": {"type": "integer", "minimum": 1},
+        "teardown": {"type": "integer", "minimum": 1}
+      }
+    },
+    "reuse_validated_same_allocation_canary": {"type": "boolean"},
+    "canary_handoff": {"type": ["object", "null"]}
+  }
+}

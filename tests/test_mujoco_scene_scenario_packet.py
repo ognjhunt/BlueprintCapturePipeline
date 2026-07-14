@@ -218,7 +218,7 @@ def test_materialize_aws_scene_asset_writes_mujoco_consumable_glb(tmp_path: Path
 
 
 def test_packet_helper_edges(tmp_path: Path) -> None:
-    assert packet._repo_root().name == "BlueprintCapturePipeline"
+    assert (packet._repo_root() / "pyproject.toml").is_file()
     scene = {
         "asset_id": "asset",
         "scene_id": "scene",

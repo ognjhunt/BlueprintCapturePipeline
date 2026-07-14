@@ -116,7 +116,7 @@ def test_optional_scene_metadata_inspection_records_counts(tmp_path: Path) -> No
 
 
 def test_scene_asset_metadata_conversion_and_proxy_helpers(monkeypatch, tmp_path: Path) -> None:
-    assert preview._repo_root().name == "BlueprintCapturePipeline"
+    assert (preview._repo_root() / "pyproject.toml").is_file()
     missing = inspect_scene_asset(tmp_path / "missing.ply")
     assert missing["status"] == "missing"
     txt = tmp_path / "notes.txt"

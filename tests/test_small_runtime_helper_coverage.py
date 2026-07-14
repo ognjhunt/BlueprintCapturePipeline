@@ -244,7 +244,7 @@ def _build_skillpack_repo(root: Path) -> None:
 def test_skill_sync_copies_skillpacks_and_main_reports_success(tmp_path: Path, capsys) -> None:
     _build_skillpack_repo(tmp_path)
 
-    assert skill_sync._repo_root().name == "BlueprintCapturePipeline"
+    assert (skill_sync._repo_root() / "pyproject.toml").is_file()
     result = skill_sync.sync_skill_pack(tmp_path)
 
     assert result["schema_version"] == "v1"

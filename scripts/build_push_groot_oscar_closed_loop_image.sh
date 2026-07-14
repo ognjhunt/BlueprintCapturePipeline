@@ -18,12 +18,24 @@ platform="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_PLATFORM:-linux/amd64}"
 allow_push="${BLUEPRINT_ALLOW_GROOT_OSCAR_CLOSED_LOOP_IMAGE_PUSH:-false}"
 base_image="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BASE_IMAGE:-nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d}"
 groot_ref="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_GROOT_SOURCE_REF:-e5749287857afd97b78f1147166137de29746392}"
+wbc_ref="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_WBC_SOURCE_REF:-6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b}"
+gear_checkpoint_revision="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_GEAR_CHECKPOINT_REVISION:-5e22ddc69abcea2a9aafc40536b14c232d3f9d7f}"
+oscar_source_ref="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_OSCAR_SOURCE_REF:-4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb}"
+oscar_checkpoint_revision="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_OSCAR_CHECKPOINT_REVISION:-c9781ffa7dd8556d862d7d9f338a2ea008a58ca6}"
 prefetch_checkpoints="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_PREFETCH_CHECKPOINTS:-true}"
 hf_token_file="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_HF_TOKEN_FILE:-${HF_TOKEN_FILE:-$HOME/.blueprint-secrets/hf_token}}"
 manifest_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_image_manifest.json}"
 registry_manifest_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_REGISTRY_MANIFEST_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_registry_manifest_diagnostic.json}"
 runtime_smoke_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_RUNTIME_SMOKE_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_runtime_smoke.json}"
+sbom_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SBOM_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_sbom.spdx.json}"
+provenance_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_PROVENANCE_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_provenance.json}"
+layer_report_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_LAYER_REPORT_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_layer_report.json}"
+buildkit_sbom_attestation_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BUILDKIT_SBOM_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_buildkit_sbom_attestation.json}"
+buildkit_provenance_attestation_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BUILDKIT_PROVENANCE_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_buildkit_provenance_attestation.json}"
 min_free_gib="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_MIN_FREE_GIB:-120}"
+expected_compressed_gib="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_EXPECTED_COMPRESSED_GIB:-46}"
+expected_unpacked_gib="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_EXPECTED_UNPACKED_GIB:-176}"
+disk_admission_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_DISK_ADMISSION_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_disk_admission.json}"
 allow_dirty_release_build="${BLUEPRINT_ALLOW_DIRTY_GROOT_OSCAR_CLOSED_LOOP_RELEASE_BUILD:-false}"
 source_identity_json="$(
   PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
@@ -156,10 +168,32 @@ docker info >/dev/null
 
 if [[ "${BLUEPRINT_SKIP_GROOT_OSCAR_CLOSED_LOOP_DISK_CHECK:-false}" != "true" ]]; then
   disk_check_free_kib="$(df -Pk "$repo_root" | awk 'NR==2 {print $4}')"
-  disk_check_required_kib=$((min_free_gib * 1024 * 1024))
+  disk_check_required_kib="$(PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 - \
+    "$disk_admission_output" "$disk_check_free_kib" "$expected_compressed_gib" \
+    "$expected_unpacked_gib" <<'PY'
+import json, sys
+from pathlib import Path
+from blueprint_pipeline.groot_oscar_release_hardening import DiskAdmission
+
+gib = 1024 ** 3
+evidence = DiskAdmission(
+    available_bytes=int(sys.argv[2]) * 1024,
+    image_compressed_bytes=int(float(sys.argv[3]) * gib),
+    image_unpacked_bytes=int(float(sys.argv[4]) * gib),
+).evidence()
+path = Path(sys.argv[1]).expanduser().resolve()
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+print((int(evidence["required_bytes"]) + 1023) // 1024)
+PY
+)"
+  legacy_required_kib=$((min_free_gib * 1024 * 1024))
+  if [[ "$legacy_required_kib" -gt "$disk_check_required_kib" ]]; then
+    disk_check_required_kib="$legacy_required_kib"
+  fi
   if [[ "${disk_check_free_kib:-0}" -lt "$disk_check_required_kib" ]]; then
     write_manifest "blocked" '["insufficient_local_disk_for_groot_oscar_closed_loop_image_build"]' >/dev/null
-    echo "insufficient local disk: need ${min_free_gib}GiB free (bakes both checkpoints)" >&2
+    echo "insufficient local disk for image build plus explicit registry scan; see $disk_admission_output" >&2
     exit 2
   fi
 fi
@@ -184,25 +218,53 @@ build_args=(
   --metadata-file "$build_metadata_file"
   --build-arg "ISAAC_SIM_BASE_IMAGE=$base_image"
   --build-arg "GROOT_SOURCE_REF=$groot_ref"
+  --build-arg "WBC_SOURCE_REF=$wbc_ref"
+  --build-arg "GEAR_SONIC_CHECKPOINT_REVISION=$gear_checkpoint_revision"
+  --build-arg "OSCAR_SOURCE_REF=$oscar_source_ref"
+  --build-arg "OSCAR_CHECKPOINT_REVISION=$oscar_checkpoint_revision"
   --build-arg "BLUEPRINT_SOURCE_COMMIT=$source_commit"
   --build-arg "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=$source_dirty_patch_sha256"
   --build-arg "PREFETCH_CHECKPOINTS=$prefetch_checkpoints"
   -f "$dockerfile"
   -t "$image_ref"
 )
-# Always load the finished image into the local Docker engine. Release images
-# must pass the real OCI runtime-user contract below before any registry push;
-# Dockerfile RUN/runuser checks do not reproduce container USER/group handling.
-build_args+=(--load)
+# The official release build is the one registry push. BuildKit emits its SBOM
+# and max-mode provenance attestations alongside the immutable image closure.
+# Local investigation remains --load only and cannot be called an attested
+# release build.
+if [[ "$allow_push" == "true" ]]; then
+  build_args+=(--push --attest type=sbom --provenance mode=max)
+else
+  build_args+=(--load)
+fi
 build_args+=("${secret_args[@]}" "$build_context_dir")
 
 "${build_args[@]}"
+
+runtime_image_ref="$image_ref"
+if [[ "$allow_push" == "true" ]]; then
+  build_digest="$(python3 - "$build_metadata_file" <<'PY'
+import json, re, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+digest = str(payload.get("containerimage.digest") or "")
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    descriptor = payload.get("containerimage.descriptor")
+    digest = str(descriptor.get("digest") or "") if isinstance(descriptor, dict) else ""
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    raise SystemExit("buildx metadata did not contain an immutable image digest")
+print(digest)
+PY
+)"
+  runtime_image_ref="${image_ref%%@*}"
+  runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"
+  docker pull "$runtime_image_ref"
+fi
 
 runtime_smoke_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 runtime_smoke_stdout="$(mktemp "${TMPDIR:-/tmp}/blueprint-groot-oscar-runtime-smoke.XXXXXX")"
 runtime_smoke_stderr="${runtime_smoke_stdout}.stderr"
 runtime_smoke_exit=0
-docker run --rm --entrypoint /bin/bash "$image_ref" -lc '
+docker run --rm --entrypoint /bin/bash "$runtime_image_ref" -lc '
   set -euo pipefail
   test "$(id -un)" = blueprint
   id -nG | tr " " "\n" | grep -Fx isaac-sim
@@ -217,7 +279,7 @@ docker run --rm --entrypoint /bin/bash "$image_ref" -lc '
     /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
 ' >"$runtime_smoke_stdout" 2>"$runtime_smoke_stderr" || runtime_smoke_exit=$?
 
-python3 - "$runtime_smoke_output" "$image_ref" "$runtime_smoke_started_at" \
+python3 - "$runtime_smoke_output" "$runtime_image_ref" "$runtime_smoke_started_at" \
   "$runtime_smoke_exit" "$runtime_smoke_stdout" "$runtime_smoke_stderr" <<'PY'
 import hashlib, json, sys
 from datetime import datetime, timezone
@@ -255,12 +317,8 @@ rm -f "$runtime_smoke_stdout" "$runtime_smoke_stderr"
 
 if [[ "$runtime_smoke_exit" -ne 0 ]]; then
   write_manifest "blocked" '["groot_oscar_closed_loop_oci_runtime_smoke_failed"]' >/dev/null
-  echo "finished image failed OCI runtime-user smoke; refusing registry push" >&2
+  echo "finished image failed OCI runtime-user smoke; refusing release acceptance" >&2
   exit 2
-fi
-
-if [[ "$allow_push" == "true" ]]; then
-  docker push "$image_ref"
 fi
 
 registry_diagnostic_exit=0
@@ -270,13 +328,92 @@ if [[ "$allow_push" == "true" ]]; then
       --image "$image_ref" --output "$registry_manifest_output" \
     || registry_diagnostic_exit=$?
 fi
+
+supply_chain_exit=0
+if [[ "$allow_push" == "true" && "$registry_diagnostic_exit" -eq 0 ]]; then
+  exact_digest_ref="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["resolved_digest_ref"])' "$registry_manifest_output")"
+  docker buildx imagetools inspect --format '{{json .SBOM}}' "$exact_digest_ref" \
+    > "$buildkit_sbom_attestation_output" || supply_chain_exit=$?
+  docker buildx imagetools inspect --format '{{json .Provenance}}' "$exact_digest_ref" \
+    > "$buildkit_provenance_attestation_output" || supply_chain_exit=$?
+  # The explicit registry: source is a safety property. Never let Syft infer
+  # the Docker daemon and export a second copy of this very large image.
+  syft "registry:${exact_digest_ref}" -o "spdx-json=${sbom_output}" || supply_chain_exit=$?
+  if [[ "$supply_chain_exit" -eq 0 ]]; then
+    PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 - \
+      "$sbom_output" "$provenance_output" "$layer_report_output" \
+      "$registry_manifest_output" "$build_metadata_file" "$exact_digest_ref" \
+      "$buildkit_sbom_attestation_output" "$buildkit_provenance_attestation_output" <<'PY' \
+      || supply_chain_exit=$?
+import json, sys
+from pathlib import Path
+from blueprint_pipeline.groot_oscar_release_hardening import (
+    build_layer_report,
+    validate_provenance_digest,
+    validate_spdx_document,
+)
+
+sbom_path, provenance_path, layer_path, registry_path, metadata_path = map(
+    lambda value: Path(value).expanduser().resolve(), sys.argv[1:6]
+)
+digest_ref = sys.argv[6]
+buildkit_sbom_path = Path(sys.argv[7]).expanduser().resolve()
+buildkit_provenance_path = Path(sys.argv[8]).expanduser().resolve()
+expected_digest = digest_ref.rsplit("@", 1)[-1]
+sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+registry = json.loads(registry_path.read_text(encoding="utf-8"))
+metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+blockers = validate_spdx_document(sbom)
+for label, path in (
+    ("sbom", buildkit_sbom_path),
+    ("provenance", buildkit_provenance_path),
+):
+    try:
+        attestation = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        attestation = None
+    if not attestation:
+        blockers.append(f"buildkit_{label}_attestation_missing")
+provenance = {
+    "schema_version": "groot_oscar_buildkit_provenance.v1",
+    "status": "passed",
+    "subject_digest": expected_digest,
+    "subject_digest_ref": digest_ref,
+    "buildkit_provenance_attestation": {"enabled": True, "mode": "max"},
+    "buildkit_sbom_attestation": {"enabled": True},
+    "buildx_metadata": metadata,
+    "raw_secret_values_recorded": False,
+}
+blockers.extend(validate_provenance_digest(provenance, expected_digest))
+provenance["blockers"] = sorted(set(blockers))
+provenance["status"] = "passed" if not blockers else "blocked"
+provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
+history = registry.get("layer_history") or []
+created_by = {
+    str(row.get("digest") or ""): str(row.get("created_by") or "")
+    for row in history if isinstance(row, dict)
+}
+layers = [
+    {
+        "digest": row.get("digest"),
+        "size_bytes": row.get("size_bytes"),
+        "created_by": created_by.get(str(row.get("digest") or ""), ""),
+    }
+    for row in registry.get("layers") or [] if isinstance(row, dict)
+]
+layer_path.write_text(json.dumps(build_layer_report(layers), indent=2, sort_keys=True) + "\n")
+if blockers or not layers:
+    raise SystemExit(2)
+PY
+  fi
+fi
 source_identity_after_json="$(
   PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
     'import json, sys; from blueprint_pipeline.g1_kitchen_bundle_compatibility import build_source_tree_identity; print(json.dumps(build_source_tree_identity(sys.argv[1]), sort_keys=True))' \
     "$repo_root"
 )"
 
-python3 - "$manifest_output" "$image_ref" "$platform" "$base_image" "$groot_ref" "$prefetch_checkpoints" "$allow_push" "$source_identity_json" "$source_identity_gate_json" "$registry_manifest_output" "$registry_diagnostic_exit" "$build_metadata_file" "$source_identity_after_json" "$runtime_smoke_output" <<'PY'
+python3 - "$manifest_output" "$image_ref" "$platform" "$base_image" "$groot_ref" "$prefetch_checkpoints" "$allow_push" "$source_identity_json" "$source_identity_gate_json" "$registry_manifest_output" "$registry_diagnostic_exit" "$build_metadata_file" "$source_identity_after_json" "$runtime_smoke_output" "$sbom_output" "$provenance_output" "$layer_report_output" "$supply_chain_exit" "$wbc_ref" "$gear_checkpoint_revision" "$oscar_source_ref" "$oscar_checkpoint_revision" <<'PY'
 import hashlib, json, re, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -290,6 +427,14 @@ registry_diagnostic_exit = int(sys.argv[11])
 metadata_path = Path(sys.argv[12]).expanduser().resolve()
 identity_after = json.loads(sys.argv[13])
 runtime_smoke_path = Path(sys.argv[14]).expanduser().resolve()
+sbom_path = Path(sys.argv[15]).expanduser().resolve()
+provenance_path = Path(sys.argv[16]).expanduser().resolve()
+layer_report_path = Path(sys.argv[17]).expanduser().resolve()
+supply_chain_exit = int(sys.argv[18])
+wbc_ref = sys.argv[19]
+gear_checkpoint_revision = sys.argv[20]
+oscar_source_ref = sys.argv[21]
+oscar_checkpoint_revision = sys.argv[22]
 pushed = sys.argv[7].lower() == "true"
 try:
     metadata_bytes = metadata_path.read_bytes()
@@ -353,6 +498,8 @@ if pushed and registry.get("resolved_digest") != build_digest:
     blockers.append("groot_oscar_closed_loop_buildx_registry_digest_mismatch")
 if pushed and registry_diagnostic_exit != 0:
     blockers.append("groot_oscar_closed_loop_registry_diagnostic_command_failed")
+if pushed and supply_chain_exit != 0:
+    blockers.append("groot_oscar_closed_loop_supply_chain_evidence_failed")
 payload = {
     "schema_version": "groot_oscar_closed_loop_image_build_manifest.v2",
     "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -365,6 +512,10 @@ payload = {
     "platform": sys.argv[3],
     "base_image": sys.argv[4],
     "groot_source_ref": sys.argv[5],
+    "wbc_source_ref": wbc_ref,
+    "gear_sonic_checkpoint_revision": gear_checkpoint_revision,
+    "oscar_source_ref": oscar_source_ref,
+    "oscar_checkpoint_revision": oscar_checkpoint_revision,
     "source_commit": identity["source_commit"],
     "source_dirty_patch_sha256": identity["source_dirty_patch_sha256"],
     "source_worktree_dirty": bool(identity["dirty"]),
@@ -425,6 +576,14 @@ payload = {
         "status": runtime_smoke.get("status"),
         "checks": runtime_smoke.get("checks", []),
     },
+    "buildkit_attestations": {
+        "sbom_enabled": pushed,
+        "provenance_enabled": pushed,
+        "provenance_mode": "max" if pushed else None,
+    },
+    "registry_sbom": {"path": str(sbom_path), "source": "registry_digest"},
+    "provenance": {"path": str(provenance_path)},
+    "layer_report": {"path": str(layer_report_path)},
     "blockers": blockers,
     "raw_secret_values_recorded": False,
     "claim_boundary": {
