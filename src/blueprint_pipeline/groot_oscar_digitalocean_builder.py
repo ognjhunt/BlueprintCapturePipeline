@@ -12,7 +12,10 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
+import platform
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -23,10 +26,14 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_infrastructure_admission import (
+    BUILD_SCHEMA_VERSION,
     DIGITALOCEAN_CPU_BUILDER_PROFILE,
     build_build_plane_admission,
+    build_cpu_build_execution_admission,
     build_digitalocean_cpu_builder_profile_evidence,
+    build_live_machine_capability_evidence,
 )
+from .paid_resource_admission import require_paid_resource_admission
 
 SCHEMA_VERSION = "groot_oscar_digitalocean_builder_run.v1"
 WATCHDOG_SCHEMA_VERSION = "groot_oscar_digitalocean_builder_watchdog.v1"
@@ -34,6 +41,83 @@ DO_API = "https://api.digitalocean.com/v2"
 BUILDER_TAG = "blueprint-groot-oscar-builder"
 TEARDOWN_TAG = "auto-teardown-required"
 READINESS_TIMEOUT_SECONDS = 15 * 60
+
+
+def live_machine_probe_command(*, mount_path: str = "/") -> str:
+    """Return a dependency-free probe whose JSON comes from the live host."""
+
+    encoded_mount = json.dumps(mount_path)
+    return f"""python3 - <<'PY'
+import json, os, platform, shutil, subprocess
+mount_path = {encoded_mount}
+stats = os.statvfs(mount_path)
+def ok(argv):
+    try:
+        return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+print(json.dumps({{
+    "observation_source": "live_machine_probe",
+    "system": platform.system(),
+    "architecture": platform.machine(),
+    "mount_path": mount_path,
+    "free_bytes": stats.f_bavail * stats.f_frsize,
+    "docker_cli_present": shutil.which("docker") is not None,
+    "docker_daemon_responding": ok(["docker", "info"]),
+    "docker_buildx_available": ok(["docker", "buildx", "version"]),
+    "builder_ready_marker": os.path.isfile("/root/blueprint-builder-ready"),
+}}, sort_keys=True))
+PY"""
+
+
+def parse_live_machine_probe(stdout: str) -> dict[str, Any]:
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("live_machine_probe_output_missing")
+    try:
+        observation = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise ValueError("live_machine_probe_output_invalid") from exc
+    if not isinstance(observation, Mapping):
+        raise ValueError("live_machine_probe_output_not_object")
+    return build_live_machine_capability_evidence(observation)
+
+
+def observe_local_machine(*, mount_path: str | Path) -> dict[str, Any]:
+    """Measure the machine running the allocator; do not accept caller claims."""
+
+    mount = Path(mount_path).expanduser().resolve()
+    stats = os.statvfs(mount)
+
+    def succeeds(command: Sequence[str]) -> bool:
+        try:
+            return (
+                subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    return build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": platform.system(),
+            "architecture": platform.machine(),
+            "mount_path": str(mount),
+            "free_bytes": stats.f_bavail * stats.f_frsize,
+            "docker_cli_present": shutil.which("docker") is not None,
+            "docker_daemon_responding": succeeds(["docker", "info"]),
+            "docker_buildx_available": succeeds(["docker", "buildx", "version"]),
+        }
+    )
+
+
+DETACHED_LAUNCH_SCHEMA_VERSION = "groot_oscar_digitalocean_builder_launch.v1"
 
 
 def _load_object(path: Path) -> dict[str, Any]:
@@ -98,9 +182,7 @@ def _host_key_material(private_path: Path) -> tuple[str, str, str]:
     )
 
 
-def build_cloud_init(
-    *, host_private_b64: str, host_public_b64: str, shutdown_minutes: int
-) -> str:
+def build_cloud_init(*, host_private_b64: str, host_public_b64: str, shutdown_minutes: int) -> str:
     """Return cloud-init with an exact client-generated SSH host identity."""
 
     if not host_private_b64 or not host_public_b64:
@@ -185,14 +267,10 @@ def _ssh_options(*, private_key: Path, known_hosts: Path) -> list[str]:
 
 
 def _delete_and_verify(*, token: str, droplet_id: str) -> dict[str, Any]:
-    delete_http, _ = _request(
-        token=token, method="DELETE", path=f"/droplets/{droplet_id}"
-    )
+    delete_http, _ = _request(token=token, method="DELETE", path=f"/droplets/{droplet_id}")
     verify_http: int | None = None
     for _ in range(30):
-        verify_http, _ = _request(
-            token=token, method="GET", path=f"/droplets/{droplet_id}"
-        )
+        verify_http, _ = _request(token=token, method="GET", path=f"/droplets/{droplet_id}")
         if verify_http == 404:
             break
         time.sleep(5)
@@ -221,15 +299,11 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
             )
             return 0
         time.sleep(15)
-    result = _delete_and_verify(
-        token=_read_secret(token_file), droplet_id=droplet_id
-    )
+    result = _delete_and_verify(token=_read_secret(token_file), droplet_id=droplet_id)
     payload = {
         "schema_version": WATCHDOG_SCHEMA_VERSION,
         "status": (
-            "provider_terminal"
-            if result["provider_absence_confirmed"]
-            else "teardown_unverified"
+            "provider_terminal" if result["provider_absence_confirmed"] else "teardown_unverified"
         ),
         "droplet_id": droplet_id,
         **result,
@@ -239,12 +313,8 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
     return 0 if result["provider_absence_confirmed"] else 2
 
 
-def _live_profile(
-    *, token: str, region: str
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    sizes_http, sizes_payload = _request(
-        token=token, method="GET", path="/sizes?per_page=200"
-    )
+def _live_profile(*, token: str, region: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    sizes_http, sizes_payload = _request(token=token, method="GET", path="/sizes?per_page=200")
     droplets_http, droplets_payload = _request(
         token=token, method="GET", path="/droplets?per_page=200"
     )
@@ -300,9 +370,7 @@ def run_builder(
     packet = _load_object(packet_manifest_path)
     builder = _load_object(builder_evidence_path)
     spend = _load_object(spend_path)
-    admission = build_build_plane_admission(
-        packet=packet, builder=builder, spend=spend
-    )
+    admission = build_build_plane_admission(packet=packet, builder=builder, spend=spend)
     write_json(output / "build_plane_admission.json", admission)
     blockers = list(admission["blockers"])
     if not allow_paid:
@@ -312,19 +380,21 @@ def run_builder(
         write_json(output / "builder_run_result.json", result)
         return result
 
+    require_paid_resource_admission(
+        admission,
+        resource_class="cpu_build",
+        expected_schema_version=BUILD_SCHEMA_VERSION,
+    )
+
     token = _read_secret(token_file)
     profile, builders = _live_profile(token=token, region=region)
     write_json(output / "live_builder_profile_evidence.json", profile)
     if profile["status"] != "verified" or builders:
-        result = _blocked_result(
-            profile["blockers"] or ["digitalocean_builder_overlap_detected"]
-        )
+        result = _blocked_result(profile["blockers"] or ["digitalocean_builder_overlap_detected"])
         write_json(output / "builder_run_result.json", result)
         return result
 
-    host_private_b64, host_public_b64, fingerprint = _host_key_material(
-        host_private_key
-    )
+    host_private_b64, host_public_b64, fingerprint = _host_key_material(host_private_key)
     if fingerprint != builder.get("ssh_host_key_sha256"):
         raise RuntimeError("builder_launch_bound_host_key_fingerprint_mismatch")
     ttl = int(spend["hard_ttl_seconds"])
@@ -345,9 +415,7 @@ def run_builder(
     create_http, create_response = _request(
         token=token, method="POST", path="/droplets", payload=create_payload
     )
-    droplet = (
-        create_response.get("droplet") if isinstance(create_response, dict) else None
-    )
+    droplet = create_response.get("droplet") if isinstance(create_response, dict) else None
     droplet_id = str((droplet or {}).get("id") or "")
     write_json(
         output / "create_result.json",
@@ -396,9 +464,7 @@ def run_builder(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    (output / "watchdog.pid").write_text(
-        f"{watchdog_process.pid}\n", encoding="utf-8"
-    )
+    (output / "watchdog.pid").write_text(f"{watchdog_process.pid}\n", encoding="utf-8")
     build_status = "blocked"
     build_exit: int | None = None
     public_ip = ""
@@ -427,24 +493,17 @@ def run_builder(
         if not public_ip:
             raise RuntimeError("digitalocean_builder_public_ip_timeout")
 
-        public_key = Path(
-            str(host_private_key.expanduser().resolve()) + ".pub"
-        ).read_text(encoding="utf-8")
+        public_key = Path(str(host_private_key.expanduser().resolve()) + ".pub").read_text(
+            encoding="utf-8"
+        )
         known_hosts = output / "launch_bound_known_hosts"
         known_hosts.write_text(
             known_hosts_line(ip=public_ip, public_key_text=public_key),
             encoding="utf-8",
         )
-        options = _ssh_options(
-            private_key=login_private_key.expanduser(), known_hosts=known_hosts
-        )
-        ready = False
-        remote_preflight = (
-            "test -f /root/blueprint-builder-ready && "
-            "docker info >/dev/null && docker buildx version >/dev/null && "
-            "test $(uname -m) = x86_64 && "
-            "test $(df -Pk / | awk 'NR==2 {print $4}') -ge 125829120"
-        )
+        options = _ssh_options(private_key=login_private_key.expanduser(), known_hosts=known_hosts)
+        live_capability: dict[str, Any] | None = None
+        remote_preflight = live_machine_probe_command(mount_path="/")
         while time.time() < readiness_deadline:
             completed = subprocess.run(
                 ["ssh", *options, f"root@{public_ip}", remote_preflight],
@@ -452,11 +511,33 @@ def run_builder(
                 text=True,
             )
             if completed.returncode == 0:
-                ready = True
-                break
+                try:
+                    candidate = parse_live_machine_probe(completed.stdout)
+                except ValueError:
+                    candidate = None
+                if candidate is not None:
+                    live_capability = candidate
+                    write_json(output / "live_machine_capability.json", candidate)
+                    if (
+                        candidate["status"] == "verified"
+                        and candidate.get("builder_ready_marker") is True
+                    ):
+                        break
             time.sleep(10)
-        if not ready:
+        if (
+            live_capability is None
+            or live_capability["status"] != "verified"
+            or live_capability.get("builder_ready_marker") is not True
+        ):
             raise RuntimeError("digitalocean_builder_runtime_preflight_failed")
+
+        execution_admission = build_cpu_build_execution_admission(
+            allocation_admission=admission,
+            live_machine=live_capability,
+        )
+        write_json(output / "cpu_build_execution_admission.json", execution_admission)
+        if execution_admission["status"] != "admitted":
+            raise RuntimeError("digitalocean_builder_execution_admission_blocked")
 
         packet_tarball = Path(str(packet["tarball_path"])).expanduser().resolve()
         if not packet_tarball.is_file():
@@ -476,6 +557,7 @@ def run_builder(
         remote_command = " && ".join(
             [
                 "set -euo pipefail",
+                "install -d -m 700 /root/.blueprint-secrets",
                 "install -m 600 /root/blueprint-build/docker_username /root/.blueprint-secrets/docker_username",
                 "install -m 600 /root/blueprint-build/docker_pat /root/.blueprint-secrets/docker_pat",
                 "rm -f /root/blueprint-build/docker_username /root/blueprint-build/docker_pat",
@@ -493,9 +575,7 @@ def run_builder(
                 stderr=subprocess.STDOUT,
             )
         build_exit = completed.returncode
-        remote_result_dir = (
-            "/root/blueprint-build/run/groot_oscar_thin_remote_build"
-        )
+        remote_result_dir = "/root/blueprint-build/run/groot_oscar_thin_remote_build"
         results_dir = output / "remote_results"
         ensure_dir(results_dir)
         subprocess.run(
@@ -537,9 +617,7 @@ def run_builder(
             if build_status == "completed" and teardown["provider_absence_confirmed"]
             else "failed"
         ),
-        "blockers": (
-            [] if build_status == "completed" else ["remote_thin_image_build_failed"]
-        ),
+        "blockers": ([] if build_status == "completed" else ["remote_thin_image_build_failed"]),
         "droplet_id": droplet_id,
         "build_exit_code": build_exit,
         "source_commit": packet["source_commit"],
@@ -556,50 +634,56 @@ def run_builder(
     return result
 
 
+def launch_detached_builder(*, output_dir: Path, run_arguments: Sequence[str]) -> dict[str, Any]:
+    """Start the paid-gated supervisor outside the invoking terminal session."""
+
+    output = output_dir.expanduser().resolve()
+    ensure_dir(output)
+    result_path = output / "builder_run_result.json"
+    if result_path.exists():
+        raise ValueError("builder_output_already_has_terminal_result")
+    log_path = output / "supervisor.log"
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.paid_resource_allocator",
+        "cpu-build-run",
+        *run_arguments,
+    ]
+    with log_path.open("ab") as log:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    payload = {
+        "schema_version": DETACHED_LAUNCH_SCHEMA_VERSION,
+        "status": "supervisor_started",
+        "pid": process.pid,
+        "output_dir": str(output),
+        "log_path": str(log_path),
+        "start_new_session": True,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(output / "supervisor_launch.json", payload)
+    (output / "supervisor.pid").write_text(f"{process.pid}\n", encoding="utf-8")
+    return payload
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    if raw and raw[0] in {"run", "launch"}:
+        print("legacy_cpu_builder_launcher_disabled:use_blueprint-allocate-cpu-build")
+        return 2
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    run = subparsers.add_parser("run")
-    run.add_argument("--output-dir", required=True)
-    run.add_argument("--packet-manifest", required=True)
-    run.add_argument("--builder-evidence", required=True)
-    run.add_argument("--spend", required=True)
-    run.add_argument(
-        "--token-file", default="~/.blueprint-secrets/digitalocean_api_token"
-    )
-    run.add_argument(
-        "--docker-username-file", default="~/.blueprint-secrets/docker_username"
-    )
-    run.add_argument(
-        "--docker-password-file", default="~/.blueprint-secrets/docker_pat"
-    )
-    run.add_argument("--login-private-key", required=True)
-    run.add_argument("--host-private-key", required=True)
-    run.add_argument("--ssh-key-id", required=True, type=int)
-    run.add_argument("--region", default="sfo3")
-    run.add_argument("--allow-paid", action="store_true")
     watch = subparsers.add_parser("watchdog")
     watch.add_argument("--state", required=True)
     watch.add_argument("--token-file", required=True)
-    args = parser.parse_args(argv)
-    if args.command == "watchdog":
-        return watchdog(state_path=Path(args.state), token_file=Path(args.token_file))
-    result = run_builder(
-        output_dir=Path(args.output_dir),
-        packet_manifest_path=Path(args.packet_manifest),
-        builder_evidence_path=Path(args.builder_evidence),
-        spend_path=Path(args.spend),
-        token_file=Path(args.token_file),
-        docker_username_file=Path(args.docker_username_file),
-        docker_password_file=Path(args.docker_password_file),
-        login_private_key=Path(args.login_private_key),
-        host_private_key=Path(args.host_private_key),
-        ssh_key_id=args.ssh_key_id,
-        region=args.region,
-        allow_paid=args.allow_paid,
-    )
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if result["status"] == "completed" else 2
+    args = parser.parse_args(raw)
+    return watchdog(state_path=Path(args.state), token_file=Path(args.token_file))
 
 
 if __name__ == "__main__":

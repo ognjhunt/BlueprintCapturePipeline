@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -52,6 +53,13 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     assert "thin_release_image_contract" in script
     assert 'release.get("required_cuda_version")' in script
     assert '"required_cuda_version":"12.6"' not in script
+    subprocess.run(
+        ["bash", "-n", result["run_script_path"]],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert '+"\\n",encoding="utf-8")' in script
     assert "--push" in script
     assert "hf_token" not in script
     assert "snapshot_download" not in script

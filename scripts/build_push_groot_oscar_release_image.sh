@@ -2,6 +2,11 @@
 # Thin, frequently pulled Blueprint release built on an immutable foundation.
 set -euo pipefail
 
+[[ "${BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT:-false}" == true ]] || {
+  echo "legacy build path disabled; use paid_resource_allocator cpu-build" >&2
+  exit 2
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 foundation="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF:-}"
 image_ref="${BLUEPRINT_GROOT_OSCAR_RELEASE_IMAGE_REF:-${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF:-}}"

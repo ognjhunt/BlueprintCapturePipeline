@@ -91,7 +91,7 @@ jobs:
             --spend "$RUNNER_TEMP/build-spend.json" \
             --out "$RUNNER_TEMP/groot-oscar-packet/build_plane_admission.json"
 
-      - name: Build, push, resolve digests, and verify thin contract
+      - name: Build through canonical CPU allocator
         shell: bash
         env:
           BLUEPRINT_REMOTE_IMAGE_BUILD_DOCKER_LOGIN: "true"
@@ -99,8 +99,14 @@ jobs:
           BLUEPRINT_DOCKER_PASSWORD_FILE: ${{ runner.temp }}/registry-secrets/password
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build"
-          ./remote_build_groot_oscar_thin_images.sh
+          python3 -m blueprint_pipeline.paid_resource_allocator cpu-build-local \
+            --output-dir "$RUNNER_TEMP/groot-oscar-packet/local-cpu-allocation" \
+            --packet-manifest "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build_packet_manifest.json" \
+            --builder-evidence "$RUNNER_TEMP/builder.json" \
+            --spend "$RUNNER_TEMP/build-spend.json" \
+            --mount-path "$RUNNER_TEMP" \
+            --build-workdir "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build" \
+            --build-script "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build/remote_build_groot_oscar_thin_images.sh"
 
       - name: Upload immutable release evidence
         if: always()
@@ -111,6 +117,9 @@ jobs:
           retention-days: 90
           path: |
             ${{ runner.temp }}/groot-oscar-packet/build_plane_admission.json
+            ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/live_machine_capability.json
+            ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/cpu_build_execution_admission.json
+            ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/local_cpu_build_allocator_result.json
             ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build_packet_manifest.json
             ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/foundation_buildx_metadata.json
             ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildx_metadata.json

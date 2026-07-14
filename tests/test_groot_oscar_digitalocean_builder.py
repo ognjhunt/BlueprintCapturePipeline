@@ -10,6 +10,9 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     build_cloud_init,
     build_droplet_payload,
     known_hosts_line,
+    launch_detached_builder,
+    live_machine_probe_command,
+    parse_live_machine_probe,
     run_builder,
 )
 
@@ -59,6 +62,78 @@ def test_known_hosts_line_uses_exact_launch_bound_ed25519_key() -> None:
     ) == "203.0.113.5 ssh-ed25519 AAAAhostkey\n"
     with pytest.raises(ValueError, match="public_host_key_invalid"):
         known_hosts_line(ip="203.0.113.5", public_key_text="ssh-rsa AAAA")
+
+
+def test_detached_launch_uses_new_session_and_records_only_nonsecret_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    observed = {}
+
+    class Process:
+        pid = 4321
+
+    def fake_popen(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder.subprocess.Popen",
+        fake_popen,
+    )
+    result = launch_detached_builder(
+        output_dir=tmp_path / "run",
+        run_arguments=["--output-dir", str(tmp_path / "run"), "--allow-paid"],
+    )
+    assert observed["start_new_session"] is True
+    assert observed["stdin"] is not None
+    assert observed["command"][-1] == "--allow-paid"
+    assert result["pid"] == 4321
+    assert result["raw_secret_values_recorded"] is False
+
+
+def test_live_machine_probe_is_validated_as_direct_machine_evidence() -> None:
+    command = live_machine_probe_command(mount_path="/")
+    assert 'os.path.isfile("/root/blueprint-builder-ready")' in command
+    assert "os.statvfs" in command
+    assert 'ok(["docker", "info"])' in command
+    evidence = parse_live_machine_probe(
+        "boot banner\n"
+        + json.dumps(
+            {
+                "observation_source": "live_machine_probe",
+                "system": "Linux",
+                "architecture": "x86_64",
+                "mount_path": "/",
+                "free_bytes": 130 * 1024**3,
+                "docker_cli_present": True,
+                "docker_daemon_responding": True,
+                "docker_buildx_available": True,
+                "builder_ready_marker": True,
+            }
+        )
+    )
+    assert evidence["status"] == "verified"
+    assert evidence["free_bytes"] == 130 * 1024**3
+
+
+def test_live_machine_probe_rejects_catalog_or_requested_configuration() -> None:
+    evidence = parse_live_machine_probe(
+        json.dumps(
+            {
+                "observation_source": "provider_catalog",
+                "system": "Linux",
+                "architecture": "x86_64",
+                "mount_path": "/",
+                "free_bytes": 320 * 1024**3,
+                "docker_cli_present": True,
+                "docker_daemon_responding": True,
+                "docker_buildx_available": True,
+            }
+        )
+    )
+    assert evidence["status"] == "blocked"
+    assert "live_machine_observation_source_invalid" in evidence["blockers"]
 
 
 def test_run_builder_is_dry_and_does_not_read_secrets_without_paid_gate(

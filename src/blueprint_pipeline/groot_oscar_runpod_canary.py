@@ -8,14 +8,17 @@ the startup canary; it is not an image builder or a customer cold-start path.
 
 from __future__ import annotations
 
-import argparse
 import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import write_json
-from .groot_oscar_infrastructure_admission import build_runpod_serve_plane_admission
+from .groot_oscar_infrastructure_admission import (
+    SERVE_SCHEMA_VERSION,
+    build_runpod_serve_plane_admission,
+)
+from .paid_resource_admission import require_paid_resource_admission
 from .runpod_provider_adapter import (
     RUNPOD_IMAGE_STARTUP_CANARY_MODE,
     run_runpod_provider_adapter,
@@ -48,9 +51,7 @@ def bind_canary_request(
     gpu = gpu if isinstance(gpu, dict) else {}
     admitted_gpu = str(admission.get("gpu_type_id") or "").strip()
     configured_gpu = str(
-        gpu.get("preferred_gpu_type_id")
-        or gpu.get("preferred_gpu_class")
-        or ""
+        gpu.get("preferred_gpu_type_id") or gpu.get("preferred_gpu_class") or ""
     ).strip()
     if configured_gpu and configured_gpu != admitted_gpu:
         blockers.append("runpod_request_gpu_differs_from_admission")
@@ -91,9 +92,7 @@ def prepare_canary_launch(
             **admission,
             "status": "blocked",
             "blockers": sorted(
-                set(
-                    [*admission.get("blockers", []), "runpod_preflight_bundle_not_verified"]
-                )
+                set([*admission.get("blockers", []), "runpod_preflight_bundle_not_verified"])
             ),
         }
     bound = bind_canary_request(request=request, admission=admission)
@@ -107,29 +106,31 @@ def prepare_canary_launch(
     }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--provider-launch-request", required=True)
-    parser.add_argument("--release-evidence", required=True)
-    parser.add_argument("--model-cache-evidence", required=True)
-    parser.add_argument("--preflight-bundle", required=True)
-    parser.add_argument("--admission-out", required=True)
-    parser.add_argument("--bound-request-out", required=True)
-    parser.add_argument("--adapter-output", required=True)
-    parser.add_argument("--pod-name", required=True)
-    parser.add_argument("--execute", action="store_true")
-    args = parser.parse_args(argv)
-    preflight = _read(args.preflight_bundle)
+def run_canary(
+    *,
+    provider_launch_request: str | Path,
+    release_evidence: str | Path,
+    model_cache_evidence: str | Path,
+    preflight_bundle: str | Path,
+    admission_out: str | Path,
+    bound_request_out: str | Path,
+    adapter_output: str | Path,
+    pod_name: str,
+    execute: bool,
+) -> dict[str, Any]:
+    """Run the adapter only through the canonical GPU-canary allocator."""
+
+    preflight = _read(preflight_bundle)
     prepared = prepare_canary_launch(
-        request=_read(args.provider_launch_request),
-        release=_read(args.release_evidence),
-        model_cache=_read(args.model_cache_evidence),
+        request=_read(provider_launch_request),
+        release=_read(release_evidence),
+        model_cache=_read(model_cache_evidence),
         preflight=preflight,
     )
     spend = preflight.get("spend")
     spend = spend if isinstance(spend, Mapping) else {}
     watchdog_prefix = str(spend.get("watchdog_pod_name_prefix") or "").strip()
-    if watchdog_prefix and not args.pod_name.startswith(watchdog_prefix):
+    if watchdog_prefix and not pod_name.startswith(watchdog_prefix):
         prepared = {
             **prepared,
             "status": "blocked",
@@ -142,35 +143,50 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             ),
         }
-    write_json(Path(args.admission_out), prepared)
+    write_json(Path(admission_out), prepared)
     if prepared["status"] != "admitted":
-        print(json.dumps(prepared, indent=2, sort_keys=True))
-        return 2
-    write_json(Path(args.bound_request_out), prepared["bound_request"])
+        return prepared
+    require_paid_resource_admission(
+        prepared["admission"],
+        resource_class="gpu_canary",
+        expected_schema_version=SERVE_SCHEMA_VERSION,
+    )
+    write_json(Path(bound_request_out), prepared["bound_request"])
     adapter = run_runpod_provider_adapter(
-        provider_launch_request_path=args.bound_request_out,
-        output_path=args.adapter_output,
-        mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE if args.execute else "dry-run",
-        allow_runpod_api_call=args.execute,
-        pod_name=args.pod_name,
+        provider_launch_request_path=bound_request_out,
+        output_path=adapter_output,
+        mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE if execute else "dry-run",
+        allow_runpod_api_call=execute,
+        pod_name=pod_name,
         gpu_type_id=prepared["admission"]["gpu_type_id"],
     )
-    if args.execute and adapter.get("status") == "submitted":
+    if execute and adapter.get("status") == "submitted":
         response = adapter.get("runpod_response")
         response = response if isinstance(response, Mapping) else {}
         pod_id = str(response.get("id") or "").strip()
         write_json(
-            Path(args.adapter_output).resolve().parent / "warm_serve_pod.json",
+            Path(adapter_output).resolve().parent / "warm_serve_pod.json",
             {
                 "schema_version": "groot_oscar_runpod_canary_allocation.v1",
                 "status": "allocated" if pod_id else "allocation_ambiguous",
                 "pod_id": pod_id or None,
-                "pod_name": args.pod_name,
+                "pod_name": pod_name,
                 "release_image_ref": prepared["admission"]["release_image_ref"],
             },
         )
-    print(json.dumps(adapter, indent=2, sort_keys=True))
-    return 0 if adapter.get("status") in {"dry_run_ready", "submitted"} else 2
+    return dict(adapter)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Hard-disable the legacy mutation entrypoint.
+
+    Imports remain for compatibility and tests, but allocation is only exposed
+    by ``blueprint-allocate-gpu-canary``.
+    """
+
+    del argv
+    print("legacy_gpu_canary_launcher_disabled:use_blueprint-allocate-gpu-canary")
+    return 2
 
 
 if __name__ == "__main__":

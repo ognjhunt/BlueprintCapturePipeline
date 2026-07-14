@@ -45,20 +45,27 @@ creation. `accept-new`, trust-on-first-use, or deleting a stale `known_hosts`
 entry cannot satisfy the gate. Existing unrelated production droplets do not
 count as builders and must never be repurposed.
 
-Use `python -m blueprint_pipeline.groot_oscar_digitalocean_builder run` for
-this profile. It is dry by default and requires both an admitted spend JSON
-and `--allow-paid`. The launcher rechecks the live size catalog and builder
-inventory, provisions the exact launch-bound host key, waits for Docker,
-Buildx, amd64, and free-disk checks, transfers registry credentials as files
+Use `python -m blueprint_pipeline.paid_resource_allocator cpu-build` for this
+profile. It is the only supported CPU builder allocator; the old
+provider-specific `run` and `launch` entrypoints
+are hard-disabled. It is dry by default and requires both an admitted spend JSON
+and `--allow-paid`. The allocator rechecks the live size catalog and builder
+inventory, provisions the exact launch-bound host key, then records the actual
+filesystem mount/free bytes, Linux architecture, Docker daemon, and Buildx
+responses from a probe running on the allocated host. Requested configuration
+and provider catalog rows cannot substitute for that evidence. It transfers
+registry credentials as files
 over strict-key SSH, runs the checksum-bound packet, retrieves JSON evidence,
-and deletes the droplet in `finally`. A detached watchdog independently
-deletes the same droplet at the authorized deadline.
+and deletes the droplet in `finally`. The `launch` command starts that
+supervisor in a new OS session so a terminal or orchestration timeout cannot
+interrupt the build; `run` remains the foreground implementation entrypoint.
+A detached watchdog independently deletes the same droplet at the authorized
+deadline.
 
-```bash
-BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF='<registry>/blueprint-groot-oscar-foundation:<version>' \
-BLUEPRINT_ALLOW_GROOT_OSCAR_FOUNDATION_IMAGE_PUSH=true \
-./scripts/build_push_groot_oscar_foundation_image.sh
-```
+The old standalone foundation build script is hard-disabled. Prepare the
+checksum-bound thin-build packet, then run the canonical `cpu-build` command;
+that single allocation builds foundation and release in the same bounded
+session.
 
 Resolve the pushed image to `repository@sha256:<digest>`. Cache that exact
 digest on every GPU host; never configure the release builder with a tag.
@@ -93,12 +100,9 @@ the builder inspects both registry manifests, proves that the release extends
 the exact foundation layers, and limits only the new compressed release layers
 to 2 GiB by default.
 
-```bash
-BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF='<registry>/foundation@sha256:<digest>' \
-BLUEPRINT_GROOT_OSCAR_RELEASE_IMAGE_REF='<registry>/blueprint-groot-oscar-eval:<version>' \
-BLUEPRINT_ALLOW_GROOT_OSCAR_RELEASE_IMAGE_PUSH=true \
-./scripts/build_push_groot_oscar_release_image.sh
-```
+The old standalone release and monolithic closed-loop image scripts are
+hard-disabled. Use the same canonical `cpu-build` packet flow so a
+release build cannot bypass live capability or paid-resource admission.
 
 The desired operational target is hundreds of MB; 2 GiB is a hard release
 budget, not a claim that the first build already achieves the desired target.
@@ -177,7 +181,7 @@ adapter remains behind its separate `BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true`
 gate:
 
 ```bash
-python -m blueprint_pipeline.groot_oscar_runpod_canary \
+python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --provider-launch-request <provider-launch-request.json> \
   --release-evidence <groot_oscar_thin_remote_build_result.json> \
   --model-cache-evidence <model-cache-verification.json> \

@@ -24,6 +24,8 @@ from .common import write_json
 
 BUILD_SCHEMA_VERSION = "groot_oscar_build_plane_admission.v1"
 SERVE_SCHEMA_VERSION = "groot_oscar_runpod_serve_plane_admission.v1"
+LIVE_MACHINE_SCHEMA_VERSION = "blueprint.live_machine_capability.v1"
+CPU_BUILD_EXECUTION_SCHEMA_VERSION = "blueprint.cpu_build_execution_admission.v1"
 MIN_BUILD_FREE_BYTES = 120 * 1024**3
 MAX_BUILD_TTL_SECONDS = 2 * 60 * 60
 MAX_CANARY_TTL_SECONDS = 30 * 60
@@ -56,6 +58,92 @@ def _string(value: Any) -> str:
 
 def _positive_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def build_live_machine_capability_evidence(
+    observation: Mapping[str, Any],
+    *,
+    minimum_free_bytes: int = MIN_BUILD_FREE_BYTES,
+    required_architecture: str = "x86_64",
+) -> dict[str, Any]:
+    """Validate facts measured by a probe running on the machine itself.
+
+    Catalog rows and requested VM configuration are deliberately not accepted
+    here.  The caller must pass the direct output of the live-machine probe.
+    """
+
+    blockers: list[str] = []
+    if observation.get("observation_source") != "live_machine_probe":
+        blockers.append("live_machine_observation_source_invalid")
+    if observation.get("system") != "Linux":
+        blockers.append("live_machine_linux_not_verified")
+    architecture = _string(observation.get("architecture"))
+    if architecture != required_architecture:
+        blockers.append("live_machine_architecture_mismatch")
+    mount_path = _string(observation.get("mount_path"))
+    if not mount_path.startswith("/"):
+        blockers.append("live_machine_mount_path_invalid")
+    free_bytes = observation.get("free_bytes")
+    if type(free_bytes) is not int or free_bytes < minimum_free_bytes:
+        blockers.append("live_machine_free_space_below_minimum")
+    if observation.get("docker_cli_present") is not True:
+        blockers.append("live_machine_docker_cli_missing")
+    if observation.get("docker_daemon_responding") is not True:
+        blockers.append("live_machine_docker_daemon_unavailable")
+    if observation.get("docker_buildx_available") is not True:
+        blockers.append("live_machine_docker_buildx_unavailable")
+    if observation.get("builder_ready_marker") is not True:
+        blockers.append("live_machine_builder_initialization_incomplete")
+    return {
+        "schema_version": LIVE_MACHINE_SCHEMA_VERSION,
+        "status": "verified" if not blockers else "blocked",
+        "blockers": blockers,
+        "observation_source": observation.get("observation_source"),
+        "system": observation.get("system"),
+        "architecture": architecture or None,
+        "mount_path": mount_path or None,
+        "free_bytes": free_bytes,
+        "docker_cli_present": observation.get("docker_cli_present"),
+        "docker_daemon_responding": observation.get("docker_daemon_responding"),
+        "docker_buildx_available": observation.get("docker_buildx_available"),
+        "builder_ready_marker": observation.get("builder_ready_marker"),
+        "minimum_free_bytes": minimum_free_bytes,
+        "required_architecture": required_architecture,
+        "claim_boundary": {
+            "requested_configuration_is_not_capability_evidence": True,
+            "provider_catalog_is_not_live_machine_evidence": True,
+        },
+    }
+
+
+def build_cpu_build_execution_admission(
+    *,
+    allocation_admission: Mapping[str, Any],
+    live_machine: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Admit build execution only after allocation and a live host probe."""
+
+    blockers: list[str] = []
+    if allocation_admission.get("schema_version") != BUILD_SCHEMA_VERSION:
+        blockers.append("cpu_builder_allocation_admission_schema_invalid")
+    if allocation_admission.get("status") != "admitted":
+        blockers.append("cpu_builder_allocation_not_admitted")
+    if live_machine.get("schema_version") != LIVE_MACHINE_SCHEMA_VERSION:
+        blockers.append("cpu_builder_live_capability_schema_invalid")
+    if live_machine.get("status") != "verified":
+        blockers.append("cpu_builder_live_capability_not_verified")
+    blockers.extend(f"live_capability:{item}" for item in live_machine.get("blockers", []))
+    return {
+        "schema_version": CPU_BUILD_EXECUTION_SCHEMA_VERSION,
+        "status": "admitted" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "allocation_admission_schema_version": allocation_admission.get("schema_version"),
+        "live_machine_capability": dict(live_machine),
+        "claim_boundary": {
+            "allocation_admission_is_not_build_execution_admission": True,
+            "live_probe_is_required_after_allocation": True,
+        },
+    }
 
 
 def build_digitalocean_cpu_builder_profile_evidence(
@@ -151,8 +239,7 @@ def build_runpod_gpu_runtime_evidence(
         (
             row
             for row in rows
-            if isinstance(row, Mapping)
-            and _string(row.get("gpu_type_id")) == gpu_type_id
+            if isinstance(row, Mapping) and _string(row.get("gpu_type_id")) == gpu_type_id
         ),
         {},
     )
@@ -169,20 +256,14 @@ def build_runpod_gpu_runtime_evidence(
         "gpu_type_id": gpu_type_id,
         "capacity_confidence": confidence or "unknown",
         "single_gpu_available": single_available,
-        "on_demand_price_usd_per_hour": selected.get(
-            "on_demand_price_usd_per_hour"
-        ),
+        "on_demand_price_usd_per_hour": selected.get("on_demand_price_usd_per_hour"),
         "required_cuda_version": required_cuda_version,
-        "allowed_cuda_versions": [required_cuda_version]
-        if required_cuda_version
-        else [],
+        "allowed_cuda_versions": [required_cuda_version] if required_cuda_version else [],
         "warm_worker_only": True,
         "provider_inventory_verified_zero": provider_inventory_verified_zero,
         "launch_constraints": {
             "dataCenterIds": [data_center_id] if data_center_id else [],
-            "allowedCudaVersions": [required_cuda_version]
-            if required_cuda_version
-            else [],
+            "allowedCudaVersions": [required_cuda_version] if required_cuda_version else [],
         },
         "claim_boundary": {
             "capacity_snapshot_is_not_reservation": True,
@@ -257,8 +338,7 @@ def build_build_plane_admission(
         blockers.append("builder_one_resource_limit_missing")
 
     checks = {
-        "runpod_excluded_from_build_plane": provider
-        not in {"runpod", "runpod_pod", "runpod-pod"},
+        "runpod_excluded_from_build_plane": provider not in {"runpod", "runpod_pod", "runpod-pod"},
         "native_linux_amd64": _string(builder.get("platform")) == "linux/amd64",
         "docker_buildx_ready": builder.get("docker_daemon_verified") is True
         and builder.get("docker_buildx_verified") is True,
@@ -302,9 +382,7 @@ def build_runpod_serve_plane_admission(
     """Admit a RunPod warm worker only from published/cache-ready evidence."""
 
     blockers: list[str] = []
-    release_ref = _string(
-        release.get("resolved_digest_ref") or release.get("release_image_ref")
-    )
+    release_ref = _string(release.get("resolved_digest_ref") or release.get("release_image_ref"))
     if not _DIGEST_REF.fullmatch(release_ref):
         blockers.append("runpod_release_image_not_digest_pinned")
     thin_contract = release.get("thin_release_contract")

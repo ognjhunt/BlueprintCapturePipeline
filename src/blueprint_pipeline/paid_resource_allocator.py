@@ -1,0 +1,209 @@
+"""Canonical paid allocators for CPU image builds and GPU canaries.
+
+No other public command may allocate these resource classes.  Provider-specific
+modules are adapters behind this interface and their mutation CLIs are disabled.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Sequence
+
+from .common import ensure_dir, write_json
+from .groot_oscar_digitalocean_builder import (
+    launch_detached_builder,
+    observe_local_machine,
+    run_builder,
+)
+from .groot_oscar_infrastructure_admission import (
+    BUILD_SCHEMA_VERSION,
+    build_build_plane_admission,
+    build_cpu_build_execution_admission,
+)
+from .groot_oscar_runpod_canary import run_canary
+from .paid_resource_admission import require_paid_resource_admission
+
+
+def _add_cpu_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--packet-manifest", required=True)
+    parser.add_argument("--builder-evidence", required=True)
+    parser.add_argument("--spend", required=True)
+    parser.add_argument("--token-file", default="~/.blueprint-secrets/digitalocean_api_token")
+    parser.add_argument("--docker-username-file", default="~/.blueprint-secrets/docker_username")
+    parser.add_argument("--docker-password-file", default="~/.blueprint-secrets/docker_pat")
+    parser.add_argument("--login-private-key", required=True)
+    parser.add_argument("--host-private-key", required=True)
+    parser.add_argument("--ssh-key-id", required=True, type=int)
+    parser.add_argument("--region", default="sfo3")
+    parser.add_argument("--allow-paid", action="store_true")
+
+
+def _cpu_vector(args: argparse.Namespace) -> list[str]:
+    values = [
+        "--output-dir",
+        args.output_dir,
+        "--packet-manifest",
+        args.packet_manifest,
+        "--builder-evidence",
+        args.builder_evidence,
+        "--spend",
+        args.spend,
+        "--token-file",
+        args.token_file,
+        "--docker-username-file",
+        args.docker_username_file,
+        "--docker-password-file",
+        args.docker_password_file,
+        "--login-private-key",
+        args.login_private_key,
+        "--host-private-key",
+        args.host_private_key,
+        "--ssh-key-id",
+        str(args.ssh_key_id),
+        "--region",
+        args.region,
+    ]
+    if args.allow_paid:
+        values.append("--allow-paid")
+    return values
+
+
+def _run_cpu(args: argparse.Namespace) -> dict:
+    return run_builder(
+        output_dir=Path(args.output_dir),
+        packet_manifest_path=Path(args.packet_manifest),
+        builder_evidence_path=Path(args.builder_evidence),
+        spend_path=Path(args.spend),
+        token_file=Path(args.token_file),
+        docker_username_file=Path(args.docker_username_file),
+        docker_password_file=Path(args.docker_password_file),
+        login_private_key=Path(args.login_private_key),
+        host_private_key=Path(args.host_private_key),
+        ssh_key_id=args.ssh_key_id,
+        region=args.region,
+        allow_paid=args.allow_paid,
+    )
+
+
+def _load(path: str | Path) -> dict:
+    value = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"expected_json_object:{path}")
+    return value
+
+
+def _run_local_cpu_build(args: argparse.Namespace) -> dict:
+    output = Path(args.output_dir).expanduser().resolve()
+    ensure_dir(output)
+    allocation = build_build_plane_admission(
+        packet=_load(args.packet_manifest),
+        builder=_load(args.builder_evidence),
+        spend=_load(args.spend),
+    )
+    write_json(output / "build_plane_admission.json", allocation)
+    require_paid_resource_admission(
+        allocation,
+        resource_class="cpu_build",
+        expected_schema_version=BUILD_SCHEMA_VERSION,
+    )
+    live = observe_local_machine(mount_path=args.mount_path)
+    write_json(output / "live_machine_capability.json", live)
+    execution = build_cpu_build_execution_admission(
+        allocation_admission=allocation, live_machine=live
+    )
+    write_json(output / "cpu_build_execution_admission.json", execution)
+    require_paid_resource_admission(
+        execution,
+        resource_class="cpu_build",
+        expected_schema_version=execution["schema_version"],
+    )
+    environment = dict(os.environ)
+    environment["BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT"] = "true"
+    completed = subprocess.run(
+        [str(Path(args.build_script).expanduser().resolve())],
+        cwd=str(Path(args.build_workdir).expanduser().resolve()),
+        env=environment,
+        check=False,
+    )
+    result = {
+        "schema_version": "blueprint.local_cpu_build_allocator_result.v1",
+        "status": "completed" if completed.returncode == 0 else "failed",
+        "build_exit_code": completed.returncode,
+        "build_process_started": True,
+        "registry_mutation_possible": True,
+        "live_machine_capability_status": live["status"],
+    }
+    write_json(output / "local_cpu_build_allocator_result.json", result)
+    return result
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    cpu = commands.add_parser("cpu-build")
+    _add_cpu_arguments(cpu)
+    cpu_run = commands.add_parser("cpu-build-run", help=argparse.SUPPRESS)
+    _add_cpu_arguments(cpu_run)
+    cpu_local = commands.add_parser("cpu-build-local", help=argparse.SUPPRESS)
+    cpu_local.add_argument("--output-dir", required=True)
+    cpu_local.add_argument("--packet-manifest", required=True)
+    cpu_local.add_argument("--builder-evidence", required=True)
+    cpu_local.add_argument("--spend", required=True)
+    cpu_local.add_argument("--mount-path", required=True)
+    cpu_local.add_argument("--build-workdir", required=True)
+    cpu_local.add_argument("--build-script", required=True)
+    gpu = commands.add_parser("gpu-canary")
+    gpu.add_argument("--provider-launch-request", required=True)
+    gpu.add_argument("--release-evidence", required=True)
+    gpu.add_argument("--model-cache-evidence", required=True)
+    gpu.add_argument("--preflight-bundle", required=True)
+    gpu.add_argument("--admission-out", required=True)
+    gpu.add_argument("--bound-request-out", required=True)
+    gpu.add_argument("--adapter-output", required=True)
+    gpu.add_argument("--pod-name", required=True)
+    gpu.add_argument("--execute", action="store_true")
+    args = parser.parse_args(argv)
+    if args.command == "cpu-build":
+        result = launch_detached_builder(
+            output_dir=Path(args.output_dir), run_arguments=_cpu_vector(args)
+        )
+        success = result.get("status") == "supervisor_started"
+    elif args.command == "cpu-build-run":
+        result = _run_cpu(args)
+        success = result.get("status") == "completed"
+    elif args.command == "cpu-build-local":
+        result = _run_local_cpu_build(args)
+        success = result.get("status") == "completed"
+    else:
+        result = run_canary(
+            provider_launch_request=args.provider_launch_request,
+            release_evidence=args.release_evidence,
+            model_cache_evidence=args.model_cache_evidence,
+            preflight_bundle=args.preflight_bundle,
+            admission_out=args.admission_out,
+            bound_request_out=args.bound_request_out,
+            adapter_output=args.adapter_output,
+            pod_name=args.pod_name,
+            execute=args.execute,
+        )
+        success = result.get("status") in {"dry_run_ready", "submitted"}
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if success else 2
+
+
+def cpu_build_main(argv: Sequence[str] | None = None) -> int:
+    return main(["cpu-build", *(list(argv) if argv is not None else sys.argv[1:])])
+
+
+def gpu_canary_main(argv: Sequence[str] | None = None) -> int:
+    return main(["gpu-canary", *(list(argv) if argv is not None else sys.argv[1:])])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

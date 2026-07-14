@@ -144,7 +144,7 @@ blockers=[]
 if contract["status"] != "passed": blockers.append("thin_release_contract_not_passed")
 if not cuda: blockers.append("release_registry_cuda_version_missing")
 payload={{"schema_version":"groot_oscar_thin_remote_build_result.v1","generated_at":datetime.now(timezone.utc).isoformat(),"status":"completed" if not blockers else "blocked","blockers":blockers,"foundation_image_ref":sys.argv[3],"release_image_ref":sys.argv[4],"resolved_digest_ref":sys.argv[4],"runnable_platform":"linux/amd64","required_cuda_version":cuda,"required_cuda_version_source":release.get("required_cuda_version_source"),"source_commit":"{source_commit}","source_patch_sha256":"{source_patch_sha256}","thin_release_contract_status":contract["status"],"thin_release_contract":contract,"models_embedded":False,"raw_secret_values_recorded":False,"claim_boundary":{{"remote_build_is_not_model_cache_verification":True,"remote_build_is_not_provider_startup":True,"remote_build_is_not_task_success":True}}}}
-out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\\n",encoding="utf-8")
 raise SystemExit(0 if payload["status"]=="completed" else 2)
 PY
 '''

@@ -1,9 +1,53 @@
 from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     MIN_BUILD_FREE_BYTES,
     build_build_plane_admission,
+    build_cpu_build_execution_admission,
     build_digitalocean_cpu_builder_profile_evidence,
+    build_live_machine_capability_evidence,
     build_runpod_serve_plane_admission,
 )
+
+
+def test_live_machine_capability_requires_direct_observation() -> None:
+    requested = build_live_machine_capability_evidence(
+        {
+            "observation_source": "requested_configuration",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": 200 * 1024**3,
+            "docker_cli_present": True,
+            "docker_daemon_responding": True,
+            "docker_buildx_available": True,
+            "builder_ready_marker": True,
+        }
+    )
+    assert requested["status"] == "blocked"
+    assert "live_machine_observation_source_invalid" in requested["blockers"]
+
+
+def test_cpu_build_execution_requires_verified_live_machine() -> None:
+    live = build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": 200 * 1024**3,
+            "docker_cli_present": True,
+            "docker_daemon_responding": True,
+            "docker_buildx_available": True,
+            "builder_ready_marker": True,
+        }
+    )
+    result = build_cpu_build_execution_admission(
+        allocation_admission={
+            "schema_version": "groot_oscar_build_plane_admission.v1",
+            "status": "admitted",
+        },
+        live_machine=live,
+    )
+    assert result["status"] == "admitted"
 
 
 COMMIT = "a" * 40
@@ -47,6 +91,53 @@ def _spend() -> dict:
     }
 
 
+def test_cpu_build_execution_requires_verified_live_machine_evidence() -> None:
+    allocation = build_build_plane_admission(packet=_packet(), builder=_builder(), spend=_spend())
+    live = build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": MIN_BUILD_FREE_BYTES,
+            "docker_cli_present": True,
+            "docker_daemon_responding": True,
+            "docker_buildx_available": True,
+            "builder_ready_marker": True,
+        }
+    )
+    assert (
+        build_cpu_build_execution_admission(allocation_admission=allocation, live_machine=live)[
+            "status"
+        ]
+        == "admitted"
+    )
+    catalog = {**live, "status": "blocked", "blockers": ["catalog_only"]}
+    blocked = build_cpu_build_execution_admission(
+        allocation_admission=allocation, live_machine=catalog
+    )
+    assert blocked["status"] == "blocked"
+    assert "cpu_builder_live_capability_not_verified" in blocked["blockers"]
+
+
+def test_live_machine_capability_waits_for_builder_initialization_marker() -> None:
+    live = build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": MIN_BUILD_FREE_BYTES,
+            "docker_cli_present": True,
+            "docker_daemon_responding": True,
+            "docker_buildx_available": True,
+            "builder_ready_marker": False,
+        }
+    )
+    assert live["status"] == "blocked"
+    assert "live_machine_builder_initialization_incomplete" in live["blockers"]
+
+
 def _serve_spend() -> dict:
     return {
         **_spend(),
@@ -56,9 +147,7 @@ def _serve_spend() -> dict:
 
 
 def test_build_plane_admits_known_native_docker_builder() -> None:
-    result = build_build_plane_admission(
-        packet=_packet(), builder=_builder(), spend=_spend()
-    )
+    result = build_build_plane_admission(packet=_packet(), builder=_builder(), spend=_spend())
     assert result["status"] == "admitted"
     assert result["blockers"] == []
     assert result["checks"]["free_disk_at_least_120_gib"] is True
@@ -81,9 +170,7 @@ def test_build_plane_refuses_tofu_and_insufficient_disk() -> None:
             "ssh_host_key_verification_method": "accept-new",
         }
     )
-    result = build_build_plane_admission(
-        packet=_packet(), builder=builder, spend=_spend()
-    )
+    result = build_build_plane_admission(packet=_packet(), builder=builder, spend=_spend())
     assert "builder_free_disk_below_120_gib" in result["blockers"]
     assert "builder_ssh_host_key_not_independently_verified" in result["blockers"]
     assert "builder_ssh_host_key_verification_method_unsafe" in result["blockers"]
@@ -242,9 +329,7 @@ def test_runpod_serve_plane_blocks_unknown_capacity_cuda_and_unarmed_watchdog() 
 
 def test_runpod_serve_plane_rejects_cuda_constraint_different_from_release() -> None:
     runtime = _runtime()
-    runtime.update(
-        {"required_cuda_version": "12.8", "allowed_cuda_versions": ["12.8"]}
-    )
+    runtime.update({"required_cuda_version": "12.8", "allowed_cuda_versions": ["12.8"]})
     result = build_runpod_serve_plane_admission(
         release=_release(),
         model_cache=_models(),
