@@ -543,7 +543,7 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         raise HTTPError(
             request.full_url,
             401,
@@ -552,7 +552,9 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
             fp=SimpleNamespace(read=lambda: b"bad secret-runpod-key"),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
     with caplog.at_level(logging.INFO):
         failed = runpod_provider_adapter.run_runpod_provider_adapter(
             provider_launch_request_path=runpod_request,
