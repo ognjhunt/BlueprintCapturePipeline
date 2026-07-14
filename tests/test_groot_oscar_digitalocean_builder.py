@@ -288,6 +288,21 @@ def test_builder_verifies_transfer_archive_digest_before_allocation(
     assert "digitalocean_builder_packet_tarball_digest_mismatch" in result["blockers"]
 
 
+def test_builder_source_copies_registry_files_to_fixed_remote_names() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        '(docker_username_file.expanduser(), "/root/blueprint-build/docker_username")'
+        in source
+    )
+    assert (
+        '(docker_password_file.expanduser(), "/root/blueprint-build/docker_pat")'
+        in source
+    )
+
+
 def test_run_builder_is_dry_and_does_not_read_secrets_without_paid_gate(
     tmp_path: Path,
 ) -> None:

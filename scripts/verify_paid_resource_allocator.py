@@ -79,6 +79,12 @@ def verify() -> list[str]:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     if "paid_resource_allocator cpu-build-local" not in workflow:
         blockers.append("release_workflow_bypasses_canonical_cpu_allocator")
+    prerequisite_index = workflow.find("verify_groot_oscar_live_prerequisites.py")
+    allocator_index = workflow.find("paid_resource_allocator cpu-build-local")
+    if prerequisite_index < 0 or not prerequisite_index < allocator_index:
+        blockers.append("release_workflow_live_prerequisite_refresh_missing")
+    elif "--live" not in workflow[prerequisite_index:allocator_index]:
+        blockers.append("release_workflow_live_prerequisite_refresh_not_live")
 
     cpu_calls = _function_calls(CPU_ADAPTER)
     if "_request" not in cpu_calls.get("run_builder", set()):
@@ -97,6 +103,12 @@ def verify() -> list[str]:
         blockers.append("cpu_teardown_error_evidence_missing")
     if "digitalocean_builder_teardown_unverified" not in cpu:
         blockers.append("cpu_teardown_unverified_blocker_missing")
+    for remote_secret_path in (
+        "/root/blueprint-build/docker_username",
+        "/root/blueprint-build/docker_pat",
+    ):
+        if remote_secret_path not in cpu:
+            blockers.append("cpu_registry_secret_fixed_remote_name_missing")
     if "_delete_with_fail_closed_evidence" not in cpu_calls.get("watchdog", set()):
         blockers.append("cpu_watchdog_teardown_error_evidence_missing")
     if 'set -- blueprint-run-robot-eval-worker "$@"' not in thin_entrypoint:

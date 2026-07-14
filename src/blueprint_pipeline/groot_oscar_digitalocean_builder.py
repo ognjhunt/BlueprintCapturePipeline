@@ -751,17 +751,20 @@ def run_builder(
         packet_tarball_sha256 = str(
             packet_tarball_verification["observed_sha256"] or ""
         )
-        subprocess.run(
-            [
-                "scp",
-                *options,
-                str(packet_tarball),
-                str(docker_username_file.expanduser()),
-                str(docker_password_file.expanduser()),
-                f"root@{public_ip}:/root/blueprint-build/",
-            ],
-            check=True,
-        )
+        for local_path, remote_path in (
+            (packet_tarball, f"/root/blueprint-build/{packet_tarball.name}"),
+            (docker_username_file.expanduser(), "/root/blueprint-build/docker_username"),
+            (docker_password_file.expanduser(), "/root/blueprint-build/docker_pat"),
+        ):
+            subprocess.run(
+                [
+                    "scp",
+                    *options,
+                    str(local_path),
+                    f"root@{public_ip}:{remote_path}",
+                ],
+                check=True,
+            )
         remote_tarball = "/root/blueprint-build/" + packet_tarball.name
         remote_command = " && ".join(
             [

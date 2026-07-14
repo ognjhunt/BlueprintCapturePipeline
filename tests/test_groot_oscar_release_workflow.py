@@ -20,6 +20,11 @@ def test_release_workflow_uses_known_amd64_docker_builder_and_digest_handoff() -
     assert "remote_build_groot_oscar_thin_images.sh" in workflow
     assert "release_buildx_metadata.json" in workflow
     assert "groot_oscar_thin_remote_build_result.json" in workflow
+    prerequisite = workflow.index("verify_groot_oscar_live_prerequisites.py")
+    allocator = workflow.index("paid_resource_allocator cpu-build-local")
+    assert prerequisite < allocator
+    assert "--live" in workflow[prerequisite:allocator]
+    assert "groot_oscar_live_prerequisites.json" in workflow
     assert "runpod.io" not in workflow.lower()
 
 

@@ -91,6 +91,14 @@ jobs:
             --spend "$RUNNER_TEMP/build-spend.json" \
             --out "$RUNNER_TEMP/groot-oscar-packet/build_plane_admission.json"
 
+      - name: Refresh external prerequisite pins immediately before allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_groot_oscar_live_prerequisites.py \
+            --live \
+            --output "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_live_prerequisites.json"
+
       - name: Build through canonical CPU allocator
         shell: bash
         env:
@@ -117,6 +125,7 @@ jobs:
           retention-days: 90
           path: |
             ${{ runner.temp }}/groot-oscar-packet/build_plane_admission.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_live_prerequisites.json
             ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/live_machine_capability.json
             ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/cpu_build_execution_admission.json
             ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/local_cpu_build_allocator_result.json
