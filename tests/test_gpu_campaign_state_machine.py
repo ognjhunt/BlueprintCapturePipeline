@@ -856,6 +856,32 @@ def test_corrupt_config_manifest_cannot_hide_checkpointed_allocation(tmp_path):
     assert result["teardown"]["billing_stopped"] is True
 
 
+def test_corrupt_config_manifest_with_valid_resumed_config_still_tears_down(tmp_path):
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    machine = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 1000.0
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+    (tmp_path / "immutable_config_manifest.json").write_text("{corrupt")
+
+    result = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+    ).run()
+
+    assert result["status"] == "blocked"
+    assert "immutable_campaign_config_manifest_unreadable" in result["blockers"]
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+
+
 def test_validation_exception_still_tears_down_checkpointed_allocation(tmp_path):
     provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
     machine = CampaignMachine(

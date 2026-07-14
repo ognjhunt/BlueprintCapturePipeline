@@ -411,32 +411,13 @@ payload["published_runtime_identity_matches_smoked_local_image"] = (
 )
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
-  if ! docker buildx imagetools create --tag "$image_ref" "$runtime_image_ref"; then
-    write_manifest "blocked" '["groot_oscar_closed_loop_final_tag_promotion_failed"]' >/dev/null
-    echo "validated candidate digest could not be promoted to the final release tag" >&2
-    exit 2
-  fi
-  promoted_digest="$(docker buildx imagetools inspect --format '{{json .}}' "$image_ref" | python3 -c '
-import json, re, sys
-payload = json.load(sys.stdin)
-manifest = payload.get("manifest") if isinstance(payload, dict) else None
-digest = str(manifest.get("digest") or "") if isinstance(manifest, dict) else ""
-if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-    raise SystemExit("promoted release tag digest missing")
-print(digest)
-')"
-  if [[ "$promoted_digest" != "$build_digest" ]]; then
-    write_manifest "blocked" '["groot_oscar_closed_loop_final_tag_digest_mismatch"]' >/dev/null
-    echo "final release tag does not resolve to the validated candidate digest" >&2
-    exit 2
-  fi
 fi
 
 registry_diagnostic_exit=0
 if [[ "$allow_push" == "true" ]]; then
   PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" \
     python3 -m blueprint_pipeline.isaac_worker_image_manifest \
-      --image "$image_ref" --output "$registry_manifest_output" \
+      --image "$runtime_image_ref" --output "$registry_manifest_output" \
     || registry_diagnostic_exit=$?
 fi
 
@@ -543,6 +524,32 @@ blockers.extend(layer_report["blockers"])
 if blockers:
     raise SystemExit(2)
 PY
+  fi
+fi
+
+# Only now is the release tag allowed to become visible. The immutable staging
+# digest has passed local runtime identity binding, registry inspection,
+# BuildKit SBOM/provenance validation, explicit registry-source Syft scanning,
+# and layer admission.
+if [[ "$allow_push" == "true" && "$registry_diagnostic_exit" -eq 0 && "$supply_chain_exit" -eq 0 ]]; then
+  if ! docker buildx imagetools create --tag "$image_ref" "$runtime_image_ref"; then
+    write_manifest "blocked" '["groot_oscar_closed_loop_final_tag_promotion_failed"]' >/dev/null
+    echo "validated candidate digest could not be promoted to the final release tag" >&2
+    exit 2
+  fi
+  promoted_digest="$(docker buildx imagetools inspect --format '{{json .}}' "$image_ref" | python3 -c '
+import json, re, sys
+payload = json.load(sys.stdin)
+manifest = payload.get("manifest") if isinstance(payload, dict) else None
+digest = str(manifest.get("digest") or "") if isinstance(manifest, dict) else ""
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    raise SystemExit("promoted release tag digest missing")
+print(digest)
+')"
+  if [[ "$promoted_digest" != "$build_digest" ]]; then
+    write_manifest "blocked" '["groot_oscar_closed_loop_final_tag_digest_mismatch"]' >/dev/null
+    echo "final release tag does not resolve to the validated candidate digest" >&2
+    exit 2
   fi
 fi
 source_identity_after_json="$(

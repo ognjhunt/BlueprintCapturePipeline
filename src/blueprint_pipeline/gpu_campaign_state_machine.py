@@ -354,7 +354,12 @@ class CampaignMachine:
         config_payload = self.config.payload()
         config_sha = _canonical_sha(config_payload)
         if self.config_path.exists():
-            recorded = json.loads(self.config_path.read_text())
+            try:
+                recorded = json.loads(self.config_path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                raise CampaignBlocked("immutable_campaign_config_manifest_unreadable") from exc
+            if not isinstance(recorded, Mapping):
+                raise CampaignBlocked("immutable_campaign_config_manifest_invalid")
             if recorded.get("config_sha256") != config_sha:
                 raise CampaignBlocked("immutable_campaign_config_changed")
         else:
