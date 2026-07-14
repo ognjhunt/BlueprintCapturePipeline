@@ -13748,6 +13748,10 @@ def test_isaac_lab_arena_results_feed_eval_package_and_delivery(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("BLUEPRINT_ALLOW_FAKE_LIVE_OPERATORS", "true")
+    # This integration test exercises 500 fixture arena rows and archive
+    # wiring, not host-capacity admission. Keep it hermetic on constrained CI
+    # and release worktrees; dedicated PTDP tests cover the default headroom.
+    monkeypatch.setenv(package_module.PTDP_MIN_FREE_HEADROOM_BYTES_ENV, "1")
     _configure_ptdp_identity_signer(monkeypatch, tmp_path)
     capture_root = _build_capture_root(tmp_path)
     _write_robot_eval_cards(capture_root)

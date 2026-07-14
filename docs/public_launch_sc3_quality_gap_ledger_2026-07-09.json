@@ -4011,7 +4011,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-02",
               "path": "tests/test_robot_eval_job_orchestrator.py",
-              "sha256": "sha256:e5754bcf531c924bd702f8c9113d0b6c5d233dfd4957009e4417229fc45136c7",
+              "sha256": "sha256:952412eb7998a06a3dc9579608fe21676c9c3000f786edc467982c3c2bde5cd3",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
