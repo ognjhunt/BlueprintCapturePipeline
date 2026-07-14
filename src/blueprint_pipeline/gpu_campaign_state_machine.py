@@ -320,6 +320,7 @@ class CampaignMachine:
             "schema_version": SCHEMA_VERSION,
             "campaign_id": self.config.campaign_id,
             "provider": self.adapter.provider_name,
+            "allocation_key": self.config.allocation_key,
             "config_sha256": config_sha,
             "teardown_owner": self.teardown_owner,
             "allocation_id": None,
@@ -427,20 +428,27 @@ class CampaignMachine:
         process already checkpointed.
         """
 
-        if not self.state_path.exists() or not self.config_path.exists():
+        if not self.state_path.exists():
             return None
         try:
             state = json.loads(self.state_path.read_text())
-            manifest = json.loads(self.config_path.read_text())
         except (OSError, json.JSONDecodeError):
             return None
-        if not isinstance(state, dict) or not isinstance(manifest, dict):
+        if not isinstance(state, dict):
             return None
         if state.get("teardown_owner") != self.teardown_owner:
             raise CampaignBlocked("campaign_teardown_owned_by_another_controller")
-        recorded_config = manifest.get("config")
-        recorded_config = recorded_config if isinstance(recorded_config, Mapping) else {}
-        allocation_key = str(recorded_config.get("allocation_key") or "").strip()
+        if state.get("provider") != self.adapter.provider_name:
+            raise CampaignBlocked("campaign_provider_adapter_mismatch")
+        allocation_key = str(state.get("allocation_key") or "").strip()
+        if not allocation_key and self.config_path.exists():
+            try:
+                manifest = json.loads(self.config_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                manifest = {}
+            recorded_config = manifest.get("config") if isinstance(manifest, dict) else {}
+            recorded_config = recorded_config if isinstance(recorded_config, Mapping) else {}
+            allocation_key = str(recorded_config.get("allocation_key") or "").strip()
         if not allocation_key:
             return None
         return state, allocation_key

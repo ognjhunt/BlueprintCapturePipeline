@@ -528,6 +528,31 @@ def test_invalid_config_does_not_repeat_proven_complete_teardown(tmp_path):
     assert provider.calls.count(("terminate", "vm-1")) == terminate_count
 
 
+def test_corrupt_config_manifest_cannot_hide_checkpointed_allocation(tmp_path):
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    machine = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 1000.0
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+    (tmp_path / "immutable_config_manifest.json").write_text("{corrupt")
+
+    result = CampaignMachine(
+        config=config(source_sha="invalid"),
+        adapter=provider,
+        state_dir=tmp_path,
+    ).run()
+
+    assert result["status"] == "blocked"
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+
+
 def test_second_controller_cannot_race_the_teardown_owner(tmp_path):
     lock_path = tmp_path / "campaign_controller.lock"
     lock_path.touch()
