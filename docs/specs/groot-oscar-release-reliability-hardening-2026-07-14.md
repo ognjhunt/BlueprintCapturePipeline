@@ -69,6 +69,32 @@ deduplicate checkpoint/framework bytes, and preserve offline execution.
 External model/asset blobs are permitted only when immutable hashes/revisions
 are verified before startup; hidden runtime downloads are forbidden.
 
+The `fca4712e` registry diagnostic measured 47,101,357,226 compressed bytes.
+Five layers explain essentially the whole closure: 10,585,790,213 bytes for
+Isaac Sim; 14,083,497,680 for sealed model checkpoints; 10,367,336,848 for the
+GR00T Python/CUDA runtime; 7,223,826,406 for WBC plus the build-time CUDA
+toolchain; and 4,322,370,426 for the OSCAR Python/CUDA runtime. The build log
+proves that upstream WBC dependency setup installed a CUDA 12.4 compiler and
+development runtime into the final carrier, while OSCAR installed Torch 2.10
+with CUDA 12.8 wheels and GR00T installed Torch 2.7.1 with a different CUDA
+12.8 wheel set. This is the first-principles source of the 46.8 GB closure.
+
+The next candidate must move WBC compilation to a builder stage and copy only
+its runtime binary/library closure. The two Python environments may share only
+byte-identical CUDA artifacts after both policy services pass real-GPU ABI
+tests; their incompatible Torch versions must not be symlinked together merely
+to improve size. Until that candidate is built and tested, the official build
+enforces ceilings of 48,000,000,000 total compressed bytes and 15,000,000,000
+bytes for any one layer, preventing silent growth above the measured release.
+
+Images at or above 20 GiB are not eligible for an on-demand paid cold pull.
+Their immutable campaign config must include `preloaded_worker_image.v1`
+evidence binding the exact digest to a runtime-health-tested host-image/cache
+identity before allocation. The allocated host must re-prove that the digest
+was already local and that no cold pull happened during the paid campaign.
+Registry resolution by itself is explicitly insufficient. This converts image
+delivery from an opaque provider wait into a release prerequisite.
+
 ## Provider-neutral campaign state machine
 
 `CampaignMachine.run()` is the repository-owned control-plane interface. Its

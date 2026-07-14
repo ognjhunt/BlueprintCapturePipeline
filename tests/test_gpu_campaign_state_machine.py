@@ -10,6 +10,7 @@ from blueprint_pipeline.gpu_campaign_state_machine import (
     CampaignConfig,
     CampaignMachine,
     validate_same_allocation_canary_handoff,
+    validate_preloaded_image_evidence,
     validate_smoke_result,
 )
 
@@ -50,6 +51,15 @@ class FakeProvider:
                 "learned_policy_action_count": 3,
                 "action_sources": ["groot_policy_server"] * 3,
             }
+        if stage == "image_ready":
+            return {
+                "status": "passed",
+                "image_digest": config["image_digest"],
+                "local_digest_inspect_passed": True,
+                "digest_already_local_at_allocation": True,
+                "cold_pull_performed_during_campaign": False,
+                "host_image_id": config["image_residency_evidence"]["host_image_id"],
+            }
         return {"status": "passed", "stage": stage}
 
     def retrieve(self, allocation_id, config):
@@ -77,9 +87,68 @@ def config(**overrides):
         max_provider_seconds=3900,
         spend_authorization_usd=20,
         prior_exposure_usd=10,
+        image_total_compressed_bytes=47_101_357_226,
+        image_largest_layer_bytes=14_083_497_680,
+        image_residency_evidence={
+            "schema_version": "preloaded_worker_image.v1",
+            "source_sha": "5" * 40,
+            "image_digest": "sha256:" + "7" * 64,
+            "allocation_key": "blueprint-g4",
+            "host_image_id": "g4-host-image-immutable-1",
+            "image_present_before_allocation": True,
+            "local_digest_inspect_passed": True,
+            "runtime_health_preflight_passed": True,
+            "cold_pull_required_during_campaign": False,
+        },
     )
     values.update(overrides)
     return CampaignConfig(**values)
+
+
+def test_large_image_requires_exact_preallocation_residency_evidence(tmp_path):
+    with pytest.raises(CampaignBlocked, match="preload_evidence_missing"):
+        CampaignMachine(
+            config=config(image_residency_evidence=None),
+            adapter=FakeProvider(),
+            state_dir=tmp_path,
+        ).run()
+
+
+def test_registry_availability_is_not_preloaded_image_evidence():
+    cfg = config()
+    blockers = validate_preloaded_image_evidence(
+        cfg,
+        {
+            "schema_version": "preloaded_worker_image.v1",
+            "source_sha": cfg.source_sha,
+            "image_digest": cfg.image_digest,
+            "allocation_key": cfg.allocation_key,
+            "host_image_id": "host-1",
+            "registry_manifest_resolves": True,
+        },
+    )
+    assert "large_image_preload_image_present_before_allocation_not_proven" in blockers
+    assert "large_image_cold_pull_still_required" in blockers
+
+
+def test_image_ready_rejects_paid_cold_pull_and_tears_down(tmp_path):
+    provider = FakeProvider()
+    original = provider.run_stage
+
+    def cold_pull(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if args[1] == "image_ready":
+            result["digest_already_local_at_allocation"] = False
+            result["cold_pull_performed_during_campaign"] = True
+        return result
+
+    provider.run_stage = cold_pull
+    result = CampaignMachine(
+        config=config(), adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    ).run()
+    assert result["status"] == "blocked"
+    assert "large_image_paid_cold_pull_detected" in result["blockers"][0]
+    assert ("terminate", "vm-1") in provider.calls
 
 
 def test_full_run_checkpoints_and_tears_down(tmp_path):

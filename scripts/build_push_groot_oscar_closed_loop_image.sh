@@ -401,8 +401,10 @@ layers = [
     }
     for row in registry.get("layers") or [] if isinstance(row, dict)
 ]
-layer_path.write_text(json.dumps(build_layer_report(layers), indent=2, sort_keys=True) + "\n")
-if blockers or not layers:
+layer_report = build_layer_report(layers)
+layer_path.write_text(json.dumps(layer_report, indent=2, sort_keys=True) + "\n")
+blockers.extend(layer_report["blockers"])
+if blockers:
     raise SystemExit(2)
 PY
   fi

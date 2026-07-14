@@ -18,6 +18,9 @@ def test_campaign_config_payload_matches_repository_schema():
         hourly_rate_usd=4.5,
         max_provider_seconds=3900,
         spend_authorization_usd=20,
+        image_total_compressed_bytes=10_000_000_000,
+        image_largest_layer_bytes=5_000_000_000,
+        image_residency_evidence=None,
     ).payload()
     schema = json.loads((SCHEMAS / "provider_neutral_gpu_campaign_config.schema.json").read_text())
     jsonschema.validate(payload, schema)

@@ -87,7 +87,63 @@ def test_layer_report_orders_size_and_preserves_offline_rule():
         ]
     )
     assert report["largest_layers"][0]["digest"] == "b"
+    assert report["status"] == "passed"
     assert report["optimization_rules"]["offline_execution_required"] is True
+
+
+def test_layer_report_blocks_release_closure_growth():
+    total_blocked = build_layer_report(
+        [{"digest": "a", "size_bytes": 101, "created_by": "large"}],
+        max_total_compressed_bytes=100,
+        max_layer_bytes=200,
+    )
+    assert total_blocked["status"] == "blocked"
+    assert "image_total_compressed_size_budget_exceeded" in total_blocked["blockers"]
+
+    layer_blocked = build_layer_report(
+        [{"digest": "a", "size_bytes": 101, "created_by": "large"}],
+        max_total_compressed_bytes=200,
+        max_layer_bytes=100,
+    )
+    assert "image_largest_layer_size_budget_exceeded" in layer_blocked["blockers"]
+
+
+def test_layer_report_attributes_the_measured_runtime_duplication():
+    report = build_layer_report(
+        [
+            {"digest": "base", "size_bytes": 10, "created_by": "COPY . /isaac-sim/"},
+            {
+                "digest": "oscar",
+                "size_bytes": 4,
+                "created_by": "uv venv /opt/oscar-venv --python 3.10",
+            },
+            {
+                "digest": "wbc",
+                "size_bytes": 7,
+                "created_by": "scripts/install_deps.sh && just build",
+            },
+            {
+                "digest": "groot",
+                "size_bytes": 9,
+                "created_by": "uv venv /opt/gr00t-venv --python 3.10",
+            },
+            {
+                "digest": "models",
+                "size_bytes": 14,
+                "created_by": "snapshot_download SONIC_CHECKPOINT_REPO",
+            },
+        ]
+    )
+    assert report["compressed_bytes_by_build_role"] == {
+        "isaac_sim_base": 10,
+        "oscar_python_cuda_runtime": 4,
+        "wbc_build_and_cuda_toolchain": 7,
+        "groot_python_cuda_runtime": 9,
+        "sealed_model_checkpoints": 14,
+        "other": 0,
+    }
+    candidates = {row["role"]: row for row in report["measured_optimization_candidates"]}
+    assert candidates["wbc_build_and_cuda_toolchain"]["runtime_gpu_abi_test_required"] is True
 
 
 def test_release_slo_requires_complete_ordered_timing():

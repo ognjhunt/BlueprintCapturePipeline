@@ -22,6 +22,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 SCHEMA_VERSION = "provider_neutral_gpu_campaign.v1"
 CONFIG_SCHEMA_VERSION = "provider_neutral_gpu_campaign_config.v1"
+LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES = 20 * 1024**3
 
 
 class CampaignBlocked(RuntimeError):
@@ -62,6 +63,9 @@ class CampaignConfig:
     hourly_rate_usd: float
     max_provider_seconds: int
     spend_authorization_usd: float
+    image_total_compressed_bytes: int
+    image_largest_layer_bytes: int
+    image_residency_evidence: Mapping[str, Any] | None
     prior_exposure_usd: float = 0.0
     smoke_seed: int = 1000
     episode_seeds: tuple[int, ...] = (1001, 1002, 1003)
@@ -98,6 +102,12 @@ class CampaignConfig:
             blockers.append("image_digest_invalid")
         if self.hourly_rate_usd <= 0 or self.max_provider_seconds <= 0:
             blockers.append("paid_runtime_bound_invalid")
+        if self.image_total_compressed_bytes <= 0 or self.image_largest_layer_bytes <= 0:
+            blockers.append("image_closure_size_missing")
+        elif self.image_largest_layer_bytes > self.image_total_compressed_bytes:
+            blockers.append("image_largest_layer_exceeds_total")
+        if self.image_total_compressed_bytes >= LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES:
+            blockers.extend(validate_preloaded_image_evidence(self, self.image_residency_evidence))
         maximum = self.prior_exposure_usd + (
             self.hourly_rate_usd * self.max_provider_seconds / 3600
         )
@@ -122,6 +132,62 @@ class CampaignConfig:
         if self.reuse_validated_same_allocation_canary:
             blockers.extend(validate_same_allocation_canary_handoff(self, self.canary_handoff))
         return blockers
+
+
+def validate_preloaded_image_evidence(
+    config: CampaignConfig, evidence: Mapping[str, Any] | None
+) -> list[str]:
+    """Require a large exact digest to be resident before paid allocation.
+
+    A registry manifest is intentionally insufficient: it proves availability,
+    not that a provider host can start the image without a paid cold pull.
+    """
+
+    if not isinstance(evidence, Mapping):
+        return ["large_image_preload_evidence_missing"]
+    blockers: list[str] = []
+    if evidence.get("schema_version") != "preloaded_worker_image.v1":
+        blockers.append("large_image_preload_schema_invalid")
+    for key, expected in {
+        "source_sha": config.source_sha,
+        "image_digest": config.image_digest,
+        "allocation_key": config.allocation_key,
+    }.items():
+        if evidence.get(key) != expected:
+            blockers.append(f"large_image_preload_{key}_mismatch")
+    if not str(evidence.get("host_image_id") or "").strip():
+        blockers.append("large_image_preload_host_image_id_missing")
+    for field_name in (
+        "image_present_before_allocation",
+        "local_digest_inspect_passed",
+        "runtime_health_preflight_passed",
+    ):
+        if evidence.get(field_name) is not True:
+            blockers.append(f"large_image_preload_{field_name}_not_proven")
+    if evidence.get("cold_pull_required_during_campaign") is not False:
+        blockers.append("large_image_cold_pull_still_required")
+    return blockers
+
+
+def validate_image_ready_result(
+    config: CampaignConfig, result: Mapping[str, Any]
+) -> list[str]:
+    """Re-verify residency on the allocated host before runtime startup."""
+
+    blockers: list[str] = []
+    if result.get("image_digest") != config.image_digest:
+        blockers.append("image_ready_digest_mismatch")
+    if result.get("local_digest_inspect_passed") is not True:
+        blockers.append("image_ready_local_digest_inspect_not_passed")
+    if config.image_total_compressed_bytes >= LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES:
+        if result.get("digest_already_local_at_allocation") is not True:
+            blockers.append("large_image_not_local_at_allocation")
+        if result.get("cold_pull_performed_during_campaign") is not False:
+            blockers.append("large_image_paid_cold_pull_detected")
+        evidence = config.image_residency_evidence or {}
+        if result.get("host_image_id") != evidence.get("host_image_id"):
+            blockers.append("large_image_host_image_identity_mismatch")
+    return blockers
 
 
 def _canonical_sha(payload: Mapping[str, Any]) -> str:
@@ -371,6 +437,12 @@ class CampaignMachine:
                 result.setdefault("elapsed_seconds", round(elapsed, 3))
                 if not self._stage_passed(result):
                     raise CampaignBlocked(f"campaign_stage_failed:{stage}")
+                if stage == "image_ready":
+                    image_blockers = validate_image_ready_result(self.config, result)
+                    if image_blockers:
+                        raise CampaignBlocked(
+                            "image_ready_gate_blocked:" + ",".join(image_blockers)
+                        )
                 if stage == "smoke":
                     smoke_blockers = validate_smoke_result(result)
                     if smoke_blockers:

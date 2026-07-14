@@ -10,6 +10,15 @@ from typing import Any, Mapping, Sequence
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
+# These are admission ceilings, not size targets.  They are deliberately just
+# above the measured 2026-07-14 closure (47,101,357,226 total;
+# 14,083,497,680 largest layer) so a release cannot silently grow while the
+# layer-reduction work proceeds.  Reducing either constant is a closure change
+# and must be accompanied by a fresh registry diagnostic.
+MAX_IMAGE_COMPRESSED_BYTES = 48_000_000_000
+MAX_IMAGE_LAYER_BYTES = 15_000_000_000
+LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES = 20 * 1024**3
+
 
 @dataclass(frozen=True)
 class DiskAdmission:
@@ -130,7 +139,12 @@ def build_regional_mirror_plan(
     }
 
 
-def build_layer_report(layers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def build_layer_report(
+    layers: Sequence[Mapping[str, Any]],
+    *,
+    max_total_compressed_bytes: int = MAX_IMAGE_COMPRESSED_BYTES,
+    max_layer_bytes: int = MAX_IMAGE_LAYER_BYTES,
+) -> dict[str, Any]:
     normalized = [
         {
             "digest": str(layer.get("digest") or ""),
@@ -141,17 +155,75 @@ def build_layer_report(layers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     ]
     normalized.sort(key=lambda row: row["size_bytes"], reverse=True)
     total = sum(row["size_bytes"] for row in normalized)
+    largest = max((row["size_bytes"] for row in normalized), default=0)
+    blockers: list[str] = []
+    if not normalized or total <= 0:
+        blockers.append("image_layer_inventory_empty")
+    if total > max_total_compressed_bytes:
+        blockers.append("image_total_compressed_size_budget_exceeded")
+    if largest > max_layer_bytes:
+        blockers.append("image_largest_layer_size_budget_exceeded")
     duplicate_digests = sorted(
         digest
         for digest in {row["digest"] for row in normalized if row["digest"]}
         if sum(row["digest"] == digest for row in normalized) > 1
     )
+    categories = {
+        "isaac_sim_base": 0,
+        "oscar_python_cuda_runtime": 0,
+        "wbc_build_and_cuda_toolchain": 0,
+        "groot_python_cuda_runtime": 0,
+        "sealed_model_checkpoints": 0,
+        "other": 0,
+    }
+    for row in normalized:
+        command = row["created_by"]
+        if "COPY . /isaac-sim/" in command:
+            category = "isaac_sim_base"
+        elif "uv venv /opt/oscar-venv" in command:
+            category = "oscar_python_cuda_runtime"
+        elif "scripts/install_deps.sh" in command and "just build" in command:
+            category = "wbc_build_and_cuda_toolchain"
+        elif "uv venv /opt/gr00t-venv" in command:
+            category = "groot_python_cuda_runtime"
+        elif "snapshot_download" in command and "SONIC_CHECKPOINT_REPO" in command:
+            category = "sealed_model_checkpoints"
+        else:
+            category = "other"
+        categories[category] += row["size_bytes"]
     return {
         "schema_version": "groot_oscar_image_layer_report.v1",
+        "status": "passed" if not blockers else "blocked",
         "layer_count": len(normalized),
         "total_compressed_size_bytes": total,
+        "largest_layer_size_bytes": largest,
+        "max_total_compressed_size_bytes": max_total_compressed_bytes,
+        "max_layer_size_bytes": max_layer_bytes,
+        "requires_preloaded_host": total >= LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES,
         "largest_layers": normalized[:20],
         "duplicate_layer_digests": duplicate_digests,
+        "compressed_bytes_by_build_role": categories,
+        "measured_optimization_candidates": [
+            {
+                "role": "wbc_build_and_cuda_toolchain",
+                "required_change": "build WBC in a separate stage and copy only runtime artifacts",
+                "runtime_gpu_abi_test_required": True,
+            },
+            {
+                "role": "oscar_and_groot_python_cuda_runtimes",
+                "required_change": (
+                    "deduplicate only byte-identical CUDA wheels; keep incompatible torch ABIs isolated"
+                ),
+                "runtime_gpu_abi_test_required": True,
+            },
+            {
+                "role": "sealed_model_checkpoints",
+                "required_change": (
+                    "retain offline immutable blobs but preload them in the host image or regional cache"
+                ),
+                "runtime_gpu_abi_test_required": False,
+            },
+        ],
         "optimization_rules": {
             "remove_build_only_dependencies": True,
             "deduplicate_model_and_framework_files": True,
@@ -159,6 +231,7 @@ def build_layer_report(layers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "offline_execution_required": True,
             "hidden_runtime_downloads_forbidden": True,
         },
+        "blockers": blockers,
     }
 
 
