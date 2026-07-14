@@ -136,16 +136,23 @@ python -m blueprint_pipeline.paid_resource_allocator model-volume \
   --gpu-type-id 'NVIDIA A40' \
   --required-cuda-version 12.8 \
   --volume-size-gib 50 \
+  --volume-hourly-rate-usd '<provider-verified-rate>' \
   --hard-ttl-seconds 2700 \
   --max-spend-usd 0.40 \
   --allow-paid
 ```
 
+The allocator derives the volume's hourly cost from the selected GiB at the
+documented first-terabyte rate and includes it in admission. Override
+`--volume-hourly-rate-usd` only when a current provider price row proves a
+different rate.
+
 It arms an independent name-scoped watchdog before creating anything, creates
 one volume and one temporary preparation Pod, downloads and fully hashes the
 pinned allowlist, retrieves token-authenticated verification evidence, deletes
-the preparation Pod, and hands the verified volume ID to the GPU canary. On
-failure it deletes the volume too. The Hugging Face token remains file-backed
+the preparation Pod, and emits the verified volume ID for the GPU canary while
+the original deadline watchdog remains responsible for the volume. On failure
+it deletes the volume too. The Hugging Face token remains file-backed
 locally and raw secret values are never persisted.
 
 The second command in the script re-reads and hashes every model byte under

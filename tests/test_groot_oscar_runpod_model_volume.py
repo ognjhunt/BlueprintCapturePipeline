@@ -1,6 +1,14 @@
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline import groot_oscar_runpod_model_volume as model_volume
 from blueprint_pipeline.groot_oscar_runpod_model_volume import (
     SCHEMA_VERSION,
+    _extract_id,
+    _matching_resources,
     build_model_volume_admission,
+    launch_detached,
 )
 from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
@@ -18,6 +26,8 @@ def _admission(**overrides):
         "hard_ttl_seconds": 2700,
         "max_spend_usd": 0.40,
         "hourly_rate_usd": 0.44,
+        "volume_hourly_rate_usd": 50 * 0.07 / (30 * 24),
+        "capacity_verified": True,
         "inventory_verified_zero": True,
         "paid_mutation_authorized": True,
         "watchdog_armed_before_allocation": True,
@@ -72,3 +82,54 @@ def test_model_volume_admission_allows_explicitly_bounded_higher_rate() -> None:
         max_spend_usd=0.75,
     )
     assert admission["status"] == "admitted"
+
+
+def test_model_volume_admission_rejects_low_stock_without_single_gpu_count() -> None:
+    admission = _admission(capacity_verified=False)
+    assert admission["status"] == "blocked"
+    assert "model_volume_single_gpu_capacity_not_verified" in admission["blockers"]
+
+
+def test_model_volume_admission_requires_verified_capacity_and_storage_rate() -> None:
+    admission = _admission(
+        capacity_verified=False,
+        volume_hourly_rate_usd=0,
+    )
+    assert admission["status"] == "blocked"
+    assert "model_volume_single_gpu_capacity_not_verified" in admission["blockers"]
+    assert "model_volume_storage_hourly_rate_missing" in admission["blockers"]
+
+
+def test_model_volume_inventory_failure_is_not_treated_as_zero(monkeypatch) -> None:
+    monkeypatch.setattr(
+        model_volume,
+        "_runpod_call",
+        lambda method, path, body, **kwargs: (503, {}),
+    )
+    pods, volumes, verified = _matching_resources(
+        key="secret",
+        pod_prefix=model_volume.POD_NAME_PREFIX,
+        volume_prefix=model_volume.VOLUME_NAME_PREFIX,
+    )
+    assert pods == []
+    assert volumes == []
+    assert verified is False
+
+
+def test_model_volume_rejects_provider_ids_that_can_escape_urls() -> None:
+    assert _extract_id({"id": "safe-pod_123"}) == "safe-pod_123"
+    assert _extract_id({"id": "../../pods/other"}) == ""
+    assert _extract_id({"id": True}) == ""
+
+
+def test_model_volume_detached_launch_is_single_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Process:
+        pid = 1234
+
+    monkeypatch.setattr(model_volume.subprocess, "Popen", lambda *args, **kwargs: Process())
+    launched = launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])
+    assert launched["status"] == "supervisor_started"
+    with pytest.raises(ValueError, match="already_has_supervisor"):
+        launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])

@@ -227,6 +227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--gpu-type-id", required=True)
         model.add_argument("--required-cuda-version", default="12.8")
         model.add_argument("--volume-size-gib", type=int, default=50)
+        model.add_argument("--volume-hourly-rate-usd", type=float, required=True)
         model.add_argument("--hard-ttl-seconds", type=int, default=2700)
         model.add_argument("--max-spend-usd", type=float, default=0.40)
         model.add_argument("--hf-token-file", default="~/.blueprint-secrets/hf_token")
@@ -274,6 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--gpu-type-id", args.gpu_type_id,
             "--required-cuda-version", args.required_cuda_version,
             "--volume-size-gib", str(args.volume_size_gib),
+            "--volume-hourly-rate-usd", str(args.volume_hourly_rate_usd),
             "--hard-ttl-seconds", str(args.hard_ttl_seconds),
             "--max-spend-usd", str(args.max_spend_usd),
             "--hf-token-file", args.hf_token_file,
@@ -292,6 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             gpu_type_id=args.gpu_type_id,
             required_cuda_version=args.required_cuda_version,
             volume_size_gib=args.volume_size_gib,
+            volume_hourly_rate_usd=args.volume_hourly_rate_usd,
             hard_ttl_seconds=args.hard_ttl_seconds,
             max_spend_usd=args.max_spend_usd,
             hf_token_file=Path(args.hf_token_file),

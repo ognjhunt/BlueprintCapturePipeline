@@ -9,6 +9,7 @@ supervisor deletes the Pod before handing the verified volume to the canary.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -22,7 +23,10 @@ from typing import Any, Mapping, Sequence
 from . import safe_outbound_http
 from .common import ensure_dir, write_json
 from .gpu_render_providers import _runpod_call, get_render_provider
-from .paid_resource_admission import require_paid_resource_admission
+from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    require_paid_resource_admission,
+)
 
 
 SCHEMA_VERSION = "groot_oscar_runpod_model_volume_admission.v1"
@@ -33,7 +37,10 @@ MIN_VOLUME_GIB = 30
 MAX_VOLUME_GIB = 100
 MAX_TTL_SECONDS = 3600
 EVIDENCE_PORT = 8765
+POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
+VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
 _DIGEST_REF = re.compile(r"\A[^\s@]+@sha256:[0-9a-f]{64}\Z")
+_RUNPOD_ID = re.compile(r"\A[A-Za-z0-9._-]{1,256}\Z")
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -57,6 +64,8 @@ def build_model_volume_admission(
     hard_ttl_seconds: int,
     max_spend_usd: float,
     hourly_rate_usd: float,
+    volume_hourly_rate_usd: float,
+    capacity_verified: bool,
     inventory_verified_zero: bool,
     paid_mutation_authorized: bool,
     watchdog_armed_before_allocation: bool,
@@ -78,8 +87,22 @@ def build_model_volume_admission(
         blockers.append("model_volume_max_spend_missing")
     if not isinstance(hourly_rate_usd, (int, float)) or hourly_rate_usd <= 0:
         blockers.append("model_volume_hourly_rate_missing")
-    elif hourly_rate_usd * hard_ttl_seconds / 3600 > max_spend_usd:
+    if (
+        not isinstance(volume_hourly_rate_usd, (int, float))
+        or volume_hourly_rate_usd <= 0
+    ):
+        blockers.append("model_volume_storage_hourly_rate_missing")
+    elif (
+        isinstance(hourly_rate_usd, (int, float))
+        and hourly_rate_usd > 0
+        and (hourly_rate_usd + volume_hourly_rate_usd)
+        * hard_ttl_seconds
+        / 3600
+        > max_spend_usd
+    ):
         blockers.append("model_volume_ttl_cost_exceeds_max_spend")
+    if capacity_verified is not True:
+        blockers.append("model_volume_single_gpu_capacity_not_verified")
     if inventory_verified_zero is not True:
         blockers.append("model_volume_preallocation_inventory_not_zero")
     if paid_mutation_authorized is not True:
@@ -98,6 +121,8 @@ def build_model_volume_admission(
         "limits": {
             "hard_ttl_seconds": hard_ttl_seconds,
             "max_spend_usd": max_spend_usd,
+            "gpu_hourly_rate_usd": hourly_rate_usd,
+            "volume_hourly_rate_usd": volume_hourly_rate_usd,
             "one_volume_limit": True,
             "one_preparation_pod_limit": True,
         },
@@ -143,10 +168,18 @@ def _delete_volume(*, key: str, volume_id: str) -> dict[str, Any]:
     }
 
 
-def _matching_resources(*, key: str, pod_prefix: str, volume_name: str) -> tuple[list[str], list[str]]:
+def _matching_resources(
+    *, key: str, pod_prefix: str, volume_prefix: str
+) -> tuple[list[str], list[str], bool]:
     pods_http, pods_payload = _runpod_call("GET", "/pods", None, key=key, timeout=30)
     volumes_http, volumes_payload = _runpod_call(
         "GET", "/networkvolumes", None, key=key, timeout=30
+    )
+    inventory_verified = (
+        pods_http == 200
+        and isinstance(pods_payload, list)
+        and volumes_http == 200
+        and isinstance(volumes_payload, list)
     )
     pod_rows = pods_payload if pods_http == 200 and isinstance(pods_payload, list) else []
     volume_rows = (
@@ -163,10 +196,10 @@ def _matching_resources(*, key: str, pod_prefix: str, volume_name: str) -> tuple
         str(row.get("id"))
         for row in volume_rows
         if isinstance(row, Mapping)
-        and str(row.get("name") or "") == volume_name
+        and str(row.get("name") or "").startswith(volume_prefix)
         and str(row.get("id") or "")
     ]
-    return pod_ids, volume_ids
+    return pod_ids, volume_ids, inventory_verified
 
 
 def watchdog(*, state_path: Path) -> int:
@@ -198,19 +231,24 @@ def watchdog(*, state_path: Path) -> int:
         }
         write_json(root / "watchdog_result.json", result)
         return 2
-    pod_ids, volume_ids = _matching_resources(
+    pod_ids, volume_ids, inventory_verified = _matching_resources(
         key=key,
         pod_prefix=str(state["pod_name_prefix"]),
-        volume_name=str(state["volume_name"]),
+        volume_prefix=str(state["volume_name"]),
     )
     pod_results = [_delete_pod(key=key, pod_id=item) for item in pod_ids]
     volume_results = [_delete_volume(key=key, volume_id=item) for item in volume_ids]
-    final_pods, final_volumes = _matching_resources(
+    final_pods, final_volumes, final_inventory_verified = _matching_resources(
         key=key,
         pod_prefix=str(state["pod_name_prefix"]),
-        volume_name=str(state["volume_name"]),
+        volume_prefix=str(state["volume_name"]),
     )
-    terminal = not final_pods and not final_volumes
+    terminal = bool(
+        inventory_verified
+        and final_inventory_verified
+        and not final_pods
+        and not final_volumes
+    )
     result = {
         "schema_version": WATCHDOG_SCHEMA_VERSION,
         "status": "provider_terminal" if terminal else "teardown_unverified",
@@ -265,7 +303,10 @@ def _fetch_verification(*, pod_id: str, token: str, timeout_seconds: int = 20) -
 
 
 def _extract_id(payload: Mapping[str, Any]) -> str:
-    return str(payload.get("id") or payload.get("podId") or "").strip()
+    value = payload.get("id") or payload.get("podId")
+    if type(value) is not str or value != value.strip() or not _RUNPOD_ID.fullmatch(value):
+        return ""
+    return value
 
 
 def run_model_volume(
@@ -278,6 +319,7 @@ def run_model_volume(
     volume_size_gib: int,
     hard_ttl_seconds: int,
     max_spend_usd: float,
+    volume_hourly_rate_usd: float,
     hf_token_file: Path,
     allow_paid: bool,
 ) -> dict[str, Any]:
@@ -288,11 +330,13 @@ def run_model_volume(
     if not key:
         raise ValueError("runpod_api_key_missing")
     suffix = secrets.token_hex(5)
-    pod_prefix = f"blueprint-groot-oscar-canary-model-{suffix}"
+    pod_prefix = f"{POD_NAME_PREFIX}{suffix}"
     pod_name = pod_prefix
-    volume_name = f"blueprint-groot-oscar-models-{suffix}"
-    existing_pods, existing_volumes = _matching_resources(
-        key=key, pod_prefix=pod_prefix, volume_name=volume_name
+    volume_name = f"{VOLUME_NAME_PREFIX}{suffix}"
+    existing_pods, existing_volumes, inventory_verified = _matching_resources(
+        key=key,
+        pod_prefix=POD_NAME_PREFIX,
+        volume_prefix=VOLUME_NAME_PREFIX,
     )
     capacity = provider.capacity_preflight(
         {
@@ -310,6 +354,16 @@ def run_model_volume(
         {},
     )
     hourly_rate = float(selected.get("on_demand_price_usd_per_hour") or 0)
+    capacity_verified = bool(
+        capacity.get("status") == "available"
+        and capacity.get("capacity_confidence") == "advisory"
+        and selected.get("capacity_confidence") == "advisory"
+        and selected.get("single_gpu_count_known") is True
+        and 1 in (selected.get("available_gpu_counts") or [])
+        and selected.get("capacity_data_center_id") == data_center_id
+        and required_cuda_version
+        in (selected.get("capacity_allowed_cuda_versions") or [])
+    )
     deadline = time.time() + hard_ttl_seconds
     state_path = output / "watchdog_state.json"
     write_json(
@@ -345,7 +399,11 @@ def run_model_volume(
         hard_ttl_seconds=hard_ttl_seconds,
         max_spend_usd=max_spend_usd,
         hourly_rate_usd=hourly_rate,
-        inventory_verified_zero=not existing_pods and not existing_volumes,
+        volume_hourly_rate_usd=volume_hourly_rate_usd,
+        capacity_verified=capacity_verified,
+        inventory_verified_zero=(
+            inventory_verified and not existing_pods and not existing_volumes
+        ),
         paid_mutation_authorized=allow_paid,
         watchdog_armed_before_allocation=watch.poll() is None,
     )
@@ -356,12 +414,24 @@ def run_model_volume(
             resource_class="model_volume",
             expected_schema_version=SCHEMA_VERSION,
         )
-    except Exception:
+    except PaidResourceAdmissionBlocked:
         write_json(
             output / "watchdog_handoff.json",
             {"status": "cancelled_before_provider_allocation"},
         )
-        raise
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked_before_allocation",
+            "blockers": admission.get("blockers") or [
+                "model_volume_paid_resource_admission_blocked"
+            ],
+            "provider_mutation_attempted": False,
+            "maximum_compute_spend_usd": 0.0,
+            "maximum_storage_spend_usd": 0.0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(output / "model_volume_result.json", result)
+        return result
     started = time.time()
     volume_id = ""
     pod_id = ""
@@ -386,8 +456,7 @@ def run_model_volume(
             provider_failure = {
                 "operation": "create_network_volume",
                 "http_status": volume_http,
-                "provider_error": str(_mapping(volume_response).get("error") or "")[:1000]
-                or None,
+                "provider_error_recorded": False,
                 "allocation_created": bool(volume_id),
                 "spend_occurred": False if not volume_id else None,
             }
@@ -444,8 +513,7 @@ def run_model_volume(
             provider_failure = {
                 "operation": "create_preparation_pod",
                 "http_status": pod_http,
-                "provider_error": str(_mapping(pod_response).get("error") or "")[:1000]
-                or None,
+                "provider_error_recorded": False,
                 "allocation_created": bool(pod_id),
                 "spend_occurred": False if not pod_id else None,
             }
@@ -499,36 +567,34 @@ def run_model_volume(
         if pod_id:
             pod_teardown = _delete_pod(key=key, pod_id=pod_id)
         else:
-            matching_pods, _ = _matching_resources(
-                key=key, pod_prefix=pod_prefix, volume_name=volume_name
+            matching_pods, _, _ = _matching_resources(
+                key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
             )
             for item in matching_pods:
                 pod_teardown = _delete_pod(key=key, pod_id=item)
         if not success:
             volume_ids = [volume_id] if volume_id else []
             if not volume_ids:
-                _, volume_ids = _matching_resources(
-                    key=key, pod_prefix=pod_prefix, volume_name=volume_name
+                _, volume_ids, _ = _matching_resources(
+                    key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
                 )
             for item in volume_ids:
                 volume_teardown = _delete_volume(key=key, volume_id=item)
-        final_pods, final_volumes = _matching_resources(
-            key=key, pod_prefix=pod_prefix, volume_name=volume_name
+        final_pods, final_volumes, final_inventory_verified = _matching_resources(
+            key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
         )
-        cleanup_terminal = not final_pods and (
-            success or not final_volumes
+        cleanup_terminal = bool(
+            final_inventory_verified
+            and not final_pods
+            and not final_volumes
         )
-        if cleanup_terminal and (
+        if not success and cleanup_terminal and (
             not pod_id or pod_teardown.get("provider_absence_confirmed") is True
         ):
             write_json(
                 output / "watchdog_handoff.json",
                 {
-                    "status": (
-                        "verified_volume_handed_to_gpu_canary"
-                        if success
-                        else "failure_cleanup_provider_terminal"
-                    ),
+                    "status": "failure_cleanup_provider_terminal",
                     "volume_id": volume_id or None,
                     "preparation_pod_absence_confirmed": not final_pods,
                     "failure_volume_absence_confirmed": not final_volumes,
@@ -555,6 +621,10 @@ def run_model_volume(
         "maximum_compute_spend_usd": (
             hourly_rate * elapsed / 3600 if compute_started else 0.0
         ),
+        "maximum_total_spend_usd": (
+            (hourly_rate + volume_hourly_rate_usd) * hard_ttl_seconds / 3600
+        ),
+        "watchdog_retained_until_epoch": deadline if result_success else None,
         "error_type": error_type,
         "raw_secret_values_recorded": False,
     }
@@ -567,6 +637,13 @@ def launch_detached(*, output_dir: Path, run_arguments: Sequence[str]) -> dict[s
     ensure_dir(output)
     if (output / "model_volume_result.json").exists():
         raise ValueError("model_volume_output_already_terminal")
+    lock_path = output / "supervisor.lock"
+    try:
+        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise ValueError("model_volume_output_already_has_supervisor") from exc
+    with os.fdopen(lock_fd, "w", encoding="utf-8") as lock:
+        lock.write(f"created_by_pid={os.getpid()}\n")
     with (output / "supervisor.log").open("ab") as log:
         process = subprocess.Popen(
             [

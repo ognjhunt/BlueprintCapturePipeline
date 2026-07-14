@@ -235,3 +235,32 @@ def test_cpu_build_cli_rechecks_prerequisites_before_detached_supervisor(
     assert exit_code == 2
     assert json.loads(capsys.readouterr().out) == {"success": False}
     assert supervisor_called is False
+
+
+def test_model_volume_run_forwards_verified_storage_rate(monkeypatch, capsys) -> None:
+    observed = {}
+
+    def fake_run_model_volume(**kwargs):
+        observed.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_model_volume", fake_run_model_volume)
+    exit_code = allocator.main(
+        [
+            "model-volume-run",
+            "--output-dir",
+            "out",
+            "--release-image-ref",
+            "docker.io/example/worker@sha256:" + "a" * 64,
+            "--data-center-id",
+            "US-TX-3",
+            "--gpu-type-id",
+            "NVIDIA L40S",
+            "--volume-hourly-rate-usd",
+            "0.004861111111",
+            "--allow-paid",
+        ]
+    )
+    assert exit_code == 0
+    assert observed["volume_hourly_rate_usd"] == pytest.approx(0.004861111111)
+    assert json.loads(capsys.readouterr().out) == {"success": True}
