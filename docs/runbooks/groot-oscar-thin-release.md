@@ -125,11 +125,28 @@ Mount the provider volume at `/models`. Preparation is asynchronous and may
 use the network and a file-based Hugging Face token. Customer requests may not
 run this step.
 
+For RunPod, use the canonical guarded allocator rather than creating or
+populating a volume in the console:
+
 ```bash
-BLUEPRINT_GROOT_OSCAR_MODEL_CACHE=/models/blueprint-groot-oscar-v1 \
-BLUEPRINT_GROOT_OSCAR_MODEL_CACHE_HF_TOKEN_FILE="$HOME/.blueprint-secrets/hf_token" \
-./scripts/prepare_groot_oscar_model_cache.sh
+python -m blueprint_pipeline.paid_resource_allocator model-volume \
+  --output-dir <evidence-dir> \
+  --release-image-ref '<repository>@sha256:<digest>' \
+  --data-center-id '<capacity-verified-dc>' \
+  --gpu-type-id 'NVIDIA A40' \
+  --required-cuda-version 12.8 \
+  --volume-size-gib 50 \
+  --hard-ttl-seconds 2700 \
+  --max-spend-usd 0.40 \
+  --allow-paid
 ```
+
+It arms an independent name-scoped watchdog before creating anything, creates
+one volume and one temporary preparation Pod, downloads and fully hashes the
+pinned allowlist, retrieves token-authenticated verification evidence, deletes
+the preparation Pod, and hands the verified volume ID to the GPU canary. On
+failure it deletes the volume too. The Hugging Face token remains file-backed
+locally and raw secret values are never persisted.
 
 The second command in the script re-reads and hashes every model byte under
 `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. Preserve the emitted

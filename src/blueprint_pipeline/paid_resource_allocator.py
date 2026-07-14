@@ -26,6 +26,8 @@ from .groot_oscar_infrastructure_admission import (
     build_cpu_build_execution_admission,
 )
 from .groot_oscar_runpod_canary import run_canary
+from .groot_oscar_runpod_model_volume import launch_detached as launch_detached_model_volume
+from .groot_oscar_runpod_model_volume import run_model_volume
 from .paid_resource_admission import require_paid_resource_admission
 
 
@@ -217,6 +219,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
     gpu.add_argument("--execute", action="store_true")
+    for name, hidden in (("model-volume", False), ("model-volume-run", True)):
+        model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
+        model.add_argument("--output-dir", required=True)
+        model.add_argument("--release-image-ref", required=True)
+        model.add_argument("--data-center-id", required=True)
+        model.add_argument("--gpu-type-id", required=True)
+        model.add_argument("--required-cuda-version", default="12.8")
+        model.add_argument("--volume-size-gib", type=int, default=50)
+        model.add_argument("--hard-ttl-seconds", type=int, default=2700)
+        model.add_argument("--max-spend-usd", type=float, default=0.40)
+        model.add_argument("--hf-token-file", default="~/.blueprint-secrets/hf_token")
+        model.add_argument("--allow-paid", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "cpu-build":
         prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
@@ -239,7 +253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "cpu-build-local":
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
-    else:
+    elif args.command == "gpu-canary":
         result = run_canary(
             provider_launch_request=args.provider_launch_request,
             release_evidence=args.release_evidence,
@@ -252,6 +266,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             execute=args.execute,
         )
         success = result.get("status") in {"dry_run_ready", "submitted"}
+    elif args.command == "model-volume":
+        vector = [
+            "--output-dir", args.output_dir,
+            "--release-image-ref", args.release_image_ref,
+            "--data-center-id", args.data_center_id,
+            "--gpu-type-id", args.gpu_type_id,
+            "--required-cuda-version", args.required_cuda_version,
+            "--volume-size-gib", str(args.volume_size_gib),
+            "--hard-ttl-seconds", str(args.hard_ttl_seconds),
+            "--max-spend-usd", str(args.max_spend_usd),
+            "--hf-token-file", args.hf_token_file,
+        ]
+        if args.allow_paid:
+            vector.append("--allow-paid")
+        result = launch_detached_model_volume(
+            output_dir=Path(args.output_dir), run_arguments=vector
+        )
+        success = result.get("status") == "supervisor_started"
+    else:
+        result = run_model_volume(
+            output_dir=Path(args.output_dir),
+            release_image_ref=args.release_image_ref,
+            data_center_id=args.data_center_id,
+            gpu_type_id=args.gpu_type_id,
+            required_cuda_version=args.required_cuda_version,
+            volume_size_gib=args.volume_size_gib,
+            hard_ttl_seconds=args.hard_ttl_seconds,
+            max_spend_usd=args.max_spend_usd,
+            hf_token_file=Path(args.hf_token_file),
+            allow_paid=args.allow_paid,
+        )
+        success = result.get("status") == "completed"
     # Provider results can contain credential-bearing request fields. Persisted
     # evidence remains in the explicitly selected output paths; stdout exposes
     # only the derived success bit so CI and operators cannot leak the payload.
@@ -265,6 +311,10 @@ def cpu_build_main(argv: Sequence[str] | None = None) -> int:
 
 def gpu_canary_main(argv: Sequence[str] | None = None) -> int:
     return main(["gpu-canary", *(list(argv) if argv is not None else sys.argv[1:])])
+
+
+def model_volume_main(argv: Sequence[str] | None = None) -> int:
+    return main(["model-volume", *(list(argv) if argv is not None else sys.argv[1:])])
 
 
 if __name__ == "__main__":

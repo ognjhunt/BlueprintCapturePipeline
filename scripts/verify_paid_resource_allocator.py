@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
+MODEL_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
 THIN_ENTRYPOINT = (
@@ -50,6 +51,7 @@ def verify() -> list[str]:
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
+    model_volume = MODEL_VOLUME_ADAPTER.read_text(encoding="utf-8")
     thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
     thin_entrypoint = THIN_ENTRYPOINT.read_text(encoding="utf-8")
     runpod_watchdog = RUNPOD_WATCHDOG.read_text(encoding="utf-8")
@@ -61,8 +63,17 @@ def verify() -> list[str]:
         blockers.append("legacy_cpu_builder_not_hard_disabled")
     if "legacy_gpu_canary_launcher_disabled" not in gpu:
         blockers.append("legacy_gpu_canary_not_hard_disabled")
-    if "cpu-build" not in canonical or "gpu-canary" not in canonical:
+    if not all(item in canonical for item in ("cpu-build", "model-volume", "gpu-canary")):
         blockers.append("canonical_allocator_subcommands_missing")
+    if "run_model_volume(" not in canonical:
+        blockers.append("canonical_allocator_missing_model_volume_route")
+    model_calls = _function_calls(MODEL_VOLUME_ADAPTER)
+    if "require_paid_resource_admission" not in model_calls.get("run_model_volume", set()):
+        blockers.append("model_volume_bypasses_shared_admission")
+    if "_delete_pod" not in model_calls.get("run_model_volume", set()):
+        blockers.append("model_volume_preparation_pod_teardown_missing")
+    if "watchdog_handoff.json" not in model_volume:
+        blockers.append("model_volume_independent_watchdog_missing")
     if "python -m blueprint_pipeline.paid_resource_allocator" not in runbook:
         blockers.append("canonical_allocator_command_missing_from_runbook")
     legacy_docs = (

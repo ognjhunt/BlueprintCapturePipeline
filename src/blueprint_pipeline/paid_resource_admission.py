@@ -27,7 +27,7 @@ def require_paid_resource_admission(
     """Return an in-process grant or raise before a provider mutation."""
 
     blockers: list[str] = []
-    if resource_class not in {"cpu_build", "gpu_canary"}:
+    if resource_class not in {"cpu_build", "gpu_canary", "model_volume"}:
         blockers.append("paid_resource_class_invalid")
     if admission.get("schema_version") != expected_schema_version:
         blockers.append("paid_resource_admission_schema_invalid")
