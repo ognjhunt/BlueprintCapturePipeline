@@ -43,9 +43,12 @@ CI runs both gates on every push and pull request. The live gate downloads and
 hashes only the small pinned bootstrap archives, reads NVIDIA's Ubuntu 24.04
 package index, and inspects immutable GitHub and Hugging Face revision metadata;
 it also checks the declared Isaac asset URLs and byte sizes without downloading
-those assets. It does not pull a container or download model weights. It fails
-before paid allocation if an exact TensorRT package, source commit, model
-revision, or required model filename has disappeared or drifted. The
+those assets. For the public NGC Isaac base, it obtains an ephemeral anonymous
+pull token, downloads only the manifest list, recomputes its pinned SHA-256, and
+requires a Linux/amd64 child manifest. It does not pull a container layer or
+download model weights. It fails before paid allocation if a base manifest,
+exact TensorRT package, source commit, model revision, or required model
+filename has disappeared or drifted. The
 network-free gate rejects reintroduced WBC build trees, separate GR00T/OSCAR
 environments, unpinned bootstrap downloads, model acquisition in the release
 Dockerfile, incomplete critical model-file contracts, and mutable

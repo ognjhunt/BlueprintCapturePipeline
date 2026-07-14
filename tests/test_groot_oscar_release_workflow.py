@@ -1,6 +1,10 @@
+import json
 from pathlib import Path
 
-from scripts.verify_groot_oscar_live_prerequisites import verify_static
+from scripts.verify_groot_oscar_live_prerequisites import (
+    _verify_isaac_base_image,
+    verify_static,
+)
 from scripts.verify_groot_oscar_thin_architecture import verify
 
 
@@ -34,3 +38,30 @@ def test_paid_foundation_build_has_a_free_live_prerequisite_gate() -> None:
     assert "scripts/verify_groot_oscar_live_prerequisites.py" in workflow
     assert "--live" in workflow
     assert verify_static() == []
+
+
+def test_isaac_base_manifest_verification_fails_closed_without_leaking_token() -> None:
+    token = "ephemeral-test-token"
+    manifest = json.dumps(
+        {
+            "schemaVersion": 2,
+            "manifests": [
+                {"platform": {"os": "linux", "architecture": "amd64"}}
+            ],
+        },
+        separators=(",", ":"),
+    ).encode()
+
+    def fake_fetch(url: str) -> bytes:
+        assert url.startswith("https://nvcr.io/proxy_auth?")
+        return json.dumps({"token": token}).encode()
+
+    def fake_authorized_fetch(url: str, supplied_token: str) -> bytes:
+        assert url.startswith("https://nvcr.io/v2/nvidia/isaac-sim/manifests/sha256:")
+        assert supplied_token == token
+        return manifest
+
+    blockers, check = _verify_isaac_base_image(fake_fetch, fake_authorized_fetch)
+    assert blockers == ["isaac_base_image_digest_mismatch"]
+    assert check["linux_amd64_present"] is True
+    assert token not in json.dumps(check)

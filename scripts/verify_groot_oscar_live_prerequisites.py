@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping, cast
@@ -27,9 +28,7 @@ MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
 ISAAC_ASSET_MANIFEST = IMAGE_ROOT / "isaac_6_g1_assets.sha256"
 
 SCHEMA = "groot_oscar_live_prerequisites.v1"
-CUDA_REPOSITORY = (
-    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64"
-)
+CUDA_REPOSITORY = "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64"
 ARTIFACTS = (
     (
         f"{CUDA_REPOSITORY}/cuda-keyring_1.1-1_all.deb",
@@ -75,8 +74,29 @@ ISAAC_ASSET_BASE_URL = (
     "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/"
     "Isaac/6.0/Isaac/Robots/Unitree/G1/"
 )
+ISAAC_BASE_REPOSITORY = "nvidia/isaac-sim"
+ISAAC_BASE_DIGEST = "68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d"
+OCI_MANIFEST_ACCEPT = ", ".join(
+    (
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    )
+)
 Fetch = Callable[[str], bytes]
 HeadSize = Callable[[str], int]
+ALLOWED_HTTPS_HOSTS = frozenset(
+    {
+        "api.github.com",
+        "developer.download.nvidia.com",
+        "github.com",
+        "huggingface.co",
+        "nvcr.io",
+        "omniverse-content-production.s3-us-west-2.amazonaws.com",
+    }
+)
+AuthorizedFetch = Callable[[str, str], bytes]
 
 
 def _assigned_literal(module: Path, name: str) -> object:
@@ -107,29 +127,58 @@ def _assigned_literal(module: Path, name: str) -> object:
     return evaluate(assignments[name])
 
 
+def _allowed_https_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in ALLOWED_HTTPS_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in (None, 443)
+    ):
+        raise ValueError("prerequisite_url_not_allowlisted")
+    return url
+
+
 def _fetch(url: str) -> bytes:
     request = urllib.request.Request(
-        url,
+        _allowed_https_url(url),
         headers={
             "Accept": "application/vnd.github+json, application/json",
             "User-Agent": "blueprint-foundation-prerequisite-verifier/1",
         },
     )
-    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+    # The request origin and scheme are allowlisted above.
+    with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310
         return response.read()
 
 
 def _head_size(url: str) -> int:
     request = urllib.request.Request(
-        url,
+        _allowed_https_url(url),
         method="HEAD",
         headers={"User-Agent": "blueprint-foundation-prerequisite-verifier/1"},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+    # The request origin and scheme are allowlisted above.
+    with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
         content_length = response.headers.get("Content-Length")
     if content_length is None:
         raise ValueError("content_length_absent")
     return int(content_length)
+
+
+def _authorized_fetch(url: str, token: str) -> bytes:
+    request = urllib.request.Request(
+        _allowed_https_url(url),
+        headers={
+            "Accept": OCI_MANIFEST_ACCEPT,
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "blueprint-foundation-prerequisite-verifier/1",
+        },
+    )
+    # The request origin and scheme are allowlisted above.
+    with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310
+        return response.read()
 
 
 def _asset_rows() -> list[tuple[str, int, str]]:
@@ -158,6 +207,9 @@ def verify_static() -> list[str]:
             blockers.append(f"dockerfile_tensorrt_package_unpinned:{package}")
     if ISAAC_ASSET_BASE_URL not in dockerfile:
         blockers.append("dockerfile_isaac_asset_base_url_mismatch")
+    expected_base = f"nvcr.io/{ISAAC_BASE_REPOSITORY}:6.0.0@sha256:{ISAAC_BASE_DIGEST}"
+    if f"ARG ISAAC_SIM_BASE_IMAGE={expected_base}" not in dockerfile:
+        blockers.append("dockerfile_isaac_base_image_pin_mismatch")
 
     try:
         assets = _asset_rows()
@@ -208,11 +260,58 @@ def _packages_by_version(packages_gz: bytes) -> set[tuple[str, str]]:
     return rows
 
 
+def _verify_isaac_base_image(
+    fetch: Fetch, authorized_fetch: AuthorizedFetch
+) -> tuple[list[str], dict[str, Any]]:
+    blockers: list[str] = []
+    check: dict[str, Any] = {}
+    try:
+        token_payload = _json_object(
+            fetch("https://nvcr.io/proxy_auth?scope=repository%3Anvidia%2Fisaac-sim%3Apull")
+        )
+        token = token_payload.get("token")
+        if not isinstance(token, str) or not token:
+            raise ValueError("anonymous_pull_token_absent")
+        manifest = authorized_fetch(
+            f"https://nvcr.io/v2/nvidia/isaac-sim/manifests/sha256:{ISAAC_BASE_DIGEST}",
+            token,
+        )
+        actual_digest = hashlib.sha256(manifest).hexdigest()
+        metadata = _json_object(manifest)
+        manifest_rows = metadata.get("manifests", [])
+        linux_amd64_present = any(
+            isinstance(row, dict)
+            and isinstance(row.get("platform"), dict)
+            and row["platform"].get("os") == "linux"
+            and row["platform"].get("architecture") == "amd64"
+            for row in manifest_rows
+        )
+        check = {
+            "repository": ISAAC_BASE_REPOSITORY,
+            "digest": f"sha256:{actual_digest}",
+            "manifest_bytes": len(manifest),
+            "linux_amd64_present": linux_amd64_present,
+        }
+        if actual_digest != ISAAC_BASE_DIGEST:
+            blockers.append("isaac_base_image_digest_mismatch")
+        if not linux_amd64_present:
+            blockers.append("isaac_base_image_linux_amd64_manifest_absent")
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+        blockers.append(f"isaac_base_image_manifest_unavailable:{type(exc).__name__}")
+    return blockers, check
+
+
 def verify_live(
-    fetch: Fetch = _fetch, head_size: HeadSize = _head_size
+    fetch: Fetch = _fetch,
+    head_size: HeadSize = _head_size,
+    authorized_fetch: AuthorizedFetch = _authorized_fetch,
 ) -> tuple[list[str], dict[str, Any]]:
     blockers = verify_static()
     checks: dict[str, Any] = {}
+
+    base_blockers, base_check = _verify_isaac_base_image(fetch, authorized_fetch)
+    blockers.extend(base_blockers)
+    checks["isaac_base_image"] = base_check
 
     for url, expected_digest in ARTIFACTS:
         label = url.rsplit("/", 1)[-1]
@@ -267,9 +366,7 @@ def verify_live(
                 blockers.append(f"isaac_asset_size_mismatch:{relative_path}")
         except (OSError, ValueError, urllib.error.URLError) as exc:
             asset_failures.append(relative_path)
-            blockers.append(
-                f"isaac_asset_unavailable:{relative_path}:{type(exc).__name__}"
-            )
+            blockers.append(f"isaac_asset_unavailable:{relative_path}:{type(exc).__name__}")
     checks["isaac_assets"] = {
         "required": len(_asset_rows()),
         "total_remote_bytes": asset_bytes,
