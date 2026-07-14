@@ -424,6 +424,9 @@ class CampaignMachine:
         ]
 
     def _initial_state(self, config_sha: str) -> dict[str, Any]:
+        teardown_deadline = self.config.stage_deadlines_seconds.get("teardown", 300)
+        if not _positive_integer(teardown_deadline):
+            teardown_deadline = 300
         return {
             "schema_version": SCHEMA_VERSION,
             "campaign_id": self.config.campaign_id,
@@ -434,7 +437,7 @@ class CampaignMachine:
             "allocation_id": None,
             "allocation_mutation_pending": False,
             "provider_started_at_epoch_seconds": None,
-            "teardown_deadline_seconds": int(self.config.stage_deadlines_seconds["teardown"]),
+            "teardown_deadline_seconds": teardown_deadline,
             "completed_stages": [],
             "stage_results": {},
             "status": "running",
