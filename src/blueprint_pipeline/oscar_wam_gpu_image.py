@@ -768,6 +768,21 @@ from . import apply_rotary_pos_emb
 
 BLUEPRINT_COMPAT_SHIM = True
 """,
+    source_root / "transformer_engine-2.0.0.dist-info" / "METADATA": """
+Metadata-Version: 2.1
+Name: transformer-engine
+Version: 2.0.0
+Summary: Blueprint OSCAR PyTorch SDPA compatibility shim metadata
+""",
+    source_root / "transformer_engine-2.0.0.dist-info" / "WHEEL": """
+Wheel-Version: 1.0
+Generator: blueprint-oscar-wam-image
+Root-Is-Purelib: true
+Tag: py3-none-any
+""",
+    source_root / "transformer_engine-2.0.0.dist-info" / "top_level.txt": """
+transformer_engine
+""",
 }
 for path, text in files.items():
     path.parent.mkdir(parents=True, exist_ok=True)
