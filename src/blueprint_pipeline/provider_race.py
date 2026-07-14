@@ -731,7 +731,10 @@ def _race_launch_impl(
             return
         # -- poll for the early boot marker --
         booted = aborted = False
-        deadline = started + max(0.0, float(marker_timeout))
+        # Readiness timeout starts only after the provider returns a known
+        # allocation. Slow create calls and fail-closed teardown-record I/O must
+        # not consume the worker's actual boot-marker observation window.
+        deadline = monotonic() + max(0.0, float(marker_timeout))
         for attempt in range(attempts):
             rec["polls"] = attempt + 1
             if interrupt_cleanup_requested.is_set():
