@@ -1,0 +1,181 @@
+from blueprint_pipeline.groot_oscar_infrastructure_admission import (
+    MIN_BUILD_FREE_BYTES,
+    build_build_plane_admission,
+    build_digitalocean_cpu_builder_profile_evidence,
+    build_runpod_serve_plane_admission,
+)
+
+
+COMMIT = "a" * 40
+DIGEST_REF = "docker.io/example/release@sha256:" + "b" * 64
+MANIFEST_DIGEST = "sha256:" + "c" * 64
+
+
+def _packet() -> dict:
+    return {
+        "status": "ready",
+        "source_commit": COMMIT,
+        "source_worktree_dirty": False,
+        "provider_launch_performed_by_packet": False,
+    }
+
+
+def _builder(provider: str = "digitalocean") -> dict:
+    return {
+        "provider": provider,
+        "purpose": "image_build",
+        "platform": "linux/amd64",
+        "docker_daemon_verified": True,
+        "docker_buildx_verified": True,
+        "free_disk_bytes": MIN_BUILD_FREE_BYTES,
+        "registry_push_auth_file_verified": True,
+        "independent_teardown_watchdog": True,
+        "ssh_host_key_sha256": "SHA256:" + "d" * 43,
+        "ssh_host_key_independently_verified": True,
+        "ssh_host_key_verification_method": "launch_bound_generated_host_key",
+        "expected_source_commit": COMMIT,
+    }
+
+
+def _spend() -> dict:
+    return {
+        "paid_mutation_authorized": True,
+        "max_spend_usd": 1.0,
+        "hard_ttl_seconds": 7200,
+        "one_resource_limit": True,
+        "independent_teardown_watchdog": True,
+    }
+
+
+def test_build_plane_admits_known_native_docker_builder() -> None:
+    result = build_build_plane_admission(
+        packet=_packet(), builder=_builder(), spend=_spend()
+    )
+    assert result["status"] == "admitted"
+    assert result["blockers"] == []
+    assert result["checks"]["free_disk_at_least_120_gib"] is True
+
+
+def test_build_plane_refuses_runpod_even_when_claimed_capabilities_are_true() -> None:
+    result = build_build_plane_admission(
+        packet=_packet(), builder=_builder("runpod"), spend=_spend()
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_pods_are_serve_plane_not_image_build_plane" in result["blockers"]
+
+
+def test_build_plane_refuses_tofu_and_insufficient_disk() -> None:
+    builder = _builder()
+    builder.update(
+        {
+            "free_disk_bytes": MIN_BUILD_FREE_BYTES - 1,
+            "ssh_host_key_independently_verified": False,
+            "ssh_host_key_verification_method": "accept-new",
+        }
+    )
+    result = build_build_plane_admission(
+        packet=_packet(), builder=builder, spend=_spend()
+    )
+    assert "builder_free_disk_below_120_gib" in result["blockers"]
+    assert "builder_ssh_host_key_not_independently_verified" in result["blockers"]
+    assert "builder_ssh_host_key_verification_method_unsafe" in result["blockers"]
+
+
+def test_known_digitalocean_cpu_builder_profile_requires_live_catalog_match() -> None:
+    size = {
+        "slug": "s-8vcpu-16gb-amd",
+        "available": True,
+        "disk": 320,
+        "vcpus": 8,
+        "memory": 16384,
+        "price_hourly": 0.16667,
+        "regions": ["sfo3"],
+    }
+    result = build_digitalocean_cpu_builder_profile_evidence(
+        size=size, region="sfo3", observed_live_builders=0
+    )
+    assert result["status"] == "verified"
+    assert result["observed"]["disk_gb"] == 320
+
+
+def test_known_digitalocean_cpu_builder_profile_blocks_drift_and_overlap() -> None:
+    size = {
+        "slug": "s-8vcpu-16gb-amd",
+        "available": True,
+        "disk": 100,
+        "vcpus": 8,
+        "memory": 16384,
+        "price_hourly": 0.20,
+        "regions": ["nyc3"],
+    }
+    result = build_digitalocean_cpu_builder_profile_evidence(
+        size=size, region="sfo3", observed_live_builders=1
+    )
+    assert "digitalocean_builder_disk_below_profile" in result["blockers"]
+    assert "digitalocean_builder_hourly_rate_above_profile" in result["blockers"]
+    assert "digitalocean_builder_region_not_available" in result["blockers"]
+    assert "digitalocean_builder_one_resource_limit_not_clear" in result["blockers"]
+
+
+def _release() -> dict:
+    return {
+        "resolved_digest_ref": DIGEST_REF,
+        "thin_release_contract_status": "passed",
+        "runnable_platform": "linux/amd64",
+    }
+
+
+def _models() -> dict:
+    return {
+        "status": "passed",
+        "model_manifest_digest": MANIFEST_DIGEST,
+        "checks": {"models_cached_offline": True},
+    }
+
+
+def _volume() -> dict:
+    return {
+        "id": "volume-1",
+        "data_center_id": "US-TX-3",
+        "size_bytes": 50 * 1024**3,
+        "model_cache_path": "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1",
+    }
+
+
+def _runtime() -> dict:
+    return {
+        "provider": "runpod",
+        "data_center_id": "US-TX-3",
+        "gpu_type_id": "NVIDIA A40",
+        "warm_worker_only": True,
+        "provider_inventory_verified_zero": True,
+    }
+
+
+def test_runpod_serve_plane_admits_only_published_volume_ready_worker() -> None:
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=_models(),
+        volume=_volume(),
+        runtime=_runtime(),
+        spend=_spend(),
+    )
+    assert result["status"] == "admitted"
+    assert result["blockers"] == []
+
+
+def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:
+    volume = _volume()
+    volume.update({"id": "", "model_cache_path": "/models/cache"})
+    runtime = _runtime()
+    runtime["warm_worker_only"] = False
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=_models(),
+        volume=volume,
+        runtime=runtime,
+        spend=_spend(),
+    )
+    assert "runpod_network_volume_id_missing" in result["blockers"]
+    assert "runpod_model_cache_path_must_be_under_workspace" in result["blockers"]
+    assert "runpod_customer_cold_start_disallowed" in result["blockers"]

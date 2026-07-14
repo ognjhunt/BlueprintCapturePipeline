@@ -42,6 +42,10 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     )
     assert result["status"] == "ready"
     assert result["provider_launch_performed_by_packet"] is False
+    assert result["supported_execution_planes"] == {
+        "native_linux_amd64_docker_builder": True,
+        "runpod_pod": False,
+    }
     script = Path(result["run_script_path"]).read_text(encoding="utf-8")
     assert script.count("docker buildx build") == 2
     assert "FOUNDATION_IMAGE=$foundation_exact" in script

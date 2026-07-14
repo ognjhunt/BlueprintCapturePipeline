@@ -216,6 +216,10 @@ def prepare_remote_build_packet(
         "min_free_gib": min_free_gib,
         "max_release_delta_bytes": max_release_bytes,
         "provider_launch_performed_by_packet": False,
+        "supported_execution_planes": {
+            "native_linux_amd64_docker_builder": True,
+            "runpod_pod": False,
+        },
         "raw_secret_values_recorded": False,
         "claim_boundary": {"packet_is_not_image_build": True, "packet_is_not_registry_proof": True, "packet_is_not_model_cache_verification": True},
     }

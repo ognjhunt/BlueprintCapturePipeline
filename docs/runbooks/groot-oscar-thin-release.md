@@ -27,6 +27,24 @@ GEAR-SONIC model assets into the WBC runtime tree.
 
 ## 1. Build the stable foundation
 
+The build plane is not the RunPod serve plane. A normal RunPod Pod is not an
+approved Docker builder: its container-disk ceiling, volume semantics, and
+privilege model do not satisfy this build. Use a verified native linux/amd64
+Docker host with at least 120 GiB free, `docker buildx`, file-based registry
+push credentials, a launch-bound independently verified SSH host key, a
+two-hour-or-shorter hard TTL, and an independent teardown watchdog. The pure
+`groot_oscar_build_plane_admission.v1` gate must say `admitted` before any paid
+builder API mutation. Do not discover builder capabilities by renting pods.
+
+The currently known profile is
+`digitalocean-s-8vcpu-16gb-amd-ubuntu-24-04-v1`: 8 vCPU, 16 GiB RAM, 320 GB
+disk, and a catalog ceiling of $0.16667/hour. Re-query the live size catalog,
+verify zero other builder-tagged droplets, generate a launch-bound Ed25519 host
+key locally, and bind its SHA-256 fingerprint into the admission record before
+creation. `accept-new`, trust-on-first-use, or deleting a stale `known_hosts`
+entry cannot satisfy the gate. Existing unrelated production droplets do not
+count as builders and must never be repurposed.
+
 ```bash
 BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF='<registry>/blueprint-groot-oscar-foundation:<version>' \
 BLUEPRINT_ALLOW_GROOT_OSCAR_FOUNDATION_IMAGE_PUSH=true \
