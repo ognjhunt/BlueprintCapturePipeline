@@ -114,6 +114,8 @@ def verify() -> list[str]:
         blockers.append("cpu_teardown_error_evidence_missing")
     if "digitalocean_builder_teardown_unverified" not in cpu:
         blockers.append("cpu_teardown_unverified_blocker_missing")
+    if "validate_remote_build_results" not in cpu or "check=True" not in cpu:
+        blockers.append("cpu_remote_build_result_copy_not_fail_closed")
     for remote_secret_path in (
         "/root/blueprint-build/docker_username",
         "/root/blueprint-build/docker_pat",
@@ -147,8 +149,10 @@ def verify() -> list[str]:
     runpod_adapter = (
         ROOT / "src/blueprint_pipeline/runpod_provider_adapter.py"
     ).read_text(encoding="utf-8")
-    if '"dockerEntrypoint": ["/opt/blueprint/thin_release_entrypoint.sh"]' not in runpod_adapter:
+    if 'shape["docker_entrypoint"] = ["/opt/blueprint/thin_release_entrypoint.sh"]' not in gpu:
         blockers.append("gpu_canary_bypasses_thin_release_entrypoint")
+    if "use_thin_entrypoint" not in runpod_adapter:
+        blockers.append("generic_gpu_canary_forces_thin_release_entrypoint")
     return sorted(set(blockers))
 
 
