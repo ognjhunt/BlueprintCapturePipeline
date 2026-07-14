@@ -13,6 +13,7 @@ import json
 import math
 import os
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, cast
@@ -65,6 +66,11 @@ class ProductionGpuCampaignBudget:
     ) -> None:
         self.path = Path(path).expanduser().resolve()
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        # flock provides cross-process exclusion, but its same-process/thread
+        # semantics vary across supported Unix kernels. Pair it with an
+        # instance lock so concurrent controller threads cannot observe an
+        # atomic-replace boundary while another thread owns the ledger.
+        self._thread_lock = threading.RLock()
         self.initial_spent_usd = _number(initial_spent_usd, field="initial_spent_usd")
         self.initial_used_gpu_seconds = _seconds(
             initial_used_gpu_seconds, field="initial_used_gpu_seconds"
@@ -102,20 +108,21 @@ class ProductionGpuCampaignBudget:
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "r+") as handle:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                yield
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            # fdopen owns and closes fd on the normal path.
+        with self._thread_lock:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
             try:
-                os.close(fd)
-            except OSError:
-                pass
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "r+") as handle:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    yield
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                # fdopen owns and closes fd on the normal path.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def _read(self) -> dict[str, Any]:
         if self.path.is_symlink() or not self.path.is_file():
