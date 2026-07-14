@@ -293,7 +293,8 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba" in foundation
     assert "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb" in foundation
     assert "FROM tensorrt-base AS wbc-builder" in foundation
-    assert foundation.count("apt-cache policy libnvinfer10") == 2
+    assert foundation.count("apt-cache madison libnvinfer10") == 2
+    assert foundation.count("'$3 == version { found=1 } END { exit !found }'") == 2
     assert foundation.count("libnvinfer10=${TENSORRT_VERSION}") == 2
     assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in foundation
     assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation

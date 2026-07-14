@@ -55,7 +55,7 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG WBC_SOURCE_URL WBC_SOURCE_REF TENSORRT_VERSION
 RUN apt-get update \
-  && test "$(apt-cache policy libnvinfer10 | awk '/Candidate:/ {print $2}')" = "${TENSORRT_VERSION}" \
+  && apt-cache madison libnvinfer10 | awk -v version="${TENSORRT_VERSION}" '$3 == version { found=1 } END { exit !found }' \
   && apt-get install -y --no-install-recommends \
       build-essential clang cmake git git-lfs ninja-build pkg-config curl ca-certificates \
       libnvinfer-headers-dev=${TENSORRT_VERSION} libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
@@ -94,7 +94,7 @@ ARG APP_UID=10001
 ARG APP_GID=10001
 ARG GROOT_SOURCE_REF OSCAR_SOURCE_REF WBC_SOURCE_REF TENSORRT_VERSION
 RUN apt-get update \
-  && test "$(apt-cache policy libnvinfer10 | awk '/Candidate:/ {print $2}')" = "${TENSORRT_VERSION}" \
+  && apt-cache madison libnvinfer10 | awk -v version="${TENSORRT_VERSION}" '$3 == version { found=1 } END { exit !found }' \
   && apt-get install -y --no-install-recommends \
       libosmesa6 ffmpeg ca-certificates gettext-base sudo \
       libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
