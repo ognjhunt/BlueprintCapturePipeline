@@ -88,6 +88,10 @@ def verify() -> list[str]:
         "cp -a /opt/onnxruntime/lib/libonnxruntime.so*",
         "test ! -d /opt/wbc/gear_sonic_deploy/build",
         "test ! -d /opt/onnxruntime/include",
+        # The OSCAR environment uses the cu128 PyTorch wheel family. The
+        # RunPod host selector must therefore require a CUDA-12.8-capable
+        # machine even though WBC carries pinned CUDA 12.6 user-space libs.
+        "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8",
     )
     for fragment in required_foundation_fragments:
         if fragment not in foundation:
@@ -108,6 +112,8 @@ def verify() -> list[str]:
         blockers.append("foundation_oscar_environment_not_isolated")
     if foundation.count("uv venv /opt/gr00t-venv") != 1:
         blockers.append("foundation_groot_environment_not_isolated")
+    if "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.6" in foundation:
+        blockers.append("foundation_host_cuda_contract_downgrades_cu128_runtime")
     for build_package in (
         "build-essential",
         "clang",

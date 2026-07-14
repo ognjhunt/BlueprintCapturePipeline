@@ -234,6 +234,8 @@ def verify_static() -> list[str]:
         blockers.append("dockerfile_cuda_cudart_version_mismatch")
     if "cuda-cudart-12-6=${CUDA_CUDART_VERSION}" not in dockerfile:
         blockers.append("dockerfile_cuda_cudart_package_unpinned")
+    if "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8" not in dockerfile:
+        blockers.append("dockerfile_host_cuda_version_must_cover_torch_cu128")
     for package in TENSORRT_PACKAGES:
         if f"{package}=${{TENSORRT_VERSION}}" not in dockerfile:
             blockers.append(f"dockerfile_tensorrt_package_unpinned:{package}")

@@ -227,7 +227,7 @@ python -m blueprint_pipeline.groot_oscar_runpod_preflight \
   --network-volume-id '<existing-volume-id>' \
   --model-cache-path /workspace/.blueprint-model-cache/blueprint-groot-oscar-v1 \
   --gpu-type-id 'NVIDIA A40' \
-  --required-cuda-version 12.6 \
+  --required-cuda-version 12.8 \
   --name-prefix blueprint-groot-oscar-canary-<attempt> \
   --watchdog-evidence <canary-dir>/groot_oscar_runpod_canary_watchdog.json \
   --max-spend-usd 1.00 \
