@@ -174,7 +174,7 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
     BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc \
     BLUEPRINT_GEAR_SONIC_ROBOT_MODEL=/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml \
     BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
-    LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:/opt/onnxruntime/lib:/usr/lib/x86_64-linux-gnu \
+    LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu \
     BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh \
     BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
     BLUEPRINT_FOUNDATION_GROOT_SOURCE_REF=${GROOT_SOURCE_REF} \
@@ -191,7 +191,9 @@ RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
   && test ! -d /opt/wbc/gear_sonic_deploy/src \
   && test ! -d /opt/onnxruntime/include \
   && ! dpkg-query -W build-essential clang cmake git git-lfs ninja-build pkg-config >/dev/null 2>&1 \
-  && ! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -q 'not found' \
+  && ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | tee /tmp/g1_deploy_onnx_ref.ldd \
+  && ! grep -q 'not found' /tmp/g1_deploy_onnx_ref.ldd \
+  && rm -f /tmp/g1_deploy_onnx_ref.ldd \
   && /opt/oscar-venv/bin/python -m pip check \
   && /opt/gr00t-venv/bin/python -m pip check
 USER blueprint

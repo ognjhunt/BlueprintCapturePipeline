@@ -69,7 +69,8 @@ def verify() -> list[str]:
         "test ! -d third_party/cppzmq/.git",
         "uv venv /opt/oscar-venv --python 3.10 --seed",
         "uv venv /opt/gr00t-venv --python 3.10 --seed",
-        "/tmp/oscar/requirements_minimal.txt",
+        # Static Dockerfile contract fragment, not a host-side temporary file.
+        "/tmp/oscar/requirements_minimal.txt",  # nosec B108
         "requirements_oscar_foundation.lock",
         "uv pip install --require-hashes",
         "uv sync --project /tmp/gr00t --active --no-dev --frozen --no-install-project",
@@ -77,11 +78,12 @@ def verify() -> list[str]:
         "/opt/gr00t-venv/bin/python -c \"from gr00t.policy.gr00t_policy import Gr00tPolicy\"",
         "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
         "COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python",
+        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu",
+        "tee /tmp/g1_deploy_onnx_ref.ldd",
         "install -m 0755 target/release/g1_deploy_onnx_ref",
         "cp -a /opt/onnxruntime/lib/libonnxruntime.so*",
         "test ! -d /opt/wbc/gear_sonic_deploy/build",
         "test ! -d /opt/onnxruntime/include",
-        "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
     )
     for fragment in required_foundation_fragments:
         if fragment not in foundation:

@@ -319,13 +319,14 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
         "COPY --from=robot-env-builder --chown=blueprint:blueprint "
         "/opt/uv-python /opt/uv-python"
     ) in foundation
+    assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in foundation
+    assert "tee /tmp/g1_deploy_onnx_ref.ldd" in foundation
     assert foundation.count("/opt/oscar-venv/bin/python -m pip check") == 2
     assert foundation.count("/opt/gr00t-venv/bin/python -m pip check") == 2
     assert "/opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py" in foundation
     assert "cp -a build target g1 scripts reference" not in foundation
     assert "COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime" in foundation
     assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation
-    assert "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in foundation
 
 
 def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
