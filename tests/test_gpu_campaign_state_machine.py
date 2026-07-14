@@ -134,6 +134,22 @@ def test_campaign_requires_at_least_one_full_episode_seed_before_allocation(tmp_
 
 
 @pytest.mark.parametrize(
+    "overrides",
+    [
+        {"smoke_seed": "1000"},
+        {"smoke_seed": True},
+        {"episode_seeds": ("1001",)},
+        {"episode_seeds": (False,)},
+    ],
+)
+def test_campaign_rejects_noninteger_seeds_before_allocation(tmp_path, overrides):
+    provider = FakeProvider()
+    with pytest.raises(CampaignBlocked, match="campaign_seed_invalid"):
+        CampaignMachine(config=config(**overrides), adapter=provider, state_dir=tmp_path).run()
+    assert not any(call[0] == "allocate" for call in provider.calls)
+
+
+@pytest.mark.parametrize(
     ("overrides", "blocker"),
     [
         ({"prior_exposure_usd": -1}, "campaign_prior_exposure_invalid"),
@@ -957,7 +973,7 @@ def test_corrupt_config_manifest_with_valid_resumed_config_still_tears_down(tmp_
     assert result["teardown"]["billing_stopped"] is True
 
 
-def test_validation_exception_still_tears_down_checkpointed_allocation(tmp_path):
+def test_invalid_deadline_still_tears_down_checkpointed_allocation(tmp_path):
     provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
     machine = CampaignMachine(
         config=config(),
@@ -979,10 +995,7 @@ def test_validation_exception_still_tears_down_checkpointed_allocation(tmp_path)
     ).run()
 
     assert result["status"] == "blocked"
-    assert any(
-        blocker.startswith("campaign_config_invalid:campaign_config_validation_exception")
-        for blocker in result["blockers"]
-    )
+    assert "campaign_config_invalid:stage_deadline_invalid" in result["blockers"]
     assert ("terminate", "vm-1") in provider.calls
     assert result["teardown"]["billing_stopped"] is True
 

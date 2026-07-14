@@ -109,13 +109,19 @@ class CampaignConfig:
 
     def validate(self) -> list[str]:
         blockers: list[str] = []
-        if not self.campaign_id.strip():
+        if not isinstance(self.campaign_id, str) or not self.campaign_id.strip():
             blockers.append("campaign_id_missing")
-        if not self.allocation_key.strip():
+        if not isinstance(self.allocation_key, str) or not self.allocation_key.strip():
             blockers.append("allocation_key_missing")
-        if re.fullmatch(r"[0-9a-f]{40}", self.source_sha) is None:
+        if (
+            not isinstance(self.source_sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", self.source_sha) is None
+        ):
             blockers.append("source_sha_invalid")
-        if re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None:
+        if (
+            not isinstance(self.image_digest, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None
+        ):
             blockers.append("image_digest_invalid")
         hourly_rate_valid = _finite_number(self.hourly_rate_usd) and self.hourly_rate_usd > 0
         provider_seconds_valid = _positive_integer(self.max_provider_seconds)
@@ -145,7 +151,11 @@ class CampaignConfig:
         if all(
             (hourly_rate_valid, provider_seconds_valid, prior_exposure_valid, authorization_valid)
         ):
-            teardown_reserve = self.stage_deadlines_seconds.get("teardown")
+            teardown_reserve = (
+                self.stage_deadlines_seconds.get("teardown")
+                if isinstance(self.stage_deadlines_seconds, Mapping)
+                else None
+            )
             teardown_reserve_valid = _positive_integer(teardown_reserve)
             maximum = self.prior_exposure_usd + (
                 self.hourly_rate_usd
@@ -164,11 +174,21 @@ class CampaignConfig:
             "artifact_retrieval",
             "teardown",
         }
-        if required - set(self.stage_deadlines_seconds):
+        if not isinstance(self.stage_deadlines_seconds, Mapping):
             blockers.append("stage_deadlines_incomplete")
-        if any(int(value) <= 0 for value in self.stage_deadlines_seconds.values()):
+        elif required - set(self.stage_deadlines_seconds):
+            blockers.append("stage_deadlines_incomplete")
+        elif any(not _positive_integer(value) for value in self.stage_deadlines_seconds.values()):
             blockers.append("stage_deadline_invalid")
-        if not self.episode_seeds:
+        smoke_seed_valid = isinstance(self.smoke_seed, int) and not isinstance(
+            self.smoke_seed, bool
+        )
+        episode_seed_values_valid = isinstance(self.episode_seeds, (tuple, list)) and all(
+            isinstance(seed, int) and not isinstance(seed, bool) for seed in self.episode_seeds
+        )
+        if not smoke_seed_valid or not episode_seed_values_valid:
+            blockers.append("campaign_seed_invalid")
+        elif not self.episode_seeds:
             blockers.append("campaign_episode_seeds_missing")
         elif len(set((self.smoke_seed, *self.episode_seeds))) != 1 + len(self.episode_seeds):
             blockers.append("campaign_seeds_not_independent")
