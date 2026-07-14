@@ -1136,3 +1136,20 @@ def test_pending_create_resume_never_starts_second_allocation(tmp_path):
     assert result["status"] == "blocked"
     assert "provider_allocation_mutation_pending_requires_teardown" in result["blockers"]
     assert result["teardown"]["billing_stopped"] is False
+
+
+def test_corrupt_checkpoint_forces_inventory_teardown_before_reallocation(tmp_path):
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    machine = CampaignMachine(
+        config=config(), adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    )
+    machine._load()
+    machine.state_path.write_text("{corrupt", encoding="utf-8")
+
+    result = CampaignMachine(config=config(), adapter=provider, state_dir=tmp_path).run()
+
+    assert not any(call[0] == "allocate" for call in provider.calls)
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["status"] == "passed"
+    assert result["teardown"]["billing_stopped"] is True
+    assert result["final_inventory"] == []

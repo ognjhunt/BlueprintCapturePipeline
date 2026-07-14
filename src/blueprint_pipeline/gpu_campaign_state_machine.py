@@ -762,27 +762,55 @@ class CampaignMachine:
         process already checkpointed.
         """
 
+        def fallback_allocation_key() -> str:
+            if self.config_path.exists():
+                try:
+                    manifest = json.loads(self.config_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    manifest = {}
+                recorded_config = manifest.get("config") if isinstance(manifest, dict) else {}
+                if isinstance(recorded_config, Mapping):
+                    key = recorded_config.get("allocation_key")
+                    if isinstance(key, str) and key.strip():
+                        return key.strip()
+            key = self.config.allocation_key
+            return key.strip() if isinstance(key, str) else ""
+
         if not self.state_path.exists():
             return None
         try:
             state = json.loads(self.state_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
+        except (OSError, json.JSONDecodeError) as exc:
+            allocation_key = fallback_allocation_key()
+            if not allocation_key:
+                return None
+            state = self._initial_state("unreadable_checkpoint")
+            state["campaign_id"] = str(self.config.campaign_id)
+            state["allocation_key"] = allocation_key
+            state["status"] = "blocked"
+            state["allocation_mutation_pending"] = True
+            state["checkpoint_unreadable"] = True
+            state["blockers"] = [f"campaign_checkpoint_unreadable:{type(exc).__name__}"]
+            return state, allocation_key
         if not isinstance(state, dict):
-            return None
+            allocation_key = fallback_allocation_key()
+            if not allocation_key:
+                return None
+            state = self._initial_state("invalid_checkpoint")
+            state["campaign_id"] = str(self.config.campaign_id)
+            state["allocation_key"] = allocation_key
+            state["status"] = "blocked"
+            state["allocation_mutation_pending"] = True
+            state["checkpoint_unreadable"] = True
+            state["blockers"] = ["campaign_checkpoint_not_object"]
+            return state, allocation_key
         if state.get("teardown_owner") != self.teardown_owner:
             raise CampaignBlocked("campaign_teardown_owned_by_another_controller")
         if state.get("provider") != self.adapter.provider_name:
             raise CampaignBlocked("campaign_provider_adapter_mismatch")
         allocation_key = str(state.get("allocation_key") or "").strip()
-        if not allocation_key and self.config_path.exists():
-            try:
-                manifest = json.loads(self.config_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                manifest = {}
-            recorded_config = manifest.get("config") if isinstance(manifest, dict) else {}
-            recorded_config = recorded_config if isinstance(recorded_config, Mapping) else {}
-            allocation_key = str(recorded_config.get("allocation_key") or "").strip()
+        if not allocation_key:
+            allocation_key = fallback_allocation_key()
         if not allocation_key:
             return None
         return state, allocation_key
@@ -863,6 +891,14 @@ class CampaignMachine:
                         blocker="campaign_config_invalid:" + ",".join(blockers),
                     )
             raise CampaignBlocked(",".join(blockers))
+        if recorded_checkpoint is not None:
+            state, allocation_key = recorded_checkpoint
+            if state.get("checkpoint_unreadable") is True:
+                return self._block_and_teardown_recorded_checkpoint(
+                    state,
+                    allocation_key=allocation_key,
+                    blocker="campaign_checkpoint_unreadable_requires_teardown",
+                )
         try:
             state, _ = self._load()
         except CampaignBlocked as exc:
