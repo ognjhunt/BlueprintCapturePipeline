@@ -154,6 +154,8 @@ def verify() -> list[str]:
     for fragment in (
         "groot_oscar_models",
         "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST",
+        "refresh_runpod_preflight",
+        "runpod_preflight_launch_refresh.json",
     ):
         if fragment not in canary:
             blockers.append(f"runpod_bound_request_model_cache_binding_missing:{fragment}")

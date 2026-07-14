@@ -1,4 +1,11 @@
-from blueprint_pipeline.groot_oscar_runpod_canary import prepare_canary_launch
+import json
+import os
+
+from blueprint_pipeline.groot_oscar_runpod_canary import (
+    prepare_canary_launch,
+    refresh_runpod_preflight,
+    run_canary,
+)
 
 
 DIGEST = "docker.io/example/release@sha256:" + "a" * 64
@@ -46,6 +53,9 @@ def _preflight() -> dict:
             "one_resource_limit": True,
             "independent_teardown_watchdog": True,
             "watchdog_armed_before_allocation": True,
+            "watchdog_pid": os.getpid(),
+            "watchdog_deadline_epoch": 1900.0,
+            "watchdog_pod_name_prefix": "blueprint-groot-oscar-canary-",
         },
     }
 
@@ -136,3 +146,126 @@ def test_canary_preparation_rejects_different_model_cache_path() -> None:
     )
     assert result["status"] == "blocked"
     assert "runpod_request_model_cache_path_differs_from_admission" in result["blockers"]
+
+
+def test_execute_refresh_rechecks_every_mutable_provider_fact() -> None:
+    observed: dict[str, object] = {}
+
+    def volume_getter(volume_id: str):
+        observed["volume_id"] = volume_id
+        return 200, {"id": volume_id, "dataCenterId": "US-TX-3", "size": 50}
+
+    def capacity_probe(request):
+        observed["capacity_request"] = request
+        return {
+            "status": "available",
+            "viable_gpu_types": [
+                {
+                    "gpu_type_id": "NVIDIA A40",
+                    "capacity_confidence": "advisory",
+                    "capacity_data_center_id": request["dataCenterIds"][0],
+                    "capacity_allowed_cuda_versions": request[
+                        "allowedCudaVersions"
+                    ],
+                    "available_gpu_counts": [1],
+                    "on_demand_price_usd_per_hour": 0.44,
+                }
+            ],
+        }
+
+    def inventory_probe(prefix: str):
+        observed["prefix"] = prefix
+        return {"api_confirmed": True, "live_resource_count": 0}
+
+    result = refresh_runpod_preflight(
+        preflight=_preflight(),
+        volume_getter=volume_getter,
+        capacity_probe=capacity_probe,
+        inventory_probe=inventory_probe,
+        clock=lambda: 1000.0,
+    )
+    assert result["status"] == "verified"
+    assert result["observed_at_epoch"] == 1000.0
+    assert observed["volume_id"] == "volume-1"
+    assert observed["capacity_request"] == {
+        "cloudType": "SECURE",
+        "gpuTypeIds": ["NVIDIA A40"],
+        "dataCenterIds": ["US-TX-3"],
+        "allowedCudaVersions": ["12.6"],
+        "requires_rtx": True,
+    }
+    assert observed["prefix"] == "blueprint-groot-oscar-canary-"
+
+
+def test_execute_blocks_before_adapter_when_launch_refresh_fails(
+    tmp_path, monkeypatch
+) -> None:
+    class Provider:
+        def _key(self):
+            return "test-key"
+
+        def capacity_preflight(self, _request):
+            return {"status": "blocked", "viable_gpu_types": []}
+
+        def billable_inventory(self, *, name_prefix):
+            del name_prefix
+            return {"api_confirmed": False, "live_resource_count": 0}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_runpod_canary.get_render_provider",
+        lambda _name: Provider(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_runpod_canary._runpod_call",
+        lambda *args, **kwargs: (404, {}),
+    )
+
+    def adapter_must_not_run(**_kwargs):
+        raise AssertionError("provider adapter reached after blocked launch refresh")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_runpod_canary.run_runpod_provider_adapter",
+        adapter_must_not_run,
+    )
+    payloads = {
+        "request.json": _request(),
+        "release.json": {
+            "resolved_digest_ref": DIGEST,
+            "thin_release_contract_status": "passed",
+            "runnable_platform": "linux/amd64",
+            "required_cuda_version": "12.6",
+            "required_cuda_version_source": "image_config_env:CUDA_VERSION",
+        },
+        "models.json": {
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
+            "status": "passed",
+            "model_manifest_digest": "sha256:" + "b" * 64,
+            "verified_size_bytes": 20 * 1024**3,
+            "cache_root": "/workspace/models",
+            "provider_volume_id": "volume-1",
+            "checks": {"models_cached_offline": True},
+        },
+        "preflight.json": _preflight(),
+    }
+    for name, payload in payloads.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    result = run_canary(
+        provider_launch_request=tmp_path / "request.json",
+        release_evidence=tmp_path / "release.json",
+        model_cache_evidence=tmp_path / "models.json",
+        preflight_bundle=tmp_path / "preflight.json",
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        pod_name="blueprint-groot-oscar-canary-test",
+        execute=True,
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_preflight_bundle_not_verified" in result["blockers"]
+    refresh = json.loads(
+        (tmp_path / "runpod_preflight_launch_refresh.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert refresh["status"] == "blocked"
+    assert refresh["provider_mutations_performed"] == 0

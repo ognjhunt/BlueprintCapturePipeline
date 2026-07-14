@@ -115,6 +115,7 @@ def collect_runpod_preflight(
         )
     )
     inventory = dict(inventory_probe(name_prefix))
+    observed_at_epoch = clock()
     zero_inventory = bool(
         inventory.get("api_confirmed") is True
         and inventory.get("live_resource_count") == 0
@@ -130,7 +131,7 @@ def collect_runpod_preflight(
         watchdog=watchdog,
         max_spend_usd=max_spend_usd,
         paid_mutation_authorized=paid_mutation_authorized,
-        clock=clock,
+        clock=lambda: observed_at_epoch,
     )
     blockers: list[str] = []
     if volume.get("status") != "verified":
@@ -148,6 +149,7 @@ def collect_runpod_preflight(
         blockers.append("runpod_teardown_watchdog_name_prefix_mismatch")
     return {
         "schema_version": SCHEMA_VERSION,
+        "observed_at_epoch": observed_at_epoch,
         "status": "verified" if not blockers else "blocked",
         "blockers": sorted(set(blockers)),
         "volume": volume,

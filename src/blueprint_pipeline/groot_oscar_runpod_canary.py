@@ -9,20 +9,63 @@ the startup canary; it is not an image builder or a customer cold-start path.
 from __future__ import annotations
 
 import json
+import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
+from .gpu_render_providers import _runpod_call, get_render_provider
 from .groot_oscar_infrastructure_admission import (
     SERVE_SCHEMA_VERSION,
     build_runpod_serve_plane_admission,
 )
 from .paid_resource_admission import require_paid_resource_admission
+from .groot_oscar_runpod_preflight import collect_runpod_preflight
 from .runpod_provider_adapter import (
     RUNPOD_IMAGE_STARTUP_CANARY_MODE,
     run_runpod_provider_adapter,
 )
+
+
+def refresh_runpod_preflight(
+    *,
+    preflight: Mapping[str, Any],
+    volume_getter: Callable[[str], tuple[int, Mapping[str, Any]]],
+    capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    inventory_probe: Callable[[str], Mapping[str, Any]],
+    clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Recheck every mutable provider fact immediately before allocation."""
+
+    volume = preflight.get("volume")
+    volume = volume if isinstance(volume, Mapping) else {}
+    runtime = preflight.get("runtime")
+    runtime = runtime if isinstance(runtime, Mapping) else {}
+    spend = preflight.get("spend")
+    spend = spend if isinstance(spend, Mapping) else {}
+    watchdog = {
+        "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+        "status": "armed",
+        "independent_process": spend.get("independent_teardown_watchdog") is True,
+        "pid": spend.get("watchdog_pid"),
+        "deadline_epoch": spend.get("watchdog_deadline_epoch"),
+        "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
+    }
+    return collect_runpod_preflight(
+        network_volume_id=str(volume.get("id") or ""),
+        model_cache_path=str(volume.get("model_cache_path") or ""),
+        gpu_type_id=str(runtime.get("gpu_type_id") or ""),
+        required_cuda_version=str(runtime.get("required_cuda_version") or ""),
+        name_prefix=str(spend.get("watchdog_pod_name_prefix") or ""),
+        watchdog=watchdog,
+        max_spend_usd=float(spend.get("max_spend_usd") or 0),
+        paid_mutation_authorized=spend.get("paid_mutation_authorized") is True,
+        volume_getter=volume_getter,
+        capacity_probe=capacity_probe,
+        inventory_probe=inventory_probe,
+        clock=clock,
+    )
 
 
 def _read(path: str | Path) -> dict[str, Any]:
@@ -145,6 +188,33 @@ def run_canary(
     """Run the adapter only through the canonical GPU-canary allocator."""
 
     preflight = _read(preflight_bundle)
+    refresh_path = Path(adapter_output).resolve().parent / "runpod_preflight_launch_refresh.json"
+    if execute:
+        provider = get_render_provider("runpod")
+        key = provider._key()  # type: ignore[attr-defined]
+        if key:
+            def volume_getter(volume_id: str) -> tuple[int, Mapping[str, Any]]:
+                status, payload = _runpod_call(
+                    "GET", f"/networkvolumes/{volume_id}", None, key=key, timeout=30
+                )
+                return status, payload if isinstance(payload, Mapping) else {}
+
+            preflight = refresh_runpod_preflight(
+                preflight=preflight,
+                volume_getter=volume_getter,
+                capacity_probe=provider.capacity_preflight,
+                inventory_probe=lambda prefix: provider.billable_inventory(
+                    name_prefix=prefix
+                ),
+            )
+        else:
+            preflight = {
+                "schema_version": "groot_oscar_runpod_preflight_bundle.v1",
+                "status": "blocked",
+                "blockers": ["runpod_api_key_missing_at_launch_refresh"],
+                "provider_mutations_performed": 0,
+            }
+        write_json(refresh_path, preflight)
     prepared = prepare_canary_launch(
         request=_read(provider_launch_request),
         release=_read(release_evidence),

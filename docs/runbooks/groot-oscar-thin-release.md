@@ -266,7 +266,12 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
 ```
 
 The launcher refuses to rewrite a tag into an admitted digest or silently pick
-another GPU. On live submission it records `warm_serve_pod.json` beside the
+another GPU. On live submission, before the provider adapter is reachable, it
+reruns every mutable read-only check and writes
+`runpod_preflight_launch_refresh.json`. This refresh revalidates the volume,
+datacenter/CUDA-filtered capacity, zero matching billable pods, and the live
+watchdog process with its remaining deadline; any changed or expired evidence
+rejects without a create call. It then records `warm_serve_pod.json` beside the
 watchdog evidence so the independent watchdog can terminate the exact pod and
 prove inventory absence at its hard deadline.
 
