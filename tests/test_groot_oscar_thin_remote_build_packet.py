@@ -60,6 +60,9 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     )
     assert result["status"] == "ready"
     assert result["provider_launch_performed_by_packet"] is False
+    assert result["tarball_sha256"] == hashlib.sha256(
+        Path(result["tarball_path"]).read_bytes()
+    ).hexdigest()
     assert result["supported_execution_planes"] == {
         "native_linux_amd64_docker_builder": True,
         "runpod_pod": False,

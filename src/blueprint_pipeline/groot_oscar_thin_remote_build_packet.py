@@ -240,6 +240,7 @@ def prepare_remote_build_packet(
         "blockers": sorted(set(blockers)),
         "packet_dir": str(packet),
         "tarball_path": str(tarball),
+        "tarball_sha256": _sha256(tarball),
         "run_script_path": str(script),
         "foundation_image_ref": foundation_ref,
         "release_image_ref": release_ref,
