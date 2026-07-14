@@ -26,6 +26,7 @@ BUILD_SCHEMA_VERSION = "groot_oscar_build_plane_admission.v1"
 SERVE_SCHEMA_VERSION = "groot_oscar_runpod_serve_plane_admission.v1"
 MIN_BUILD_FREE_BYTES = 120 * 1024**3
 MAX_BUILD_TTL_SECONDS = 2 * 60 * 60
+MAX_CANARY_TTL_SECONDS = 30 * 60
 MIN_MODEL_VOLUME_BYTES = 30 * 1024**3
 DIGITALOCEAN_CPU_BUILDER_PROFILE = {
     "profile_id": "digitalocean-s-8vcpu-16gb-amd-ubuntu-24-04-v1",
@@ -100,6 +101,92 @@ def build_digitalocean_cpu_builder_profile_evidence(
             "catalog_verification_is_not_droplet_allocation": True,
             "catalog_verification_is_not_docker_runtime_probe": True,
             "catalog_verification_is_not_image_build": True,
+        },
+    }
+
+
+def build_runpod_network_volume_evidence(
+    *, provider_payload: Mapping[str, Any], expected_volume_id: str, model_cache_path: str
+) -> dict[str, Any]:
+    """Normalize the authoritative RunPod ``GET /networkvolumes/{id}`` row."""
+
+    observed_id = _string(provider_payload.get("id"))
+    data_center_id = _string(provider_payload.get("dataCenterId"))
+    size_gib = provider_payload.get("size")
+    blockers: list[str] = []
+    if not expected_volume_id or observed_id != expected_volume_id:
+        blockers.append("runpod_network_volume_provider_id_mismatch")
+    if not data_center_id:
+        blockers.append("runpod_network_volume_data_center_missing")
+    if type(size_gib) is not int or size_gib <= 0:
+        blockers.append("runpod_network_volume_size_invalid")
+    size_bytes = size_gib * 1024**3 if type(size_gib) is int and size_gib > 0 else None
+    return {
+        "schema_version": "groot_oscar_runpod_network_volume_evidence.v1",
+        "status": "verified" if not blockers else "blocked",
+        "blockers": blockers,
+        "provider": "runpod",
+        "provider_api_verified": not blockers,
+        "id": observed_id or None,
+        "data_center_id": data_center_id or None,
+        "size_bytes": size_bytes,
+        "model_cache_path": model_cache_path,
+        "raw_provider_response_recorded": False,
+    }
+
+
+def build_runpod_gpu_runtime_evidence(
+    *,
+    capacity: Mapping[str, Any],
+    gpu_type_id: str,
+    data_center_id: str,
+    required_cuda_version: str,
+    provider_inventory_verified_zero: bool,
+) -> dict[str, Any]:
+    """Bind a selected GPU to a provider capacity row and CUDA/DC constraints."""
+
+    rows = capacity.get("viable_gpu_types")
+    rows = rows if isinstance(rows, list) else []
+    selected = next(
+        (
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and _string(row.get("gpu_type_id")) == gpu_type_id
+        ),
+        {},
+    )
+    counts = selected.get("available_gpu_counts")
+    counts = counts if isinstance(counts, list) else []
+    confidence = _string(selected.get("capacity_confidence"))
+    single_available = confidence == "advisory" and 1 in counts
+    provider_verified = capacity.get("status") == "available" and bool(selected)
+    return {
+        "schema_version": "groot_oscar_runpod_gpu_runtime_evidence.v1",
+        "provider": "runpod",
+        "provider_api_verified": provider_verified,
+        "data_center_id": data_center_id,
+        "gpu_type_id": gpu_type_id,
+        "capacity_confidence": confidence or "unknown",
+        "single_gpu_available": single_available,
+        "on_demand_price_usd_per_hour": selected.get(
+            "on_demand_price_usd_per_hour"
+        ),
+        "required_cuda_version": required_cuda_version,
+        "allowed_cuda_versions": [required_cuda_version]
+        if required_cuda_version
+        else [],
+        "warm_worker_only": True,
+        "provider_inventory_verified_zero": provider_inventory_verified_zero,
+        "launch_constraints": {
+            "dataCenterIds": [data_center_id] if data_center_id else [],
+            "allowedCudaVersions": [required_cuda_version]
+            if required_cuda_version
+            else [],
+        },
+        "claim_boundary": {
+            "capacity_snapshot_is_not_reservation": True,
+            "provider_create_response_is_authoritative": True,
         },
     }
 
@@ -215,10 +302,18 @@ def build_runpod_serve_plane_admission(
     """Admit a RunPod warm worker only from published/cache-ready evidence."""
 
     blockers: list[str] = []
-    release_ref = _string(release.get("resolved_digest_ref"))
+    release_ref = _string(
+        release.get("resolved_digest_ref") or release.get("release_image_ref")
+    )
     if not _DIGEST_REF.fullmatch(release_ref):
         blockers.append("runpod_release_image_not_digest_pinned")
-    if release.get("thin_release_contract_status") != "passed":
+    thin_contract = release.get("thin_release_contract")
+    thin_status = (
+        thin_contract.get("status")
+        if isinstance(thin_contract, Mapping)
+        else release.get("thin_release_contract_status")
+    )
+    if thin_status != "passed":
         blockers.append("runpod_thin_release_contract_not_passed")
     if release.get("runnable_platform") != "linux/amd64":
         blockers.append("runpod_release_platform_not_linux_amd64")
@@ -234,6 +329,8 @@ def build_runpod_serve_plane_admission(
     volume_id = _string(volume.get("id"))
     volume_dc = _string(volume.get("data_center_id"))
     volume_bytes = volume.get("size_bytes")
+    if volume.get("provider") != "runpod" or volume.get("provider_api_verified") is not True:
+        blockers.append("runpod_network_volume_not_provider_verified")
     if not volume_id:
         blockers.append("runpod_network_volume_id_missing")
     if not volume_dc:
@@ -250,6 +347,17 @@ def build_runpod_serve_plane_admission(
         blockers.append("runpod_gpu_and_network_volume_data_center_mismatch")
     if not _string(runtime.get("gpu_type_id")):
         blockers.append("runpod_gpu_type_not_selected")
+    if runtime.get("provider_api_verified") is not True:
+        blockers.append("runpod_gpu_capacity_not_provider_verified")
+    if runtime.get("capacity_confidence") != "advisory":
+        blockers.append("runpod_single_gpu_availability_unknown")
+    if runtime.get("single_gpu_available") is not True:
+        blockers.append("runpod_single_gpu_not_available")
+    required_cuda = _string(runtime.get("required_cuda_version"))
+    allowed_cuda = runtime.get("allowed_cuda_versions")
+    allowed_cuda = allowed_cuda if isinstance(allowed_cuda, list) else []
+    if not required_cuda or required_cuda not in allowed_cuda:
+        blockers.append("runpod_cuda_compatibility_not_bound")
     if runtime.get("warm_worker_only") is not True:
         blockers.append("runpod_customer_cold_start_disallowed")
     if runtime.get("provider_inventory_verified_zero") is not True:
@@ -260,12 +368,25 @@ def build_runpod_serve_plane_admission(
     if not _positive_number(spend.get("max_spend_usd")):
         blockers.append("runpod_max_spend_usd_missing")
     ttl = spend.get("hard_ttl_seconds")
-    if type(ttl) is not int or ttl <= 0:
-        blockers.append("runpod_hard_ttl_missing")
+    if type(ttl) is not int or ttl <= 0 or ttl > MAX_CANARY_TTL_SECONDS:
+        blockers.append("runpod_hard_ttl_must_be_at_most_30_minutes")
     if spend.get("one_resource_limit") is not True:
         blockers.append("runpod_one_resource_limit_missing")
     if spend.get("independent_teardown_watchdog") is not True:
         blockers.append("runpod_independent_teardown_watchdog_missing")
+    if spend.get("watchdog_armed_before_allocation") is not True:
+        blockers.append("runpod_teardown_watchdog_not_armed_before_allocation")
+    hourly_rate = runtime.get("on_demand_price_usd_per_hour")
+    max_spend = spend.get("max_spend_usd")
+    if not _positive_number(hourly_rate):
+        blockers.append("runpod_hourly_rate_missing")
+    elif (
+        _positive_number(max_spend)
+        and type(ttl) is int
+        and ttl > 0
+        and float(hourly_rate) * ttl / 3600 > float(max_spend)
+    ):
+        blockers.append("runpod_ttl_cost_exceeds_max_spend")
 
     return {
         "schema_version": SERVE_SCHEMA_VERSION,
@@ -275,6 +396,13 @@ def build_runpod_serve_plane_admission(
         "model_manifest_digest": manifest_digest or None,
         "network_volume_id": volume_id or None,
         "data_center_id": volume_dc or None,
+        "gpu_type_id": _string(runtime.get("gpu_type_id")) or None,
+        "required_cuda_version": required_cuda or None,
+        "limits": {
+            "maximum_canary_ttl_seconds": MAX_CANARY_TTL_SECONDS,
+            "hard_ttl_seconds": ttl,
+            "max_spend_usd": max_spend,
+        },
         "claim_boundary": {
             "admission_is_not_provider_startup": True,
             "admission_is_not_warm_readiness": True,

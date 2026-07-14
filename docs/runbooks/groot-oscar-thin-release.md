@@ -45,6 +45,15 @@ creation. `accept-new`, trust-on-first-use, or deleting a stale `known_hosts`
 entry cannot satisfy the gate. Existing unrelated production droplets do not
 count as builders and must never be repurposed.
 
+Use `python -m blueprint_pipeline.groot_oscar_digitalocean_builder run` for
+this profile. It is dry by default and requires both an admitted spend JSON
+and `--allow-paid`. The launcher rechecks the live size catalog and builder
+inventory, provisions the exact launch-bound host key, waits for Docker,
+Buildx, amd64, and free-disk checks, transfers registry credentials as files
+over strict-key SSH, runs the checksum-bound packet, retrieves JSON evidence,
+and deletes the droplet in `finally`. A detached watchdog independently
+deletes the same droplet at the authorized deadline.
+
 ```bash
 BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF='<registry>/blueprint-groot-oscar-foundation:<version>' \
 BLUEPRINT_ALLOW_GROOT_OSCAR_FOUNDATION_IMAGE_PUSH=true \
@@ -95,6 +104,17 @@ The desired operational target is hundreds of MB; 2 GiB is a hard release
 budget, not a claim that the first build already achieves the desired target.
 The registry delta evidence is authoritative.
 
+For the canonical automated path, dispatch
+`.github/workflows/groot-oscar-thin-release.yml` with an exact 40-character
+commit SHA and two versioned registry tags. The job only targets the
+`blueprint-large-docker` native Linux/x86_64 runner class, requires 120 GiB
+free before building, packages the clean commit into a byte-inventoried build
+context, builds and pushes foundation first, feeds its resolved digest into the
+thin release build, and uploads both registry diagnostics plus the thin-layer
+contract. It cannot run on RunPod. A tag or a workflow success without the
+`groot_oscar_thin_remote_build_result.v1` artifact and exact
+`release_image_ref` digest is not release evidence.
+
 After the exact release is present on a worker host, record `docker image
 inspect` evidence containing `local_uncompressed_size_bytes`, verify the real
 model volume, and audit the combined on-disk footprint:
@@ -111,7 +131,58 @@ This is the 30 GiB target gate. Registry-compressed image bytes cannot be
 substituted for local Docker image size, and unhashed model-directory sizes
 cannot be substituted for the verified model-cache total.
 
-## 4. Warm-worker admission
+## 4. RunPod canary preflight and admission
+
+RunPod is the GPU serve/canary plane only. Before a create call, start the
+independent `production_gpu_warm_watchdog` in the canary output directory and
+wait until `production_gpu_warm_watchdog.json` says `armed`. Then run the
+read-only provider preflight:
+
+```bash
+python -m blueprint_pipeline.groot_oscar_runpod_preflight \
+  --network-volume-id '<existing-volume-id>' \
+  --model-cache-path /workspace/.blueprint-model-cache/blueprint-groot-oscar-v1 \
+  --gpu-type-id 'NVIDIA A40' \
+  --required-cuda-version 12.6 \
+  --watchdog-evidence <canary-dir>/production_gpu_warm_watchdog.json \
+  --max-spend-usd 1.00 \
+  --paid-mutation-authorized \
+  --out <canary-dir>/runpod_preflight.json
+```
+
+The command makes only read-only calls. It requires RunPod's exact network
+volume response (ID, size, and datacenter), a one-GPU stock row with an hourly
+rate, provider-confirmed zero matching billable pods, and a live independent
+watchdog whose deadline is already counting down. It binds the canary create
+request to the volume datacenter through `dataCenterIds` and to the image CUDA
+family through `allowedCudaVersions`. Unknown stock, a missing volume, a
+datacenter mismatch, an unverified cache, a tag instead of a digest, an absent
+rate, a TTL above 30 minutes, a TTL whose maximum cost exceeds the cap, or an
+unarmed watchdog all reject before allocation.
+
+Run the admission/launcher first without `--execute` to inspect the exact bound
+request. Add `--execute` only for the single authorized canary; the generic
+adapter remains behind its separate `BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true`
+gate:
+
+```bash
+python -m blueprint_pipeline.groot_oscar_runpod_canary \
+  --provider-launch-request <provider-launch-request.json> \
+  --release-evidence <groot_oscar_thin_remote_build_result.json> \
+  --model-cache-evidence <model-cache-verification.json> \
+  --preflight-bundle <canary-dir>/runpod_preflight.json \
+  --admission-out <canary-dir>/runpod_admission.json \
+  --bound-request-out <canary-dir>/bound_provider_request.json \
+  --adapter-output <canary-dir>/runpod_adapter_result.json \
+  --pod-name blueprint-groot-oscar-canary-<attempt>
+```
+
+The launcher refuses to rewrite a tag into an admitted digest or silently pick
+another GPU. On live submission it records `warm_serve_pod.json` beside the
+watchdog evidence so the independent watchdog can terminate the exact pod and
+prove inventory absence at its hard deadline.
+
+## 5. Warm-worker admission
 
 Start the release with the already-populated volume mounted at
 `/models/blueprint-groot-oscar-v1`. The entrypoint fails before worker code if

@@ -47,6 +47,14 @@ def _spend() -> dict:
     }
 
 
+def _serve_spend() -> dict:
+    return {
+        **_spend(),
+        "hard_ttl_seconds": 1800,
+        "watchdog_armed_before_allocation": True,
+    }
+
+
 def test_build_plane_admits_known_native_docker_builder() -> None:
     result = build_build_plane_admission(
         packet=_packet(), builder=_builder(), spend=_spend()
@@ -135,6 +143,8 @@ def _models() -> dict:
 
 def _volume() -> dict:
     return {
+        "provider": "runpod",
+        "provider_api_verified": True,
         "id": "volume-1",
         "data_center_id": "US-TX-3",
         "size_bytes": 50 * 1024**3,
@@ -145,8 +155,14 @@ def _volume() -> dict:
 def _runtime() -> dict:
     return {
         "provider": "runpod",
+        "provider_api_verified": True,
         "data_center_id": "US-TX-3",
         "gpu_type_id": "NVIDIA A40",
+        "capacity_confidence": "advisory",
+        "single_gpu_available": True,
+        "required_cuda_version": "12.6",
+        "allowed_cuda_versions": ["12.6"],
+        "on_demand_price_usd_per_hour": 0.44,
         "warm_worker_only": True,
         "provider_inventory_verified_zero": True,
     }
@@ -158,7 +174,7 @@ def test_runpod_serve_plane_admits_only_published_volume_ready_worker() -> None:
         model_cache=_models(),
         volume=_volume(),
         runtime=_runtime(),
-        spend=_spend(),
+        spend=_serve_spend(),
     )
     assert result["status"] == "admitted"
     assert result["blockers"] == []
@@ -174,8 +190,33 @@ def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:
         model_cache=_models(),
         volume=volume,
         runtime=runtime,
-        spend=_spend(),
+        spend=_serve_spend(),
     )
     assert "runpod_network_volume_id_missing" in result["blockers"]
     assert "runpod_model_cache_path_must_be_under_workspace" in result["blockers"]
     assert "runpod_customer_cold_start_disallowed" in result["blockers"]
+
+
+def test_runpod_serve_plane_blocks_unknown_capacity_cuda_and_unarmed_watchdog() -> None:
+    runtime = _runtime()
+    runtime.update(
+        {
+            "provider_api_verified": False,
+            "capacity_confidence": "unknown",
+            "single_gpu_available": False,
+            "allowed_cuda_versions": [],
+        }
+    )
+    spend = _serve_spend()
+    spend["watchdog_armed_before_allocation"] = False
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=_models(),
+        volume=_volume(),
+        runtime=runtime,
+        spend=spend,
+    )
+    assert "runpod_gpu_capacity_not_provider_verified" in result["blockers"]
+    assert "runpod_single_gpu_availability_unknown" in result["blockers"]
+    assert "runpod_cuda_compatibility_not_bound" in result["blockers"]
+    assert "runpod_teardown_watchdog_not_armed_before_allocation" in result["blockers"]

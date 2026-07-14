@@ -267,6 +267,30 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     assert "RUNPOD_API_KEY" not in json.dumps(persisted)
 
 
+def test_runpod_pod_payload_attaches_existing_volume_and_cuda_dc_constraints(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "request.json")
+    request = _read_json(request_path)
+    shape = request["provider_request_shape"]
+    assert isinstance(shape, dict)
+    shape.update(
+        {
+            "network_volume_id": "volume-1",
+            "data_center_id": "US-TX-3",
+            "allowed_cuda_versions": ["12.6"],
+        }
+    )
+    _write_json(request_path, request)
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path, mode="dry-run"
+    )
+    body = result["runpod_request"]["on_demand_pod"]["body"]
+    assert body["networkVolumeId"] == "volume-1"
+    assert body["dataCenterIds"] == ["US-TX-3"]
+    assert body["allowedCudaVersions"] == ["12.6"]
+
+
 def test_runpod_adapter_blocks_when_prelaunch_spend_guard_is_false(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

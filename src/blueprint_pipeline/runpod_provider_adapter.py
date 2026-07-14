@@ -1022,6 +1022,17 @@ def _pod_payload(
         "volumeMountPath": "/workspace",
         "env": env,
     }
+    network_volume_id = _string(provider_shape.get("network_volume_id"))
+    data_center_id = _string(provider_shape.get("data_center_id"))
+    allowed_cuda_versions = _string_list(
+        provider_shape.get("allowed_cuda_versions")
+    )
+    if network_volume_id:
+        input_payload["networkVolumeId"] = network_volume_id
+    if data_center_id:
+        input_payload["dataCenterIds"] = [data_center_id]
+    if allowed_cuda_versions:
+        input_payload["allowedCudaVersions"] = allowed_cuda_versions
     if docker_entrypoint:
         input_payload["dockerEntrypoint"] = docker_entrypoint
     if container_registry_auth_id:
@@ -1192,6 +1203,9 @@ def _existing_pod_start_payload(
         "env",
         "imageName",
         "name",
+        "networkVolumeId",
+        "dataCenterIds",
+        "allowedCudaVersions",
         "ports",
         "volumeInGb",
         "volumeMountPath",
