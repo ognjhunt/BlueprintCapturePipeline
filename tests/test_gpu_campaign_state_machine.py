@@ -537,6 +537,8 @@ def test_same_allocation_canary_blocks_if_handoff_is_not_in_inventory(tmp_path):
     assert result["status"] == "blocked"
     assert "same_allocation_handoff_inventory_mismatch" in result["blockers"]
     assert not any(call[0] == "allocate" for call in provider.calls)
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
 
 
 def test_smoke_evidence_rejects_surrogate_actions_and_missing_steps():

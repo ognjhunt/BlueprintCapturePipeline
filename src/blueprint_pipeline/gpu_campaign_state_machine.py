@@ -702,12 +702,6 @@ class CampaignMachine:
                     allocation_id = str(handoff.get("allocation_id") or "").strip()
                     if str(handoff.get("teardown_owner") or "") != self.teardown_owner:
                         raise CampaignBlocked("same_allocation_teardown_owner_mismatch")
-                    inventory_ids = {
-                        str(item.get("allocation_id") or item.get("id") or "").strip()
-                        for item in inventory
-                    }
-                    if inventory_ids != {allocation_id}:
-                        raise CampaignBlocked("same_allocation_handoff_inventory_mismatch")
                     allocation = {
                         "status": "completed",
                         "allocation_id": allocation_id,
@@ -716,6 +710,20 @@ class CampaignMachine:
                         "teardown_owner": self.teardown_owner,
                     }
                     provider_started_at = handoff.get("provider_started_at_epoch_seconds")
+                    # Once ownership is proven by the signed handoff contract,
+                    # persist its exact allocation ID before consulting the
+                    # eventually-consistent provider inventory. Any rejection
+                    # below must still reach finally-equivalent deletion.
+                    state["allocation_id"] = allocation_id
+                    state["allocation_mutation_pending"] = False
+                    state["provider_started_at_epoch_seconds"] = provider_started_at
+                    self._checkpoint(state, "allocation", allocation)
+                    inventory_ids = {
+                        str(item.get("allocation_id") or item.get("id") or "").strip()
+                        for item in inventory
+                    }
+                    if inventory_ids != {allocation_id}:
+                        raise CampaignBlocked("same_allocation_handoff_inventory_mismatch")
                 else:
                     if inventory:
                         raise CampaignBlocked("duplicate_paid_allocation_detected")
@@ -737,10 +745,11 @@ class CampaignMachine:
                     ).strip()
                     if not allocation_id:
                         raise CampaignBlocked("provider_allocation_id_missing")
-                state["allocation_id"] = allocation_id
-                state["allocation_mutation_pending"] = False
-                state["provider_started_at_epoch_seconds"] = provider_started_at
-                self._checkpoint(state, "allocation", allocation)
+                if "allocation" not in state["completed_stages"]:
+                    state["allocation_id"] = allocation_id
+                    state["allocation_mutation_pending"] = False
+                    state["provider_started_at_epoch_seconds"] = provider_started_at
+                    self._checkpoint(state, "allocation", allocation)
 
             allocation_id = str(state["allocation_id"])
             self._enforce_provider_lifetime(state)
