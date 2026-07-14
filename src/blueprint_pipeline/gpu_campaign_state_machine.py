@@ -386,6 +386,25 @@ class CampaignMachine:
         if self._provider_elapsed_seconds(state) > self.config.max_provider_seconds:
             raise CampaignBlocked("campaign_provider_lifetime_exceeded")
 
+    def _authorized_stage_deadline_seconds(
+        self, state: Mapping[str, Any], stage: str
+    ) -> int:
+        """Cap every paid operation to both its stage and provider lifetime."""
+
+        remaining_lifetime = (
+            float(self.config.max_provider_seconds) - self._provider_elapsed_seconds(state)
+        )
+        # Adapter deadlines are integral seconds. Refuse to begin work when
+        # less than one authorized second remains instead of rounding up past
+        # the paid lifetime ceiling.
+        remaining_whole_seconds = int(remaining_lifetime)
+        if remaining_whole_seconds <= 0:
+            raise CampaignBlocked("campaign_provider_lifetime_exceeded")
+        return min(
+            int(self.config.stage_deadlines_seconds[stage]),
+            remaining_whole_seconds,
+        )
+
     @staticmethod
     def _stage_passed(result: Mapping[str, Any]) -> bool:
         return result.get("status") in {"passed", "completed", "ready", "retrieved"}
@@ -597,7 +616,10 @@ class CampaignMachine:
     def _recorded_checkpoint_needs_teardown(state: Mapping[str, Any]) -> bool:
         teardown = state.get("teardown")
         teardown = teardown if isinstance(teardown, Mapping) else {}
-        return bool(state.get("allocation_id")) and teardown.get("status") not in {
+        paid_mutation_may_exist = bool(
+            state.get("allocation_id") or state.get("allocation_mutation_pending")
+        )
+        return paid_mutation_may_exist and teardown.get("status") not in {
             "passed",
             "not_required",
         }
@@ -722,23 +744,35 @@ class CampaignMachine:
                 if stage in state["completed_stages"]:
                     continue
                 self._enforce_provider_lifetime(state)
+                authorized_deadline = self._authorized_stage_deadline_seconds(state, stage)
                 stage_started = self.clock()
                 if stage == "canary" and self.config.reuse_validated_same_allocation_canary:
                     result = {"status": "passed", "reused_handoff": True}
                 elif stage == "artifact_retrieval":
-                    result = dict(self.adapter.retrieve(allocation_id, self.config.payload()))
-                else:
                     result = dict(
-                        self.adapter.run_stage(
+                        self._call_with_deadline(
+                            authorized_deadline,
+                            self.adapter.retrieve,
                             allocation_id,
-                            stage,
-                            deadline_seconds=int(self.config.stage_deadlines_seconds[stage]),
-                            config=self.config.payload(),
+                            self.config.payload(),
                         )
                     )
+                else:
+                    def run_stage() -> Mapping[str, Any]:
+                        return self.adapter.run_stage(
+                            allocation_id,
+                            stage,
+                            deadline_seconds=authorized_deadline,
+                            config=self.config.payload(),
+                        )
+
+                    result = dict(
+                        self._call_with_deadline(authorized_deadline, run_stage)
+                    )
                 elapsed = self.clock() - stage_started
-                if elapsed > int(self.config.stage_deadlines_seconds[stage]):
+                if elapsed > authorized_deadline:
                     raise CampaignBlocked(f"campaign_stage_deadline_exceeded:{stage}")
+                result.setdefault("authorized_deadline_seconds", authorized_deadline)
                 result.setdefault("elapsed_seconds", round(elapsed, 3))
                 if not self._stage_passed(result):
                     raise CampaignBlocked(f"campaign_stage_failed:{stage}")

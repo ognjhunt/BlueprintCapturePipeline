@@ -56,6 +56,7 @@ build_context_dir=""
 build_metadata_file=""
 local_build_metadata_file=""
 publish_build_metadata_file=""
+publish_staging_ref=""
 
 cleanup_build_context() {
   if [[ -n "$build_context_dir" && -d "$build_context_dir" ]]; then
@@ -142,6 +143,11 @@ case "$image_name" in
     exit 2
     ;;
 esac
+if [[ "$allow_push" == "true" && "$image_ref" == *@sha256:* ]]; then
+  write_manifest "blocked" '["groot_oscar_closed_loop_release_push_requires_final_tag"]' >/dev/null
+  echo "release image push requires a versioned final tag, not a digest reference" >&2
+  exit 2
+fi
 
 # FABLE-008 release evidence must bind the Isaac base by immutable digest.
 # Keep mutable base overrides available for local --load investigation, but
@@ -230,7 +236,6 @@ build_args=(
   --build-arg "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=$source_dirty_patch_sha256"
   --build-arg "PREFETCH_CHECKPOINTS=$prefetch_checkpoints"
   -f "$dockerfile"
-  -t "$image_ref"
 )
 # Always build into the local content store first. The release tag must not be
 # registry-visible until this exact local runtime closure passes the sealed OCI
@@ -238,6 +243,7 @@ build_args=(
 # back to the smoked image-config digest.
 local_build_args=(
   "${build_args[@]}"
+  -t "$image_ref"
   --metadata-file "$local_build_metadata_file"
   --load
   "${secret_args[@]}"
@@ -320,10 +326,13 @@ if [[ "$runtime_smoke_exit" -ne 0 ]]; then
 fi
 
 if [[ "$allow_push" == "true" ]]; then
-  # This export is deliberately after runtime smoke. BuildKit reuses the
-  # already-built closure and adds official SBOM/max-provenance attestations.
+  # Export to a non-release staging tag after runtime smoke. The final release
+  # tag is promoted only after the registry's runnable config digest is proven
+  # byte-identical to the local image that passed the sealed OCI smoke.
+  publish_staging_ref="${image_ref}-candidate-${source_commit:0:12}"
   publish_build_args=(
     "${build_args[@]}"
+    -t "$publish_staging_ref"
     --metadata-file "$publish_build_metadata_file"
     --push
     --attest type=sbom
@@ -345,7 +354,7 @@ if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
 print(digest)
 PY
 )"
-  runtime_image_ref="${image_ref%%@*}"
+  runtime_image_ref="${publish_staging_ref%%@*}"
   runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"
   published_config_digest="$(python3 - "$runtime_image_ref" <<'PY'
 import json, re, subprocess, sys
@@ -402,6 +411,25 @@ payload["published_runtime_identity_matches_smoked_local_image"] = (
 )
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
+  if ! docker buildx imagetools create --tag "$image_ref" "$runtime_image_ref"; then
+    write_manifest "blocked" '["groot_oscar_closed_loop_final_tag_promotion_failed"]' >/dev/null
+    echo "validated candidate digest could not be promoted to the final release tag" >&2
+    exit 2
+  fi
+  promoted_digest="$(docker buildx imagetools inspect --format '{{json .}}' "$image_ref" | python3 -c '
+import json, re, sys
+payload = json.load(sys.stdin)
+manifest = payload.get("manifest") if isinstance(payload, dict) else None
+digest = str(manifest.get("digest") or "") if isinstance(manifest, dict) else ""
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    raise SystemExit("promoted release tag digest missing")
+print(digest)
+')"
+  if [[ "$promoted_digest" != "$build_digest" ]]; then
+    write_manifest "blocked" '["groot_oscar_closed_loop_final_tag_digest_mismatch"]' >/dev/null
+    echo "final release tag does not resolve to the validated candidate digest" >&2
+    exit 2
+  fi
 fi
 
 registry_diagnostic_exit=0

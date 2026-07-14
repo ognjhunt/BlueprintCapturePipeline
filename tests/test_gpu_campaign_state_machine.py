@@ -550,6 +550,28 @@ def test_stage_deadline_is_enforced_even_if_adapter_reports_passed(tmp_path):
     assert "campaign_stage_deadline_exceeded:host_ready" in result["blockers"]
 
 
+def test_stage_deadline_is_capped_to_remaining_paid_lifetime(tmp_path):
+    provider = FakeProvider()
+    machine = CampaignMachine(
+        config=config(max_provider_seconds=100),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+        wall_clock=lambda: 1000.0,
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 950.0
+    provider.live = [{"allocation_id": "vm-1"}]
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+
+    result = machine.run()
+
+    assert result["status"] == "completed"
+    assert ("host_ready", 50) in provider.calls
+    assert result["stage_results"]["host_ready"]["authorized_deadline_seconds"] == 50
+
+
 def test_resume_preserves_original_provider_lifetime_and_tears_down(tmp_path):
     cfg = config(max_provider_seconds=100)
     provider = FakeProvider()
@@ -625,6 +647,35 @@ def test_invalid_resume_config_still_tears_down_recorded_allocation(tmp_path):
     assert ("terminate", "vm-1") in provider.calls
     assert ("inventory", original.allocation_key) in provider.calls
     assert result["teardown"]["billing_stopped"] is True
+
+
+def test_invalid_resume_config_tears_down_pending_create_without_checkpointed_id(
+    tmp_path,
+):
+    original = config()
+    provider = FakeProvider(live=[{"allocation_id": "vm-created-before-response-loss"}])
+    machine = CampaignMachine(
+        config=original,
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    )
+    state, _ = machine._load()
+    state["allocation_mutation_pending"] = True
+    state["provider_started_at_epoch_seconds"] = 1000.0
+    machine._write(machine.state_path, state)
+
+    result = CampaignMachine(
+        config=config(source_sha="not-a-sha", allocation_key="changed-invalid-key"),
+        adapter=provider,
+        state_dir=tmp_path,
+    ).run()
+
+    assert result["status"] == "blocked"
+    assert ("inventory", original.allocation_key) in provider.calls
+    assert ("terminate", "vm-created-before-response-loss") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+    assert result["allocation_mutation_pending"] is False
 
 
 def test_changed_valid_resume_config_still_tears_down_checkpoint(tmp_path):
