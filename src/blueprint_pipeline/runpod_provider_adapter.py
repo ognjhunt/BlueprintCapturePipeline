@@ -22,6 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
+from . import safe_outbound_http
 
 
 RUNPOD_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "runpod_provider_adapter_result.v1"
@@ -38,6 +39,10 @@ RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 RUNPOD_REST_API_BASE_ENV = "RUNPOD_REST_API_BASE"
 RUNPOD_REST_API_BASE = os.getenv(RUNPOD_REST_API_BASE_ENV, "https://rest.runpod.io/v1").rstrip("/")
 RUNPOD_SERVERLESS_API_BASE = "https://api.runpod.ai/v2"
+RUNPOD_PROVIDER_API_POLICY = safe_outbound_http.OutboundHttpPolicy(
+    allowed_hosts=frozenset({"rest.runpod.io", "api.runpod.ai"}),
+    max_response_bytes=8 * 1024 * 1024,
+)
 RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
 RUNPOD_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_EXISTING_POD_ID"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
@@ -1408,9 +1413,13 @@ def _http_json(
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        status_code = int(getattr(response, "status", 200))
-        response_text = response.read().decode("utf-8", errors="replace")
+    response = safe_outbound_http.open_request(
+        request,
+        policy=RUNPOD_PROVIDER_API_POLICY,
+        timeout_seconds=timeout_seconds,
+    )
+    status_code = response.status
+    response_text = response.body.decode("utf-8", errors="replace")
     if not response_text.strip():
         return status_code, {}
     parsed = json.loads(response_text)

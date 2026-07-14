@@ -30,6 +30,19 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_runpod_http_transport_rejects_non_runpod_origins_before_network() -> None:
+    with pytest.raises(
+        adapter.safe_outbound_http.SafeOutboundHttpError,
+        match="outbound_http_host_not_allowed",
+    ):
+        adapter._http_json(
+            url="https://rest.runpod.io.evil.example/v1/pods",
+            payload={},
+            api_key="secret-runpod-key",
+            timeout_seconds=5,
+        )
+
+
 def _ready_runpod_request(path: Path) -> Path:
     _write_json(
         path,
@@ -371,11 +384,13 @@ def test_runpod_adapter_forwards_allowed_secret_env_with_redaction(
         def read(self) -> bytes:
             return json.dumps({"id": "pod-secret-env"}).encode()
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
@@ -803,7 +818,7 @@ def test_runpod_adapter_submits_serverless_run_with_redacted_error(
 
     captured: dict[str, object] = {}
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
@@ -815,7 +830,9 @@ def test_runpod_adapter_submits_serverless_run_with_redacted_error(
             fp=SimpleNamespace(read=lambda: b"bad secret-runpod-key"),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
@@ -899,13 +916,15 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
                 }
             ).encode("utf-8")
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
@@ -1002,11 +1021,13 @@ def test_runpod_adapter_accepts_api_key_file_without_persisting_secret(
         def read(self) -> bytes:
             return b'{"id":"pod-file"}'
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["headers"] = dict(request.header_items())
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
@@ -1049,11 +1070,13 @@ def test_runpod_adapter_accepts_runpod_config_without_persisting_secret(
         def read(self) -> bytes:
             return b'{"id":"pod-config"}'
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["headers"] = dict(request.header_items())
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
@@ -1327,7 +1350,10 @@ def test_runpod_adapter_empty_http_response_is_submitted_with_empty_body(
         def read(self) -> bytes:
             return b""
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy",
+        lambda request, timeout, policy: FakeResponse(),
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
@@ -1458,7 +1484,7 @@ def test_runpod_adapter_updates_and_starts_existing_pod(
         def read(self) -> bytes:
             return json.dumps(self.body).encode("utf-8")
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         body = json.loads(request.data.decode("utf-8")) if request.data else None
         calls.append(
             {
@@ -1473,7 +1499,9 @@ def test_runpod_adapter_updates_and_starts_existing_pod(
             return FakeResponse(200, {"id": "pod-123", "desiredStatus": "RUNNING"})
         raise AssertionError(request.full_url)
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
