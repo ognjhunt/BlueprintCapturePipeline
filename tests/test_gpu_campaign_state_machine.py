@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import fcntl
+import math
 import threading
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -138,9 +140,7 @@ def test_campaign_requires_at_least_one_full_episode_seed_before_allocation(tmp_
         ({"spend_authorization_usd": -1}, "campaign_spend_authorization_invalid"),
     ],
 )
-def test_campaign_rejects_negative_budget_inputs_before_allocation(
-    tmp_path, overrides, blocker
-):
+def test_campaign_rejects_negative_budget_inputs_before_allocation(tmp_path, overrides, blocker):
     provider = FakeProvider()
 
     with pytest.raises(CampaignBlocked, match=blocker):
@@ -947,3 +947,39 @@ def test_second_controller_cannot_race_the_teardown_owner(tmp_path):
         fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(CampaignBlocked, match="already_running"):
             CampaignMachine(config=config(), adapter=FakeProvider(), state_dir=tmp_path).run()
+
+
+@pytest.mark.parametrize(
+    ("field", "blocker"),
+    [
+        ("hourly_rate_usd", "paid_runtime_bound_invalid"),
+        ("prior_exposure_usd", "campaign_prior_exposure_invalid"),
+        ("spend_authorization_usd", "campaign_spend_authorization_invalid"),
+        ("image_total_compressed_bytes", "image_closure_size_missing"),
+        ("image_largest_layer_bytes", "image_closure_size_missing"),
+    ],
+)
+def test_nonfinite_budget_and_image_numbers_fail_closed(field, blocker):
+    cfg = config(**{field: math.nan})
+    assert blocker in cfg.validate()
+
+
+def test_nonserializable_stage_result_cannot_preempt_teardown(tmp_path):
+    class NonserializableProvider(FakeProvider):
+        def run_stage(self, allocation_id, stage, *, deadline_seconds, config):
+            result = super().run_stage(
+                allocation_id, stage, deadline_seconds=deadline_seconds, config=config
+            )
+            if stage == "host_ready":
+                result["observed_at"] = datetime.now(timezone.utc)
+            return result
+
+    provider = NonserializableProvider()
+    result = CampaignMachine(config=config(), adapter=provider, state_dir=tmp_path).run()
+
+    assert result["status"] == "blocked"
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+    assert any(
+        item.startswith("state_persistence_exception:TypeError") for item in result["blockers"]
+    )

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import fcntl
+import math
 import queue
 import re
 import signal
@@ -27,6 +28,18 @@ from typing import Any, Mapping, Protocol, Sequence
 SCHEMA_VERSION = "provider_neutral_gpu_campaign.v1"
 CONFIG_SCHEMA_VERSION = "provider_neutral_gpu_campaign_config.v1"
 LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES = 20 * 1024**3
+
+
+def _finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _positive_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 class CampaignBlocked(RuntimeError):
@@ -104,23 +117,39 @@ class CampaignConfig:
             blockers.append("source_sha_invalid")
         if re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None:
             blockers.append("image_digest_invalid")
-        if self.hourly_rate_usd <= 0 or self.max_provider_seconds <= 0:
+        hourly_rate_valid = _finite_number(self.hourly_rate_usd) and self.hourly_rate_usd > 0
+        provider_seconds_valid = _positive_integer(self.max_provider_seconds)
+        prior_exposure_valid = (
+            _finite_number(self.prior_exposure_usd) and self.prior_exposure_usd >= 0
+        )
+        authorization_valid = (
+            _finite_number(self.spend_authorization_usd) and self.spend_authorization_usd >= 0
+        )
+        total_size_valid = _positive_integer(self.image_total_compressed_bytes)
+        largest_size_valid = _positive_integer(self.image_largest_layer_bytes)
+        if not hourly_rate_valid or not provider_seconds_valid:
             blockers.append("paid_runtime_bound_invalid")
-        if self.prior_exposure_usd < 0:
+        if not prior_exposure_valid:
             blockers.append("campaign_prior_exposure_invalid")
-        if self.spend_authorization_usd < 0:
+        if not authorization_valid:
             blockers.append("campaign_spend_authorization_invalid")
-        if self.image_total_compressed_bytes <= 0 or self.image_largest_layer_bytes <= 0:
+        if not total_size_valid or not largest_size_valid:
             blockers.append("image_closure_size_missing")
         elif self.image_largest_layer_bytes > self.image_total_compressed_bytes:
             blockers.append("image_largest_layer_exceeds_total")
-        if self.image_total_compressed_bytes >= LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES:
+        if (
+            total_size_valid
+            and self.image_total_compressed_bytes >= LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES
+        ):
             blockers.extend(validate_preloaded_image_evidence(self, self.image_residency_evidence))
-        maximum = self.prior_exposure_usd + (
-            self.hourly_rate_usd * self.max_provider_seconds / 3600
-        )
-        if maximum > self.spend_authorization_usd:
-            blockers.append("campaign_maximum_exceeds_spend_authorization")
+        if all(
+            (hourly_rate_valid, provider_seconds_valid, prior_exposure_valid, authorization_valid)
+        ):
+            maximum = self.prior_exposure_usd + (
+                self.hourly_rate_usd * self.max_provider_seconds / 3600
+            )
+            if maximum > self.spend_authorization_usd:
+                blockers.append("campaign_maximum_exceeds_spend_authorization")
         required = {
             "host_ready",
             "image_ready",
@@ -137,9 +166,7 @@ class CampaignConfig:
             blockers.append("stage_deadline_invalid")
         if not self.episode_seeds:
             blockers.append("campaign_episode_seeds_missing")
-        elif len(set((self.smoke_seed, *self.episode_seeds))) != 1 + len(
-            self.episode_seeds
-        ):
+        elif len(set((self.smoke_seed, *self.episode_seeds))) != 1 + len(self.episode_seeds):
             blockers.append("campaign_seeds_not_independent")
         if self.reuse_validated_same_allocation_canary:
             blockers.extend(validate_same_allocation_canary_handoff(self, self.canary_handoff))
@@ -330,6 +357,18 @@ class CampaignMachine:
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         temporary.replace(path)
 
+    def _write_best_effort(self, path: Path, state: dict[str, Any]) -> bool:
+        """Persist terminal evidence without ever preempting provider teardown."""
+
+        try:
+            self._write(path, state)
+            return True
+        except Exception as exc:  # noqa: BLE001 - teardown must still run
+            blocker = f"state_persistence_exception:{type(exc).__name__}:{exc}"
+            if blocker not in state["blockers"]:
+                state["blockers"].append(blocker)
+            return False
+
     def _initial_state(self, config_sha: str) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -403,14 +442,12 @@ class CampaignMachine:
         if self._provider_elapsed_seconds(state) > self.config.max_provider_seconds:
             raise CampaignBlocked("campaign_provider_lifetime_exceeded")
 
-    def _authorized_stage_deadline_seconds(
-        self, state: Mapping[str, Any], stage: str
-    ) -> int:
+    def _authorized_stage_deadline_seconds(self, state: Mapping[str, Any], stage: str) -> int:
         """Cap every paid operation to both its stage and provider lifetime."""
 
-        remaining_lifetime = (
-            float(self.config.max_provider_seconds) - self._provider_elapsed_seconds(state)
-        )
+        remaining_lifetime = float(
+            self.config.max_provider_seconds
+        ) - self._provider_elapsed_seconds(state)
         # Adapter deadlines are integral seconds. Refuse to begin work when
         # less than one authorized second remains instead of rounding up past
         # the paid lifetime ceiling.
@@ -494,7 +531,7 @@ class CampaignMachine:
                 state["blockers"].append("provider_final_inventory_not_zero")
             if teardown_passed:
                 state["allocation_mutation_pending"] = False
-            self._write(self.state_path, state)
+            self._write_best_effort(self.state_path, state)
             return
         teardown = dict(bounded(self.adapter.terminate, allocation_id))
         inspection = dict(bounded(self.adapter.inspect, allocation_id))
@@ -514,7 +551,7 @@ class CampaignMachine:
             state["blockers"].append("provider_teardown_ambiguous")
         if final_inventory:
             state["blockers"].append("provider_final_inventory_not_zero")
-        self._write(self.state_path, state)
+        self._write_best_effort(self.state_path, state)
 
     @staticmethod
     def _call_with_deadline(timeout_seconds: float, operation: Any, *args: Any) -> Any:
@@ -705,7 +742,7 @@ class CampaignMachine:
                     "exception": f"{type(exc).__name__}:{exc}",
                 }
                 state["final_inventory"] = None
-            self._write(self.state_path, state)
+            self._write_best_effort(self.state_path, state)
             return state
         try:
             if not state.get("allocation_id"):
@@ -797,6 +834,7 @@ class CampaignMachine:
                         )
                     )
                 else:
+
                     def run_stage() -> Mapping[str, Any]:
                         return self.adapter.run_stage(
                             allocation_id,
@@ -805,9 +843,7 @@ class CampaignMachine:
                             config=self.config.payload(),
                         )
 
-                    result = dict(
-                        self._call_with_deadline(authorized_deadline, run_stage)
-                    )
+                    result = dict(self._call_with_deadline(authorized_deadline, run_stage))
                 elapsed = self.clock() - stage_started
                 if elapsed > authorized_deadline:
                     raise CampaignBlocked(f"campaign_stage_deadline_exceeded:{stage}")
@@ -836,7 +872,7 @@ class CampaignMachine:
             if blocker not in state["blockers"]:
                 state["blockers"].append(blocker)
         finally:
-            self._write(self.state_path, state)
+            self._write_best_effort(self.state_path, state)
             try:
                 self._teardown(state)
             except Exception as exc:
@@ -854,5 +890,5 @@ class CampaignMachine:
                 state["status"] = "completed"
             elif state["teardown"]["status"] != "passed":
                 state["status"] = "blocked"
-            self._write(self.state_path, state)
+            self._write_best_effort(self.state_path, state)
         return state
