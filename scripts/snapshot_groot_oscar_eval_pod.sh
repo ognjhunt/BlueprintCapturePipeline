@@ -80,6 +80,8 @@ export BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR
 export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT=/opt/blueprint/ckpts/oscar
 export BLUEPRINT_GROOT_OSCAR_GROOT_ROOT=/opt/gr00t
 export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT=/opt/blueprint/ckpts/sonic
+export GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC
+export GEAR_SONIC_CHECKPOINT_REVISION=5e22ddc69abcea2a9aafc40536b14c232d3f9d7f
 export BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED=true
 ENV
 # If blueprint_pipeline is an EDITABLE install (pip install -e <src>), its source

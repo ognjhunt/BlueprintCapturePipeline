@@ -238,6 +238,10 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert plan["gear_sonic_controller_command"][0:2] == ["bash", "-lc"]
     assert "deploy.sh sim" in plan["gear_sonic_controller_command"][2]
     assert plan["env"]["BLUEPRINT_GEAR_SONIC_ROOT"] == "/opt/wbc"
+    assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == "nvidia/GEAR-SONIC"
+    assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (
+        "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+    )
     assert "gear_sonic_official_zmq_executor" in plan["env"][
         "BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND"
     ]
@@ -374,6 +378,12 @@ def test_snapshot_plan_lists_all_baked_trees_and_markers():
     # sealed markers must be written into the image env
     assert plan["image_env"][gocl.SEALED_CONFIRMED_ENV] == "true"
     assert plan["image_env"]["MUJOCO_GL"] == "osmesa"
+    assert plan["image_env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == (
+        "nvidia/GEAR-SONIC"
+    )
+    assert plan["image_env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (
+        "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+    )
     assert plan["raw_secret_values_recorded"] is False
     assert plan["claim_boundary"]
 
@@ -410,6 +420,15 @@ def test_image_seals_the_exact_gear_sonic_deploy_models():
     ):
         assert required in dockerfile
     assert 'revision=os.environ["GEAR_SONIC_CHECKPOINT_REVISION"]' in dockerfile
+
+
+def test_snapshot_carrier_stamps_the_exact_gear_sonic_revision():
+    script = Path("scripts/snapshot_groot_oscar_eval_pod.sh").read_text(encoding="utf-8")
+    assert "export GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC" in script
+    assert (
+        "export GEAR_SONIC_CHECKPOINT_REVISION="
+        "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+    ) in script
 
 
 def test_image_makes_gear_sonic_build_tree_runtime_user_writable():

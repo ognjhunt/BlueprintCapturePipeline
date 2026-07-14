@@ -6,6 +6,7 @@ proof rows; a structurally completed worker result closes none by itself.
 from __future__ import annotations
 
 import json
+import math
 import shlex
 import time
 import uuid
@@ -13,6 +14,7 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
 from .common import ensure_dir, utc_now_iso, write_json
 from .groot_oscar_digitalocean_job_inputs import (
     _argv_value,
@@ -2114,6 +2116,24 @@ def run_groot_oscar_digitalocean_closed_loop_job(
     if not isinstance(route_payload, Mapping):
         manifest["blockers"].append("route_file_must_contain_json_object")
         return _write_job_manifest(out, manifest)
+    route_points = list(route_payload.get("route_points") or [])
+    try:
+        start_pose = [float(value) for value in route_points[0]]
+        start_yaw = float(route_payload.get("accepted_stance_yaw_rad"))
+    except (IndexError, TypeError, ValueError):
+        manifest["blockers"].append("persistent_isaac_route_start_pose_invalid")
+        return _write_job_manifest(out, manifest)
+    if len(start_pose) != 3 or not all(
+        math.isfinite(value) for value in [*start_pose, start_yaw]
+    ):
+        manifest["blockers"].append("persistent_isaac_route_start_pose_invalid")
+        return _write_job_manifest(out, manifest)
+    manifest["persistent_isaac_robot_start_pose"] = {
+        "status": "passed",
+        "xyz": start_pose,
+        "yaw_rad": start_yaw,
+        "validated_before_paid_provider_mutation": True,
+    }
     attempt_input = (
         _read_json_mapping(attempt_input_manifest_file)
         if attempt_input_manifest_file is not None
