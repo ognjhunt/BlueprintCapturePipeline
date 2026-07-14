@@ -327,6 +327,7 @@ class CampaignMachine:
             "config_sha256": config_sha,
             "teardown_owner": self.teardown_owner,
             "allocation_id": None,
+            "allocation_mutation_pending": False,
             "provider_started_at_epoch_seconds": None,
             "teardown_deadline_seconds": int(self.config.stage_deadlines_seconds["teardown"]),
             "completed_stages": [],
@@ -408,17 +409,55 @@ class CampaignMachine:
         inventory_key = allocation_key or self.config.allocation_key
         allocation_id = str(state.get("allocation_id") or "")
         if not allocation_id:
-            final_inventory = list(bounded(self.adapter.inventory, inventory_key))
+            discovered_inventory = list(bounded(self.adapter.inventory, inventory_key))
+            delete_requests: list[dict[str, Any]] = []
+            inspections: list[dict[str, Any]] = []
+            discovered_ids = [
+                str(item.get("allocation_id") or item.get("id") or "").strip()
+                for item in discovered_inventory
+                if isinstance(item, Mapping)
+            ]
+            can_delete_discovered = bool(state.get("allocation_mutation_pending"))
+            if can_delete_discovered and discovered_inventory and all(discovered_ids):
+                for discovered_id in discovered_ids:
+                    delete_requests.append(dict(bounded(self.adapter.terminate, discovered_id)))
+                    inspections.append(dict(bounded(self.adapter.inspect, discovered_id)))
+                final_inventory = list(bounded(self.adapter.inventory, inventory_key))
+            else:
+                final_inventory = discovered_inventory
+            discovered_absent = bool(inspections) and all(
+                item.get("absent") is True or item.get("http") == 404 for item in inspections
+            )
+            teardown_passed = bool(
+                can_delete_discovered
+                and discovered_inventory
+                and all(discovered_ids)
+                and discovered_absent
+                and not final_inventory
+            )
+            # An empty immediate inventory cannot prove absence after an
+            # ambiguous create; provider listings may be eventually consistent.
+            # Keep teardown retryable until an ID is discovered/deleted or an
+            # independent terminal inventory proof clears the mutation window.
+            not_required = not discovered_inventory and not can_delete_discovered
             state["teardown"] = {
-                "status": "not_required" if not final_inventory else "blocked",
-                "billing_stopped": not final_inventory,
+                "status": (
+                    "passed" if teardown_passed else "not_required" if not_required else "blocked"
+                ),
+                "billing_stopped": bool(not_required or teardown_passed),
                 "teardown_owner": self.teardown_owner,
+                "allocation_mutation_pending": can_delete_discovered,
+                "discovered_inventory": discovered_inventory,
+                "delete_requests": delete_requests,
+                "provider_inspections": inspections,
                 "elapsed_seconds": round(self.clock() - teardown_started, 3),
                 "deadline_seconds": int(teardown_deadline),
             }
             state["final_inventory"] = final_inventory
             if final_inventory and "provider_final_inventory_not_zero" not in state["blockers"]:
                 state["blockers"].append("provider_final_inventory_not_zero")
+            if teardown_passed:
+                state["allocation_mutation_pending"] = False
             self._write(self.state_path, state)
             return
         teardown = dict(bounded(self.adapter.terminate, allocation_id))
@@ -658,6 +697,8 @@ class CampaignMachine:
                     # provider mutation. It remains valid across controller
                     # crashes and process resumes.
                     provider_started_at = float(self.wall_clock())
+                    state["allocation_mutation_pending"] = True
+                    self._write(self.state_path, state)
                     allocation = dict(self.adapter.allocate(self.config.payload()))
                     allocation_id = str(
                         allocation.get("allocation_id") or allocation.get("id") or ""
@@ -665,6 +706,7 @@ class CampaignMachine:
                     if not allocation_id:
                         raise CampaignBlocked("provider_allocation_id_missing")
                 state["allocation_id"] = allocation_id
+                state["allocation_mutation_pending"] = False
                 state["provider_started_at_epoch_seconds"] = provider_started_at
                 self._checkpoint(state, "allocation", allocation)
 

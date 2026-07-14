@@ -208,6 +208,87 @@ def test_provider_native_id_is_checkpointed_and_torn_down(tmp_path):
     assert result["teardown"]["billing_stopped"] is True
 
 
+def test_lost_allocate_response_deletes_inventory_discovered_allocation(tmp_path):
+    class LostResponseProvider(FakeProvider):
+        def allocate(self, config):
+            self.calls.append(("allocate", config["campaign_id"]))
+            self.live = [{"id": "created-but-response-lost"}]
+            raise ConnectionError("create_response_lost")
+
+    provider = LostResponseProvider()
+    result = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    ).run()
+
+    assert result["status"] == "blocked"
+    assert ("terminate", "created-but-response-lost") in provider.calls
+    assert result["teardown"]["status"] == "passed"
+    assert result["teardown"]["billing_stopped"] is True
+    assert result["final_inventory"] == []
+
+
+def test_missing_allocate_id_deletes_inventory_discovered_allocation(tmp_path):
+    class MissingIdProvider(FakeProvider):
+        def allocate(self, config):
+            self.calls.append(("allocate", config["campaign_id"]))
+            self.live = [{"allocation_id": "created-with-missing-response-id"}]
+            return {"status": "completed"}
+
+    provider = MissingIdProvider()
+    result = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    ).run()
+
+    assert result["status"] == "blocked"
+    assert ("terminate", "created-with-missing-response-id") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+
+
+def test_ambiguous_create_empty_inventory_stays_retryable_until_discovered(tmp_path):
+    class EventuallyVisibleProvider(FakeProvider):
+        post_create_inventory_calls = 0
+
+        def allocate(self, config):
+            self.calls.append(("allocate", config["campaign_id"]))
+            self.live = [{"id": "eventually-visible-vm"}]
+            raise ConnectionError("create_response_lost")
+
+        def inventory(self, allocation_key):
+            self.calls.append(("inventory", allocation_key))
+            if self.live:
+                self.post_create_inventory_calls += 1
+                if self.post_create_inventory_calls == 1:
+                    return []
+            return list(self.live)
+
+    provider = EventuallyVisibleProvider()
+    first = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    ).run()
+    assert first["status"] == "blocked"
+    assert first["teardown"]["status"] == "blocked"
+    assert first["teardown"]["billing_stopped"] is False
+
+    second = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    ).run()
+    assert ("terminate", "eventually-visible-vm") in provider.calls
+    assert second["teardown"]["status"] == "passed"
+    assert second["teardown"]["billing_stopped"] is True
+
+
 def test_budget_is_admitted_on_worst_case_not_expected_spend(tmp_path):
     with pytest.raises(CampaignBlocked, match="maximum_exceeds"):
         CampaignMachine(
