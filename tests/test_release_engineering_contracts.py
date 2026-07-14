@@ -308,6 +308,7 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation
     assert "uv venv /opt/robot-venv --python 3.10 --seed" in foundation
     assert foundation.count("/opt/robot-venv/bin/python -m pip check") == 2
+    assert "/opt/robot-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py" in foundation
     assert "cp -a build target g1 scripts reference" not in foundation
     assert "COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime" in foundation
     assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation

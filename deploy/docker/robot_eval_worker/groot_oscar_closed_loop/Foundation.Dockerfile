@@ -168,7 +168,7 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
     BLUEPRINT_FOUNDATION_WBC_SOURCE_REF=${WBC_SOURCE_REF}
 RUN ln -s /opt/robot-venv /opt/oscar-venv \
   && ln -s /opt/robot-venv /opt/gr00t-venv \
-  && python3 /opt/blueprint/fetch_pinned_isaac_assets.py \
+  && /opt/robot-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
       --manifest /opt/blueprint/isaac_6_g1_assets.sha256 \
       --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
       --output-dir /isaac-sim/Isaac/Robots/Unitree/G1 \
