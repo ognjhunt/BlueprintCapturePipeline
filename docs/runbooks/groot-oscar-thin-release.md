@@ -270,7 +270,9 @@ another GPU. On live submission, before the provider adapter is reachable, it
 reruns every mutable read-only check and writes
 `runpod_preflight_launch_refresh.json`. This refresh revalidates the volume,
 datacenter/CUDA-filtered capacity, zero matching billable pods, and the live
-watchdog process with its remaining deadline; any changed or expired evidence
+watchdog process with its remaining deadline. The watchdog PID is accepted only
+when its live Linux command line is the canonical name-bound watchdog with the
+exact admitted pod prefix and deadline; any changed, forged, or expired evidence
 rejects without a create call. It then records `warm_serve_pod.json` beside the
 watchdog evidence so the independent watchdog can terminate the exact pod and
 prove inventory absence at its hard deadline.

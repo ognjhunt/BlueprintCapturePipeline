@@ -35,6 +35,7 @@ def refresh_runpod_preflight(
     capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     inventory_probe: Callable[[str], Mapping[str, Any]],
     clock: Callable[[], float] = time.time,
+    process_argv_probe: Callable[[int], Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Recheck every mutable provider fact immediately before allocation."""
 
@@ -52,6 +53,9 @@ def refresh_runpod_preflight(
         "deadline_epoch": spend.get("watchdog_deadline_epoch"),
         "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
     }
+    kwargs: dict[str, Any] = {}
+    if process_argv_probe is not None:
+        kwargs["process_argv_probe"] = process_argv_probe
     return collect_runpod_preflight(
         network_volume_id=str(volume.get("id") or ""),
         model_cache_path=str(volume.get("model_cache_path") or ""),
@@ -65,6 +69,7 @@ def refresh_runpod_preflight(
         capacity_probe=capacity_probe,
         inventory_probe=inventory_probe,
         clock=clock,
+        **kwargs,
     )
 
 

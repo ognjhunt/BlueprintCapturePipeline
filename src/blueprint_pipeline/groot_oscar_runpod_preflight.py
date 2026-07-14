@@ -23,6 +23,7 @@ from .groot_oscar_infrastructure_admission import (
 )
 
 SCHEMA_VERSION = "groot_oscar_runpod_preflight_bundle.v1"
+WATCHDOG_MODULE = "blueprint_pipeline.groot_oscar_runpod_watchdog"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -36,17 +37,48 @@ def _read_json(path: str | Path) -> dict[str, Any]:
     return dict(value)
 
 
+def _read_linux_process_argv(pid: int) -> tuple[str, ...]:
+    """Read a live process identity without trusting watchdog-authored evidence."""
+
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return ()
+    return tuple(part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part)
+
+
+def _watchdog_process_matches(
+    *,
+    argv: Sequence[str],
+    pod_name_prefix: str,
+    deadline_epoch: float,
+) -> bool:
+    tokens = tuple(str(token) for token in argv)
+    if WATCHDOG_MODULE not in tokens:
+        return False
+    try:
+        prefix_index = tokens.index("--pod-name-prefix") + 1
+        deadline_index = tokens.index("--deadline-epoch") + 1
+        observed_prefix = tokens[prefix_index]
+        observed_deadline = float(tokens[deadline_index])
+    except (ValueError, IndexError):
+        return False
+    return observed_prefix == pod_name_prefix and observed_deadline == deadline_epoch
+
+
 def build_watchdog_spend_evidence(
     *,
     watchdog: Mapping[str, Any],
     max_spend_usd: float,
     paid_mutation_authorized: bool,
     clock: Callable[[], float] = time.time,
+    process_argv_probe: Callable[[int], Sequence[str]] = _read_linux_process_argv,
 ) -> dict[str, Any]:
     deadline = watchdog.get("deadline_epoch")
     pid = watchdog.get("pid")
     ttl = int(float(deadline) - clock()) if isinstance(deadline, (int, float)) else 0
     process_alive = False
+    process_identity_verified = False
     if type(pid) is int and pid > 0:
         try:
             os.kill(pid, 0)
@@ -56,15 +88,19 @@ def build_watchdog_spend_evidence(
             process_alive = True
         else:
             process_alive = True
+    pod_name_prefix = str(watchdog.get("pod_name_prefix") or "").strip()
+    if process_alive and isinstance(deadline, (int, float)):
+        process_identity_verified = _watchdog_process_matches(
+            argv=process_argv_probe(pid),
+            pod_name_prefix=pod_name_prefix,
+            deadline_epoch=float(deadline),
+        )
     armed = bool(
-        watchdog.get("schema_version")
-        in {
-            "production_gpu_warm_watchdog.v1",
-            "groot_oscar_runpod_canary_watchdog.v1",
-        }
+        watchdog.get("schema_version") == "groot_oscar_runpod_canary_watchdog.v1"
         and watchdog.get("status") == "armed"
         and watchdog.get("independent_process") is True
         and process_alive
+        and process_identity_verified
         and ttl > 60
     )
     return {
@@ -76,8 +112,9 @@ def build_watchdog_spend_evidence(
         "independent_teardown_watchdog": armed,
         "watchdog_armed_before_allocation": armed,
         "watchdog_pid": pid if process_alive else None,
+        "watchdog_process_identity_verified": process_identity_verified,
         "watchdog_deadline_epoch": deadline,
-        "watchdog_pod_name_prefix": watchdog.get("pod_name_prefix"),
+        "watchdog_pod_name_prefix": pod_name_prefix,
         "raw_secret_values_recorded": False,
     }
 
@@ -96,6 +133,7 @@ def collect_runpod_preflight(
     capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     inventory_probe: Callable[[str], Mapping[str, Any]],
     clock: Callable[[], float] = time.time,
+    process_argv_probe: Callable[[int], Sequence[str]] = _read_linux_process_argv,
 ) -> dict[str, Any]:
     status, raw_volume = volume_getter(network_volume_id)
     volume = build_runpod_network_volume_evidence(
@@ -132,6 +170,7 @@ def collect_runpod_preflight(
         max_spend_usd=max_spend_usd,
         paid_mutation_authorized=paid_mutation_authorized,
         clock=lambda: observed_at_epoch,
+        process_argv_probe=process_argv_probe,
     )
     blockers: list[str] = []
     if volume.get("status") != "verified":

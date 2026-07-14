@@ -183,6 +183,15 @@ def test_execute_refresh_rechecks_every_mutable_provider_fact() -> None:
         capacity_probe=capacity_probe,
         inventory_probe=inventory_probe,
         clock=lambda: 1000.0,
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "--pod-name-prefix",
+            "blueprint-groot-oscar-canary-",
+            "--deadline-epoch",
+            "1900.0",
+        ),
     )
     assert result["status"] == "verified"
     assert result["observed_at_epoch"] == 1000.0
