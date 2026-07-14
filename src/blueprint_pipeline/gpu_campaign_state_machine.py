@@ -14,6 +14,8 @@ import hashlib
 import json
 import fcntl
 import re
+import signal
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -325,6 +327,7 @@ class CampaignMachine:
             "teardown_owner": self.teardown_owner,
             "allocation_id": None,
             "provider_started_at_epoch_seconds": None,
+            "teardown_deadline_seconds": int(self.config.stage_deadlines_seconds["teardown"]),
             "completed_stages": [],
             "stage_results": {},
             "status": "running",
@@ -386,30 +389,49 @@ class CampaignMachine:
         return result.get("status") in {"passed", "completed", "ready", "retrieved"}
 
     def _teardown(self, state: dict[str, Any], *, allocation_key: str | None = None) -> None:
+        teardown_started = self.clock()
+        raw_deadline = state.get("teardown_deadline_seconds")
+        if raw_deadline is None:
+            raw_deadline = self.config.stage_deadlines_seconds.get("teardown", 300)
+        try:
+            teardown_deadline = float(raw_deadline)
+        except (TypeError, ValueError):
+            teardown_deadline = 300.0
+        if teardown_deadline <= 0:
+            teardown_deadline = 300.0
+
+        def bounded(operation: Any, *args: Any) -> Any:
+            remaining = teardown_deadline - (self.clock() - teardown_started)
+            return self._call_with_deadline(remaining, operation, *args)
+
         inventory_key = allocation_key or self.config.allocation_key
         allocation_id = str(state.get("allocation_id") or "")
         if not allocation_id:
-            final_inventory = list(self.adapter.inventory(inventory_key))
+            final_inventory = list(bounded(self.adapter.inventory, inventory_key))
             state["teardown"] = {
                 "status": "not_required" if not final_inventory else "blocked",
                 "billing_stopped": not final_inventory,
                 "teardown_owner": self.teardown_owner,
+                "elapsed_seconds": round(self.clock() - teardown_started, 3),
+                "deadline_seconds": int(teardown_deadline),
             }
             state["final_inventory"] = final_inventory
             if final_inventory and "provider_final_inventory_not_zero" not in state["blockers"]:
                 state["blockers"].append("provider_final_inventory_not_zero")
             self._write(self.state_path, state)
             return
-        teardown = dict(self.adapter.terminate(allocation_id))
-        inspection = dict(self.adapter.inspect(allocation_id))
+        teardown = dict(bounded(self.adapter.terminate, allocation_id))
+        inspection = dict(bounded(self.adapter.inspect, allocation_id))
         absent = inspection.get("absent") is True or inspection.get("http") == 404
-        final_inventory = list(self.adapter.inventory(inventory_key))
+        final_inventory = list(bounded(self.adapter.inventory, inventory_key))
         state["teardown"] = {
             "status": "passed" if absent and not final_inventory else "blocked",
             "delete_request": teardown,
             "provider_inspection": inspection,
             "billing_stopped": absent,
             "teardown_owner": self.teardown_owner,
+            "elapsed_seconds": round(self.clock() - teardown_started, 3),
+            "deadline_seconds": int(teardown_deadline),
         }
         state["final_inventory"] = final_inventory
         if not absent:
@@ -417,6 +439,36 @@ class CampaignMachine:
         if final_inventory:
             state["blockers"].append("provider_final_inventory_not_zero")
         self._write(self.state_path, state)
+
+    @staticmethod
+    def _call_with_deadline(timeout_seconds: float, operation: Any, *args: Any) -> Any:
+        """Interrupt a blocking provider teardown call on the controller thread."""
+
+        if timeout_seconds <= 0:
+            raise CampaignBlocked("campaign_teardown_deadline_exceeded")
+        if threading.current_thread() is not threading.main_thread():
+            raise CampaignBlocked("campaign_teardown_deadline_requires_main_thread")
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+        started = time.monotonic()
+
+        def deadline_handler(_signum: int, _frame: Any) -> None:
+            raise CampaignBlocked("campaign_teardown_deadline_exceeded")
+
+        signal.signal(signal.SIGALRM, deadline_handler)
+        signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+        try:
+            return operation(*args)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            if previous_delay > 0:
+                elapsed = time.monotonic() - started
+                signal.setitimer(
+                    signal.ITIMER_REAL,
+                    max(0.000001, previous_delay - elapsed),
+                    previous_interval,
+                )
 
     def _recorded_checkpoint_for_teardown(
         self,

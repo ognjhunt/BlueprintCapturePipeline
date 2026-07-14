@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import time
 
 import pytest
 
@@ -237,6 +238,34 @@ def test_teardown_ambiguity_remains_blocked(tmp_path):
     ).run()
     assert result["status"] == "blocked"
     assert "provider_teardown_ambiguous" in result["blockers"]
+
+
+def test_teardown_call_is_actually_interrupted_at_deadline():
+    with pytest.raises(CampaignBlocked, match="teardown_deadline_exceeded"):
+        CampaignMachine._call_with_deadline(0.01, time.sleep, 0.2)
+
+
+def test_teardown_timeout_is_checkpointed_as_billing_ambiguous(tmp_path, monkeypatch):
+    provider = FakeProvider()
+    machine = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    )
+    original = machine._call_with_deadline
+
+    def timeout_on_terminate(timeout_seconds, operation, *args):
+        if operation == provider.terminate:
+            raise CampaignBlocked("campaign_teardown_deadline_exceeded")
+        return original(timeout_seconds, operation, *args)
+
+    monkeypatch.setattr(machine, "_call_with_deadline", timeout_on_terminate)
+    result = machine.run()
+    assert result["status"] == "blocked"
+    assert result["teardown"]["status"] == "blocked"
+    assert result["teardown"]["billing_stopped"] is False
+    assert any("campaign_teardown_deadline_exceeded" in item for item in result["blockers"])
 
 
 def test_teardown_exception_never_persists_false_completion_and_is_retried(tmp_path):
@@ -600,6 +629,32 @@ def test_validation_exception_still_tears_down_checkpointed_allocation(tmp_path)
     )
     assert ("terminate", "vm-1") in provider.calls
     assert result["teardown"]["billing_stopped"] is True
+
+
+def test_malformed_resumed_teardown_deadline_uses_recorded_deadline(tmp_path):
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    machine = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 1000.0
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+    malformed_deadlines = dict(config().stage_deadlines_seconds)
+    malformed_deadlines["teardown"] = "bad"  # type: ignore[assignment]
+
+    result = CampaignMachine(
+        config=config(stage_deadlines_seconds=malformed_deadlines),
+        adapter=provider,
+        state_dir=tmp_path,
+    ).run()
+
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+    assert result["teardown"]["deadline_seconds"] == 300
 
 
 def test_second_controller_cannot_race_the_teardown_owner(tmp_path):
