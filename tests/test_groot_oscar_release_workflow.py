@@ -1,7 +1,11 @@
 import json
+import urllib.request
 from pathlib import Path
 
+import pytest
+
 from scripts.verify_groot_oscar_live_prerequisites import (
+    _AllowlistedRedirectHandler,
     _verify_isaac_base_image,
     summarize_required_model_metadata,
     verify_static,
@@ -86,3 +90,17 @@ def test_model_metadata_sizing_fails_closed_for_missing_or_unknown_sizes() -> No
     assert missing == ["tokenizer.json"]
     assert invalid_sizes == ["config.json"]
     assert required_bytes == 123
+
+
+def test_prerequisite_redirect_handler_reapplies_outbound_allowlist() -> None:
+    handler = _AllowlistedRedirectHandler()
+    request = urllib.request.Request("https://github.com/source")
+    with pytest.raises(ValueError, match="prerequisite_url_not_allowlisted"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://attacker.example/payload",
+        )

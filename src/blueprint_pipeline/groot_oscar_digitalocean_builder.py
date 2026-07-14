@@ -479,7 +479,11 @@ def _reconcile_ambiguous_create(
 def watchdog(*, state_path: Path, token_file: Path) -> int:
     state = _load_object(state_path)
     output = state_path.parent
-    droplet_id = str(state["droplet_id"])
+    droplet_id = str(state.get("droplet_id") or "")
+    name = str(state.get("name") or "")
+    region = str(state.get("region") or "")
+    if not droplet_id and (not name or not region):
+        raise ValueError("watchdog_allocation_identity_missing")
     deadline = float(state["deadline_epoch"])
     cancelled = output / "watchdog_cancelled"
     while time.time() < deadline:
@@ -494,15 +498,21 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
             )
             return 0
         time.sleep(15)
-    result = _delete_with_fail_closed_evidence(
-        token=_read_secret(token_file), droplet_id=droplet_id
-    )
+    token = _read_secret(token_file)
+    if droplet_id:
+        result = _delete_with_fail_closed_evidence(
+            token=token, droplet_id=droplet_id
+        )
+    else:
+        result = _reconcile_ambiguous_create(token=token, name=name, region=region)
     payload = {
         "schema_version": WATCHDOG_SCHEMA_VERSION,
         "status": (
             "provider_terminal" if result["provider_absence_confirmed"] else "teardown_unverified"
         ),
-        "droplet_id": droplet_id,
+        "droplet_id": droplet_id or None,
+        "name": name or None,
+        "region": region or None,
         **result,
         "raw_secret_values_recorded": False,
     }
@@ -614,6 +624,35 @@ def run_builder(
         name=name, region=region, ssh_key_id=ssh_key_id, user_data=user_data
     )
     started = time.time()
+    state_path = output / "allocation_state.json"
+    write_json(
+        state_path,
+        {
+            "droplet_id": None,
+            "name": name,
+            "region": region,
+            "deadline_epoch": started + ttl,
+            "source_commit": packet["source_commit"],
+            "maximum_spend_usd": maximum_cost,
+        },
+    )
+    watchdog_log = (output / "watchdog.log").open("ab")
+    watchdog_process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.groot_oscar_digitalocean_builder",
+            "watchdog",
+            "--state",
+            str(state_path),
+            "--token-file",
+            str(token_file),
+        ],
+        stdout=watchdog_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    (output / "watchdog.pid").write_text(f"{watchdog_process.pid}\n", encoding="utf-8")
     create_error_type: str | None = None
     try:
         create_http, create_response = _request(
@@ -649,6 +688,8 @@ def run_builder(
         )
         write_json(output / "ambiguous_create_reconciliation.json", reconciliation)
         absence_confirmed = reconciliation["provider_absence_confirmed"] is True
+        if absence_confirmed:
+            (output / "watchdog_cancelled").touch()
         result = {
             **_blocked_result(
                 [
@@ -670,6 +711,7 @@ def run_builder(
         write_json(output / "builder_run_result.json", result)
         return result
     if not create_succeeded:
+        (output / "watchdog_cancelled").touch()
         result = {
             **_blocked_result(["digitalocean_builder_create_rejected"]),
             "status": "create_rejected_no_allocation",
@@ -679,33 +721,17 @@ def run_builder(
         write_json(output / "builder_run_result.json", result)
         return result
 
-    state_path = output / "allocation_state.json"
     write_json(
         state_path,
         {
             "droplet_id": droplet_id,
+            "name": name,
+            "region": region,
             "deadline_epoch": started + ttl,
             "source_commit": packet["source_commit"],
             "maximum_spend_usd": maximum_cost,
         },
     )
-    watchdog_log = (output / "watchdog.log").open("ab")
-    watchdog_process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "blueprint_pipeline.groot_oscar_digitalocean_builder",
-            "watchdog",
-            "--state",
-            str(state_path),
-            "--token-file",
-            str(token_file),
-        ],
-        stdout=watchdog_log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    (output / "watchdog.pid").write_text(f"{watchdog_process.pid}\n", encoding="utf-8")
     build_exit: int | None = None
     public_ip = ""
     teardown: dict[str, Any] = {"provider_absence_confirmed": False}

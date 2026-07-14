@@ -121,6 +121,7 @@ ALLOWED_HTTPS_HOSTS = frozenset(
         "nvcr.io",
         "omniverse-content-production.s3-us-west-2.amazonaws.com",
         "raw.githubusercontent.com",
+        "release-assets.githubusercontent.com",
     }
 )
 AuthorizedFetch = Callable[[str, str], bytes]
@@ -167,6 +168,22 @@ def _allowed_https_url(url: str) -> str:
     return url
 
 
+class _AllowlistedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-apply the outbound allowlist to every redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return super().redirect_request(
+            req, fp, code, msg, headers, _allowed_https_url(newurl)
+        )
+
+
+def _open_allowlisted(request: urllib.request.Request, *, timeout: int):
+    _allowed_https_url(request.full_url)
+    return urllib.request.build_opener(_AllowlistedRedirectHandler()).open(
+        request, timeout=timeout
+    )
+
+
 def _fetch(url: str) -> bytes:
     request = urllib.request.Request(
         _allowed_https_url(url),
@@ -175,8 +192,7 @@ def _fetch(url: str) -> bytes:
             "User-Agent": "blueprint-foundation-prerequisite-verifier/1",
         },
     )
-    # The request origin and scheme are allowlisted above.
-    with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310
+    with _open_allowlisted(request, timeout=60) as response:
         return response.read()
 
 
@@ -186,8 +202,7 @@ def _head_size(url: str) -> int:
         method="HEAD",
         headers={"User-Agent": "blueprint-foundation-prerequisite-verifier/1"},
     )
-    # The request origin and scheme are allowlisted above.
-    with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
+    with _open_allowlisted(request, timeout=30) as response:
         content_length = response.headers.get("Content-Length")
     if content_length is None:
         raise ValueError("content_length_absent")
@@ -203,8 +218,7 @@ def _authorized_fetch(url: str, token: str) -> bytes:
             "User-Agent": "blueprint-foundation-prerequisite-verifier/1",
         },
     )
-    # The request origin and scheme are allowlisted above.
-    with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310
+    with _open_allowlisted(request, timeout=60) as response:
         return response.read()
 
 

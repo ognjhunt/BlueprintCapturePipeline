@@ -83,6 +83,54 @@ def test_digitalocean_watchdog_persists_teardown_transport_error(
     assert "secret response" not in json.dumps(persisted)
 
 
+def test_digitalocean_watchdog_reconciles_precreate_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from blueprint_pipeline.groot_oscar_digitalocean_builder import watchdog
+
+    state = tmp_path / "allocation_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "droplet_id": None,
+                "name": "blueprint-groot-oscar-thin-aaaaaaaa",
+                "region": "sfo3",
+                "deadline_epoch": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    token_file = tmp_path / "token"
+    token_file.write_text("secret", encoding="utf-8")
+    observed: dict[str, str] = {}
+
+    def reconcile(**kwargs):
+        observed.update(kwargs)
+        return {"provider_absence_confirmed": True, "status": "provider_terminal"}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._reconcile_ambiguous_create",
+        reconcile,
+    )
+    assert watchdog(state_path=state, token_file=token_file) == 0
+    assert observed == {
+        "token": "secret",
+        "name": "blueprint-groot-oscar-thin-aaaaaaaa",
+        "region": "sfo3",
+    }
+
+
+def test_builder_arms_watchdog_before_provider_create() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
+    ).read_text(encoding="utf-8")
+    run_source = source[source.index("def run_builder(") : source.index("def launch_detached_builder(")]
+    assert run_source.index("watchdog_process = subprocess.Popen(") < run_source.index(
+        'method="POST", path="/droplets"'
+    )
+
+
 def test_ambiguous_create_reconciliation_deletes_exact_name_tag_match(
     monkeypatch,
 ) -> None:
