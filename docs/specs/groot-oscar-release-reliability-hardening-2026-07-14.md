@@ -50,6 +50,12 @@ self-test records driver, GPU, Docker, toolkit, source, and locally resolved
 worker-digest identity. Application, model, task, capture, and policy files are
 forbidden outside the immutable worker-image or hashed job-bundle contracts.
 
+After a real G4 boot, `scripts/build_preloaded_worker_image_evidence.py` combines
+that host self-test with the sealed worker runtime-health result. It emits the
+campaign-compatible `preloaded_worker_image.v1` contract and binds both input
+artifacts by SHA-256; a host-image build or registry lookup alone cannot produce
+passing preload evidence.
+
 The Packer manifest is the immutable machine-image identity input for campaign
 configuration. A host image is not considered ready until a real G4 boot has
 returned a passing `blueprint_g4_host_self_test.v1` artifact.

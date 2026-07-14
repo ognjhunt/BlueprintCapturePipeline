@@ -169,6 +169,10 @@ def validate_preloaded_image_evidence(
             blockers.append(f"large_image_preload_{key}_mismatch")
     if not str(evidence.get("host_image_id") or "").strip():
         blockers.append("large_image_preload_host_image_id_missing")
+    for field_name in ("host_self_test_sha256", "runtime_health_sha256"):
+        value = str(evidence.get(field_name) or "")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            blockers.append(f"large_image_preload_{field_name}_invalid")
     for field_name in (
         "image_present_before_allocation",
         "local_digest_inspect_passed",

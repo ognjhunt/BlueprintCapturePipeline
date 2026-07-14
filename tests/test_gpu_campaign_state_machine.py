@@ -101,6 +101,8 @@ def config(**overrides):
             "local_digest_inspect_passed": True,
             "runtime_health_preflight_passed": True,
             "cold_pull_required_during_campaign": False,
+            "host_self_test_sha256": "a" * 64,
+            "runtime_health_sha256": "b" * 64,
         },
     )
     values.update(overrides)

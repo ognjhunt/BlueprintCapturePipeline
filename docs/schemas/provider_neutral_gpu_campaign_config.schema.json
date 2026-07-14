@@ -28,7 +28,8 @@
       "required": [
         "schema_version", "source_sha", "image_digest", "allocation_key",
         "host_image_id", "image_present_before_allocation", "local_digest_inspect_passed",
-        "runtime_health_preflight_passed", "cold_pull_required_during_campaign"
+        "runtime_health_preflight_passed", "cold_pull_required_during_campaign",
+        "host_self_test_sha256", "runtime_health_sha256"
       ],
       "properties": {
         "schema_version": {"const": "preloaded_worker_image.v1"},
@@ -39,7 +40,9 @@
         "image_present_before_allocation": {"const": true},
         "local_digest_inspect_passed": {"const": true},
         "runtime_health_preflight_passed": {"const": true},
-        "cold_pull_required_during_campaign": {"const": false}
+        "cold_pull_required_during_campaign": {"const": false},
+        "host_self_test_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "runtime_health_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "prior_exposure_usd": {"type": "number", "minimum": 0},
