@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import fcntl
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -96,9 +97,9 @@ class CampaignConfig:
             blockers.append("campaign_id_missing")
         if not self.allocation_key.strip():
             blockers.append("allocation_key_missing")
-        if len(self.source_sha) != 40:
+        if re.fullmatch(r"[0-9a-f]{40}", self.source_sha) is None:
             blockers.append("source_sha_invalid")
-        if not self.image_digest.startswith("sha256:") or len(self.image_digest) != 71:
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None:
             blockers.append("image_digest_invalid")
         if self.hourly_rate_usd <= 0 or self.max_provider_seconds <= 0:
             blockers.append("paid_runtime_bound_invalid")
@@ -169,9 +170,7 @@ def validate_preloaded_image_evidence(
     return blockers
 
 
-def validate_image_ready_result(
-    config: CampaignConfig, result: Mapping[str, Any]
-) -> list[str]:
+def validate_image_ready_result(config: CampaignConfig, result: Mapping[str, Any]) -> list[str]:
     """Re-verify residency on the allocated host before runtime startup."""
 
     blockers: list[str] = []
@@ -219,6 +218,13 @@ def validate_same_allocation_canary_handoff(
         blockers.append("same_allocation_canary_launch_nonce_missing")
     if not str(evidence.get("teardown_owner") or "").strip():
         blockers.append("same_allocation_canary_teardown_owner_missing")
+    provider_started_at = evidence.get("provider_started_at_epoch_seconds")
+    if (
+        not isinstance(provider_started_at, (int, float))
+        or isinstance(provider_started_at, bool)
+        or provider_started_at <= 0
+    ):
+        blockers.append("same_allocation_canary_provider_started_at_invalid")
     if evidence.get("runtime_health_passed") is not True:
         blockers.append("same_allocation_canary_runtime_health_not_passed")
     if evidence.get("review_media_valid") is not True:
@@ -279,6 +285,7 @@ class CampaignMachine:
         state_dir: str | Path,
         teardown_owner: str | None = None,
         clock: Any = time.monotonic,
+        wall_clock: Any = time.time,
     ) -> None:
         self.config = config
         self.adapter = adapter
@@ -299,10 +306,9 @@ class CampaignMachine:
             self.config.canary_handoff, Mapping
         ):
             handoff_owner = str(self.config.canary_handoff.get("teardown_owner") or "")
-        self.teardown_owner = (
-            teardown_owner or recorded_owner or handoff_owner or str(uuid.uuid4())
-        )
+        self.teardown_owner = teardown_owner or recorded_owner or handoff_owner or str(uuid.uuid4())
         self.clock = clock
+        self.wall_clock = wall_clock
 
     def _write(self, path: Path, payload: Mapping[str, Any]) -> None:
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -317,6 +323,7 @@ class CampaignMachine:
             "config_sha256": config_sha,
             "teardown_owner": self.teardown_owner,
             "allocation_id": None,
+            "provider_started_at_epoch_seconds": None,
             "completed_stages": [],
             "stage_results": {},
             "status": "running",
@@ -355,6 +362,23 @@ class CampaignMachine:
         if stage not in state["completed_stages"]:
             state["completed_stages"].append(stage)
         self._write(self.state_path, state)
+
+    def _provider_elapsed_seconds(self, state: Mapping[str, Any]) -> float:
+        started_at = state.get("provider_started_at_epoch_seconds")
+        if (
+            not isinstance(started_at, (int, float))
+            or isinstance(started_at, bool)
+            or started_at <= 0
+        ):
+            raise CampaignBlocked("campaign_provider_start_time_missing")
+        elapsed = float(self.wall_clock()) - float(started_at)
+        if elapsed < 0:
+            raise CampaignBlocked("campaign_provider_start_time_in_future")
+        return elapsed
+
+    def _enforce_provider_lifetime(self, state: Mapping[str, Any]) -> None:
+        if self._provider_elapsed_seconds(state) > self.config.max_provider_seconds:
+            raise CampaignBlocked("campaign_provider_lifetime_exceeded")
 
     @staticmethod
     def _stage_passed(result: Mapping[str, Any]) -> bool:
@@ -432,7 +456,6 @@ class CampaignMachine:
                 state["final_inventory"] = None
             self._write(self.state_path, state)
             return state
-        started = self.clock()
         try:
             if not state.get("allocation_id"):
                 inventory = list(self.adapter.inventory(self.config.allocation_key))
@@ -446,9 +469,7 @@ class CampaignMachine:
                         for item in inventory
                     }
                     if inventory_ids != {allocation_id}:
-                        raise CampaignBlocked(
-                            "same_allocation_handoff_inventory_mismatch"
-                        )
+                        raise CampaignBlocked("same_allocation_handoff_inventory_mismatch")
                     allocation = {
                         "status": "completed",
                         "allocation_id": allocation_id,
@@ -456,17 +477,24 @@ class CampaignMachine:
                         "launch_nonce": handoff.get("launch_nonce"),
                         "teardown_owner": self.teardown_owner,
                     }
+                    provider_started_at = handoff.get("provider_started_at_epoch_seconds")
                 else:
                     if inventory:
                         raise CampaignBlocked("duplicate_paid_allocation_detected")
+                    # Record the conservative lifetime baseline before the paid
+                    # provider mutation. It remains valid across controller
+                    # crashes and process resumes.
+                    provider_started_at = float(self.wall_clock())
                     allocation = dict(self.adapter.allocate(self.config.payload()))
                     allocation_id = str(allocation.get("allocation_id") or "").strip()
                     if not allocation_id:
                         raise CampaignBlocked("provider_allocation_id_missing")
                 state["allocation_id"] = allocation_id
+                state["provider_started_at_epoch_seconds"] = provider_started_at
                 self._checkpoint(state, "allocation", allocation)
 
             allocation_id = str(state["allocation_id"])
+            self._enforce_provider_lifetime(state)
             if self.config.reuse_validated_same_allocation_canary:
                 handoff = self.config.canary_handoff or {}
                 if allocation_id != str(handoff.get("allocation_id") or ""):
@@ -476,6 +504,7 @@ class CampaignMachine:
             for stage in self._STAGES:
                 if stage in state["completed_stages"]:
                     continue
+                self._enforce_provider_lifetime(state)
                 stage_started = self.clock()
                 if stage == "canary" and self.config.reuse_validated_same_allocation_canary:
                     result = {"status": "passed", "reused_handoff": True}
@@ -507,8 +536,7 @@ class CampaignMachine:
                     if smoke_blockers:
                         raise CampaignBlocked("smoke_gate_blocked:" + ",".join(smoke_blockers))
                 self._checkpoint(state, stage, result)
-                if self.clock() - started > self.config.max_provider_seconds:
-                    raise CampaignBlocked("campaign_provider_lifetime_exceeded")
+                self._enforce_provider_lifetime(state)
             state["status"] = "teardown_pending"
         except Exception as exc:  # fail closed, including provider ambiguity
             state["status"] = "blocked"

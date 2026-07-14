@@ -196,6 +196,19 @@ def test_budget_is_admitted_on_worst_case_not_expected_spend(tmp_path):
         ).run()
 
 
+@pytest.mark.parametrize(
+    ("overrides", "blocker"),
+    [
+        ({"source_sha": "z" * 40}, "source_sha_invalid"),
+        ({"source_sha": "A" * 40}, "source_sha_invalid"),
+        ({"image_digest": "sha256:" + "z" * 64}, "image_digest_invalid"),
+        ({"image_digest": "sha256:" + "A" * 64}, "image_digest_invalid"),
+    ],
+)
+def test_runtime_identity_validation_matches_lowercase_hex_schema(overrides, blocker):
+    assert blocker in config(**overrides).validate()
+
+
 def test_teardown_ambiguity_remains_blocked(tmp_path):
     result = CampaignMachine(
         config=config(),
@@ -255,9 +268,12 @@ def test_running_checkpoint_auto_adopts_recorded_teardown_owner_and_resumes(tmp_
     )
     state, _ = machine._load()
     state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 1000.0
     provider.live = [{"allocation_id": "vm-1"}]
     machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
-    resumed = CampaignMachine(config=cfg, adapter=provider, state_dir=tmp_path)
+    resumed = CampaignMachine(
+        config=cfg, adapter=provider, state_dir=tmp_path, wall_clock=lambda: 1001.0
+    )
     result = resumed.run()
     assert resumed.teardown_owner == "owner-1"
     assert result["status"] == "completed"
@@ -274,6 +290,7 @@ def test_same_allocation_canary_handoff_schema():
         "allocation_id": "vm-1",
         "launch_nonce": "nonce-1",
         "teardown_owner": "owner-1",
+        "provider_started_at_epoch_seconds": 1000.0,
         "runtime_health_passed": True,
         "review_media_valid": True,
         "allocation_still_owned": True,
@@ -297,6 +314,7 @@ def test_same_allocation_canary_adopts_inventory_without_allocating(tmp_path):
             "allocation_id": "vm-1",
             "launch_nonce": "nonce-1",
             "teardown_owner": "owner-1",
+            "provider_started_at_epoch_seconds": 1000.0,
             "runtime_health_passed": True,
             "review_media_valid": True,
             "allocation_still_owned": True,
@@ -304,7 +322,9 @@ def test_same_allocation_canary_adopts_inventory_without_allocating(tmp_path):
         },
     )
     provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
-    result = CampaignMachine(config=cfg, adapter=provider, state_dir=tmp_path).run()
+    result = CampaignMachine(
+        config=cfg, adapter=provider, state_dir=tmp_path, wall_clock=lambda: 1001.0
+    ).run()
     assert result["status"] == "completed"
     assert result["stage_results"]["allocation"]["adopted_canary_handoff"] is True
     assert result["stage_results"]["canary"]["reused_handoff"] is True
@@ -322,6 +342,7 @@ def test_same_allocation_canary_blocks_if_handoff_is_not_in_inventory(tmp_path):
             "allocation_id": "vm-1",
             "launch_nonce": "nonce-1",
             "teardown_owner": "owner-1",
+            "provider_started_at_epoch_seconds": 1000.0,
             "runtime_health_passed": True,
             "review_media_valid": True,
             "allocation_still_owned": True,
@@ -381,6 +402,53 @@ def test_stage_deadline_is_enforced_even_if_adapter_reports_passed(tmp_path):
     ).run()
     assert result["status"] == "blocked"
     assert "campaign_stage_deadline_exceeded:host_ready" in result["blockers"]
+
+
+def test_resume_preserves_original_provider_lifetime_and_tears_down(tmp_path):
+    cfg = config(max_provider_seconds=100)
+    provider = FakeProvider()
+    machine = CampaignMachine(
+        config=cfg,
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+        wall_clock=lambda: 1000.0,
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 800.0
+    provider.live = [{"allocation_id": "vm-1"}]
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+
+    result = CampaignMachine(
+        config=cfg,
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+        wall_clock=lambda: 1000.0,
+    ).run()
+
+    assert result["status"] == "blocked"
+    assert "campaign_provider_lifetime_exceeded" in result["blockers"]
+    assert not any(call[0] == "host_ready" for call in provider.calls)
+    assert ("terminate", "vm-1") in provider.calls
+
+
+def test_resume_with_allocation_but_no_start_time_fails_closed(tmp_path):
+    cfg = config()
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    machine = CampaignMachine(
+        config=cfg, adapter=provider, state_dir=tmp_path, teardown_owner="owner-1"
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+
+    result = machine.run()
+
+    assert result["status"] == "blocked"
+    assert "campaign_provider_start_time_missing" in result["blockers"]
+    assert ("terminate", "vm-1") in provider.calls
 
 
 def test_second_controller_cannot_race_the_teardown_owner(tmp_path):

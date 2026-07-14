@@ -35,6 +35,7 @@ def test_same_allocation_handoff_matches_repository_schema():
         "allocation_id": "vm-1",
         "launch_nonce": "nonce-1",
         "teardown_owner": "owner-1",
+        "provider_started_at_epoch_seconds": 1000.0,
         "runtime_health_passed": True,
         "review_media_valid": True,
         "allocation_still_owned": True,
