@@ -64,17 +64,21 @@ else
   total=""
 fi
 
-python3 - "$manifest" "$image_ref" "$resolved_ref" "$foundation" "$source_commit" "$total" "$max_release_bytes" <<'PY'
+python3 - "$manifest" "$image_ref" "$resolved_ref" "$foundation" "$source_commit" "$total" "$max_release_bytes" "${diagnostic:-}" <<'PY'
 import json, sys
 from datetime import datetime, timezone
 from pathlib import Path
 out=Path(sys.argv[1]); out.parent.mkdir(parents=True,exist_ok=True)
 total=int(sys.argv[6]) if sys.argv[6] else None
+diagnostic=json.load(open(sys.argv[8])) if sys.argv[8] else {}
 payload={
  "schema_version":"groot_oscar_thin_release_build.v1",
  "generated_at":datetime.now(timezone.utc).isoformat(), "status":"completed",
  "image_ref":sys.argv[2], "resolved_image_ref":sys.argv[3],
  "foundation_image_ref":sys.argv[4], "source_commit":sys.argv[5],
+ "runnable_platform":"linux/amd64",
+ "required_cuda_version":diagnostic.get("required_cuda_version"),
+ "required_cuda_version_source":diagnostic.get("required_cuda_version_source"),
  "models_embedded":False, "model_cache_mount":"/models/blueprint-groot-oscar-v1",
  "total_compressed_size_bytes":total, "release_budget_bytes":int(sys.argv[7]),
  "release_budget_passed":None if total is None else total <= int(sys.argv[7]),

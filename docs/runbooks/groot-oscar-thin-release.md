@@ -134,9 +134,19 @@ cannot be substituted for the verified model-cache total.
 ## 4. RunPod canary preflight and admission
 
 RunPod is the GPU serve/canary plane only. Before a create call, start the
-independent `production_gpu_warm_watchdog` in the canary output directory and
-wait until `production_gpu_warm_watchdog.json` says `armed`. Then run the
-read-only provider preflight:
+name-bound watchdog in a separate process and wait until its evidence says
+`armed`. It enumerates and deletes every matching canary resource at the hard
+deadline, so even an ambiguous create response cannot orphan spend:
+
+```bash
+deadline="$(( $(date +%s) + 900 ))"
+python -m blueprint_pipeline.groot_oscar_runpod_watchdog \
+  --out-dir <canary-dir> \
+  --pod-name-prefix blueprint-groot-oscar-canary-<attempt> \
+  --deadline-epoch "$deadline" &
+```
+
+Then run the read-only provider preflight with the same name prefix:
 
 ```bash
 python -m blueprint_pipeline.groot_oscar_runpod_preflight \
@@ -144,7 +154,8 @@ python -m blueprint_pipeline.groot_oscar_runpod_preflight \
   --model-cache-path /workspace/.blueprint-model-cache/blueprint-groot-oscar-v1 \
   --gpu-type-id 'NVIDIA A40' \
   --required-cuda-version 12.6 \
-  --watchdog-evidence <canary-dir>/production_gpu_warm_watchdog.json \
+  --name-prefix blueprint-groot-oscar-canary-<attempt> \
+  --watchdog-evidence <canary-dir>/groot_oscar_runpod_canary_watchdog.json \
   --max-spend-usd 1.00 \
   --paid-mutation-authorized \
   --out <canary-dir>/runpod_preflight.json

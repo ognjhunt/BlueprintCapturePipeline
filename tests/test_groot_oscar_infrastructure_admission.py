@@ -130,6 +130,10 @@ def _release() -> dict:
         "resolved_digest_ref": DIGEST_REF,
         "thin_release_contract_status": "passed",
         "runnable_platform": "linux/amd64",
+        "required_cuda_version": "12.6",
+        "required_cuda_version_source": (
+            "image_config_env:BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION"
+        ),
     }
 
 
@@ -197,6 +201,20 @@ def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:
     assert "runpod_customer_cold_start_disallowed" in result["blockers"]
 
 
+def test_runpod_serve_plane_rejects_operator_asserted_cuda_version() -> None:
+    release = _release()
+    release["required_cuda_version_source"] = "operator_input"
+    result = build_runpod_serve_plane_admission(
+        release=release,
+        model_cache=_models(),
+        volume=_volume(),
+        runtime=_runtime(),
+        spend=_serve_spend(),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_release_cuda_not_registry_config_verified" in result["blockers"]
+
+
 def test_runpod_serve_plane_blocks_unknown_capacity_cuda_and_unarmed_watchdog() -> None:
     runtime = _runtime()
     runtime.update(
@@ -220,3 +238,18 @@ def test_runpod_serve_plane_blocks_unknown_capacity_cuda_and_unarmed_watchdog() 
     assert "runpod_single_gpu_availability_unknown" in result["blockers"]
     assert "runpod_cuda_compatibility_not_bound" in result["blockers"]
     assert "runpod_teardown_watchdog_not_armed_before_allocation" in result["blockers"]
+
+
+def test_runpod_serve_plane_rejects_cuda_constraint_different_from_release() -> None:
+    runtime = _runtime()
+    runtime.update(
+        {"required_cuda_version": "12.8", "allowed_cuda_versions": ["12.8"]}
+    )
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=_models(),
+        volume=_volume(),
+        runtime=runtime,
+        spend=_serve_spend(),
+    )
+    assert "runpod_cuda_version_differs_from_release" in result["blockers"]

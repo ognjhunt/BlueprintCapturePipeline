@@ -1304,7 +1304,7 @@ def test_worker_bootstrap_runs_healthcheck_groot_and_task_adaptive_closed_loop()
 
     assert "upload_phase container_bash_started" in script
     assert "groot_oscar_closed_loop_image_healthcheck.py --require-cuda" in script
-    assert "/opt/gr00t/.venv/bin/python /opt/gr00t/gr00t/eval/run_gr00t_server.py" in script
+    assert "/opt/gr00t-venv/bin/python -m gr00t.eval.run_gr00t_server" in script
     assert "BLUEPRINT_CLOSED_LOOP_RC=\"$RC\" python /workspace/write_result.py" in script
     assert "upload_phase runner_done" in script
     assert "--require-fresh-learned-policy-requery" in script

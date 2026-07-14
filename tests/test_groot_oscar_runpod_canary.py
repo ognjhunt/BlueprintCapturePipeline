@@ -55,6 +55,8 @@ def test_canary_preparation_binds_exact_admitted_tuple_into_request() -> None:
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
+            "required_cuda_version": "12.6",
+            "required_cuda_version_source": "image_config_env:CUDA_VERSION",
         },
         model_cache={
             "status": "passed",
@@ -79,6 +81,8 @@ def test_canary_preparation_rejects_tag_or_different_digest() -> None:
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
+            "required_cuda_version": "12.6",
+            "required_cuda_version_source": "image_config_env:CUDA_VERSION",
         },
         model_cache={
             "status": "passed",

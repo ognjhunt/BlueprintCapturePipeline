@@ -354,10 +354,16 @@ def build_runpod_serve_plane_admission(
     if runtime.get("single_gpu_available") is not True:
         blockers.append("runpod_single_gpu_not_available")
     required_cuda = _string(runtime.get("required_cuda_version"))
+    release_cuda = _string(release.get("required_cuda_version"))
+    release_cuda_source = _string(release.get("required_cuda_version_source"))
     allowed_cuda = runtime.get("allowed_cuda_versions")
     allowed_cuda = allowed_cuda if isinstance(allowed_cuda, list) else []
     if not required_cuda or required_cuda not in allowed_cuda:
         blockers.append("runpod_cuda_compatibility_not_bound")
+    if not release_cuda or release_cuda != required_cuda:
+        blockers.append("runpod_cuda_version_differs_from_release")
+    if not release_cuda_source.startswith("image_config_env:"):
+        blockers.append("runpod_release_cuda_not_registry_config_verified")
     if runtime.get("warm_worker_only") is not True:
         blockers.append("runpod_customer_cold_start_disallowed")
     if runtime.get("provider_inventory_verified_zero") is not True:
@@ -402,6 +408,7 @@ def build_runpod_serve_plane_admission(
             "maximum_canary_ttl_seconds": MAX_CANARY_TTL_SECONDS,
             "hard_ttl_seconds": ttl,
             "max_spend_usd": max_spend,
+            "watchdog_pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
         },
         "claim_boundary": {
             "admission_is_not_provider_startup": True,

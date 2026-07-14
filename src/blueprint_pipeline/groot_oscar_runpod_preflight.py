@@ -57,7 +57,11 @@ def build_watchdog_spend_evidence(
         else:
             process_alive = True
     armed = bool(
-        watchdog.get("schema_version") == "production_gpu_warm_watchdog.v1"
+        watchdog.get("schema_version")
+        in {
+            "production_gpu_warm_watchdog.v1",
+            "groot_oscar_runpod_canary_watchdog.v1",
+        }
         and watchdog.get("status") == "armed"
         and watchdog.get("independent_process") is True
         and process_alive
@@ -73,6 +77,7 @@ def build_watchdog_spend_evidence(
         "watchdog_armed_before_allocation": armed,
         "watchdog_pid": pid if process_alive else None,
         "watchdog_deadline_epoch": deadline,
+        "watchdog_pod_name_prefix": watchdog.get("pod_name_prefix"),
         "raw_secret_values_recorded": False,
     }
 
@@ -136,6 +141,9 @@ def collect_runpod_preflight(
         blockers.append("runpod_preallocation_inventory_not_zero")
     if spend.get("watchdog_armed_before_allocation") is not True:
         blockers.append("runpod_teardown_watchdog_not_armed_before_allocation")
+    watchdog_prefix = str(spend.get("watchdog_pod_name_prefix") or "").strip()
+    if watchdog_prefix and watchdog_prefix != name_prefix:
+        blockers.append("runpod_teardown_watchdog_name_prefix_mismatch")
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "verified" if not blockers else "blocked",

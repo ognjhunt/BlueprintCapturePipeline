@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.isaac_worker_image_manifest import (
+    derive_required_cuda_version,
     _inspect_local_image,
     _runnable_child_digest,
     inspect_image_manifest,
@@ -16,6 +17,35 @@ from blueprint_pipeline.isaac_worker_image_manifest import (
 
 def _digest(character: str) -> str:
     return "sha256:" + character * 64
+
+
+@pytest.mark.parametrize(
+    ("config", "expected", "source"),
+    [
+        (
+            {"config": {"Env": ["CUDA_VERSION=12.6.3"]}},
+            "12.6",
+            "image_config_env:CUDA_VERSION",
+        ),
+        (
+            {
+                "config": {
+                    "Env": [
+                        "CUDA_VERSION=12.4.1",
+                        "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.6",
+                    ]
+                }
+            },
+            "12.6",
+            "image_config_env:BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION",
+        ),
+        ({"config": {"Env": ["CUDA_VERSION=unknown"]}}, None, None),
+    ],
+)
+def test_required_cuda_version_is_derived_from_image_config(
+    config: dict, expected: str | None, source: str | None
+) -> None:
+    assert derive_required_cuda_version(config) == (expected, source)
 
 
 def test_split_image_manifest_is_digest_pinned_and_sizes_drive_startup_timeout() -> None:
@@ -90,6 +120,7 @@ def test_registry_history_detects_late_checkpoint_ownership_copyup() -> None:
             ]
         },
         image_config={
+            "config": {"Env": ["CUDA_VERSION=12.6.3"]},
             "history": [
                 {
                     "created_by": (
@@ -109,6 +140,8 @@ def test_registry_history_detects_late_checkpoint_ownership_copyup() -> None:
 
     assert result["history_layer_count_matches"] is True
     assert result["checkpoint_ownership_copyup_detected"] is True
+    assert result["required_cuda_version"] == "12.6"
+    assert result["required_cuda_version_source"] == "image_config_env:CUDA_VERSION"
     assert result["checkpoint_ownership_copyup_layers"][0]["size"] == 8_720_000_000
 
 

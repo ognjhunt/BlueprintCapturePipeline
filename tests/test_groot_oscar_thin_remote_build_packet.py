@@ -50,6 +50,8 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     assert script.count("docker buildx build") == 2
     assert "FOUNDATION_IMAGE=$foundation_exact" in script
     assert "thin_release_image_contract" in script
+    assert 'release.get("required_cuda_version")' in script
+    assert '"required_cuda_version":"12.6"' not in script
     assert "--push" in script
     assert "hf_token" not in script
     assert "snapshot_download" not in script

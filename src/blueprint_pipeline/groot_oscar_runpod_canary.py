@@ -119,12 +119,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pod-name", required=True)
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
+    preflight = _read(args.preflight_bundle)
     prepared = prepare_canary_launch(
         request=_read(args.provider_launch_request),
         release=_read(args.release_evidence),
         model_cache=_read(args.model_cache_evidence),
-        preflight=_read(args.preflight_bundle),
+        preflight=preflight,
     )
+    spend = preflight.get("spend")
+    spend = spend if isinstance(spend, Mapping) else {}
+    watchdog_prefix = str(spend.get("watchdog_pod_name_prefix") or "").strip()
+    if watchdog_prefix and not args.pod_name.startswith(watchdog_prefix):
+        prepared = {
+            **prepared,
+            "status": "blocked",
+            "blockers": sorted(
+                set(
+                    [
+                        *prepared.get("blockers", []),
+                        "runpod_canary_pod_name_outside_watchdog_scope",
+                    ]
+                )
+            ),
+        }
     write_json(Path(args.admission_out), prepared)
     if prepared["status"] != "admitted":
         print(json.dumps(prepared, indent=2, sort_keys=True))
