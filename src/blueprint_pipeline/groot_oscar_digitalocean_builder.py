@@ -643,6 +643,13 @@ def launch_detached_builder(*, output_dir: Path, run_arguments: Sequence[str]) -
     result_path = output / "builder_run_result.json"
     if result_path.exists():
         raise ValueError("builder_output_already_has_terminal_result")
+    lock_path = output / "supervisor.lock"
+    try:
+        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise ValueError("builder_output_already_has_supervisor_lock") from exc
+    with os.fdopen(lock_fd, "w", encoding="utf-8") as lock:
+        lock.write(f"created_by_pid={os.getpid()}\n")
     log_path = output / "supervisor.log"
     command = [
         sys.executable,

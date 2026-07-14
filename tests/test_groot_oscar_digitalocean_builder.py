@@ -90,6 +90,12 @@ def test_detached_launch_uses_new_session_and_records_only_nonsecret_metadata(
     assert observed["command"][-1] == "--allow-paid"
     assert result["pid"] == 4321
     assert result["raw_secret_values_recorded"] is False
+    assert (tmp_path / "run/supervisor.lock").is_file()
+    with pytest.raises(ValueError, match="already_has_supervisor_lock"):
+        launch_detached_builder(
+            output_dir=tmp_path / "run",
+            run_arguments=["--output-dir", str(tmp_path / "run"), "--allow-paid"],
+        )
 
 
 def test_live_machine_probe_is_validated_as_direct_machine_evidence() -> None:
