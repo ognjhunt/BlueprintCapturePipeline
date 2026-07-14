@@ -314,6 +314,8 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "requirements_oscar_foundation.lock" in foundation
     assert "uv pip install --require-hashes" in foundation
     assert "uv sync --project /tmp/gr00t --active --no-dev --frozen" in foundation
+    assert "Tag: cp36-cp36m-manylinux2010_x86_64" in foundation
+    assert "Tag: py3-none-manylinux2010_x86_64" in foundation
     assert "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python" in foundation
     assert (
         "COPY --from=robot-env-builder --chown=blueprint:blueprint "

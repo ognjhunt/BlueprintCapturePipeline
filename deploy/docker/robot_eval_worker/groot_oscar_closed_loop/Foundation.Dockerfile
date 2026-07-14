@@ -48,6 +48,11 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
       -r /tmp/requirements_oscar_foundation.lock \
   && PYTHONPATH=/tmp/blueprint-build-src /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import transformer_engine_shim_script_text; Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
   && /opt/oscar-venv/bin/python /tmp/te_shim.py /tmp/oscar \
+  && decord_wheel=/opt/oscar-venv/lib/python3.10/site-packages/decord-0.6.0.dist-info/WHEEL \
+  && test -f "${decord_wheel}" \
+  && grep -qx 'Tag: cp36-cp36m-manylinux2010_x86_64' "${decord_wheel}" \
+  && sed -i 's/^Tag: cp36-cp36m-manylinux2010_x86_64$/Tag: py3-none-manylinux2010_x86_64/' "${decord_wheel}" \
+  && grep -qx 'Tag: py3-none-manylinux2010_x86_64' "${decord_wheel}" \
   && /opt/oscar-venv/bin/python -m pip check \
   && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import inference.inference_oscar" \
   && uv venv /opt/gr00t-venv --python 3.10 --seed \

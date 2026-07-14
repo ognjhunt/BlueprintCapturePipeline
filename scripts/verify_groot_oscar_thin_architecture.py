@@ -75,6 +75,8 @@ def verify() -> list[str]:
         "uv pip install --require-hashes",
         "uv sync --project /tmp/gr00t --active --no-dev --frozen --no-install-project",
         "PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c \"import inference.inference_oscar\"",
+        "Tag: cp36-cp36m-manylinux2010_x86_64",
+        "Tag: py3-none-manylinux2010_x86_64",
         "/opt/gr00t-venv/bin/python -c \"from gr00t.policy.gr00t_policy import Gr00tPolicy\"",
         "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
         "COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python",
