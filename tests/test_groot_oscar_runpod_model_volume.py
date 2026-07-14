@@ -116,6 +116,24 @@ def test_model_volume_inventory_failure_is_not_treated_as_zero(monkeypatch) -> N
     assert verified is False
 
 
+def test_model_volume_global_inventory_counts_unrelated_names(monkeypatch) -> None:
+    def fake_call(method, path, body, **kwargs):
+        del method, body, kwargs
+        if path == "/pods":
+            return 200, [{"id": "other-pod", "name": "unrelated-worker"}]
+        return 200, [{"id": "other-volume", "name": "unrelated-cache"}]
+
+    monkeypatch.setattr(model_volume, "_runpod_call", fake_call)
+    pods, volumes, verified = _matching_resources(
+        key="secret",
+        pod_prefix="",
+        volume_prefix="",
+    )
+    assert verified is True
+    assert pods == ["other-pod"]
+    assert volumes == ["other-volume"]
+
+
 def test_model_volume_rejects_provider_ids_that_can_escape_urls() -> None:
     assert _extract_id({"id": "safe-pod_123"}) == "safe-pod_123"
     assert _extract_id({"id": "../../pods/other"}) == ""

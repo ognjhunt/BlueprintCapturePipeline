@@ -23,6 +23,9 @@ from typing import Any, Mapping, Sequence
 from . import safe_outbound_http
 from .common import ensure_dir, write_json
 from .gpu_render_providers import _runpod_call, get_render_provider
+from .groot_oscar_infrastructure_admission import (
+    build_runpod_network_volume_evidence,
+)
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     require_paid_resource_admission,
@@ -335,8 +338,8 @@ def run_model_volume(
     volume_name = f"{VOLUME_NAME_PREFIX}{suffix}"
     existing_pods, existing_volumes, inventory_verified = _matching_resources(
         key=key,
-        pod_prefix=POD_NAME_PREFIX,
-        volume_prefix=VOLUME_NAME_PREFIX,
+        pod_prefix="",
+        volume_prefix="",
     )
     capacity = provider.capacity_preflight(
         {
@@ -464,22 +467,19 @@ def run_model_volume(
         get_http, volume_row = _runpod_call(
             "GET", f"/networkvolumes/{volume_id}", None, key=key, timeout=30
         )
-        if get_http != 200 or _mapping(volume_row).get("dataCenterId") != data_center_id:
-            raise RuntimeError("runpod_network_volume_post_create_verification_failed")
-        write_json(
-            output / "network_volume_evidence.json",
-            {
-                "schema_version": "groot_oscar_runpod_network_volume_evidence.v1",
-                "status": "verified",
-                "provider": "runpod",
-                "provider_api_verified": True,
-                "id": volume_id,
-                "data_center_id": data_center_id,
-                "size_bytes": volume_size_gib * 1024**3,
-                "model_cache_path": MODEL_CACHE_PATH,
-                "raw_provider_response_recorded": False,
-            },
+        volume_evidence = build_runpod_network_volume_evidence(
+            provider_payload=_mapping(volume_row),
+            expected_volume_id=volume_id,
+            model_cache_path=MODEL_CACHE_PATH,
         )
+        if (
+            get_http != 200
+            or volume_evidence["status"] != "verified"
+            or volume_evidence["data_center_id"] != data_center_id
+            or volume_evidence["size_bytes"] != volume_size_gib * 1024**3
+        ):
+            raise RuntimeError("runpod_network_volume_post_create_verification_failed")
+        write_json(output / "network_volume_evidence.json", volume_evidence)
         evidence_token = secrets.token_urlsafe(32)
         pod_body = {
             "cloudType": "SECURE",
