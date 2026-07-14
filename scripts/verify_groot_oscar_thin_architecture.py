@@ -62,10 +62,19 @@ def verify() -> list[str]:
         "AS robot-env-builder",
         "AS wbc-builder",
         "ca-certificates sudo",
+        "requirements_uv_bootstrap.txt",
+        "--require-hashes -r /tmp/requirements_uv_bootstrap.txt",
         "sha256:a1bc93654f31669fd964ea3011a5e5e9676b9b6f8adcd762606e5140632ea72d",
         "sha256:b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e",
         "test ! -d third_party/cppzmq/.git",
-        "uv venv /opt/robot-venv --python 3.10 --seed",
+        "uv venv /opt/oscar-venv --python 3.10 --seed",
+        "uv venv /opt/gr00t-venv --python 3.10 --seed",
+        "/tmp/oscar/requirements_minimal.txt",
+        "requirements_oscar_foundation.lock",
+        "uv pip install --require-hashes",
+        "uv sync --project /tmp/gr00t --active --no-dev --frozen --no-install-project",
+        "PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c \"import inference.inference_oscar\"",
+        "/opt/gr00t-venv/bin/python -c \"from gr00t.policy.gr00t_policy import Gr00tPolicy\"",
         "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
         "COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python",
         "install -m 0755 target/release/g1_deploy_onnx_ref",
@@ -87,8 +96,12 @@ def verify() -> list[str]:
     for fragment in forbidden_foundation_fragments:
         if fragment in foundation:
             blockers.append(f"foundation_forbidden_payload_present:{fragment}")
-    if foundation.count("uv venv /opt/robot-venv") != 1:
-        blockers.append("foundation_robot_environment_not_consolidated")
+    if "/opt/robot-venv" in foundation:
+        blockers.append("foundation_uses_unproven_consolidated_robot_environment")
+    if foundation.count("uv venv /opt/oscar-venv") != 1:
+        blockers.append("foundation_oscar_environment_not_isolated")
+    if foundation.count("uv venv /opt/gr00t-venv") != 1:
+        blockers.append("foundation_groot_environment_not_isolated")
     for build_package in (
         "build-essential",
         "clang",

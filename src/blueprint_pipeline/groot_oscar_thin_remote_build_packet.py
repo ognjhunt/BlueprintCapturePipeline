@@ -26,6 +26,8 @@ REQUIRED_IMAGE_FILES = (
     "Foundation.Dockerfile",
     "Release.Dockerfile",
     "requirements_robot_runtime.txt",
+    "requirements_oscar_foundation.lock",
+    "requirements_uv_bootstrap.txt",
     "thin_release_entrypoint.sh",
     "groot_oscar_closed_loop_image_healthcheck.py",
     "isaac_6_g1_assets.sha256",

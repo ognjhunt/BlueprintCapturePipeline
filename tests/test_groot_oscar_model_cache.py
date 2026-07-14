@@ -195,10 +195,11 @@ def test_thin_image_contract_separates_foundation_models_and_release() -> None:
 
     assert "AS wbc-builder" in foundation
     assert "AS robot-env-builder" in foundation
-    assert "/opt/robot-venv" in foundation
-    assert foundation.count("uv venv /opt/robot-venv") == 1
-    assert "uv venv /opt/gr00t-venv" not in foundation
-    assert "ln -s /opt/robot-venv /opt/gr00t-venv" in foundation
+    assert "/opt/robot-venv" not in foundation
+    assert foundation.count("uv venv /opt/oscar-venv") == 1
+    assert foundation.count("uv venv /opt/gr00t-venv") == 1
+    assert "/tmp/oscar/requirements_minimal.txt" in foundation
+    assert "requirements_oscar_foundation.lock" in foundation
     assert "target/release/g1_deploy_onnx_ref" in foundation
     assert "cp -a build target g1 scripts reference" not in foundation
     assert "install -m 0755 target/release/g1_deploy_onnx_ref" in foundation

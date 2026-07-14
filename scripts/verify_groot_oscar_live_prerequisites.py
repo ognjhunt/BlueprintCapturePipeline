@@ -26,6 +26,9 @@ IMAGE_ROOT = ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
 FOUNDATION = IMAGE_ROOT / "Foundation.Dockerfile"
 MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
 ISAAC_ASSET_MANIFEST = IMAGE_ROOT / "isaac_6_g1_assets.sha256"
+UV_BOOTSTRAP = IMAGE_ROOT / "requirements_uv_bootstrap.txt"
+OSCAR_FOUNDATION_LOCK = IMAGE_ROOT / "requirements_oscar_foundation.lock"
+ROBOT_RUNTIME_REQUIREMENTS = IMAGE_ROOT / "requirements_robot_runtime.txt"
 
 SCHEMA = "groot_oscar_live_prerequisites.v1"
 CUDA_REPOSITORY = "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64"
@@ -44,6 +47,12 @@ ARTIFACTS = (
         "onnxruntime-linux-x64-1.16.3.tgz",
         "b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e",
     ),
+    (
+        "https://files.pythonhosted.org/packages/71/a9/"
+        "2735cc9dc39457c9cf64d1ce2ba5a9a8ecbb103d0fb64b052bf33ba3d669/"
+        "uv-0.10.7-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "89de2504407dcf04aece914c6ca3b9d8e60cf9ff39a13031c1df1f7c040cea81",
+    ),
 )
 SOURCE_PINS = (
     (
@@ -59,6 +68,21 @@ SOURCE_PINS = (
         "6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b",
     ),
 )
+SOURCE_REQUIRED_FILES = {
+    "NVIDIA/Isaac-GR00T": (
+        "pyproject.toml",
+        "uv.lock",
+        "gr00t/policy/gr00t_policy.py",
+    ),
+    "wuzy2115/oscar-public": (
+        "requirements_minimal.txt",
+        "inference/inference_oscar.py",
+    ),
+    "NVlabs/GR00T-WholeBodyControl": (
+        "gear_sonic_deploy/scripts/setup_env.sh",
+        "gear_sonic_deploy/.justfile",
+    ),
+}
 TENSORRT_VERSION = "10.4.0.26-1+cuda12.6"
 TENSORRT_PACKAGES = (
     "libnvinfer-headers-dev",
@@ -90,10 +114,12 @@ ALLOWED_HTTPS_HOSTS = frozenset(
     {
         "api.github.com",
         "developer.download.nvidia.com",
+        "files.pythonhosted.org",
         "github.com",
         "huggingface.co",
         "nvcr.io",
         "omniverse-content-production.s3-us-west-2.amazonaws.com",
+        "raw.githubusercontent.com",
     }
 )
 AuthorizedFetch = Callable[[str, str], bytes]
@@ -194,8 +220,9 @@ def _asset_rows() -> list[tuple[str, int, str]]:
 def verify_static() -> list[str]:
     blockers: list[str] = []
     dockerfile = FOUNDATION.read_text(encoding="utf-8")
+    bootstrap_contract = dockerfile + "\n" + UV_BOOTSTRAP.read_text(encoding="utf-8")
     for url, digest in ARTIFACTS:
-        if url not in dockerfile or f"sha256:{digest}" not in dockerfile:
+        if url not in bootstrap_contract or f"sha256:{digest}" not in bootstrap_contract:
             blockers.append(f"dockerfile_artifact_pin_mismatch:{url}")
     for repository, revision in SOURCE_PINS:
         if revision not in dockerfile or repository.split("/", 1)[1] not in dockerfile:
@@ -210,6 +237,16 @@ def verify_static() -> list[str]:
     expected_base = f"nvcr.io/{ISAAC_BASE_REPOSITORY}:6.0.0@sha256:{ISAAC_BASE_DIGEST}"
     if f"ARG ISAAC_SIM_BASE_IMAGE={expected_base}" not in dockerfile:
         blockers.append("dockerfile_isaac_base_image_pin_mismatch")
+
+    lock_text = OSCAR_FOUNDATION_LOCK.read_text(encoding="utf-8")
+    runtime_digest = hashlib.sha256(ROBOT_RUNTIME_REQUIREMENTS.read_bytes()).hexdigest()
+    if (
+        f"# blueprint-input-sha256 requirements-robot-runtime {runtime_digest}"
+        not in lock_text
+    ):
+        blockers.append("oscar_foundation_lock_runtime_input_digest_stale")
+    if "# blueprint-target cpython-3.10 linux-x86_64 torch-cu128 uv-0.10.7" not in lock_text:
+        blockers.append("oscar_foundation_lock_target_missing")
 
     try:
         assets = _asset_rows()
@@ -343,6 +380,7 @@ def verify_live(
     except (OSError, ValueError, gzip.BadGzipFile, urllib.error.URLError) as exc:
         blockers.append(f"nvidia_package_index_unavailable:{type(exc).__name__}")
 
+    source_file_payloads: dict[tuple[str, str], bytes] = {}
     for repository, revision in SOURCE_PINS:
         try:
             metadata = _json_object(
@@ -354,6 +392,53 @@ def verify_live(
                 blockers.append(f"source_revision_mismatch:{repository}")
         except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
             blockers.append(f"source_revision_unavailable:{repository}:{type(exc).__name__}")
+        for path in SOURCE_REQUIRED_FILES[repository]:
+            try:
+                content = fetch(
+                    f"https://raw.githubusercontent.com/{repository}/{revision}/{path}"
+                )
+                if not content:
+                    raise ValueError("source_file_empty")
+                source_file_payloads[(repository, path)] = content
+                checks[f"source_file:{repository}:{path}"] = {
+                    "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            except (OSError, ValueError, urllib.error.URLError) as exc:
+                blockers.append(
+                    f"source_file_unavailable:{repository}:{path}:{type(exc).__name__}"
+                )
+
+    groot_metadata = source_file_payloads.get(
+        ("NVIDIA/Isaac-GR00T", "pyproject.toml"), b""
+    ).decode("utf-8", errors="replace")
+    oscar_requirements = source_file_payloads.get(
+        ("wuzy2115/oscar-public", "requirements_minimal.txt"), b""
+    ).decode("utf-8", errors="replace")
+    oscar_requirements_digest = hashlib.sha256(oscar_requirements.encode()).hexdigest()
+    lock_text = OSCAR_FOUNDATION_LOCK.read_text(encoding="utf-8")
+    if (
+        f"# blueprint-input-sha256 oscar-requirements-minimal {oscar_requirements_digest}"
+        not in lock_text
+    ):
+        blockers.append("oscar_foundation_lock_upstream_input_digest_stale")
+    groot_torch = re.search(r'"torch==([^";]+)', groot_metadata)
+    oscar_torch = re.search(r"(?m)^torch==([^\s#]+)", oscar_requirements)
+    groot_torch_version = groot_torch.group(1) if groot_torch else None
+    oscar_torch_version = oscar_torch.group(1) if oscar_torch else None
+    checks["python_environment_compatibility"] = {
+        "groot_torch_version": groot_torch_version,
+        "oscar_torch_version": oscar_torch_version,
+        "shared_torch_environment_supported": (
+            bool(groot_torch_version)
+            and groot_torch_version == oscar_torch_version
+        ),
+        "isolated_environments_required": groot_torch_version != oscar_torch_version,
+    }
+    if groot_torch_version != "2.7.1":
+        blockers.append("groot_declared_torch_version_drifted")
+    if oscar_torch_version != "2.10.0":
+        blockers.append("oscar_declared_torch_version_drifted")
 
     asset_failures: list[str] = []
     asset_bytes = 0

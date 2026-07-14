@@ -20,9 +20,22 @@ files, C/C++ source/build trees, ONNX Runtime headers, source Git data, and
 build caches do not enter the final stage. The WBC copy is an explicit runtime
 allowlist: the production executable, G1 runtime assets, setup script, required
 reference data, the ZMQ Python client surface, Unitree runtime libraries, and
-ONNX Runtime shared objects. GR00T
-and OSCAR share `/opt/robot-venv`; `pip check` and the GR00T import gate must
-pass before publication.
+ONNX Runtime shared objects. GR00T and OSCAR deliberately use isolated
+environments: the pinned GR00T release declares Python 3.10 with Torch 2.7.1,
+while the pinned OSCAR release is verified with Torch 2.10.0 and its public
+inference requirements declare that exact version. Treating those stacks as
+compatible silently downgraded OSCAR and skipped its real
+`requirements_minimal.txt`. Both environments now run `pip check`, and both
+the GR00T policy import and OSCAR inference import must pass before publication.
+This gives up speculative Torch deduplication rather than shipping an invalid
+shared environment; the foundation remains host-cached and the release layer
+remains thin.
+
+The OSCAR environment is installed from a fully resolved, hash-checked
+Linux/Python 3.10 lock that includes the Blueprint runtime dependencies. GR00T
+uses the immutable upstream `uv.lock` with `uv sync --frozen`, followed by a
+no-dependency install of the pinned source tree. Neither environment performs
+an unconstrained dependency solve on the paid builder.
 
 Checkpoints are absent from both OCI images. The release entrypoint verifies
 every declared model file by size and SHA-256 while offline, verifies the exact
@@ -49,8 +62,8 @@ requires a Linux/amd64 child manifest. It does not pull a container layer or
 download model weights. It fails before paid allocation if a base manifest,
 exact TensorRT package, source commit, model revision, or required model
 filename has disappeared or drifted. The
-network-free gate rejects reintroduced WBC build trees, separate GR00T/OSCAR
-environments, unpinned bootstrap downloads, model acquisition in the release
+network-free gate rejects reintroduced WBC build trees, an unproven shared
+GR00T/OSCAR environment, unpinned bootstrap downloads, model acquisition in the release
 Dockerfile, incomplete critical model-file contracts, and mutable
 foundation/release seams before paid infrastructure is used.
 

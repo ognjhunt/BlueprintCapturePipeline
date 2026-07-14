@@ -306,18 +306,58 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert foundation.count("libnvinfer10=${TENSORRT_VERSION}") == 2
     assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in foundation
     assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation
-    assert "uv venv /opt/robot-venv --python 3.10 --seed" in foundation
+    assert "uv venv /opt/oscar-venv --python 3.10 --seed" in foundation
+    assert "uv venv /opt/gr00t-venv --python 3.10 --seed" in foundation
+    assert "requirements_uv_bootstrap.txt" in foundation
+    assert "--require-hashes -r /tmp/requirements_uv_bootstrap.txt" in foundation
+    assert "/tmp/oscar/requirements_minimal.txt" in foundation
+    assert "requirements_oscar_foundation.lock" in foundation
+    assert "uv pip install --require-hashes" in foundation
+    assert "uv sync --project /tmp/gr00t --active --no-dev --frozen" in foundation
     assert "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python" in foundation
     assert (
         "COPY --from=robot-env-builder --chown=blueprint:blueprint "
         "/opt/uv-python /opt/uv-python"
     ) in foundation
-    assert foundation.count("/opt/robot-venv/bin/python -m pip check") == 2
-    assert "/opt/robot-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py" in foundation
+    assert foundation.count("/opt/oscar-venv/bin/python -m pip check") == 2
+    assert foundation.count("/opt/gr00t-venv/bin/python -m pip check") == 2
+    assert "/opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py" in foundation
     assert "cp -a build target g1 scripts reference" not in foundation
     assert "COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime" in foundation
     assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation
     assert "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in foundation
+
+
+def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
+    lock = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_oscar_foundation.lock"
+    ).read_text(encoding="utf-8")
+    requirement_lines = [
+        line for line in lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)
+    ]
+    assert len(requirement_lines) >= 100
+    assert lock.count("--hash=sha256:") >= len(requirement_lines)
+    assert "torch==2.10.0+cu128" in lock
+    assert "torchvision==0.25.0+cu128" in lock
+    assert "mujoco==" in lock
+    assert "msgpack-numpy==0.4.8" in lock
+    assert (
+        "# blueprint-input-sha256 oscar-requirements-minimal "
+        "6002a7c982b96435f995d765306785f4835e404ea41308d4864f59bc8e34d117"
+        in lock
+    )
+    runtime_requirements = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_robot_runtime.txt"
+    ).read_bytes()
+    assert (
+        "# blueprint-input-sha256 requirements-robot-runtime "
+        + hashlib.sha256(runtime_requirements).hexdigest()
+        in lock
+    )
 
 
 def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:

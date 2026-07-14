@@ -10,7 +10,8 @@ COPY pyproject.toml README.md LICENSE /tmp/blueprint-release/
 COPY src /tmp/blueprint-release/src
 COPY --chmod=0755 deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh /opt/blueprint/thin_release_entrypoint.sh
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
-RUN /opt/robot-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
+RUN /opt/oscar-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
+  && /opt/gr00t-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
   && /isaac-sim/python.sh -m pip install --no-deps /tmp/blueprint-release \
   && rm -rf /tmp/blueprint-release /root/.cache \
   && test ! -e /opt/blueprint/ckpts

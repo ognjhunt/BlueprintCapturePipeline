@@ -24,10 +24,12 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GROOT_SOURCE_URL GROOT_SOURCE_REF OSCAR_SOURCE_URL OSCAR_SOURCE_REF
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_uv_bootstrap.txt /tmp/requirements_uv_bootstrap.txt
 RUN apt-get update && apt-get install -y --no-install-recommends git python3-pip python3-venv ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
-  && python3 -m pip install --break-system-packages --no-cache-dir uv
+  && python3 -m pip install --break-system-packages --no-cache-dir --require-hashes -r /tmp/requirements_uv_bootstrap.txt
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_robot_runtime.txt /tmp/requirements_robot_runtime.txt
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_foundation.lock /tmp/requirements_oscar_foundation.lock
 COPY src /tmp/blueprint-build-src
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && git -C /tmp/gr00t fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
@@ -37,19 +39,27 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && git -C /tmp/oscar fetch --depth 1 origin "${OSCAR_SOURCE_REF}" \
   && git -C /tmp/oscar checkout --detach FETCH_HEAD \
   && test "$(git -C /tmp/oscar rev-parse HEAD)" = "${OSCAR_SOURCE_REF}" \
-  && uv venv /opt/robot-venv --python 3.10 --seed \
-  && VIRTUAL_ENV=/opt/robot-venv uv pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.10.0 torchvision==0.25.0 \
-  && VIRTUAL_ENV=/opt/robot-venv uv pip install "nvidia-cudnn-cu12>=9.10" -r /tmp/requirements_robot_runtime.txt \
-  && VIRTUAL_ENV=/opt/robot-venv uv pip install /tmp/gr00t \
-  && PYTHONPATH=/tmp/blueprint-build-src /opt/robot-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import filter_requirements_script_text, transformer_engine_shim_script_text; Path('/tmp/filter.py').write_text(filter_requirements_script_text()); Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
-  && /opt/robot-venv/bin/python /tmp/filter.py /tmp/oscar/requirements.txt /tmp/oscar_requirements.txt \
-  && VIRTUAL_ENV=/opt/robot-venv uv pip install -r /tmp/oscar_requirements.txt \
-  && /opt/robot-venv/bin/python /tmp/te_shim.py /tmp/oscar \
-  && /opt/robot-venv/bin/python -m pip check \
-  && /opt/robot-venv/bin/python -c "from gr00t.policy.gr00t_policy import Gr00tPolicy" \
-  && rm -rf /opt/robot-venv/.git /root/.cache /tmp/gr00t/.git /tmp/oscar/.git \
+  && test -f /tmp/oscar/requirements_minimal.txt \
+  && uv venv /opt/oscar-venv --python 3.10 --seed \
+  && VIRTUAL_ENV=/opt/oscar-venv uv pip install --require-hashes \
+      --index-url https://download.pytorch.org/whl/cu128 \
+      --extra-index-url https://pypi.org/simple \
+      --index-strategy unsafe-best-match \
+      -r /tmp/requirements_oscar_foundation.lock \
+  && PYTHONPATH=/tmp/blueprint-build-src /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import transformer_engine_shim_script_text; Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
+  && /opt/oscar-venv/bin/python /tmp/te_shim.py /tmp/oscar \
+  && /opt/oscar-venv/bin/python -m pip check \
+  && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import inference.inference_oscar" \
+  && uv venv /opt/gr00t-venv --python 3.10 --seed \
+  && VIRTUAL_ENV=/opt/gr00t-venv uv sync --project /tmp/gr00t --active --no-dev --frozen --no-install-project \
+  && VIRTUAL_ENV=/opt/gr00t-venv uv pip install --no-deps /tmp/gr00t \
+  && /opt/gr00t-venv/bin/python -m pip check \
+  && /opt/gr00t-venv/bin/python -c "from gr00t.policy.gr00t_policy import Gr00tPolicy" \
+  && rm -rf /opt/oscar-venv/.git /opt/gr00t-venv/.git /root/.cache /tmp/gr00t/.git /tmp/oscar/.git \
   && mkdir -p /opt/oscar-runtime \
-  && cp -a /tmp/oscar/. /opt/oscar-runtime/
+  && cp -a /tmp/oscar/. /opt/oscar-runtime/ \
+  && mkdir -p /opt/gr00t-runtime \
+  && cp -a /tmp/gr00t/. /opt/gr00t-runtime/
 
 FROM tensorrt-base AS wbc-builder
 USER root
@@ -142,9 +152,11 @@ RUN apt-get update \
   && chown blueprint:blueprint /workspace /opt/blueprint /models \
   && chown blueprint:isaac-sim /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
   && chmod 0775 /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs
-COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/robot-venv /opt/robot-venv
+COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/oscar-venv /opt/oscar-venv
+COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/gr00t-venv /opt/gr00t-venv
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/oscar-runtime /opt/OSCAR
+COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/gr00t-runtime /opt/gr00t
 COPY --from=wbc-builder --chown=blueprint:blueprint /opt/wbc-runtime /opt/wbc
 COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/isaac_6_g1_assets.sha256 /opt/blueprint/isaac_6_g1_assets.sha256
@@ -156,21 +168,19 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
     BLUEPRINT_GROOT_OSCAR_MODEL_CACHE=/models/blueprint-groot-oscar-v1 \
     BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR \
     BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT=/models/blueprint-groot-oscar-v1/oscar \
-    BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON=/opt/robot-venv/bin/python \
+    BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON=/opt/gr00t-venv/bin/python \
     BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT=/models/blueprint-groot-oscar-v1/sonic \
-    BLUEPRINT_GROOT_OSCAR_GROOT_ROOT=/opt/robot-venv \
+    BLUEPRINT_GROOT_OSCAR_GROOT_ROOT=/opt/gr00t \
     BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc \
     BLUEPRINT_GEAR_SONIC_ROBOT_MODEL=/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml \
-    BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/robot-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
+    BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor" \
     LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:/opt/onnxruntime/lib:/usr/lib/x86_64-linux-gnu \
     BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh \
     BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
     BLUEPRINT_FOUNDATION_GROOT_SOURCE_REF=${GROOT_SOURCE_REF} \
     BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF=${OSCAR_SOURCE_REF} \
     BLUEPRINT_FOUNDATION_WBC_SOURCE_REF=${WBC_SOURCE_REF}
-RUN ln -s /opt/robot-venv /opt/oscar-venv \
-  && ln -s /opt/robot-venv /opt/gr00t-venv \
-  && /opt/robot-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
+RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
       --manifest /opt/blueprint/isaac_6_g1_assets.sha256 \
       --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
       --output-dir /isaac-sim/Isaac/Robots/Unitree/G1 \
@@ -182,7 +192,8 @@ RUN ln -s /opt/robot-venv /opt/oscar-venv \
   && test ! -d /opt/onnxruntime/include \
   && ! dpkg-query -W build-essential clang cmake git git-lfs ninja-build pkg-config >/dev/null 2>&1 \
   && ! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -q 'not found' \
-  && /opt/robot-venv/bin/python -m pip check
+  && /opt/oscar-venv/bin/python -m pip check \
+  && /opt/gr00t-venv/bin/python -m pip check
 USER blueprint
 WORKDIR /workspace
 CMD ["bash"]
