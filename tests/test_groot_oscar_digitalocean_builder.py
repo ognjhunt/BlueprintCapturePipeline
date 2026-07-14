@@ -24,6 +24,8 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
     )
     assert private in text
     assert public in text
+    assert "bootcmd:" in text
+    assert "systemctl restart ssh" in text
     assert "docker.io" in text
     assert "docker-buildx" in text
     assert "docker info" in text

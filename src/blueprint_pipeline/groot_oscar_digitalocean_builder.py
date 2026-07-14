@@ -33,6 +33,7 @@ WATCHDOG_SCHEMA_VERSION = "groot_oscar_digitalocean_builder_watchdog.v1"
 DO_API = "https://api.digitalocean.com/v2"
 BUILDER_TAG = "blueprint-groot-oscar-builder"
 TEARDOWN_TAG = "auto-teardown-required"
+READINESS_TIMEOUT_SECONDS = 15 * 60
 
 
 def _load_object(path: Path) -> dict[str, Any]:
@@ -107,6 +108,8 @@ def build_cloud_init(
     if shutdown_minutes <= 0 or shutdown_minutes > 120:
         raise ValueError("shutdown_minutes_must_be_between_1_and_120")
     return f"""#cloud-config
+bootcmd:
+  - [bash, -c, "printf '%s' '{host_private_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key && chmod 600 /etc/ssh/ssh_host_ed25519_key && printf '%s' '{host_public_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key.pub && chmod 644 /etc/ssh/ssh_host_ed25519_key.pub && rm -f /etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub && systemctl restart ssh"]
 package_update: true
 packages:
   - ca-certificates
@@ -401,7 +404,8 @@ def run_builder(
     teardown: dict[str, Any] = {"provider_absence_confirmed": False}
     try:
         deadline = started + ttl
-        while time.time() < deadline:
+        readiness_deadline = min(deadline, started + READINESS_TIMEOUT_SECONDS)
+        while time.time() < readiness_deadline:
             inspect_http, inspect = _request(
                 token=token, method="GET", path=f"/droplets/{droplet_id}"
             )
@@ -440,7 +444,7 @@ def run_builder(
             "test $(uname -m) = x86_64 && "
             "test $(df -Pk / | awk 'NR==2 {print $4}') -ge 125829120"
         )
-        while time.time() < deadline:
+        while time.time() < readiness_deadline:
             completed = subprocess.run(
                 ["ssh", *options, f"root@{public_ip}", remote_preflight],
                 capture_output=True,
