@@ -612,17 +612,35 @@ def run_builder(
         expected_schema_version=BUILD_SCHEMA_VERSION,
     )
 
-    token = _read_secret(token_file)
-    profile, builders = _live_profile(token=token, region=region)
+    try:
+        token = _read_secret(token_file)
+        profile, builders = _live_profile(token=token, region=region)
+    except Exception as exc:  # noqa: BLE001 - persist a secret-free terminal result
+        result = {
+            **_blocked_result(["digitalocean_builder_live_profile_unverified"]),
+            "error_type": type(exc).__name__,
+        }
+        write_json(output / "builder_run_result.json", result)
+        return result
     write_json(output / "live_builder_profile_evidence.json", profile)
     if profile["status"] != "verified" or builders:
         result = _blocked_result(profile["blockers"] or ["digitalocean_builder_overlap_detected"])
         write_json(output / "builder_run_result.json", result)
         return result
 
-    host_private_b64, host_public_b64, fingerprint = _host_key_material(host_private_key)
+    try:
+        host_private_b64, host_public_b64, fingerprint = _host_key_material(host_private_key)
+    except Exception as exc:  # noqa: BLE001 - persist a secret-free terminal result
+        result = {
+            **_blocked_result(["builder_launch_bound_host_key_unavailable"]),
+            "error_type": type(exc).__name__,
+        }
+        write_json(output / "builder_run_result.json", result)
+        return result
     if fingerprint != builder.get("ssh_host_key_sha256"):
-        raise RuntimeError("builder_launch_bound_host_key_fingerprint_mismatch")
+        result = _blocked_result(["builder_launch_bound_host_key_fingerprint_mismatch"])
+        write_json(output / "builder_run_result.json", result)
+        return result
     ttl = int(spend["hard_ttl_seconds"])
     hourly = float(profile["observed"]["price_hourly_usd"])
     maximum_cost = hourly * ttl / 3600
@@ -658,48 +676,60 @@ def run_builder(
             "watchdog_nonce": watchdog_nonce,
         },
     )
-    watchdog_log = (output / "watchdog.log").open("ab")
-    watchdog_process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "blueprint_pipeline.groot_oscar_digitalocean_builder",
-            "watchdog",
-            "--state",
-            str(state_path),
-            "--token-file",
-            str(token_file),
-        ],
-        stdout=watchdog_log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    (output / "watchdog.pid").write_text(f"{watchdog_process.pid}\n", encoding="utf-8")
-    watchdog_armed_path = output / "watchdog_armed.json"
-    watchdog_start_deadline = time.time() + 10
-    watchdog_armed = False
-    while time.time() < watchdog_start_deadline:
-        if watchdog_armed_path.is_file() and watchdog_process.poll() is None:
-            try:
-                armed = _load_object(watchdog_armed_path)
-            except (OSError, ValueError, json.JSONDecodeError):
-                armed = {}
-            watchdog_armed = bool(
-                armed.get("schema_version") == WATCHDOG_SCHEMA_VERSION
-                and armed.get("status") == "armed"
-                and armed.get("pid") == watchdog_process.pid
-                and armed.get("watchdog_nonce") == watchdog_nonce
-                and armed.get("name") == name
-                and armed.get("region") == region
-            )
-            if watchdog_armed:
+    watchdog_error_type: str | None = None
+    try:
+        watchdog_log = (output / "watchdog.log").open("ab")
+        watchdog_process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "blueprint_pipeline.groot_oscar_digitalocean_builder",
+                "watchdog",
+                "--state",
+                str(state_path),
+                "--token-file",
+                str(token_file),
+            ],
+            stdout=watchdog_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        (output / "watchdog.pid").write_text(f"{watchdog_process.pid}\n", encoding="utf-8")
+        watchdog_armed_path = output / "watchdog_armed.json"
+        watchdog_start_deadline = time.time() + 10
+        watchdog_armed = False
+        while time.time() < watchdog_start_deadline:
+            if watchdog_armed_path.is_file() and watchdog_process.poll() is None:
+                try:
+                    armed = _load_object(watchdog_armed_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    armed = {}
+                watchdog_armed = bool(
+                    armed.get("schema_version") == WATCHDOG_SCHEMA_VERSION
+                    and armed.get("status") == "armed"
+                    and armed.get("pid") == watchdog_process.pid
+                    and armed.get("watchdog_nonce") == watchdog_nonce
+                    and armed.get("name") == name
+                    and armed.get("region") == region
+                )
+                if watchdog_armed:
+                    break
+            if watchdog_process.poll() is not None:
                 break
+            time.sleep(0.05)
         if watchdog_process.poll() is not None:
-            break
-        time.sleep(0.05)
-    if not watchdog_armed or watchdog_process.poll() is not None:
+            watchdog_error_type = "WatchdogProcessExited"
+    except Exception as exc:  # noqa: BLE001 - no provider mutation has occurred
+        watchdog_armed = False
+        watchdog_error_type = type(exc).__name__
+    if not watchdog_armed:
         (output / "watchdog_cancelled").touch()
-        raise RuntimeError("digitalocean_builder_watchdog_not_armed_before_create")
+        result = {
+            **_blocked_result(["digitalocean_builder_watchdog_not_armed_before_create"]),
+            "error_type": watchdog_error_type,
+        }
+        write_json(output / "builder_run_result.json", result)
+        return result
     create_error_type: str | None = None
     try:
         create_http, create_response = _request(
