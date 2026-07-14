@@ -32,6 +32,7 @@ provenance_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_PROVENANCE_OUTPUT:-$repo_
 layer_report_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_LAYER_REPORT_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_layer_report.json}"
 buildkit_sbom_attestation_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BUILDKIT_SBOM_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_buildkit_sbom_attestation.json}"
 buildkit_provenance_attestation_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BUILDKIT_PROVENANCE_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_buildkit_provenance_attestation.json}"
+buildkit_attestation_index_output="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BUILDKIT_ATTESTATION_INDEX_OUTPUT:-$repo_root/output/groot_oscar_closed_loop_buildkit_attestation_index.json}"
 min_free_gib="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_MIN_FREE_GIB:-120}"
 expected_compressed_gib="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_EXPECTED_COMPRESSED_GIB:-46}"
 expected_unpacked_gib="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_EXPECTED_UNPACKED_GIB:-176}"
@@ -418,6 +419,8 @@ if [[ "$allow_push" == "true" && "$registry_diagnostic_exit" -eq 0 ]]; then
     > "$buildkit_sbom_attestation_output" || supply_chain_exit=$?
   docker buildx imagetools inspect --format '{{json .Provenance}}' "$exact_digest_ref" \
     > "$buildkit_provenance_attestation_output" || supply_chain_exit=$?
+  docker buildx imagetools inspect --raw "$exact_digest_ref" \
+    > "$buildkit_attestation_index_output" || supply_chain_exit=$?
   # The explicit registry: source is a safety property. Never let Syft infer
   # the Docker daemon and export a second copy of this very large image.
   syft "registry:${exact_digest_ref}" -o "spdx-json=${sbom_output}" || supply_chain_exit=$?
@@ -425,13 +428,14 @@ if [[ "$allow_push" == "true" && "$registry_diagnostic_exit" -eq 0 ]]; then
     PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 - \
       "$sbom_output" "$provenance_output" "$layer_report_output" \
       "$registry_manifest_output" "$build_metadata_file" "$exact_digest_ref" \
-      "$buildkit_sbom_attestation_output" "$buildkit_provenance_attestation_output" <<'PY' \
+      "$buildkit_sbom_attestation_output" "$buildkit_provenance_attestation_output" \
+      "$buildkit_attestation_index_output" <<'PY' \
       || supply_chain_exit=$?
 import json, sys
 from pathlib import Path
 from blueprint_pipeline.groot_oscar_release_hardening import (
     build_layer_report,
-    validate_provenance_digest,
+    validate_buildkit_provenance_binding,
     validate_spdx_document,
 )
 
@@ -441,32 +445,54 @@ sbom_path, provenance_path, layer_path, registry_path, metadata_path = map(
 digest_ref = sys.argv[6]
 buildkit_sbom_path = Path(sys.argv[7]).expanduser().resolve()
 buildkit_provenance_path = Path(sys.argv[8]).expanduser().resolve()
+buildkit_index_path = Path(sys.argv[9]).expanduser().resolve()
 expected_digest = digest_ref.rsplit("@", 1)[-1]
 sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
 registry = json.loads(registry_path.read_text(encoding="utf-8"))
 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 blockers = validate_spdx_document(sbom)
-for label, path in (
-    ("sbom", buildkit_sbom_path),
-    ("provenance", buildkit_provenance_path),
-):
+attestations = {}
+for label, path in (("sbom", buildkit_sbom_path), ("provenance", buildkit_provenance_path)):
     try:
         attestation = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         attestation = None
     if not attestation:
         blockers.append(f"buildkit_{label}_attestation_missing")
+    attestations[label] = attestation
+try:
+    attestation_index = json.loads(buildkit_index_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    attestation_index = None
+if not isinstance(attestation_index, dict):
+    blockers.append("buildkit_attestation_index_missing")
+else:
+    blockers.extend(
+        validate_buildkit_provenance_binding(
+            attestations.get("provenance") or {},
+            attestation_index,
+            str(registry.get("runnable_child_digest") or ""),
+        )
+    )
 provenance = {
     "schema_version": "groot_oscar_buildkit_provenance.v1",
     "status": "passed",
     "subject_digest": expected_digest,
     "subject_digest_ref": digest_ref,
-    "buildkit_provenance_attestation": {"enabled": True, "mode": "max"},
+    "buildkit_provenance_attestation": {
+        "enabled": True,
+        "mode": "max",
+        "predicate_validated": not any(
+            blocker.startswith("buildkit_provenance_") for blocker in blockers
+        ),
+        "oci_subject_binding_validated": (
+            "buildkit_attestation_subject_binding_missing" not in blockers
+        ),
+    },
     "buildkit_sbom_attestation": {"enabled": True},
     "buildx_metadata": metadata,
     "raw_secret_values_recorded": False,
 }
-blockers.extend(validate_provenance_digest(provenance, expected_digest))
 provenance["blockers"] = sorted(set(blockers))
 provenance["status"] = "passed" if not blockers else "blocked"
 provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")

@@ -89,6 +89,7 @@ jobs:
             output/groot_oscar_closed_loop_layer_report.json
             output/groot_oscar_closed_loop_buildkit_sbom_attestation.json
             output/groot_oscar_closed_loop_buildkit_provenance_attestation.json
+            output/groot_oscar_closed_loop_buildkit_attestation_index.json
 
       - name: Remove ephemeral credentials
         if: always()

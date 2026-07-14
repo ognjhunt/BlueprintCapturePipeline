@@ -10,6 +10,7 @@ from blueprint_pipeline.groot_oscar_release_hardening import (
     record_startup_milestone,
     syft_registry_scan_command,
     validate_provenance_digest,
+    validate_buildkit_provenance_binding,
     validate_registry_mirror_equivalence,
     validate_spdx_document,
 )
@@ -45,6 +46,40 @@ def test_sbom_and_provenance_are_fail_closed():
     )
     assert validate_provenance_digest({"subject": DIGEST}, DIGEST) == []
     assert validate_provenance_digest({"subject": "other"}, DIGEST)
+
+
+def test_buildkit_provenance_binds_actual_predicate_to_runnable_manifest():
+    runnable = "sha256:" + "b" * 64
+    provenance = {
+        "SLSA": {
+            "buildType": "https://mobyproject.org/buildkit@v1",
+            "invocation": {"environment": {"platform": "linux/amd64"}},
+        }
+    }
+    index = {
+        "manifests": [
+            {
+                "digest": runnable,
+                "platform": {"os": "linux", "architecture": "amd64"},
+            },
+            {
+                "digest": "sha256:" + "c" * 64,
+                "platform": {"os": "unknown", "architecture": "unknown"},
+                "annotations": {
+                    "vnd.docker.reference.type": "attestation-manifest",
+                    "vnd.docker.reference.digest": runnable,
+                },
+            },
+        ]
+    }
+    assert validate_buildkit_provenance_binding(provenance, index, runnable) == []
+    index["manifests"][1]["annotations"]["vnd.docker.reference.digest"] = DIGEST
+    assert "buildkit_attestation_subject_binding_missing" in (
+        validate_buildkit_provenance_binding(provenance, index, runnable)
+    )
+    assert "buildkit_provenance_slsa_predicate_missing" in (
+        validate_buildkit_provenance_binding({}, index, runnable)
+    )
 
 
 def test_registry_mirror_requires_per_platform_digest_equivalence():

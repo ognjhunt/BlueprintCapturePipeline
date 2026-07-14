@@ -586,7 +586,9 @@ class CampaignMachine:
                     # crashes and process resumes.
                     provider_started_at = float(self.wall_clock())
                     allocation = dict(self.adapter.allocate(self.config.payload()))
-                    allocation_id = str(allocation.get("allocation_id") or "").strip()
+                    allocation_id = str(
+                        allocation.get("allocation_id") or allocation.get("id") or ""
+                    ).strip()
                     if not allocation_id:
                         raise CampaignBlocked("provider_allocation_id_missing")
                 state["allocation_id"] = allocation_id

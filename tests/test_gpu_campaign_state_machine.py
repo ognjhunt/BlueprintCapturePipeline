@@ -187,6 +187,25 @@ def test_duplicate_allocation_is_refused_before_mutation(tmp_path):
     assert not any(call[0] == "allocate" for call in provider.calls)
 
 
+def test_provider_native_id_is_checkpointed_and_torn_down(tmp_path):
+    class NativeIdProvider(FakeProvider):
+        def allocate(self, config):
+            self.calls.append(("allocate", config["campaign_id"]))
+            self.live = [{"id": "native-vm-1"}]
+            return {"status": "completed", "id": "native-vm-1"}
+
+    provider = NativeIdProvider(fail_stage="host_ready")
+    result = CampaignMachine(
+        config=config(),
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    ).run()
+    assert result["allocation_id"] == "native-vm-1"
+    assert ("terminate", "native-vm-1") in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+
+
 def test_budget_is_admitted_on_worst_case_not_expected_spend(tmp_path):
     with pytest.raises(CampaignBlocked, match="maximum_exceeds"):
         CampaignMachine(

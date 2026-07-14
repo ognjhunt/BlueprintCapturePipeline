@@ -77,6 +77,61 @@ def validate_provenance_digest(payload: Mapping[str, Any], expected_digest: str)
     return [] if expected_digest in serialized else ["provenance_digest_mismatch"]
 
 
+def validate_buildkit_provenance_binding(
+    provenance_attestation: Mapping[str, Any],
+    image_index: Mapping[str, Any],
+    runnable_digest: str,
+) -> list[str]:
+    """Bind BuildKit's predicate to the runnable OCI manifest descriptor.
+
+    ``imagetools inspect --format '{{json .Provenance}}'`` returns the SLSA
+    predicate without an in-toto subject envelope. BuildKit records the subject
+    binding on the OCI attestation-manifest descriptor instead, so both the
+    actual predicate and that descriptor must validate together.
+    """
+
+    blockers: list[str] = []
+    if not _DIGEST.fullmatch(runnable_digest):
+        return ["buildkit_runnable_digest_invalid"]
+    slsa = provenance_attestation.get("SLSA")
+    if not isinstance(slsa, Mapping):
+        blockers.append("buildkit_provenance_slsa_predicate_missing")
+    else:
+        if slsa.get("buildType") != "https://mobyproject.org/buildkit@v1":
+            blockers.append("buildkit_provenance_build_type_invalid")
+        invocation = slsa.get("invocation")
+        invocation = invocation if isinstance(invocation, Mapping) else {}
+        environment = invocation.get("environment")
+        environment = environment if isinstance(environment, Mapping) else {}
+        if environment.get("platform") != "linux/amd64":
+            blockers.append("buildkit_provenance_platform_invalid")
+
+    manifests = image_index.get("manifests")
+    manifests = manifests if isinstance(manifests, list) else []
+    runnable = [
+        descriptor
+        for descriptor in manifests
+        if isinstance(descriptor, Mapping)
+        and descriptor.get("digest") == runnable_digest
+        and isinstance(descriptor.get("platform"), Mapping)
+        and descriptor["platform"].get("os") == "linux"
+        and descriptor["platform"].get("architecture") == "amd64"
+    ]
+    if len(runnable) != 1:
+        blockers.append("buildkit_runnable_manifest_descriptor_mismatch")
+    bound_attestations = [
+        descriptor
+        for descriptor in manifests
+        if isinstance(descriptor, Mapping)
+        and isinstance(descriptor.get("annotations"), Mapping)
+        and descriptor["annotations"].get("vnd.docker.reference.type") == "attestation-manifest"
+        and descriptor["annotations"].get("vnd.docker.reference.digest") == runnable_digest
+    ]
+    if not bound_attestations:
+        blockers.append("buildkit_attestation_subject_binding_missing")
+    return blockers
+
+
 def validate_registry_mirror_equivalence(
     source: Mapping[str, Any], mirror: Mapping[str, Any]
 ) -> dict[str, Any]:
