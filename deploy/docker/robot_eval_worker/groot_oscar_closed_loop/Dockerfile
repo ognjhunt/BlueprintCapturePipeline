@@ -372,6 +372,14 @@ RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
       --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
       --output-dir /isaac-sim/Isaac/Robots/Unitree/G1
 
+# The runtime needs CUDA shared libraries, not a compiler or development tree.
+# Remove any such files inherited from the pinned carrier after all package
+# installation/build work is finished. The sealed non-root healthcheck below
+# independently walks the resulting filesystem and fails if a marker remains.
+RUN rm -f /usr/local/cuda*/bin/nvcc \
+  && rm -rf /usr/local/cuda*/include /usr/local/cuda*/lib64/stubs \
+  && find /usr/local/cuda* -type f -name '*.a' -delete
+
 # 7. Build-time healthcheck (all three environments; no GPU required). It must
 #    run AS THE RUNTIME USER: the 20260712 canary (rc=126 on every gate) proved
 #    a root-only healthcheck cannot see runtime-user exec/traversal failures

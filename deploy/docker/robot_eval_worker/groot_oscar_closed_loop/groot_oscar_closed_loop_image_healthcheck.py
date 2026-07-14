@@ -193,6 +193,35 @@ def main() -> int:
         if spec is None:
             blockers.append(f"{label}_not_importable")
 
+    try:
+        from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (  # type: ignore
+            build_command_message,
+            pack_pose_message,
+        )
+
+        payload["gear_sonic_zmq_python_runtime_importable"] = bool(
+            callable(build_command_message) and callable(pack_pose_message)
+        )
+    except Exception as exc:  # pragma: no cover - image-only path
+        payload["gear_sonic_zmq_python_runtime_importable"] = False
+        payload["gear_sonic_zmq_python_runtime_error_type"] = type(exc).__name__
+    if not payload["gear_sonic_zmq_python_runtime_importable"]:
+        blockers.append("gear_sonic_zmq_python_runtime_not_importable")
+
+    cuda_development_markers: set[str] = set()
+    for cuda_root in Path("/usr/local").glob("cuda*"):
+        for marker in (cuda_root / "bin/nvcc", cuda_root / "include", cuda_root / "lib64/stubs"):
+            if marker.exists():
+                cuda_development_markers.add(str(marker.resolve()))
+        if cuda_root.is_dir():
+            cuda_development_markers.update(
+                str(path.resolve()) for path in cuda_root.rglob("*.a") if path.is_file()
+            )
+    payload["cuda_compiler_or_development_markers"] = sorted(cuda_development_markers)
+    payload["cuda_compiler_and_development_files_removed"] = not cuda_development_markers
+    if cuda_development_markers:
+        blockers.append("cuda_compiler_or_development_files_present")
+
     # --- OSCAR source on PYTHONPATH ---
     oscar_entrypoint = Path(OSCAR_REPO) / "inference" / "inference_oscar.py"
     payload["oscar_repo"] = OSCAR_REPO

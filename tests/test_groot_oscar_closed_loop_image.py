@@ -460,6 +460,9 @@ def test_wbc_compiler_toolchain_is_confined_to_disposable_builder_stage():
     assert "libcudart.so* /usr/local/lib/" in runtime
     assert "ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in runtime
     assert "grep -F 'not found'" in runtime
+    assert "rm -f /usr/local/cuda*/bin/nvcc" in runtime
+    assert "rm -rf /usr/local/cuda*/include /usr/local/cuda*/lib64/stubs" in runtime
+    assert "find /usr/local/cuda* -type f -name '*.a' -delete" in runtime
 
 
 def test_image_healthcheck_enforces_runtime_service_dependencies():
@@ -475,6 +478,8 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
     assert "groot_nested_processor_not_offline_constructible" in healthcheck
     assert "official_gear_sonic_source_revision_mismatch" in healthcheck
+    assert "gear_sonic_zmq_python_runtime_not_importable" in healthcheck
+    assert "cuda_compiler_or_development_files_present" in healthcheck
     assert 'wbc_root / ".blueprint-source-revision"' in healthcheck
     assert "model_encoder.onnx" in healthcheck
     assert "model_decoder.onnx" in healthcheck
