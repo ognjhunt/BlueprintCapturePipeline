@@ -300,7 +300,7 @@ def run_watchdog(
             )
         marker_path = _marker_path(root)
         marker = _read_mapping(marker_path)
-        if marker.get("status") in {"terminated", "teardown_blocked"}:
+        if marker.get("status") == "terminated":
             result = {**armed, "status": "owner_teardown_observed", "completed_at": utc_now_iso()}
             write_json(_evidence_path(root), result)
             return result

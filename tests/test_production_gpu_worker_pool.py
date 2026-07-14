@@ -205,6 +205,26 @@ def test_scale_demand_has_one_atomic_autoscaler_owner_and_retry(tmp_path: Path) 
     assert pool.claim_scale_request(autoscaler_id="autoscaler-2") is not None
 
 
+def test_ready_worker_reregistration_does_not_double_satisfy_scale_demand(
+    tmp_path: Path,
+) -> None:
+    pool = ProductionGpuWorkerPool(tmp_path / "pool.sqlite")
+    pool.reconcile_min_ready(
+        host_image_id=HOST,
+        worker_image_ref=IMAGE,
+        gpu_family=GPU,
+        min_ready_workers=2,
+    )
+
+    _register(pool, "worker-1")
+    _register(pool, "worker-1")
+
+    assert pool.snapshot()["pending_scale_requests"] == 1
+    claimed = pool.claim_scale_request(autoscaler_id="autoscaler-1")
+    assert claimed is not None
+    assert claimed["requested_ready_workers"] == 1
+
+
 def test_atomic_database_update_prevents_double_binding_one_worker(tmp_path: Path) -> None:
     path = tmp_path / "pool.sqlite"
     pool = ProductionGpuWorkerPool(path)

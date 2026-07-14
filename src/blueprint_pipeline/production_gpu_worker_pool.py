@@ -232,6 +232,7 @@ class ProductionGpuWorkerPool:
                 raise WorkerLeaseConflict("leased_worker_cannot_reregister")
             if existing is not None and existing["release_fingerprint"] != fingerprint:
                 raise WorkerLeaseConflict("worker_identity_release_changed")
+            became_ready = existing is None or existing["state"] != "ready"
             connection.execute(
                 """
                 INSERT INTO production_gpu_workers (
@@ -248,29 +249,30 @@ class ProductionGpuWorkerPool:
                 """,
                 (worker, provider_name, host, image, gpu, fingerprint, endpoint, _canonical_json(ready), now, now),
             )
-            connection.execute(
-                """
-                UPDATE production_gpu_scale_requests
-                   SET requested_ready_workers = CASE
-                           WHEN requested_ready_workers > 1
-                           THEN requested_ready_workers - 1 ELSE 0 END,
-                       status = CASE
-                           WHEN requested_ready_workers > 1
-                           THEN status ELSE 'satisfied' END,
-                       updated_at = ?,
-                       claim_owner = CASE
-                           WHEN requested_ready_workers > 1
-                           THEN claim_owner ELSE NULL END,
-                       claim_token_digest = CASE
-                           WHEN requested_ready_workers > 1
-                           THEN claim_token_digest ELSE NULL END,
-                       claim_expires_at = CASE
-                           WHEN requested_ready_workers > 1
-                           THEN claim_expires_at ELSE NULL END
-                 WHERE release_fingerprint=? AND status IN ('pending','claimed')
-                """,
-                (now, fingerprint),
-            )
+            if became_ready:
+                connection.execute(
+                    """
+                    UPDATE production_gpu_scale_requests
+                       SET requested_ready_workers = CASE
+                               WHEN requested_ready_workers > 1
+                               THEN requested_ready_workers - 1 ELSE 0 END,
+                           status = CASE
+                               WHEN requested_ready_workers > 1
+                               THEN status ELSE 'satisfied' END,
+                           updated_at = ?,
+                           claim_owner = CASE
+                               WHEN requested_ready_workers > 1
+                               THEN claim_owner ELSE NULL END,
+                           claim_token_digest = CASE
+                               WHEN requested_ready_workers > 1
+                               THEN claim_token_digest ELSE NULL END,
+                           claim_expires_at = CASE
+                               WHEN requested_ready_workers > 1
+                               THEN claim_expires_at ELSE NULL END
+                     WHERE release_fingerprint=? AND status IN ('pending','claimed')
+                    """,
+                    (now, fingerprint),
+                )
         return {
             "schema_version": PRODUCTION_GPU_WORKER_SCHEMA_VERSION,
             "worker_id": worker,

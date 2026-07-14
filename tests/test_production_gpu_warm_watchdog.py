@@ -122,6 +122,28 @@ def test_cancel_before_allocation_confirms_inventory_and_performs_no_provider_mu
     assert provider.terminated == []
 
 
+def test_blocked_owner_teardown_keeps_watchdog_active_until_absence_is_proven(
+    tmp_path: Path,
+) -> None:
+    now = {"value": 1000.0}
+    provider = Provider()
+    (tmp_path / "warm_serve_pod.json").write_text(
+        '{"status":"teardown_blocked","pod_id":"pod-1"}', encoding="utf-8"
+    )
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        deadline_epoch=1200,
+        clock=lambda: now["value"],
+        sleeper=lambda _seconds: now.update(value=1200.0),
+        provider_factory=lambda _name: provider,
+    )
+
+    assert provider.terminated == ["pod-1"]
+    assert result["status"] == "PASS"
+    assert result["api_confirmed_absent"] is True
+
+
 def test_provider_confirmed_no_allocation_releases_reserved_campaign_budget(
     tmp_path: Path,
 ) -> None:
