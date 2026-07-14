@@ -57,7 +57,7 @@ ARG WBC_SOURCE_URL WBC_SOURCE_REF TENSORRT_VERSION
 RUN apt-get update \
   && apt-cache madison libnvinfer10 | awk -v version="${TENSORRT_VERSION}" '$3 == version { found=1 } END { exit !found }' \
   && apt-get install -y --no-install-recommends \
-      build-essential clang cmake git git-lfs ninja-build pkg-config curl ca-certificates \
+      build-essential clang cmake git git-lfs ninja-build pkg-config curl ca-certificates sudo \
       libnvinfer-headers-dev=${TENSORRT_VERSION} libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
       libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
       libnvonnxparsers10=${TENSORRT_VERSION} libnvinfer-dev=${TENSORRT_VERSION} \
