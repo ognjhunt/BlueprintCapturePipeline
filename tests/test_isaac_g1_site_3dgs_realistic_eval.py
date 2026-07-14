@@ -1193,7 +1193,9 @@ def test_isaac_helper_runtime_and_provider_plan_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert isaac_eval._repo_root().name == "BlueprintCapturePipeline"
+    repo_root = isaac_eval._repo_root()
+    assert (repo_root / "pyproject.toml").is_file()
+    assert (repo_root / "src" / "blueprint_pipeline").is_dir()
     assert isaac_eval._string_list("front") == ["front"]
     assert isaac_eval._string_list(object()) == []
     assert isaac_eval._usd_identifier("123 shelf").startswith("_")

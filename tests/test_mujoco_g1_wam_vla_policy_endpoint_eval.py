@@ -114,7 +114,9 @@ def test_wam_vla_policy_endpoint_discovery_matrix_and_file_helpers(
 ) -> None:
     _clear_env(monkeypatch, _UNITREE_POLICY_ENV_VARS)
     _clear_env(monkeypatch, _WAM_RUNTIME_ENV_VARS)
-    assert lane._repo_root().name == "BlueprintCapturePipeline"
+    repo_root = lane._repo_root()
+    assert (repo_root / "pyproject.toml").is_file()
+    assert (repo_root / "src" / "blueprint_pipeline").is_dir()
     assert lane._safe_id(" Door / Table ") == "door_table"
     assert lane._safe_id("", fallback="fallback") == "fallback"
     assert lane._number(True, 4.0) == 4.0
