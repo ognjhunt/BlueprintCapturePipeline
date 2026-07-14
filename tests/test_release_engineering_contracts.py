@@ -480,20 +480,22 @@ def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> Non
 
     ``runuser`` during a Docker build resolves supplementary groups differently
     from an OCI runtime when Dockerfile ``USER`` includes an explicit group.
-    The attested release path therefore pushes once, resolves the resulting
-    digest, and runs that exact immutable image before accepting the release.
-    A local investigation remains a ``--load`` build and smokes its local tag.
+    The release path therefore loads and smokes the finished local closure
+    before its release tag can be pushed. The attested registry export must
+    then bind its runnable config digest back to that smoke-tested image ID.
     """
     script = (ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh").read_text(
         encoding="utf-8"
     )
 
-    build_at = script.index('"${build_args[@]}"')
-    digest_at = script.index('runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"')
+    build_at = script.index('"${local_build_args[@]}"')
     smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$runtime_image_ref"')
-    assert build_at < digest_at < smoke_at
-    assert "build_args+=(--load)" in script
-    assert "build_args+=(--push --attest type=sbom --provenance mode=max)" in script
+    publish_at = script.index('"${publish_build_args[@]}"')
+    digest_at = script.index('runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"')
+    binding_at = script.index('published_config_digest="$(python3')
+    assert build_at < smoke_at < publish_at < digest_at < binding_at
+    assert "--load" in script[build_at - 500 : smoke_at]
+    assert "--push" in script[publish_at - 500 : digest_at]
     assert 'test "$(id -un)" = blueprint' in script
     assert "grep -Fx isaac-sim" in script
     assert "/isaac-sim/python.sh" in script
@@ -502,13 +504,10 @@ def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> Non
     assert "groot_oscar_closed_loop_oci_runtime_smoke_failed" in script
     assert '"oci_runtime_smoke": {' in script
     assert 'runtime_smoke.get("status")' in script
-    assert re.search(
-        r'if \[\[ "\$runtime_smoke_exit" -ne 0 \]\]; then.*?exit 2.*?fi'
-        r'.*?if \[\[ "\$allow_push" == "true" \]\]; then\s*'
-        r"PYTHONPATH=",
-        script,
-        re.DOTALL,
-    )
+    smoke_failure_at = script.index('if [[ "$runtime_smoke_exit" -ne 0 ]]')
+    smoke_failure_exit_at = script.index("exit 2", smoke_failure_at)
+    assert smoke_failure_at < smoke_failure_exit_at < publish_at
+    assert "published_runtime_identity_matches_smoked_local_image" in script
 
 
 def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
