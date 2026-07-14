@@ -23,3 +23,14 @@ def test_release_runtime_smoke_uses_the_pushed_immutable_digest():
     assert 'runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"' in text
     assert 'docker pull "$runtime_image_ref"' in text
     assert 'docker run --rm --entrypoint /bin/bash "$runtime_image_ref"' in text
+
+
+def test_release_image_uses_runtime_only_wbc_multistage_closure():
+    dockerfile = Path(
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
+    ).read_text(encoding="utf-8")
+    from_line = "FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE}"
+    assert dockerfile.count(from_line) == 2
+    assert "AS gear_sonic_builder" in dockerfile
+    assert "AS runtime" in dockerfile
+    assert "COPY --from=gear_sonic_builder /opt/wbc/gear_sonic_deploy" in dockerfile

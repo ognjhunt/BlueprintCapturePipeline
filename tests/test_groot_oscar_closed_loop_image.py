@@ -436,6 +436,25 @@ def test_image_makes_gear_sonic_build_tree_runtime_user_writable():
     assert "chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build" in dockerfile
 
 
+def test_wbc_compiler_toolchain_is_confined_to_disposable_builder_stage():
+    dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "AS gear_sonic_builder" in dockerfile
+    assert "AS runtime" in dockerfile
+    builder_start = dockerfile.index("AS gear_sonic_builder")
+    runtime_start = dockerfile.index("AS runtime")
+    assert builder_start < runtime_start
+    builder = dockerfile[builder_start:runtime_start]
+    runtime = dockerfile[runtime_start:]
+    assert "scripts/install_deps.sh" in builder
+    assert "just build" in builder
+    assert "scripts/install_deps.sh" not in runtime
+    assert "libnvinfer-dev=${TENSORRT_VERSION}" not in runtime
+    assert "COPY --from=gear_sonic_builder" in runtime
+    assert "libcudart.so* /usr/local/lib/" in runtime
+    assert "ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in runtime
+    assert "grep -F 'not found'" in runtime
+
+
 def test_image_healthcheck_enforces_runtime_service_dependencies():
     healthcheck = (IMAGE_ROOT / "groot_oscar_closed_loop_image_healthcheck.py").read_text(
         encoding="utf-8"

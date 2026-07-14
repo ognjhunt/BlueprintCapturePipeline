@@ -79,11 +79,15 @@ development runtime into the final carrier, while OSCAR installed Torch 2.10
 with CUDA 12.8 wheels and GR00T installed Torch 2.7.1 with a different CUDA
 12.8 wheel set. This is the first-principles source of the 46.8 GB closure.
 
-The next candidate must move WBC compilation to a builder stage and copy only
-its runtime binary/library closure. The two Python environments may share only
+The next-candidate Dockerfile now moves WBC compilation to a disposable
+Isaac-based builder stage and copies only its runtime tree, ONNX Runtime,
+`libcudart`, and pinned TensorRT/runtime dependencies. The final stage runs
+`ldd` fail-closed against `g1_deploy_onnx_ref`; nvcc, CUDA headers/static
+development archives, WBC git objects, and TensorRT development packages are
+not copied into the carrier. The two Python environments may share only
 byte-identical CUDA artifacts after both policy services pass real-GPU ABI
 tests; their incompatible Torch versions must not be symlinked together merely
-to improve size. Until that candidate is built and tested, the official build
+to improve size. Until this candidate is built and tested, the official build
 enforces ceilings of 48,000,000,000 total compressed bytes and 15,000,000,000
 bytes for any one layer, preventing silent growth above the measured release.
 

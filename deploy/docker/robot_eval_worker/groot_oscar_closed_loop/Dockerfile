@@ -14,7 +14,51 @@
 # pull + go. It proves build/runtime readiness only — not task success.
 
 ARG ISAAC_SIM_BASE_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d
-FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE}
+
+# WBC/GEAR needs nvcc, CUDA development headers, CMake, and other build-only
+# packages. Build it in a disposable stage so none of that toolchain ships in
+# the paid worker image. The same pinned Isaac carrier preserves compiler ABI.
+FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE} AS gear_sonic_builder
+
+USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
+ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
+ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git git-lfs sudo wget \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
+  && git -C /opt/wbc fetch --depth 1 origin "${WBC_SOURCE_REF}" \
+  && git -C /opt/wbc checkout --detach FETCH_HEAD \
+  && test "$(git -C /opt/wbc rev-parse HEAD)" = "${WBC_SOURCE_REF}" \
+  && git -C /opt/wbc lfs pull \
+  && cd /opt/wbc/gear_sonic_deploy \
+  && chmod +x scripts/install_deps.sh deploy.sh \
+  && scripts/install_deps.sh \
+  && apt-get install -y --no-install-recommends \
+       libnvinfer-headers-dev=${TENSORRT_VERSION} \
+       libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
+       libnvinfer10=${TENSORRT_VERSION} \
+       libnvinfer-plugin10=${TENSORRT_VERSION} \
+       libnvonnxparsers10=${TENSORRT_VERSION} \
+       libnvinfer-dev=${TENSORRT_VERSION} \
+       libnvinfer-plugin-dev=${TENSORRT_VERSION} \
+       libnvonnxparsers-dev=${TENSORRT_VERSION} \
+  && sed -i \
+       's/nvinfer nvinfer_plugin nvonnxparser nvparsers/nvinfer nvinfer_plugin nvonnxparser/' \
+       cmake/FindTensorRT.cmake \
+  && source scripts/setup_env.sh \
+  && just build \
+  && test -x target/release/g1_deploy_onnx_ref \
+  && rm -rf /opt/wbc/.git /opt/wbc/gear_sonic_deploy/build \
+  && mkdir -p /opt/wbc/gear_sonic_deploy/build
+
+FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE} AS runtime
 
 # The pinned Isaac-Sim base ships USER isaac-sim (uid 1234); every layer below
 # needs root (apt, /opt installs), and the sealed worker bootstrap runs as root.
@@ -100,6 +144,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     sudo \
+    libyaml-cpp-dev \
+    libeigen3-dev \
+    libmsgpack-dev \
+    libzmq3-dev \
+    nlohmann-json3-dev \
+    zlib1g-dev \
+    libnvinfer10=${TENSORRT_VERSION} \
+    libnvinfer-plugin10=${TENSORRT_VERSION} \
+    libnvonnxparsers10=${TENSORRT_VERSION} \
   && rm -rf /var/lib/apt/lists/*
 
 # 1b. Runtime identity, created BEFORE the checkpoint layer. OCI layers are
@@ -120,6 +173,17 @@ RUN groupadd --gid "${APP_GID}" blueprint \
   && mkdir -p /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
   && chown blueprint:isaac-sim /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
   && chmod 0775 /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs
+
+# Copy only the compiled GEAR runtime closure from the disposable builder. Do
+# not copy nvcc, CUDA headers/static archives, apt state, or WBC git objects.
+COPY --from=gear_sonic_builder /opt/wbc/gear_sonic_deploy /opt/wbc/gear_sonic_deploy
+COPY --from=gear_sonic_builder /opt/onnxruntime /opt/onnxruntime
+COPY --from=gear_sonic_builder /usr/local/bin/just /usr/local/bin/just
+COPY --from=gear_sonic_builder /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcudart.so* /usr/local/lib/
+RUN ldconfig \
+  && test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref \
+  && ! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found' \
+  && chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build
 
 # 2. Blueprint package in both the OSCAR client environment and Isaac runtime.
 COPY pyproject.toml README.md LICENSE /opt/blueprint/blueprint-capture-pipeline/
@@ -149,30 +213,8 @@ RUN git clone --filter=blob:none "${OSCAR_SOURCE_URL}" /opt/oscar-public \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install -r /tmp/oscar_requirements.txt \
   && /opt/oscar-venv/bin/python /tmp/te_shim.py /opt/OSCAR
 
-# 4. GR00T runtime and official GEAR-SONIC deployment stack.
-RUN git clone --filter=blob:none "${WBC_SOURCE_URL}" /opt/wbc \
-  && git -C /opt/wbc fetch --depth 1 origin "${WBC_SOURCE_REF}" \
-  && git -C /opt/wbc checkout --detach FETCH_HEAD \
-  && test "$(git -C /opt/wbc rev-parse HEAD)" = "${WBC_SOURCE_REF}" \
-  && git -C /opt/wbc lfs pull \
-  && cd /opt/wbc/gear_sonic_deploy \
-  && chmod +x scripts/install_deps.sh deploy.sh \
-  && scripts/install_deps.sh \
-  && apt-get install -y --no-install-recommends \
-       libnvinfer-headers-dev=${TENSORRT_VERSION} \
-       libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
-       libnvinfer10=${TENSORRT_VERSION} \
-       libnvinfer-plugin10=${TENSORRT_VERSION} \
-       libnvonnxparsers10=${TENSORRT_VERSION} \
-       libnvinfer-dev=${TENSORRT_VERSION} \
-       libnvinfer-plugin-dev=${TENSORRT_VERSION} \
-       libnvonnxparsers-dev=${TENSORRT_VERSION} \
-  && sed -i \
-       's/nvinfer nvinfer_plugin nvonnxparser nvparsers/nvinfer nvinfer_plugin nvonnxparser/' \
-       cmake/FindTensorRT.cmake \
-  && source scripts/setup_env.sh \
-  && just build \
-  && chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build
+# 4. GR00T runtime. GEAR-SONIC was compiled in gear_sonic_builder and admitted
+#    above as a runtime-only dynamic closure.
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /opt/gr00t \
   && cd /opt/gr00t \
   && git fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
