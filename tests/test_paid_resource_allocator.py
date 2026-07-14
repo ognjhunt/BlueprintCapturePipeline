@@ -146,3 +146,69 @@ def test_allocator_cli_never_prints_provider_result_secrets(monkeypatch, capsys)
     )
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_cpu_build_run_blocks_before_provider_when_live_prerequisites_fail(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_run_cpu_prerequisite_gate",
+        lambda _output: {"status": "blocked", "blockers": ["pin_missing"]},
+    )
+    provider_called = False
+
+    def fail_if_provider_called(**_kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return {}
+
+    monkeypatch.setattr(allocator, "run_builder", fail_if_provider_called)
+    result = allocator._run_cpu(Namespace(output_dir=str(tmp_path)))
+    assert result["status"] == "blocked_before_allocation"
+    assert result["provider_mutation_attempted"] is False
+    assert result["blockers"] == ["pin_missing"]
+    assert provider_called is False
+
+
+def test_cpu_build_cli_rechecks_prerequisites_before_detached_supervisor(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_run_cpu_prerequisite_gate",
+        lambda _output: {"status": "blocked", "blockers": ["pin_missing"]},
+    )
+    supervisor_called = False
+
+    def fail_if_supervisor_called(**_kwargs):
+        nonlocal supervisor_called
+        supervisor_called = True
+        return {}
+
+    monkeypatch.setattr(
+        allocator, "launch_detached_builder", fail_if_supervisor_called
+    )
+    exit_code = allocator.main(
+        [
+            "cpu-build",
+            "--output-dir",
+            str(tmp_path),
+            "--packet-manifest",
+            "packet.json",
+            "--builder-evidence",
+            "builder.json",
+            "--spend",
+            "spend.json",
+            "--login-private-key",
+            "login-key",
+            "--host-private-key",
+            "host-key",
+            "--ssh-key-id",
+            "1",
+            "--allow-paid",
+        ]
+    )
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().out) == {"success": False}
+    assert supervisor_called is False

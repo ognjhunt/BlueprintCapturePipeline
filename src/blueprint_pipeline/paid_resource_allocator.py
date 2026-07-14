@@ -29,6 +29,10 @@ from .groot_oscar_runpod_canary import run_canary
 from .paid_resource_admission import require_paid_resource_admission
 
 
+ROOT = Path(__file__).resolve().parents[2]
+CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
+
+
 def _add_cpu_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--packet-manifest", required=True)
@@ -75,6 +79,16 @@ def _cpu_vector(args: argparse.Namespace) -> list[str]:
 
 
 def _run_cpu(args: argparse.Namespace) -> dict:
+    prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
+    if prerequisite.get("status") != "ready":
+        return {
+            "schema_version": "blueprint.cpu_build_allocator_result.v1",
+            "status": "blocked_before_allocation",
+            "blockers": prerequisite.get(
+                "blockers", ["groot_oscar_live_prerequisites_not_ready"]
+            ),
+            "provider_mutation_attempted": False,
+        }
     return run_builder(
         output_dir=Path(args.output_dir),
         packet_manifest_path=Path(args.packet_manifest),
@@ -89,6 +103,41 @@ def _run_cpu(args: argparse.Namespace) -> dict:
         region=args.region,
         allow_paid=args.allow_paid,
     )
+
+
+def _run_cpu_prerequisite_gate(output_dir: Path) -> dict:
+    """Run the read-only upstream gate before a provider create call."""
+    output = output_dir.expanduser().resolve()
+    ensure_dir(output)
+    evidence = output / CPU_BUILD_PREREQUISITE_EVIDENCE
+    verifier = ROOT / "scripts/verify_groot_oscar_live_prerequisites.py"
+    completed = subprocess.run(
+        [sys.executable, str(verifier), "--live", "--output", str(evidence)],
+        cwd=str(ROOT),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if evidence.is_file():
+        result = _load(evidence)
+    else:
+        result = {
+            "schema": "groot_oscar_live_prerequisites.v1",
+            "status": "blocked",
+            "live": True,
+            "blockers": [
+                "groot_oscar_live_prerequisite_verifier_failed_without_evidence"
+            ],
+            "checks": {},
+            "verifier_exit_code": completed.returncode,
+        }
+        write_json(evidence, result)
+    if completed.returncode != 0 and result.get("status") == "ready":
+        result["status"] = "blocked"
+        result["blockers"] = ["groot_oscar_live_prerequisite_verifier_exit_nonzero"]
+        result["verifier_exit_code"] = completed.returncode
+        write_json(evidence, result)
+    return result
 
 
 def _load(path: str | Path) -> dict:
@@ -170,9 +219,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "cpu-build":
-        result = launch_detached_builder(
-            output_dir=Path(args.output_dir), run_arguments=_cpu_vector(args)
-        )
+        prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
+        if prerequisite.get("status") != "ready":
+            result = {
+                "status": "blocked_before_supervisor",
+                "blockers": prerequisite.get(
+                    "blockers", ["groot_oscar_live_prerequisites_not_ready"]
+                ),
+                "provider_mutation_attempted": False,
+            }
+        else:
+            result = launch_detached_builder(
+                output_dir=Path(args.output_dir), run_arguments=_cpu_vector(args)
+            )
         success = result.get("status") == "supervisor_started"
     elif args.command == "cpu-build-run":
         result = _run_cpu(args)

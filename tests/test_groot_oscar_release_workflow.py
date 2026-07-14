@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from scripts.verify_groot_oscar_live_prerequisites import verify_static
 from scripts.verify_groot_oscar_thin_architecture import verify
 
 
@@ -23,3 +24,13 @@ def test_thin_architecture_has_a_dedicated_network_free_ci_gate() -> None:
     workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "scripts/verify_groot_oscar_thin_architecture.py" in workflow
     assert verify() == []
+
+
+def test_paid_foundation_build_has_a_free_live_prerequisite_gate() -> None:
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "foundation-prerequisites:" in workflow
+    assert "runs-on: ubuntu-24.04" in workflow
+    assert "scripts/verify_groot_oscar_live_prerequisites.py" in workflow
+    assert "--live" in workflow
+    assert verify_static() == []

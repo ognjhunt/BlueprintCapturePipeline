@@ -5120,7 +5120,7 @@
             {
               "artifact_id": "REL-07-AC-01-EV-01",
               "path": ".github/workflows/ci.yml",
-              "sha256": "sha256:4ffcc0a854a15a6a5c59afa10e9f8ecfa05748291fef1c8d77f61e98918858dc",
+              "sha256": "sha256:02bf6ae479574e83ade1a30796a9b79810415c1c995b15dd905da1f812b48432",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

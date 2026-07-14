@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""Verify external GR00T + OSCAR foundation inputs before paid builds.
+
+The static check binds this verifier to the canonical Dockerfile and model-cache
+contract.  ``--live`` performs only read-only network requests and downloads no
+model weights or container layers.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import gzip
+import hashlib
+import json
+import re
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable, Mapping, cast
+
+
+ROOT = Path(__file__).resolve().parents[1]
+IMAGE_ROOT = ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
+FOUNDATION = IMAGE_ROOT / "Foundation.Dockerfile"
+MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
+ISAAC_ASSET_MANIFEST = IMAGE_ROOT / "isaac_6_g1_assets.sha256"
+
+SCHEMA = "groot_oscar_live_prerequisites.v1"
+CUDA_REPOSITORY = (
+    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64"
+)
+ARTIFACTS = (
+    (
+        f"{CUDA_REPOSITORY}/cuda-keyring_1.1-1_all.deb",
+        "d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba",
+    ),
+    (
+        "https://github.com/casey/just/releases/download/1.43.0/"
+        "just-1.43.0-x86_64-unknown-linux-musl.tar.gz",
+        "a1bc93654f31669fd964ea3011a5e5e9676b9b6f8adcd762606e5140632ea72d",
+    ),
+    (
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/"
+        "onnxruntime-linux-x64-1.16.3.tgz",
+        "b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e",
+    ),
+)
+SOURCE_PINS = (
+    (
+        "NVIDIA/Isaac-GR00T",
+        "e5749287857afd97b78f1147166137de29746392",
+    ),
+    (
+        "wuzy2115/oscar-public",
+        "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    ),
+    (
+        "NVlabs/GR00T-WholeBodyControl",
+        "6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b",
+    ),
+)
+TENSORRT_VERSION = "10.4.0.26-1+cuda12.6"
+TENSORRT_PACKAGES = (
+    "libnvinfer-headers-dev",
+    "libnvinfer-headers-plugin-dev",
+    "libnvinfer10",
+    "libnvinfer-plugin10",
+    "libnvonnxparsers10",
+    "libnvinfer-dev",
+    "libnvinfer-plugin-dev",
+    "libnvonnxparsers-dev",
+)
+ISAAC_ASSET_BASE_URL = (
+    "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/"
+    "Isaac/6.0/Isaac/Robots/Unitree/G1/"
+)
+Fetch = Callable[[str], bytes]
+HeadSize = Callable[[str], int]
+
+
+def _assigned_literal(module: Path, name: str) -> object:
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    assignments: dict[str, ast.expr] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and node.value is not None:
+                    assignments[target.id] = node.value
+
+    def evaluate(node: ast.expr) -> object:
+        if isinstance(node, ast.Name) and node.id in assignments:
+            return evaluate(assignments[node.id])
+        if isinstance(node, ast.Tuple):
+            return tuple(evaluate(item) for item in node.elts)
+        if isinstance(node, ast.Dict):
+            return {
+                evaluate(key): evaluate(value)
+                for key, value in zip(node.keys, node.values)
+                if key is not None
+            }
+        return ast.literal_eval(node)
+
+    if name not in assignments:
+        raise ValueError(f"missing_literal:{name}")
+    return evaluate(assignments[name])
+
+
+def _fetch(url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json, application/json",
+            "User-Agent": "blueprint-foundation-prerequisite-verifier/1",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        return response.read()
+
+
+def _head_size(url: str) -> int:
+    request = urllib.request.Request(
+        url,
+        method="HEAD",
+        headers={"User-Agent": "blueprint-foundation-prerequisite-verifier/1"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        content_length = response.headers.get("Content-Length")
+    if content_length is None:
+        raise ValueError("content_length_absent")
+    return int(content_length)
+
+
+def _asset_rows() -> list[tuple[str, int, str]]:
+    rows: list[tuple[str, int, str]] = []
+    for line in ISAAC_ASSET_MANIFEST.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        digest, size, relative_path = line.split(maxsplit=2)
+        rows.append((digest, int(size), relative_path))
+    return rows
+
+
+def verify_static() -> list[str]:
+    blockers: list[str] = []
+    dockerfile = FOUNDATION.read_text(encoding="utf-8")
+    for url, digest in ARTIFACTS:
+        if url not in dockerfile or f"sha256:{digest}" not in dockerfile:
+            blockers.append(f"dockerfile_artifact_pin_mismatch:{url}")
+    for repository, revision in SOURCE_PINS:
+        if revision not in dockerfile or repository.split("/", 1)[1] not in dockerfile:
+            blockers.append(f"dockerfile_source_pin_mismatch:{repository}")
+    if f"ARG TENSORRT_VERSION={TENSORRT_VERSION}" not in dockerfile:
+        blockers.append("dockerfile_tensorrt_version_mismatch")
+    for package in TENSORRT_PACKAGES:
+        if f"{package}=${{TENSORRT_VERSION}}" not in dockerfile:
+            blockers.append(f"dockerfile_tensorrt_package_unpinned:{package}")
+    if ISAAC_ASSET_BASE_URL not in dockerfile:
+        blockers.append("dockerfile_isaac_asset_base_url_mismatch")
+
+    try:
+        assets = _asset_rows()
+    except (OSError, ValueError) as exc:
+        blockers.append(f"isaac_asset_manifest_unreadable:{exc}")
+    else:
+        if not assets:
+            blockers.append("isaac_asset_manifest_empty")
+        for digest, size, relative_path in assets:
+            if not re.fullmatch(r"[0-9a-f]{64}", digest) or size <= 0:
+                blockers.append(f"isaac_asset_manifest_invalid:{relative_path}")
+
+    model_pins = cast(
+        tuple[tuple[str, str, str], ...], _assigned_literal(MODEL_CACHE, "MODEL_PINS")
+    )
+    required_files = cast(
+        dict[str, tuple[str, ...]],
+        _assigned_literal(MODEL_CACHE, "REQUIRED_MODEL_FILES"),
+    )
+    if {row[0] for row in model_pins} != set(required_files):
+        blockers.append("model_pin_required_file_coverage_mismatch")
+    for name, _repository, revision in model_pins:
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            blockers.append(f"model_revision_not_immutable:{name}")
+        if not required_files.get(name):
+            blockers.append(f"model_required_files_empty:{name}")
+    return sorted(set(blockers))
+
+
+def _json_object(payload: bytes) -> Mapping[str, Any]:
+    decoded = json.loads(payload)
+    if not isinstance(decoded, dict):
+        raise ValueError("response_not_object")
+    return cast(Mapping[str, Any], decoded)
+
+
+def _packages_by_version(packages_gz: bytes) -> set[tuple[str, str]]:
+    text = gzip.decompress(packages_gz).decode("utf-8")
+    rows: set[tuple[str, str]] = set()
+    for stanza in text.split("\n\n"):
+        fields = dict(
+            line.split(": ", 1)
+            for line in stanza.splitlines()
+            if ": " in line and line.split(": ", 1)[0] in {"Package", "Version"}
+        )
+        if "Package" in fields and "Version" in fields:
+            rows.add((fields["Package"], fields["Version"]))
+    return rows
+
+
+def verify_live(
+    fetch: Fetch = _fetch, head_size: HeadSize = _head_size
+) -> tuple[list[str], dict[str, Any]]:
+    blockers = verify_static()
+    checks: dict[str, Any] = {}
+
+    for url, expected_digest in ARTIFACTS:
+        label = url.rsplit("/", 1)[-1]
+        try:
+            payload = fetch(url)
+            actual_digest = hashlib.sha256(payload).hexdigest()
+            checks[f"artifact:{label}"] = {
+                "bytes": len(payload),
+                "sha256": actual_digest,
+            }
+            if actual_digest != expected_digest:
+                blockers.append(f"artifact_checksum_mismatch:{label}")
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            blockers.append(f"artifact_unavailable:{label}:{type(exc).__name__}")
+
+    try:
+        package_rows = _packages_by_version(fetch(f"{CUDA_REPOSITORY}/Packages.gz"))
+        missing_packages = sorted(
+            package
+            for package in TENSORRT_PACKAGES
+            if (package, TENSORRT_VERSION) not in package_rows
+        )
+        checks["tensorrt_packages"] = {
+            "version": TENSORRT_VERSION,
+            "required": len(TENSORRT_PACKAGES),
+            "missing": missing_packages,
+        }
+        blockers.extend(f"tensorrt_package_unavailable:{row}" for row in missing_packages)
+    except (OSError, ValueError, gzip.BadGzipFile, urllib.error.URLError) as exc:
+        blockers.append(f"nvidia_package_index_unavailable:{type(exc).__name__}")
+
+    for repository, revision in SOURCE_PINS:
+        try:
+            metadata = _json_object(
+                fetch(f"https://api.github.com/repos/{repository}/commits/{revision}")
+            )
+            actual_revision = metadata.get("sha")
+            checks[f"source:{repository}"] = {"revision": actual_revision}
+            if actual_revision != revision:
+                blockers.append(f"source_revision_mismatch:{repository}")
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+            blockers.append(f"source_revision_unavailable:{repository}:{type(exc).__name__}")
+
+    asset_failures: list[str] = []
+    asset_bytes = 0
+    for _digest, expected_size, relative_path in _asset_rows():
+        try:
+            actual_size = head_size(ISAAC_ASSET_BASE_URL + relative_path)
+            asset_bytes += actual_size
+            if actual_size != expected_size:
+                asset_failures.append(relative_path)
+                blockers.append(f"isaac_asset_size_mismatch:{relative_path}")
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            asset_failures.append(relative_path)
+            blockers.append(
+                f"isaac_asset_unavailable:{relative_path}:{type(exc).__name__}"
+            )
+    checks["isaac_assets"] = {
+        "required": len(_asset_rows()),
+        "total_remote_bytes": asset_bytes,
+        "failures": sorted(asset_failures),
+    }
+
+    model_pins = cast(
+        tuple[tuple[str, str, str], ...], _assigned_literal(MODEL_CACHE, "MODEL_PINS")
+    )
+    required_files = cast(
+        dict[str, tuple[str, ...]],
+        _assigned_literal(MODEL_CACHE, "REQUIRED_MODEL_FILES"),
+    )
+    for name, repository, revision in model_pins:
+        try:
+            metadata = _json_object(
+                fetch(f"https://huggingface.co/api/models/{repository}/revision/{revision}")
+            )
+            actual_revision = metadata.get("sha")
+            siblings = metadata.get("siblings", [])
+            available = {
+                row.get("rfilename")
+                for row in siblings
+                if isinstance(row, dict) and isinstance(row.get("rfilename"), str)
+            }
+            missing = sorted(set(required_files[name]) - available)
+            checks[f"model:{name}"] = {
+                "repository": repository,
+                "revision": actual_revision,
+                "required": len(required_files[name]),
+                "missing": missing,
+            }
+            if actual_revision != revision:
+                blockers.append(f"model_revision_mismatch:{name}")
+            blockers.extend(f"model_file_unavailable:{name}:{path}" for path in missing)
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+            blockers.append(f"model_revision_unavailable:{name}:{type(exc).__name__}")
+
+    return sorted(set(blockers)), checks
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+
+    if args.live:
+        blockers, checks = verify_live()
+    else:
+        blockers, checks = verify_static(), {}
+    payload = {
+        "schema": SCHEMA,
+        "status": "blocked" if blockers else "ready",
+        "live": args.live,
+        "blockers": blockers,
+        "checks": checks,
+    }
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(encoded, encoding="utf-8")
+    print(encoded, end="")
+    return 2 if blockers else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

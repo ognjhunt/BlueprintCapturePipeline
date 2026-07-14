@@ -29,17 +29,34 @@ every declared model file by size and SHA-256 while offline, verifies the exact
 repository revisions and manifest self-digest, and only then links the verified
 GEAR-SONIC model assets into the WBC runtime tree.
 
-Before allocating a builder, run the network-free architecture gate:
+Before allocating a builder, run the network-free architecture gate and the
+read-only live prerequisite gate:
 
 ```bash
 python scripts/verify_groot_oscar_thin_architecture.py
+python scripts/verify_groot_oscar_live_prerequisites.py \
+  --live \
+  --output output/groot_oscar_live_prerequisites.json
 ```
 
-CI runs the same gate on every push and pull request. It rejects reintroduced
-WBC build trees, separate GR00T/OSCAR environments, unpinned bootstrap
-downloads, model acquisition in the release Dockerfile, incomplete critical
-model-file contracts, and mutable foundation/release seams before paid
-infrastructure is used.
+CI runs both gates on every push and pull request. The live gate downloads and
+hashes only the small pinned bootstrap archives, reads NVIDIA's Ubuntu 24.04
+package index, and inspects immutable GitHub and Hugging Face revision metadata;
+it also checks the declared Isaac asset URLs and byte sizes without downloading
+those assets. It does not pull a container or download model weights. It fails
+before paid allocation if an exact TensorRT package, source commit, model
+revision, or required model filename has disappeared or drifted. The
+network-free gate rejects reintroduced WBC build trees, separate GR00T/OSCAR
+environments, unpinned bootstrap downloads, model acquisition in the release
+Dockerfile, incomplete critical model-file contracts, and mutable
+foundation/release seams before paid infrastructure is used.
+
+The canonical `paid_resource_allocator cpu-build` command runs the live gate
+before starting its detached supervisor, and the supervisor runs it again
+immediately before the provider adapter can create a droplet. A blocked or
+missing evidence file therefore fails closed with
+`provider_mutation_attempted: false`; passing CI is not a substitute for the
+launch-time recheck.
 
 ## 1. Build the stable foundation
 
