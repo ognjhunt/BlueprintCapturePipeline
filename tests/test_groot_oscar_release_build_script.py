@@ -32,8 +32,7 @@ def test_release_runtime_smoke_precedes_push_and_binds_published_digest():
     assert "published_config_digest" in text
     assert "published_runtime_identity_matches_smoked_local_image" in text
     assert 'docker pull "$runtime_image_ref"' not in text
-    assert 'payload.get("Manifest")' in text
-    assert 'payload.get("manifest")' not in text
+    assert 'payload.get("manifest") or payload.get("Manifest")' in text
 
 
 def test_release_image_uses_runtime_only_wbc_multistage_closure():

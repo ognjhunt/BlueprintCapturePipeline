@@ -566,7 +566,11 @@ if [[ "$allow_push" == "true" && "$registry_diagnostic_exit" -eq 0 && "$supply_c
   promoted_digest="$(docker buildx imagetools inspect --format '{{json .}}' "$image_ref" | python3 -c '
 import json, re, sys
 payload = json.load(sys.stdin)
-manifest = payload.get("Manifest") if isinstance(payload, dict) else None
+manifest = (
+    payload.get("manifest") or payload.get("Manifest")
+    if isinstance(payload, dict)
+    else None
+)
 digest = str(manifest.get("digest") or "") if isinstance(manifest, dict) else ""
 if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
     raise SystemExit("promoted release tag digest missing")
