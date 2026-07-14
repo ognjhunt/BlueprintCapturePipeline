@@ -290,6 +290,35 @@ def _json_object(payload: bytes) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], decoded)
 
 
+def summarize_required_model_metadata(
+    siblings: object, required_paths: tuple[str, ...]
+) -> tuple[dict[str, Mapping[str, Any]], list[str], list[str], int]:
+    """Return exact required-file availability and sizing from HF metadata."""
+
+    rows = siblings if isinstance(siblings, list) else []
+    available = {
+        str(row.get("rfilename")): row
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("rfilename"), str)
+    }
+    missing = sorted(set(required_paths) - set(available))
+    invalid_sizes = sorted(
+        path
+        for path in required_paths
+        if path in available
+        and (
+            type(available[path].get("size")) is not int
+            or available[path]["size"] <= 0
+        )
+    )
+    required_bytes = sum(
+        int(available[path]["size"])
+        for path in required_paths
+        if path in available and path not in invalid_sizes
+    )
+    return available, missing, invalid_sizes, required_bytes
+
+
 def _packages_by_version(packages_gz: bytes) -> set[tuple[str, str]]:
     text = gzip.decompress(packages_gz).decode("utf-8")
     rows: set[tuple[str, str]] = set()
@@ -481,30 +510,50 @@ def verify_live(
         dict[str, tuple[str, ...]],
         _assigned_literal(MODEL_CACHE, "REQUIRED_MODEL_FILES"),
     )
+    required_model_cache_bytes = 0
+    required_model_cache_files = 0
     for name, repository, revision in model_pins:
         try:
             metadata = _json_object(
-                fetch(f"https://huggingface.co/api/models/{repository}/revision/{revision}")
+                fetch(
+                    f"https://huggingface.co/api/models/{repository}/revision/"
+                    f"{revision}?blobs=true"
+                )
             )
             actual_revision = metadata.get("sha")
-            siblings = metadata.get("siblings", [])
-            available = {
-                row.get("rfilename")
-                for row in siblings
-                if isinstance(row, dict) and isinstance(row.get("rfilename"), str)
-            }
-            missing = sorted(set(required_files[name]) - available)
+            _available, missing, invalid_sizes, model_bytes = (
+                summarize_required_model_metadata(
+                    metadata.get("siblings", []), required_files[name]
+                )
+            )
+            required_model_cache_bytes += model_bytes
+            required_model_cache_files += len(required_files[name])
             checks[f"model:{name}"] = {
                 "repository": repository,
                 "revision": actual_revision,
                 "required": len(required_files[name]),
+                "required_bytes": model_bytes,
                 "missing": missing,
+                "invalid_sizes": invalid_sizes,
             }
             if actual_revision != revision:
                 blockers.append(f"model_revision_mismatch:{name}")
             blockers.extend(f"model_file_unavailable:{name}:{path}" for path in missing)
+            blockers.extend(
+                f"model_file_size_unavailable:{name}:{path}" for path in invalid_sizes
+            )
         except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
             blockers.append(f"model_revision_unavailable:{name}:{type(exc).__name__}")
+
+    checks["model_cache_plan"] = {
+        "required_files": required_model_cache_files,
+        "required_bytes": required_model_cache_bytes,
+        "minimum_volume_size_gib": 30,
+        "recommended_volume_size_gib": 50,
+        "provider_volume_verified": False,
+        "model_bytes_downloaded_or_hashed": False,
+        "claim_boundary": "metadata sizing is not offline model-cache verification",
+    }
 
     return sorted(set(blockers)), checks
 

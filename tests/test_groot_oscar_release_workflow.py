@@ -3,6 +3,7 @@ from pathlib import Path
 
 from scripts.verify_groot_oscar_live_prerequisites import (
     _verify_isaac_base_image,
+    summarize_required_model_metadata,
     verify_static,
 )
 from scripts.verify_groot_oscar_thin_architecture import verify
@@ -70,3 +71,18 @@ def test_isaac_base_manifest_verification_fails_closed_without_leaking_token() -
     assert blockers == ["isaac_base_image_digest_mismatch"]
     assert check["linux_amd64_present"] is True
     assert token not in json.dumps(check)
+
+
+def test_model_metadata_sizing_fails_closed_for_missing_or_unknown_sizes() -> None:
+    available, missing, invalid_sizes, required_bytes = summarize_required_model_metadata(
+        [
+            {"rfilename": "weights.bin", "size": 123},
+            {"rfilename": "config.json", "size": None},
+            {"rfilename": "ignored.txt", "size": 999},
+        ],
+        ("weights.bin", "config.json", "tokenizer.json"),
+    )
+    assert set(available) == {"weights.bin", "config.json", "ignored.txt"}
+    assert missing == ["tokenizer.json"]
+    assert invalid_sizes == ["config.json"]
+    assert required_bytes == 123
