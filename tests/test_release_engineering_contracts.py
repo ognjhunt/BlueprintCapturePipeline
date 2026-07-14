@@ -302,8 +302,11 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "cppzmq-dev" in wbc_builder
     assert "test ! -d third_party/cppzmq/.git" in wbc_builder
     assert foundation.count("apt-cache madison libnvinfer10") == 2
-    assert foundation.count("'$3 == version { found=1 } END { exit !found }'") == 2
+    assert foundation.count("'$3 == version { found=1 } END { exit !found }'") == 3
     assert foundation.count("libnvinfer10=${TENSORRT_VERSION}") == 2
+    assert "ARG CUDA_CUDART_VERSION=12.6.77-1" in foundation
+    assert "apt-cache madison cuda-cudart-12-6" in foundation
+    assert "cuda-cudart-12-6=${CUDA_CUDART_VERSION}" in foundation
     assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in foundation
     assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation
     assert "uv venv /opt/oscar-venv --python 3.10 --seed" in foundation

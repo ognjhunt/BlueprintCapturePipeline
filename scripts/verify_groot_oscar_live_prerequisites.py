@@ -84,6 +84,7 @@ SOURCE_REQUIRED_FILES = {
     ),
 }
 TENSORRT_VERSION = "10.4.0.26-1+cuda12.6"
+CUDA_CUDART_VERSION = "12.6.77-1"
 TENSORRT_PACKAGES = (
     "libnvinfer-headers-dev",
     "libnvinfer-headers-plugin-dev",
@@ -229,6 +230,10 @@ def verify_static() -> list[str]:
             blockers.append(f"dockerfile_source_pin_mismatch:{repository}")
     if f"ARG TENSORRT_VERSION={TENSORRT_VERSION}" not in dockerfile:
         blockers.append("dockerfile_tensorrt_version_mismatch")
+    if f"ARG CUDA_CUDART_VERSION={CUDA_CUDART_VERSION}" not in dockerfile:
+        blockers.append("dockerfile_cuda_cudart_version_mismatch")
+    if "cuda-cudart-12-6=${CUDA_CUDART_VERSION}" not in dockerfile:
+        blockers.append("dockerfile_cuda_cudart_package_unpinned")
     for package in TENSORRT_PACKAGES:
         if f"{package}=${{TENSORRT_VERSION}}" not in dockerfile:
             blockers.append(f"dockerfile_tensorrt_package_unpinned:{package}")
@@ -377,6 +382,15 @@ def verify_live(
             "missing": missing_packages,
         }
         blockers.extend(f"tensorrt_package_unavailable:{row}" for row in missing_packages)
+        cuda_cudart_missing = (
+            ("cuda-cudart-12-6", CUDA_CUDART_VERSION) not in package_rows
+        )
+        checks["cuda_cudart_package"] = {
+            "version": CUDA_CUDART_VERSION,
+            "missing": cuda_cudart_missing,
+        }
+        if cuda_cudart_missing:
+            blockers.append("cuda_cudart_package_unavailable:cuda-cudart-12-6")
     except (OSError, ValueError, gzip.BadGzipFile, urllib.error.URLError) as exc:
         blockers.append(f"nvidia_package_index_unavailable:{type(exc).__name__}")
 

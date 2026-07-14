@@ -10,6 +10,7 @@ ARG OSCAR_SOURCE_REF=4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb
 ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
 ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
 ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
+ARG CUDA_CUDART_VERSION=12.6.77-1
 
 FROM ${ISAAC_SIM_BASE_IMAGE} AS tensorrt-base
 USER root
@@ -139,11 +140,13 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG APP_UID=10001
 ARG APP_GID=10001
-ARG GROOT_SOURCE_REF OSCAR_SOURCE_REF WBC_SOURCE_REF TENSORRT_VERSION
+ARG GROOT_SOURCE_REF OSCAR_SOURCE_REF WBC_SOURCE_REF TENSORRT_VERSION CUDA_CUDART_VERSION
 RUN apt-get update \
   && apt-cache madison libnvinfer10 | awk -v version="${TENSORRT_VERSION}" '$3 == version { found=1 } END { exit !found }' \
+  && apt-cache madison cuda-cudart-12-6 | awk -v version="${CUDA_CUDART_VERSION}" '$3 == version { found=1 } END { exit !found }' \
   && apt-get install -y --no-install-recommends \
       libosmesa6 ffmpeg ca-certificates gettext-base libzmq5 libyaml-cpp0.8 zlib1g \
+      cuda-cudart-12-6=${CUDA_CUDART_VERSION} \
       libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
       libnvonnxparsers10=${TENSORRT_VERSION} \
   && installed_build_packages="$(dpkg-query -W -f='${binary:Package}\n' build-essential clang cmake git git-lfs ninja-build pkg-config 2>/dev/null || true)" \
