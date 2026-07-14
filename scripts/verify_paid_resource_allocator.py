@@ -14,6 +14,11 @@ CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
+THIN_ENTRYPOINT = (
+    ROOT
+    / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh"
+)
+RUNPOD_WATCHDOG = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_watchdog.py"
 LEGACY_BUILD_SCRIPTS = (
     ROOT / "scripts/build_push_groot_oscar_foundation_image.sh",
     ROOT / "scripts/build_push_groot_oscar_release_image.sh",
@@ -46,6 +51,8 @@ def verify() -> list[str]:
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
     thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
+    thin_entrypoint = THIN_ENTRYPOINT.read_text(encoding="utf-8")
+    runpod_watchdog = RUNPOD_WATCHDOG.read_text(encoding="utf-8")
     runbook = RUNBOOK.read_text(encoding="utf-8")
 
     if "run_builder(" not in canonical or "run_canary(" not in canonical:
@@ -90,6 +97,12 @@ def verify() -> list[str]:
         blockers.append("cpu_teardown_error_evidence_missing")
     if "digitalocean_builder_teardown_unverified" not in cpu:
         blockers.append("cpu_teardown_unverified_blocker_missing")
+    if "_delete_with_fail_closed_evidence" not in cpu_calls.get("watchdog", set()):
+        blockers.append("cpu_watchdog_teardown_error_evidence_missing")
+    if 'set -- blueprint-run-robot-eval-worker "$@"' not in thin_entrypoint:
+        blockers.append("thin_release_worker_executable_restore_missing")
+    if "teardown_unverified" not in runpod_watchdog:
+        blockers.append("gpu_watchdog_teardown_error_evidence_missing")
     if 'item.get("size")' not in thin_release:
         blockers.append("thin_release_native_registry_layer_size_missing")
     gpu_calls = _function_calls(GPU_ADAPTER)

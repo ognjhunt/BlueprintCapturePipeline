@@ -43,7 +43,21 @@ def arm_watchdog(
 def terminate_canary_resources(
     *, provider: Any, pod_name_prefix: str, armed: Mapping[str, Any]
 ) -> dict[str, Any]:
-    inventory = provider.billable_inventory(name_prefix=pod_name_prefix)
+    try:
+        inventory = provider.billable_inventory(name_prefix=pod_name_prefix)
+    except Exception as exc:  # noqa: BLE001 - persist terminal watchdog uncertainty
+        return {
+            **dict(armed),
+            "status": "teardown_unverified",
+            "completed_at": utc_now_iso(),
+            "initial_inventory": {"api_confirmed": False},
+            "terminations": [],
+            "final_inventory": {"api_confirmed": False},
+            "provider_absence_confirmed": False,
+            "provider_mutations_performed": 0,
+            "teardown_error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
     resources = inventory.get("resources")
     resources = resources if isinstance(resources, list) else []
     terminations: list[dict[str, Any]] = []
@@ -53,9 +67,20 @@ def terminate_canary_resources(
         if not instance_id:
             terminations.append({"status": "blocked", "reason": "resource_id_missing"})
             continue
-        result = provider.terminate(instance_id)
+        try:
+            result = provider.terminate(instance_id)
+        except Exception as exc:  # noqa: BLE001 - continue bounded name-scope cleanup
+            result = {
+                "status": "teardown_unverified",
+                "error_type": type(exc).__name__,
+            }
         terminations.append({"instance_id": instance_id, **dict(result)})
-    final_inventory = provider.billable_inventory(name_prefix=pod_name_prefix)
+    try:
+        final_inventory = provider.billable_inventory(name_prefix=pod_name_prefix)
+        final_error_type = None
+    except Exception as exc:  # noqa: BLE001 - persist terminal watchdog uncertainty
+        final_inventory = {"api_confirmed": False}
+        final_error_type = type(exc).__name__
     absent = bool(
         final_inventory.get("api_confirmed") is True
         and final_inventory.get("live_resource_count") == 0
@@ -69,6 +94,8 @@ def terminate_canary_resources(
         "final_inventory": final_inventory,
         "provider_absence_confirmed": absent,
         "provider_mutations_performed": len(terminations),
+        "teardown_error_type": final_error_type,
+        "raw_secret_values_recorded": False,
     }
 
 
@@ -89,11 +116,24 @@ def run_watchdog(
     )
     while clock() < deadline_epoch:
         sleeper(min(10.0, max(0.0, deadline_epoch - clock())))
-    result = terminate_canary_resources(
-        provider=provider_factory("runpod"),
-        pod_name_prefix=pod_name_prefix,
-        armed=armed,
-    )
+    try:
+        provider = provider_factory("runpod")
+    except Exception as exc:  # noqa: BLE001 - evidence must survive provider init failure
+        result = {
+            **dict(armed),
+            "status": "teardown_unverified",
+            "completed_at": utc_now_iso(),
+            "provider_absence_confirmed": False,
+            "provider_mutations_performed": 0,
+            "teardown_error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    else:
+        result = terminate_canary_resources(
+            provider=provider,
+            pod_name_prefix=pod_name_prefix,
+            armed=armed,
+        )
     write_json(root / EVIDENCE_NAME, result)
     return result
 

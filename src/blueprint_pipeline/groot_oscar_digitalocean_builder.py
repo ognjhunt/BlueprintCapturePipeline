@@ -462,7 +462,9 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
             )
             return 0
         time.sleep(15)
-    result = _delete_and_verify(token=_read_secret(token_file), droplet_id=droplet_id)
+    result = _delete_with_fail_closed_evidence(
+        token=_read_secret(token_file), droplet_id=droplet_id
+    )
     payload = {
         "schema_version": WATCHDOG_SCHEMA_VERSION,
         "status": (

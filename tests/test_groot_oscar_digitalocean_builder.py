@@ -59,6 +59,28 @@ def test_teardown_transport_error_is_persistable_fail_closed(monkeypatch) -> Non
     assert "lost delete response" not in json.dumps(result)
 
 
+def test_digitalocean_watchdog_persists_teardown_transport_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from blueprint_pipeline.groot_oscar_digitalocean_builder import watchdog
+
+    state = tmp_path / "allocation_state.json"
+    state.write_text(
+        json.dumps({"droplet_id": "123", "deadline_epoch": 0}), encoding="utf-8"
+    )
+    token_file = tmp_path / "token"
+    token_file.write_text("secret", encoding="utf-8")
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._delete_and_verify",
+        lambda **_kwargs: (_ for _ in ()).throw(TimeoutError("secret response")),
+    )
+    assert watchdog(state_path=state, token_file=token_file) == 2
+    persisted = json.loads((tmp_path / "watchdog_result.json").read_text())
+    assert persisted["status"] == "teardown_unverified"
+    assert persisted["teardown_error_type"] == "TimeoutError"
+    assert "secret response" not in json.dumps(persisted)
+
+
 def test_ambiguous_create_reconciliation_deletes_exact_name_tag_match(
     monkeypatch,
 ) -> None:

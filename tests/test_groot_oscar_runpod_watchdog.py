@@ -1,4 +1,9 @@
-from blueprint_pipeline.groot_oscar_runpod_watchdog import terminate_canary_resources
+import json
+
+from blueprint_pipeline.groot_oscar_runpod_watchdog import (
+    run_watchdog,
+    terminate_canary_resources,
+)
 
 
 class _Provider:
@@ -30,3 +35,43 @@ def test_watchdog_reaps_every_name_bound_resource_and_proves_absence() -> None:
         "pod-1",
         "pod-2",
     ]
+
+
+def test_watchdog_inventory_error_returns_secret_safe_unverified_evidence() -> None:
+    class Provider:
+        def billable_inventory(self, *, name_prefix: str):
+            del name_prefix
+            raise TimeoutError("secret provider response")
+
+    result = terminate_canary_resources(
+        provider=Provider(),
+        pod_name_prefix="blueprint-groot-oscar-canary-attempt-",
+        armed={"status": "armed"},
+    )
+    assert result["status"] == "teardown_unverified"
+    assert result["provider_absence_confirmed"] is False
+    assert result["teardown_error_type"] == "TimeoutError"
+    assert "secret provider response" not in json.dumps(result)
+
+
+def test_watchdog_persists_provider_factory_error(tmp_path) -> None:
+    def fail_provider(_name: str):
+        raise TimeoutError("secret provider initialization")
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-groot-oscar-canary-attempt-",
+        deadline_epoch=10_000_000_000.0,
+        provider_factory=fail_provider,
+        clock=lambda: 10_000_000_000.0,
+        sleeper=lambda _seconds: None,
+    )
+    persisted = json.loads(
+        (tmp_path / "groot_oscar_runpod_canary_watchdog.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result == persisted
+    assert persisted["status"] == "teardown_unverified"
+    assert persisted["teardown_error_type"] == "TimeoutError"
+    assert "secret provider initialization" not in json.dumps(persisted)
