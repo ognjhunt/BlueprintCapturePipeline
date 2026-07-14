@@ -46,6 +46,8 @@ cloud = [
     "google-cloud-storage>=2.10.0",
     "google-cloud-pubsub>=2.21.0",
     "boto3>=1.34.0",
+    "google-auth>=2.0.0",
+    "requests>=2.31.0",
 ]
 runtime = [
     "opencv-python-headless>=4.10.0",
@@ -312,6 +314,12 @@ blueprint-audit-first-gpu-candidates = "blueprint_pipeline.first_gpu_candidate_a
 blueprint-audit-first-gpu-sample-video = "blueprint_pipeline.first_gpu_sample_video_preflight:main"
 blueprint-stage-first-gpu-sample-video = "blueprint_pipeline.first_gpu_sample_video_stage:main"
 blueprint-audit-first-gpu-cross-repo-readiness = "blueprint_pipeline.cross_repo_first_gpu_readiness:main"
+blueprint-run-production-gpu-worker-pool = "blueprint_pipeline.production_gpu_worker_pool:main"
+blueprint-run-production-gpu-worker-agent = "blueprint_pipeline.production_gpu_worker_agent:main"
+blueprint-run-production-gpu-warm-watchdog = "blueprint_pipeline.production_gpu_warm_watchdog:main"
+blueprint-build-production-gpu-launch-qualification = "blueprint_pipeline.production_gpu_launch_qualification:main"
+blueprint-run-production-gpu-rollback-drill = "blueprint_pipeline.production_gpu_rollback_drill:main"
+blueprint-run-production-gpu-replenishment-probe = "blueprint_pipeline.production_gpu_replenishment_probe:main"
 
 [project.urls]
 Homepage = "https://tryblueprint.io"

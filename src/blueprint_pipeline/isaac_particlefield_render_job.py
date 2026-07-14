@@ -1171,7 +1171,7 @@ def main(argv=None) -> int:
     ap.add_argument("--source", help="capture splat (.ply/.spz) or ParticleField .usdc")
     ap.add_argument("--out-dir")
     ap.add_argument("--cameras-file", default="cameras.json", choices=["cameras.json", "cameras_canary.json"])
-    ap.add_argument("--provider", default="runpod", choices=["runpod", "vast"],
+    ap.add_argument("--provider", default="runpod", choices=["runpod", "vast", "digitalocean", "gcp", "aws"],
                     help="GPU backend (provider-agnostic launch; bundle/watch identical)")
     ap.add_argument("--allow-paid", action="store_true", help="spend GPU (otherwise prepare+stage only)")
     ap.add_argument("--cold", action="store_true", help="force cold on-demand create")

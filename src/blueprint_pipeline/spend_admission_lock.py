@@ -24,6 +24,7 @@ SCHEMA_VERSION = "blueprint.paid_spend_admission_lock.v1"
 OVERRIDE_SCHEMA_VERSION = "blueprint.paid_spend_override.v1"
 HARD_STOP_USD = 5000.0
 REQUIRED_BILLING_PROVIDERS = {"runpod", "vast", "digitalocean"}
+SUPPORTED_BILLING_PROVIDERS = REQUIRED_BILLING_PROVIDERS | {"gcp", "aws"}
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_EXPORT_SCOPE = "blueprint_beta_100_user_cohort"
 MAX_LOCK_AGE_SECONDS = 5 * 60
@@ -97,12 +98,15 @@ def _inventory_contract_blockers(value: object) -> list[str]:
     rows = [_mapping(item) for item in value]
     providers = [str(row.get("provider") or "").strip() for row in rows]
     blockers: list[str] = []
-    if len(rows) != len(REQUIRED_BILLING_PROVIDERS) or set(providers) != (
-        REQUIRED_BILLING_PROVIDERS
+    provider_set = set(providers)
+    if (
+        len(rows) != len(provider_set)
+        or not REQUIRED_BILLING_PROVIDERS.issubset(provider_set)
+        or not provider_set.issubset(SUPPORTED_BILLING_PROVIDERS)
     ):
         blockers.append("provider_inventory_coverage_incomplete")
     for row, provider in zip(rows, providers, strict=False):
-        if provider not in REQUIRED_BILLING_PROVIDERS:
+        if provider not in SUPPORTED_BILLING_PROVIDERS:
             blockers.append(f"provider_inventory_unexpected:{provider or 'missing'}")
             continue
         if row.get("required") is not True:
@@ -331,9 +335,10 @@ def build_spend_admission_lock(
     if billing.get("scope") != BILLING_EXPORT_SCOPE:
         blockers.append("billing_reconciliation_scope_invalid")
     billing_totals = billing.get("provider_totals_usd")
-    if not isinstance(billing_totals, Mapping) or set(billing_totals) != (
-        REQUIRED_BILLING_PROVIDERS
-    ):
+    inventory_provider_set = {
+        str(row.get("provider") or "").strip() for row in inventory_rows
+    }
+    if not isinstance(billing_totals, Mapping) or set(billing_totals) != inventory_provider_set:
         blockers.append("billing_reconciliation_provider_coverage_incomplete")
     billing_generated_at = _parse_time(billing.get("generated_at"))
     if (
@@ -515,7 +520,12 @@ def validate_spend_admission_lock(
     ):
         blockers.append("spend_admission_lock_billing_contract_invalid")
     totals = billing.get("provider_totals_usd")
-    if not isinstance(totals, Mapping) or set(totals) != REQUIRED_BILLING_PROVIDERS:
+    inventory_provider_set = {
+        str(item.get("provider") or "").strip()
+        for item in row.get("provider_inventory") or []
+        if isinstance(item, Mapping)
+    }
+    if not isinstance(totals, Mapping) or set(totals) != inventory_provider_set:
         blockers.append("spend_admission_lock_billing_provider_coverage_incomplete")
     billing_generated_at = _parse_time(billing.get("generated_at"))
     if (

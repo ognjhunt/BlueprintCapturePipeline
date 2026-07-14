@@ -263,8 +263,10 @@ dependencies = [
 [package.optional-dependencies]
 cloud = [
     { name = "boto3" },
+    { name = "google-auth" },
     { name = "google-cloud-pubsub" },
     { name = "google-cloud-storage" },
+    { name = "requests" },
 ]
 dev = [
     { name = "bandit" },
@@ -364,6 +366,7 @@ requires-dist = [
     { name = "dm-tree", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.1.8" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-auth", specifier = ">=2.0.0" },
+    { name = "google-auth", marker = "extra == 'cloud'", specifier = ">=2.0.0" },
     { name = "google-cloud-pubsub", marker = "extra == 'cloud'", specifier = ">=2.21.0" },
     { name = "google-cloud-storage", specifier = ">=2.10.0" },
     { name = "google-cloud-storage", marker = "extra == 'cloud'", specifier = ">=2.10.0" },
@@ -393,6 +396,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "pyzmq", marker = "extra == 'dev'", specifier = ">=26.0" },
+    { name = "requests", marker = "extra == 'cloud'", specifier = ">=2.31.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "safetensors", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.4.0" },
     { name = "timm", marker = "extra == 'groot-libero-cpu'", specifier = ">=1.0.0" },

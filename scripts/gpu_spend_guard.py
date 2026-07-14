@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GPU spend guard — report RunPod/Vast/DigitalOcean GPU spend and reap orphans.
+"""GPU spend guard — report configured GPU-provider spend and reap orphans.
 
 A standalone cost watchdog. It reads file-based credentials from
 ``~/.blueprint-secrets`` (``runpod_api_key``, ``vast_api_key``, and
@@ -64,7 +64,8 @@ VAST_API = "https://console.vast.ai/api/v0"
 DEFAULT_MAX_BOOT_SECONDS = 480
 DEFAULT_MAX_BOOTED_ORPHAN_SECONDS = 4 * 60 * 60
 DEFAULT_WARM_LEASE_SECONDS = 15 * 60
-PROVIDERS = ("runpod", "vast", "digitalocean")
+PROVIDERS = ("runpod", "vast", "digitalocean", "gcp", "aws")
+BILLING_BASE_PROVIDERS = ("runpod", "vast", "digitalocean")
 MAX_BILLING_EXPORT_BYTES = 1024 * 1024
 ALLOWED_PROVIDER_API_HOSTS = frozenset(
     {"rest.runpod.io", "console.vast.ai", "api.digitalocean.com"}
@@ -276,12 +277,33 @@ def _parse_do_droplet(droplet: Mapping[str, Any], *, now: float) -> GpuInstance:
     )
 
 
+def _parse_cloud_vm(resource: Mapping[str, Any], *, provider: str, now: float) -> GpuInstance:
+    """Normalize a GCP/AWS resource returned by the first-class render adapter."""
+    status = str(resource.get("status") or "").lower()
+    terminal = {"terminated", "shutting-down"}
+    booted = status == "running"
+    started = _iso_to_epoch(resource.get("created_at"))
+    return GpuInstance(
+        provider=provider,
+        id=str(resource.get("instance_id") or ""),
+        name=str(resource.get("name") or ""),
+        state=status or "unknown",
+        booted=booted,
+        # Stopped VMs retain billable disks and remain inventory until deleted.
+        live=status not in terminal,
+        cost_per_hr=_coerce_float(resource.get("cost_per_hour")) or 0.0,
+        age_seconds=max(0.0, now - started) if started is not None else None,
+    )
+
+
 def collect_instances(
     *,
     now: float,
     runpod_pods: Sequence[Mapping[str, Any]] | None = None,
     vast_instances: Sequence[Mapping[str, Any]] | None = None,
     do_droplets: Sequence[Mapping[str, Any]] | None = None,
+    gcp_instances: Sequence[Mapping[str, Any]] | None = None,
+    aws_instances: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[GpuInstance]:
     """Parse raw provider JSON rows into :class:`GpuInstance` records (no network)."""
     instances: list[GpuInstance] = []
@@ -294,6 +316,12 @@ def collect_instances(
     for droplet in do_droplets or []:
         if isinstance(droplet, Mapping):
             instances.append(_parse_do_droplet(droplet, now=now))
+    for resource in gcp_instances or []:
+        if isinstance(resource, Mapping):
+            instances.append(_parse_cloud_vm(resource, provider="gcp", now=now))
+    for resource in aws_instances or []:
+        if isinstance(resource, Mapping):
+            instances.append(_parse_cloud_vm(resource, provider="aws", now=now))
     return instances
 
 
@@ -604,6 +632,31 @@ def fetch_do_droplets(token: str, *, timeout: int = 30) -> list[dict[str, Any]]:
     ]
 
 
+def cloud_provider_configured(provider: str) -> bool:
+    """Return whether the explicit account/location contract is configured."""
+    try:
+        from blueprint_pipeline.gpu_render_providers import get_render_provider
+
+        availability = get_render_provider(provider).available()
+    except Exception:  # noqa: BLE001 - configuration uncertainty is false
+        return False
+    return availability.get("available") is True
+
+
+def fetch_cloud_vm_instances(provider: str, *, timeout: int = 30) -> list[dict[str, Any]]:
+    """Use the provider adapter's authenticated, scoped inventory API."""
+    del timeout  # provider adapters own their bounded per-call timeouts
+    from blueprint_pipeline.gpu_render_providers import get_render_provider
+
+    inventory = get_render_provider(provider).billable_inventory(name_prefix="blueprint")
+    if inventory.get("api_confirmed") is not True:
+        raise ProviderInventoryError(provider, int(inventory.get("http") or 0))
+    rows = inventory.get("resources")
+    if not isinstance(rows, list):
+        raise ProviderInventoryError(provider, 0)
+    return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+
 def _inventory_query(
     *,
     provider: str,
@@ -707,7 +760,12 @@ def reconcile_billing_export(
     if not isinstance(totals, Mapping):
         blockers.append("provider_billing_export_totals_missing")
         totals = {}
-    required_providers = set(PROVIDERS) if required else live_providers
+    # Backward-compatible exports always cover the original fleet. Newly added
+    # providers become mandatory as soon as they have live inventory; an
+    # unconfigured provider does not make every historical export invalid.
+    required_providers = (
+        set(BILLING_BASE_PROVIDERS) | live_providers if required else live_providers
+    )
     missing = sorted(provider for provider in required_providers if provider not in totals)
     if missing:
         blockers.extend(f"provider_billing_export_missing:{provider}" for provider in missing)
@@ -751,7 +809,13 @@ def _warn(message: str) -> None:
 # The render job writes the launched provider id into the run's
 # object_store_real_run dir: started_pod_id.txt (RunPod) / started_vast_instance_id.txt
 # (Vast). Both confer ownership — protect either against reaping.
-OWNER_ID_FILENAMES = ("started_pod_id.txt", "started_vast_instance_id.txt", "started_do_droplet_id.txt")
+OWNER_ID_FILENAMES = (
+    "started_pod_id.txt",
+    "started_vast_instance_id.txt",
+    "started_do_droplet_id.txt",
+    "started_gcp_instance_name.txt",
+    "started_aws_instance_id.txt",
+)
 
 
 def _iter_owner_id_files(
@@ -1002,6 +1066,46 @@ def terminate_instance(
             "verification_http": verification_http,
             "absence_verified": False,
             "reason": "digitalocean_droplet_absence_not_verified",
+        }
+    if inst.provider in {"gcp", "aws"}:
+        try:
+            from blueprint_pipeline.gpu_render_providers import get_render_provider
+
+            provider = get_render_provider(inst.provider)
+            result = provider.terminate(inst.id)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "terminate_failed",
+                "absence_verified": False,
+                "error_type": type(exc).__name__,
+            }
+        if result.get("status") != "terminated":
+            return {
+                "status": "terminate_failed",
+                "absence_verified": False,
+                "provider_result_status": result.get("status"),
+            }
+        for attempt in range(max(1, verification_attempts)):
+            inventory = provider.billable_inventory(name_prefix="blueprint")
+            resources = inventory.get("resources")
+            if inventory.get("api_confirmed") is True and isinstance(resources, list):
+                live_ids = {
+                    str(row.get("instance_id") or "")
+                    for row in resources
+                    if isinstance(row, Mapping)
+                }
+                if inst.id not in live_ids:
+                    return {
+                        "status": "terminated",
+                        "absence_verified": True,
+                        "verification_attempts": attempt + 1,
+                    }
+            if attempt + 1 < max(1, verification_attempts):
+                time.sleep(max(0.0, verification_delay_seconds))
+        return {
+            "status": "terminate_unverified",
+            "absence_verified": False,
+            "reason": f"{inst.provider}_instance_absence_not_verified",
         }
     return {"status": "blocked", "reason": "unknown_provider"}
 
@@ -1351,10 +1455,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "runpod": runpod_key,
         "vast": vast_key,
         "digitalocean": do_token,
+        "gcp": "configured" if cloud_provider_configured("gcp") else None,
+        "aws": "configured" if cloud_provider_configured("aws") else None,
     }
     configured = {provider for provider, value in credentials.items() if value}
     required_providers = (
-        set(PROVIDERS)
+        configured
         if args.admission_lock_report
         else (set(args.require_provider) or configured)
     )
@@ -1381,16 +1487,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout=args.timeout,
         required="digitalocean" in required_providers,
     )
-    inventory_results = [runpod_inventory, vast_inventory, do_inventory]
+    gcp_instances, gcp_inventory = _inventory_query(
+        provider="gcp",
+        credential=credentials["gcp"],
+        fetch=lambda _credential, *, timeout: fetch_cloud_vm_instances("gcp", timeout=timeout),
+        timeout=args.timeout,
+        required="gcp" in required_providers,
+    )
+    aws_instances, aws_inventory = _inventory_query(
+        provider="aws",
+        credential=credentials["aws"],
+        fetch=lambda _credential, *, timeout: fetch_cloud_vm_instances("aws", timeout=timeout),
+        timeout=args.timeout,
+        required="aws" in required_providers,
+    )
+    inventory_results = [
+        runpod_inventory,
+        vast_inventory,
+        do_inventory,
+        gcp_inventory,
+        aws_inventory,
+    ]
     inventory_blocked = any(result.get("blockers") for result in inventory_results)
     if not configured:
         print(
-            "No file-based GPU credentials found; provider inventory is unknown and blocked.",
+            "No file-based GPU credentials or configured cloud identity found; "
+            "provider inventory is unknown and blocked.",
             file=sys.stderr,
         )
     instances = collect_instances(
         now=now, runpod_pods=runpod_pods, vast_instances=vast_instances,
         do_droplets=do_droplets,
+        gcp_instances=gcp_instances,
+        aws_instances=aws_instances,
     )
 
     roots = [Path(p) for p in (args.output_root or default_output_roots())]
@@ -1465,7 +1594,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 billing_reconciliation=billing_reconciliation,
                 instances=report["instances"],
                 reap_results=reap_results,
-                inventory_results=inventory_results,
+                inventory_results=[
+                    result for result in inventory_results
+                    if result.get("required") is True
+                ],
                 override_path=Path(args.admission_override)
                 if args.admission_override
                 else None,

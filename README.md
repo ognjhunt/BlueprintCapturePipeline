@@ -20,6 +20,16 @@ contains, how to verify it, and its claim boundaries are documented in
 Every package export writes a fail-closed `buyer_package_readout.json` +
 `buyer_package_summary.md` and `replay_review_instructions.md`.
 
+Paid GPU operators can configure first-class GCP Compute Engine and AWS EC2
+adapters using [`docs/GCP_AWS_GPU_PROVIDER_SETUP.md`](docs/GCP_AWS_GPU_PROVIDER_SETUP.md).
+The current customer-facing lane uses RunPod Secure active workers, an exact
+cached worker digest, same-session readiness evidence, and an atomically leased
+warm pool; see
+[`docs/runbooks/production-gpu-startup-and-warm-pool.md`](docs/runbooks/production-gpu-startup-and-warm-pool.md).
+The production reliability golden path, campaign state machine, artifact
+contract, SLOs, ownership, and promotion rules are defined in
+[`docs/PRODUCTION_GPU_RELIABILITY_OPERATING_MODEL.md`](docs/PRODUCTION_GPU_RELIABILITY_OPERATING_MODEL.md).
+
 ## Scope
 
 Primary product path:

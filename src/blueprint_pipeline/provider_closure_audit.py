@@ -24,6 +24,8 @@ RUNPOD_CONFIG_FILE_ENV = "RUNPOD_CONFIG_FILE"
 DEFAULT_RUNPOD_CONFIG_FILE = "~/.runpod/config.toml"
 VAST_API_KEY_FILE_ENV = "VAST_API_KEY_FILE"
 DEFAULT_VAST_API_KEY_FILE = "~/.blueprint-secrets/vast_api_key"
+DEFAULT_GCP_ADC_FILE = "~/.config/gcloud/application_default_credentials.json"
+DEFAULT_AWS_CREDENTIALS_FILE = "~/.aws/credentials"
 
 FINALIZER_ARTIFACT_NAMES = (
     "provider_runtime_finalizer_proof.json",
@@ -289,6 +291,44 @@ def _credential_audit(provider: str) -> dict[str, Any]:
         return _runpod_credentials_configured()
     if provider == "vast":
         return _vast_credentials_configured()
+    if provider == "gcp":
+        configured_path = _string(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+        credential_file = _path_status(
+            Path(configured_path or DEFAULT_GCP_ADC_FILE).expanduser()
+        )
+        project_configured = bool(_string(os.getenv("BLUEPRINT_GCP_PROJECT")))
+        return {
+            "provider": provider,
+            "credential_configured": bool(credential_file.get("nonempty") and project_configured),
+            "application_default_credentials_file": credential_file,
+            "project_configured": project_configured,
+            "raw_secret_values_read": False,
+            "raw_secret_values_recorded": False,
+        }
+    if provider == "aws":
+        configured_path = _string(os.getenv("AWS_SHARED_CREDENTIALS_FILE"))
+        credential_file = _path_status(
+            Path(configured_path or DEFAULT_AWS_CREDENTIALS_FILE).expanduser()
+        )
+        profile_configured = bool(_string(os.getenv("AWS_PROFILE")))
+        account_configured = bool(_string(os.getenv("BLUEPRINT_AWS_ACCOUNT_ID")))
+        credential_chain_configured = bool(
+            credential_file.get("nonempty")
+            or profile_configured
+            or _string(os.getenv("AWS_ACCESS_KEY_ID"))
+            or _string(os.getenv("AWS_WEB_IDENTITY_TOKEN_FILE"))
+            or _string(os.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"))
+        )
+        return {
+            "provider": provider,
+            "credential_configured": bool(credential_chain_configured and account_configured),
+            "shared_credentials_file": credential_file,
+            "profile_configured": profile_configured,
+            "account_configured": account_configured,
+            "standard_credential_chain_configured": credential_chain_configured,
+            "raw_secret_values_read": False,
+            "raw_secret_values_recorded": False,
+        }
     runpod = _runpod_credentials_configured()
     vast = _vast_credentials_configured()
     return {

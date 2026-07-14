@@ -291,6 +291,7 @@ def test_cli_forwards_warm_serve_flags(monkeypatch, tmp_path: Path) -> None:
         "--serve-max-jobs", "3",
         "--serve-ready-timeout", "1200",
         "--startup-no-runtime-timeout", "600",
+        "--serve-production-warmup-before-ready",
     ])
 
     assert rc == 0
@@ -299,6 +300,35 @@ def test_cli_forwards_warm_serve_flags(monkeypatch, tmp_path: Path) -> None:
     assert captured["serve_max_jobs"] == 3
     assert captured["serve_ready_timeout"] == 1200
     assert captured["startup_no_runtime_timeout"] == 600
+    assert captured["serve_production_warmup_before_ready"] is True
+
+
+def test_production_warm_serve_launch_spec_carries_exact_release_and_probe_flag(
+    tmp_path: Path,
+) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_bundle_url.txt").write_text("https://objects.example/bundle.zip")
+    (job_dir / "provider_output_put_url.txt").write_text("https://objects.example/out.zip")
+    image = "docker.io/blueprint/worker@sha256:" + "a" * 64
+
+    spec = J.build_launch_spec(
+        job_dir,
+        image=image,
+        policy_id="groot_sonic",
+        steps=8,
+        serve=True,
+        serve_production_warmup_before_ready=True,
+    )
+
+    assert spec.env["BLUEPRINT_WORKER_IMAGE_REF"] == image
+    assert spec.env["PARITY_SERVE_PRODUCTION_WARMUP_BEFORE_READY"] == "1"
+    assert spec.env["BLUEPRINT_HOST_IMAGE_ID"] == "runpod-secure-active-worker-v1"
+    assert spec.env["BLUEPRINT_GPU_POOL_CLASS"] == (
+        "runpod-secure-l40s-preferred-a40-fallback"
+    )
+    assert "--serve-production-warmup-before-ready" in str(spec.bootstrap_argv)
+    assert "production_cache_evidence.json" in str(spec.bootstrap_argv)
 
 
 def test_cli_forwards_provider_race_list(monkeypatch, tmp_path: Path) -> None:
@@ -1235,7 +1265,9 @@ def test_job_prepared_plan_without_spend(tmp_path: Path, monkeypatch) -> None:
         "fps": 20,
         "warmup_frames": 6,
         "per_scenario_seconds": 420,
-        "expected_frame_count_per_scenario": 81,
+        "dynamic_episode_termination": True,
+        "episode_max_steps": 0,
+        "expected_frame_count_per_scenario": None,
     }
     assert m["launch_request_shape"]["steps"] == 81
     assert m["launch_request_shape"]["width"] == 640
@@ -3464,6 +3496,72 @@ def test_paid_warm_serve_block_occurs_before_any_provider_allocation(
     assert provider.terminated == []
 
 
+def test_paid_warm_serve_accepts_independent_bounded_teardown_supervisor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _install_fake_warm_serve_stack(monkeypatch, tmp_path, ready=True)
+    evidence_path = tmp_path / "watchdog.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    supervisor = {
+        "schema_version": "production_gpu_warm_watchdog.v1",
+        "status": "armed",
+        "independent_process": True,
+        "pid": 999_999,
+        "deadline_epoch": J.time.time() + 600,
+        "evidence_path": str(evidence_path),
+    }
+    evidence_path.write_text(json.dumps(supervisor), encoding="utf-8")
+    monkeypatch.setattr(J, "_external_process_alive", lambda pid: pid == 999_999)
+
+    manifest = J.run_isaac_g1_kitchen_parity_job(
+        scenarios=[],
+        out_dir=tmp_path / "job",
+        provider="runpod",
+        allow_paid=True,
+        serve=True,
+        serve_max_jobs=3,
+        serve_teardown_supervisor=supervisor,
+    )
+
+    assert manifest["status"] == "serving"
+    assert manifest["warm_serve_spend_policy"]["status"] == (
+        "bounded_by_external_teardown_supervisor"
+    )
+    assert provider.terminated == []
+
+
+def test_production_paid_warm_supervisor_requires_open_campaign_budget_reservation(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.production_gpu_campaign_budget import (
+        ProductionGpuCampaignBudget,
+    )
+
+    ledger_path = tmp_path / "campaign-budget.json"
+    ledger = ProductionGpuCampaignBudget(
+        ledger_path,
+        initial_spent_usd=3.0,
+        initial_used_gpu_seconds=8_815,
+    )
+    ledger.reserve(
+        reservation_id="qualification-reservation-one",
+        gpu_seconds=600,
+        max_hourly_rate_usd=1.0,
+    )
+    now = J.time.time()
+    supervisor = {
+        "campaign_budget_ledger": str(ledger_path),
+        "campaign_reservation_id": "qualification-reservation-one",
+        "armed_at_epoch": now,
+        "deadline_epoch": now + 600,
+    }
+
+    assert J._campaign_budget_reservation_valid(supervisor) is True
+    supervisor["campaign_reservation_id"] = "missing"
+    assert J._campaign_budget_reservation_valid(supervisor) is False
+
+
 def test_await_warm_serve_ready_requires_matching_launch_session(
     tmp_path: Path,
     monkeypatch,
@@ -3537,6 +3635,96 @@ def test_await_warm_serve_ready_accepts_matching_launch_session(
 
     assert res["ready"] is True
     assert res["serve_detail"]["launch_session_id"] == "fresh-session"
+
+
+def test_await_warm_serve_ready_production_mode_rejects_legacy_marker(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import io as _io
+    import zipfile as _zip
+
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    (jd / "launch_session_nonce.txt").write_text("fresh-session", encoding="utf-8")
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("bootstrap.json", json.dumps({"phase": "runner_starting"}))
+        z.writestr("warm_serve_ready.json", json.dumps({
+            "status": "serving",
+            "launch_session_id": "fresh-session",
+            "production_ready": False,
+        }))
+    clock = {"t": 0.0}
+    monkeypatch.setattr(J.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(J.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(
+        J, "_fetch_provider_artifact_bytes", lambda _url, **_kwargs: buf.getvalue()
+    )
+
+    result = J._await_warm_serve_ready(
+        jd,
+        instance_id="pod1",
+        timeout_s=2,
+        poll_interval_s=1,
+        require_production_ready=True,
+    )
+
+    assert result["ready"] is False
+    assert result["reason"] == "serve_ready_timeout"
+
+
+def test_production_ready_extracts_all_registration_evidence_layers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import io as _io
+    import zipfile as _zip
+
+    jd = tmp_path / "job"
+    jd.mkdir()
+    (jd / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=A")
+    (jd / "launch_session_nonce.txt").write_text("fresh-session", encoding="utf-8")
+    records = {
+        "production_host_boot_evidence.json": {
+            "schema_version": "production_gpu_host_boot_evidence.v1",
+            "host_image_id": "runpod-host-v1",
+        },
+        "production_cache_evidence.json": {
+            "schema_version": "production_gpu_cache_evidence.v1",
+            "worker_image_ref": "docker.io/worker@sha256:" + "a" * 64,
+        },
+        "warm_serve_ready.json": {
+            "schema_version": "production_gpu_warm_serve_ready.v2",
+            "status": "serving",
+            "launch_session_id": "fresh-session",
+            "production_ready": True,
+        },
+    }
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("bootstrap.json", json.dumps({"phase": "runner_starting"}))
+        for filename, record in records.items():
+            z.writestr(filename, json.dumps(record))
+    monkeypatch.setattr(J.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(J.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        J, "_fetch_provider_artifact_bytes", lambda _url, **_kwargs: buf.getvalue()
+    )
+
+    result = J._await_warm_serve_ready(
+        jd,
+        instance_id="pod1",
+        timeout_s=2,
+        poll_interval_s=1,
+        require_production_ready=True,
+    )
+
+    assert result["ready"] is True
+    assert set(result["registration_evidence_paths"]) == {"host", "cache", "warm"}
+    for path in result["registration_evidence_paths"].values():
+        assert Path(path).is_file()
 
 
 def test_await_warm_serve_ready_fails_fast_when_runner_done_without_ready(
