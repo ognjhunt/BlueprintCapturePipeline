@@ -91,6 +91,19 @@ def test_layer_report_orders_size_and_preserves_offline_rule():
     assert report["optimization_rules"]["offline_execution_required"] is True
 
 
+def test_layer_report_accepts_real_registry_diagnostic_size_field():
+    report = build_layer_report(
+        [
+            {"digest": "sha256:a", "size": 10, "created_by": "small"},
+            {"digest": "sha256:b", "size": 100, "created_by": "large"},
+        ]
+    )
+    assert report["status"] == "passed"
+    assert report["total_compressed_size_bytes"] == 110
+    assert report["largest_layer_size_bytes"] == 100
+    assert report["largest_layers"][0]["digest"] == "sha256:b"
+
+
 def test_layer_report_blocks_release_closure_growth():
     total_blocked = build_layer_report(
         [{"digest": "a", "size_bytes": 101, "created_by": "large"}],

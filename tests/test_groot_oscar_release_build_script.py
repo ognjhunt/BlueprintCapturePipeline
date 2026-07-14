@@ -17,6 +17,8 @@ def test_official_build_enables_buildkit_attestations_and_scans_registry_digest(
     assert "--format '{{json .Provenance}}'" in text
     assert '"WBC_SOURCE_REF=$wbc_ref"' in text
     assert '"GEAR_SONIC_CHECKPOINT_REVISION=$gear_checkpoint_revision"' in text
+    assert '"size_bytes": row.get("size")' in text
+    assert '"size_bytes": row.get("size_bytes")' not in text
 
 
 def test_release_runtime_smoke_precedes_push_and_binds_published_digest():

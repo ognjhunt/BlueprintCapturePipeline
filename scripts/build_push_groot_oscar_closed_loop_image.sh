@@ -478,7 +478,7 @@ created_by = {
 layers = [
     {
         "digest": row.get("digest"),
-        "size_bytes": row.get("size_bytes"),
+        "size_bytes": row.get("size"),
         "created_by": created_by.get(str(row.get("digest") or ""), ""),
     }
     for row in registry.get("layers") or [] if isinstance(row, dict)

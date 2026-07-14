@@ -145,10 +145,19 @@ def build_layer_report(
     max_total_compressed_bytes: int = MAX_IMAGE_COMPRESSED_BYTES,
     max_layer_bytes: int = MAX_IMAGE_LAYER_BYTES,
 ) -> dict[str, Any]:
+    def layer_size(layer: Mapping[str, Any]) -> int:
+        # Registry diagnostics use OCI's `size`; internal callers historically
+        # used `size_bytes`. Accept both without silently converting a present
+        # registry layer to zero bytes.
+        value = layer.get("size_bytes")
+        if value is None:
+            value = layer.get("size")
+        return int(value or 0)
+
     normalized = [
         {
             "digest": str(layer.get("digest") or ""),
-            "size_bytes": int(layer.get("size_bytes") or 0),
+            "size_bytes": layer_size(layer),
             "created_by": str(layer.get("created_by") or ""),
         }
         for layer in layers
