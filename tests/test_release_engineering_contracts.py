@@ -284,6 +284,21 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     assert 'revision=os.environ["GROOT_CHECKPOINT_REVISION"]' in groot_wam
 
 
+def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
+    foundation = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "FROM ${ISAAC_SIM_BASE_IMAGE} AS tensorrt-base" in foundation
+    assert "ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba" in foundation
+    assert "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb" in foundation
+    assert "FROM tensorrt-base AS wbc-builder" in foundation
+    assert foundation.count("apt-cache policy libnvinfer10") == 2
+    assert foundation.count("libnvinfer10=${TENSORRT_VERSION}") == 2
+    assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in foundation
+    assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation
+
+
 def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:
     """The ~8.7GB checkpoint layer must not be duplicated by a later chown.
 

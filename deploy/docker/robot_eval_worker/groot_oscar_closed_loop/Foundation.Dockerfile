@@ -11,6 +11,14 @@ ARG WBC_SOURCE_URL=https://github.com/NVlabs/GR00T-WholeBodyControl.git
 ARG WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
 ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
 
+FROM ${ISAAC_SIM_BASE_IMAGE} AS tensorrt-base
+USER root
+ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba \
+  https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
+  /tmp/cuda-keyring.deb
+RUN dpkg -i /tmp/cuda-keyring.deb \
+  && rm -f /tmp/cuda-keyring.deb
+
 FROM ${ISAAC_SIM_BASE_IMAGE} AS robot-env-builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -42,11 +50,13 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && mkdir -p /opt/oscar-runtime \
   && cp -a /tmp/oscar/. /opt/oscar-runtime/
 
-FROM ${ISAAC_SIM_BASE_IMAGE} AS wbc-builder
+FROM tensorrt-base AS wbc-builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG WBC_SOURCE_URL WBC_SOURCE_REF TENSORRT_VERSION
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+  && test "$(apt-cache policy libnvinfer10 | awk '/Candidate:/ {print $2}')" = "${TENSORRT_VERSION}" \
+  && apt-get install -y --no-install-recommends \
       build-essential clang cmake git git-lfs ninja-build pkg-config curl ca-certificates \
       libnvinfer-headers-dev=${TENSORRT_VERSION} libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
       libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
@@ -77,15 +87,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && test -x /opt/wbc-runtime/gear_sonic_deploy/target/release/g1_deploy_onnx_ref \
   && test -f /opt/wbc-runtime/.blueprint-source-revision
 
-FROM ${ISAAC_SIM_BASE_IMAGE}
+FROM tensorrt-base
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG APP_UID=10001
 ARG APP_GID=10001
-ARG GROOT_SOURCE_REF OSCAR_SOURCE_REF WBC_SOURCE_REF
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ARG GROOT_SOURCE_REF OSCAR_SOURCE_REF WBC_SOURCE_REF TENSORRT_VERSION
+RUN apt-get update \
+  && test "$(apt-cache policy libnvinfer10 | awk '/Candidate:/ {print $2}')" = "${TENSORRT_VERSION}" \
+  && apt-get install -y --no-install-recommends \
       libosmesa6 ffmpeg ca-certificates gettext-base sudo \
-      libnvinfer10 libnvinfer-plugin10 libnvonnxparsers10 \
+      libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
+      libnvonnxparsers10=${TENSORRT_VERSION} \
   && installed_build_packages="$(dpkg-query -W -f='${binary:Package}\n' build-essential clang cmake git git-lfs ninja-build pkg-config 2>/dev/null || true)" \
   && if [[ -n "${installed_build_packages}" ]]; then apt-get purge -y ${installed_build_packages}; fi \
   && apt-get autoremove -y \
