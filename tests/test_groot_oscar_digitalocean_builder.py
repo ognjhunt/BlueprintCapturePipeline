@@ -16,6 +16,7 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     known_hosts_line,
     launch_detached_builder,
     live_machine_probe_command,
+    observe_local_machine,
     parse_live_machine_probe,
     run_builder,
     verify_packet_tarball,
@@ -271,6 +272,36 @@ def test_live_machine_probe_rejects_catalog_or_requested_configuration() -> None
     )
     assert evidence["status"] == "blocked"
     assert "live_machine_observation_source_invalid" in evidence["blockers"]
+
+
+def test_local_machine_probe_requires_observed_builder_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Completed:
+        returncode = 0
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder.subprocess.run",
+        lambda *_args, **_kwargs: Completed(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder.shutil.which",
+        lambda _name: "/usr/bin/docker",
+    )
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: False
+        if self == Path("/root/blueprint-builder-ready")
+        else original_is_file(self),
+    )
+
+    evidence = observe_local_machine(mount_path=tmp_path)
+
+    assert evidence["builder_ready_marker"] is False
+    assert evidence["status"] == "blocked"
+    assert "live_machine_builder_initialization_incomplete" in evidence["blockers"]
 
 
 def test_builder_verifies_transfer_archive_digest_before_allocation(

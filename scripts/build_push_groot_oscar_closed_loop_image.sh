@@ -10,10 +10,8 @@
 #   ./scripts/build_push_groot_oscar_closed_loop_image.sh
 set -euo pipefail
 
-[[ "${BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT:-false}" == true ]] || {
-  echo "legacy build path disabled; use paid_resource_allocator cpu-build" >&2
-  exit 2
-}
+echo "legacy build path disabled; use paid_resource_allocator cpu-build" >&2
+exit 2
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 docker_dir="$repo_root/deploy/docker/robot_eval_worker/groot_oscar_closed_loop"

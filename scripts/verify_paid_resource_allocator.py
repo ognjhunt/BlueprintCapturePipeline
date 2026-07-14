@@ -71,11 +71,15 @@ def verify() -> list[str]:
     )
     if any(item in runbook for item in legacy_docs):
         blockers.append("runbook_recommends_legacy_paid_launcher")
-    if any(
-        "BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT" not in path.read_text(encoding="utf-8")
-        for path in LEGACY_BUILD_SCRIPTS
-    ):
-        blockers.append("legacy_cpu_build_script_not_hard_disabled")
+    for path in LEGACY_BUILD_SCRIPTS:
+        script = path.read_text(encoding="utf-8")
+        prefix = script.split("repo_root=", 1)[0]
+        if (
+            'echo "legacy build path disabled; use paid_resource_allocator cpu-build"' not in prefix
+            or "exit 2" not in prefix
+            or "BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT" in prefix
+        ):
+            blockers.append("legacy_cpu_build_script_not_hard_disabled")
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     if "paid_resource_allocator cpu-build-local" not in workflow:
         blockers.append("release_workflow_bypasses_canonical_cpu_allocator")
@@ -124,6 +128,10 @@ def verify() -> list[str]:
         blockers.append("gpu_watchdog_teardown_error_evidence_missing")
     if 'item.get("size")' not in thin_release:
         blockers.append("thin_release_native_registry_layer_size_missing")
+    if 'Path("/root/blueprint-builder-ready").is_file()' not in cpu:
+        blockers.append("local_cpu_builder_ready_marker_not_observed")
+    if "/root/blueprint-builder-ready" not in runbook:
+        blockers.append("local_cpu_builder_ready_marker_not_documented")
     packet_builder = (
         ROOT / "src/blueprint_pipeline/groot_oscar_thin_remote_build_packet.py"
     ).read_text(encoding="utf-8")

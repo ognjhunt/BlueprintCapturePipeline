@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from argparse import Namespace
 from pathlib import Path
 
@@ -101,6 +103,27 @@ def test_local_cpu_allocator_sets_canonical_context_after_both_admissions(
     assert result["status"] == "completed"
     assert observed["environment"]["BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT"] == "true"
     assert (tmp_path / "out/cpu_build_execution_admission.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        "build_push_groot_oscar_foundation_image.sh",
+        "build_push_groot_oscar_release_image.sh",
+        "build_push_groot_oscar_closed_loop_image.sh",
+    ],
+)
+def test_legacy_build_scripts_cannot_be_reenabled_by_environment(script_name: str) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts" / script_name
+    completed = subprocess.run(
+        ["bash", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT": "true"},
+    )
+    assert completed.returncode == 2
+    assert "legacy build path disabled" in completed.stderr
 
 
 def test_local_cpu_allocator_rejects_before_build_process_when_not_admitted(

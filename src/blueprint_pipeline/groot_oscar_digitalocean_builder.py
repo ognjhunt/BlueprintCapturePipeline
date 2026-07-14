@@ -145,7 +145,7 @@ def observe_local_machine(*, mount_path: str | Path) -> dict[str, Any]:
             "docker_cli_present": shutil.which("docker") is not None,
             "docker_daemon_responding": succeeds(["docker", "info"]),
             "docker_buildx_available": succeeds(["docker", "buildx", "version"]),
-            "builder_ready_marker": True,
+            "builder_ready_marker": Path("/root/blueprint-builder-ready").is_file(),
         }
     )
 

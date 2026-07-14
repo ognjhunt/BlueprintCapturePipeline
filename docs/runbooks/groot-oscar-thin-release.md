@@ -182,7 +182,9 @@ For the canonical automated path, dispatch
 `.github/workflows/groot-oscar-thin-release.yml` with an exact 40-character
 commit SHA and two versioned registry tags. The job only targets the
 `blueprint-large-docker` native Linux/x86_64 runner class, requires 120 GiB
-free before building, packages the clean commit into a byte-inventoried build
+free before building, and requires the provisioner-owned
+`/root/blueprint-builder-ready` file to exist on that live host. It packages
+the clean commit into a byte-inventoried build
 context, builds and pushes foundation first, feeds its resolved digest into the
 thin release build, and uploads both registry diagnostics plus the thin-layer
 contract. It cannot run on RunPod. A tag or a workflow success without the
