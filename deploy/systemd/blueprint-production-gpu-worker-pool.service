@@ -33,7 +33,7 @@ LimitNOFILE=65536
 MemoryMax=8G
 CPUQuota=200%
 EnvironmentFile=/etc/blueprint/production-gpu-worker-pool.env
-ExecStart=/usr/local/bin/python3 -m blueprint_pipeline.production_gpu_worker_pool --database /var/lib/blueprint/production-gpu-worker-pool.sqlite --host 127.0.0.1 --port 8790
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-production-gpu-worker-pool ]; then exec .venv/bin/blueprint-run-production-gpu-worker-pool --database /var/lib/blueprint/production-gpu-worker-pool.sqlite --host 127.0.0.1 --port 8790; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_gpu_worker_pool --database /var/lib/blueprint/production-gpu-worker-pool.sqlite --host 127.0.0.1 --port 8790'
 Restart=on-failure
 RestartSec=2
 
