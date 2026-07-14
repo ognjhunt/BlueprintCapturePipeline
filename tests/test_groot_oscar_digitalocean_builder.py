@@ -466,3 +466,85 @@ def test_run_builder_is_dry_and_does_not_read_secrets_without_paid_gate(
     assert result["provider_mutation_performed"] is False
     assert "builder_paid_mutation_not_authorized" in result["blockers"]
     assert "digitalocean_builder_allow_paid_flag_missing" in result["blockers"]
+
+
+def test_run_builder_persists_live_cost_cap_failure_before_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tarball = tmp_path / "packet.tar.gz"
+    tarball.write_bytes(b"bound-build-packet")
+    packet = {
+        "status": "ready",
+        "source_commit": "a" * 40,
+        "source_worktree_dirty": False,
+        "provider_launch_performed_by_packet": False,
+        "tarball_path": str(tarball),
+        "tarball_sha256": hashlib.sha256(tarball.read_bytes()).hexdigest(),
+    }
+    builder = {
+        "provider": "digitalocean",
+        "purpose": "image_build",
+        "platform": "linux/amd64",
+        "docker_daemon_verified": True,
+        "docker_buildx_verified": True,
+        "free_disk_bytes": 120 * 1024**3,
+        "registry_push_auth_file_verified": True,
+        "independent_teardown_watchdog": True,
+        "ssh_host_key_sha256": "SHA256:" + "d" * 43,
+        "ssh_host_key_independently_verified": True,
+        "ssh_host_key_verification_method": "launch_bound_generated_host_key",
+        "expected_source_commit": "a" * 40,
+    }
+    spend = {
+        "paid_mutation_authorized": True,
+        "max_spend_usd": 0.01,
+        "hard_ttl_seconds": 7200,
+        "one_resource_limit": True,
+        "independent_teardown_watchdog": True,
+    }
+    paths: dict[str, Path] = {}
+    for name, payload in (
+        ("packet", packet),
+        ("builder", builder),
+        ("spend", spend),
+    ):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        paths[name] = path
+    token_file = tmp_path / "do-token"
+    token_file.write_text("test-token", encoding="utf-8")
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._live_profile",
+        lambda **_kwargs: (
+            {
+                "status": "verified",
+                "blockers": [],
+                "observed": {"price_hourly_usd": 0.10},
+            },
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._host_key_material",
+        lambda _path: ("private", "public", "SHA256:" + "d" * 43),
+    )
+    missing = tmp_path / "not-read-before-cap"
+    output = tmp_path / "out"
+    result = run_builder(
+        output_dir=output,
+        packet_manifest_path=paths["packet"],
+        builder_evidence_path=paths["builder"],
+        spend_path=paths["spend"],
+        token_file=token_file,
+        docker_username_file=missing,
+        docker_password_file=missing,
+        login_private_key=missing,
+        host_private_key=missing,
+        ssh_key_id=1,
+        region="sfo3",
+        allow_paid=True,
+    )
+    assert result["status"] == "blocked_pre_allocation"
+    assert result["provider_mutation_performed"] is False
+    assert result["required_maximum_compute_spend_usd"] == pytest.approx(0.20)
+    assert json.loads((output / "builder_run_result.json").read_text()) == result

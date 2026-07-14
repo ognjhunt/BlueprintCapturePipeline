@@ -627,7 +627,13 @@ def run_builder(
     hourly = float(profile["observed"]["price_hourly_usd"])
     maximum_cost = hourly * ttl / 3600
     if maximum_cost > float(spend["max_spend_usd"]):
-        raise RuntimeError("digitalocean_builder_cost_exceeds_authorized_cap")
+        result = {
+            **_blocked_result(["digitalocean_builder_cost_exceeds_authorized_cap"]),
+            "required_maximum_compute_spend_usd": maximum_cost,
+            "authorized_maximum_spend_usd": float(spend["max_spend_usd"]),
+        }
+        write_json(output / "builder_run_result.json", result)
+        return result
     name = f"blueprint-groot-oscar-thin-{str(packet['source_commit'])[:8]}"
     user_data = build_cloud_init(
         host_private_b64=host_private_b64,
