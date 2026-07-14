@@ -4,6 +4,7 @@ import pytest
 
 from blueprint_pipeline.groot_oscar_release_hardening import (
     DiskAdmission,
+    STARTUP_MILESTONES,
     build_regional_mirror_plan,
     build_layer_report,
     evaluate_release_slos,
@@ -13,6 +14,7 @@ from blueprint_pipeline.groot_oscar_release_hardening import (
     validate_buildkit_provenance_binding,
     validate_registry_mirror_equivalence,
     validate_spdx_document,
+    validate_startup_timing,
 )
 
 
@@ -213,6 +215,17 @@ def test_release_slo_requires_complete_ordered_timing():
     assert evaluate_release_slos(timing)["status"] == "passed"
     timing["policy_ready"] = 400
     assert "cached_worker_ready_slo_missed" in evaluate_release_slos(timing)["blockers"]
+
+
+@pytest.mark.parametrize("invalid", [True, float("nan"), float("inf"), -0.1])
+def test_release_slo_rejects_invalid_timing_values(invalid):
+    timing = {name: float(index) for index, name in enumerate(STARTUP_MILESTONES)}
+    timing["policy_ready"] = invalid
+
+    assert "startup_timing_invalid:policy_ready" in validate_startup_timing(timing)
+    assert evaluate_release_slos(timing)["status"] == "blocked"
+    with pytest.raises(ValueError, match="startup_milestone_time_invalid"):
+        record_startup_milestone({}, "vm_allocation", invalid)
 
 
 def test_startup_milestones_are_append_only_and_monotonic():

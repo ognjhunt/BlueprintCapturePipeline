@@ -8,6 +8,12 @@ on:
       - deploy/docker/robot_eval_worker/groot_oscar_closed_loop/**
       - scripts/build_push_groot_oscar_closed_loop_image.sh
       - src/blueprint_pipeline/**
+      - "!src/blueprint_pipeline/gpu_campaign_*.py"
+      - "!src/blueprint_pipeline/production_gpu_*.py"
+      - "!src/blueprint_pipeline/cloud_vm_render_providers.py"
+      - "!src/blueprint_pipeline/gpu_render_providers.py"
+      - "!src/blueprint_pipeline/provider_closure_audit.py"
+      - "!src/blueprint_pipeline/spend_admission_lock.py"
       - src/blueprint_pipeline/groot_oscar_closed_loop_image.py
       - src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py
       - src/blueprint_pipeline/isaac_persistent_task_executor_service.py

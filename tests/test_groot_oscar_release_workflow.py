@@ -10,6 +10,9 @@ def test_release_workflow_is_serialized_and_excludes_docs_only_changes():
     assert "build-scan-once" in text
     assert "docs/**" not in text
     assert "src/blueprint_pipeline/**" in text
+    assert '"!src/blueprint_pipeline/gpu_campaign_*.py"' in text
+    assert '"!src/blueprint_pipeline/production_gpu_*.py"' in text
+    assert '"!src/blueprint_pipeline/cloud_vm_render_providers.py"' in text
     assert "src/blueprint_pipeline/gpu_campaign_state_machine.py" not in text
     assert "src/blueprint_pipeline/groot_oscar_release_hardening.py" in text
     assert "src/blueprint_pipeline/gear_sonic_official_zmq_executor.py" in text

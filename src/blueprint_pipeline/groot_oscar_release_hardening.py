@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -327,11 +328,28 @@ def record_startup_milestone(
     expected_index = len(timing)
     if expected_index >= len(STARTUP_MILESTONES) or STARTUP_MILESTONES[expected_index] != milestone:
         raise ValueError(f"startup_milestone_out_of_order:{milestone}")
-    previous = max((float(value) for value in timing.values()), default=-1.0)
+    if (
+        isinstance(elapsed_seconds, bool)
+        or not isinstance(elapsed_seconds, (int, float))
+        or not math.isfinite(float(elapsed_seconds))
+        or float(elapsed_seconds) < 0
+    ):
+        raise ValueError(f"startup_milestone_time_invalid:{milestone}")
+    normalized: dict[str, float] = {}
+    for key, value in timing.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0
+        ):
+            raise ValueError(f"startup_milestone_existing_time_invalid:{key}")
+        normalized[str(key)] = float(value)
+    previous = max(normalized.values(), default=-1.0)
     if float(elapsed_seconds) < previous:
         raise ValueError(f"startup_milestone_time_reversed:{milestone}")
     return {
-        **{str(key): float(value) for key, value in timing.items()},
+        **normalized,
         milestone: float(elapsed_seconds),
     }
 
@@ -341,8 +359,16 @@ def validate_startup_timing(timing: Mapping[str, Any]) -> list[str]:
     previous = -1.0
     for milestone in STARTUP_MILESTONES:
         value = timing.get(milestone)
-        if not isinstance(value, (int, float)):
+        if value is None:
             blockers.append(f"startup_timing_missing:{milestone}")
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0
+        ):
+            blockers.append(f"startup_timing_invalid:{milestone}")
             continue
         if float(value) < previous:
             blockers.append(f"startup_timing_out_of_order:{milestone}")
