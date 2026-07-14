@@ -1054,8 +1054,29 @@ def test_nonserializable_stage_result_cannot_preempt_teardown(tmp_path):
     assert ("terminate", "vm-1") in provider.calls
     assert result["teardown"]["billing_stopped"] is True
     assert any(
-        item.startswith("state_persistence_exception:TypeError") for item in result["blockers"]
+        item.startswith("TypeError:Object of type datetime is not JSON serializable")
+        for item in result["blockers"]
     )
+    persisted = json.loads((tmp_path / "campaign_state.json").read_text())
+    assert persisted["teardown"]["status"] == "passed"
+    assert persisted["teardown"]["billing_stopped"] is True
+
+
+def test_nonserializable_delete_response_preserves_terminal_teardown_proof(tmp_path):
+    class NonserializableDeleteProvider(FakeProvider):
+        def terminate(self, allocation_id):
+            result = super().terminate(allocation_id)
+            result["observed_at"] = datetime.now(timezone.utc)
+            return result
+
+    provider = NonserializableDeleteProvider()
+    result = CampaignMachine(config=config(), adapter=provider, state_dir=tmp_path).run()
+
+    assert result["status"] == "completed"
+    assert result["teardown"]["status"] == "passed"
+    assert result["teardown"]["delete_request"]["provider_response_unserializable"] is True
+    persisted = json.loads((tmp_path / "campaign_state.json").read_text())
+    assert persisted["teardown"]["billing_stopped"] is True
 
 
 def test_resumed_emergency_teardown_survives_read_only_state_file(tmp_path, monkeypatch):

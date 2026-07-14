@@ -373,6 +373,36 @@ class CampaignMachine:
                 state["blockers"].append(blocker)
             return False
 
+    @staticmethod
+    def _provider_evidence_mapping(value: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+        payload = dict(value)
+        try:
+            json.dumps(payload, sort_keys=True)
+            return payload
+        except (TypeError, ValueError) as exc:
+            summary = {
+                key: payload[key]
+                for key in ("status", "http", "absent", "allocation_id", "id")
+                if key in payload and isinstance(payload[key], (str, int, float, bool, type(None)))
+            }
+            summary.update(
+                {
+                    "provider_response_unserializable": True,
+                    "response_label": label,
+                    "error_type": type(exc).__name__,
+                }
+            )
+            return summary
+
+    @classmethod
+    def _provider_evidence_list(
+        cls, values: Sequence[Mapping[str, Any]], *, label: str
+    ) -> list[dict[str, Any]]:
+        return [
+            cls._provider_evidence_mapping(value, label=f"{label}[{index}]")
+            for index, value in enumerate(values)
+        ]
+
     def _initial_state(self, config_sha: str) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -424,7 +454,12 @@ class CampaignMachine:
         return state, config_sha
 
     def _checkpoint(self, state: dict[str, Any], stage: str, result: Mapping[str, Any]) -> None:
-        state["stage_results"][stage] = dict(result)
+        result_copy = dict(result)
+        # Validate external provider data before touching the live checkpoint.
+        # A failed serialization must leave state clean enough to persist the
+        # finally-equivalent teardown proof.
+        json.dumps(result_copy, sort_keys=True)
+        state["stage_results"][stage] = result_copy
         if stage not in state["completed_stages"]:
             state["completed_stages"].append(stage)
         self._write(self.state_path, state)
@@ -569,8 +604,16 @@ class CampaignMachine:
             can_delete_discovered = bool(state.get("allocation_mutation_pending"))
             if can_delete_discovered and discovered_inventory and all(discovered_ids):
                 for discovered_id in discovered_ids:
-                    delete_requests.append(dict(bounded(self.adapter.terminate, discovered_id)))
-                    inspections.append(dict(bounded(self.adapter.inspect, discovered_id)))
+                    delete_raw = dict(bounded(self.adapter.terminate, discovered_id))
+                    inspect_raw = dict(bounded(self.adapter.inspect, discovered_id))
+                    delete_requests.append(
+                        self._provider_evidence_mapping(delete_raw, label="teardown_delete_request")
+                    )
+                    inspections.append(
+                        self._provider_evidence_mapping(
+                            inspect_raw, label="teardown_provider_inspection"
+                        )
+                    )
                 final_inventory = list(bounded(self.adapter.inventory, inventory_key))
             else:
                 final_inventory = discovered_inventory
@@ -596,33 +639,43 @@ class CampaignMachine:
                 "billing_stopped": bool(not_required or teardown_passed),
                 "teardown_owner": self.teardown_owner,
                 "allocation_mutation_pending": can_delete_discovered,
-                "discovered_inventory": discovered_inventory,
+                "discovered_inventory": self._provider_evidence_list(
+                    discovered_inventory, label="discovered_inventory"
+                ),
                 "delete_requests": delete_requests,
                 "provider_inspections": inspections,
                 "elapsed_seconds": round(self.clock() - teardown_started, 3),
                 "deadline_seconds": int(teardown_deadline),
             }
-            state["final_inventory"] = final_inventory
+            state["final_inventory"] = self._provider_evidence_list(
+                final_inventory, label="final_inventory"
+            )
             if final_inventory and "provider_final_inventory_not_zero" not in state["blockers"]:
                 state["blockers"].append("provider_final_inventory_not_zero")
             if teardown_passed:
                 state["allocation_mutation_pending"] = False
             self._write_best_effort(self.state_path, state)
             return
-        teardown = dict(bounded(self.adapter.terminate, allocation_id))
-        inspection = dict(bounded(self.adapter.inspect, allocation_id))
-        absent = inspection.get("absent") is True or inspection.get("http") == 404
+        teardown_raw = dict(bounded(self.adapter.terminate, allocation_id))
+        inspection_raw = dict(bounded(self.adapter.inspect, allocation_id))
+        absent = inspection_raw.get("absent") is True or inspection_raw.get("http") == 404
         final_inventory = list(bounded(self.adapter.inventory, inventory_key))
         state["teardown"] = {
             "status": "passed" if absent and not final_inventory else "blocked",
-            "delete_request": teardown,
-            "provider_inspection": inspection,
+            "delete_request": self._provider_evidence_mapping(
+                teardown_raw, label="teardown_delete_request"
+            ),
+            "provider_inspection": self._provider_evidence_mapping(
+                inspection_raw, label="teardown_provider_inspection"
+            ),
             "billing_stopped": absent,
             "teardown_owner": self.teardown_owner,
             "elapsed_seconds": round(self.clock() - teardown_started, 3),
             "deadline_seconds": int(teardown_deadline),
         }
-        state["final_inventory"] = final_inventory
+        state["final_inventory"] = self._provider_evidence_list(
+            final_inventory, label="final_inventory"
+        )
         if not absent:
             state["blockers"].append("provider_teardown_ambiguous")
         if final_inventory:
