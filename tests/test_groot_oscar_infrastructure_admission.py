@@ -231,6 +231,7 @@ def _models() -> dict:
         "model_manifest_digest": MANIFEST_DIGEST,
         "cache_root": "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1",
         "provider_volume_id": "volume-1",
+        "verified_size_bytes": 20 * 1024**3,
         "checks": {"models_cached_offline": True},
     }
 
@@ -252,6 +253,7 @@ def _runtime() -> dict:
         "provider_api_verified": True,
         "data_center_id": "US-TX-3",
         "capacity_data_center_id": "US-TX-3",
+        "capacity_allowed_cuda_versions": ["12.6"],
         "gpu_type_id": "NVIDIA A40",
         "capacity_confidence": "advisory",
         "single_gpu_available": True,
@@ -302,6 +304,22 @@ def test_runpod_serve_plane_binds_cache_verification_to_volume_and_path() -> Non
     assert result["status"] == "blocked"
     assert "runpod_model_cache_verification_volume_mismatch" in result["blockers"]
     assert "runpod_model_cache_verification_path_mismatch" in result["blockers"]
+
+
+def test_runpod_serve_plane_rejects_volume_smaller_than_verified_cache() -> None:
+    models = _models()
+    models["verified_size_bytes"] = 60 * 1024**3
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=models,
+        volume=_volume(),
+        runtime=_runtime(),
+        spend=_serve_spend(),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_network_volume_smaller_than_verified_model_cache" in result[
+        "blockers"
+    ]
 
 
 def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:
@@ -385,3 +403,17 @@ def test_runpod_serve_plane_rejects_capacity_from_different_data_center() -> Non
     )
     assert result["status"] == "blocked"
     assert "runpod_gpu_capacity_not_verified_in_volume_data_center" in result["blockers"]
+
+
+def test_runpod_serve_plane_rejects_capacity_not_filtered_for_cuda() -> None:
+    runtime = _runtime()
+    runtime["capacity_allowed_cuda_versions"] = ["12.5"]
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=_models(),
+        volume=_volume(),
+        runtime=runtime,
+        spend=_serve_spend(),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_gpu_capacity_not_verified_for_cuda_version" in result["blockers"]

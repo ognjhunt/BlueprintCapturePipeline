@@ -146,6 +146,8 @@ def verify() -> list[str]:
         "runpod_model_cache_verification_path_mismatch",
         "runpod_model_cache_verification_volume_mismatch",
         "runpod_gpu_capacity_not_verified_in_volume_data_center",
+        "runpod_gpu_capacity_not_verified_for_cuda_version",
+        "runpod_network_volume_smaller_than_verified_model_cache",
     ):
         if fragment not in admission:
             blockers.append(f"runpod_model_cache_admission_binding_missing:{fragment}")

@@ -248,11 +248,19 @@ def build_runpod_gpu_runtime_evidence(
     confidence = _string(selected.get("capacity_confidence"))
     single_available = confidence == "advisory" and 1 in counts
     capacity_data_center_id = _string(selected.get("capacity_data_center_id"))
+    capacity_cuda_versions = selected.get("capacity_allowed_cuda_versions")
+    capacity_cuda_versions = (
+        [str(item) for item in capacity_cuda_versions]
+        if isinstance(capacity_cuda_versions, list)
+        else []
+    )
     provider_verified = (
         capacity.get("status") == "available"
         and bool(selected)
         and bool(data_center_id)
         and capacity_data_center_id == data_center_id
+        and bool(required_cuda_version)
+        and required_cuda_version in capacity_cuda_versions
     )
     return {
         "schema_version": "groot_oscar_runpod_gpu_runtime_evidence.v1",
@@ -260,6 +268,7 @@ def build_runpod_gpu_runtime_evidence(
         "provider_api_verified": provider_verified,
         "data_center_id": data_center_id,
         "capacity_data_center_id": capacity_data_center_id or None,
+        "capacity_allowed_cuda_versions": capacity_cuda_versions,
         "gpu_type_id": gpu_type_id,
         "capacity_confidence": confidence or "unknown",
         "single_gpu_available": single_available,
@@ -419,6 +428,7 @@ def build_runpod_serve_plane_admission(
     volume_id = _string(volume.get("id"))
     volume_dc = _string(volume.get("data_center_id"))
     volume_bytes = volume.get("size_bytes")
+    verified_cache_bytes = model_cache.get("verified_size_bytes")
     if volume.get("provider") != "runpod" or volume.get("provider_api_verified") is not True:
         blockers.append("runpod_network_volume_not_provider_verified")
     if not volume_id:
@@ -427,6 +437,10 @@ def build_runpod_serve_plane_admission(
         blockers.append("runpod_network_volume_data_center_missing")
     if type(volume_bytes) is not int or volume_bytes < MIN_MODEL_VOLUME_BYTES:
         blockers.append("runpod_network_volume_below_30_gib")
+    if type(verified_cache_bytes) is not int or verified_cache_bytes <= 0:
+        blockers.append("runpod_model_cache_verified_size_missing")
+    elif type(volume_bytes) is int and verified_cache_bytes > volume_bytes:
+        blockers.append("runpod_network_volume_smaller_than_verified_model_cache")
     cache_path = _string(volume.get("model_cache_path"))
     if not cache_path.startswith("/workspace/"):
         blockers.append("runpod_model_cache_path_must_be_under_workspace")
@@ -456,6 +470,12 @@ def build_runpod_serve_plane_admission(
     allowed_cuda = allowed_cuda if isinstance(allowed_cuda, list) else []
     if not required_cuda or required_cuda not in allowed_cuda:
         blockers.append("runpod_cuda_compatibility_not_bound")
+    capacity_cuda_versions = runtime.get("capacity_allowed_cuda_versions")
+    capacity_cuda_versions = (
+        capacity_cuda_versions if isinstance(capacity_cuda_versions, list) else []
+    )
+    if not required_cuda or required_cuda not in capacity_cuda_versions:
+        blockers.append("runpod_gpu_capacity_not_verified_for_cuda_version")
     if not release_cuda or release_cuda != required_cuda:
         blockers.append("runpod_cuda_version_differs_from_release")
     if not release_cuda_source.startswith("image_config_env:"):
@@ -497,6 +517,7 @@ def build_runpod_serve_plane_admission(
         "release_image_ref": release_ref or None,
         "model_manifest_digest": manifest_digest or None,
         "model_cache_path": cache_path or None,
+        "verified_model_cache_bytes": verified_cache_bytes,
         "network_volume_id": volume_id or None,
         "data_center_id": volume_dc or None,
         "gpu_type_id": _string(runtime.get("gpu_type_id")) or None,

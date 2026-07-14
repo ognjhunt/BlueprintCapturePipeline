@@ -109,6 +109,7 @@ def collect_runpod_preflight(
                 "cloudType": "SECURE",
                 "gpuTypeIds": [gpu_type_id],
                 "dataCenterIds": [str(volume.get("data_center_id") or "")],
+                "allowedCudaVersions": [required_cuda_version],
                 "requires_rtx": True,
             }
         )

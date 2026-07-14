@@ -245,6 +245,7 @@ def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
         del timeout
         assert key == "rp-key"
         assert 'dataCenterId: "US-TX-3"' in query
+        assert 'allowedCudaVersions: ["12.6"]' in query
         return 200, {
             "data": {
                 "gpuTypes": [
@@ -271,12 +272,17 @@ def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
         {
             "gpuTypeIds": ["NVIDIA A40"],
             "dataCenterIds": ["US-TX-3"],
+            "allowedCudaVersions": ["12.6"],
             "requires_rtx": True,
         }
     )
     assert result["status"] == "available"
     assert result["requested_data_center_ids"] == ["US-TX-3"]
+    assert result["requested_allowed_cuda_versions"] == ["12.6"]
     assert result["viable_gpu_types"][0]["capacity_data_center_id"] == "US-TX-3"
+    assert result["viable_gpu_types"][0]["capacity_allowed_cuda_versions"] == [
+        "12.6"
+    ]
 
 
 def test_runpod_capacity_preflight_supports_explicit_community_pool(monkeypatch) -> None:

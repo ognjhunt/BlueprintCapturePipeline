@@ -28,6 +28,9 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
                     "gpu_type_id": "NVIDIA A40",
                     "capacity_confidence": "advisory",
                     "capacity_data_center_id": request["dataCenterIds"][0],
+                    "capacity_allowed_cuda_versions": request[
+                        "allowedCudaVersions"
+                    ],
                     "available_gpu_counts": [1],
                     "on_demand_price_usd_per_hour": 0.44,
                 }

@@ -396,9 +396,15 @@ class RunPodRenderProvider(GpuRenderProvider):
             _string_list(req.get("gpuTypeIds")) or _runpod_gpu_types_from_env()
         )
         requested_data_centers = _string_list(req.get("dataCenterIds"))
+        requested_cuda_versions = _string_list(req.get("allowedCudaVersions"))
         data_center_filter = (
             f", dataCenterId: {json.dumps(','.join(requested_data_centers))}"
             if requested_data_centers
+            else ""
+        )
+        cuda_filter = (
+            f", allowedCudaVersions: {json.dumps(requested_cuda_versions)}"
+            if requested_cuda_versions
             else ""
         )
         min_gpu_ram_mb = _positive_int(req.get("min_gpu_ram_mb")) or 0
@@ -411,7 +417,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             memoryInGb
             secureCloud
             communityCloud
-            lowestPrice(input: {{gpuCount: 1, secureCloud: {secure_literal}{data_center_filter}}}) {{
+            lowestPrice(input: {{gpuCount: 1, secureCloud: {secure_literal}{data_center_filter}{cuda_filter}}}) {{
               stockStatus
               uninterruptablePrice
               availableGpuCounts
@@ -467,6 +473,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                     if len(requested_data_centers) == 1
                     else None
                 ),
+                "capacity_allowed_cuda_versions": requested_cuda_versions,
                 "requested_pool_capable": pool_capable,
                 "stock_status": stock,
                 "catalog_reported_stock": stock,
@@ -519,6 +526,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             "blockers": [] if viable else ["runpod_secure_rtx_capacity_unavailable"],
             "requested_gpu_types": list(requested_types),
             "requested_data_center_ids": requested_data_centers,
+            "requested_allowed_cuda_versions": requested_cuda_versions,
             "min_gpu_ram_mb": min_gpu_ram_mb,
             "requires_rtx": requires_rtx,
             "viable_gpu_types": viable,
