@@ -172,7 +172,7 @@ def _delete_volume(*, key: str, volume_id: str) -> dict[str, Any]:
 
 
 def _matching_resources(
-    *, key: str, pod_prefix: str, volume_prefix: str
+    *, key: str, pod_prefix: str | None, volume_prefix: str | None
 ) -> tuple[list[str], list[str], bool]:
     pods_http, pods_payload = _runpod_call("GET", "/pods", None, key=key, timeout=30)
     volumes_http, volumes_payload = _runpod_call(
@@ -192,14 +192,17 @@ def _matching_resources(
         str(row.get("id"))
         for row in pod_rows
         if isinstance(row, Mapping)
-        and str(row.get("name") or "").startswith(pod_prefix)
+        and (pod_prefix is None or str(row.get("name") or "").startswith(pod_prefix))
         and str(row.get("id") or "")
     ]
     volume_ids = [
         str(row.get("id"))
         for row in volume_rows
         if isinstance(row, Mapping)
-        and str(row.get("name") or "").startswith(volume_prefix)
+        and (
+            volume_prefix is None
+            or str(row.get("name") or "").startswith(volume_prefix)
+        )
         and str(row.get("id") or "")
     ]
     return pod_ids, volume_ids, inventory_verified
@@ -338,8 +341,8 @@ def run_model_volume(
     volume_name = f"{VOLUME_NAME_PREFIX}{suffix}"
     existing_pods, existing_volumes, inventory_verified = _matching_resources(
         key=key,
-        pod_prefix="",
-        volume_prefix="",
+        pod_prefix=None,
+        volume_prefix=None,
     )
     capacity = provider.capacity_preflight(
         {

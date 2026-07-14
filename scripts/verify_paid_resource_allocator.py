@@ -74,6 +74,10 @@ def verify() -> list[str]:
         blockers.append("model_volume_preparation_pod_teardown_missing")
     if "watchdog_handoff.json" not in model_volume:
         blockers.append("model_volume_independent_watchdog_missing")
+    if "pod_prefix=None" not in model_volume or "volume_prefix=None" not in model_volume:
+        blockers.append("model_volume_global_inventory_guard_missing")
+    if "build_runpod_network_volume_evidence(" not in model_volume:
+        blockers.append("model_volume_provider_reported_size_guard_missing")
     if "python -m blueprint_pipeline.paid_resource_allocator" not in runbook:
         blockers.append("canonical_allocator_command_missing_from_runbook")
     legacy_docs = (

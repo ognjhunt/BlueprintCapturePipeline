@@ -126,12 +126,22 @@ def test_model_volume_global_inventory_counts_unrelated_names(monkeypatch) -> No
     monkeypatch.setattr(model_volume, "_runpod_call", fake_call)
     pods, volumes, verified = _matching_resources(
         key="secret",
-        pod_prefix="",
-        volume_prefix="",
+        pod_prefix=None,
+        volume_prefix=None,
     )
     assert verified is True
     assert pods == ["other-pod"]
     assert volumes == ["other-volume"]
+
+
+def test_model_volume_uses_provider_reported_volume_size() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+    ).read_text(encoding="utf-8")
+    assert "build_runpod_network_volume_evidence(" in source
+    assert '"size_bytes": volume_size_gib * 1024**3' not in source
+    assert 'volume_evidence["size_bytes"] != volume_size_gib * 1024**3' in source
 
 
 def test_model_volume_rejects_provider_ids_that_can_escape_urls() -> None:
