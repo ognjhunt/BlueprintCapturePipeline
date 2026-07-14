@@ -465,7 +465,10 @@ def test_race_opens_pending_teardown_for_winner_and_closes_loser(
         [fast, dud],
         request={"spec": 1},
         marker_check=_marker_check,
-        marker_timeout=0.05,
+        # Pending-teardown records are fsynced before provider launch. Leave enough
+        # wall-clock headroom for a contended CI filesystem; the injected no-op
+        # sleep still keeps this unit test fast and deterministic.
+        marker_timeout=1,
         job_dir=tmp_path,
         poll_interval=0.01,
         prelaunch_guard={"can_launch": True, "blockers": []},
