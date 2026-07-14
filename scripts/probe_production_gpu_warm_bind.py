@@ -39,7 +39,10 @@ def _post(base_url: str, route: str, payload: Mapping[str, Any], token: str) -> 
         data=json.dumps(dict(payload)).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - origin constrained above
+    # The parsed origin is restricted to HTTPS or loopback and the joined target
+    # must retain that exact authority, so non-HTTP handlers and origin escapes
+    # are rejected before urlopen sees the request.
+    with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
         body = response.read(1024 * 1024 + 1)
     if len(body) > 1024 * 1024:
         raise ValueError("warm_bind_probe_response_too_large")
