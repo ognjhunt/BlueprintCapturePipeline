@@ -193,7 +193,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             execute=args.execute,
         )
         success = result.get("status") in {"dry_run_ready", "submitted"}
-    print(json.dumps(result, indent=2, sort_keys=True))
+    # Provider results can contain credential-bearing request fields. Persisted
+    # evidence remains in the explicitly selected output paths; stdout exposes
+    # only the derived success bit so CI and operators cannot leak the payload.
+    print(json.dumps({"success": success}, sort_keys=True))
     return 0 if success else 2
 
 

@@ -31,7 +31,7 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
     assert "bootcmd:" in text
     assert "systemctl restart ssh" not in text.split("package_update:", 1)[0]
     assert "systemctl restart ssh" in text
-    assert "docker.io" in text
+    assert text.splitlines().count("  - docker.io") == 1
     assert "docker-buildx" in text
     assert "docker info" in text
     assert "shutdown -h +120" in text
@@ -41,9 +41,7 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
 
 def test_cloud_init_refuses_ttl_above_two_hours() -> None:
     with pytest.raises(ValueError, match="shutdown_minutes"):
-        build_cloud_init(
-            host_private_b64="a", host_public_b64="b", shutdown_minutes=121
-        )
+        build_cloud_init(host_private_b64="a", host_public_b64="b", shutdown_minutes=121)
 
 
 def test_droplet_payload_uses_only_verified_profile() -> None:
@@ -57,9 +55,10 @@ def test_droplet_payload_uses_only_verified_profile() -> None:
 
 
 def test_known_hosts_line_uses_exact_launch_bound_ed25519_key() -> None:
-    assert known_hosts_line(
-        ip="203.0.113.5", public_key_text="ssh-ed25519 AAAAhostkey comment"
-    ) == "203.0.113.5 ssh-ed25519 AAAAhostkey\n"
+    assert (
+        known_hosts_line(ip="203.0.113.5", public_key_text="ssh-ed25519 AAAAhostkey comment")
+        == "203.0.113.5 ssh-ed25519 AAAAhostkey\n"
+    )
     with pytest.raises(ValueError, match="public_host_key_invalid"):
         known_hosts_line(ip="203.0.113.5", public_key_text="ssh-rsa AAAA")
 

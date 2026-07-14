@@ -82,9 +82,7 @@ DEFAULT_GROOT_VENV = "/opt/gr00t-venv"
 DEFAULT_WBC_ROOT = "/opt/wbc"
 DEFAULT_UNITREE_G1_USD = "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd"
 OFFICIAL_GEAR_SONIC_CHECKPOINT_REPO = "nvidia/GEAR-SONIC"
-OFFICIAL_GEAR_SONIC_CHECKPOINT_REVISION = (
-    "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
-)
+OFFICIAL_GEAR_SONIC_CHECKPOINT_REVISION = "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
 DEFAULT_OSCAR_VENV_PYTHON = "/opt/oscar-venv/bin/python"
 
 POLICY_SERVER_PORT = 5550
@@ -111,6 +109,7 @@ def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
 # --------------------------------------------------------------------------- #
 # image-ref resolution (mirrors _configured_isaac_worker_image_ref order)
 # --------------------------------------------------------------------------- #
+
 
 def configured_image_ref(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Resolve the sealed image ref: explicit env > secret file > generic env."""
@@ -164,7 +163,9 @@ def image_ref_launch_blockers(image_ref: str) -> list[str]:
         return ["missing_image_ref"]
     if ":" not in ref and "@sha256:" not in ref:
         return ["image_ref_must_be_versioned"]
-    tag = ref.rsplit("@", maxsplit=1)[0].rsplit(":", maxsplit=1)[-1] if "@sha256:" not in ref else ""
+    tag = (
+        ref.rsplit("@", maxsplit=1)[0].rsplit(":", maxsplit=1)[-1] if "@sha256:" not in ref else ""
+    )
     if tag in _UNSTABLE_TAGS:
         return ["image_ref_refuses_unstable_tag"]
     return []
@@ -173,6 +174,7 @@ def image_ref_launch_blockers(image_ref: str) -> list[str]:
 # --------------------------------------------------------------------------- #
 # sealed-mode gate
 # --------------------------------------------------------------------------- #
+
 
 def sealed_image_contract(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Fail-closed sealed-mode contract for the closed-loop launcher.
@@ -209,8 +211,7 @@ def sealed_image_contract(env: Mapping[str, str] | None = None) -> dict[str, Any
         "sonic_checkpoint": _string(env.get(SONIC_CHECKPOINT_ENV)) or DEFAULT_SONIC_CHECKPOINT,
         "unitree_g1_usd": _string(env.get(UNITREE_G1_USD_ENV)) or DEFAULT_UNITREE_G1_USD,
         "gear_sonic_checkpoint_repo": (
-            _string(env.get(GEAR_SONIC_CHECKPOINT_REPO_ENV))
-            or OFFICIAL_GEAR_SONIC_CHECKPOINT_REPO
+            _string(env.get(GEAR_SONIC_CHECKPOINT_REPO_ENV)) or OFFICIAL_GEAR_SONIC_CHECKPOINT_REPO
         ),
         "gear_sonic_checkpoint_revision": (
             _string(env.get(GEAR_SONIC_CHECKPOINT_REVISION_ENV))
@@ -228,6 +229,7 @@ def sealed_image_contract(env: Mapping[str, str] | None = None) -> dict[str, Any
 # --------------------------------------------------------------------------- #
 # launch plan (what the sealed image actually runs)
 # --------------------------------------------------------------------------- #
+
 
 def build_sealed_launch_plan(
     *,
@@ -295,21 +297,12 @@ def build_sealed_launch_plan(
         },
         "quality_gate_contract": {
             "min_coherent_horizon_frames": int(min_coherent_horizon_frames),
-            "forward_inverse_consistency_required": bool(
-                require_forward_inverse_consistency
-            ),
+            "forward_inverse_consistency_required": bool(require_forward_inverse_consistency),
             "forward_inverse_consistency_command": _string(wam_consistency_command) or None,
-            "forward_inverse_consistency_allow_scoring": bool(
-                allow_wam_consistency_scoring
-            ),
-            "generated_video_success_label_required": bool(
-                require_generated_video_success_label
-            ),
-            "generated_video_success_label_command": _string(wam_success_label_command)
-            or None,
-            "generated_video_success_label_allow_labeling": bool(
-                allow_wam_success_labeling
-            ),
+            "forward_inverse_consistency_allow_scoring": bool(allow_wam_consistency_scoring),
+            "generated_video_success_label_required": bool(require_generated_video_success_label),
+            "generated_video_success_label_command": _string(wam_success_label_command) or None,
+            "generated_video_success_label_allow_labeling": bool(allow_wam_success_labeling),
             "claim_boundary": {
                 "forward_inverse_consistency_is_required_for_eval_run_quality": bool(
                     require_forward_inverse_consistency
@@ -332,9 +325,7 @@ def build_sealed_launch_plan(
         require_forward_inverse_consistency
         and _string(wam_consistency_command) == DEFAULT_VISUAL_MOTION_SMOKE_COMMAND
     ):
-        plan["blockers"].append(
-            "visual_motion_smoke_cannot_satisfy_forward_inverse_consistency"
-        )
+        plan["blockers"].append("visual_motion_smoke_cannot_satisfy_forward_inverse_consistency")
         plan["sealed_active"] = False
         return plan
     if require_generated_video_success_label and not _string(wam_success_label_command):
@@ -346,11 +337,16 @@ def build_sealed_launch_plan(
     oscar_repo = contract["oscar_repo"]
     plan["groot_server_command"] = [
         contract["groot_venv_python"],
-        "-m", "gr00t.eval.run_gr00t_server",
-        "--model-path", contract["sonic_checkpoint"],
-        "--embodiment-tag", SONIC_EMBODIMENT_TAG,
-        "--device", str(device),
-        "--port", str(contract["policy_server_port"]),
+        "-m",
+        "gr00t.eval.run_gr00t_server",
+        "--model-path",
+        contract["sonic_checkpoint"],
+        "--embodiment-tag",
+        SONIC_EMBODIMENT_TAG,
+        "--device",
+        str(device),
+        "--port",
+        str(contract["policy_server_port"]),
     ]
     plan["isaac_task_executor_command"] = [
         "/isaac-sim/python.sh",
@@ -370,54 +366,73 @@ def build_sealed_launch_plan(
     plan["gear_sonic_controller_command"] = [
         "bash",
         "-lc",
-        "cd /opt/wbc/gear_sonic_deploy && source scripts/setup_env.sh && exec "
-        "./target/release/g1_deploy_onnx_ref lo "
-        "policy/release/model_decoder.onnx reference/example "
-        "--obs-config policy/release/observation_config.yaml "
-        "--encoder-file policy/release/model_encoder.onnx "
-        "--planner-file planner/target_vel/V2/planner_sonic.onnx "
-        "--input-type zmq_manager --output-type zmq --zmq-host localhost "
-        "--disable-crc-check",
+        " ".join(
+            [
+                "cd /opt/wbc/gear_sonic_deploy && source scripts/setup_env.sh && exec",
+                "./target/release/g1_deploy_onnx_ref lo",
+                "policy/release/model_decoder.onnx reference/example",
+                "--obs-config policy/release/observation_config.yaml",
+                "--encoder-file policy/release/model_encoder.onnx",
+                "--planner-file planner/target_vel/V2/planner_sonic.onnx",
+                "--input-type zmq_manager --output-type zmq --zmq-host localhost",
+                "--disable-crc-check",
+            ]
+        ),
     ]
     plan["closed_loop_command"] = [
-        DEFAULT_OSCAR_VENV_PYTHON, "-m", "blueprint_pipeline.oscar_isaac_closed_loop_eval",
-        "--start-frame", start_frame,
-        "--route-file", route_file,
-        "--steps", str(int(steps)),
-        "--task-prompt", task_prompt,
-        "--oscar-repo", oscar_repo,
-        "--checkpoint", contract["oscar_checkpoint"],
-        "--output-dir", output_dir,
-        "--groot-sonic-policy-server-url", contract["policy_server_url"],
-        "--groot-root", groot_root,
-        "--groot-policy-initial-state", initial_g1_sonic_state_path,
+        DEFAULT_OSCAR_VENV_PYTHON,
+        "-m",
+        "blueprint_pipeline.oscar_isaac_closed_loop_eval",
+        "--start-frame",
+        start_frame,
+        "--route-file",
+        route_file,
+        "--steps",
+        str(int(steps)),
+        "--task-prompt",
+        task_prompt,
+        "--oscar-repo",
+        oscar_repo,
+        "--checkpoint",
+        contract["oscar_checkpoint"],
+        "--output-dir",
+        output_dir,
+        "--groot-sonic-policy-server-url",
+        contract["policy_server_url"],
+        "--groot-root",
+        groot_root,
+        "--groot-policy-initial-state",
+        initial_g1_sonic_state_path,
         "--require-fresh-learned-policy-requery",
-        "--action-skeleton-command", action_skeleton_command,
-        "--task-success-contract", task_success_contract_path,
-        "--task-completion-command", task_completion_command,
-        "--attempt-input-manifest", attempt_input_manifest_path,
+        "--action-skeleton-command",
+        action_skeleton_command,
+        "--task-success-contract",
+        task_success_contract_path,
+        "--task-completion-command",
+        task_completion_command,
+        "--attempt-input-manifest",
+        attempt_input_manifest_path,
         # Episode length is task-adaptive: --steps is the hard cap and the
         # episode ends when the target-reached criterion fires.
         "--stop-on-task-completion",
-        "--min-steps", str(int(min_task_adaptive_steps)),
-        "--harness-backend-kind", "real_provider_probe",
+        "--min-steps",
+        str(int(min_task_adaptive_steps)),
+        "--harness-backend-kind",
+        "real_provider_probe",
         "--require-real-perception-backend",
         "--require-sam3-completed",
         "--require-da3-completed",
-        "--oscar-height", str(int(oscar_height)),
-        "--oscar-width", str(int(oscar_width)),
-        "--min-coherent-horizon-frames", str(int(min_coherent_horizon_frames)),
+        "--oscar-height",
+        str(int(oscar_height)),
+        "--oscar-width",
+        str(int(oscar_width)),
+        "--min-coherent-horizon-frames",
+        str(int(min_coherent_horizon_frames)),
     ]
     consistency_command = _string(wam_consistency_command)
-    if (
-        require_forward_inverse_consistency
-        or allow_wam_consistency_scoring
-        or consistency_command
-    ):
+    if require_forward_inverse_consistency or allow_wam_consistency_scoring or consistency_command:
         if consistency_command:
-            plan["closed_loop_command"].extend(
-                ["--wam-consistency-command", consistency_command]
-            )
+            plan["closed_loop_command"].extend(["--wam-consistency-command", consistency_command])
         if allow_wam_consistency_scoring:
             plan["closed_loop_command"].append("--allow-wam-consistency-scoring")
         if wam_consistency_timeout_seconds is not None:
@@ -430,11 +445,7 @@ def build_sealed_launch_plan(
         if require_forward_inverse_consistency:
             plan["closed_loop_command"].append("--require-forward-inverse-consistency")
     success_label_command = _string(wam_success_label_command)
-    if (
-        require_generated_video_success_label
-        or allow_wam_success_labeling
-        or success_label_command
-    ):
+    if require_generated_video_success_label or allow_wam_success_labeling or success_label_command:
         if success_label_command:
             plan["closed_loop_command"].extend(
                 ["--wam-success-label-command", success_label_command]
@@ -464,8 +475,7 @@ def build_sealed_launch_plan(
             "/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml"
         ),
         "BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND": (
-            f"{DEFAULT_OSCAR_VENV_PYTHON} -m "
-            "blueprint_pipeline.gear_sonic_official_zmq_executor"
+            f"{DEFAULT_OSCAR_VENV_PYTHON} -m blueprint_pipeline.gear_sonic_official_zmq_executor"
         ),
     }
     if consistency_command or allow_wam_consistency_scoring or require_forward_inverse_consistency:
@@ -482,6 +492,7 @@ def build_sealed_launch_plan(
 # --------------------------------------------------------------------------- #
 # snapshot layer plan (source of truth for the crane-snapshot build)
 # --------------------------------------------------------------------------- #
+
 
 def build_snapshot_layer_plan(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Allow-list of pod paths + image env markers for the crane-snapshot script.
@@ -517,9 +528,7 @@ def build_snapshot_layer_plan(env: Mapping[str, str] | None = None) -> dict[str,
             "PYTHONPATH": contract["oscar_repo"],
             "BLUEPRINT_OSCAR_WAM_HF_REVISION": contract["oscar_hf_revision"],
             GEAR_SONIC_CHECKPOINT_REPO_ENV: contract["gear_sonic_checkpoint_repo"],
-            GEAR_SONIC_CHECKPOINT_REVISION_ENV: contract[
-                "gear_sonic_checkpoint_revision"
-            ],
+            GEAR_SONIC_CHECKPOINT_REVISION_ENV: contract["gear_sonic_checkpoint_revision"],
             "BLUEPRINT_WORKER_IMAGE_FAMILY": "groot-oscar-closed-loop-eval",
         },
         "raw_secret_values_recorded": False,
@@ -530,6 +539,7 @@ def build_snapshot_layer_plan(env: Mapping[str, str] | None = None) -> dict[str,
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
+
 
 def _emit(payload: Mapping[str, Any]) -> int:
     print(json.dumps(payload, indent=2, sort_keys=True))

@@ -117,3 +117,32 @@ def test_local_cpu_allocator_rejects_before_build_process_when_not_admitted(
     with pytest.raises(PaidResourceAdmissionBlocked):
         allocator._run_local_cpu_build(_write_inputs(tmp_path, paid=False))
     assert called is False
+
+
+def test_allocator_cli_never_prints_provider_result_secrets(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_run_local_cpu_build",
+        lambda _args: {"status": "completed", "password": "do-not-print"},
+    )
+    exit_code = allocator.main(
+        [
+            "cpu-build-local",
+            "--output-dir",
+            "out",
+            "--packet-manifest",
+            "packet.json",
+            "--builder-evidence",
+            "builder.json",
+            "--spend",
+            "spend.json",
+            "--mount-path",
+            ".",
+            "--build-workdir",
+            ".",
+            "--build-script",
+            "build.sh",
+        ]
+    )
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"success": True}

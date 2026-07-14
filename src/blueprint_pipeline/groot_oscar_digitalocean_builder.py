@@ -473,7 +473,6 @@ def run_builder(
         start_new_session=True,
     )
     (output / "watchdog.pid").write_text(f"{watchdog_process.pid}\n", encoding="utf-8")
-    build_status = "blocked"
     build_exit: int | None = None
     public_ip = ""
     teardown: dict[str, Any] = {"provider_absence_confirmed": False}
@@ -596,7 +595,7 @@ def run_builder(
             check=False,
         )
         build_status = "completed" if build_exit == 0 else "failed"
-    except BaseException as exc:
+    except Exception as exc:
         write_json(
             output / "builder_error.json",
             {"error_type": type(exc).__name__, "error": str(exc)},
