@@ -384,10 +384,11 @@ class CampaignMachine:
     def _stage_passed(result: Mapping[str, Any]) -> bool:
         return result.get("status") in {"passed", "completed", "ready", "retrieved"}
 
-    def _teardown(self, state: dict[str, Any]) -> None:
+    def _teardown(self, state: dict[str, Any], *, allocation_key: str | None = None) -> None:
+        inventory_key = allocation_key or self.config.allocation_key
         allocation_id = str(state.get("allocation_id") or "")
         if not allocation_id:
-            final_inventory = list(self.adapter.inventory(self.config.allocation_key))
+            final_inventory = list(self.adapter.inventory(inventory_key))
             state["teardown"] = {
                 "status": "not_required" if not final_inventory else "blocked",
                 "billing_stopped": not final_inventory,
@@ -401,7 +402,7 @@ class CampaignMachine:
         teardown = dict(self.adapter.terminate(allocation_id))
         inspection = dict(self.adapter.inspect(allocation_id))
         absent = inspection.get("absent") is True or inspection.get("http") == 404
-        final_inventory = list(self.adapter.inventory(self.config.allocation_key))
+        final_inventory = list(self.adapter.inventory(inventory_key))
         state["teardown"] = {
             "status": "passed" if absent and not final_inventory else "blocked",
             "delete_request": teardown,
@@ -415,6 +416,71 @@ class CampaignMachine:
         if final_inventory:
             state["blockers"].append("provider_final_inventory_not_zero")
         self._write(self.state_path, state)
+
+    def _recorded_checkpoint_for_teardown(
+        self,
+    ) -> tuple[dict[str, Any], str] | None:
+        """Read only the persisted identity needed for emergency teardown.
+
+        This deliberately precedes current-config validation. A changed or now
+        invalid resume config must never hide an allocation that the previous
+        process already checkpointed.
+        """
+
+        if not self.state_path.exists() or not self.config_path.exists():
+            return None
+        try:
+            state = json.loads(self.state_path.read_text())
+            manifest = json.loads(self.config_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(state, dict) or not isinstance(manifest, dict):
+            return None
+        if state.get("teardown_owner") != self.teardown_owner:
+            raise CampaignBlocked("campaign_teardown_owned_by_another_controller")
+        recorded_config = manifest.get("config")
+        recorded_config = recorded_config if isinstance(recorded_config, Mapping) else {}
+        allocation_key = str(recorded_config.get("allocation_key") or "").strip()
+        if not allocation_key:
+            return None
+        return state, allocation_key
+
+    def _block_and_teardown_recorded_checkpoint(
+        self,
+        state: dict[str, Any],
+        *,
+        allocation_key: str,
+        blocker: str,
+    ) -> dict[str, Any]:
+        state["status"] = "blocked"
+        state.setdefault("blockers", [])
+        if blocker not in state["blockers"]:
+            state["blockers"].append(blocker)
+        self._write(self.state_path, state)
+        try:
+            self._teardown(state, allocation_key=allocation_key)
+        except Exception as exc:
+            teardown_blocker = f"provider_teardown_exception:{type(exc).__name__}:{exc}"
+            if teardown_blocker not in state["blockers"]:
+                state["blockers"].append(teardown_blocker)
+            state["teardown"] = {
+                "status": "blocked",
+                "billing_stopped": False,
+                "teardown_owner": self.teardown_owner,
+                "exception": f"{type(exc).__name__}:{exc}",
+            }
+            state["final_inventory"] = None
+        self._write(self.state_path, state)
+        return state
+
+    @staticmethod
+    def _recorded_checkpoint_needs_teardown(state: Mapping[str, Any]) -> bool:
+        teardown = state.get("teardown")
+        teardown = teardown if isinstance(teardown, Mapping) else {}
+        return bool(state.get("allocation_id")) and teardown.get("status") not in {
+            "passed",
+            "not_required",
+        }
 
     def run(self) -> dict[str, Any]:
         """Run with an OS-released exclusive lock as the teardown owner."""
@@ -434,10 +500,30 @@ class CampaignMachine:
                 lock_handle.close()
 
     def _run_owned(self) -> dict[str, Any]:
+        recorded_checkpoint = self._recorded_checkpoint_for_teardown()
         blockers = self.config.validate()
         if blockers:
+            if recorded_checkpoint is not None:
+                state, allocation_key = recorded_checkpoint
+                if self._recorded_checkpoint_needs_teardown(state):
+                    return self._block_and_teardown_recorded_checkpoint(
+                        state,
+                        allocation_key=allocation_key,
+                        blocker="campaign_config_invalid:" + ",".join(blockers),
+                    )
             raise CampaignBlocked(",".join(blockers))
-        state, _ = self._load()
+        try:
+            state, _ = self._load()
+        except CampaignBlocked as exc:
+            if recorded_checkpoint is not None:
+                state, allocation_key = recorded_checkpoint
+                if self._recorded_checkpoint_needs_teardown(state):
+                    return self._block_and_teardown_recorded_checkpoint(
+                        state,
+                        allocation_key=allocation_key,
+                        blocker=str(exc),
+                    )
+            raise
         if state.get("status") == "completed":
             return state
         if state.get("status") == "blocked":

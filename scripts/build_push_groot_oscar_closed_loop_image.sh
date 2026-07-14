@@ -53,6 +53,8 @@ disk_check_free_kib=""
 disk_check_required_kib=""
 build_context_dir=""
 build_metadata_file=""
+local_build_metadata_file=""
+publish_build_metadata_file=""
 
 cleanup_build_context() {
   if [[ -n "$build_context_dir" && -d "$build_context_dir" ]]; then
@@ -206,7 +208,9 @@ fi
 # A release build consumes an immutable archive of the clean source commit,
 # not the mutable worktree that happened to pass the identity check earlier.
 build_context_dir="$(mktemp -d "${TMPDIR:-/tmp}/blueprint-groot-oscar-context.XXXXXX")"
-build_metadata_file="$build_context_dir/buildx-metadata.json"
+local_build_metadata_file="$build_context_dir/buildx-local-metadata.json"
+publish_build_metadata_file="$build_context_dir/buildx-publish-metadata.json"
+build_metadata_file="$local_build_metadata_file"
 git -C "$repo_root" archive --format=tar "$source_commit" | tar -xf - -C "$build_context_dir"
 dockerfile="$build_context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
 test -f "$dockerfile"
@@ -215,7 +219,6 @@ build_args=(
   docker buildx build
   --platform "$platform"
   --progress plain
-  --metadata-file "$build_metadata_file"
   --build-arg "ISAAC_SIM_BASE_IMAGE=$base_image"
   --build-arg "GROOT_SOURCE_REF=$groot_ref"
   --build-arg "WBC_SOURCE_REF=$wbc_ref"
@@ -228,36 +231,25 @@ build_args=(
   -f "$dockerfile"
   -t "$image_ref"
 )
-# The official release build is the one registry push. BuildKit emits its SBOM
-# and max-mode provenance attestations alongside the immutable image closure.
-# Local investigation remains --load only and cannot be called an attested
-# release build.
-if [[ "$allow_push" == "true" ]]; then
-  build_args+=(--push --attest type=sbom --provenance mode=max)
-else
-  build_args+=(--load)
-fi
-build_args+=("${secret_args[@]}" "$build_context_dir")
-
-"${build_args[@]}"
+# Always build into the local content store first. The release tag must not be
+# registry-visible until this exact local runtime closure passes the sealed OCI
+# smoke below. The later publish export reuses this build cache and is bound
+# back to the smoked image-config digest.
+local_build_args=(
+  "${build_args[@]}"
+  --metadata-file "$local_build_metadata_file"
+  --load
+  "${secret_args[@]}"
+  "$build_context_dir"
+)
+"${local_build_args[@]}"
 
 runtime_image_ref="$image_ref"
-if [[ "$allow_push" == "true" ]]; then
-  build_digest="$(python3 - "$build_metadata_file" <<'PY'
-import json, re, sys
-payload = json.load(open(sys.argv[1], encoding="utf-8"))
-digest = str(payload.get("containerimage.digest") or "")
-if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-    descriptor = payload.get("containerimage.descriptor")
-    digest = str(descriptor.get("digest") or "") if isinstance(descriptor, dict) else ""
-if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-    raise SystemExit("buildx metadata did not contain an immutable image digest")
-print(digest)
-PY
-)"
-  runtime_image_ref="${image_ref%%@*}"
-  runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"
-  docker pull "$runtime_image_ref"
+smoked_local_image_id="$(docker image inspect --format '{{.Id}}' "$runtime_image_ref")"
+if [[ ! "$smoked_local_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  write_manifest "blocked" '["groot_oscar_closed_loop_local_image_id_invalid"]' >/dev/null
+  echo "local image config digest is invalid; refusing runtime smoke" >&2
+  exit 2
 fi
 
 runtime_smoke_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -280,7 +272,8 @@ docker run --rm --entrypoint /bin/bash "$runtime_image_ref" -lc '
 ' >"$runtime_smoke_stdout" 2>"$runtime_smoke_stderr" || runtime_smoke_exit=$?
 
 python3 - "$runtime_smoke_output" "$runtime_image_ref" "$runtime_smoke_started_at" \
-  "$runtime_smoke_exit" "$runtime_smoke_stdout" "$runtime_smoke_stderr" <<'PY'
+  "$runtime_smoke_exit" "$runtime_smoke_stdout" "$runtime_smoke_stderr" \
+  "$smoked_local_image_id" <<'PY'
 import hashlib, json, sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -290,11 +283,15 @@ stdout = Path(sys.argv[5]).read_bytes()
 stderr = Path(sys.argv[6]).read_bytes()
 exit_code = int(sys.argv[4])
 payload = {
-    "schema_version": "groot_oscar_closed_loop_runtime_smoke.v1",
+    "schema_version": "groot_oscar_closed_loop_runtime_smoke.v2",
     "started_at": sys.argv[3],
     "completed_at": datetime.now(timezone.utc).isoformat(),
     "status": "passed" if exit_code == 0 else "failed",
     "image_ref": sys.argv[2],
+    "smoked_local_image_id": sys.argv[7],
+    "published_digest_ref": None,
+    "published_runnable_config_digest": None,
+    "published_runtime_identity_matches_smoked_local_image": None,
     "exit_code": exit_code,
     "checks": [
         "oci_configured_user_is_blueprint",
@@ -317,8 +314,93 @@ rm -f "$runtime_smoke_stdout" "$runtime_smoke_stderr"
 
 if [[ "$runtime_smoke_exit" -ne 0 ]]; then
   write_manifest "blocked" '["groot_oscar_closed_loop_oci_runtime_smoke_failed"]' >/dev/null
-  echo "finished image failed OCI runtime-user smoke; refusing release acceptance" >&2
+  echo "finished image failed OCI runtime-user smoke; release tag was not published" >&2
   exit 2
+fi
+
+if [[ "$allow_push" == "true" ]]; then
+  # This export is deliberately after runtime smoke. BuildKit reuses the
+  # already-built closure and adds official SBOM/max-provenance attestations.
+  publish_build_args=(
+    "${build_args[@]}"
+    --metadata-file "$publish_build_metadata_file"
+    --push
+    --attest type=sbom
+    --provenance mode=max
+    "${secret_args[@]}"
+    "$build_context_dir"
+  )
+  "${publish_build_args[@]}"
+  build_metadata_file="$publish_build_metadata_file"
+  build_digest="$(python3 - "$build_metadata_file" <<'PY'
+import json, re, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+digest = str(payload.get("containerimage.digest") or "")
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    descriptor = payload.get("containerimage.descriptor")
+    digest = str(descriptor.get("digest") or "") if isinstance(descriptor, dict) else ""
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    raise SystemExit("buildx metadata did not contain an immutable image digest")
+print(digest)
+PY
+)"
+  runtime_image_ref="${image_ref%%@*}"
+  runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"
+  published_config_digest="$(python3 - "$runtime_image_ref" <<'PY'
+import json, re, subprocess, sys
+
+exact_ref = sys.argv[1]
+repository = exact_ref.rsplit("@", 1)[0]
+
+def inspect_raw(ref):
+    completed = subprocess.run(
+        ["docker", "buildx", "imagetools", "inspect", "--raw", ref],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    return json.loads(completed.stdout)
+
+manifest = inspect_raw(exact_ref)
+if isinstance(manifest.get("manifests"), list):
+    candidates = [
+        item.get("digest")
+        for item in manifest["manifests"]
+        if isinstance(item, dict)
+        and isinstance(item.get("platform"), dict)
+        and item["platform"].get("os") == "linux"
+        and item["platform"].get("architecture") == "amd64"
+    ]
+    if len(candidates) != 1:
+        raise SystemExit("published index does not have exactly one linux/amd64 runtime")
+    manifest = inspect_raw(f"{repository}@{candidates[0]}")
+config = manifest.get("config")
+digest = str(config.get("digest") or "") if isinstance(config, dict) else ""
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    raise SystemExit("published runnable config digest missing")
+print(digest)
+PY
+)"
+  if [[ "$published_config_digest" != "$smoked_local_image_id" ]]; then
+    write_manifest "blocked" '["published_runtime_identity_differs_from_smoked_local_image"]' >/dev/null
+    echo "published runtime config does not match the smoke-tested local image" >&2
+    exit 2
+  fi
+  python3 - "$runtime_smoke_output" "$runtime_image_ref" \
+    "$published_config_digest" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1]).expanduser().resolve()
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["published_digest_ref"] = sys.argv[2]
+payload["published_runnable_config_digest"] = sys.argv[3]
+payload["published_runtime_identity_matches_smoked_local_image"] = (
+    payload.get("smoked_local_image_id") == sys.argv[3]
+)
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 fi
 
 registry_diagnostic_exit=0

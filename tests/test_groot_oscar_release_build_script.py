@@ -6,7 +6,8 @@ SCRIPT = Path("scripts/build_push_groot_oscar_closed_loop_image.sh")
 
 def test_official_build_enables_buildkit_attestations_and_scans_registry_digest():
     text = SCRIPT.read_text(encoding="utf-8")
-    assert "--attest type=sbom --provenance mode=max" in text
+    assert "--attest type=sbom" in " ".join(text.split())
+    assert "--provenance mode=max" in " ".join(text.split())
     assert 'syft "registry:${exact_digest_ref}"' in text
     assert 'syft "$image_ref"' not in text
     assert "groot_oscar_closed_loop_supply_chain_evidence_failed" in text
@@ -18,11 +19,17 @@ def test_official_build_enables_buildkit_attestations_and_scans_registry_digest(
     assert '"GEAR_SONIC_CHECKPOINT_REVISION=$gear_checkpoint_revision"' in text
 
 
-def test_release_runtime_smoke_uses_the_pushed_immutable_digest():
+def test_release_runtime_smoke_precedes_push_and_binds_published_digest():
     text = SCRIPT.read_text(encoding="utf-8")
+    smoke_index = text.index('docker run --rm --entrypoint /bin/bash "$runtime_image_ref"')
+    publish_index = text.index("publish_build_args=(")
+    assert smoke_index < publish_index
+    assert "--load" in text[smoke_index - 2500 : smoke_index]
+    assert "--push" in text[publish_index : publish_index + 800]
     assert 'runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"' in text
-    assert 'docker pull "$runtime_image_ref"' in text
-    assert 'docker run --rm --entrypoint /bin/bash "$runtime_image_ref"' in text
+    assert "published_config_digest" in text
+    assert "published_runtime_identity_matches_smoked_local_image" in text
+    assert 'docker pull "$runtime_image_ref"' not in text
 
 
 def test_release_image_uses_runtime_only_wbc_multistage_closure():
