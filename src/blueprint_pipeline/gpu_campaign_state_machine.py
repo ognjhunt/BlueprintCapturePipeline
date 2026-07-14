@@ -496,7 +496,7 @@ class CampaignMachine:
             def invoke() -> None:
                 try:
                     outcome.put(("result", operation(*args)))
-                except BaseException as exc:
+                except Exception as exc:
                     outcome.put(("error", exc))
 
             worker = threading.Thread(target=invoke, daemon=True)
