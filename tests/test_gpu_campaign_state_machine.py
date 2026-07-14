@@ -1218,3 +1218,28 @@ def test_corrupt_checkpoint_with_malformed_teardown_deadline_still_tears_down(tm
     assert result["teardown"]["billing_stopped"] is True
     assert result["teardown"]["deadline_seconds"] == 300
     assert result["final_inventory"] == []
+
+
+def test_corrupt_checkpoint_with_nonmapping_deadlines_still_tears_down(tmp_path):
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    campaign_config = config(stage_deadlines_seconds=None)  # type: ignore[arg-type]
+    machine = CampaignMachine(
+        config=campaign_config,
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    )
+    machine.state_path.write_text("{corrupt", encoding="utf-8")
+
+    result = CampaignMachine(
+        config=campaign_config,
+        adapter=provider,
+        state_dir=tmp_path,
+    ).run()
+
+    assert not any(call[0] == "allocate" for call in provider.calls)
+    assert ("terminate", "vm-1") in provider.calls
+    assert result["teardown"]["status"] == "passed"
+    assert result["teardown"]["billing_stopped"] is True
+    assert result["teardown"]["deadline_seconds"] == 300
+    assert result["final_inventory"] == []

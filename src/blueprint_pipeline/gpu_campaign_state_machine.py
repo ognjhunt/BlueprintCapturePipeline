@@ -431,7 +431,10 @@ class CampaignMachine:
         ]
 
     def _initial_state(self, config_sha: str) -> dict[str, Any]:
-        teardown_deadline = self.config.stage_deadlines_seconds.get("teardown", 300)
+        deadlines = self.config.stage_deadlines_seconds
+        teardown_deadline = (
+            deadlines.get("teardown", 300) if isinstance(deadlines, Mapping) else 300
+        )
         if not _positive_integer(teardown_deadline):
             teardown_deadline = 300
         return {
