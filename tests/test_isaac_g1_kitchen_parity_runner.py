@@ -33,6 +33,17 @@ def test_runner_imports_without_isaacsim() -> None:
     assert hasattr(M, "run_scenarios") and hasattr(M, "parse_scenarios")
 
 
+def test_production_warm_serve_flag_is_explicit_and_defaults_off() -> None:
+    default = M.build_arg_parser().parse_args(["--out-dir", "out"])
+    enabled = M.build_arg_parser().parse_args(
+        ["--out-dir", "out", "--serve-production-warmup-before-ready"]
+    )
+
+    assert default.serve_production_warmup_before_ready is False
+    assert enabled.serve_production_warmup_before_ready is True
+    assert M.run_scenarios.__kwdefaults__["serve_production_warmup_before_ready"] is False
+
+
 def test_manipulation_reach_fraction_progresses_for_robot_pov() -> None:
     values = [
         M.manipulation_reach_fraction_for_frame(

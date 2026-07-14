@@ -1,0 +1,38 @@
+[Unit]
+Description=Blueprint production warm GPU worker registration agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+MemoryMax=8G
+CPUQuota=200%
+EnvironmentFile=/etc/blueprint/production-gpu-worker-agent.env
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-run-production-gpu-worker-agent ]; then exec .venv/bin/blueprint-run-production-gpu-worker-agent --pool-base-url "$${BLUEPRINT_POOL_BASE_URL}" --worker-id "$${BLUEPRINT_WORKER_ID}" --provider runpod --host-image-id "$${BLUEPRINT_HOST_IMAGE_ID}" --worker-image-ref "$${BLUEPRINT_WORKER_IMAGE_REF}" --gpu-family "$${BLUEPRINT_GPU_FAMILY}" --endpoint-ref "$${BLUEPRINT_WORKER_ENDPOINT_REF}" --launch-session-id "$${BLUEPRINT_LAUNCH_SESSION_ID}" --host-evidence "$${BLUEPRINT_HOST_EVIDENCE_PATH}" --cache-evidence "$${BLUEPRINT_CACHE_EVIDENCE_PATH}" --warm-evidence "$${BLUEPRINT_WARM_EVIDENCE_PATH}"; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_gpu_worker_agent --pool-base-url "$${BLUEPRINT_POOL_BASE_URL}" --worker-id "$${BLUEPRINT_WORKER_ID}" --provider runpod --host-image-id "$${BLUEPRINT_HOST_IMAGE_ID}" --worker-image-ref "$${BLUEPRINT_WORKER_IMAGE_REF}" --gpu-family "$${BLUEPRINT_GPU_FAMILY}" --endpoint-ref "$${BLUEPRINT_WORKER_ENDPOINT_REF}" --launch-session-id "$${BLUEPRINT_LAUNCH_SESSION_ID}" --host-evidence "$${BLUEPRINT_HOST_EVIDENCE_PATH}" --cache-evidence "$${BLUEPRINT_CACHE_EVIDENCE_PATH}" --warm-evidence "$${BLUEPRINT_WARM_EVIDENCE_PATH}"'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

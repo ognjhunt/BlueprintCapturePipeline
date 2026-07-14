@@ -1,0 +1,113 @@
+name: Production GPU Reliability
+
+on:
+  pull_request:
+    paths:
+      - "src/blueprint_pipeline/production_gpu_*.py"
+      - "scripts/probe_production_gpu_warm_bind.py"
+      - "deploy/packer/**"
+      - "deploy/systemd/*production-gpu*"
+      - "tests/test_production_gpu_*.py"
+      - ".github/workflows/production-gpu-reliability.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "src/blueprint_pipeline/production_gpu_*.py"
+      - "scripts/probe_production_gpu_warm_bind.py"
+      - "deploy/packer/**"
+      - "deploy/systemd/*production-gpu*"
+      - "tests/test_production_gpu_*.py"
+      - ".github/workflows/production-gpu-reliability.yml"
+  schedule:
+    - cron: "41 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      run_live_warm_bind_probe:
+        description: "Probe the pre-authorized private warm pool; never provisions capacity."
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: production-gpu-reliability-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract-qualification:
+    name: Golden path contract qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+      - name: Install frozen test environment
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+      - name: Run golden-path reliability contracts
+        run: |
+          uv run python -m pytest -q \
+            tests/test_production_gpu_release_candidate.py \
+            tests/test_production_gpu_image_contract.py \
+            tests/test_production_gpu_host_image_contract.py \
+            tests/test_production_gpu_launch_qualification.py \
+            tests/test_production_gpu_worker_pool.py \
+            tests/test_production_gpu_worker_agent.py \
+            tests/test_production_gpu_campaign_budget.py \
+            tests/test_production_gpu_campaign_control_plane.py \
+            tests/test_production_gpu_reliability_qualification.py \
+            tests/test_production_gpu_replenishment_probe.py \
+            tests/test_production_gpu_runpod_autoscaler.py \
+            tests/test_production_gpu_rollback_drill.py \
+            tests/test_production_gpu_warm_watchdog.py \
+            tests/test_production_gpu_warm_bind_probe.py
+
+  live-warm-bind-canary:
+    name: Private warm-bind SLO canary
+    if: >-
+      (github.event_name == 'schedule' && vars.BLUEPRINT_ENABLE_SCHEDULED_WARM_POOL_CANARY == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_live_warm_bind_probe)
+    runs-on: [self-hosted, linux, x64, blueprint-private-control-plane]
+    timeout-minutes: 10
+    environment: production-gpu-canary
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+      - name: Install frozen package
+        run: uv sync --frozen
+      - name: Materialize ephemeral private API token
+        env:
+          POOL_TOKEN: ${{ secrets.BLUEPRINT_PRODUCTION_GPU_POOL_TOKEN }}
+        run: |
+          test -n "${POOL_TOKEN}"
+          umask 077
+          printf '%s' "${POOL_TOKEN}" > "${RUNNER_TEMP}/production_gpu_pool_token"
+      - name: Probe warm bind and healthy release
+        env:
+          POOL_BASE_URL: ${{ vars.BLUEPRINT_PRODUCTION_GPU_POOL_BASE_URL }}
+          HOST_IMAGE_ID: ${{ vars.BLUEPRINT_PRODUCTION_GPU_HOST_IMAGE_ID }}
+          WORKER_IMAGE_REF: ${{ vars.BLUEPRINT_PRODUCTION_GPU_WORKER_IMAGE_REF }}
+          GPU_FAMILY: ${{ vars.BLUEPRINT_PRODUCTION_GPU_FAMILY }}
+        run: |
+          uv run python scripts/probe_production_gpu_warm_bind.py \
+            --base-url "${POOL_BASE_URL}" \
+            --token-file "${RUNNER_TEMP}/production_gpu_pool_token" \
+            --host-image-id "${HOST_IMAGE_ID}" \
+            --worker-image-ref "${WORKER_IMAGE_REF}" \
+            --gpu-family "${GPU_FAMILY}" \
+            --samples 20 \
+            --output output/ci/production_gpu_warm_bind_probe.json
+      - name: Upload redacted SLO evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-gpu-warm-bind-${{ github.sha }}-${{ github.run_id }}
+          path: output/ci/production_gpu_warm_bind_probe.json
+          if-no-files-found: error
+          retention-days: 90
