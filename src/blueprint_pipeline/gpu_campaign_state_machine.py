@@ -509,7 +509,13 @@ class CampaignMachine:
 
     def _run_owned(self) -> dict[str, Any]:
         recorded_checkpoint = self._recorded_checkpoint_for_teardown()
-        blockers = self.config.validate()
+        try:
+            blockers = self.config.validate()
+        except Exception as exc:
+            # Dataclass type hints are not runtime validation. A malformed
+            # decoded config must still enter the recorded-allocation teardown
+            # path instead of escaping and leaving paid compute alive.
+            blockers = [f"campaign_config_validation_exception:{type(exc).__name__}:{exc}"]
         if blockers:
             if recorded_checkpoint is not None:
                 state, allocation_key = recorded_checkpoint
