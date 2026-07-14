@@ -359,6 +359,16 @@ def test_budget_is_admitted_on_worst_case_not_expected_spend(tmp_path):
         ).run()
 
 
+def test_budget_reserves_teardown_deadline_after_provider_lifetime():
+    cfg = config(
+        prior_exposure_usd=0,
+        hourly_rate_usd=4.5,
+        max_provider_seconds=3600,
+        spend_authorization_usd=4.5,
+    )
+    assert "campaign_maximum_exceeds_spend_authorization" in cfg.validate()
+
+
 @pytest.mark.parametrize(
     ("overrides", "blocker"),
     [
@@ -402,6 +412,23 @@ def test_teardown_deadline_is_bounded_off_main_thread():
     worker.join(0.2)
     assert not worker.is_alive()
     assert outcome == ["campaign_teardown_deadline_exceeded"]
+
+
+def test_service_thread_rejects_unbounded_allocation_before_provider_mutation(tmp_path):
+    provider = FakeProvider()
+    outcome = []
+
+    def invoke():
+        outcome.append(CampaignMachine(config=config(), adapter=provider, state_dir=tmp_path).run())
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert not any(call[0] == "allocate" for call in provider.calls)
+    assert outcome[0]["status"] == "blocked"
+    assert "service_thread_allocation_requires_provider_enforced_deadline" in outcome[0]["blockers"]
 
 
 def test_teardown_timeout_is_checkpointed_as_billing_ambiguous(tmp_path, monkeypatch):

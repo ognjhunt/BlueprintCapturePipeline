@@ -145,8 +145,12 @@ class CampaignConfig:
         if all(
             (hourly_rate_valid, provider_seconds_valid, prior_exposure_valid, authorization_valid)
         ):
+            teardown_reserve = self.stage_deadlines_seconds.get("teardown")
+            teardown_reserve_valid = _positive_integer(teardown_reserve)
             maximum = self.prior_exposure_usd + (
-                self.hourly_rate_usd * self.max_provider_seconds / 3600
+                self.hourly_rate_usd
+                * (self.max_provider_seconds + (teardown_reserve if teardown_reserve_valid else 0))
+                / 3600
             )
             if maximum > self.spend_authorization_usd:
                 blockers.append("campaign_maximum_exceeds_spend_authorization")
@@ -462,6 +466,25 @@ class CampaignMachine:
     @staticmethod
     def _stage_passed(result: Mapping[str, Any]) -> bool:
         return result.get("status") in {"passed", "completed", "ready", "retrieved"}
+
+    def _allocate_with_deadline(self, timeout_seconds: float) -> Mapping[str, Any]:
+        """Never abandon a provider create operation in a daemon thread.
+
+        Main-thread controllers use the signal-backed deadline. Service-thread
+        controllers must supply an adapter operation whose deadline and
+        idempotency are enforced by the provider client itself; otherwise the
+        create is rejected before any paid mutation is attempted.
+        """
+
+        if threading.current_thread() is threading.main_thread():
+            return self._call_with_deadline(
+                timeout_seconds, self.adapter.allocate, self.config.payload()
+            )
+        operation = getattr(self.adapter, "allocate_with_deadline", None)
+        supported = getattr(self.adapter, "supports_provider_enforced_allocation_deadline", False)
+        if not callable(operation) or supported is not True:
+            raise CampaignBlocked("service_thread_allocation_requires_provider_enforced_deadline")
+        return operation(self.config.payload(), deadline_seconds=max(1, int(timeout_seconds)))
 
     def _teardown(self, state: dict[str, Any], *, allocation_key: str | None = None) -> None:
         teardown_started = self.clock()
@@ -784,6 +807,18 @@ class CampaignMachine:
                     inventory = list(self.adapter.inventory(self.config.allocation_key))
                     if inventory:
                         raise CampaignBlocked("duplicate_paid_allocation_detected")
+                    if (
+                        threading.current_thread() is not threading.main_thread()
+                        and getattr(
+                            self.adapter,
+                            "supports_provider_enforced_allocation_deadline",
+                            False,
+                        )
+                        is not True
+                    ):
+                        raise CampaignBlocked(
+                            "service_thread_allocation_requires_provider_enforced_deadline"
+                        )
                     # Record the conservative lifetime baseline before the paid
                     # provider mutation. It remains valid across controller
                     # crashes and process resumes.
@@ -791,11 +826,7 @@ class CampaignMachine:
                     state["allocation_mutation_pending"] = True
                     self._write(self.state_path, state)
                     allocation = dict(
-                        self._call_with_deadline(
-                            float(self.config.max_provider_seconds),
-                            self.adapter.allocate,
-                            self.config.payload(),
-                        )
+                        self._allocate_with_deadline(float(self.config.max_provider_seconds))
                     )
                     allocation_id = str(
                         allocation.get("allocation_id") or allocation.get("id") or ""

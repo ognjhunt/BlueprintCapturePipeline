@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 Inventory = Callable[[str], Sequence[Mapping[str, Any]]]
 Allocate = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+AllocateWithDeadline = Callable[[Mapping[str, Any], int], Mapping[str, Any]]
 RunStage = Callable[[str, str, int, Mapping[str, Any]], Mapping[str, Any]]
 Retrieve = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
 Terminate = Callable[[str], Mapping[str, Any]]
@@ -27,6 +28,7 @@ class _OperationsAdapter:
     retrieve_operation: Retrieve
     terminate_operation: Terminate
     inspect_operation: Inspect
+    allocate_with_deadline_operation: AllocateWithDeadline | None = None
     provider_name: str = "external"
 
     def inventory(self, allocation_key: str) -> Sequence[Mapping[str, Any]]:
@@ -34,6 +36,17 @@ class _OperationsAdapter:
 
     def allocate(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
         return self.allocate_operation(config)
+
+    @property
+    def supports_provider_enforced_allocation_deadline(self) -> bool:
+        return self.allocate_with_deadline_operation is not None
+
+    def allocate_with_deadline(
+        self, config: Mapping[str, Any], *, deadline_seconds: int
+    ) -> Mapping[str, Any]:
+        if self.allocate_with_deadline_operation is None:
+            raise RuntimeError("provider_enforced_allocation_deadline_not_configured")
+        return self.allocate_with_deadline_operation(config, deadline_seconds)
 
     def run_stage(
         self,
