@@ -87,6 +87,9 @@ def test_canary_preparation_binds_exact_admitted_tuple_into_request() -> None:
     assert shape["data_center_id"] == "US-TX-3"
     assert shape["allowed_cuda_versions"] == ["12.6"]
     assert shape["cache"]["paths"]["groot_oscar_models"] == "/workspace/models"
+    assert shape["docker_entrypoint"] == [
+        "/opt/blueprint/thin_release_entrypoint.sh"
+    ]
     assert shape["environment"]["plaintext_env_values"][
         "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST"
     ] == "sha256:" + "b" * 64

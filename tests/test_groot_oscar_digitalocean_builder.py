@@ -19,6 +19,7 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     observe_local_machine,
     parse_live_machine_probe,
     run_builder,
+    validate_remote_build_results,
     verify_packet_tarball,
 )
 
@@ -332,6 +333,22 @@ def test_builder_source_copies_registry_files_to_fixed_remote_names() -> None:
         '(docker_password_file.expanduser(), "/root/blueprint-build/docker_pat")'
         in source
     )
+
+
+def test_remote_build_results_must_be_complete_and_completed(tmp_path: Path) -> None:
+    results = tmp_path / "remote_results"
+    results.mkdir()
+    blocked = validate_remote_build_results(results)
+    assert blocked["status"] == "blocked"
+    assert any(
+        item.startswith("remote_build_result_missing:")
+        for item in blocked["blockers"]
+    )
+
+    for name in blocked["required_results"]:
+        payload = {"status": "completed"} if name.startswith("groot_oscar_thin") else {}
+        (results / name).write_text(json.dumps(payload), encoding="utf-8")
+    assert validate_remote_build_results(results)["status"] == "verified"
 
 
 def test_run_builder_is_dry_and_does_not_read_secrets_without_paid_gate(

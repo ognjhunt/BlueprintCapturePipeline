@@ -151,6 +151,13 @@ def observe_local_machine(*, mount_path: str | Path) -> dict[str, Any]:
 
 
 DETACHED_LAUNCH_SCHEMA_VERSION = "groot_oscar_digitalocean_builder_launch.v1"
+REMOTE_BUILD_REQUIRED_RESULTS = (
+    "groot_oscar_thin_remote_build_result.json",
+    "foundation_buildx_metadata.json",
+    "release_buildx_metadata.json",
+    "foundation_registry_diagnostic.json",
+    "release_registry_diagnostic.json",
+)
 
 
 def _load_object(path: Path) -> dict[str, Any]:
@@ -158,6 +165,31 @@ def _load_object(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"expected JSON object: {path}")
     return payload
+
+
+def validate_remote_build_results(results_dir: Path) -> dict[str, Any]:
+    """Require the complete copied result set before claiming build success."""
+
+    blockers: list[str] = []
+    payloads: dict[str, dict[str, Any]] = {}
+    for name in REMOTE_BUILD_REQUIRED_RESULTS:
+        path = results_dir / name
+        if not path.is_file():
+            blockers.append(f"remote_build_result_missing:{name}")
+            continue
+        try:
+            payloads[name] = _load_object(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            blockers.append(f"remote_build_result_invalid:{name}")
+    result = payloads.get("groot_oscar_thin_remote_build_result.json")
+    if result is not None and result.get("status") != "completed":
+        blockers.append("remote_build_result_not_completed")
+    return {
+        "schema_version": "groot_oscar_remote_build_results_verification.v1",
+        "status": "verified" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "required_results": list(REMOTE_BUILD_REQUIRED_RESULTS),
+    }
 
 
 def _read_secret(path: Path) -> str:
@@ -800,8 +832,15 @@ def run_builder(
                 f"root@{public_ip}:{remote_result_dir}/*.json",
                 str(results_dir) + "/",
             ],
-            check=False,
+            check=True,
         )
+        result_verification = validate_remote_build_results(results_dir)
+        write_json(output / "remote_build_results_verification.json", result_verification)
+        if result_verification["status"] != "verified":
+            raise RuntimeError(
+                "digitalocean_remote_build_results_unverified:"
+                + ",".join(result_verification["blockers"])
+            )
         build_status = "completed" if build_exit == 0 else "failed"
     except Exception as exc:
         write_json(

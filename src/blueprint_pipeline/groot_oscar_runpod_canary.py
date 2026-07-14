@@ -130,6 +130,7 @@ def bind_canary_request(
     shape["network_volume_id"] = admission.get("network_volume_id")
     shape["data_center_id"] = admission.get("data_center_id")
     shape["allowed_cuda_versions"] = [admission.get("required_cuda_version")]
+    shape["docker_entrypoint"] = ["/opt/blueprint/thin_release_entrypoint.sh"]
     gpu["preferred_gpu_type_id"] = admitted_gpu
     gpu["provider_gpu_priority"] = [admitted_gpu]
     shape["gpu"] = gpu

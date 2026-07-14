@@ -1168,12 +1168,16 @@ def _image_startup_canary_pod_payload(
         env["BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS"] = canary_hold_seconds
     else:
         env.setdefault("BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS", "5")
+    thin_entrypoint = ["/opt/blueprint/thin_release_entrypoint.sh"]
+    use_thin_entrypoint = body.get("dockerEntrypoint") == thin_entrypoint
     body.update(
         {
-            # The thin entrypoint verifies the admitted external model cache
-            # before it execs this canary command. Never replace it with bash.
-            "dockerEntrypoint": ["/opt/blueprint/thin_release_entrypoint.sh"],
-            "dockerStartCmd": ["bash", "-lc", _image_startup_canary_command()],
+            "dockerEntrypoint": thin_entrypoint if use_thin_entrypoint else ["bash"],
+            "dockerStartCmd": (
+                ["bash", "-lc", _image_startup_canary_command()]
+                if use_thin_entrypoint
+                else ["-lc", _image_startup_canary_command()]
+            ),
             "env": env,
         }
     )

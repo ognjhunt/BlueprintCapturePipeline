@@ -238,6 +238,8 @@ def test_thin_image_contract_separates_foundation_models_and_release() -> None:
     assert "groot_oscar_model_cache activate" in entrypoint
     assert "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST" in entrypoint
     assert "--expected-manifest-digest" in entrypoint
+    assert 'export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT="$model_cache/oscar"' in entrypoint
+    assert 'export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT="$model_cache/sonic"' in entrypoint
     assert 'if [[ $# -eq 0 || "${1}" == -* ]]' in entrypoint
     assert 'set -- blueprint-run-robot-eval-worker "$@"' in entrypoint
 

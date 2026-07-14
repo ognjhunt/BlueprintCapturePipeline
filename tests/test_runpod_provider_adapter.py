@@ -1579,21 +1579,19 @@ def test_runpod_adapter_builds_image_startup_canary_request(
     assert shaped["request_blockers"] == []
     body = shaped["runpod_request"]["body"]  # type: ignore[index]
     assert body["name"] == "canary-pod"
-    assert body["dockerEntrypoint"] == [
-        "/opt/blueprint/thin_release_entrypoint.sh"
-    ]
-    assert body["dockerStartCmd"][:2] == ["bash", "-lc"]
-    assert "runpod_image_startup_canary.v1" in body["dockerStartCmd"][2]
+    assert body["dockerEntrypoint"] == ["bash"]
+    assert body["dockerStartCmd"][0] == "-lc"
+    assert "runpod_image_startup_canary.v1" in body["dockerStartCmd"][1]
     assert 'PYTHON_BIN="$(command -v python3 || command -v python || true)"' in body[
         "dockerStartCmd"
-    ][2]
-    assert 'PYTHON_BIN="/isaac-sim/python.sh"' in body["dockerStartCmd"][2]
+    ][1]
+    assert 'PYTHON_BIN="/isaac-sim/python.sh"' in body["dockerStartCmd"][1]
     assert 'RESOLVED_PYTHON_BIN="$(command -v "$PYTHON_BIN" || true)"' in body[
         "dockerStartCmd"
-    ][2]
-    assert '"python3_path": shutil.which("python3")' in body["dockerStartCmd"][2]
-    assert '"curl_path": shutil.which("curl")' in body["dockerStartCmd"][2]
-    assert '"python_executable": sys.executable' in body["dockerStartCmd"][2]
+    ][1]
+    assert '"python3_path": shutil.which("python3")' in body["dockerStartCmd"][1]
+    assert '"curl_path": shutil.which("curl")' in body["dockerStartCmd"][1]
+    assert '"python_executable": sys.executable' in body["dockerStartCmd"][1]
     assert body["env"]["BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY"] == "true"
     assert body["env"]["BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS"] == "300"
     assert body["env"]["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"] == (
@@ -1601,6 +1599,22 @@ def test_runpod_adapter_builds_image_startup_canary_request(
     )
     assert "secret-signature" not in persisted
     assert "secret-runpod-key" not in persisted
+
+    provider_shape["docker_entrypoint"] = [
+        "/opt/blueprint/thin_release_entrypoint.sh"
+    ]
+    _write_json(request_path, request)
+    thin = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "thin-canary-shaped.json",
+        mode=adapter.RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+        pod_name="thin-canary-pod",
+    )
+    thin_body = thin["runpod_request"]["body"]  # type: ignore[index]
+    assert thin_body["dockerEntrypoint"] == [
+        "/opt/blueprint/thin_release_entrypoint.sh"
+    ]
+    assert thin_body["dockerStartCmd"][:2] == ["bash", "-lc"]
 
 
 def test_runpod_adapter_main_errors_and_env_request_path(
