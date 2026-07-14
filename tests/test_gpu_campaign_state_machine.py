@@ -129,6 +129,28 @@ def test_campaign_requires_at_least_one_full_episode_seed_before_allocation(tmp_
     assert not any(call[0] == "allocate" for call in provider.calls)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "blocker"),
+    [
+        ({"prior_exposure_usd": -1}, "campaign_prior_exposure_invalid"),
+        ({"spend_authorization_usd": -1}, "campaign_spend_authorization_invalid"),
+    ],
+)
+def test_campaign_rejects_negative_budget_inputs_before_allocation(
+    tmp_path, overrides, blocker
+):
+    provider = FakeProvider()
+
+    with pytest.raises(CampaignBlocked, match=blocker):
+        CampaignMachine(
+            config=config(**overrides),
+            adapter=provider,
+            state_dir=tmp_path,
+        ).run()
+
+    assert not any(call[0] == "allocate" for call in provider.calls)
+
+
 def test_registry_availability_is_not_preloaded_image_evidence():
     cfg = config()
     blockers = validate_preloaded_image_evidence(

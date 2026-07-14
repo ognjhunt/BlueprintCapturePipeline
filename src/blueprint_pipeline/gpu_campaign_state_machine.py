@@ -106,6 +106,10 @@ class CampaignConfig:
             blockers.append("image_digest_invalid")
         if self.hourly_rate_usd <= 0 or self.max_provider_seconds <= 0:
             blockers.append("paid_runtime_bound_invalid")
+        if self.prior_exposure_usd < 0:
+            blockers.append("campaign_prior_exposure_invalid")
+        if self.spend_authorization_usd < 0:
+            blockers.append("campaign_spend_authorization_invalid")
         if self.image_total_compressed_bytes <= 0 or self.image_largest_layer_bytes <= 0:
             blockers.append("image_closure_size_missing")
         elif self.image_largest_layer_bytes > self.image_total_compressed_bytes:
