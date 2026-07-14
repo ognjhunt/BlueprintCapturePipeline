@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
+
+
+_DIGEST_REF = re.compile(r"\A[^\s@]+@sha256:[0-9a-f]{64}\Z")
+
+
+def _layer_rows(payload: Mapping[str, Any]) -> list[tuple[str, int]]:
+    rows: list[tuple[str, int]] = []
+    layers = payload.get("layers")
+    if not isinstance(layers, list):
+        return rows
+    for item in layers:
+        if not isinstance(item, Mapping):
+            continue
+        digest = item.get("digest")
+        size = item.get("size_bytes")
+        if isinstance(digest, str) and type(size) is int:
+            rows.append((digest, size))
+    return rows
 
 
 def build_thin_release_contract(
@@ -12,23 +31,22 @@ def build_thin_release_contract(
     max_release_bytes: int = 2 * 1024**3,
 ) -> dict[str, Any]:
     blockers: list[str] = []
-    release_layers = {
-        str(item.get("digest")): int(item.get("size_bytes"))
-        for item in release.get("layers", [])
-        if isinstance(item, Mapping)
-        and isinstance(item.get("digest"), str)
-        and type(item.get("size_bytes")) is int
-    }
-    foundation_layers = {
-        str(item.get("digest"))
-        for item in foundation.get("layers", [])
-        if isinstance(item, Mapping) and isinstance(item.get("digest"), str)
-    }
+    release_layer_rows = _layer_rows(release)
+    release_layers = dict(release_layer_rows)
+    foundation_layer_rows = _layer_rows(foundation)
+    foundation_layers = dict(foundation_layer_rows)
+    release_ref = str(release.get("resolved_digest_ref") or "")
+    foundation_ref = str(foundation.get("resolved_digest_ref") or "")
+    if not _DIGEST_REF.fullmatch(release_ref):
+        blockers.append("thin_release_registry_ref_not_digest_pinned")
+    if not _DIGEST_REF.fullmatch(foundation_ref):
+        blockers.append("foundation_registry_ref_not_digest_pinned")
     if release.get("status") != "completed" or not release_layers:
         blockers.append("thin_release_registry_layers_missing")
     if foundation.get("status") != "completed" or not foundation_layers:
         blockers.append("foundation_registry_layers_missing")
-    if foundation_layers and not foundation_layers.issubset(release_layers):
+    foundation_prefix = release_layer_rows[: len(foundation_layer_rows)]
+    if foundation_layer_rows and foundation_prefix != foundation_layer_rows:
         blockers.append("release_does_not_extend_exact_foundation_layers")
     delta = {
         digest: size
@@ -43,8 +61,8 @@ def build_thin_release_contract(
         "schema_version": "groot_oscar_thin_release_image_contract.v1",
         "status": "passed" if not blockers else "blocked",
         "blockers": blockers,
-        "foundation_image_ref": foundation.get("resolved_digest_ref"),
-        "release_image_ref": release.get("resolved_digest_ref"),
+        "foundation_image_ref": foundation_ref or None,
+        "release_image_ref": release_ref or None,
         "foundation_layer_count": len(foundation_layers),
         "release_layer_count": len(release_layers),
         "release_delta_layer_count": len(delta),

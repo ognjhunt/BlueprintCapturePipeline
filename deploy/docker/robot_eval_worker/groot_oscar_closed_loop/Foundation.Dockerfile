@@ -54,10 +54,20 @@ FROM tensorrt-base AS wbc-builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG WBC_SOURCE_URL WBC_SOURCE_REF TENSORRT_VERSION
-RUN apt-get update \
+ADD --checksum=sha256:a1bc93654f31669fd964ea3011a5e5e9676b9b6f8adcd762606e5140632ea72d \
+  https://github.com/casey/just/releases/download/1.43.0/just-1.43.0-x86_64-unknown-linux-musl.tar.gz \
+  /tmp/just.tgz
+ADD --checksum=sha256:b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e \
+  https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz \
+  /tmp/onnxruntime.tgz
+RUN tar -xzf /tmp/just.tgz -C /usr/local/bin just \
+  && mkdir -p /opt/onnxruntime \
+  && tar -xzf /tmp/onnxruntime.tgz -C /opt/onnxruntime --strip-components=1 \
+  && rm -f /tmp/just.tgz /tmp/onnxruntime.tgz \
+  && apt-get update \
   && apt-cache madison libnvinfer10 | awk -v version="${TENSORRT_VERSION}" '$3 == version { found=1 } END { exit !found }' \
   && apt-get install -y --no-install-recommends \
-      build-essential clang cmake git git-lfs ninja-build pkg-config curl ca-certificates sudo \
+      build-essential clang cmake git git-lfs ninja-build pkg-config curl ca-certificates sudo cppzmq-dev \
       libnvinfer-headers-dev=${TENSORRT_VERSION} libnvinfer-headers-plugin-dev=${TENSORRT_VERSION} \
       libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
       libnvonnxparsers10=${TENSORRT_VERSION} libnvinfer-dev=${TENSORRT_VERSION} \
@@ -71,19 +81,40 @@ RUN apt-get update \
   && cd /tmp/wbc/gear_sonic_deploy \
   && chmod +x scripts/install_deps.sh deploy.sh \
   && scripts/install_deps.sh \
+  && test "$(command -v just)" = /usr/local/bin/just \
+  && test -f /usr/include/zmq.hpp \
+  && test ! -d third_party/cppzmq/.git \
   && sed -i 's/nvinfer nvinfer_plugin nvonnxparser nvparsers/nvinfer nvinfer_plugin nvonnxparser/' cmake/FindTensorRT.cmake \
   && source scripts/setup_env.sh \
   && just build \
   && test -d /opt/onnxruntime \
-  && mkdir -p /opt/wbc-runtime/gear_sonic_deploy \
-  && cp -a build target g1 scripts reference /opt/wbc-runtime/gear_sonic_deploy/ \
+  && mkdir -p /opt/wbc-runtime/gear_sonic_deploy/target/release \
+      /opt/wbc-runtime/gear_sonic_deploy/scripts \
+      /opt/wbc-runtime/gear_sonic_deploy/reference \
+      /opt/wbc-runtime/gear_sonic/utils \
+      /opt/wbc-runtime/gear_sonic/utils/teleop \
+      /opt/onnxruntime-runtime/lib \
+  && install -m 0755 target/release/g1_deploy_onnx_ref \
+      /opt/wbc-runtime/gear_sonic_deploy/target/release/g1_deploy_onnx_ref \
+  && cp -a g1 /opt/wbc-runtime/gear_sonic_deploy/g1 \
+  && install -m 0755 scripts/setup_env.sh \
+      /opt/wbc-runtime/gear_sonic_deploy/scripts/setup_env.sh \
+  && cp -a reference/example /opt/wbc-runtime/gear_sonic_deploy/reference/example \
   && mkdir -p /opt/wbc-runtime/gear_sonic_deploy/thirdparty_runtime \
   && cp -a thirdparty/unitree_sdk2/thirdparty/lib/x86_64 /opt/wbc-runtime/gear_sonic_deploy/thirdparty_runtime/lib \
-  && cp -a /tmp/wbc/gear_sonic /opt/wbc-runtime/gear_sonic \
+  && install -m 0644 /tmp/wbc/gear_sonic/__init__.py /tmp/wbc/gear_sonic/version.py \
+      /opt/wbc-runtime/gear_sonic/ \
+  && install -m 0644 /tmp/wbc/gear_sonic/utils/__init__.py \
+      /opt/wbc-runtime/gear_sonic/utils/__init__.py \
+  && cp -a /tmp/wbc/gear_sonic/utils/teleop/zmq \
+      /opt/wbc-runtime/gear_sonic/utils/teleop/zmq \
+  && cp -a /opt/onnxruntime/lib/libonnxruntime.so* /opt/onnxruntime-runtime/lib/ \
   && printf '%s\n' "${WBC_SOURCE_REF}" > /opt/wbc-runtime/.blueprint-source-revision \
   && mkdir -p /opt/wbc-runtime/gear_sonic_deploy/policy/release /opt/wbc-runtime/gear_sonic_deploy/planner/target_vel/V2 \
-  && find /opt/wbc-runtime -type d -name CMakeFiles -prune -exec rm -rf '{}' + \
-  && find /opt/wbc-runtime -type f \( -name '*.o' -o -name '*.a' -o -name 'CMakeCache.txt' \) -delete \
+  && test ! -d /opt/wbc-runtime/gear_sonic_deploy/build \
+  && test ! -d /opt/wbc-runtime/gear_sonic_deploy/src \
+  && test ! -d /opt/wbc-runtime/gear_sonic/tests \
+  && test -z "$(find /opt/wbc-runtime -type f \( -name '*.o' -o -name '*.a' -o -name 'CMakeCache.txt' -o -name 'CMakeLists.txt' \) -print -quit)" \
   && test -x /opt/wbc-runtime/gear_sonic_deploy/target/release/g1_deploy_onnx_ref \
   && test -f /opt/wbc-runtime/.blueprint-source-revision
 
@@ -96,7 +127,7 @@ ARG GROOT_SOURCE_REF OSCAR_SOURCE_REF WBC_SOURCE_REF TENSORRT_VERSION
 RUN apt-get update \
   && apt-cache madison libnvinfer10 | awk -v version="${TENSORRT_VERSION}" '$3 == version { found=1 } END { exit !found }' \
   && apt-get install -y --no-install-recommends \
-      libosmesa6 ffmpeg ca-certificates gettext-base sudo \
+      libosmesa6 ffmpeg ca-certificates gettext-base libzmq5 libyaml-cpp0.8 zlib1g \
       libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
       libnvonnxparsers10=${TENSORRT_VERSION} \
   && installed_build_packages="$(dpkg-query -W -f='${binary:Package}\n' build-essential clang cmake git git-lfs ninja-build pkg-config 2>/dev/null || true)" \
@@ -113,7 +144,7 @@ RUN apt-get update \
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/robot-venv /opt/robot-venv
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/oscar-runtime /opt/OSCAR
 COPY --from=wbc-builder --chown=blueprint:blueprint /opt/wbc-runtime /opt/wbc
-COPY --from=wbc-builder /opt/onnxruntime /opt/onnxruntime
+COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/isaac_6_g1_assets.sha256 /opt/blueprint/isaac_6_g1_assets.sha256
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/fetch_pinned_isaac_assets.py /opt/blueprint/fetch_pinned_isaac_assets.py
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
@@ -144,7 +175,11 @@ RUN ln -s /opt/robot-venv /opt/oscar-venv \
   && test ! -e /opt/blueprint/ckpts \
   && test ! -d /opt/wbc/.git \
   && test ! -d /opt/OSCAR/.git \
+  && test ! -d /opt/wbc/gear_sonic_deploy/build \
+  && test ! -d /opt/wbc/gear_sonic_deploy/src \
+  && test ! -d /opt/onnxruntime/include \
   && ! dpkg-query -W build-essential clang cmake git git-lfs ninja-build pkg-config >/dev/null 2>&1 \
+  && ! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -q 'not found' \
   && /opt/robot-venv/bin/python -m pip check
 USER blueprint
 WORKDIR /workspace

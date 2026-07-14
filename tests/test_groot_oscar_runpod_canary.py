@@ -59,6 +59,7 @@ def test_canary_preparation_binds_exact_admitted_tuple_into_request() -> None:
             "required_cuda_version_source": "image_config_env:CUDA_VERSION",
         },
         model_cache={
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
             "status": "passed",
             "model_manifest_digest": "sha256:" + "b" * 64,
             "checks": {"models_cached_offline": True},
@@ -85,6 +86,7 @@ def test_canary_preparation_rejects_tag_or_different_digest() -> None:
             "required_cuda_version_source": "image_config_env:CUDA_VERSION",
         },
         model_cache={
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
             "status": "passed",
             "model_manifest_digest": "sha256:" + "b" * 64,
             "checks": {"models_cached_offline": True},

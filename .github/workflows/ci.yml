@@ -117,6 +117,7 @@ jobs:
           uv run ruff check src/blueprint_pipeline scripts tests
           uv run python scripts/lint_public_scientific_claims.py
           uv run python scripts/verify_paid_resource_allocator.py
+          uv run python scripts/verify_groot_oscar_thin_architecture.py
 
   typecheck:
     name: Typed release contract core

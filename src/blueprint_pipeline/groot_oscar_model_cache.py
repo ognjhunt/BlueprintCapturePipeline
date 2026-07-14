@@ -13,13 +13,15 @@ import json
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .common import write_json
 
-SCHEMA_VERSION = "groot_oscar_external_model_cache.v1"
+SCHEMA_VERSION = "groot_oscar_external_model_cache.v2"
+VERIFICATION_SCHEMA_VERSION = "groot_oscar_external_model_cache_verification.v2"
 MANIFEST_NAME = "groot_oscar_model_cache_manifest.json"
 MODEL_PINS: tuple[tuple[str, str, str], ...] = (
     ("sonic", "LucaFrat/groot-bs16", "86b17337379926a8d8f1ad5c4580c7c33deeb49f"),
@@ -33,6 +35,40 @@ GEAR_FILES = (
     "observation_config.yaml",
     "planner_sonic.onnx",
 )
+REQUIRED_MODEL_FILES: dict[str, tuple[str, ...]] = {
+    "sonic": (
+        "config.json",
+        "experiment_cfg/conf.yaml",
+        "experiment_cfg/config.yaml",
+        "experiment_cfg/dataset_statistics.json",
+        "experiment_cfg/final_model_config.json",
+        "experiment_cfg/final_processor_config.json",
+        "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors",
+        "model.safetensors.index.json",
+        "processor/embodiment_id.json",
+        "processor/processor_config.json",
+        "processor/statistics.json",
+    ),
+    "cosmos": (
+        "config.json",
+        "chat_template.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "video_preprocessor_config.json",
+        "vocab.json",
+    ),
+    "oscar": (
+        "case_map.json",
+        "model/.metadata",
+        "model/__0_0.distcp",
+    ),
+    "gear_sonic": GEAR_FILES,
+}
 _IMMUTABLE_HF_REVISION = re.compile(r"[0-9a-f]{40}")
 
 
@@ -57,17 +93,23 @@ def _model_files(root: Path) -> Iterable[Path]:
             yield from sorted(path for path in model_root.rglob("*") if path.is_file())
 
 
+def _missing_required_files(root: Path) -> list[str]:
+    missing: list[str] = []
+    for model_name, relatives in REQUIRED_MODEL_FILES.items():
+        for relative in relatives:
+            path = root / model_name / relative
+            if not path.is_file() or path.stat().st_size <= 0:
+                missing.append(f"{model_name}/{relative}")
+    return missing
+
+
 def build_manifest(root: Path) -> dict[str, Any]:
     """Inventory and hash a fully prepared cache.  Missing models fail closed."""
 
     root = root.expanduser().resolve()
-    missing = [
-        name
-        for name, _, _ in MODEL_PINS
-        if not any(path.is_file() for path in (root / name).rglob("*"))
-    ]
+    missing = _missing_required_files(root)
     if missing:
-        raise ValueError("model_cache_required_roots_missing:" + ",".join(missing))
+        raise ValueError("model_cache_required_files_missing_or_empty:" + ",".join(missing))
     files = []
     for path in _model_files(root):
         resolved = path.resolve()
@@ -89,6 +131,9 @@ def build_manifest(root: Path) -> dict[str, Any]:
             {"name": name, "repo_id": repo_id, "revision": revision}
             for name, repo_id, revision in MODEL_PINS
         ],
+        "required_files": {
+            name: list(paths) for name, paths in REQUIRED_MODEL_FILES.items()
+        },
         "files": files,
         "file_count": len(files),
         "total_size_bytes": sum(item["size_bytes"] for item in files),
@@ -118,6 +163,11 @@ def verify_model_cache(root: Path, manifest_path: Path | None = None) -> dict[st
         blockers.append("model_cache_manifest_schema_invalid")
     if payload.get("repositories") != expected_repositories:
         blockers.append("model_cache_repository_pins_mismatch")
+    expected_required_files = {
+        name: list(paths) for name, paths in REQUIRED_MODEL_FILES.items()
+    }
+    if payload.get("required_files") != expected_required_files:
+        blockers.append("model_cache_required_file_contract_mismatch")
     if payload.get("network_download_allowed_at_runtime") is not False:
         blockers.append("model_cache_runtime_network_policy_invalid")
     observed_digest = str(payload.get("manifest_digest") or "")
@@ -163,8 +213,10 @@ def verify_model_cache(root: Path, manifest_path: Path | None = None) -> dict[st
         int(entry.get("size_bytes") or 0) for entry in entries if isinstance(entry, dict)
     ):
         blockers.append("model_cache_total_size_mismatch")
+    for relative in _missing_required_files(root):
+        blockers.append(f"model_cache_required_file_missing_or_empty:{relative}")
     return {
-        "schema_version": "groot_oscar_external_model_cache_verification.v1",
+        "schema_version": VERIFICATION_SCHEMA_VERSION,
         "status": "passed" if not blockers else "blocked",
         "blockers": blockers,
         "model_manifest_digest": observed_digest or None,
@@ -213,7 +265,11 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
         raise RuntimeError("huggingface_hub_required_to_prepare_model_cache") from exc
 
     root = root.expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    transaction_id = uuid.uuid4().hex
+    staging = root.parent / f".{root.name}.staging-{transaction_id}"
+    backup = root.parent / f".{root.name}.backup-{transaction_id}"
+    staging.mkdir(mode=0o700)
     pins = {name: (repo, revision) for name, repo, revision in MODEL_PINS}
     invalid_pins = sorted(
         name
@@ -223,56 +279,76 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
     if invalid_pins:
         raise RuntimeError("model_cache_revisions_must_be_commit_shas:" + ",".join(invalid_pins))
     # Each revision is validated as an immutable commit SHA above.
-    snapshot_download(  # nosec B615
-        repo_id=pins["sonic"][0],
-        revision=pins["sonic"][1],
-        local_dir=str(root / "sonic"),
-        ignore_patterns=["checkpoint-*", "checkpoint-*/*"],
-        token=token,
-    )
-    cosmos_source = Path(
+    try:
+        snapshot_download(  # nosec B615
+            repo_id=pins["sonic"][0],
+            revision=pins["sonic"][1],
+            local_dir=str(staging / "sonic"),
+            allow_patterns=list(REQUIRED_MODEL_FILES["sonic"]),
+            token=token,
+        )
         snapshot_download(  # nosec B615
             repo_id=pins["cosmos"][0],
             revision=pins["cosmos"][1],
+            local_dir=str(staging / "cosmos"),
+            allow_patterns=list(REQUIRED_MODEL_FILES["cosmos"]),
             token=token,
         )
-    )
-    cosmos = root / "cosmos"
-    if cosmos.exists():
-        shutil.rmtree(cosmos)
-    shutil.copytree(cosmos_source, cosmos, symlinks=False)
-    snapshot_download(  # nosec B615
-        repo_id=pins["oscar"][0],
-        revision=pins["oscar"][1],
-        local_dir=str(root / "oscar"),
-        token=token,
-    )
-    gear = root / "gear_sonic"
-    gear.mkdir(parents=True, exist_ok=True)
-    for filename in GEAR_FILES:
-        source = Path(
-            hf_hub_download(  # nosec B615
-                repo_id=pins["gear_sonic"][0],
-                revision=pins["gear_sonic"][1],
-                filename=filename,
-                token=token,
-            )
+        snapshot_download(  # nosec B615
+            repo_id=pins["oscar"][0],
+            revision=pins["oscar"][1],
+            local_dir=str(staging / "oscar"),
+            allow_patterns=list(REQUIRED_MODEL_FILES["oscar"]),
+            token=token,
         )
-        shutil.copyfile(source, gear / filename)
+        gear = staging / "gear_sonic"
+        gear.mkdir(parents=True, exist_ok=True)
+        for filename in GEAR_FILES:
+            source = Path(
+                hf_hub_download(  # nosec B615
+                    repo_id=pins["gear_sonic"][0],
+                    revision=pins["gear_sonic"][1],
+                    filename=filename,
+                    token=token,
+                )
+            )
+            shutil.copyfile(source, gear / filename)
 
-    sonic_config_path = root / "sonic" / "config.json"
-    sonic_config = json.loads(sonic_config_path.read_text(encoding="utf-8"))
-    if sonic_config.get("model_name") != pins["cosmos"][0]:
-        raise RuntimeError("unexpected_sonic_nested_model")
-    sonic_config["blueprint_original_model_name"] = pins["cosmos"][0]
-    sonic_config["blueprint_model_revision"] = pins["cosmos"][1]
-    sonic_config["model_name"] = str(root / "cosmos")
-    sonic_config_path.write_text(
-        json.dumps(sonic_config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    manifest = build_manifest(root)
-    write_json(root / MANIFEST_NAME, manifest)
-    return manifest
+        for metadata_dir in sorted(staging.rglob(".cache"), reverse=True):
+            if metadata_dir.is_dir():
+                shutil.rmtree(metadata_dir)
+
+        sonic_config_path = staging / "sonic" / "config.json"
+        sonic_config = json.loads(sonic_config_path.read_text(encoding="utf-8"))
+        if sonic_config.get("model_name") != pins["cosmos"][0]:
+            raise RuntimeError("unexpected_sonic_nested_model")
+        sonic_config["blueprint_original_model_name"] = pins["cosmos"][0]
+        sonic_config["blueprint_model_revision"] = pins["cosmos"][1]
+        sonic_config["model_name"] = str(root / "cosmos")
+        sonic_config_path.write_text(
+            json.dumps(sonic_config, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        manifest = build_manifest(staging)
+        write_json(staging / MANIFEST_NAME, manifest)
+        staged_verification = verify_model_cache(staging)
+        if staged_verification["status"] != "passed":
+            raise RuntimeError(
+                "prepared_model_cache_failed_verification:"
+                + ",".join(staged_verification["blockers"])
+            )
+        if root.exists():
+            root.replace(backup)
+        staging.replace(root)
+        if backup.exists():
+            shutil.rmtree(backup)
+        return manifest
+    except BaseException:
+        if not root.exists() and backup.exists():
+            backup.replace(root)
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
 
 
 def _token_from_file(path: str) -> str | None:

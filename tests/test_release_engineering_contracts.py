@@ -297,6 +297,10 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
         "FROM tensorrt-base", 1
     )[0]
     assert "ca-certificates sudo" in wbc_builder
+    assert "sha256:a1bc93654f31669fd964ea3011a5e5e9676b9b6f8adcd762606e5140632ea72d" in wbc_builder
+    assert "sha256:b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e" in wbc_builder
+    assert "cppzmq-dev" in wbc_builder
+    assert "test ! -d third_party/cppzmq/.git" in wbc_builder
     assert foundation.count("apt-cache madison libnvinfer10") == 2
     assert foundation.count("'$3 == version { found=1 } END { exit !found }'") == 2
     assert foundation.count("libnvinfer10=${TENSORRT_VERSION}") == 2
@@ -304,6 +308,10 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation
     assert "uv venv /opt/robot-venv --python 3.10 --seed" in foundation
     assert foundation.count("/opt/robot-venv/bin/python -m pip check") == 2
+    assert "cp -a build target g1 scripts reference" not in foundation
+    assert "COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime" in foundation
+    assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation
+    assert "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in foundation
 
 
 def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:

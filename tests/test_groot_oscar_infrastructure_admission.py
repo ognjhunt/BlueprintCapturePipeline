@@ -226,6 +226,7 @@ def _release() -> dict:
 
 def _models() -> dict:
     return {
+        "schema_version": "groot_oscar_external_model_cache_verification.v2",
         "status": "passed",
         "model_manifest_digest": MANIFEST_DIGEST,
         "checks": {"models_cached_offline": True},
@@ -269,6 +270,20 @@ def test_runpod_serve_plane_admits_only_published_volume_ready_worker() -> None:
     )
     assert result["status"] == "admitted"
     assert result["blockers"] == []
+
+
+def test_runpod_serve_plane_rejects_legacy_weak_model_verification() -> None:
+    models = _models()
+    models["schema_version"] = "groot_oscar_external_model_cache_verification.v1"
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=models,
+        volume=_volume(),
+        runtime=_runtime(),
+        spend=_serve_spend(),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_model_cache_verification_schema_invalid" in result["blockers"]
 
 
 def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:

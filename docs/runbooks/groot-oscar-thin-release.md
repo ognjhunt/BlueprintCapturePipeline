@@ -10,13 +10,17 @@ The worker is an exact tuple:
 
 1. digest-pinned foundation image built from `Foundation.Dockerfile`;
 2. digest-pinned thin Blueprint release built from `Release.Dockerfile`;
-3. `groot_oscar_external_model_cache.v1` manifest digest on a provider volume;
+3. `groot_oscar_external_model_cache.v2` manifest digest on a provider volume;
 4. GPU serving class.
 
 The foundation contains Isaac 6, the shared PyTorch/CUDA robot environment,
 OSCAR runtime source, installed GR00T runtime, WBC runtime binaries/configs,
 TensorRT runtime libraries, and pinned Isaac G1 assets. WBC compilers, object
-files, source Git data, and build caches do not enter the final stage. GR00T
+files, C/C++ source/build trees, ONNX Runtime headers, source Git data, and
+build caches do not enter the final stage. The WBC copy is an explicit runtime
+allowlist: the production executable, G1 runtime assets, setup script, required
+reference data, the ZMQ Python client surface, Unitree runtime libraries, and
+ONNX Runtime shared objects. GR00T
 and OSCAR share `/opt/robot-venv`; `pip check` and the GR00T import gate must
 pass before publication.
 
@@ -24,6 +28,18 @@ Checkpoints are absent from both OCI images. The release entrypoint verifies
 every declared model file by size and SHA-256 while offline, verifies the exact
 repository revisions and manifest self-digest, and only then links the verified
 GEAR-SONIC model assets into the WBC runtime tree.
+
+Before allocating a builder, run the network-free architecture gate:
+
+```bash
+python scripts/verify_groot_oscar_thin_architecture.py
+```
+
+CI runs the same gate on every push and pull request. It rejects reintroduced
+WBC build trees, separate GR00T/OSCAR environments, unpinned bootstrap
+downloads, model acquisition in the release Dockerfile, incomplete critical
+model-file contracts, and mutable foundation/release seams before paid
+infrastructure is used.
 
 ## 1. Build the stable foundation
 
@@ -86,6 +102,11 @@ The second command in the script re-reads and hashes every model byte under
 `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. Preserve the emitted
 `manifest_digest` as part of worker readiness evidence. File presence, total
 directory size, or a hash of size metadata is not accepted as model proof.
+Preparation downloads only the pinned runtime allowlist into a sibling staging
+directory. It removes downloader metadata, builds and verifies the manifest,
+then atomically replaces the active cache. A failed or interrupted preparation
+leaves the previous cache in place; customer-serving workers never consume a
+partially downloaded replacement.
 
 RunPod exposes its network volume at `/workspace`, so prepare the same cache at
 `/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1` and set the

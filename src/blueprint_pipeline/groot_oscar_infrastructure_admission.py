@@ -397,6 +397,11 @@ def build_runpod_serve_plane_admission(
         blockers.append("runpod_release_platform_not_linux_amd64")
 
     manifest_digest = _string(model_cache.get("model_manifest_digest"))
+    if (
+        model_cache.get("schema_version")
+        != "groot_oscar_external_model_cache_verification.v2"
+    ):
+        blockers.append("runpod_model_cache_verification_schema_invalid")
     if model_cache.get("status") != "passed":
         blockers.append("runpod_external_model_cache_not_verified")
     if not _SHA256.fullmatch(manifest_digest):

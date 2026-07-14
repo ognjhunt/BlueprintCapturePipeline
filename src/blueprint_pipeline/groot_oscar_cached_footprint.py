@@ -37,7 +37,9 @@ def build_cached_footprint_audit(
         blockers.append("local_uncompressed_worker_image_size_missing")
         image_bytes = None
     if (
-        model_cache_verification.get("status") != "passed"
+        model_cache_verification.get("schema_version")
+        != "groot_oscar_external_model_cache_verification.v2"
+        or model_cache_verification.get("status") != "passed"
         or model_cache_verification.get("checks", {}).get("models_cached_offline")
         is not True
     ):

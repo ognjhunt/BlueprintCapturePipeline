@@ -8,6 +8,7 @@ REF = "registry.example/blueprint/release@sha256:" + "a" * 64
 
 def _models(size: int = 14 * 1024**3) -> dict:
     return {
+        "schema_version": "groot_oscar_external_model_cache_verification.v2",
         "status": "passed",
         "model_manifest_digest": "sha256:" + "b" * 64,
         "verified_size_bytes": size,
@@ -43,6 +44,21 @@ def test_cached_worker_audit_reports_measured_above_target() -> None:
     assert result["target_met"] is False
 
 
+def test_cached_worker_audit_rejects_legacy_model_verification_schema() -> None:
+    models = _models()
+    models["schema_version"] = "groot_oscar_external_model_cache_verification.v1"
+    result = build_cached_footprint_audit(
+        image_evidence={
+            "resolved_digest_ref": REF,
+            "local_uncompressed_size_bytes": 14 * 1024**3,
+        },
+        model_cache_verification=models,
+        expected_release_ref=REF,
+    )
+    assert result["status"] == "blocked"
+    assert "external_model_cache_not_verified" in result["blockers"]
+
+
 def test_cached_worker_audit_refuses_registry_compressed_size_substitution() -> None:
     result = build_cached_footprint_audit(
         image_evidence={
@@ -63,6 +79,7 @@ def test_cached_worker_audit_requires_exact_release_and_verified_models() -> Non
             "local_uncompressed_size_bytes": 10,
         },
         model_cache_verification={
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
             "status": "blocked",
             "verified_size_bytes": 10,
             "checks": {"models_cached_offline": False},
