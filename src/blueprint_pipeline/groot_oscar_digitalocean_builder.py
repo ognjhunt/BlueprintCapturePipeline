@@ -320,6 +320,44 @@ def _delete_and_verify(*, token: str, droplet_id: str) -> dict[str, Any]:
     }
 
 
+def _delete_with_fail_closed_evidence(*, token: str, droplet_id: str) -> dict[str, Any]:
+    try:
+        return _delete_and_verify(token=token, droplet_id=droplet_id)
+    except Exception as exc:  # noqa: BLE001 - teardown uncertainty must be persisted
+        return {
+            "delete_http_status": None,
+            "verify_http_status": None,
+            "provider_absence_confirmed": False,
+            "teardown_error_type": type(exc).__name__,
+        }
+
+
+def _list_droplets_by_tag(
+    *, token: str, tag: str, per_page: int = 200, max_pages: int = 100
+) -> tuple[int, list[dict[str, Any]]]:
+    """Read every matching inventory page or fail closed without partial data."""
+
+    rows: list[dict[str, Any]] = []
+    encoded_tag = urllib.parse.quote(tag, safe="")
+    for page in range(1, max_pages + 1):
+        http_status, payload = _request(
+            token=token,
+            method="GET",
+            path=(
+                f"/droplets?tag_name={encoded_tag}&per_page={per_page}&page={page}"
+            ),
+        )
+        if http_status != 200:
+            return http_status, []
+        page_rows = payload.get("droplets", []) if isinstance(payload, Mapping) else []
+        if not isinstance(page_rows, list):
+            return 502, []
+        rows.extend(row for row in page_rows if isinstance(row, dict))
+        if len(page_rows) < per_page:
+            return 200, rows
+    return 508, []
+
+
 def _reconcile_ambiguous_create(
     *,
     token: str,
@@ -338,10 +376,8 @@ def _reconcile_ambiguous_create(
         if attempt:
             sleeper(5)
         try:
-            http_status, payload = _request(
-                token=token,
-                method="GET",
-                path=f"/droplets?tag_name={urllib.parse.quote(BUILDER_TAG)}&per_page=200",
+            http_status, tagged_rows = _list_droplets_by_tag(
+                token=token, tag=BUILDER_TAG
             )
         except Exception as exc:  # noqa: BLE001 - mutation outcome must be reconciled
             observations.append(
@@ -353,10 +389,9 @@ def _reconcile_ambiguous_create(
             )
             inventory_verified = False
             continue
-        rows = payload.get("droplets", []) if isinstance(payload, Mapping) else []
         exact_matches = [
             row
-            for row in rows
+            for row in tagged_rows
             if isinstance(row, Mapping)
             and row.get("name") == name
             and isinstance(row.get("region"), Mapping)
@@ -443,8 +478,8 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
 
 def _live_profile(*, token: str, region: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     sizes_http, sizes_payload = _request(token=token, method="GET", path="/sizes?per_page=200")
-    droplets_http, droplets_payload = _request(
-        token=token, method="GET", path="/droplets?per_page=200"
+    droplets_http, tagged_droplets = _list_droplets_by_tag(
+        token=token, tag=BUILDER_TAG
     )
     if sizes_http != 200 or droplets_http != 200:
         raise RuntimeError("digitalocean_builder_inventory_query_failed")
@@ -459,7 +494,7 @@ def _live_profile(*, token: str, region: str) -> tuple[dict[str, Any], list[dict
     )
     builders = [
         row
-        for row in droplets_payload.get("droplets", [])
+        for row in tagged_droplets
         if isinstance(row, dict) and BUILDER_TAG in (row.get("tags") or [])
     ]
     profile = build_digitalocean_cpu_builder_profile_evidence(
@@ -770,7 +805,9 @@ def run_builder(
         )
         build_status = "failed"
     finally:
-        teardown = _delete_and_verify(token=token, droplet_id=droplet_id)
+        teardown = _delete_with_fail_closed_evidence(
+            token=token, droplet_id=droplet_id
+        )
         elapsed = max(0.0, time.time() - started)
         teardown.update(
             {
@@ -792,7 +829,14 @@ def run_builder(
             if build_status == "completed" and teardown["provider_absence_confirmed"]
             else "failed"
         ),
-        "blockers": ([] if build_status == "completed" else ["remote_thin_image_build_failed"]),
+        "blockers": [
+            *([] if build_status == "completed" else ["remote_thin_image_build_failed"]),
+            *(
+                []
+                if teardown["provider_absence_confirmed"]
+                else ["digitalocean_builder_teardown_unverified"]
+            ),
+        ],
         "droplet_id": droplet_id,
         "build_exit_code": build_exit,
         "source_commit": packet["source_commit"],

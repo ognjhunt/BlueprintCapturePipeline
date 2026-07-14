@@ -8,6 +8,8 @@ import pytest
 from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     BUILDER_TAG,
     TEARDOWN_TAG,
+    _delete_with_fail_closed_evidence,
+    _list_droplets_by_tag,
     _reconcile_ambiguous_create,
     build_cloud_init,
     build_droplet_payload,
@@ -18,6 +20,43 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     run_builder,
     verify_packet_tarball,
 )
+
+
+def test_builder_inventory_follows_every_tag_filtered_page(monkeypatch) -> None:
+    observed_paths: list[str] = []
+    first_page = [
+        {"id": index, "tags": [BUILDER_TAG]} for index in range(200)
+    ]
+
+    def fake_request(*, token, method, path, payload=None):
+        del token, method, payload
+        observed_paths.append(path)
+        if "page=1" in path:
+            return 200, {"droplets": first_page}
+        return 200, {"droplets": [{"id": 999, "tags": [BUILDER_TAG]}]}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._request",
+        fake_request,
+    )
+    http_status, rows = _list_droplets_by_tag(token="secret", tag=BUILDER_TAG)
+    assert http_status == 200
+    assert len(rows) == 201
+    assert any("page=2" in path for path in observed_paths)
+
+
+def test_teardown_transport_error_is_persistable_fail_closed(monkeypatch) -> None:
+    def fail_delete(**_kwargs):
+        raise TimeoutError("lost delete response")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder._delete_and_verify",
+        fail_delete,
+    )
+    result = _delete_with_fail_closed_evidence(token="secret", droplet_id="123")
+    assert result["provider_absence_confirmed"] is False
+    assert result["teardown_error_type"] == "TimeoutError"
+    assert "lost delete response" not in json.dumps(result)
 
 
 def test_ambiguous_create_reconciliation_deletes_exact_name_tag_match(

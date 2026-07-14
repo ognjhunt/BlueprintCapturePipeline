@@ -84,6 +84,12 @@ def verify() -> list[str]:
         blockers.append("cpu_ambiguous_create_reconciliation_missing")
     if "ambiguous_create_reconciliation.json" not in cpu:
         blockers.append("cpu_ambiguous_create_evidence_missing")
+    if "_list_droplets_by_tag" not in cpu_calls.get("_live_profile", set()):
+        blockers.append("cpu_builder_inventory_pagination_missing")
+    if "_delete_with_fail_closed_evidence" not in cpu_calls.get("run_builder", set()):
+        blockers.append("cpu_teardown_error_evidence_missing")
+    if "digitalocean_builder_teardown_unverified" not in cpu:
+        blockers.append("cpu_teardown_unverified_blocker_missing")
     if 'item.get("size")' not in thin_release:
         blockers.append("thin_release_native_registry_layer_size_missing")
     gpu_calls = _function_calls(GPU_ADAPTER)
