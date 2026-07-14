@@ -855,6 +855,35 @@ def test_invalid_resume_config_still_tears_down_recorded_allocation(tmp_path):
     assert result["teardown"]["billing_stopped"] is True
 
 
+def test_nonjson_resume_config_still_tears_down_recorded_allocation(tmp_path):
+    original = config()
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    machine = CampaignMachine(
+        config=original,
+        adapter=provider,
+        state_dir=tmp_path,
+        teardown_owner="owner-1",
+    )
+    state, _ = machine._load()
+    state["allocation_id"] = "vm-1"
+    state["provider_started_at_epoch_seconds"] = 1000.0
+    machine._checkpoint(state, "allocation", {"status": "completed", "allocation_id": "vm-1"})
+    nonjson_evidence = dict(original.image_residency_evidence or {})
+    nonjson_evidence["opaque_provider_value"] = object()
+
+    result = CampaignMachine(
+        config=config(image_residency_evidence=nonjson_evidence),
+        adapter=provider,
+        state_dir=tmp_path,
+    ).run()
+
+    assert result["status"] == "blocked"
+    assert "immutable_campaign_config_not_json_serializable" in result["blockers"]
+    assert ("terminate", "vm-1") in provider.calls
+    assert ("inventory", original.allocation_key) in provider.calls
+    assert result["teardown"]["billing_stopped"] is True
+
+
 def test_invalid_resume_config_tears_down_pending_create_without_checkpointed_id(
     tmp_path,
 ):

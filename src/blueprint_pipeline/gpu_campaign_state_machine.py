@@ -459,7 +459,10 @@ class CampaignMachine:
 
     def _load(self) -> tuple[dict[str, Any], str]:
         config_payload = self.config.payload()
-        config_sha = _canonical_sha(config_payload)
+        try:
+            config_sha = _canonical_sha(config_payload)
+        except (TypeError, ValueError) as exc:
+            raise CampaignBlocked("immutable_campaign_config_not_json_serializable") from exc
         if self.config_path.exists():
             try:
                 recorded = json.loads(self.config_path.read_text())
