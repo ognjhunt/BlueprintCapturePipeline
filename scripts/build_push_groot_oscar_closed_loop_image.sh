@@ -527,11 +527,17 @@ PY
   fi
 fi
 
+source_identity_after_json="$(
+  PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+    'import json, sys; from blueprint_pipeline.g1_kitchen_bundle_compatibility import build_source_tree_identity; print(json.dumps(build_source_tree_identity(sys.argv[1]), sort_keys=True))' \
+    "$repo_root"
+)"
+
 # Only now is the release tag allowed to become visible. The immutable staging
 # digest has passed local runtime identity binding, registry inspection,
 # BuildKit SBOM/provenance validation, explicit registry-source Syft scanning,
 # and layer admission.
-if [[ "$allow_push" == "true" && "$registry_diagnostic_exit" -eq 0 && "$supply_chain_exit" -eq 0 ]]; then
+if [[ "$allow_push" == "true" && "$registry_diagnostic_exit" -eq 0 && "$supply_chain_exit" -eq 0 && "$source_identity_after_json" == "$source_identity_json" ]]; then
   if ! docker buildx imagetools create --tag "$image_ref" "$runtime_image_ref"; then
     write_manifest "blocked" '["groot_oscar_closed_loop_final_tag_promotion_failed"]' >/dev/null
     echo "validated candidate digest could not be promoted to the final release tag" >&2
@@ -552,11 +558,6 @@ print(digest)
     exit 2
   fi
 fi
-source_identity_after_json="$(
-  PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
-    'import json, sys; from blueprint_pipeline.g1_kitchen_bundle_compatibility import build_source_tree_identity; print(json.dumps(build_source_tree_identity(sys.argv[1]), sort_keys=True))' \
-    "$repo_root"
-)"
 
 python3 - "$manifest_output" "$image_ref" "$platform" "$base_image" "$groot_ref" "$prefetch_checkpoints" "$allow_push" "$source_identity_json" "$source_identity_gate_json" "$registry_manifest_output" "$registry_diagnostic_exit" "$build_metadata_file" "$source_identity_after_json" "$runtime_smoke_output" "$sbom_output" "$provenance_output" "$layer_report_output" "$supply_chain_exit" "$wbc_ref" "$gear_checkpoint_revision" "$oscar_source_ref" "$oscar_checkpoint_revision" <<'PY'
 import hashlib, json, re, subprocess, sys

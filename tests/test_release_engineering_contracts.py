@@ -496,6 +496,7 @@ def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> Non
     binding_check_at = script.index('if [[ "$published_config_digest" != "$smoked_local_image_id" ]]')
     registry_scan_at = script.index('syft "registry:${exact_digest_ref}"')
     provenance_gate_at = script.index("validate_buildkit_provenance_binding(")
+    identity_recheck_at = script.index('source_identity_after_json="$(')
     promotion_at = script.index('docker buildx imagetools create --tag "$image_ref"')
     assert (
         build_at
@@ -506,6 +507,7 @@ def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> Non
         < binding_check_at
         < registry_scan_at
         < provenance_gate_at
+        < identity_recheck_at
         < promotion_at
     )
     assert "--load" in script[build_at - 500 : smoke_at]
@@ -515,6 +517,7 @@ def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> Non
     assert 'publish_staging_ref="${image_ref}-candidate-${source_commit:0:12}"' in script
     assert '--image "$runtime_image_ref" --output "$registry_manifest_output"' in script
     assert 'if [[ "$promoted_digest" != "$build_digest" ]]' in script
+    assert '"$source_identity_after_json" == "$source_identity_json"' in script
     assert 'test "$(id -un)" = blueprint' in script
     assert "grep -Fx isaac-sim" in script
     assert "/isaac-sim/python.sh" in script
