@@ -16,6 +16,7 @@ Allocate = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 AllocateWithDeadline = Callable[[Mapping[str, Any], int], Mapping[str, Any]]
 RunStage = Callable[[str, str, int, Mapping[str, Any]], Mapping[str, Any]]
 Retrieve = Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
+RetrieveWithDeadline = Callable[[str, int, Mapping[str, Any]], Mapping[str, Any]]
 Terminate = Callable[[str], Mapping[str, Any]]
 Inspect = Callable[[str], Mapping[str, Any]]
 
@@ -29,6 +30,8 @@ class _OperationsAdapter:
     terminate_operation: Terminate
     inspect_operation: Inspect
     allocate_with_deadline_operation: AllocateWithDeadline | None = None
+    stage_with_deadline_operation: RunStage | None = None
+    retrieve_with_deadline_operation: RetrieveWithDeadline | None = None
     provider_name: str = "external"
 
     def inventory(self, allocation_key: str) -> Sequence[Mapping[str, Any]]:
@@ -58,8 +61,39 @@ class _OperationsAdapter:
     ) -> Mapping[str, Any]:
         return self.stage_operation(allocation_id, stage, deadline_seconds, config)
 
+    @property
+    def supports_provider_enforced_stage_deadline(self) -> bool:
+        return self.stage_with_deadline_operation is not None
+
+    def run_stage_with_deadline(
+        self,
+        allocation_id: str,
+        stage: str,
+        *,
+        deadline_seconds: int,
+        config: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if self.stage_with_deadline_operation is None:
+            raise RuntimeError("provider_enforced_stage_deadline_not_configured")
+        return self.stage_with_deadline_operation(allocation_id, stage, deadline_seconds, config)
+
     def retrieve(self, allocation_id: str, config: Mapping[str, Any]) -> Mapping[str, Any]:
         return self.retrieve_operation(allocation_id, config)
+
+    @property
+    def supports_provider_enforced_retrieval_deadline(self) -> bool:
+        return self.retrieve_with_deadline_operation is not None
+
+    def retrieve_with_deadline(
+        self,
+        allocation_id: str,
+        *,
+        deadline_seconds: int,
+        config: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if self.retrieve_with_deadline_operation is None:
+            raise RuntimeError("provider_enforced_retrieval_deadline_not_configured")
+        return self.retrieve_with_deadline_operation(allocation_id, deadline_seconds, config)
 
     def terminate(self, allocation_id: str) -> Mapping[str, Any]:
         return self.terminate_operation(allocation_id)

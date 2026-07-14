@@ -464,8 +464,17 @@ class CampaignMachine:
         )
 
     @staticmethod
-    def _stage_passed(result: Mapping[str, Any]) -> bool:
-        return result.get("status") in {"passed", "completed", "ready", "retrieved"}
+    def _stage_passed(stage: str, result: Mapping[str, Any]) -> bool:
+        allowed = {
+            "host_ready": {"ready", "passed", "completed"},
+            "image_ready": {"ready", "passed", "completed"},
+            "runtime_health": {"ready", "passed", "completed"},
+            "canary": {"passed", "completed"},
+            "smoke": {"passed", "completed"},
+            "episodes": {"passed", "completed"},
+            "artifact_retrieval": {"retrieved", "passed", "completed"},
+        }
+        return result.get("status") in allowed.get(stage, set())
 
     def _allocate_with_deadline(self, timeout_seconds: float) -> Mapping[str, Any]:
         """Never abandon a provider create operation in a daemon thread.
@@ -485,6 +494,50 @@ class CampaignMachine:
         if not callable(operation) or supported is not True:
             raise CampaignBlocked("service_thread_allocation_requires_provider_enforced_deadline")
         return operation(self.config.payload(), deadline_seconds=max(1, int(timeout_seconds)))
+
+    def _run_stage_with_deadline(
+        self, allocation_id: str, stage: str, timeout_seconds: int
+    ) -> Mapping[str, Any]:
+        if threading.current_thread() is threading.main_thread():
+            return self._call_with_deadline(
+                timeout_seconds,
+                lambda: self.adapter.run_stage(
+                    allocation_id,
+                    stage,
+                    deadline_seconds=timeout_seconds,
+                    config=self.config.payload(),
+                ),
+            )
+        operation = getattr(self.adapter, "run_stage_with_deadline", None)
+        supported = getattr(self.adapter, "supports_provider_enforced_stage_deadline", False)
+        if not callable(operation) or supported is not True:
+            raise CampaignBlocked("service_thread_stage_requires_provider_enforced_deadline")
+        return operation(
+            allocation_id,
+            stage,
+            deadline_seconds=timeout_seconds,
+            config=self.config.payload(),
+        )
+
+    def _retrieve_with_deadline(
+        self, allocation_id: str, timeout_seconds: int
+    ) -> Mapping[str, Any]:
+        if threading.current_thread() is threading.main_thread():
+            return self._call_with_deadline(
+                timeout_seconds,
+                self.adapter.retrieve,
+                allocation_id,
+                self.config.payload(),
+            )
+        operation = getattr(self.adapter, "retrieve_with_deadline", None)
+        supported = getattr(self.adapter, "supports_provider_enforced_retrieval_deadline", False)
+        if not callable(operation) or supported is not True:
+            raise CampaignBlocked("service_thread_retrieval_requires_provider_enforced_deadline")
+        return operation(
+            allocation_id,
+            deadline_seconds=timeout_seconds,
+            config=self.config.payload(),
+        )
 
     def _teardown(self, state: dict[str, Any], *, allocation_key: str | None = None) -> None:
         teardown_started = self.clock()
@@ -856,31 +909,17 @@ class CampaignMachine:
                 if stage == "canary" and self.config.reuse_validated_same_allocation_canary:
                     result = {"status": "passed", "reused_handoff": True}
                 elif stage == "artifact_retrieval":
-                    result = dict(
-                        self._call_with_deadline(
-                            authorized_deadline,
-                            self.adapter.retrieve,
-                            allocation_id,
-                            self.config.payload(),
-                        )
-                    )
+                    result = dict(self._retrieve_with_deadline(allocation_id, authorized_deadline))
                 else:
-
-                    def run_stage() -> Mapping[str, Any]:
-                        return self.adapter.run_stage(
-                            allocation_id,
-                            stage,
-                            deadline_seconds=authorized_deadline,
-                            config=self.config.payload(),
-                        )
-
-                    result = dict(self._call_with_deadline(authorized_deadline, run_stage))
+                    result = dict(
+                        self._run_stage_with_deadline(allocation_id, stage, authorized_deadline)
+                    )
                 elapsed = self.clock() - stage_started
                 if elapsed > authorized_deadline:
                     raise CampaignBlocked(f"campaign_stage_deadline_exceeded:{stage}")
                 result.setdefault("authorized_deadline_seconds", authorized_deadline)
                 result.setdefault("elapsed_seconds", round(elapsed, 3))
-                if not self._stage_passed(result):
+                if not self._stage_passed(stage, result):
                     raise CampaignBlocked(f"campaign_stage_failed:{stage}")
                 if stage == "image_ready":
                     image_blockers = validate_image_ready_result(self.config, result)

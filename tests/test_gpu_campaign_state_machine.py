@@ -431,6 +431,52 @@ def test_service_thread_rejects_unbounded_allocation_before_provider_mutation(tm
     assert "service_thread_allocation_requires_provider_enforced_deadline" in outcome[0]["blockers"]
 
 
+def test_ready_is_not_a_terminal_episode_status():
+    assert CampaignMachine._stage_passed("host_ready", {"status": "ready"}) is True
+    assert CampaignMachine._stage_passed("episodes", {"status": "ready"}) is False
+
+
+def test_service_thread_handoff_rejects_unbounded_stage_before_dispatch(tmp_path):
+    cfg = config(
+        reuse_validated_same_allocation_canary=True,
+        canary_handoff={
+            "schema_version": "same_allocation_canary_handoff.v1",
+            "source_sha": "5" * 40,
+            "image_digest": "sha256:" + "7" * 64,
+            "allocation_key": "blueprint-g4",
+            "allocation_id": "vm-1",
+            "launch_nonce": "nonce-1",
+            "teardown_owner": "owner-1",
+            "provider_started_at_epoch_seconds": time.time(),
+            "runtime_health_passed": True,
+            "review_media_valid": True,
+            "allocation_still_owned": True,
+            "teardown_requested": False,
+        },
+    )
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    outcome = []
+
+    def invoke():
+        outcome.append(
+            CampaignMachine(
+                config=cfg,
+                adapter=provider,
+                state_dir=tmp_path,
+                teardown_owner="owner-1",
+            ).run()
+        )
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert not any(call[0] == "host_ready" for call in provider.calls)
+    assert ("terminate", "vm-1") in provider.calls
+    assert "service_thread_stage_requires_provider_enforced_deadline" in outcome[0]["blockers"]
+
+
 def test_teardown_timeout_is_checkpointed_as_billing_ambiguous(tmp_path, monkeypatch):
     provider = FakeProvider()
     machine = CampaignMachine(
