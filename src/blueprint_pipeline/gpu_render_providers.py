@@ -395,6 +395,12 @@ class RunPodRenderProvider(GpuRenderProvider):
         requested_types = tuple(
             _string_list(req.get("gpuTypeIds")) or _runpod_gpu_types_from_env()
         )
+        requested_data_centers = _string_list(req.get("dataCenterIds"))
+        data_center_filter = (
+            f", dataCenterId: {json.dumps(','.join(requested_data_centers))}"
+            if requested_data_centers
+            else ""
+        )
         min_gpu_ram_mb = _positive_int(req.get("min_gpu_ram_mb")) or 0
         requires_rtx = req.get("requires_rtx") is not False
         query = f"""
@@ -405,7 +411,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             memoryInGb
             secureCloud
             communityCloud
-            lowestPrice(input: {{gpuCount: 1, secureCloud: {secure_literal}}}) {{
+            lowestPrice(input: {{gpuCount: 1, secureCloud: {secure_literal}{data_center_filter}}}) {{
               stockStatus
               uninterruptablePrice
               availableGpuCounts
@@ -455,6 +461,12 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "secure_cloud": row.get("secureCloud") is True,
                 "community_cloud": row.get("communityCloud") is True,
                 "cloud_type": cloud_type,
+                "capacity_data_center_ids": requested_data_centers,
+                "capacity_data_center_id": (
+                    requested_data_centers[0]
+                    if len(requested_data_centers) == 1
+                    else None
+                ),
                 "requested_pool_capable": pool_capable,
                 "stock_status": stock,
                 "catalog_reported_stock": stock,
@@ -506,6 +518,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             "cloud_type": cloud_type,
             "blockers": [] if viable else ["runpod_secure_rtx_capacity_unavailable"],
             "requested_gpu_types": list(requested_types),
+            "requested_data_center_ids": requested_data_centers,
             "min_gpu_ram_mb": min_gpu_ram_mb,
             "requires_rtx": requires_rtx,
             "viable_gpu_types": viable,

@@ -55,6 +55,30 @@ def bind_canary_request(
     ).strip()
     if configured_gpu and configured_gpu != admitted_gpu:
         blockers.append("runpod_request_gpu_differs_from_admission")
+    admitted_cache_path = str(admission.get("model_cache_path") or "").strip()
+    cache = shape.get("cache")
+    cache = cache if isinstance(cache, dict) else {}
+    cache_paths = cache.get("paths")
+    cache_paths = cache_paths if isinstance(cache_paths, dict) else {}
+    configured_cache_path = str(cache_paths.get("groot_oscar_models") or "").strip()
+    if configured_cache_path and configured_cache_path != admitted_cache_path:
+        blockers.append("runpod_request_model_cache_path_differs_from_admission")
+    cache_paths["groot_oscar_models"] = admitted_cache_path
+    cache["paths"] = cache_paths
+    shape["cache"] = cache
+    environment = shape.get("environment")
+    environment = environment if isinstance(environment, dict) else {}
+    plaintext_names = environment.get("plaintext_env_var_names")
+    plaintext_names = plaintext_names if isinstance(plaintext_names, list) else []
+    digest_env = "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST"
+    if digest_env not in plaintext_names:
+        plaintext_names.append(digest_env)
+    plaintext_values = environment.get("plaintext_env_values")
+    plaintext_values = plaintext_values if isinstance(plaintext_values, dict) else {}
+    plaintext_values[digest_env] = admission.get("model_manifest_digest")
+    environment["plaintext_env_var_names"] = plaintext_names
+    environment["plaintext_env_values"] = plaintext_values
+    shape["environment"] = environment
     shape["network_volume_id"] = admission.get("network_volume_id")
     shape["data_center_id"] = admission.get("data_center_id")
     shape["allowed_cuda_versions"] = [admission.get("required_cuda_version")]

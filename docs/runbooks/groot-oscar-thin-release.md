@@ -146,6 +146,20 @@ RunPod exposes its network volume at `/workspace`, so prepare the same cache at
 provider request cache path `groot_oscar_models` to that exact directory. VM
 providers mount the host cache root `/var/lib/blueprint/models` read-only at
 `/models`; cloud-init refuses to start the thin worker if its manifest is absent.
+The RunPod readiness artifact must be produced while that exact volume is
+mounted, and must bind both its provider ID and mounted cache root:
+
+```bash
+python -m blueprint_pipeline.groot_oscar_model_cache verify \
+  --root /workspace/.blueprint-model-cache/blueprint-groot-oscar-v1 \
+  --provider-volume-id '<existing-volume-id>' \
+  --out model-cache-verification.json
+```
+
+The canary admission rejects verification from a different volume or path.
+It also injects the admitted `model_manifest_digest` into the container as
+`BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST`; the thin entrypoint
+compares that exact digest before worker code starts.
 
 ## 3. Build the thin release
 
@@ -224,7 +238,9 @@ volume response (ID, size, and datacenter), a one-GPU stock row with an hourly
 rate, provider-confirmed zero matching billable pods, and a live independent
 watchdog whose deadline is already counting down. It binds the canary create
 request to the volume datacenter through `dataCenterIds` and to the image CUDA
-family through `allowedCudaVersions`. Unknown stock, a missing volume, a
+family through `allowedCudaVersions`. The stock and price query itself is also
+scoped to that exact volume datacenter; global stock from another datacenter
+cannot satisfy admission. Unknown stock, a missing volume, a
 datacenter mismatch, an unverified cache, a tag instead of a digest, an absent
 rate, a TTL above 30 minutes, a TTL whose maximum cost exceeds the cap, or an
 unarmed watchdog all reject before allocation.

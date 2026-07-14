@@ -144,7 +144,13 @@ def build_manifest(root: Path) -> dict[str, Any]:
     return payload
 
 
-def verify_model_cache(root: Path, manifest_path: Path | None = None) -> dict[str, Any]:
+def verify_model_cache(
+    root: Path,
+    manifest_path: Path | None = None,
+    *,
+    expected_manifest_digest: str | None = None,
+    provider_volume_id: str | None = None,
+) -> dict[str, Any]:
     """Verify pins, inventory, byte hashes, and manifest self-digest offline."""
 
     root = root.expanduser().resolve()
@@ -173,6 +179,9 @@ def verify_model_cache(root: Path, manifest_path: Path | None = None) -> dict[st
     observed_digest = str(payload.get("manifest_digest") or "")
     if observed_digest != _canonical_digest(payload):
         blockers.append("model_cache_manifest_digest_mismatch")
+    expected_digest = str(expected_manifest_digest or "").strip()
+    if expected_digest and observed_digest != expected_digest:
+        blockers.append("model_cache_manifest_digest_differs_from_admission")
 
     entries = payload.get("files")
     entries = entries if isinstance(entries, list) else []
@@ -220,6 +229,9 @@ def verify_model_cache(root: Path, manifest_path: Path | None = None) -> dict[st
         "status": "passed" if not blockers else "blocked",
         "blockers": blockers,
         "model_manifest_digest": observed_digest or None,
+        "expected_model_manifest_digest": expected_digest or None,
+        "cache_root": str(root),
+        "provider_volume_id": str(provider_volume_id or "").strip() or None,
         "verified_file_count": len(declared_paths) if not blockers else 0,
         "verified_size_bytes": verified_bytes if not blockers else 0,
         "checks": {"models_cached_offline": not blockers},
@@ -227,10 +239,14 @@ def verify_model_cache(root: Path, manifest_path: Path | None = None) -> dict[st
     }
 
 
-def activate_model_cache(root: Path) -> dict[str, Any]:
+def activate_model_cache(
+    root: Path, *, expected_manifest_digest: str | None = None
+) -> dict[str, Any]:
     """Verify the cache, then expose model-only WBC assets at runtime paths."""
 
-    verification = verify_model_cache(root)
+    verification = verify_model_cache(
+        root, expected_manifest_digest=expected_manifest_digest
+    )
     if verification["status"] != "passed":
         return verification
     root = root.expanduser().resolve()
@@ -368,6 +384,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--manifest")
+    parser.add_argument(
+        "--expected-manifest-digest",
+        default=os.environ.get(
+            "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST", ""
+        ),
+    )
+    parser.add_argument(
+        "--provider-volume-id",
+        default=os.environ.get("BLUEPRINT_GROOT_OSCAR_PROVIDER_VOLUME_ID", ""),
+    )
     parser.add_argument("--token-file", default=os.environ.get("HF_TOKEN_FILE", ""))
     parser.add_argument("--out")
     args = parser.parse_args(argv)
@@ -378,9 +404,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = build_manifest(root)
         write_json(Path(args.manifest) if args.manifest else root / MANIFEST_NAME, result)
     elif args.command == "activate":
-        result = activate_model_cache(root)
+        result = activate_model_cache(
+            root, expected_manifest_digest=args.expected_manifest_digest
+        )
     else:
-        result = verify_model_cache(root, Path(args.manifest) if args.manifest else None)
+        result = verify_model_cache(
+            root,
+            Path(args.manifest) if args.manifest else None,
+            expected_manifest_digest=args.expected_manifest_digest,
+            provider_volume_id=args.provider_volume_id,
+        )
     if args.out:
         write_json(Path(args.out), result)
     print(json.dumps(result, indent=2, sort_keys=True))

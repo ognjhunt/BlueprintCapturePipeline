@@ -28,6 +28,7 @@ def _preflight() -> dict:
             "provider": "runpod",
             "provider_api_verified": True,
             "data_center_id": "US-TX-3",
+            "capacity_data_center_id": "US-TX-3",
             "gpu_type_id": "NVIDIA A40",
             "capacity_confidence": "advisory",
             "single_gpu_available": True,
@@ -62,6 +63,8 @@ def test_canary_preparation_binds_exact_admitted_tuple_into_request() -> None:
             "schema_version": "groot_oscar_external_model_cache_verification.v2",
             "status": "passed",
             "model_manifest_digest": "sha256:" + "b" * 64,
+            "cache_root": "/workspace/models",
+            "provider_volume_id": "volume-1",
             "checks": {"models_cached_offline": True},
         },
         preflight=_preflight(),
@@ -71,6 +74,10 @@ def test_canary_preparation_binds_exact_admitted_tuple_into_request() -> None:
     assert shape["network_volume_id"] == "volume-1"
     assert shape["data_center_id"] == "US-TX-3"
     assert shape["allowed_cuda_versions"] == ["12.6"]
+    assert shape["cache"]["paths"]["groot_oscar_models"] == "/workspace/models"
+    assert shape["environment"]["plaintext_env_values"][
+        "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST"
+    ] == "sha256:" + "b" * 64
 
 
 def test_canary_preparation_rejects_tag_or_different_digest() -> None:
@@ -89,9 +96,39 @@ def test_canary_preparation_rejects_tag_or_different_digest() -> None:
             "schema_version": "groot_oscar_external_model_cache_verification.v2",
             "status": "passed",
             "model_manifest_digest": "sha256:" + "b" * 64,
+            "cache_root": "/workspace/models",
+            "provider_volume_id": "volume-1",
             "checks": {"models_cached_offline": True},
         },
         preflight=_preflight(),
     )
     assert result["status"] == "blocked"
     assert "runpod_request_release_image_differs_from_admission" in result["blockers"]
+
+
+def test_canary_preparation_rejects_different_model_cache_path() -> None:
+    request = _request()
+    request["provider_request_shape"]["cache"] = {
+        "paths": {"groot_oscar_models": "/workspace/other-cache"}
+    }
+    result = prepare_canary_launch(
+        request=request,
+        release={
+            "resolved_digest_ref": DIGEST,
+            "thin_release_contract_status": "passed",
+            "runnable_platform": "linux/amd64",
+            "required_cuda_version": "12.6",
+            "required_cuda_version_source": "image_config_env:CUDA_VERSION",
+        },
+        model_cache={
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
+            "status": "passed",
+            "model_manifest_digest": "sha256:" + "b" * 64,
+            "cache_root": "/workspace/models",
+            "provider_volume_id": "volume-1",
+            "checks": {"models_cached_offline": True},
+        },
+        preflight=_preflight(),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_request_model_cache_path_differs_from_admission" in result["blockers"]

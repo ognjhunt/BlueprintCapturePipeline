@@ -21,12 +21,13 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
             200,
             {"id": "volume-1", "dataCenterId": "US-TX-3", "size": 50},
         ),
-        capacity_probe=lambda _request: {
+        capacity_probe=lambda request: {
             "status": "available",
             "viable_gpu_types": [
                 {
                     "gpu_type_id": "NVIDIA A40",
                     "capacity_confidence": "advisory",
+                    "capacity_data_center_id": request["dataCenterIds"][0],
                     "available_gpu_counts": [1],
                     "on_demand_price_usd_per_hour": 0.44,
                 }

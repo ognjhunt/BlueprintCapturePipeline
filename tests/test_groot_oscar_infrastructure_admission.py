@@ -229,6 +229,8 @@ def _models() -> dict:
         "schema_version": "groot_oscar_external_model_cache_verification.v2",
         "status": "passed",
         "model_manifest_digest": MANIFEST_DIGEST,
+        "cache_root": "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1",
+        "provider_volume_id": "volume-1",
         "checks": {"models_cached_offline": True},
     }
 
@@ -249,6 +251,7 @@ def _runtime() -> dict:
         "provider": "runpod",
         "provider_api_verified": True,
         "data_center_id": "US-TX-3",
+        "capacity_data_center_id": "US-TX-3",
         "gpu_type_id": "NVIDIA A40",
         "capacity_confidence": "advisory",
         "single_gpu_available": True,
@@ -284,6 +287,21 @@ def test_runpod_serve_plane_rejects_legacy_weak_model_verification() -> None:
     )
     assert result["status"] == "blocked"
     assert "runpod_model_cache_verification_schema_invalid" in result["blockers"]
+
+
+def test_runpod_serve_plane_binds_cache_verification_to_volume_and_path() -> None:
+    models = _models()
+    models.update({"provider_volume_id": "other-volume", "cache_root": "/workspace/other"})
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=models,
+        volume=_volume(),
+        runtime=_runtime(),
+        spend=_serve_spend(),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_model_cache_verification_volume_mismatch" in result["blockers"]
+    assert "runpod_model_cache_verification_path_mismatch" in result["blockers"]
 
 
 def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:
@@ -353,3 +371,17 @@ def test_runpod_serve_plane_rejects_cuda_constraint_different_from_release() -> 
         spend=_serve_spend(),
     )
     assert "runpod_cuda_version_differs_from_release" in result["blockers"]
+
+
+def test_runpod_serve_plane_rejects_capacity_from_different_data_center() -> None:
+    runtime = _runtime()
+    runtime["capacity_data_center_id"] = "EU-RO-1"
+    result = build_runpod_serve_plane_admission(
+        release=_release(),
+        model_cache=_models(),
+        volume=_volume(),
+        runtime=runtime,
+        spend=_serve_spend(),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_gpu_capacity_not_verified_in_volume_data_center" in result["blockers"]

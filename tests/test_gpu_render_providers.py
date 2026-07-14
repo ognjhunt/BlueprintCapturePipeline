@@ -236,6 +236,49 @@ def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> Non
     assert "single_gpu_stock_unavailable" in a6000["blockers"]
 
 
+def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        del timeout
+        assert key == "rp-key"
+        assert 'dataCenterId: "US-TX-3"' in query
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA A40",
+                        "displayName": "A40",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "High",
+                            "uninterruptablePrice": 0.44,
+                            "availableGpuCounts": [1],
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "gpuTypeIds": ["NVIDIA A40"],
+            "dataCenterIds": ["US-TX-3"],
+            "requires_rtx": True,
+        }
+    )
+    assert result["status"] == "available"
+    assert result["requested_data_center_ids"] == ["US-TX-3"]
+    assert result["viable_gpu_types"][0]["capacity_data_center_id"] == "US-TX-3"
+
+
 def test_runpod_capacity_preflight_supports_explicit_community_pool(monkeypatch) -> None:
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
 

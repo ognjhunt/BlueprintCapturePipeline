@@ -39,6 +39,27 @@ def test_external_model_cache_verifies_every_declared_byte(tmp_path: Path) -> No
         len(paths) for paths in REQUIRED_MODEL_FILES.values()
     )
     assert str(result["model_manifest_digest"]).startswith("sha256:")
+    assert result["cache_root"] == str(root.resolve())
+
+
+def test_external_model_cache_rejects_digest_different_from_admission(
+    tmp_path: Path,
+) -> None:
+    root = _cache(tmp_path)
+    result = verify_model_cache(
+        root, expected_manifest_digest="sha256:" + "f" * 64
+    )
+    assert result["status"] == "blocked"
+    assert "model_cache_manifest_digest_differs_from_admission" in result["blockers"]
+
+
+def test_external_model_cache_verification_records_provider_volume_binding(
+    tmp_path: Path,
+) -> None:
+    root = _cache(tmp_path)
+    result = verify_model_cache(root, provider_volume_id="volume-1")
+    assert result["status"] == "passed"
+    assert result["provider_volume_id"] == "volume-1"
 
 
 def test_external_model_cache_rejects_mutated_checkpoint(tmp_path: Path) -> None:
@@ -215,6 +236,8 @@ def test_thin_image_contract_separates_foundation_models_and_release() -> None:
     assert "snapshot_download" not in release
     assert "test ! -e /opt/blueprint/ckpts" in release
     assert "groot_oscar_model_cache activate" in entrypoint
+    assert "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST" in entrypoint
+    assert "--expected-manifest-digest" in entrypoint
 
 
 def test_release_builder_enforces_digest_foundation_and_two_gib_budget() -> None:

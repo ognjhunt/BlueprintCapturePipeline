@@ -19,6 +19,8 @@ FOUNDATION = IMAGE_ROOT / "Foundation.Dockerfile"
 RELEASE = IMAGE_ROOT / "Release.Dockerfile"
 ENTRYPOINT = IMAGE_ROOT / "thin_release_entrypoint.sh"
 MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
+ADMISSION = ROOT / "src/blueprint_pipeline/groot_oscar_infrastructure_admission.py"
+CANARY = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
 
 
 def _assigned_literal(module: Path, name: str) -> object:
@@ -133,6 +135,26 @@ def verify() -> list[str]:
             blockers.append(f"thin_release_embeds_model_acquisition:{fragment}")
     if "groot_oscar_model_cache activate" not in entrypoint:
         blockers.append("thin_release_offline_model_activation_missing")
+    if "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST" not in entrypoint:
+        blockers.append("thin_release_expected_model_manifest_digest_missing")
+    if "--expected-manifest-digest" not in entrypoint:
+        blockers.append("thin_release_model_manifest_digest_not_enforced")
+
+    admission = ADMISSION.read_text(encoding="utf-8")
+    canary = CANARY.read_text(encoding="utf-8")
+    for fragment in (
+        "runpod_model_cache_verification_path_mismatch",
+        "runpod_model_cache_verification_volume_mismatch",
+        "runpod_gpu_capacity_not_verified_in_volume_data_center",
+    ):
+        if fragment not in admission:
+            blockers.append(f"runpod_model_cache_admission_binding_missing:{fragment}")
+    for fragment in (
+        "groot_oscar_models",
+        "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST",
+    ):
+        if fragment not in canary:
+            blockers.append(f"runpod_bound_request_model_cache_binding_missing:{fragment}")
 
     try:
         schema = _assigned_literal(MODEL_CACHE, "SCHEMA_VERSION")

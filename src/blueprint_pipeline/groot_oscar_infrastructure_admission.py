@@ -247,12 +247,19 @@ def build_runpod_gpu_runtime_evidence(
     counts = counts if isinstance(counts, list) else []
     confidence = _string(selected.get("capacity_confidence"))
     single_available = confidence == "advisory" and 1 in counts
-    provider_verified = capacity.get("status") == "available" and bool(selected)
+    capacity_data_center_id = _string(selected.get("capacity_data_center_id"))
+    provider_verified = (
+        capacity.get("status") == "available"
+        and bool(selected)
+        and bool(data_center_id)
+        and capacity_data_center_id == data_center_id
+    )
     return {
         "schema_version": "groot_oscar_runpod_gpu_runtime_evidence.v1",
         "provider": "runpod",
         "provider_api_verified": provider_verified,
         "data_center_id": data_center_id,
+        "capacity_data_center_id": capacity_data_center_id or None,
         "gpu_type_id": gpu_type_id,
         "capacity_confidence": confidence or "unknown",
         "single_gpu_available": single_available,
@@ -423,11 +430,17 @@ def build_runpod_serve_plane_admission(
     cache_path = _string(volume.get("model_cache_path"))
     if not cache_path.startswith("/workspace/"):
         blockers.append("runpod_model_cache_path_must_be_under_workspace")
+    if _string(model_cache.get("cache_root")) != cache_path:
+        blockers.append("runpod_model_cache_verification_path_mismatch")
+    if _string(model_cache.get("provider_volume_id")) != volume_id:
+        blockers.append("runpod_model_cache_verification_volume_mismatch")
 
     if runtime.get("provider") != "runpod":
         blockers.append("runpod_serve_provider_invalid")
     if runtime.get("data_center_id") != volume_dc:
         blockers.append("runpod_gpu_and_network_volume_data_center_mismatch")
+    if runtime.get("capacity_data_center_id") != volume_dc:
+        blockers.append("runpod_gpu_capacity_not_verified_in_volume_data_center")
     if not _string(runtime.get("gpu_type_id")):
         blockers.append("runpod_gpu_type_not_selected")
     if runtime.get("provider_api_verified") is not True:
@@ -483,6 +496,7 @@ def build_runpod_serve_plane_admission(
         "blockers": sorted(set(blockers)),
         "release_image_ref": release_ref or None,
         "model_manifest_digest": manifest_digest or None,
+        "model_cache_path": cache_path or None,
         "network_volume_id": volume_id or None,
         "data_center_id": volume_dc or None,
         "gpu_type_id": _string(runtime.get("gpu_type_id")) or None,
