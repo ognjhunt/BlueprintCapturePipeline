@@ -46,8 +46,13 @@ def main() -> int:
     if not image_digest.startswith("sha256:") or len(image_digest) != 71:
         raise ValueError("host self-test image digest is invalid")
     runtime_metadata = health.get("runtime_metadata")
-    if not isinstance(runtime_metadata, dict) or runtime_metadata.get("source_commit") != source_sha:
+    if (
+        not isinstance(runtime_metadata, dict)
+        or runtime_metadata.get("source_commit") != source_sha
+    ):
         raise ValueError("runtime health source does not match the preloaded worker")
+    if health.get("worker_image_digest") != image_digest:
+        raise ValueError("runtime health digest does not match the preloaded worker")
     if host.get("image_present_before_allocation") is not True:
         raise ValueError("image was not proven present before allocation")
     if host.get("local_digest_inspect_passed") is not True:
