@@ -19,6 +19,7 @@ Paid GPU launches are gated behind ``allow_paid=True``. Secrets are file-based a
 logged. Truth boundary: Isaac RTX kinematic walk-to-target preview parity (Stage A) — not
 dynamic locomotion, not a learned policy, not readiness.
 """
+
 from __future__ import annotations
 
 import json
@@ -39,7 +40,12 @@ from .g1_kitchen_evaluation_run_adapter import (
     build_g1_kitchen_cli_evaluation_run,
     build_g1_kitchen_evaluation_run_spec,
 )
-from .gpu_render_providers import RenderLaunchSpec, get_render_provider
+from .g1_kitchen_episode_contract import build_episode_render_settings
+from .gpu_render_providers import (
+    RenderLaunchSpec,
+    _runpod_gpu_types_from_env,
+    get_render_provider,
+)
 from .g1_kitchen_bundle_compatibility import (
     build_bundle_compatibility,
     build_source_tree_identity,
@@ -63,7 +69,9 @@ from .worker_image_diagnostic_gate import (
     worker_image_diagnostic_paid_validation as _worker_image_diagnostic_paid_validation,
 )
 from .isaac_particlefield_render_job import (
-    DEFAULT_WARM_CANDIDATES, stage_bundle, watch_and_collect,
+    DEFAULT_WARM_CANDIDATES,
+    stage_bundle,
+    watch_and_collect,
 )
 from .isaac_review_media import (
     _int_or_none,
@@ -97,6 +105,11 @@ from .paid_provider_allocation_lifecycle import (
     teardown_proof_from_watch_result as _teardown_proof_from_watch_result,
 )
 from .provider_race import boot_marker_present, race_launch
+from .production_gpu_warm_serve_contract import (
+    bounded_serve_supervisor_valid as _validate_bounded_serve_supervisor,
+    campaign_budget_reservation_valid as _campaign_budget_reservation_valid,
+    external_process_alive as _process_alive,
+)
 from .security_controls import (
     exact_https_origin,
     fetch_bounded_https,
@@ -116,12 +129,14 @@ LAUNCH_ATTEMPT_TRACE_FILENAME = _G1_KITCHEN_PACK.proof.launch_attempt_trace_file
 WORKER_BUNDLE_DIR = _G1_KITCHEN_PACK.scene.worker_bundle_dir
 ISAAC_G1_KITCHEN_PARITY_LANE = _G1_KITCHEN_PACK.runtime.lane_id
 ISAAC_G1_KITCHEN_PARITY_RESOURCE_PREFIX = "blueprint-isaac-g1"
-PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset({
-    "digitalocean_gpu_size_region_unavailable",
-    "digitalocean_gpu_size_not_rtx_capable",
-    "digitalocean_gpu_size_below_min_vram",
-    "runpod_secure_cloud_create_capacity_unavailable",
-})
+PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS = frozenset(
+    {
+        "digitalocean_gpu_size_region_unavailable",
+        "digitalocean_gpu_size_not_rtx_capable",
+        "digitalocean_gpu_size_below_min_vram",
+        "runpod_secure_cloud_create_capacity_unavailable",
+    }
+)
 DEFAULT_G1_USD_RELATIVE = _G1_KITCHEN_PACK.robot.robot_usd_relative
 DEFAULT_KITCHEN_MAIN_USD = _G1_KITCHEN_PACK.scene.main_usd_relative
 ISAAC_REVIEW_MIN_GPU_RAM_MB = _G1_KITCHEN_PACK.runtime.min_gpu_ram_mb
@@ -137,12 +152,8 @@ DEFAULT_PARITY_IMAGE_REF = _G1_KITCHEN_PACK.runtime.default_image_ref
 ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV = "BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START"
 COLD_RACE_CONTENDERS_ENV = "BLUEPRINT_COLD_RACE_CONTENDERS"
 DEFAULT_COLD_RACE_CONTENDERS = 1
-DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = (
-    _G1_KITCHEN_PACK.runtime.default_startup_no_runtime_timeout_seconds
-)
-PROVIDER_ARTIFACT_ALLOWED_ORIGINS_ENV = (
-    "BLUEPRINT_PROVIDER_ARTIFACT_ALLOWED_ORIGINS"
-)
+DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = _G1_KITCHEN_PACK.runtime.default_startup_no_runtime_timeout_seconds
+PROVIDER_ARTIFACT_ALLOWED_ORIGINS_ENV = "BLUEPRINT_PROVIDER_ARTIFACT_ALLOWED_ORIGINS"
 MAX_KITCHEN_ASSET_ARCHIVE_BYTES = _G1_KITCHEN_PACK.scene.max_asset_archive_bytes
 MAX_WARM_READINESS_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 ISAAC_G1_MAX_SPEND_USD_ENV = _G1_KITCHEN_PACK.runtime.max_spend_env
@@ -150,12 +161,8 @@ ISAAC_G1_GROOT_POLICY_COMMAND_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND"
 UNITREE_GROOT_POLICY_COMMAND_ENV = _G1_KITCHEN_PACK.policy.policy_command_env
 UNITREE_GROOT_POLICY_SERVER_URL_ENV = _G1_KITCHEN_PACK.policy.policy_server_url_env
 ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV = _G1_KITCHEN_PACK.policy.policy_runtime_mode_env
-ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV = (
-    "BLUEPRINT_ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED"
-)
-ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV = (
-    "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"
-)
+ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED"
+ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV = "BLUEPRINT_ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"
 PARITY_BUNDLE_REQUIRED_FILES = (
     "run_isaac_g1_kitchen_parity_eval.py",
     "isaac_g1_policy.py",
@@ -340,9 +347,7 @@ def _configured_isaac_worker_image_ref() -> dict:
         image_ref = image_ref_file.read_text(encoding="utf-8").strip()
         return {
             "image_ref": image_ref,
-            "source": ISAAC_WORKER_IMAGE_REF_FILE_ENV
-            if file_value
-            else "default_blueprint_secret_file_path",
+            "source": ISAAC_WORKER_IMAGE_REF_FILE_ENV if file_value else "default_blueprint_secret_file_path",
             "configured": bool(image_ref),
             "image_ref_file": str(image_ref_file),
             "image_ref_file_present": True,
@@ -374,11 +379,7 @@ def _gemini_api_key_from_env() -> str:
 
 
 def _vast_max_hourly_rate_from_env(default: float = DEFAULT_VAST_MAX_HOURLY_RATE_USD) -> float:
-    value = (
-        os.getenv("BLUEPRINT_ISAAC_G1_PARITY_VAST_MAX_HOURLY_RATE")
-        or os.getenv("BLUEPRINT_VAST_RENDER_MAX_HOURLY_RATE")
-        or ""
-    ).strip()
+    value = (os.getenv("BLUEPRINT_ISAAC_G1_PARITY_VAST_MAX_HOURLY_RATE") or os.getenv("BLUEPRINT_VAST_RENDER_MAX_HOURLY_RATE") or "").strip()
     if not value:
         return float(default)
     try:
@@ -390,9 +391,16 @@ def _vast_max_hourly_rate_from_env(default: float = DEFAULT_VAST_MAX_HOURLY_RATE
 
 # ----------------------------- request + bundle -----------------------------
 
-def build_request(*, scenarios: Sequence[dict], kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
-                  g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str, steps: int,
-                  render_noise_audit_plan: dict | None = None) -> dict:
+
+def build_request(
+    *,
+    scenarios: Sequence[dict],
+    kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
+    g1_usd: str = DEFAULT_G1_USD_RELATIVE,
+    policy_id: str,
+    steps: int,
+    render_noise_audit_plan: dict | None = None,
+) -> dict:
     """The runner's request.json. kitchen_usd is the worker-absolute path inside the extracted
     bundle; g1_usd is a relative Isaac asset path resolved against the assets root on the worker."""
     return evaluation_run.build_runner_request(
@@ -406,14 +414,18 @@ def build_request(*, scenarios: Sequence[dict], kitchen_main_usd_relative: str =
     )
 
 
-def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
-                        kitchen_asset_dir: str | Path | None = None,
-                        kitchen_asset_inventory: Mapping[str, Any] | None = None,
-                        kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
-                        g1_usd: str = DEFAULT_G1_USD_RELATIVE,
-                        policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
-                        steps: int = 64,
-                        render_noise_audit_plan: dict | None = None) -> Path:
+def build_parity_bundle(
+    *,
+    scenarios: Sequence[dict],
+    out_dir: Path,
+    kitchen_asset_dir: str | Path | None = None,
+    kitchen_asset_inventory: Mapping[str, Any] | None = None,
+    kitchen_main_usd_relative: str = DEFAULT_KITCHEN_MAIN_USD,
+    g1_usd: str = DEFAULT_G1_USD_RELATIVE,
+    policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
+    steps: int = 64,
+    render_noise_audit_plan: dict | None = None,
+) -> Path:
     """Assemble the GPU bundle: the runner + the policy module + request.json + (optional) the
     kitchen asset tree under kitchen/. The runner imports the shipped policy module on the worker."""
     bundle = out_dir / "bundle"
@@ -452,14 +464,20 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     # `blueprint_pipeline` on its path and the runner silently degrades to the scenario's literal
     # target. The package is pure-Python + intra-package imports only, so a flat copy is importable.
     import shutil
+
     sp_src = _repo_root() / "src" / "blueprint_pipeline" / "scene_placement"
     sp_dst = bundle / "scene_placement"
     if sp_dst.exists():
         shutil.rmtree(sp_dst)
     shutil.copytree(sp_src, sp_dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    request = build_request(scenarios=scenarios, kitchen_main_usd_relative=kitchen_main_usd_relative,
-                            g1_usd=g1_usd, policy_id=policy_id, steps=steps,
-                            render_noise_audit_plan=render_noise_audit_plan)
+    request = build_request(
+        scenarios=scenarios,
+        kitchen_main_usd_relative=kitchen_main_usd_relative,
+        g1_usd=g1_usd,
+        policy_id=policy_id,
+        steps=steps,
+        render_noise_audit_plan=render_noise_audit_plan,
+    )
     (bundle / "request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")
     if kitchen_asset_inventory is not None:
         write_json(
@@ -473,11 +491,7 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
                 dst = bundle / "kitchen" / item.relative_to(src)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.write_bytes(item.read_bytes())
-    bundle_files = sorted(
-        item.relative_to(bundle).as_posix()
-        for item in bundle.rglob("*")
-        if item.is_file()
-    )
+    bundle_files = sorted(item.relative_to(bundle).as_posix() for item in bundle.rglob("*") if item.is_file())
     _assert_parity_bundle_namelist(set(bundle_files))
     (bundle / "bundle_manifest.json").write_text(
         json.dumps(
@@ -502,63 +516,88 @@ def build_parity_bundle(*, scenarios: Sequence[dict], out_dir: Path,
     return zip_path
 
 
-def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, width: int = 1280,
-                      height: int = 960, fps: int = 20, container_disk_gb: int = 140,
-                      volume_gb: int = 80, kitchen_url: str | None = None, warmup: int = 6,
-                      per_scenario_seconds: int = 420, no_collision_probe: bool = False,
-                      focus_radius: float = 0.0, keep_objects: str = "", settle_seconds: int = 0,
-                      cheap_collision: bool = False, articulated: bool = False,
-                      physics_articulation_drive: bool = False,
-                      dynamic_standing_contact_steps: int = 0,
-                      manipulation_cam: bool = False, manipulation_look_at: str = "",
-                      render_subframes: int = 0, manipulation_reach: bool = False,
-                      manipulation_reach_arm: str = "auto",
-                      dynamic_episode_termination: bool = True,
-                      episode_max_steps: int = 0,
-                      dynamic_episode_check_every: int = 1,
-                      capture_every: int = 1,
-                      fill_light_intensity: float = 0.0,
-                      neutral_environment: bool = False,
-                      robot_review_material_override: bool = False,
-                      robot_review_material_mode: str = "",
-                      kinematic_arm_pose: bool = False,
-                      collision_approximation: str = "",
-                      verify_cam: bool = False,
-                      manipulation_stand: bool = False,
-                      placement_topdown_capture: bool = True,
-                      render_noise_audit: bool = False,
-                      audit_high_spp: int = 0,
-                      audit_warmup_frames: int = 0,
-                      audit_boost_light_intensity: float = 0.0,
-                      gemini_api_key: str | None = None,
-                      groot_policy_command: str = "",
-                      groot_policy_command_timeout_seconds: float = 120.0,
-                      serve: bool = False, inbox_get_url: str = "",
-                      warm_broker_base_url: str = "",
-                      warm_broker_token: str = "",
-                      serve_idle_timeout_s: float = 1800.0,
-                      serve_max_jobs: int | None = None,
-                      vast_max_hourly_rate_usd: float | None = None,
-                      image_startup_canary: bool = False,
-                      supervised_startup: bool = False,
-                      runner_timeout_seconds: int = 0) -> RenderLaunchSpec:
+def build_launch_spec(
+    job_dir: Path,
+    *,
+    image: str,
+    policy_id: str,
+    steps: int,
+    width: int = 1280,
+    height: int = 960,
+    fps: int = 20,
+    container_disk_gb: int = 140,
+    volume_gb: int = 80,
+    kitchen_url: str | None = None,
+    warmup: int = 6,
+    per_scenario_seconds: int = 420,
+    no_collision_probe: bool = False,
+    focus_radius: float = 0.0,
+    keep_objects: str = "",
+    settle_seconds: int = 0,
+    cheap_collision: bool = False,
+    articulated: bool = False,
+    physics_articulation_drive: bool = False,
+    dynamic_standing_contact_steps: int = 0,
+    manipulation_cam: bool = False,
+    manipulation_look_at: str = "",
+    render_subframes: int = 0,
+    manipulation_reach: bool = False,
+    manipulation_reach_arm: str = "auto",
+    dynamic_episode_termination: bool = True,
+    episode_max_steps: int = 0,
+    dynamic_episode_check_every: int = 1,
+    capture_every: int = 1,
+    fill_light_intensity: float = 0.0,
+    neutral_environment: bool = False,
+    robot_review_material_override: bool = False,
+    robot_review_material_mode: str = "",
+    kinematic_arm_pose: bool = False,
+    collision_approximation: str = "",
+    verify_cam: bool = False,
+    manipulation_stand: bool = False,
+    placement_topdown_capture: bool = True,
+    render_noise_audit: bool = False,
+    audit_high_spp: int = 0,
+    audit_warmup_frames: int = 0,
+    audit_boost_light_intensity: float = 0.0,
+    gemini_api_key: str | None = None,
+    groot_policy_command: str = "",
+    groot_policy_command_timeout_seconds: float = 120.0,
+    serve: bool = False,
+    inbox_get_url: str = "",
+    warm_broker_base_url: str = "",
+    warm_broker_token: str = "",
+    serve_idle_timeout_s: float = 1800.0,
+    serve_max_jobs: int | None = None,
+    serve_production_warmup_before_ready: bool = False,
+    runpod_gpu_types: Sequence[str] | None = None,
+    vast_max_hourly_rate_usd: float | None = None,
+    image_startup_canary: bool = False,
+    supervised_startup: bool = False,
+    runner_timeout_seconds: int = 0,
+) -> RenderLaunchSpec:
     bundle_url = (job_dir / "provider_bundle_url.txt").read_text().strip()
     put_url = (job_dir / "provider_output_put_url.txt").read_text().strip()
     env = {
-        "ACCEPT_EULA": "Y", "PRIVACY_CONSENT": "Y", "CUDA_VISIBLE_DEVICES": "0",
+        "ACCEPT_EULA": "Y",
+        "PRIVACY_CONSENT": "Y",
+        "CUDA_VISIBLE_DEVICES": "0",
         "NVIDIA_DRIVER_CAPABILITIES": "all",
         "BLUEPRINT_EVAL_MANIFEST_URI": bundle_url,
         "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL": put_url,
-        "PARITY_POLICY": policy_id, "PARITY_STEPS": str(steps),
-        "RENDER_WIDTH": str(width), "RENDER_HEIGHT": str(height), "RENDER_FPS": str(fps),
-        "RENDER_WARMUP": str(warmup), "PARITY_PER_SCENARIO_SECONDS": str(per_scenario_seconds),
+        "PARITY_POLICY": policy_id,
+        "PARITY_STEPS": str(steps),
+        "RENDER_WIDTH": str(width),
+        "RENDER_HEIGHT": str(height),
+        "RENDER_FPS": str(fps),
+        "RENDER_WARMUP": str(warmup),
+        "PARITY_PER_SCENARIO_SECONDS": str(per_scenario_seconds),
         "PYTHONPATH": WORKER_BUNDLE_DIR,
+        "BLUEPRINT_WORKER_IMAGE_REF": image,
     }
     if supervised_startup:
         env["PARITY_SUPERVISED_STARTUP"] = "1"
-        env["BLUEPRINT_WORKER_IMAGE_DIGEST"] = (
-            image.split("@", 1)[1] if "@sha256:" in image else ""
-        )
+        env["BLUEPRINT_WORKER_IMAGE_DIGEST"] = image.split("@", 1)[1] if "@sha256:" in image else ""
     if runner_timeout_seconds and runner_timeout_seconds > 0:
         env["PARITY_RUNNER_TIMEOUT_SECONDS"] = str(int(runner_timeout_seconds))
     if no_collision_probe:
@@ -635,39 +674,41 @@ def build_launch_spec(job_dir: Path, *, image: str, policy_id: str, steps: int, 
         env["GEMINI_API_KEY"] = gemini_api_key
     if groot_policy_command:
         env["PARITY_GROOT_POLICY_COMMAND"] = str(groot_policy_command)
-        env["PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"] = str(
-            float(groot_policy_command_timeout_seconds)
-        )
+        env["PARITY_GROOT_POLICY_COMMAND_TIMEOUT_SECONDS"] = str(float(groot_policy_command_timeout_seconds))
     if serve:
         env["PARITY_SERVE"] = "1"
         env["PARITY_SERVE_IDLE_TIMEOUT"] = str(int(serve_idle_timeout_s))
         if serve_max_jobs is not None:
             env["PARITY_SERVE_MAX_JOBS"] = str(int(serve_max_jobs))
+        if serve_production_warmup_before_ready:
+            env["PARITY_SERVE_PRODUCTION_WARMUP_BEFORE_READY"] = "1"
+            env["BLUEPRINT_HOST_IMAGE_ID"] = "runpod-secure-active-worker-v1"
+            env["BLUEPRINT_GPU_POOL_CLASS"] = "runpod-secure-l40s-preferred-a40-fallback"
         if inbox_get_url:
-            raise ValueError(
-                "single_object_warm_inbox_retired_use_durable_broker"
-            )
+            raise ValueError("single_object_warm_inbox_retired_use_durable_broker")
         if bool(warm_broker_base_url) != bool(warm_broker_token):
             raise ValueError("warm_render_broker_url_and_token_required_together")
         if warm_broker_base_url:
             env["BLUEPRINT_WARM_RENDER_BROKER_BASE_URL"] = warm_broker_base_url
             env["BLUEPRINT_WARM_RENDER_BROKER_TOKEN"] = warm_broker_token
+    selected_runpod_gpu_types = tuple(str(value).strip() for value in (runpod_gpu_types or ()) if str(value).strip())
     return RenderLaunchSpec(
-        name="blueprint-isaac-g1-kitchen-parity", image=image, env=env,
+        name="blueprint-isaac-g1-kitchen-parity",
+        image=image,
+        env=env,
         bootstrap_argv=docker_start_cmd(image_startup_canary=image_startup_canary),
         entrypoint=["bash"],
-        container_disk_gb=container_disk_gb, volume_gb=volume_gb,
-        max_hourly_rate_usd=(
-            float(vast_max_hourly_rate_usd)
-            if vast_max_hourly_rate_usd is not None and vast_max_hourly_rate_usd > 0
-            else _vast_max_hourly_rate_from_env()
-        ),
+        container_disk_gb=container_disk_gb,
+        volume_gb=volume_gb,
+        max_hourly_rate_usd=(float(vast_max_hourly_rate_usd) if vast_max_hourly_rate_usd is not None and vast_max_hourly_rate_usd > 0 else _vast_max_hourly_rate_from_env()),
         min_gpu_ram_mb=ISAAC_REVIEW_MIN_GPU_RAM_MB,
         requires_rtx=True,
+        gpu_types=selected_runpod_gpu_types or _runpod_gpu_types_from_env(),
     )
 
 
 # ----------------------------- WAM-ready harness package -----------------------------
+
 
 def build_harness_package(
     *,
@@ -687,21 +728,23 @@ def build_harness_package(
         sdir = render_out_dir / str(sid)
         overview_mp4 = sdir / "overview.mp4"
         robot_pov_mp4 = sdir / "robot_pov.mp4"
-        items.append({
-            "scenario_id": sid,
-            "task_success": sc.get("task_success"),
-            "task_success_contract": sc.get("task_success_contract"),
-            "review_task_success": sc.get("review_task_success"),
-            "success_claim_ledger": sc.get("success_claim_ledger"),
-            "trace_jsonl": str(sdir / "trace.jsonl"),
-            "overview_mp4": str(overview_mp4),
-            "robot_pov_mp4": str(robot_pov_mp4),
-            "wam_reference_video": str(overview_mp4),
-            "media_metadata": {
-                "overview_mp4": _probe_video_file(overview_mp4),
-                "robot_pov_mp4": _probe_video_file(robot_pov_mp4),
-            },
-        })
+        items.append(
+            {
+                "scenario_id": sid,
+                "task_success": sc.get("task_success"),
+                "task_success_contract": sc.get("task_success_contract"),
+                "review_task_success": sc.get("review_task_success"),
+                "success_claim_ledger": sc.get("success_claim_ledger"),
+                "trace_jsonl": str(sdir / "trace.jsonl"),
+                "overview_mp4": str(overview_mp4),
+                "robot_pov_mp4": str(robot_pov_mp4),
+                "wam_reference_video": str(overview_mp4),
+                "media_metadata": {
+                    "overview_mp4": _probe_video_file(overview_mp4),
+                    "robot_pov_mp4": _probe_video_file(robot_pov_mp4),
+                },
+            }
+        )
     package = {
         "schema_version": "isaac_g1_kitchen_parity_harness.v1",
         "policy_id": result.get("policy_id") if isinstance(result, dict) else None,
@@ -732,6 +775,7 @@ def build_harness_package(
 
 # ----------------------------- launch with flaky-pod retry -----------------------------
 
+
 def _request_with_launch_session_nonce(request: dict, launch_session_id: str) -> dict:
     """Return a provider request copy whose worker environment carries this launch nonce."""
     request_copy = deepcopy(request)
@@ -751,11 +795,7 @@ def _request_with_launch_session_nonce(request: dict, launch_session_id: str) ->
 
 
 def _provider_names(provider: str | None) -> list[str]:
-    names = [
-        p.strip().lower()
-        for p in str(provider or DEFAULT_ISAAC_REVIEW_PROVIDER).split(",")
-        if p.strip()
-    ]
+    names = [p.strip().lower() for p in str(provider or DEFAULT_ISAAC_REVIEW_PROVIDER).split(",") if p.strip()]
     return names or [DEFAULT_ISAAC_REVIEW_PROVIDER]
 
 
@@ -779,10 +819,7 @@ def _apply_paid_provider_policy(provider_names: Sequence[str], *, allow_paid: bo
         "disabled_paid_providers": ["vast"],
         "blocker": "vast_provider_disabled_for_paid_isaac_review",
         "override_env": ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV,
-        "reason": (
-            "Vast is not used as a default paid Isaac review-render fallback because this lane "
-            "requires reliable bootstrap/output markers before WAM can consume a seed."
-        ),
+        "reason": ("Vast is not used as a default paid Isaac review-render fallback because this lane requires reliable bootstrap/output markers before WAM can consume a seed."),
     }
     return filtered, policy
 
@@ -808,9 +845,7 @@ def _paid_worker_image_policy(
         selected_image = _string(image_config.get("image_ref")) or DEFAULT_PARITY_IMAGE_REF
         configured = bool(image_config.get("configured"))
         source = image_config.get("source") or "default_historical_parity_image"
-    image_size_diagnostic = _isaac_worker_image_size_diagnostic(
-        selected_image, explicit_path=worker_image_manifest_diagnostic
-    )
+    image_size_diagnostic = _isaac_worker_image_size_diagnostic(selected_image, explicit_path=worker_image_manifest_diagnostic)
     diagnostic_validation = _worker_image_diagnostic_paid_validation(
         selected_image=selected_image,
         diagnostic=image_size_diagnostic,
@@ -823,11 +858,8 @@ def _paid_worker_image_policy(
     cold_start_possible = bool(cold or not warm_only)
     split_layer_cold_start_suitable = bool(
         image_size_diagnostic.get("split_layer_layout_suitable") is True
-        and (_int_or_none(
-            image_size_diagnostic.get("recommended_startup_no_runtime_timeout_seconds") or 0
-        ) or 0) > 0
-        and (_int_or_none(image_size_diagnostic.get("largest_layer_size_bytes")) or 0)
-        <= 3_000_000_000
+        and (_int_or_none(image_size_diagnostic.get("recommended_startup_no_runtime_timeout_seconds") or 0) or 0) > 0
+        and (_int_or_none(image_size_diagnostic.get("largest_layer_size_bytes")) or 0) <= 3_000_000_000
     )
     large_runpod_fresh_start = bool(
         allow_paid
@@ -851,20 +883,14 @@ def _paid_worker_image_policy(
         "worker_image_diagnostic_validation": diagnostic_validation,
         "direct_isaac_base_image_runpod_allowed": direct_base_image_allowed,
         "direct_isaac_base_image_override_env": ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD_ENV,
-        "large_runpod_image_fresh_start_allowed": _env_truthy(
-            ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV
-        ) or bool(image_startup_canary) or split_layer_cold_start_suitable,
+        "large_runpod_image_fresh_start_allowed": _env_truthy(ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV) or bool(image_startup_canary) or split_layer_cold_start_suitable,
         "split_layer_cold_start_suitable": split_layer_cold_start_suitable,
         "image_startup_canary": bool(image_startup_canary),
         "runpod_cold_start_possible": cold_start_possible,
         "large_runpod_image_fresh_start_override_env": ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START_ENV,
         "blockers": blockers,
         "blocker": blockers[0] if blockers else None,
-        "claim_boundary": (
-            "Worker image policy only gates provider startup risk. It does not prove "
-            "container startup, Isaac execution, rendered RGB quality, WAM quality, or "
-            "robot readiness."
-        ),
+        "claim_boundary": ("Worker image policy only gates provider startup risk. It does not prove container startup, Isaac execution, rendered RGB quality, WAM quality, or robot readiness."),
     }
     return selected_image, policy
 
@@ -878,19 +904,13 @@ def _groot_sonic_policy_runtime_policy(
     effective_groot_policy_command: str,
     effective_groot_policy_command_timeout_seconds: float,
 ) -> dict:
-    requested = str(policy_id).strip() in set(
-        _G1_KITCHEN_PACK.policy.remote_runtime_policy_ids
-    )
+    requested = str(policy_id).strip() in set(_G1_KITCHEN_PACK.policy.remote_runtime_policy_ids)
     command_configured = bool(_string(effective_groot_policy_command))
     server_url_configured = bool(_string(os.getenv(UNITREE_GROOT_POLICY_SERVER_URL_ENV)))
     runtime_mode = _string(os.getenv(ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV)).lower()
     prebaked_image_confirmed = _env_truthy(ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV)
     selected_image_text = _string(selected_image).lower()
-    image_looks_like_plain_isaac_worker = (
-        "isaac-eval-worker" in selected_image_text
-        and "groot" not in selected_image_text
-        and "sonic" not in selected_image_text
-    )
+    image_looks_like_plain_isaac_worker = "isaac-eval-worker" in selected_image_text and "groot" not in selected_image_text and "sonic" not in selected_image_text
 
     if image_startup_canary or not requested:
         return {
@@ -928,9 +948,7 @@ def _groot_sonic_policy_runtime_policy(
         "policy_server_url_env": UNITREE_GROOT_POLICY_SERVER_URL_ENV,
         "runtime_mode_env": ISAAC_G1_GROOT_POLICY_RUNTIME_MODE_ENV,
         "runtime_mode": runtime_mode or None,
-        "prebaked_image_confirmed_env": (
-            ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV
-        ),
+        "prebaked_image_confirmed_env": (ISAAC_G1_GROOT_POLICY_PREBAKED_IMAGE_CONFIRMED_ENV),
         "prebaked_image_confirmed": prebaked_image_confirmed,
         "runtime_dependency_install_disallowed_for_paid_launch": bool(allow_paid),
         "required_isaac_control_contract": required_contract,
@@ -990,21 +1008,12 @@ def _groot_sonic_policy_runtime_policy(
         "runtime_location_source": runtime_location_source,
         "blockers": blockers,
         "blocker": blockers[0] if blockers else None,
-        "reason": (
-            "No-spend plan only; runtime location is recorded but not paid-launched."
-            if blockers and not allow_paid
-            else None
-        ),
+        "reason": ("No-spend plan only; runtime location is recorded but not paid-launched." if blockers and not allow_paid else None),
     }
 
 
 def _provider_startup_pre_runtime(snapshot: dict) -> bool:
-    return (
-        snapshot.get("status") == "observed"
-        and int(snapshot.get("http") or 0) == 200
-        and snapshot.get("runtime_present") is False
-        and snapshot.get("public_ip_present") is False
-    )
+    return snapshot.get("status") == "observed" and int(snapshot.get("http") or 0) == 200 and snapshot.get("runtime_present") is False and snapshot.get("public_ip_present") is False
 
 
 def _unique_strings(values: Sequence[str]) -> list[str]:
@@ -1028,31 +1037,18 @@ def _launch_attempt_detail_blockers(attempts: Sequence[dict]) -> list[str]:
 def _launch_failure_blockers(attempts: Sequence[dict]) -> list[str]:
     """Classify launch failures without conflating provider capacity with dead pods."""
     detail_blockers = _launch_attempt_detail_blockers(attempts)
-    capacity_blockers = [
-        blocker
-        for blocker in detail_blockers
-        if blocker in PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS
-    ]
-    if capacity_blockers and all(
-        (item.get("result") if isinstance(item, dict) else None) == "launch_call_failed"
-        for item in attempts
-    ):
-        return _unique_strings([
-            *capacity_blockers,
-            "provider_capacity_unavailable_before_instance_created",
-        ])
+    capacity_blockers = [blocker for blocker in detail_blockers if blocker in PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS]
+    if capacity_blockers and all((item.get("result") if isinstance(item, dict) else None) == "launch_call_failed" for item in attempts):
+        return _unique_strings(
+            [
+                *capacity_blockers,
+                "provider_capacity_unavailable_before_instance_created",
+            ]
+        )
     final_blockers = ["all_launch_attempts_flaky"]
-    if any(
-        str(item.get("result") or "").startswith("startup_no_runtime_timeout")
-        for item in attempts
-        if isinstance(item, dict)
-    ):
+    if any(str(item.get("result") or "").startswith("startup_no_runtime_timeout") for item in attempts if isinstance(item, dict)):
         final_blockers.append("provider_startup_no_runtime_timeout")
-    if any(
-        str(item.get("result") or "").startswith("quarantined_machine")
-        for item in attempts
-        if isinstance(item, dict)
-    ):
+    if any(str(item.get("result") or "").startswith("quarantined_machine") for item in attempts if isinstance(item, dict)):
         final_blockers.append("provider_repeated_quarantined_machine")
     return final_blockers
 
@@ -1076,7 +1072,11 @@ class _ColdCreateContender:
 
 def resolve_cold_race_contenders(value: int | None = None) -> int:
     """How many same-provider cold creates to race. CLI/param wins over env."""
-    raw = value if value is not None else os.getenv(COLD_RACE_CONTENDERS_ENV, "")
+    raw: object
+    if value is not None:
+        raw = value
+    else:
+        raw = os.getenv(COLD_RACE_CONTENDERS_ENV, "")
     try:
         count = int(str(raw).strip() or DEFAULT_COLD_RACE_CONTENDERS)
     except (TypeError, ValueError):
@@ -1084,14 +1084,31 @@ def resolve_cold_race_contenders(value: int | None = None) -> int:
     return max(1, min(4, count))
 
 
-def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts: int = 3,
-                             marker_timeout: int = 150, poll: int = 15,
-                             cold: bool = True,
-                             allow_cold_fallback: bool = True,
-                             startup_no_runtime_timeout: int = 0,
-                             max_runtime_seconds: int = 0,
-                             prelaunch_guard: dict | None = None,
-                             owned_allocation_sink: dict[str, Any] | None = None) -> dict:
+def _external_process_alive(pid: int) -> bool:
+    return _process_alive(pid)
+
+
+def _bounded_serve_supervisor_valid(supervisor: Mapping[str, Any]) -> bool:
+    return _validate_bounded_serve_supervisor(
+        supervisor, process_alive=_external_process_alive
+    )
+
+
+def launch_with_marker_retry(
+    prov,
+    job_dir: Path,
+    request: dict,
+    *,
+    max_attempts: int = 3,
+    marker_timeout: int = 150,
+    poll: int = 15,
+    cold: bool = True,
+    allow_cold_fallback: bool = True,
+    startup_no_runtime_timeout: int = 0,
+    max_runtime_seconds: int = 0,
+    prelaunch_guard: dict | None = None,
+    owned_allocation_sink: dict[str, Any] | None = None,
+) -> dict:
     """Launch a pod, then wait for its container's early heartbeat (``bootstrap.json`` on the
     output URL). RunPod cold pods are ~50% flaky — created + billing but the container never runs.
     If no marker appears within ``marker_timeout``, terminate that pod and retry, so we never pay
@@ -1100,9 +1117,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
     attempts: list[dict] = []
     failed_machine_ids: set[str] = set()
     launch_image = str(request.get("imageName") or request.get("image") or "").strip()
-    launch_image_digest = (
-        launch_image.split("@", 1)[1] if "@sha256:" in launch_image else ""
-    )
+    launch_image_digest = launch_image.split("@", 1)[1] if "@sha256:" in launch_image else ""
     launcher_provider_name = getattr(prov, "name", "unknown")
     trace = {
         "schema_version": "isaac_g1_kitchen_parity_launch_attempts.v1",
@@ -1117,11 +1132,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         "prelaunch_guard": prelaunch_guard,
         "attempts": attempts,
         "quarantined_machine_ids": [],
-        "proof_boundary": (
-            "Launch-attempt trace only. It proves provider API/result observation, "
-            "not container startup, Isaac execution, rendered RGB quality, WAM quality, "
-            "or robot readiness."
-        ),
+        "proof_boundary": ("Launch-attempt trace only. It proves provider API/result observation, not container startup, Isaac execution, rendered RGB quality, WAM quality, or robot readiness."),
     }
     # P0-2: seed the in-call quarantine with still-valid durable entries so a
     # machine that killed a PREVIOUS run is terminated on first re-allocation
@@ -1131,9 +1142,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
         durable_machine_ids = {
             str(entry.get("machine_id") or "").strip()
             for entry in machine_quarantine.load_quarantine_entries()
-            if entry.get("provider") == launcher_provider_name
-            and entry.get("image_digest") == launch_image_digest
-            and entry.get("isaac_version") == machine_quarantine.DEFAULT_ISAAC_VERSION
+            if entry.get("provider") == launcher_provider_name and entry.get("image_digest") == launch_image_digest and entry.get("isaac_version") == machine_quarantine.DEFAULT_ISAAC_VERSION
         }
         durable_machine_ids.discard("")
         if durable_machine_ids:
@@ -1257,15 +1266,14 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                         mark_pending_teardown_ambiguous(
                             pending_teardown["path"],
                             reason="launch_returned_without_explicit_no_allocation",
-                            evidence={"status": launch.get("status"), "blockers": launch.get("blockers")},
+                            evidence={
+                                "status": launch.get("status"),
+                                "blockers": launch.get("blockers"),
+                            },
                         )
                     except Exception:
                         pass
-            launch_result = (
-                "launch_outcome_ambiguous"
-                if allocation_outcome_ambiguous
-                else "launch_call_failed"
-            )
+            launch_result = "launch_outcome_ambiguous" if allocation_outcome_ambiguous else "launch_call_failed"
             attempts.append({"attempt": attempt, "result": launch_result, "detail": launch})
             trace["status"] = launch_result
             _write_launch_attempt_trace(job_dir, trace)
@@ -1279,11 +1287,11 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                         }
                     ),
                     "attempts": attempts,
-                    "pending_teardown_record": pending_teardown["path"],
+                    "pending_teardown_record": (pending_teardown["path"] if pending_teardown else None),
                     "attempt_trace_path": str(trace_path),
                 }
-            blockers = {str(b) for b in (launch.get("blockers") or [])}
-            if "warm_restart_failed_cold_fallback_disabled" in blockers:
+            launch_blocker_set = {str(b) for b in (launch.get("blockers") or [])}
+            if "warm_restart_failed_cold_fallback_disabled" in launch_blocker_set:
                 return {
                     "status": "blocked",
                     "blockers": ["warm_restart_failed_cold_fallback_disabled"],
@@ -1329,15 +1337,8 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                     quarantine_snapshot = prov.inspect(iid)
                 except Exception:  # noqa: BLE001 - the normal timeout path remains authoritative
                     quarantine_snapshot = None
-                machine_id = str(
-                    quarantine_snapshot.get("machineId")
-                    if isinstance(quarantine_snapshot, Mapping)
-                    else ""
-                ).strip()
-                if (
-                    machine_id in failed_machine_ids
-                    and _provider_startup_pre_runtime(quarantine_snapshot)
-                ):
+                machine_id = str(quarantine_snapshot.get("machineId") if isinstance(quarantine_snapshot, Mapping) else "").strip()
+                if machine_id in failed_machine_ids and _provider_startup_pre_runtime(quarantine_snapshot):
                     repeated_quarantined_machine = True
                     attempt_record["quarantined_machine_snapshot"] = quarantine_snapshot
                     attempt_record["quarantined_machine_elapsed_seconds"] = round(elapsed, 1)
@@ -1375,9 +1376,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                                     evidence_paths=(trace_path,),
                                     run_id=launch_session_id,
                                 )
-                                attempt_record["durable_quarantine_path"] = (
-                                    durable_entry["path"]
-                                )
+                                attempt_record["durable_quarantine_path"] = durable_entry["path"]
                             except machine_quarantine.QuarantineRefused:
                                 # Non-machine-attributable classes are refused
                                 # by design; the in-call quarantine above still
@@ -1394,13 +1393,15 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
             trace["status"] = "marker_verified"
             _write_launch_attempt_trace(job_dir, trace)
             mode = launch.get("mode") or ("cold_create" if cold else "warm_or_cold")
-            return {"status": "launched", "instance_id": iid, "mode": f"{mode}_marker_verified",
-                    "attempts": attempts, "attempt_trace_path": str(trace_path),
-                    "pending_teardown_record": launch.get("pending_teardown_record")}
-        if (
-            str(launch.get("mode") or "").startswith("warm")
-            and not launch.get("pending_teardown_record")
-        ):
+            return {
+                "status": "launched",
+                "instance_id": iid,
+                "mode": f"{mode}_marker_verified",
+                "attempts": attempts,
+                "attempt_trace_path": str(trace_path),
+                "pending_teardown_record": launch.get("pending_teardown_record"),
+            }
+        if str(launch.get("mode") or "").startswith("warm") and not launch.get("pending_teardown_record"):
             try:
                 teardown = prov.stop(iid)
             except Exception as exc:  # noqa: BLE001 - inspect below is authoritative
@@ -1410,15 +1411,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                 }
             attempt_record["teardown"] = teardown
             attempt_record["teardown_action"] = "stop"
-            attempt_record["result"] = (
-                "quarantined_machine_stopped"
-                if repeated_quarantined_machine
-                else (
-                    "startup_no_runtime_timeout_stopped"
-                    if startup_no_runtime
-                    else "marker_timeout_stopped"
-                )
-            )
+            attempt_record["result"] = "quarantined_machine_stopped" if repeated_quarantined_machine else ("startup_no_runtime_timeout_stopped" if startup_no_runtime else "marker_timeout_stopped")
         else:
             try:
                 teardown = prov.terminate(iid)
@@ -1430,13 +1423,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
             attempt_record["teardown"] = teardown
             attempt_record["teardown_action"] = "terminate"
             attempt_record["result"] = (
-                "quarantined_machine_terminated"
-                if repeated_quarantined_machine
-                else (
-                    "startup_no_runtime_timeout_terminated"
-                    if startup_no_runtime
-                    else "marker_timeout_terminated"
-                )
+                "quarantined_machine_terminated" if repeated_quarantined_machine else ("startup_no_runtime_timeout_terminated" if startup_no_runtime else "marker_timeout_terminated")
             )
         if launch.get("pending_teardown_record"):
             proof = _teardown_proof_from_attempt(
@@ -1451,10 +1438,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                 proof,
             )
             attempt_record["pending_teardown_status"] = closure.get("status")
-            if (
-                str(proof.get("status") or "").upper() != "PASS"
-                or closure.get("status") != "closed"
-            ):
+            if str(proof.get("status") or "").upper() != "PASS" or closure.get("status") != "closed":
                 attempt_record["result"] = "teardown_unverified_retry_blocked"
                 trace["status"] = attempt_record["result"]
                 trace["blockers"] = ["provider_teardown_unverified_before_retry"]
@@ -1463,9 +1447,7 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
                     "status": "blocked",
                     "blockers": ["provider_teardown_unverified_before_retry"],
                     "attempts": attempts,
-                    "pending_teardown_record": launch.get(
-                        "pending_teardown_record"
-                    ),
+                    "pending_teardown_record": launch.get("pending_teardown_record"),
                     "attempt_trace_path": str(trace_path),
                 }
         trace["status"] = attempt_record["result"]
@@ -1484,9 +1466,16 @@ def launch_with_marker_retry(prov, job_dir: Path, request: dict, *, max_attempts
 
 # ----------------------------- orchestration -----------------------------
 
-def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int = 1800,
-                            poll_interval_s: float = 15.0,
-                            launch_session_id: str | None = None) -> dict:
+
+def _await_warm_serve_ready(
+    job_dir: Path,
+    *,
+    instance_id: str,
+    timeout_s: int = 1800,
+    poll_interval_s: float = 15.0,
+    launch_session_id: str | None = None,
+    require_production_ready: bool = False,
+) -> dict:
     """Poll the worker's uploaded output zip for the --serve readiness marker (Isaac booted + scene
     loaded + the loop accepting jobs). Returns {ready, elapsed_seconds, last_phase}. Does NOT tear the
     pod down — the warm pod must stay running for the caller's WarmPoolClient."""
@@ -1520,9 +1509,7 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
                         bootstrap_detail = json.loads(z.read("bootstrap.json").decode())
                         if isinstance(bootstrap_detail, dict):
                             last_phase = bootstrap_detail.get("phase")
-                            bootstrap_session = str(
-                                bootstrap_detail.get("launch_session_id") or ""
-                            ).strip()
+                            bootstrap_session = str(bootstrap_detail.get("launch_session_id") or "").strip()
                     except Exception:  # noqa: BLE001
                         bootstrap_detail = {}
                         bootstrap_session = ""
@@ -1536,20 +1523,55 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
                     if expected_session and str(detail.get("launch_session_id") or "") != expected_session:
                         _time.sleep(poll_interval_s)
                         continue
-                    return {"ready": True, "elapsed_seconds": round(_time.monotonic() - start, 1),
-                            "last_phase": last_phase, "serve_detail": detail, "instance_id": instance_id}
-                if (
-                    last_phase in {"runner_done", "runner_timeout"}
-                    and (
-                        not expected_session
-                        or bootstrap_session == expected_session
-                    )
-                ):
-                    reason = (
-                        "runner_timeout_without_warm_serve_ready"
-                        if last_phase == "runner_timeout"
-                        else "runner_completed_without_warm_serve_ready"
-                    )
+                    if require_production_ready and detail.get("production_ready") is not True:
+                        last_phase = "warm_serve_marker_not_production_ready"
+                        _time.sleep(poll_interval_s)
+                        continue
+                    registration_evidence_paths: dict[str, str] = {}
+                    if require_production_ready:
+                        required_records = {
+                            "host": "production_host_boot_evidence.json",
+                            "cache": "production_cache_evidence.json",
+                            "warm": "warm_serve_ready.json",
+                        }
+                        if not all(filename in names for filename in required_records.values()):
+                            last_phase = "production_registration_evidence_missing"
+                            _time.sleep(poll_interval_s)
+                            continue
+                        evidence_dir = job_dir / "production_registration_evidence"
+                        evidence_dir.mkdir(parents=True, exist_ok=True)
+                        extracted: dict[str, dict[str, Any]] = {}
+                        extraction_failed = False
+                        for label, filename in required_records.items():
+                            try:
+                                record_bytes = z.read(filename)
+                                if len(record_bytes) > 1024 * 1024:
+                                    raise ValueError("production_registration_evidence_too_large")
+                                record = json.loads(record_bytes.decode("utf-8"))
+                                if not isinstance(record, dict):
+                                    raise ValueError("production_registration_evidence_not_object")
+                                target = evidence_dir / filename
+                                write_json(target, record)
+                                extracted[label] = record
+                                registration_evidence_paths[label] = str(target.resolve())
+                            except (KeyError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                                extraction_failed = True
+                                break
+                        if extraction_failed:
+                            last_phase = "production_registration_evidence_invalid"
+                            _time.sleep(poll_interval_s)
+                            continue
+                        detail = extracted["warm"]
+                    return {
+                        "ready": True,
+                        "elapsed_seconds": round(_time.monotonic() - start, 1),
+                        "last_phase": last_phase,
+                        "serve_detail": detail,
+                        "registration_evidence_paths": registration_evidence_paths,
+                        "instance_id": instance_id,
+                    }
+                if last_phase in {"runner_done", "runner_timeout"} and (not expected_session or bootstrap_session == expected_session):
+                    reason = "runner_timeout_without_warm_serve_ready" if last_phase == "runner_timeout" else "runner_completed_without_warm_serve_ready"
                     return {
                         "ready": False,
                         "reason": reason,
@@ -1571,33 +1593,61 @@ def _await_warm_serve_ready(job_dir: Path, *, instance_id: str, timeout_s: int =
         except Exception:  # noqa: BLE001 - output not posted yet / mid-upload
             pass
         _time.sleep(poll_interval_s)
-    return {"ready": False, "reason": "serve_ready_timeout", "elapsed_seconds": round(_time.monotonic() - start, 1),
-            "last_phase": last_phase, "instance_id": instance_id}
+    return {
+        "ready": False,
+        "reason": "serve_ready_timeout",
+        "elapsed_seconds": round(_time.monotonic() - start, 1),
+        "last_phase": last_phase,
+        "instance_id": instance_id,
+    }
 
 
 def run_isaac_g1_kitchen_parity_job(
-    *, scenarios: Sequence[dict], out_dir: str | Path, kitchen_asset_dir: str | Path | None = None,
+    *,
+    scenarios: Sequence[dict],
+    out_dir: str | Path,
+    kitchen_asset_dir: str | Path | None = None,
     evaluation_run_id: str | None = None,
     kitchen_url: str | None = None,
-    g1_usd: str = DEFAULT_G1_USD_RELATIVE, policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
-    steps: int = 64, provider: str = DEFAULT_ISAAC_REVIEW_PROVIDER, allow_paid: bool = False,
-    allow_dirty_paid_launch: bool = False, cold: bool = False,
-    image: str | None = None, key_prefix: str = "blueprint/isaac-g1-parity", max_seconds: int = 1500,
-    marker_timeout: int = 900, max_attempts: int = 3,
+    g1_usd: str = DEFAULT_G1_USD_RELATIVE,
+    policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
+    steps: int = 64,
+    provider: str = DEFAULT_ISAAC_REVIEW_PROVIDER,
+    allow_paid: bool = False,
+    allow_dirty_paid_launch: bool = False,
+    cold: bool = False,
+    image: str | None = None,
+    key_prefix: str = "blueprint/isaac-g1-parity",
+    max_seconds: int = 1500,
+    marker_timeout: int = 900,
+    max_attempts: int = 3,
     post_marker_progress_timeout: int = 360,
     startup_no_runtime_timeout: int = DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS,
     cold_race_contenders: int | None = None,
-    width: int = 1280, height: int = 960, fps: int = 20,
-    warmup: int = 6, per_scenario_seconds: int = 420,
-    container_disk_gb: int = 140, volume_gb: int = 80,
-    no_collision_probe: bool = False, focus_radius: float = 0.0, keep_objects: str = "",
-    settle_seconds: int = 0, cheap_collision: bool = False, articulated: bool = False,
+    width: int = 1280,
+    height: int = 960,
+    fps: int = 20,
+    warmup: int = 6,
+    per_scenario_seconds: int = 420,
+    container_disk_gb: int = 140,
+    volume_gb: int = 80,
+    no_collision_probe: bool = False,
+    focus_radius: float = 0.0,
+    keep_objects: str = "",
+    settle_seconds: int = 0,
+    cheap_collision: bool = False,
+    articulated: bool = False,
     physics_articulation_drive: bool = False,
     dynamic_standing_contact_steps: int = 0,
-    manipulation_cam: bool = False, manipulation_look_at: str = "", render_subframes: int = 0,
-    manipulation_reach: bool = False, manipulation_reach_arm: str = "auto",
-    dynamic_episode_termination: bool = True, episode_max_steps: int = 0,
-    dynamic_episode_check_every: int = 1, capture_every: int = 1,
+    manipulation_cam: bool = False,
+    manipulation_look_at: str = "",
+    render_subframes: int = 0,
+    manipulation_reach: bool = False,
+    manipulation_reach_arm: str = "auto",
+    dynamic_episode_termination: bool = True,
+    episode_max_steps: int = 0,
+    dynamic_episode_check_every: int = 1,
+    capture_every: int = 1,
     fill_light_intensity: float = 0.0,
     neutral_environment: bool = False,
     robot_review_material_override: bool = False,
@@ -1615,8 +1665,13 @@ def run_isaac_g1_kitchen_parity_job(
     max_spend_usd: float | None = None,
     warm_candidates: Sequence[str] | None = None,
     warm_only: bool = False,
-    serve: bool = False, serve_idle_timeout_s: float = 1800.0,
-    serve_max_jobs: int | None = None, serve_ready_timeout: int = 1800,
+    serve: bool = False,
+    serve_idle_timeout_s: float = 1800.0,
+    serve_max_jobs: int | None = None,
+    serve_ready_timeout: int = 1800,
+    serve_production_warmup_before_ready: bool = False,
+    runpod_gpu_types: Sequence[str] | None = None,
+    serve_teardown_supervisor: Mapping[str, Any] | None = None,
     image_startup_canary: bool = False,
     supervised_startup: bool | None = None,
     groot_policy_command: str = "",
@@ -1635,28 +1690,48 @@ def run_isaac_g1_kitchen_parity_job(
     out_dir.mkdir(parents=True, exist_ok=True)
     requested_provider_names = _provider_names(provider)
     provider_names = list(requested_provider_names)
-    manifest: dict = {"schema_version": SCHEMA_VERSION, "status": "blocked", "blockers": [],
-                      "provider": ",".join(provider_names), "policy_id": policy_id,
-                      "rendered_by": "isaac_rtx_g1_kitchen_parity",
-                      "image_startup_canary": bool(image_startup_canary),
-                      "supervised_startup": bool(supervised_startup)}
-    requested_render_settings = {
-        "steps": int(steps),
-        "width": int(width),
-        "height": int(height),
-        "fps": int(fps),
-        "warmup_frames": int(warmup),
-        "per_scenario_seconds": int(per_scenario_seconds),
-        "expected_frame_count_per_scenario": int(steps),
+    manifest: dict = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "blocked",
+        "blockers": [],
+        "provider": ",".join(provider_names),
+        "policy_id": policy_id,
+        "rendered_by": "isaac_rtx_g1_kitchen_parity",
+        "image_startup_canary": bool(image_startup_canary),
+        "supervised_startup": bool(supervised_startup),
     }
+    requested_render_settings = build_episode_render_settings(
+        steps=steps,
+        width=width,
+        height=height,
+        fps=fps,
+        warmup_frames=warmup,
+        per_scenario_seconds=per_scenario_seconds,
+        dynamic_episode_termination=dynamic_episode_termination,
+        episode_max_steps=episode_max_steps,
+    )
     manifest["requested_render_settings"] = requested_render_settings
     if allow_paid and serve:
-        return _block_unbounded_paid_serve(manifest)
-    configured_warm_candidates = tuple(
-        c.strip()
-        for c in (os.getenv("BLUEPRINT_RUNPOD_WARM_CANDIDATES") or "").split(",")
-        if c.strip()
-    )
+        supervisor = dict(serve_teardown_supervisor or {})
+        if not _bounded_serve_supervisor_valid(supervisor):
+            return _block_unbounded_paid_serve(manifest)
+        if serve_production_warmup_before_ready and not _campaign_budget_reservation_valid(supervisor):
+            manifest["blockers"].append("production_paid_warm_serve_requires_campaign_budget_reservation")
+            _write_job_manifest(out_dir, manifest)
+            return manifest
+        supervisor_deadline = float(supervisor["deadline_epoch"])
+        supervisor_pid = int(supervisor["pid"])
+        supervisor_evidence_path = Path(str(supervisor["evidence_path"])).expanduser()
+        manifest["warm_serve_spend_policy"] = {
+            "status": "bounded_by_external_teardown_supervisor",
+            "deadline_epoch": supervisor_deadline,
+            "watchdog_pid": supervisor_pid,
+            "watchdog_evidence_path": str(supervisor_evidence_path.resolve()),
+            "campaign_budget_ledger": supervisor.get("campaign_budget_ledger"),
+            "campaign_reservation_id": supervisor.get("campaign_reservation_id"),
+            "standing_spend_authorization_supported": False,
+        }
+    configured_warm_candidates = tuple(c.strip() for c in (os.getenv("BLUEPRINT_RUNPOD_WARM_CANDIDATES") or "").split(",") if c.strip())
     warm_candidate_ids = tuple(warm_candidates or ()) + configured_warm_candidates + tuple(DEFAULT_WARM_CANDIDATES)
     try:
         providers = [
@@ -1672,6 +1747,9 @@ def run_isaac_g1_kitchen_parity_job(
         return manifest
     if not scenarios and not serve and not image_startup_canary:
         manifest["blockers"].append("no_scenarios")
+        return manifest
+    if serve_production_warmup_before_ready and (not serve or not scenarios):
+        manifest["blockers"].append("production_warm_serve_requires_serve_and_initial_scenario")
         return manifest
     if supervised_startup and (serve or image_startup_canary or len(provider_names) != 1):
         manifest["blockers"].append("supervised_startup_requires_single_nonserve_full_job")
@@ -1697,10 +1775,7 @@ def run_isaac_g1_kitchen_parity_job(
     if not effective_provider_names:
         manifest["provider"] = ",".join(requested_provider_names)
         manifest["blockers"].append("vast_provider_disabled_for_paid_isaac_review")
-        manifest["note"] = (
-            "Vast paid Isaac review renders are disabled by default for this lane. "
-            f"Set {ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1 only for an intentional Vast experiment."
-        )
+        manifest["note"] = f"Vast paid Isaac review renders are disabled by default for this lane. Set {ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1 only for an intentional Vast experiment."
         return manifest
     selected_image, image_policy = _paid_worker_image_policy(
         image=image,
@@ -1749,17 +1824,11 @@ def run_isaac_g1_kitchen_parity_job(
         startup_no_runtime_timeout,
         image_policy.get("worker_image_manifest_diagnostic"),
     )
-    effective_startup_no_runtime_timeout = int(
-        startup_timeout_policy["effective_seconds"]
-    )
+    effective_startup_no_runtime_timeout = int(startup_timeout_policy["effective_seconds"])
     manifest["startup_no_runtime_timeout_policy"] = startup_timeout_policy
     effective_marker_timeout = max(
         int(marker_timeout),
-        (
-            effective_startup_no_runtime_timeout + 120
-            if effective_startup_no_runtime_timeout > 0
-            else int(marker_timeout)
-        ),
+        (effective_startup_no_runtime_timeout + 120 if effective_startup_no_runtime_timeout > 0 else int(marker_timeout)),
     )
     manifest["startup_marker_timeout_policy"] = {
         "requested_seconds": int(marker_timeout),
@@ -1767,20 +1836,13 @@ def run_isaac_g1_kitchen_parity_job(
         "must_exceed_pre_runtime_timeout_by_seconds": 120,
         "raised_for_pre_runtime_timeout": effective_marker_timeout > int(marker_timeout),
     }
-    effective_groot_policy_command = (
-        _string(groot_policy_command)
-        or _string(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_ENV))
-        or _string(os.getenv(UNITREE_GROOT_POLICY_COMMAND_ENV))
-    )
+    effective_groot_policy_command = _string(groot_policy_command) or _string(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_ENV)) or _string(os.getenv(UNITREE_GROOT_POLICY_COMMAND_ENV))
     effective_groot_policy_command_timeout_seconds = (
         float(groot_policy_command_timeout_seconds)
-        if groot_policy_command_timeout_seconds is not None
-        and groot_policy_command_timeout_seconds > 0
+        if groot_policy_command_timeout_seconds is not None and groot_policy_command_timeout_seconds > 0
         else float(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_TIMEOUT_ENV, "120") or 120)
     )
-    groot_policy_requested = str(policy_id).strip() in set(
-        _G1_KITCHEN_PACK.policy.remote_runtime_policy_ids
-    )
+    groot_policy_requested = str(policy_id).strip() in set(_G1_KITCHEN_PACK.policy.remote_runtime_policy_ids)
     if not image_startup_canary and groot_policy_requested:
         manifest["policy_runtime_policy"] = _groot_sonic_policy_runtime_policy(
             policy_id=policy_id,
@@ -1788,9 +1850,7 @@ def run_isaac_g1_kitchen_parity_job(
             allow_paid=allow_paid,
             image_startup_canary=image_startup_canary,
             effective_groot_policy_command=effective_groot_policy_command,
-            effective_groot_policy_command_timeout_seconds=(
-                effective_groot_policy_command_timeout_seconds
-            ),
+            effective_groot_policy_command_timeout_seconds=(effective_groot_policy_command_timeout_seconds),
         )
         if manifest["policy_runtime_policy"].get("status") == "blocked":
             manifest["blockers"].extend(manifest["policy_runtime_policy"].get("blockers") or [])
@@ -1804,17 +1864,8 @@ def run_isaac_g1_kitchen_parity_job(
     prov = providers[0]
     multi_provider_race = len(providers) > 1 and not serve
     race_contender_count = resolve_cold_race_contenders(cold_race_contenders)
-    single_provider_cold_race = (
-        not multi_provider_race
-        and not supervised_startup
-        and not serve
-        and not warm_only
-        and prov.name == "runpod"
-        and race_contender_count > 1
-    )
-    manifest["cold_race_contenders"] = (
-        race_contender_count if single_provider_cold_race else 1
-    )
+    single_provider_cold_race = not multi_provider_race and not supervised_startup and not serve and not warm_only and prov.name == "runpod" and race_contender_count > 1
+    manifest["cold_race_contenders"] = race_contender_count if single_provider_cold_race else 1
     capacity: Mapping[str, Any] | None = None
     if multi_provider_race:
         manifest["providers"] = [p.name for p in providers]
@@ -1894,12 +1945,20 @@ def run_isaac_g1_kitchen_parity_job(
             "archive_sha256": kitchen_asset_inventory.get("archive_sha256"),
         }
     evaluation_run_spec = build_g1_kitchen_evaluation_run_spec(
-        out_dir=out_dir, run_id=evaluation_run_id, scenarios=scenarios, kitchen_uri=kitchen_url,
+        out_dir=out_dir,
+        run_id=evaluation_run_id,
+        scenarios=scenarios,
+        kitchen_uri=kitchen_url,
         kitchen_main_usd_relative=kitchen_main_usd_relative,
-        kitchen_asset_inventory=kitchen_asset_inventory, g1_usd=g1_usd,
-        policy_id=policy_id, providers=provider_names, selected_image=selected_image,
-        allow_paid=allow_paid, max_spend_usd=max_spend_usd,
-        image_startup_canary=image_startup_canary, serve=serve,
+        kitchen_asset_inventory=kitchen_asset_inventory,
+        g1_usd=g1_usd,
+        policy_id=policy_id,
+        providers=provider_names,
+        selected_image=selected_image,
+        allow_paid=allow_paid,
+        max_spend_usd=max_spend_usd,
+        image_startup_canary=image_startup_canary,
+        serve=serve,
         requested_render_settings=requested_render_settings,
     )
     evaluation_run_plan = compile_evaluation_run(
@@ -1923,18 +1982,21 @@ def run_isaac_g1_kitchen_parity_job(
     render_noise_audit_plan = None
     if render_noise_audit:
         from .g1_render_noise_audit import build_variant_plan
+
         render_noise_audit_plan = build_variant_plan()
         manifest["render_noise_audit_requested"] = True
-        manifest["render_noise_audit_variants"] = [
-            v["variant_id"] for v in render_noise_audit_plan["variants"]
-        ]
-    bundle_zip = build_parity_bundle(scenarios=scenarios, out_dir=out_dir,
-                                     kitchen_asset_dir=None,
-                                     kitchen_asset_inventory=kitchen_asset_inventory,
-                                     kitchen_main_usd_relative=kitchen_main_usd_relative,
-                                     g1_usd=g1_usd,
-                                     policy_id=policy_id, steps=steps,
-                                     render_noise_audit_plan=render_noise_audit_plan)
+        manifest["render_noise_audit_variants"] = [v["variant_id"] for v in render_noise_audit_plan["variants"]]
+    bundle_zip = build_parity_bundle(
+        scenarios=scenarios,
+        out_dir=out_dir,
+        kitchen_asset_dir=None,
+        kitchen_asset_inventory=kitchen_asset_inventory,
+        kitchen_main_usd_relative=kitchen_main_usd_relative,
+        g1_usd=g1_usd,
+        policy_id=policy_id,
+        steps=steps,
+        render_noise_audit_plan=render_noise_audit_plan,
+    )
     manifest["bundle_zip"] = str(bundle_zip)
     job_dir = out_dir / "object_store_real_run"
     staged = stage_bundle(bundle_zip, job_dir, key_prefix=key_prefix)
@@ -1947,14 +2009,13 @@ def run_isaac_g1_kitchen_parity_job(
     warm_broker_token = ""
     if serve:
         from blueprint_pipeline.wam_provider_object_store import presign_warm_inbox_channel
+
         inbox = presign_warm_inbox_channel(job_dir, key_prefix=key_prefix)
         manifest["warm_inbox"] = {
             "status": inbox.get("status"),
             "blockers": inbox.get("blockers"),
             "transport": inbox.get("transport"),
-            "single_object_transport_enabled": inbox.get(
-                "single_object_transport_enabled"
-            ),
+            "single_object_transport_enabled": inbox.get("single_object_transport_enabled"),
         }
         if inbox.get("status") != "completed":
             manifest["blockers"].append("durable_warm_render_broker_not_configured")
@@ -1968,97 +2029,95 @@ def run_isaac_g1_kitchen_parity_job(
             300,
             min(int(max_seconds) - 60, scenario_budget + 420),
         )
-    spec = build_launch_spec(job_dir, image=selected_image, policy_id=policy_id,
-                             steps=steps, kitchen_url=kitchen_url, width=width, height=height,
-                             fps=fps,
-                             container_disk_gb=container_disk_gb, volume_gb=volume_gb,
-                             serve=serve,
-                             warm_broker_base_url=warm_broker_base_url,
-                             warm_broker_token=warm_broker_token,
-                             serve_idle_timeout_s=serve_idle_timeout_s, serve_max_jobs=serve_max_jobs,
-                             warmup=warmup, per_scenario_seconds=per_scenario_seconds,
-                             no_collision_probe=no_collision_probe, focus_radius=focus_radius,
-                             keep_objects=keep_objects, settle_seconds=settle_seconds,
-                             cheap_collision=cheap_collision, articulated=articulated,
-                             physics_articulation_drive=physics_articulation_drive,
-                             dynamic_standing_contact_steps=dynamic_standing_contact_steps,
-                             manipulation_cam=manipulation_cam, manipulation_look_at=manipulation_look_at,
-                             render_subframes=render_subframes, manipulation_reach=manipulation_reach,
-                             manipulation_reach_arm=manipulation_reach_arm,
-                             dynamic_episode_termination=dynamic_episode_termination,
-                             episode_max_steps=episode_max_steps,
-                             dynamic_episode_check_every=dynamic_episode_check_every,
-                             capture_every=capture_every,
-                             fill_light_intensity=fill_light_intensity,
-                             neutral_environment=neutral_environment,
-                             robot_review_material_override=robot_review_material_override,
-                             robot_review_material_mode=robot_review_material_mode,
-                             kinematic_arm_pose=kinematic_arm_pose,
-                             collision_approximation=collision_approximation, verify_cam=verify_cam,
-                             manipulation_stand=manipulation_stand,
-                             placement_topdown_capture=placement_topdown_capture,
-                             render_noise_audit=render_noise_audit,
-                             audit_high_spp=audit_high_spp,
-                             audit_warmup_frames=audit_warmup_frames,
-                             audit_boost_light_intensity=audit_boost_light_intensity,
-                             vast_max_hourly_rate_usd=vast_max_hourly_rate_usd,
-                             gemini_api_key=_gemini_api_key_from_env(),
-                             groot_policy_command=effective_groot_policy_command,
-                             groot_policy_command_timeout_seconds=(
-                                 effective_groot_policy_command_timeout_seconds
-                             ),
-                             image_startup_canary=image_startup_canary,
-                             supervised_startup=supervised_startup,
-                             runner_timeout_seconds=runner_timeout_seconds)
+    spec = build_launch_spec(
+        job_dir,
+        image=selected_image,
+        policy_id=policy_id,
+        steps=steps,
+        kitchen_url=kitchen_url,
+        width=width,
+        height=height,
+        fps=fps,
+        container_disk_gb=container_disk_gb,
+        volume_gb=volume_gb,
+        serve=serve,
+        warm_broker_base_url=warm_broker_base_url,
+        warm_broker_token=warm_broker_token,
+        serve_idle_timeout_s=serve_idle_timeout_s,
+        serve_max_jobs=serve_max_jobs,
+        serve_production_warmup_before_ready=serve_production_warmup_before_ready,
+        runpod_gpu_types=runpod_gpu_types,
+        warmup=warmup,
+        per_scenario_seconds=per_scenario_seconds,
+        no_collision_probe=no_collision_probe,
+        focus_radius=focus_radius,
+        keep_objects=keep_objects,
+        settle_seconds=settle_seconds,
+        cheap_collision=cheap_collision,
+        articulated=articulated,
+        physics_articulation_drive=physics_articulation_drive,
+        dynamic_standing_contact_steps=dynamic_standing_contact_steps,
+        manipulation_cam=manipulation_cam,
+        manipulation_look_at=manipulation_look_at,
+        render_subframes=render_subframes,
+        manipulation_reach=manipulation_reach,
+        manipulation_reach_arm=manipulation_reach_arm,
+        dynamic_episode_termination=dynamic_episode_termination,
+        episode_max_steps=episode_max_steps,
+        dynamic_episode_check_every=dynamic_episode_check_every,
+        capture_every=capture_every,
+        fill_light_intensity=fill_light_intensity,
+        neutral_environment=neutral_environment,
+        robot_review_material_override=robot_review_material_override,
+        robot_review_material_mode=robot_review_material_mode,
+        kinematic_arm_pose=kinematic_arm_pose,
+        collision_approximation=collision_approximation,
+        verify_cam=verify_cam,
+        manipulation_stand=manipulation_stand,
+        placement_topdown_capture=placement_topdown_capture,
+        render_noise_audit=render_noise_audit,
+        audit_high_spp=audit_high_spp,
+        audit_warmup_frames=audit_warmup_frames,
+        audit_boost_light_intensity=audit_boost_light_intensity,
+        vast_max_hourly_rate_usd=vast_max_hourly_rate_usd,
+        gemini_api_key=_gemini_api_key_from_env(),
+        groot_policy_command=effective_groot_policy_command,
+        groot_policy_command_timeout_seconds=(effective_groot_policy_command_timeout_seconds),
+        image_startup_canary=image_startup_canary,
+        supervised_startup=supervised_startup,
+        runner_timeout_seconds=runner_timeout_seconds,
+    )
     request_body = prov.build_request(spec, job_dir)
-    manifest["launch_request_shape"] = {"provider": prov.name, "image": spec.image,
-                                        "policy_id": policy_id, "steps": steps,
-                                        "width": int(width), "height": int(height),
-                                        "fps": int(fps),
-                                        "runner_timeout_seconds": int(runner_timeout_seconds),
-                                        "post_marker_progress_timeout": int(
-                                            post_marker_progress_timeout or 0
-                                        ),
-                                        "marker_timeout_seconds": int(
-                                            effective_marker_timeout
-                                        ),
-                                        "startup_no_runtime_timeout_seconds": int(
-                                            effective_startup_no_runtime_timeout
-                                        ),
-                                        "container_disk_gb": int(container_disk_gb),
-                                        "volume_gb": int(volume_gb),
-                                        "min_gpu_ram_mb": int(spec.min_gpu_ram_mb),
-                                        "requires_rtx": bool(spec.requires_rtx),
-                                        "vast_max_hourly_rate_usd": spec.max_hourly_rate_usd,
-                                        "physics_articulation_drive": bool(
-                                            physics_articulation_drive
-                                            or dynamic_standing_contact_steps > 0
-                                        ),
-                                        "dynamic_standing_contact_steps": int(
-                                            dynamic_standing_contact_steps
-                                        ),
-                                        "dynamic_episode_termination": bool(
-                                            dynamic_episode_termination
-                                        ),
-                                        "episode_max_steps": int(episode_max_steps or 0),
-                                        "dynamic_episode_check_every": int(
-                                            dynamic_episode_check_every or 1
-                                        ),
-                                        "capture_every": int(capture_every or 1),
-                                        "placement_topdown_capture": bool(
-                                            placement_topdown_capture
-                                        ),
-                                        "robot_review_material_override": bool(
-                                            robot_review_material_override
-                                        ),
-                                        "robot_review_material_mode": (
-                                            str(robot_review_material_mode) or None
-                                        ),
-                                        "groot_policy_command_configured": bool(
-                                            effective_groot_policy_command
-                                        ),
-                                        "image_startup_canary": bool(image_startup_canary),
-                                        "supervised_startup": bool(supervised_startup)}
+    manifest["launch_request_shape"] = {
+        "provider": prov.name,
+        "image": spec.image,
+        "policy_id": policy_id,
+        "steps": steps,
+        "width": int(width),
+        "height": int(height),
+        "fps": int(fps),
+        "runner_timeout_seconds": int(runner_timeout_seconds),
+        "post_marker_progress_timeout": int(post_marker_progress_timeout or 0),
+        "marker_timeout_seconds": int(effective_marker_timeout),
+        "startup_no_runtime_timeout_seconds": int(effective_startup_no_runtime_timeout),
+        "container_disk_gb": int(container_disk_gb),
+        "volume_gb": int(volume_gb),
+        "min_gpu_ram_mb": int(spec.min_gpu_ram_mb),
+        "requires_rtx": bool(spec.requires_rtx),
+        "vast_max_hourly_rate_usd": spec.max_hourly_rate_usd,
+        "physics_articulation_drive": bool(physics_articulation_drive or dynamic_standing_contact_steps > 0),
+        "dynamic_standing_contact_steps": int(dynamic_standing_contact_steps),
+        "dynamic_episode_termination": bool(dynamic_episode_termination),
+        "episode_max_steps": int(episode_max_steps or 0),
+        "dynamic_episode_check_every": int(dynamic_episode_check_every or 1),
+        "capture_every": int(capture_every or 1),
+        "placement_topdown_capture": bool(placement_topdown_capture),
+        "robot_review_material_override": bool(robot_review_material_override),
+        "robot_review_material_mode": (str(robot_review_material_mode) or None),
+        "groot_policy_command_configured": bool(effective_groot_policy_command),
+        "image_startup_canary": bool(image_startup_canary),
+        "supervised_startup": bool(supervised_startup),
+    }
     if not allow_paid:
         manifest["status"] = "prepared"
         manifest["note"] = f"bundled + staged + launchable on {prov.name}; re-run with allow_paid=True to spend GPU"
@@ -2075,27 +2134,15 @@ def run_isaac_g1_kitchen_parity_job(
         if not avail.get("available"):
             manifest["blockers"].append(avail.get("reason") or "provider_credentials_missing")
             return manifest
-    prelaunch_contender_count = (
-        len(runnable_providers)
-        if multi_provider_race
-        else race_contender_count
-        if single_provider_cold_race
-        else 1
-    )
+    prelaunch_contender_count = len(runnable_providers) if multi_provider_race else race_contender_count if single_provider_cold_race else 1
     capacity_hourly_rate = _capacity_preflight_hourly_rate(capacity)
     prelaunch_spend_guard = _isaac_g1_prelaunch_spend_guard(
         allow_paid=allow_paid,
-        provider_name=",".join([p.name for p in providers])
-        if multi_provider_race
-        else prov.name,
+        provider_name=",".join([p.name for p in providers]) if multi_provider_race else prov.name,
         max_spend_usd=max_spend_usd,
         max_seconds=max_seconds,
         max_hourly_rate_usd=capacity_hourly_rate or spec.max_hourly_rate_usd,
-        max_hourly_rate_source=(
-            "provider_adapter_pre_mutation_verified_ceiling"
-            if capacity_hourly_rate is not None
-            else "configured_provider_ceiling"
-        ),
+        max_hourly_rate_source=("provider_adapter_pre_mutation_verified_ceiling" if capacity_hourly_rate is not None else "configured_provider_ceiling"),
         contender_count=prelaunch_contender_count,
         marker_timeout_seconds=effective_marker_timeout,
         startup_no_runtime_timeout_seconds=effective_startup_no_runtime_timeout,
@@ -2107,13 +2154,8 @@ def run_isaac_g1_kitchen_parity_job(
         manifest["blockers"].extend(prelaunch_spend_guard.get("blockers") or [])
         manifest["blockers"] = sorted(set(manifest["blockers"]))
         return manifest
-    request_body["max_hourly_rate_usd"] = prelaunch_spend_guard[
-        "max_hourly_rate_usd"
-    ]
-    lease_provider_objects = {
-        str(p.name): p
-        for p in (list(runnable_providers) if multi_provider_race else [prov])
-    }
+    request_body["max_hourly_rate_usd"] = prelaunch_spend_guard["max_hourly_rate_usd"]
+    lease_provider_objects = {str(p.name): p for p in (list(runnable_providers) if multi_provider_race else [prov])}
     lease_set = PaidProviderLaneLeaseSet(
         providers=lease_provider_objects,
         lane=ISAAC_G1_KITCHEN_PARITY_LANE,
@@ -2134,12 +2176,8 @@ def run_isaac_g1_kitchen_parity_job(
     supervised_watch_result: dict[str, Any] | None = None
     if supervised_startup:
         diagnostic = image_policy.get("worker_image_manifest_diagnostic")
-        if not isinstance(diagnostic, Mapping) or diagnostic.get(
-            "metadata_available_for_selected_image"
-        ) is not True:
-            manifest["blockers"].append(
-                "supervised_startup_worker_image_manifest_diagnostic_missing"
-            )
+        if not isinstance(diagnostic, Mapping) or diagnostic.get("metadata_available_for_selected_image") is not True:
+            manifest["blockers"].append("supervised_startup_worker_image_manifest_diagnostic_missing")
             _release_lane_leases(
                 "blocked_before_any_provider_mutation",
                 provider_mutation_started=False,
@@ -2173,12 +2211,11 @@ def run_isaac_g1_kitchen_parity_job(
         supervised_watch_result = supervised.get("watch")
         manifest["launch"] = launch
     elif multi_provider_race or single_provider_cold_race:
+        race_contender_providers: list[Any]
         if multi_provider_race:
             race_contender_providers = list(runnable_providers)
         else:
-            race_contender_providers = [prov] + [
-                _ColdCreateContender(prov) for _ in range(race_contender_count - 1)
-            ]
+            race_contender_providers = [prov] + [_ColdCreateContender(prov) for _ in range(race_contender_count - 1)]
         race_stage_records: list[dict] = []
 
         def _race_request(provider_obj, contender_job_dir):
@@ -2188,24 +2225,22 @@ def run_isaac_g1_kitchen_parity_job(
                 contender_job_dir,
                 key_prefix=f"{key_prefix}/race/{provider_obj.name}",
             )
-            race_stage_records.append({
-                "provider": provider_obj.name,
-                "job_dir": str(contender_job_dir),
-                "status": staged_contender.get("status"),
-            })
+            race_stage_records.append(
+                {
+                    "provider": provider_obj.name,
+                    "job_dir": str(contender_job_dir),
+                    "status": staged_contender.get("status"),
+                }
+            )
             if staged_contender.get("status") != "completed":
-                raise RuntimeError(
-                    f"race_staging_failed:{provider_obj.name}:{staged_contender.get('status')}"
-                )
+                raise RuntimeError(f"race_staging_failed:{provider_obj.name}:{staged_contender.get('status')}")
             launch_session_id = uuid.uuid4().hex
             (contender_job_dir / "launch_session_nonce.txt").write_text(
                 launch_session_id,
                 encoding="utf-8",
             )
             body = provider_obj.build_request(spec, contender_job_dir)
-            body["max_hourly_rate_usd"] = prelaunch_spend_guard[
-                "max_hourly_rate_usd"
-            ]
+            body["max_hourly_rate_usd"] = prelaunch_spend_guard["max_hourly_rate_usd"]
             request_for_launch = _request_with_launch_session_nonce(body, launch_session_id)
             request_for_launch["prelaunch_spend_guard"] = prelaunch_spend_guard
             return request_for_launch
@@ -2242,9 +2277,7 @@ def run_isaac_g1_kitchen_parity_job(
                     pending_teardown_lane=ISAAC_G1_KITCHEN_PARITY_LANE,
                     pending_teardown_max_age_seconds=_paid_launch_pending_teardown_max_age(
                         marker_timeout=int(effective_marker_timeout),
-                        startup_no_runtime_timeout=int(
-                            effective_startup_no_runtime_timeout
-                        ),
+                        startup_no_runtime_timeout=int(effective_startup_no_runtime_timeout),
                         max_attempts=int(max_attempts),
                         max_seconds=int(max_seconds),
                     ),
@@ -2257,10 +2290,7 @@ def run_isaac_g1_kitchen_parity_job(
                 raise
             if race.get("status") == "launched":
                 break
-            if (
-                race.get("paid_retry_safe") is not True
-                or race.get("reason") != "all_providers_dudded"
-            ):
+            if race.get("paid_retry_safe") is not True or race.get("reason") != "all_providers_dudded":
                 break
         manifest["race_rounds"] = race_rounds
         manifest["race_staging"] = race_stage_records
@@ -2274,9 +2304,7 @@ def run_isaac_g1_kitchen_parity_job(
                 "pending_teardown_record": race.get("pending_teardown_record"),
             }
             collect_provider = race["winner_provider"]
-            collect_job_dir = Path(
-                str((race.get("winner_launch") or {}).get("job_dir") or job_dir)
-            )
+            collect_job_dir = Path(str((race.get("winner_launch") or {}).get("job_dir") or job_dir))
         else:
             launch = race
     else:
@@ -2301,18 +2329,14 @@ def run_isaac_g1_kitchen_parity_job(
                     manifest["launch_exception_cleanup"] = _finalize_paid_allocation(
                         provider_obj=direct_owned_allocation["provider"],
                         instance_id=str(direct_owned_allocation["instance_id"]),
-                        pending_path=_string(
-                            direct_owned_allocation.get("pending_teardown_record")
-                        ),
+                        pending_path=_string(direct_owned_allocation.get("pending_teardown_record")),
                         reason="exception_after_known_provider_allocation",
                         teardown_proof_builder=_teardown_proof_from_attempt,
                         close_pending=close_pending_teardown,
                         release_lane=_release_lane_leases,
                     )
                 except BaseException as cleanup_exc:
-                    manifest["launch_exception_cleanup_error_type"] = type(
-                        cleanup_exc
-                    ).__name__
+                    manifest["launch_exception_cleanup_error_type"] = type(cleanup_exc).__name__
             _release_lane_leases(
                 "provider_launch_raised",
                 provider_mutation_started=True,
@@ -2325,11 +2349,7 @@ def run_isaac_g1_kitchen_parity_job(
                 manifest["blockers"].append(blocker)
         failed_launch_blocker = (
             "launch_failed_provider_capacity_unavailable"
-            if any(
-                blocker in PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS
-                or blocker == "provider_capacity_unavailable_before_instance_created"
-                for blocker in (launch.get("blockers") or [])
-            )
+            if any(blocker in PROVIDER_CAPACITY_UNAVAILABLE_BLOCKERS or blocker == "provider_capacity_unavailable_before_instance_created" for blocker in (launch.get("blockers") or []))
             else "launch_failed_all_attempts_flaky"
         )
         if failed_launch_blocker not in manifest["blockers"]:
@@ -2351,6 +2371,7 @@ def run_isaac_g1_kitchen_parity_job(
                 job_dir,
                 instance_id=launch["instance_id"],
                 timeout_s=serve_ready_timeout,
+                require_production_ready=serve_production_warmup_before_ready,
             )
         except Exception as exc:
             manifest["warm_serve_exception_cleanup"] = _finalize_paid_allocation(
@@ -2410,9 +2431,7 @@ def run_isaac_g1_kitchen_parity_job(
                         provider_mutation_started=True,
                     )
                     raise
-                manifest["warm_serve"]["pending_teardown_status"] = closure.get(
-                    "status"
-                )
+                manifest["warm_serve"]["pending_teardown_status"] = closure.get("status")
             manifest["blockers"].append("warm_serve_not_ready")
             _release_lane_leases(
                 "warm_serve_not_ready_terminated",
@@ -2444,9 +2463,7 @@ def run_isaac_g1_kitchen_parity_job(
                 release_lane=_release_lane_leases,
             )
         except BaseException as cleanup_exc:
-            manifest["watch_exception_cleanup_error_type"] = type(
-                cleanup_exc
-            ).__name__
+            manifest["watch_exception_cleanup_error_type"] = type(cleanup_exc).__name__
             _release_lane_leases(
                 "watch_exception_cleanup_raised",
                 provider_mutation_started=True,
@@ -2464,13 +2481,9 @@ def run_isaac_g1_kitchen_parity_job(
         "last_bootstrap": result.get("last_bootstrap"),
         "runner_console_tail": result.get("runner_console_tail"),
         "runner_timeout_observed": result.get("runner_timeout_observed"),
-        "post_marker_progress_timeout_observed": result.get(
-            "post_marker_progress_timeout_observed"
-        ),
+        "post_marker_progress_timeout_observed": result.get("post_marker_progress_timeout_observed"),
         "post_marker_progress_timeout": result.get("post_marker_progress_timeout"),
-        "provider_snapshot_before_teardown": result.get(
-            "provider_snapshot_before_teardown"
-        ),
+        "provider_snapshot_before_teardown": result.get("provider_snapshot_before_teardown"),
     }
     paid_lifecycle = _settle_paid_watch_lifecycle(
         provider_name=str(getattr(collect_provider, "name", "unknown")),
@@ -2485,22 +2498,19 @@ def run_isaac_g1_kitchen_parity_job(
     if paid_lifecycle.get("teardown_proof") is not None:
         manifest["render"]["teardown_proof"] = paid_lifecycle["teardown_proof"]
         manifest["render"]["pending_teardown_record"] = pending_teardown_record
-        manifest["render"]["pending_teardown_status"] = paid_lifecycle[
-            "pending_teardown_close"
-        ].get("status")
+        manifest["render"]["pending_teardown_status"] = paid_lifecycle["pending_teardown_close"].get("status")
     manifest["paid_lifecycle"] = paid_lifecycle
     if render_noise_audit:
         audit_worker_result: dict = {}
         try:
-            audit_worker_result = json.loads(
-                (render_out / "render_noise_audit_result.json").read_text()
-            )
+            audit_worker_result = json.loads((render_out / "render_noise_audit_result.json").read_text())
         except Exception:  # noqa: BLE001
             pass
         manifest["render_noise_audit_worker_result"] = audit_worker_result
         analysis = None
         try:
             from .g1_render_noise_audit import AUDIT_MANIFEST_NAME, analyze_render_noise_audit_run
+
             analysis = analyze_render_noise_audit_run(render_out)
         except Exception as exc:  # noqa: BLE001
             manifest["blockers"].append("render_noise_audit_local_analysis_failed")
@@ -2515,7 +2525,7 @@ def run_isaac_g1_kitchen_parity_job(
                 "analysis_blockers": analysis.get("blockers"),
             }
         worker_completed = str(audit_worker_result.get("status") or "").lower() == "completed"
-        analysis_completed = bool(analysis) and analysis.get("status") == "completed"
+        analysis_completed = bool(analysis) and bool(analysis is not None and analysis.get("status") == "completed")
         if worker_completed and analysis_completed:
             manifest["status"] = "completed"
         else:
@@ -2533,10 +2543,7 @@ def run_isaac_g1_kitchen_parity_job(
     manifest["parity_result"] = parity_result
     parity_status = str(parity_result.get("status") or "").strip().lower()
     runner_timeout_observed = bool(result.get("runner_timeout_observed"))
-    runner_completed = (
-        not bool(result.get("timed_out_without_runner_done"))
-        and not runner_timeout_observed
-    )
+    runner_completed = not bool(result.get("timed_out_without_runner_done")) and not runner_timeout_observed
     manifest["runner_completed"] = runner_completed
     manifest["runner_timeout_observed"] = runner_timeout_observed
     manifest["parity_result_status"] = parity_status or None
@@ -2545,13 +2552,8 @@ def run_isaac_g1_kitchen_parity_job(
             render_out_dir=render_out,
             result=parity_result,
             fps=int(requested_render_settings.get("fps") or fps),
-            optional_videos=(
-                ("placement_topdown",) if not placement_topdown_capture else ()
-            ),
-            expected_frame_count=int(
-                requested_render_settings.get("expected_frame_count_per_scenario") or 0
-            )
-            or None,
+            optional_videos=(("placement_topdown",) if not placement_topdown_capture else ()),
+            expected_frame_count=int(requested_render_settings.get("expected_frame_count_per_scenario") or 0) or None,
         )
         media_admissions = []
         for scenario in parity_result.get("scenarios") or []:
@@ -2565,12 +2567,7 @@ def run_isaac_g1_kitchen_parity_job(
                     "scenario_id": scenario_id,
                     **admit_collected_scenario_episode(
                         scenario_dir=render_out / scenario_id,
-                        expected_frame_count=int(
-                            requested_render_settings.get(
-                                "expected_frame_count_per_scenario"
-                            )
-                            or 0
-                        ),
+                        expected_frame_count=int(requested_render_settings.get("expected_frame_count_per_scenario") or 0),
                         # Render-parity scenarios carry no attested action
                         # horizon; the admission stays truthfully blocked and
                         # closure remains the only success authority.
@@ -2621,24 +2618,32 @@ def main(argv=None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="Isaac G1 kitchen MuJoCo-parity eval job (GPU)")
-    ap.add_argument("--scenarios", required=True, help="JSON file: list of {scenario_id, spawn_position_xyz, target_position_xyz}")
+    ap.add_argument(
+        "--scenarios",
+        required=True,
+        help="JSON file: list of {scenario_id, spawn_position_xyz, target_position_xyz}",
+    )
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--kitchen-asset-dir", default=None, help="local Collected_KitchenRoom parent dir to ship in the bundle")
-    ap.add_argument("--kitchen-url", default=None,
-                    help="previously staged kitchen asset zip signed URL; skips the large asset upload")
+    ap.add_argument(
+        "--kitchen-asset-dir",
+        default=None,
+        help="local Collected_KitchenRoom parent dir to ship in the bundle",
+    )
+    ap.add_argument(
+        "--kitchen-url",
+        default=None,
+        help="previously staged kitchen asset zip signed URL; skips the large asset upload",
+    )
     ap.add_argument("--g1-usd", default=DEFAULT_G1_USD_RELATIVE)
-    ap.add_argument("--policy", default="blueprint_default_walk_to_target_smoke_policy",
-                    choices=["blueprint_default_walk_to_target_smoke_policy", "groot_sonic"])
+    ap.add_argument(
+        "--policy",
+        default="blueprint_default_walk_to_target_smoke_policy",
+        choices=["blueprint_default_walk_to_target_smoke_policy", "groot_sonic"],
+    )
     ap.add_argument(
         "--groot-policy-command",
-        default=(
-            os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_ENV, "")
-            or os.getenv(UNITREE_GROOT_POLICY_COMMAND_ENV, "")
-        ),
-        help=(
-            "command the Isaac worker runs for GR00T/SONIC policy actions; required "
-            "for --policy groot_sonic to pass paid preflight"
-        ),
+        default=(os.getenv(ISAAC_G1_GROOT_POLICY_COMMAND_ENV, "") or os.getenv(UNITREE_GROOT_POLICY_COMMAND_ENV, "")),
+        help=("command the Isaac worker runs for GR00T/SONIC policy actions; required for --policy groot_sonic to pass paid preflight"),
     )
     ap.add_argument(
         "--groot-policy-command-timeout-seconds",
@@ -2650,10 +2655,7 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--no-dynamic-episode-termination",
         action="store_true",
-        help=(
-            "disable task-contract dynamic stop/extend behavior for manipulation review jobs; "
-            "the default is enabled but inert for non-manipulation contracts"
-        ),
+        help=("disable task-contract dynamic stop/extend behavior for manipulation review jobs; the default is enabled but inert for non-manipulation contracts"),
     )
     ap.add_argument(
         "--episode-max-steps",
@@ -2667,31 +2669,28 @@ def main(argv=None) -> int:
     ap.add_argument("--height", type=int, default=960)
     ap.add_argument("--fps", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=6)
-    ap.add_argument("--provider", default=DEFAULT_ISAAC_REVIEW_PROVIDER,
-                    help=(
-                        "provider name. DigitalOcean is the paid default for this high-reliability "
-                        "Isaac review lane; pass runpod explicitly for cheaper compatibility runs. "
-                        f"Vast is disabled for paid Isaac review renders unless "
-                        f"{ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1"
-                    ))
+    ap.add_argument(
+        "--provider",
+        default=DEFAULT_ISAAC_REVIEW_PROVIDER,
+        help=(
+            "provider name. DigitalOcean is the paid default for this high-reliability "
+            "Isaac review lane; pass runpod explicitly for cheaper compatibility runs. "
+            f"Vast is disabled for paid Isaac review renders unless "
+            f"{ALLOW_UNSTABLE_VAST_ISAAC_RENDER_ENV}=1"
+        ),
+    )
     ap.add_argument("--allow-paid", action="store_true")
     ap.add_argument(
         "--allow-dirty-paid-launch",
         action="store_true",
-        help=(
-            "override the dirty-worktree paid-launch block. Use only when the manifest's "
-            "git_evidence is an intentional evidence boundary."
-        ),
+        help=("override the dirty-worktree paid-launch block. Use only when the manifest's git_evidence is an intentional evidence boundary."),
     )
     ap.add_argument("--cold", action="store_true")
     ap.add_argument(
         "--warm-candidate",
         action="append",
         default=[],
-        help=(
-            "RunPod stopped pod id to try as a warm restart before cold create. "
-            "May be repeated; can also be supplied via BLUEPRINT_RUNPOD_WARM_CANDIDATES."
-        ),
+        help=("RunPod stopped pod id to try as a warm restart before cold create. May be repeated; can also be supplied via BLUEPRINT_RUNPOD_WARM_CANDIDATES."),
     )
     ap.add_argument(
         "--warm-only",
@@ -2701,10 +2700,7 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--serve",
         action="store_true",
-        help=(
-            "launch one persistent warm Isaac render worker, wait for warm_serve_ready, "
-            "and leave the pod running for WarmPoolClient job submissions"
-        ),
+        help=("launch one persistent warm Isaac render worker, wait for warm_serve_ready, and leave the pod running for WarmPoolClient job submissions"),
     )
     ap.add_argument(
         "--serve-idle-timeout",
@@ -2725,12 +2721,21 @@ def main(argv=None) -> int:
         help="seconds to wait for warm_serve_ready.json before marking the serve launch blocked",
     )
     ap.add_argument(
+        "--serve-production-warmup-before-ready",
+        action="store_true",
+        help=("run the first supplied scenario before readiness and require fresh renderer plus GR00T policy-call evidence; required for production worker registration"),
+    )
+    ap.add_argument(
+        "--runpod-gpu-type",
+        action="append",
+        default=[],
+        choices=["NVIDIA L40S", "NVIDIA A40"],
+        help=("explicit RunPod GPU priority (repeatable). Production uses L40S alone first; A40 is a separate fallback only after an authoritative no-allocation rejection"),
+    )
+    ap.add_argument(
         "--image-startup-canary",
         action="store_true",
-        help=(
-            "run only a provider image startup/upload canary. This proves user command "
-            "execution in the selected image, not Isaac rendering, WAM quality, or task success."
-        ),
+        help=("run only a provider image startup/upload canary. This proves user command execution in the selected image, not Isaac rendering, WAM quality, or task success."),
     )
     supervised_group = ap.add_mutually_exclusive_group()
     supervised_group.add_argument(
@@ -2766,107 +2771,164 @@ def main(argv=None) -> int:
         "--max-spend-usd",
         type=float,
         default=None,
-        help=(
-            "required positive spend cap for --allow-paid launches; may also be supplied "
-            f"via {ISAAC_G1_MAX_SPEND_USD_ENV}"
-        ),
+        help=(f"required positive spend cap for --allow-paid launches; may also be supplied via {ISAAC_G1_MAX_SPEND_USD_ENV}"),
     )
-    ap.add_argument("--container-disk-gb", type=int, default=140,
-                    help="RunPod container disk size. Must be >= existing pod size for warm update.")
-    ap.add_argument("--volume-gb", type=int, default=80,
-                    help="RunPod network volume size. Must be >= existing pod size for warm update.")
-    ap.add_argument("--marker-timeout", type=int, default=900,
-                    help="seconds to wait for a pod's boot marker before reaping it as a dud "
-                         "(must exceed the worker image pull time on a slow node)")
+    ap.add_argument(
+        "--container-disk-gb",
+        type=int,
+        default=140,
+        help="RunPod container disk size. Must be >= existing pod size for warm update.",
+    )
+    ap.add_argument(
+        "--volume-gb",
+        type=int,
+        default=80,
+        help="RunPod network volume size. Must be >= existing pod size for warm update.",
+    )
+    ap.add_argument(
+        "--marker-timeout",
+        type=int,
+        default=900,
+        help="seconds to wait for a pod's boot marker before reaping it as a dud (must exceed the worker image pull time on a slow node)",
+    )
     ap.add_argument(
         "--post-marker-progress-timeout",
         type=int,
         default=360,
-        help=(
-            "seconds to allow an early bootstrap phase to repeat without progress after the boot "
-            "marker is visible before terminating the paid pod"
-        ),
+        help=("seconds to allow an early bootstrap phase to repeat without progress after the boot marker is visible before terminating the paid pod"),
     )
     ap.add_argument(
         "--startup-no-runtime-timeout",
         type=int,
         default=DEFAULT_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS,
-        help=(
-            "earlier RunPod dud guard: if provider inspection still shows no runtime/public IP "
-            "and no bootstrap marker after this many seconds, terminate the pod before marker-timeout; "
-            "0 disables"
-        ),
+        help=("earlier RunPod dud guard: if provider inspection still shows no runtime/public IP and no bootstrap marker after this many seconds, terminate the pod before marker-timeout; 0 disables"),
     )
     ap.add_argument(
         "--cold-race-contenders",
         type=int,
         default=None,
-        help=(
-            "race N simultaneous cold creates on a single provider and keep the first boot marker "
-            f"(default {DEFAULT_COLD_RACE_CONTENDERS}; 1 disables)"
-        ),
+        help=(f"race N simultaneous cold creates on a single provider and keep the first boot marker (default {DEFAULT_COLD_RACE_CONTENDERS}; 1 disables)"),
     )
-    ap.add_argument("--max-attempts", type=int, default=3,
-                    help="cold-launch attempts before giving up")
-    ap.add_argument("--vast-max-hourly-rate", type=float, default=None,
-                    help="maximum Vast offer hourly rate; defaults to env or $5/hr")
+    ap.add_argument("--max-attempts", type=int, default=3, help="cold-launch attempts before giving up")
+    ap.add_argument(
+        "--vast-max-hourly-rate",
+        type=float,
+        default=None,
+        help="maximum Vast offer hourly rate; defaults to env or $5/hr",
+    )
     ap.add_argument("--articulated", action="store_true")
     ap.add_argument("--physics-articulation-drive", action="store_true")
     ap.add_argument("--dynamic-standing-contact-steps", type=int, default=0)
     ap.add_argument("--cheap-collision", action="store_true")
     ap.add_argument("--settle-seconds", type=int, default=0)
-    ap.add_argument("--focus-radius", type=float, default=0.0,
-                    help="task-aware scene pruning radius in meters (0=full scene)")
-    ap.add_argument("--keep-objects", default="",
-                    help="comma substrings of object names to always keep during focus pruning")
-    ap.add_argument("--per-scenario-seconds", type=int, default=420,
-                    help="wall-clock cap per scenario inside the Isaac runner")
-    ap.add_argument("--manipulation-cam", action="store_true",
-                    help="egocentric at-sink POV (manipulation framing) instead of the navigation chase cam")
-    ap.add_argument("--manipulation-look-at", default="",
-                    help="fixed world 'x,y,z' the manipulation cam aims at (e.g. the faucet)")
-    ap.add_argument("--render-subframes", type=int, default=0,
-                    help="RTX subframes accumulated per captured frame to denoise grain (e.g. 16)")
-    ap.add_argument("--manipulation-reach", action="store_true",
-                    help="animate the arm reaching the faucet so the skeleton-video encodes the task")
+    ap.add_argument(
+        "--focus-radius",
+        type=float,
+        default=0.0,
+        help="task-aware scene pruning radius in meters (0=full scene)",
+    )
+    ap.add_argument(
+        "--keep-objects",
+        default="",
+        help="comma substrings of object names to always keep during focus pruning",
+    )
+    ap.add_argument(
+        "--per-scenario-seconds",
+        type=int,
+        default=420,
+        help="wall-clock cap per scenario inside the Isaac runner",
+    )
+    ap.add_argument(
+        "--manipulation-cam",
+        action="store_true",
+        help="egocentric at-sink POV (manipulation framing) instead of the navigation chase cam",
+    )
+    ap.add_argument(
+        "--manipulation-look-at",
+        default="",
+        help="fixed world 'x,y,z' the manipulation cam aims at (e.g. the faucet)",
+    )
+    ap.add_argument(
+        "--render-subframes",
+        type=int,
+        default=0,
+        help="RTX subframes accumulated per captured frame to denoise grain (e.g. 16)",
+    )
+    ap.add_argument(
+        "--manipulation-reach",
+        action="store_true",
+        help="animate the arm reaching the faucet so the skeleton-video encodes the task",
+    )
     ap.add_argument("--manipulation-reach-arm", default="auto", choices=["auto", "right", "left", "both"])
-    ap.add_argument("--fill-light-intensity", type=float, default=0.0,
-                    help="sphere fill light over the faucet workspace to lift the dark basin (0=off)")
-    ap.add_argument("--neutral-environment", action="store_true",
-                    help="replace the kitchen's outdoor-HDRI dome with a neutral environment "
-                         "(no cityscape through the windows + lifts shadows)")
-    ap.add_argument("--robot-review-material-override", action="store_true",
-                    help="bind neutral matte material over authored G1 materials/textures for a "
-                         "clearer untextured manipulation seed image")
+    ap.add_argument(
+        "--fill-light-intensity",
+        type=float,
+        default=0.0,
+        help="sphere fill light over the faucet workspace to lift the dark basin (0=off)",
+    )
+    ap.add_argument(
+        "--neutral-environment",
+        action="store_true",
+        help="replace the kitchen's outdoor-HDRI dome with a neutral environment (no cityscape through the windows + lifts shadows)",
+    )
+    ap.add_argument(
+        "--robot-review-material-override",
+        action="store_true",
+        help="bind neutral matte material over authored G1 materials/textures for a clearer untextured manipulation seed image",
+    )
     ap.add_argument(
         "--robot-review-material-mode",
         default="",
         choices=["", "neutral_matte", "non_white_matte"],
-        help=(
-            "material mode forwarded to the Isaac worker when robot review material "
-            "override is active"
-        ),
+        help=("material mode forwarded to the Isaac worker when robot review material override is active"),
     )
-    ap.add_argument("--kinematic-arm-pose", action="store_true",
-                    help="pose the rendered arm reaching the workspace (pure-USD, crash-safe)")
-    ap.add_argument("--collision-approximation", default="",
-                    choices=["", "boundingCube", "convexHull", "convexDecomposition"],
-                    help="mesh collision shape (convexHull lets the robot stand centered + close)")
-    ap.add_argument("--verify-cam", action="store_true",
-                    help="render a 3rd-person verify_*.png that frames the whole robot at the workspace")
-    ap.add_argument("--manipulation-stand", action="store_true",
-                    help="place the robot AT the target facing the look-at (task start pose, no navigation)")
+    ap.add_argument(
+        "--kinematic-arm-pose",
+        action="store_true",
+        help="pose the rendered arm reaching the workspace (pure-USD, crash-safe)",
+    )
+    ap.add_argument(
+        "--collision-approximation",
+        default="",
+        choices=["", "boundingCube", "convexHull", "convexDecomposition"],
+        help="mesh collision shape (convexHull lets the robot stand centered + close)",
+    )
+    ap.add_argument(
+        "--verify-cam",
+        action="store_true",
+        help="render a 3rd-person verify_*.png that frames the whole robot at the workspace",
+    )
+    ap.add_argument(
+        "--manipulation-stand",
+        action="store_true",
+        help="place the robot AT the target facing the look-at (task start pose, no navigation)",
+    )
     ap.add_argument("--no-placement-topdown-capture", action="store_true")
-    ap.add_argument("--render-noise-audit", action="store_true",
-                    help="run the textured-robot render-noise audit variant matrix (A-G) instead of "
-                         "the scenario eval: one raw PNG per material/render variant + material/"
-                         "render/camera manifests + local gates/interpretation on collect")
-    ap.add_argument("--audit-high-spp", type=int, default=0,
-                    help="samples per pixel for the audit's high-budget variants (default 384)")
-    ap.add_argument("--audit-warmup-frames", type=int, default=0,
-                    help="shader warmup render steps before the first audit variant (default 8)")
-    ap.add_argument("--audit-boost-light-intensity", type=float, default=0.0,
-                    help="workspace boost light intensity for the audit's bright-lighting variant")
+    ap.add_argument(
+        "--render-noise-audit",
+        action="store_true",
+        help="run the textured-robot render-noise audit variant matrix (A-G) instead of "
+        "the scenario eval: one raw PNG per material/render variant + material/"
+        "render/camera manifests + local gates/interpretation on collect",
+    )
+    ap.add_argument(
+        "--audit-high-spp",
+        type=int,
+        default=0,
+        help="samples per pixel for the audit's high-budget variants (default 384)",
+    )
+    ap.add_argument(
+        "--audit-warmup-frames",
+        type=int,
+        default=0,
+        help="shader warmup render steps before the first audit variant (default 8)",
+    )
+    ap.add_argument(
+        "--audit-boost-light-intensity",
+        type=float,
+        default=0.0,
+        help="workspace boost light intensity for the audit's bright-lighting variant",
+    )
     args = ap.parse_args(argv)
     scenarios = json.loads(Path(args.scenarios).read_text())
     if isinstance(scenarios, dict):

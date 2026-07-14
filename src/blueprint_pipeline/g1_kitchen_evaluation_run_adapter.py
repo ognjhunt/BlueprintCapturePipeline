@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from .evaluation_run_contract import EVALUATION_RUN_SCHEMA_VERSION, EvaluationRunSpec
+from .g1_kitchen_episode_contract import build_episode_render_settings
 
 
 G1_KITCHEN_SCENE_ADAPTER = "openusd_scene_bundle"
@@ -58,9 +59,12 @@ G1_KITCHEN_CONTEXT_OPTION_KEYS = frozenset(
         "render_subframes",
         "robot_review_material_mode",
         "robot_review_material_override",
+        "runpod_gpu_types",
         "serve_idle_timeout_s",
         "serve_max_jobs",
+        "serve_production_warmup_before_ready",
         "serve_ready_timeout",
+        "serve_teardown_supervisor",
         "settle_seconds",
         "startup_no_runtime_timeout",
         "supervised_startup",
@@ -108,9 +112,7 @@ def _run_id(
     identity = json.dumps(
         {
             "out_dir": str(Path(out_dir).expanduser()),
-            "scenario_ids": [
-                _string(row.get("scenario_id") or row.get("id")) for row in scenarios
-            ],
+            "scenario_ids": [_string(row.get("scenario_id") or row.get("id")) for row in scenarios],
             "policy_id": policy_id,
         },
         sort_keys=True,
@@ -154,9 +156,7 @@ def _policy_adapter(policy_id: str) -> dict[str, Any]:
         "unitree_groot_n17_sonic_policy",
     }
     return {
-        "adapter_id": (
-            "unitree_groot_n17_sonic" if learned else "isaac_g1_deterministic_controller"
-        ),
+        "adapter_id": ("unitree_groot_n17_sonic" if learned else "isaac_g1_deterministic_controller"),
         "adapter_version": "1",
         "policy_id": policy_id,
         "observation_schema_ref": "blueprint://schemas/robot_eval_observation.v1",
@@ -187,9 +187,7 @@ def build_g1_kitchen_evaluation_run_spec(
 
     inventory = dict(kitchen_asset_inventory or {})
     archive_sha = _string(inventory.get("archive_sha256"))
-    content_digest = (
-        archive_sha if archive_sha.startswith("sha256:") else f"sha256:{archive_sha}"
-    ) if archive_sha else None
+    content_digest = (archive_sha if archive_sha.startswith("sha256:") else f"sha256:{archive_sha}") if archive_sha else None
     mode = "startup_canary" if image_startup_canary else "serve" if serve else "evaluate"
     scene_uri = _evidence_uri(kitchen_uri)
     identity_status = "verified" if content_digest else "legacy_unverified"
@@ -203,9 +201,7 @@ def build_g1_kitchen_evaluation_run_spec(
         scene_uri = "legacy://g1-kitchen-scene-unmaterialized"
     return {
         "schema_version": EVALUATION_RUN_SCHEMA_VERSION,
-        "run_id": _safe_id(run_id) if run_id else _run_id(
-            out_dir=out_dir, scenarios=scenarios, policy_id=policy_id
-        ),
+        "run_id": _safe_id(run_id) if run_id else _run_id(out_dir=out_dir, scenarios=scenarios, policy_id=policy_id),
         "mode": mode,
         "scene_bundle": {
             "adapter_id": G1_KITCHEN_SCENE_ADAPTER,
@@ -272,9 +268,7 @@ def build_g1_kitchen_evaluation_run_spec(
             "compatibility_source": "isaac_g1_kitchen_parity_job.v1",
             "legacy_lane_retained_for_artifact_read_compatibility": True,
             "scene_specific_name_is_not_platform_contract": True,
-            "source_identity": _sha256(
-                f"{kitchen_main_usd_relative}\0{g1_usd}\0{policy_id}"
-            ),
+            "source_identity": _sha256(f"{kitchen_main_usd_relative}\0{g1_usd}\0{policy_id}"),
         },
     }
 
@@ -361,9 +355,7 @@ class G1KitchenEvaluationRunExecutor:
         result = run_isaac_g1_kitchen_parity_job(**kwargs)
         return {
             **dict(result),
-            "evaluation_run_execution_adapter_schema_version": (
-                "g1_kitchen_evaluation_run_execution.v1"
-            ),
+            "evaluation_run_execution_adapter_schema_version": ("g1_kitchen_evaluation_run_execution.v1"),
             "evaluation_run_id": spec.run_id,
             "source_spec_is_execution_authority": True,
         }
@@ -376,15 +368,16 @@ def build_g1_kitchen_cli_evaluation_run(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Translate the legacy CLI namespace into spec plus ephemeral context."""
 
-    render_settings = {
-        "steps": int(args.steps),
-        "width": int(args.width),
-        "height": int(args.height),
-        "fps": int(args.fps),
-        "warmup_frames": int(args.warmup),
-        "per_scenario_seconds": int(args.per_scenario_seconds),
-        "expected_frame_count_per_scenario": int(args.steps),
-    }
+    render_settings = build_episode_render_settings(
+        steps=args.steps,
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        warmup_frames=args.warmup,
+        per_scenario_seconds=args.per_scenario_seconds,
+        dynamic_episode_termination=not args.no_dynamic_episode_termination,
+        episode_max_steps=args.episode_max_steps,
+    )
     providers = [value.strip() for value in str(args.provider).split(",") if value.strip()]
     spec = build_g1_kitchen_evaluation_run_spec(
         out_dir=args.out_dir,
@@ -418,6 +411,8 @@ def build_g1_kitchen_cli_evaluation_run(
         "serve_idle_timeout_s": args.serve_idle_timeout,
         "serve_max_jobs": args.serve_max_jobs,
         "serve_ready_timeout": args.serve_ready_timeout,
+        "serve_production_warmup_before_ready": (args.serve_production_warmup_before_ready),
+        "runpod_gpu_types": tuple(args.runpod_gpu_type or ()),
         "supervised_startup": args.supervised_startup,
         "vast_max_hourly_rate_usd": args.vast_max_hourly_rate,
         "articulated": args.articulated,

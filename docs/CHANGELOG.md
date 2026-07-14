@@ -1,5 +1,107 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-14
+
+### User-Facing
+
+- Added the production GPU startup path that binds customer jobs only to an
+  already-ready, exact-release worker. When no worker is ready, the request
+  remains queued and writes asynchronous scale demand; it never allocates a VM,
+  installs host software, logs in to a registry, or pulls the 47 GB worker image
+  inline (`src/blueprint_pipeline/production_gpu_worker_pool.py`,
+  `docs/runbooks/production-gpu-startup-and-warm-pool.md`).
+- Added one durable campaign lifecycle after warm binding: smoke seed 1000 must
+  pass before seeds 1001–1003 can run; episodes stop dynamically, review media
+  is at least 640x480, artifacts resume by verified offset/hash, and customer
+  status never equates startup or artifact arrival with task success
+  (`src/blueprint_pipeline/production_gpu_campaign_control_plane.py`).
+
+### Employee-Facing
+
+- Added a GCP Packer contract for an immutable GPU host image containing the
+  driver payload, Docker, NVIDIA Container Toolkit, and exact digest-pinned
+  worker cache. GCP/AWS VM startup now verifies the baked image marker and local
+  Docker cache instead of pulling at boot (`deploy/packer/gcp_g4_gpu_worker_host.pkr.hcl`,
+  `src/blueprint_pipeline/cloud_vm_render_providers.py`).
+- Added restart-safe ready-worker leases, stale-worker quarantine, exact release
+  fingerprints, atomic autoscaler claims, a private hardened systemd service,
+  and a fail-closed promotion gate. The gate cannot report
+  `customer_launch_ready` without exact-release live p95 bind/replenishment,
+  rollback, inventory, and teardown evidence.
+- Classified the 47.1 GB exact RunPod release as `active_worker_only`, added a
+  same-session worker registration agent that joins all nine readiness checks,
+  and enforced one Secure L40S attempt with A40 fallback only after an explicit
+  no-allocation capacity rejection. The fallback uses an honest GPU serving
+  class while retaining the actual GPU model as evidence
+  (`production_gpu_image_contract.py`, `production_gpu_worker_agent.py`,
+  `production_gpu_runpod_autoscaler.py`).
+- Added a deterministic release-candidate closure, repeated-campaign
+  promotion/quarantine evaluator, scheduled contract qualification, opt-in
+  private warm-bind p95 canary, hardened campaign service, and the ten-control
+  operating model (`production_gpu_release_candidate.py`,
+  `production_gpu_reliability_qualification.py`,
+  `.github/workflows/production-gpu-reliability.yml`,
+  `docs/PRODUCTION_GPU_RELIABILITY_OPERATING_MODEL.md`).
+- Added an atomic dual-cap campaign budget ledger and independent hard-TTL
+  termination watchdog so a crashed warm-worker owner cannot silently reuse
+  spend/time or leave a paid allocation running
+  (`production_gpu_campaign_budget.py`, `production_gpu_warm_watchdog.py`).
+- Added live launch qualification, three-cycle asynchronous replenishment
+  measurement, and candidate quarantine/alternate-worker rollback drills; none
+  can promote from local or historical evidence
+  (`production_gpu_launch_qualification.py`,
+  `production_gpu_replenishment_probe.py`, `production_gpu_rollback_drill.py`).
+
+### Future-Agent-Facing
+
+- Treat the immutable 20–25 minute cold-start campaign as release-engineering
+  evidence, not the production-serving architecture. Packer build and local
+  pool tests do not prove a live GPU host image, warm capacity, or latency SLO;
+  preserve `local_contract_ready_live_proof_required` until the exact promoted
+  tuple passes the live evidence gate.
+
+## 2026-07-13
+
+### User-Facing
+
+- Published the provider-neutral Evaluation Run and shared consent-normalization
+  work recorded in the July 12 entry. The July 13 merge made those contracts
+  available on `main`; it did not add live provider, semantic-task-success,
+  public-readiness, or deployment proof (`src/blueprint_pipeline/evaluation_run_contract.py`,
+  `src/blueprint_pipeline/consent_normalization.py`).
+
+### Employee-Facing
+
+- Hardened the sealed GR00T+OSCAR worker startup path by sealing and pinning the
+  nested Cosmos backbone for offline use, making required runtime trees writable,
+  detecting child-process death during readiness waits, and moving persistent
+  Isaac articulation control to the supported `SingleArticulation` API
+  (`deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile`,
+  `src/blueprint_pipeline/isaac_runtime_task_backend.py`).
+- Made review-renderer canaries fail closed on a bounded timeout and on blocked
+  verdicts, while preserving the distinction between startup/review-media checks
+  and task success. Legacy robot-eval requests now execute through their existing
+  builder before compiling the canonical Evaluation Run mirror, preserving
+  dataset-card task enrichment (`src/blueprint_pipeline/isaac_review_renderer_canary.py`,
+  `src/blueprint_pipeline/robot_eval_evaluation_run_adapter.py`).
+- **Uncommitted local work (July 13):** added first-class GCP Compute Engine and
+  AWS EC2 render-provider adapters, operator setup guidance, and spend-guard /
+  termination inventory integration; also generalized RunPod capacity checks for
+  the requested secure or community pool (`src/blueprint_pipeline/cloud_vm_render_providers.py`,
+  `docs/GCP_AWS_GPU_PROVIDER_SETUP.md`, `scripts/gpu_spend_guard.py`). This is a
+  dirty-tree snapshot, not merged provider-runtime or paid-run proof.
+
+### Future-Agent-Facing
+
+- The committed July 13 America/Chicago window runs from `4a2cae3b` through
+  `a4b01fd0`. Treat image construction, health checks, and canary controls as
+  release/runtime safeguards only; they do not prove a rebuilt image was
+  published or that a live episode completed successfully.
+- Preserve the current uncommitted cloud-provider files when continuing work.
+  Before upgrading their status, run focused adapter/spend tests and bind any
+  provider claim to authenticated inventory, exact resource identity, teardown,
+  and absence verification.
+
 ## 2026-07-12
 
 ### User-Facing

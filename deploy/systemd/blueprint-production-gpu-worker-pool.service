@@ -1,0 +1,41 @@
+[Unit]
+Description=Blueprint production warm GPU worker pool control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
+EnvironmentFile=/etc/blueprint/production-gpu-worker-pool.env
+ExecStart=/usr/local/bin/python3 -m blueprint_pipeline.production_gpu_worker_pool --database /var/lib/blueprint/production-gpu-worker-pool.sqlite --host 127.0.0.1 --port 8790
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

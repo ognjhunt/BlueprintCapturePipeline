@@ -313,6 +313,130 @@ def test_start_warm_worker_writes_expected_serve_marker(tmp_path: Path) -> None:
     assert (tmp_path / J.JOB_MANIFEST_FILENAME).is_file()
 
 
+def test_production_warm_worker_forwards_probe_scenario_gpu_and_supervisor(
+    tmp_path: Path,
+) -> None:
+    captured: dict = {}
+    image = "docker.io/blueprint/worker@sha256:" + "a" * 64
+    evidence_dir = tmp_path / "production_registration_evidence"
+    evidence_dir.mkdir()
+    records = {
+        "host": {
+            "schema_version": "production_gpu_host_boot_evidence.v1",
+            "host_image_id": "runpod-secure-l40s-active-worker-v1",
+            "actual_gpu_model": "NVIDIA L40S",
+            "checks": {
+                "host_image_booted": True,
+                "nvidia_driver_ready": True,
+                "container_runtime_ready": True,
+            },
+        },
+        "cache": {
+            "schema_version": "production_gpu_cache_evidence.v1",
+            "worker_image_ref": image,
+            "model_manifest_digest": "sha256:" + "b" * 64,
+            "checks": {"worker_image_cached": True, "models_cached_offline": True},
+        },
+        "warm": {
+            "schema_version": "production_gpu_warm_serve_ready.v2",
+            "status": "serving",
+            "launch_session_id": "session-1",
+            "worker_image_ref": image,
+            "checks": {
+                "isaac_renderer_warm": True,
+                "kitchen_scene_loaded": True,
+                "policy_endpoint_ready": True,
+                "worker_healthcheck_passed": True,
+            },
+        },
+    }
+    filenames = {
+        "host": "production_host_boot_evidence.json",
+        "cache": "production_cache_evidence.json",
+        "warm": "warm_serve_ready.json",
+    }
+    paths: dict[str, str] = {}
+    for label, filename in filenames.items():
+        path = evidence_dir / filename
+        path.write_text(json.dumps(records[label]), encoding="utf-8")
+        paths[label] = str(path)
+    manifest = _serving_manifest()
+    manifest["warm_serve"]["ready_detail"] = {
+        "registration_evidence_paths": paths,
+    }
+    token = tmp_path / "pool-token"
+    token.write_text("x" * 32, encoding="utf-8")
+    token.chmod(0o600)
+    supervisor = {
+        "schema_version": "production_gpu_warm_watchdog.v1",
+        "status": "armed",
+        "independent_process": True,
+        "pid": 123,
+        "deadline_epoch": 9_999_999_999,
+        "evidence_path": str(tmp_path / "watchdog.json"),
+    }
+
+    result = worker.start_warm_worker(
+        out_dir=tmp_path,
+        kitchen_asset_dir=None,
+        kitchen_url="https://signed/kitchen.zip",
+        provider="runpod",
+        allow_paid=True,
+        warm_candidates=(),
+        marker_timeout=900,
+        serve_idle_timeout_s=1800,
+        serve_max_jobs=3,
+        serve_ready_timeout=1800,
+        scenarios=[{"scenario_id": "warmup", "task": "open drawer"}],
+        production_warmup_before_ready=True,
+        teardown_supervisor=supervisor,
+        pool_base_url="https://pool.example.internal",
+        pool_token_file=token,
+        worker_endpoint_ref="https://broker.example.internal/workers/{worker_id}",
+        registration_sender=lambda *_args: {"ready_for_customer_binding": True},
+        heartbeat_launcher=lambda **_kwargs: {"status": "monitoring", "pid": 456},
+        job_fn=lambda **kwargs: captured.update(kwargs) or manifest,
+    )
+
+    assert result["status"] == "serving"
+    assert captured["scenarios"][0]["scenario_id"] == "warmup"
+    assert captured["serve_production_warmup_before_ready"] is True
+    assert captured["runpod_gpu_types"] == ("NVIDIA L40S",)
+    assert captured["serve_teardown_supervisor"] == supervisor
+    assert result["production_registration"]["status"] == "registered"
+    assert result["production_registration"]["registration_payload"]["endpoint_ref"] == (
+        "https://broker.example.internal/workers/pod-serve"
+    )
+    assert result["heartbeat_agent"] == {"status": "monitoring", "pid": 456}
+
+
+def test_campaign_budget_is_reserved_before_paid_warm_launch(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "campaign-budget.json"
+    reservation = worker.reserve_campaign_budget(
+        ledger_path=ledger_path,
+        hard_ttl_seconds=2_000,
+        max_hourly_rate_usd=1.0,
+        initial_spent_usd=3.0,
+        initial_used_gpu_seconds=8_815,
+        reservation_id="qualification-reservation-one",
+    )
+
+    assert reservation["status"] == "open"
+    assert reservation["ledger_snapshot"]["committed_gpu_seconds"] == 10_815
+    assert reservation["ledger_snapshot"]["remaining_gpu_seconds"] == 165
+
+
+def test_new_campaign_budget_requires_reconciled_baseline(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires_reconciled_baseline"):
+        worker.reserve_campaign_budget(
+            ledger_path=tmp_path / "campaign-budget.json",
+            hard_ttl_seconds=300,
+            max_hourly_rate_usd=1.0,
+            initial_spent_usd=None,
+            initial_used_gpu_seconds=None,
+        )
+
+
 def test_start_warm_worker_blocked_job_writes_no_marker(tmp_path: Path) -> None:
     result = worker.start_warm_worker(
         out_dir=tmp_path,

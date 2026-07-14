@@ -1,0 +1,41 @@
+[Unit]
+Description=Blueprint production GPU campaign control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blueprint
+Group=blueprint
+EnvironmentFile=/etc/blueprint/production-gpu-campaign-control-plane.env
+ExecStart=/opt/blueprint/venv/bin/python -m blueprint_pipeline.production_gpu_campaign_control_plane --database /var/lib/blueprint/production-gpu-campaigns.sqlite --artifact-root /var/lib/blueprint/production-gpu-artifacts
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

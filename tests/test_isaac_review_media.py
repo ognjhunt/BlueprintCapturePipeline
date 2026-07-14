@@ -284,7 +284,8 @@ def test_collected_scenario_episode_requires_renderer_sidecar(tmp_path) -> None:
     )
     admitted = admit_collected_scenario_episode(
         scenario_dir=tmp_path,
-        expected_frame_count=2,
+        expected_frame_count=None,
         step_bindings=_step_bindings(2),
     )
     assert admitted["status"] == "passed"
+    assert admitted["expected_frame_count_per_required_camera"] == 2

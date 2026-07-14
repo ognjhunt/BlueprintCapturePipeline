@@ -10268,7 +10268,8 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                   groot_policy_initial_frame: str = "",
                   serve: bool = False, serve_dir: "Path | None" = None,
                   serve_idle_timeout_s: float = 600.0,
-                  serve_max_jobs: "int | None" = None) -> dict:
+                  serve_max_jobs: "int | None" = None,
+                  serve_production_warmup_before_ready: bool = False) -> dict:
     """GPU orchestration: boot Isaac, load scene + G1, run the controller per scenario with RTX
     render + (optional) PhysX collision probe, emit traces + MP4s + outcomes. Instrumented with
     flushed progress + a per-scenario wall-clock cap so it cannot hang silently.
@@ -12247,12 +12248,98 @@ def run_scenarios(*, kitchen_usd: str, g1_usd: str, scenarios: Sequence[dict], o
                     "outcome": produced,
                 }
 
+            warmup_png_paths: list[str] = []
+            warmup_policy_call_paths: list[str] = []
+            warmup_outcome = None
+            if serve_production_warmup_before_ready:
+                if not scenarios:
+                    raise RuntimeError(
+                        "production_warm_serve_requires_initial_warmup_scenario"
+                    )
+                before_png = {str(path) for path in out_dir.rglob("*.png")}
+                before_policy_calls = {
+                    str(path) for path in out_dir.rglob("groot_policy_call_*.json")
+                }
+                _log(
+                    "production warm serve: executing one initial scenario before readiness "
+                    "to prove renderer and policy endpoint state"
+                )
+                warmup_outcome = _render_scenario(scenarios[0])
+                warmup_png_paths = sorted(
+                    str(path.relative_to(out_dir))
+                    for path in out_dir.rglob("*.png")
+                    if str(path) not in before_png
+                )
+                warmup_policy_call_paths = sorted(
+                    str(path.relative_to(out_dir))
+                    for path in out_dir.rglob("groot_policy_call_*.json")
+                    if str(path) not in before_policy_calls
+                )
+
+            worker_image_ref = os.environ.get("BLUEPRINT_WORKER_IMAGE_REF", "").strip()
+            host_evidence_path = out_dir / "production_host_boot_evidence.json"
+            cache_evidence_path = out_dir / "production_cache_evidence.json"
+            local_production_evidence_ready = bool(
+                host_evidence_path.is_file() and cache_evidence_path.is_file()
+            )
+            renderer_warm = bool(warmup_outcome is not None and warmup_png_paths)
+            policy_endpoint_ready = bool(
+                str(groot_policy_command or "").strip() and warmup_policy_call_paths
+            )
+            production_checks = {
+                "isaac_renderer_warm": renderer_warm,
+                "kitchen_scene_loaded": True,
+                "policy_endpoint_ready": policy_endpoint_ready,
+                "worker_healthcheck_passed": bool(
+                    renderer_warm
+                    and policy_endpoint_ready
+                    and "@sha256:" in worker_image_ref
+                    and local_production_evidence_ready
+                ),
+            }
+
             # Readiness marker: the control plane polls the output zip for this so it knows Isaac is
-            # booted + the scene is loaded + the loop is accepting jobs (so it can start submitting).
-            (out_dir / "warm_serve_ready.json").write_text(json.dumps(
-                {"status": "serving", "source": source_label,
-                 "launch_session_id": os.environ.get("BLUEPRINT_LAUNCH_SESSION_ID", ""),
-                 "idle_timeout_s": serve_idle_timeout_s, "max_jobs": serve_max_jobs}))
+            # booted + the scene is loaded + the loop is accepting jobs. Production registration is
+            # stricter: it additionally requires a fresh render, a real policy call, and exact digest.
+            (out_dir / "warm_serve_ready.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "production_gpu_warm_serve_ready.v2",
+                        "status": "serving",
+                        "source": source_label,
+                        "launch_session_id": os.environ.get(
+                            "BLUEPRINT_LAUNCH_SESSION_ID", ""
+                        ),
+                        "worker_image_ref": worker_image_ref,
+                        "idle_timeout_s": serve_idle_timeout_s,
+                        "max_jobs": serve_max_jobs,
+                        "production_ready": all(production_checks.values()),
+                        "checks": production_checks,
+                        "warmup_evidence": {
+                            "initial_scenario_executed": warmup_outcome is not None,
+                            "new_png_paths": warmup_png_paths,
+                            "new_policy_call_paths": warmup_policy_call_paths,
+                            "host_evidence_path": (
+                                host_evidence_path.name
+                                if host_evidence_path.is_file()
+                                else None
+                            ),
+                            "cache_evidence_path": (
+                                cache_evidence_path.name
+                                if cache_evidence_path.is_file()
+                                else None
+                            ),
+                        },
+                        "claim_boundary": (
+                            "This marker proves scene-loaded warm application state only. Host boot, "
+                            "container runtime, cached image, and offline model cache are separate "
+                            "evidence required by the production worker registration agent."
+                        ),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             _log(f"warm serve: setup complete; serving jobs from {source_label} "
                  f"(idle_timeout={serve_idle_timeout_s}s, max_jobs={serve_max_jobs})")
             serve_summary = serve_render_loop(
@@ -13738,6 +13825,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="seconds with no new job before the warm worker exits (default 600)")
     ap.add_argument("--serve-max-jobs", type=int, default=None,
                     help="optional cap on jobs served before the warm worker exits (default: unlimited)")
+    ap.add_argument(
+        "--serve-production-warmup-before-ready",
+        action="store_true",
+        help=(
+            "before writing production readiness, run the request's first scenario and require "
+            "fresh rendered frames plus a successful configured GR00T policy-command call"
+        ),
+    )
     return ap
 
 
@@ -13877,7 +13972,9 @@ def main(argv=None) -> int:
         segmentation=args.segmentation,
         serve=args.serve,
         serve_dir=(Path(args.serve_dir) if args.serve_dir else None),
-        serve_idle_timeout_s=args.serve_idle_timeout, serve_max_jobs=args.serve_max_jobs)
+        serve_idle_timeout_s=args.serve_idle_timeout,
+        serve_max_jobs=args.serve_max_jobs,
+        serve_production_warmup_before_ready=args.serve_production_warmup_before_ready)
     upload_zip(out_dir, put_url)
     print(json.dumps({"status": result["status"], "passed": result["scenarios_passed"],
                       "executed": result["scenarios_executed"]}))

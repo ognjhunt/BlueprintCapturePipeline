@@ -363,7 +363,7 @@ def _load_frame_step_bindings(frames_dir: Path) -> dict[str, dict[str, Any]] | N
 def admit_collected_scenario_episode(
     *,
     scenario_dir: str | Path,
-    expected_frame_count: int,
+    expected_frame_count: int | None,
     step_bindings: Sequence[Mapping[str, Any]] | None,
     attestation_pins: Mapping[str, Any] | None = None,
     identity_binding: Mapping[str, Any] | None = None,
@@ -371,6 +371,13 @@ def admit_collected_scenario_episode(
     """Load worker-emitted semantic sidecars and persist collected media admission."""
     root = Path(scenario_dir)
     frames = root / "frames"
+    overview_paths = sorted(frames.glob("overview_[0-9][0-9][0-9][0-9].png"))
+    robot_pov_paths = sorted(frames.glob("robot_pov_[0-9][0-9][0-9][0-9].png"))
+    effective_expected = int(expected_frame_count or 0)
+    if effective_expected <= 0 and len(overview_paths) == len(robot_pov_paths):
+        # Dynamic episodes bind validation to the terminal trace's observed
+        # complete camera horizon instead of a predeclared frame count.
+        effective_expected = len(overview_paths)
     semantics_path = root / "full_episode_frame_semantics.json"
     review_path = root / "full_episode_semantic_review.json"
     if (
@@ -380,7 +387,7 @@ def admit_collected_scenario_episode(
     ):
         run_full_episode_semantic_review(
             scenario_dir=root,
-            expected_frame_count=int(expected_frame_count),
+            expected_frame_count=effective_expected,
             attestation_pins=attestation_pins,
             identity_binding=identity_binding,
             step_bindings=step_bindings,
@@ -398,12 +405,12 @@ def admit_collected_scenario_episode(
         review = None
     result = admit_full_ordered_episode(
         camera_frames={
-            "overview": sorted(frames.glob("overview_[0-9][0-9][0-9][0-9].png")),
-            "robot_pov": sorted(frames.glob("robot_pov_[0-9][0-9][0-9][0-9].png")),
+            "overview": overview_paths,
+            "robot_pov": robot_pov_paths,
         },
         frame_semantics=semantics,
         semantic_review=review,
-        expected_frame_count=int(expected_frame_count),
+        expected_frame_count=effective_expected,
         step_bindings=step_bindings,
         frame_step_bindings=_load_frame_step_bindings(frames),
     )

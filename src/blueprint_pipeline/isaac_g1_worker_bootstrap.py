@@ -102,6 +102,85 @@ try: subprocess.call(["/isaac-sim/python.sh","-m","pip","install","-q","pillow",
 except Exception: pass
 try: subprocess.call(["bash","-c","command -v ffmpeg >/dev/null 2>&1 || (apt-get update -y >/dev/null 2>&1 && apt-get install -y ffmpeg >/dev/null 2>&1)"])  # mp4 assembly (best-effort)
 except Exception: pass
+if os.environ.get("PARITY_SERVE_PRODUCTION_WARMUP_BEFORE_READY","")=="1":
+    import hashlib
+    worker_image_ref=os.environ.get("BLUEPRINT_WORKER_IMAGE_REF","").strip()
+    host_image_id=os.environ.get("BLUEPRINT_HOST_IMAGE_ID","").strip()
+    gpu_pool_class=os.environ.get("BLUEPRINT_GPU_POOL_CLASS","").strip()
+    if "@sha256:" not in worker_image_ref:
+        raise RuntimeError("production_worker_image_ref_not_digest_pinned")
+    if not host_image_id:
+        raise RuntimeError("production_host_image_id_required")
+    if gpu_pool_class != "runpod-secure-l40s-preferred-a40-fallback":
+        raise RuntimeError("production_gpu_pool_class_invalid")
+    gpu_query=subprocess.run(
+        ["nvidia-smi","--query-gpu=name","--format=csv,noheader"],
+        capture_output=True,text=True,timeout=30,check=False,
+    )
+    raw_gpu_name=(gpu_query.stdout.splitlines() or [""])[0].strip()
+    actual_gpu_model=(
+        "NVIDIA L40S" if "L40S" in raw_gpu_name
+        else "NVIDIA A40" if "A40" in raw_gpu_name
+        else ""
+    )
+    if gpu_query.returncode != 0 or not actual_gpu_model:
+        raise RuntimeError("production_runpod_gpu_model_not_allowed")
+    required_model_paths=[
+        pathlib.Path("/opt/blueprint/ckpts/sonic/config.json"),
+        pathlib.Path("/opt/blueprint/ckpts/oscar"),
+        pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx"),
+        pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx"),
+        pathlib.Path("/opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"),
+    ]
+    missing=[
+        str(path) for path in required_model_paths
+        if not path.exists() or (path.is_dir() and not any(item.is_file() for item in path.rglob("*")))
+    ]
+    sonic_config={}
+    try: sonic_config=json.loads(required_model_paths[0].read_text(encoding="utf-8"))
+    except Exception: missing.append(str(required_model_paths[0])+":invalid_json")
+    nested_model=pathlib.Path(str(sonic_config.get("model_name") or ""))
+    if not nested_model.is_absolute() or not nested_model.is_dir():
+        missing.append("sonic_nested_model_not_local")
+    if missing:
+        raise RuntimeError("production_model_cache_incomplete:"+",".join(missing))
+    model_inventory=[]
+    for path in required_model_paths+[nested_model]:
+        if path.is_file():
+            model_inventory.append({"path":str(path),"kind":"file","size_bytes":path.stat().st_size})
+        else:
+            files=[item for item in path.rglob("*") if item.is_file()]
+            model_inventory.append({
+                "path":str(path),"kind":"directory","file_count":len(files),
+                "total_size_bytes":sum(item.stat().st_size for item in files),
+            })
+    model_manifest={
+        "schema_version":"production_gpu_model_cache_manifest.v1",
+        "worker_image_ref":worker_image_ref,
+        "items":model_inventory,
+        "sonic_model_revision":sonic_config.get("blueprint_model_revision"),
+        "network_download_allowed":False,
+    }
+    model_manifest_digest="sha256:"+hashlib.sha256(
+        json.dumps(model_manifest,sort_keys=True,separators=(",",":")).encode()
+    ).hexdigest()
+    pathlib.Path(OUT,"production_model_cache_manifest.json").write_text(
+        json.dumps({**model_manifest,"model_manifest_digest":model_manifest_digest},indent=2),
+        encoding="utf-8",
+    )
+    pathlib.Path(OUT,"production_host_boot_evidence.json").write_text(json.dumps({
+        "schema_version":"production_gpu_host_boot_evidence.v1",
+        "host_image_id":host_image_id,"actual_gpu_model":actual_gpu_model,
+        "checks":{"host_image_booted":True,"nvidia_driver_ready":True,
+                  "container_runtime_ready":True},
+    },indent=2),encoding="utf-8")
+    pathlib.Path(OUT,"production_cache_evidence.json").write_text(json.dumps({
+        "schema_version":"production_gpu_cache_evidence.v1",
+        "worker_image_ref":worker_image_ref,"model_manifest_digest":model_manifest_digest,
+        "checks":{"worker_image_cached":True,"models_cached_offline":True},
+    },indent=2),encoding="utf-8")
+    mark("production_worker_local_evidence_ready", actual_gpu_model=actual_gpu_model,
+         model_manifest_digest=model_manifest_digest)
 if os.environ.get("PARITY_SUPERVISED_STARTUP","")=="1":
     image_digest=os.environ.get("BLUEPRINT_WORKER_IMAGE_DIGEST","")
     gate_rows=[]; gate_blockers=[]
@@ -259,6 +338,7 @@ if os.environ.get("PARITY_SERVE","")=="1":
     cmd.append("--serve")  # warm mode: boot Isaac + load scene ONCE, then serve jobs from the inbox env
     if os.environ.get("PARITY_SERVE_IDLE_TIMEOUT",""): cmd += ["--serve-idle-timeout", os.environ["PARITY_SERVE_IDLE_TIMEOUT"]]
     if os.environ.get("PARITY_SERVE_MAX_JOBS",""): cmd += ["--serve-max-jobs", os.environ["PARITY_SERVE_MAX_JOBS"]]
+    if os.environ.get("PARITY_SERVE_PRODUCTION_WARMUP_BEFORE_READY","")=="1": cmd.append("--serve-production-warmup-before-ready")
 mark("runner_starting", cmd=cmd)
 timeout=runner_timeout_seconds()
 started=time.monotonic()

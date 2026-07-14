@@ -16,6 +16,9 @@ Providers:
   the chosen ask -> ``args`` onstart running the same bootstrap. Reuses the proven Vast
   API mechanics in :mod:`blueprint_pipeline.vast_provider_adapter` so offer selection and
   request shaping live in one place.
+* ``digitalocean`` — explicitly configured GPU Droplet.
+* ``gcp`` — explicitly configured Compute Engine GPU VM.
+* ``aws`` — explicitly configured EC2 GPU VM.
 
 This deliberately does NOT depend on the heavy ``robot_eval_gpu_provider_launch_request``
 schema used by :mod:`runpod_provider_adapter` / :mod:`vast_provider_adapter`; it is a thin
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -375,7 +379,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "reason": None if key else "runpod_api_key_missing"}
 
     def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
-        """Read-only Secure Cloud RTX stock and price probe."""
+        """Read-only RTX stock and price probe for the requested RunPod pool."""
 
         key = self._key()
         if not key:
@@ -385,25 +389,29 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "blockers": ["runpod_api_key_missing"],
             }
         req = _mapping(request)
+        cloud_type = str(req.get("cloudType") or "SECURE").strip().upper()
+        secure_cloud = cloud_type != "COMMUNITY"
+        secure_literal = "true" if secure_cloud else "false"
         requested_types = tuple(
             _string_list(req.get("gpuTypeIds")) or _runpod_gpu_types_from_env()
         )
         min_gpu_ram_mb = _positive_int(req.get("min_gpu_ram_mb")) or 0
         requires_rtx = req.get("requires_rtx") is not False
-        query = """
-        query BlueprintRenderCapacity {
-          gpuTypes {
+        query = f"""
+        query BlueprintRenderCapacity {{
+          gpuTypes {{
             id
             displayName
             memoryInGb
             secureCloud
-            lowestPrice(input: {gpuCount: 1, secureCloud: true}) {
+            communityCloud
+            lowestPrice(input: {{gpuCount: 1, secureCloud: {secure_literal}}}) {{
               stockStatus
               uninterruptablePrice
               availableGpuCounts
-            }
-          }
-        }
+            }}
+          }}
+        }}
         """
         status, payload = _runpod_graphql_call(query, key=key, timeout=60)
         data = _mapping(_mapping(payload).get("data"))
@@ -427,6 +435,11 @@ class RunPodRenderProvider(GpuRenderProvider):
         for gpu_type in requested_types:
             row = _mapping(by_id.get(gpu_type))
             price = _mapping(row.get("lowestPrice"))
+            pool_capable = (
+                row.get("secureCloud") is True
+                if secure_cloud
+                else row.get("communityCloud") is True
+            )
             memory_gb = _positive_int(row.get("memoryInGb")) or 0
             stock = str(price.get("stockStatus") or "None")
             counts = [
@@ -440,6 +453,9 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "display_name": row.get("displayName"),
                 "memory_in_gb": memory_gb or None,
                 "secure_cloud": row.get("secureCloud") is True,
+                "community_cloud": row.get("communityCloud") is True,
+                "cloud_type": cloud_type,
+                "requested_pool_capable": pool_capable,
                 "stock_status": stock,
                 "catalog_reported_stock": stock,
                 "available_gpu_counts": counts,
@@ -451,8 +467,12 @@ class RunPodRenderProvider(GpuRenderProvider):
             blockers: list[str] = []
             if not row:
                 blockers.append("gpu_type_not_listed")
-            if row.get("secureCloud") is not True:
-                blockers.append("secure_cloud_unavailable")
+            if not pool_capable:
+                blockers.append(
+                    "secure_cloud_unavailable"
+                    if secure_cloud
+                    else "community_cloud_unavailable"
+                )
             if min_gpu_ram_mb and memory_gb * 1000 < min_gpu_ram_mb:
                 blockers.append("below_min_gpu_ram")
             if requires_rtx and gpu_type not in DEFAULT_RUNPOD_RENDER_GPU_TYPES:
@@ -483,6 +503,7 @@ class RunPodRenderProvider(GpuRenderProvider):
         return {
             "status": "available" if viable else "blocked",
             "provider": self.name,
+            "cloud_type": cloud_type,
             "blockers": [] if viable else ["runpod_secure_rtx_capacity_unavailable"],
             "requested_gpu_types": list(requested_types),
             "min_gpu_ram_mb": min_gpu_ram_mb,
@@ -566,6 +587,11 @@ class RunPodRenderProvider(GpuRenderProvider):
         launch_request.pop("pending_teardown_record", None)
         launch_request.pop("blueprintStorageContract", None)
         launch_request.pop("max_hourly_rate_usd", None)
+        # Local capability filters shape ``capacity_preflight`` only. They are
+        # not part of RunPod's public Pod-create schema and must never leak
+        # into the paid mutation request.
+        launch_request.pop("min_gpu_ram_mb", None)
+        launch_request.pop("requires_rtx", None)
         attempts: list[dict] = []
         if not cold and self.warm_candidates:
             upd = {k: launch_request[k] for k in (
@@ -688,14 +714,16 @@ class RunPodRenderProvider(GpuRenderProvider):
                 }
             launch_request["gpuTypeIds"] = eligible_ids
         s, r = _runpod_call("POST", "/pods", launch_request, key=key)
-        pid = _normalize_provider_instance_id(
+        created_pid = _normalize_provider_instance_id(
             r.get("id") if isinstance(r, dict) else None
         )
-        attempts.append({"cold_create_status": s, "pod_id": pid,
+        attempts.append({"cold_create_status": s, "pod_id": created_pid,
                          "error": r.get("error") if isinstance(r, dict) else None})
-        if pid:
-            started_id_record = _record_started_id(job_dir / "started_pod_id.txt", pid)
-            return {"status": "launched", "instance_id": pid,
+        if created_pid:
+            started_id_record = _record_started_id(
+                job_dir / "started_pod_id.txt", created_pid
+            )
+            return {"status": "launched", "instance_id": created_pid,
                     "mode": "cold_create", "attempts": attempts,
                     "started_id_record": started_id_record}
         if s == 0:
@@ -777,6 +805,7 @@ class RunPodRenderProvider(GpuRenderProvider):
         }
 
     def billable_inventory(self, *, name_prefix: str) -> dict:
+        observed_at_epoch = time.time()
         key = self._key()
         if not key:
             return {
@@ -786,6 +815,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "live_resource_count": None,
                 "resources": [],
                 "api_confirmed": False,
+                "observed_at_epoch": observed_at_epoch,
                 "blockers": ["runpod_api_key_missing"],
             }
         status, body = _runpod_call("GET", "/pods", None, key=key, timeout=30)
@@ -798,6 +828,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "live_resource_count": None,
                 "resources": [],
                 "api_confirmed": False,
+                "observed_at_epoch": observed_at_epoch,
                 "blockers": ["runpod_billable_inventory_failed"],
                 "http": status,
                 "raw_provider_response_recorded": False,
@@ -831,6 +862,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             "live_resource_count": len(resources),
             "resources": resources,
             "api_confirmed": True,
+            "observed_at_epoch": observed_at_epoch,
             "http": status,
             "raw_provider_response_recorded": False,
         }
@@ -1259,10 +1291,10 @@ def _filter_do_size_candidates_by_gpu_ram(
 ) -> tuple[list[str], dict]:
     min_gpu_ram_mb = _requested_do_min_gpu_ram_mb(request)
     if min_gpu_ram_mb <= 0:
-        allowed = list(size_candidates)
-        return allowed, {
+        unrestricted = list(size_candidates)
+        return unrestricted, {
             "min_gpu_ram_mb": 0,
-            "allowed_size_candidates": allowed,
+            "allowed_size_candidates": unrestricted,
             "rejected_size_candidates": [],
         }
     allowed: list[str] = []
@@ -1299,10 +1331,10 @@ def _filter_do_size_candidates_by_render_capability(
     req = _mapping(request)
     requires_rtx = req.get("requires_rtx") is not False
     if not requires_rtx:
-        allowed = list(size_candidates)
-        return allowed, {
+        unrestricted = list(size_candidates)
+        return unrestricted, {
             "requires_rtx": False,
-            "allowed_size_candidates": allowed,
+            "allowed_size_candidates": unrestricted,
             "rejected_size_candidates": [],
         }
     allowed: list[str] = []
@@ -1851,10 +1883,25 @@ def get_render_provider(name: str | None, *, warm_candidates: Sequence[str] = ()
         return VastRenderProvider()
     if key == "digitalocean":
         return DigitalOceanRenderProvider()
-    raise ValueError(f"unknown_render_provider:{name!r} (known: runpod, vast, digitalocean)")
+    if key == "gcp":
+        from .cloud_vm_render_providers import GCPRenderProvider
+        return GCPRenderProvider()
+    if key == "aws":
+        from .cloud_vm_render_providers import AWSRenderProvider
+        return AWSRenderProvider()
+    raise ValueError(
+        f"unknown_render_provider:{name!r} "
+        "(known: runpod, vast, digitalocean, gcp, aws)"
+    )
 
 
 def list_render_providers() -> list[dict]:
     """Report each provider and whether its credentials are present in this env."""
-    return [RunPodRenderProvider().available(), VastRenderProvider().available(),
-            DigitalOceanRenderProvider().available()]
+    from .cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
+    return [
+        RunPodRenderProvider().available(),
+        VastRenderProvider().available(),
+        DigitalOceanRenderProvider().available(),
+        GCPRenderProvider().available(),
+        AWSRenderProvider().available(),
+    ]

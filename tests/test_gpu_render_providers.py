@@ -24,6 +24,7 @@ from blueprint_pipeline.gpu_render_providers import (
     list_render_providers,
     validate_runpod_restart_storage_contract,
 )
+from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
 
 
 def _spec(**over) -> RenderLaunchSpec:
@@ -80,6 +81,8 @@ def test_registry_returns_known_providers_and_rejects_unknown() -> None:
     assert isinstance(get_render_provider("vast"), VastRenderProvider)
     assert isinstance(get_render_provider(None), RunPodRenderProvider)  # default
     assert isinstance(get_render_provider("VAST"), VastRenderProvider)  # case-insensitive
+    assert isinstance(get_render_provider("gcp"), GCPRenderProvider)
+    assert isinstance(get_render_provider("aws"), AWSRenderProvider)
     with pytest.raises(ValueError):
         get_render_provider("lambda-labs")
 
@@ -87,7 +90,7 @@ def test_registry_returns_known_providers_and_rejects_unknown() -> None:
 def test_list_render_providers_reports_both_with_availability() -> None:
     listed = list_render_providers()
     names = {p["provider"] for p in listed}
-    assert names == {"runpod", "vast", "digitalocean"}
+    assert names == {"runpod", "vast", "digitalocean", "gcp", "aws"}
     for entry in listed:
         assert "available" in entry  # bool reflecting credential presence
 
@@ -109,6 +112,52 @@ def test_runpod_build_request_is_pod_body(tmp_path: Path) -> None:
     assert body["blueprintStorageContract"]["persistent_volume"].startswith(
         "survives_restart"
     )
+
+
+def test_runpod_launch_strips_local_capability_filters_before_create(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    observed: list[dict] = []
+
+    def fake_call(method, path, body, **_kwargs):
+        if method == "POST" and path == "/pods":
+            observed.append(dict(body))
+            return 400, {"error": "no capacity"}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
+    )
+    monkeypatch.setattr(
+        RunPodRenderProvider,
+        "_key",
+        lambda _self: "test-key",
+    )
+    monkeypatch.setattr(
+        RunPodRenderProvider,
+        "capacity_preflight",
+        lambda _self, _request=None: {
+            "status": "available",
+            "viable_gpu_types": [
+                {
+                    "gpu_type_id": "NVIDIA L40S",
+                    "on_demand_price_usd_per_hour": 0.99,
+                }
+            ],
+        },
+    )
+    request = _guarded_runpod_request(
+        gpuTypeIds=["NVIDIA L40S"],
+        max_hourly_rate_usd=1.10,
+        min_gpu_ram_mb=48_000,
+        requires_rtx=True,
+    )
+    result = RunPodRenderProvider().launch(tmp_path, request, cold=True)
+
+    assert result["allocation_created"] is False
+    assert len(observed) == 1
+    assert "min_gpu_ram_mb" not in observed[0]
+    assert "requires_rtx" not in observed[0]
 
 
 def test_runpod_restart_storage_contract_requires_volume_not_container_sentinel(
@@ -185,6 +234,50 @@ def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> Non
         if row["gpu_type_id"] == "NVIDIA RTX A6000"
     )
     assert "single_gpu_stock_unavailable" in a6000["blockers"]
+
+
+def test_runpod_capacity_preflight_supports_explicit_community_pool(monkeypatch) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        assert key == "rp-key"
+        assert "secureCloud: false" in query
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA RTX 6000 Ada Generation",
+                        "displayName": "RTX 6000 Ada",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "communityCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "Low",
+                            "uninterruptablePrice": 0.74,
+                            "availableGpuCounts": None,
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "cloudType": "COMMUNITY",
+            "gpuTypeIds": ["NVIDIA RTX 6000 Ada Generation"],
+            "min_gpu_ram_mb": 46000,
+            "requires_rtx": True,
+        }
+    )
+
+    assert result["status"] == "available"
+    assert result["cloud_type"] == "COMMUNITY"
+    assert result["capacity_confidence"] == "unknown"
+    assert result["viable_gpu_types"][0]["on_demand_price_usd_per_hour"] == 0.74
 
 
 def test_runpod_capacity_preflight_reports_honest_confidence(monkeypatch) -> None:

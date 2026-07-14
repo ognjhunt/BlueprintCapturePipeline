@@ -100,6 +100,36 @@ def test_parse_runpod_stopped_warm_pod_is_not_live_or_reapable() -> None:
     assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
 
 
+@pytest.mark.parametrize("provider", ["gcp", "aws"])
+def test_parse_cloud_vm_is_visible_to_burn_and_orphan_logic(provider: str) -> None:
+    now = _epoch(2026, 6, 27, 1, 0, 0)
+    inst = guard._parse_cloud_vm(
+        {
+            "instance_id": "blueprint-vm" if provider == "gcp" else "i-0123456789abcdef0",
+            "name": "blueprint-render",
+            "status": "RUNNING" if provider == "gcp" else "running",
+            "created_at": "2026-06-27T00:00:00Z",
+            "cost_per_hour": 1.25,
+        },
+        provider=provider,
+        now=now,
+    )
+    assert inst.live is True
+    assert inst.booted is True
+    assert inst.cost_per_hr == pytest.approx(1.25)
+    assert inst.age_seconds == pytest.approx(3600)
+
+
+def test_collect_instances_includes_gcp_and_aws() -> None:
+    rows = [{"instance_id": "vm", "name": "blueprint", "status": "running"}]
+    instances = guard.collect_instances(
+        now=0,
+        gcp_instances=rows,
+        aws_instances=rows,
+    )
+    assert [item.provider for item in instances] == ["gcp", "aws"]
+
+
 # --------------------------- Vast parsing ---------------------------
 
 

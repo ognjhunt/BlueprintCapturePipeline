@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import concurrent.futures
+
+import pytest
+
+from blueprint_pipeline.production_gpu_campaign_budget import (
+    CampaignBudgetExceeded,
+    ProductionGpuCampaignBudget,
+)
+
+
+def _ledger(tmp_path, *, used: int = 8_815, spent: float = 3.0):
+    return ProductionGpuCampaignBudget(
+        tmp_path / "campaign-budget.json",
+        initial_spent_usd=spent,
+        initial_used_gpu_seconds=used,
+    )
+
+
+def test_wall_time_reservation_fails_closed_against_campaign_total(tmp_path) -> None:
+    ledger = _ledger(tmp_path)
+    with pytest.raises(CampaignBudgetExceeded) as excinfo:
+        ledger.reserve(
+            reservation_id="qualification-too-long",
+            gpu_seconds=2_166,
+            max_hourly_rate_usd=1.0,
+        )
+    assert excinfo.value.admission["blocker"] == "campaign_gpu_wall_time_cap_exceeded"
+    assert ledger.snapshot()["open_reservation_count"] == 0
+
+
+def test_open_reservation_retains_full_worst_case_until_settled(tmp_path) -> None:
+    ledger = _ledger(tmp_path)
+    reservation = ledger.reserve(
+        reservation_id="qualification-one",
+        gpu_seconds=2_000,
+        max_hourly_rate_usd=1.0,
+    )
+    assert reservation["reserved_usd"] == pytest.approx(0.555556)
+    assert ledger.snapshot()["remaining_gpu_seconds"] == 165
+
+    ledger.settle(
+        reservation_id="qualification-one",
+        charged_gpu_seconds=1_000,
+        charged_usd=0.25,
+        outcome="provider_teardown_proven",
+    )
+    snapshot = ledger.snapshot()
+    assert snapshot["open_reservation_count"] == 0
+    assert snapshot["remaining_gpu_seconds"] == 1_165
+
+
+def test_existing_ledger_identity_cannot_be_reset_to_recover_budget(tmp_path) -> None:
+    _ledger(tmp_path).reserve(
+        reservation_id="qualification-one",
+        gpu_seconds=100,
+        max_hourly_rate_usd=1.0,
+    )
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        _ledger(tmp_path, used=0)
+
+
+def test_duplicate_reservation_is_idempotent_but_conflict_is_rejected(tmp_path) -> None:
+    ledger = _ledger(tmp_path)
+    first = ledger.reserve(
+        reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0
+    )
+    assert ledger.reserve(
+        reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0
+    ) == first
+    with pytest.raises(ValueError, match="reservation_id_conflict"):
+        ledger.reserve(
+            reservation_id="qualification-one", gpu_seconds=101, max_hourly_rate_usd=1.0
+        )
+
+
+def test_concurrent_reservations_cannot_oversubscribe_wall_cap(tmp_path) -> None:
+    ledger = _ledger(tmp_path, used=10_000)
+
+    def reserve(index: int) -> bool:
+        try:
+            ledger.reserve(
+                reservation_id=f"qualification-{index}",
+                gpu_seconds=600,
+                max_hourly_rate_usd=1.0,
+            )
+        except CampaignBudgetExceeded:
+            return False
+        return True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        admitted = list(executor.map(reserve, range(2)))
+    assert sorted(admitted) == [False, True]
+    assert ledger.snapshot()["committed_gpu_seconds"] == 10_600
