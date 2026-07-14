@@ -217,6 +217,8 @@ def validate_same_allocation_canary_handoff(
         blockers.append("same_allocation_canary_allocation_id_missing")
     if not str(evidence.get("launch_nonce") or "").strip():
         blockers.append("same_allocation_canary_launch_nonce_missing")
+    if not str(evidence.get("teardown_owner") or "").strip():
+        blockers.append("same_allocation_canary_teardown_owner_missing")
     if evidence.get("runtime_health_passed") is not True:
         blockers.append("same_allocation_canary_runtime_health_not_passed")
     if evidence.get("review_media_valid") is not True:
@@ -292,7 +294,14 @@ class CampaignMachine:
                 )
             except (OSError, json.JSONDecodeError):
                 recorded_owner = ""
-        self.teardown_owner = teardown_owner or recorded_owner or str(uuid.uuid4())
+        handoff_owner = ""
+        if self.config.reuse_validated_same_allocation_canary and isinstance(
+            self.config.canary_handoff, Mapping
+        ):
+            handoff_owner = str(self.config.canary_handoff.get("teardown_owner") or "")
+        self.teardown_owner = (
+            teardown_owner or recorded_owner or handoff_owner or str(uuid.uuid4())
+        )
         self.clock = clock
 
     def _write(self, path: Path, payload: Mapping[str, Any]) -> None:
@@ -404,16 +413,43 @@ class CampaignMachine:
         try:
             if not state.get("allocation_id"):
                 inventory = list(self.adapter.inventory(self.config.allocation_key))
-                if inventory:
-                    raise CampaignBlocked("duplicate_paid_allocation_detected")
-                allocation = dict(self.adapter.allocate(self.config.payload()))
-                allocation_id = str(allocation.get("allocation_id") or "").strip()
-                if not allocation_id:
-                    raise CampaignBlocked("provider_allocation_id_missing")
+                if self.config.reuse_validated_same_allocation_canary:
+                    handoff = self.config.canary_handoff or {}
+                    allocation_id = str(handoff.get("allocation_id") or "").strip()
+                    if str(handoff.get("teardown_owner") or "") != self.teardown_owner:
+                        raise CampaignBlocked("same_allocation_teardown_owner_mismatch")
+                    inventory_ids = {
+                        str(item.get("allocation_id") or item.get("id") or "").strip()
+                        for item in inventory
+                    }
+                    if inventory_ids != {allocation_id}:
+                        raise CampaignBlocked(
+                            "same_allocation_handoff_inventory_mismatch"
+                        )
+                    allocation = {
+                        "status": "completed",
+                        "allocation_id": allocation_id,
+                        "adopted_canary_handoff": True,
+                        "launch_nonce": handoff.get("launch_nonce"),
+                        "teardown_owner": self.teardown_owner,
+                    }
+                else:
+                    if inventory:
+                        raise CampaignBlocked("duplicate_paid_allocation_detected")
+                    allocation = dict(self.adapter.allocate(self.config.payload()))
+                    allocation_id = str(allocation.get("allocation_id") or "").strip()
+                    if not allocation_id:
+                        raise CampaignBlocked("provider_allocation_id_missing")
                 state["allocation_id"] = allocation_id
                 self._checkpoint(state, "allocation", allocation)
 
             allocation_id = str(state["allocation_id"])
+            if self.config.reuse_validated_same_allocation_canary:
+                handoff = self.config.canary_handoff or {}
+                if allocation_id != str(handoff.get("allocation_id") or ""):
+                    raise CampaignBlocked("same_allocation_handoff_checkpoint_mismatch")
+                if self.teardown_owner != str(handoff.get("teardown_owner") or ""):
+                    raise CampaignBlocked("same_allocation_teardown_owner_mismatch")
             for stage in self._STAGES:
                 if stage in state["completed_stages"]:
                     continue

@@ -145,7 +145,9 @@ GPU image. Targets become claims only after a real campaign measures them.
 ## Same-allocation canary continuation
 
 The optional `same_allocation_canary_handoff.v1` schema binds source SHA, image
-digest, allocation key/id, launch nonce, runtime health, and valid review media.
+digest, allocation key/id, launch nonce, the single teardown owner, runtime
+health, and valid review media. The continuing controller must find and adopt
+that exact allocation in live provider inventory; it never allocates a new VM.
 Continuation requires that the allocation is still owned and no teardown has
 been requested. The state machine may skip only its duplicate canary stage;
 smoke and all task-evidence gates remain mandatory. A canary that has already

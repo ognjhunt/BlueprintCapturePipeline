@@ -12,6 +12,7 @@ on:
       - src/blueprint_pipeline/isaac_persistent_task_executor_service.py
       - src/blueprint_pipeline/isaac_runtime_task_backend.py
       - src/blueprint_pipeline/gear_sonic_controller_fk_adapter.py
+      - src/blueprint_pipeline/groot_oscar_release_hardening.py
       - pyproject.toml
       - uv.lock
 

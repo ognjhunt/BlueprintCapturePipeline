@@ -241,6 +241,7 @@ def test_same_allocation_canary_handoff_schema():
         "allocation_key": cfg.allocation_key,
         "allocation_id": "vm-1",
         "launch_nonce": "nonce-1",
+        "teardown_owner": "owner-1",
         "runtime_health_passed": True,
         "review_media_valid": True,
         "allocation_still_owned": True,
@@ -251,6 +252,55 @@ def test_same_allocation_canary_handoff_schema():
     assert "same_allocation_canary_review_media_not_valid" in (
         validate_same_allocation_canary_handoff(cfg, evidence)
     )
+
+
+def test_same_allocation_canary_adopts_inventory_without_allocating(tmp_path):
+    cfg = config(
+        reuse_validated_same_allocation_canary=True,
+        canary_handoff={
+            "schema_version": "same_allocation_canary_handoff.v1",
+            "source_sha": "5" * 40,
+            "image_digest": "sha256:" + "7" * 64,
+            "allocation_key": "blueprint-g4",
+            "allocation_id": "vm-1",
+            "launch_nonce": "nonce-1",
+            "teardown_owner": "owner-1",
+            "runtime_health_passed": True,
+            "review_media_valid": True,
+            "allocation_still_owned": True,
+            "teardown_requested": False,
+        },
+    )
+    provider = FakeProvider(live=[{"allocation_id": "vm-1"}])
+    result = CampaignMachine(config=cfg, adapter=provider, state_dir=tmp_path).run()
+    assert result["status"] == "completed"
+    assert result["stage_results"]["allocation"]["adopted_canary_handoff"] is True
+    assert result["stage_results"]["canary"]["reused_handoff"] is True
+    assert not any(call[0] == "allocate" for call in provider.calls)
+
+
+def test_same_allocation_canary_blocks_if_handoff_is_not_in_inventory(tmp_path):
+    cfg = config(
+        reuse_validated_same_allocation_canary=True,
+        canary_handoff={
+            "schema_version": "same_allocation_canary_handoff.v1",
+            "source_sha": "5" * 40,
+            "image_digest": "sha256:" + "7" * 64,
+            "allocation_key": "blueprint-g4",
+            "allocation_id": "vm-1",
+            "launch_nonce": "nonce-1",
+            "teardown_owner": "owner-1",
+            "runtime_health_passed": True,
+            "review_media_valid": True,
+            "allocation_still_owned": True,
+            "teardown_requested": False,
+        },
+    )
+    provider = FakeProvider()
+    result = CampaignMachine(config=cfg, adapter=provider, state_dir=tmp_path).run()
+    assert result["status"] == "blocked"
+    assert "same_allocation_handoff_inventory_mismatch" in result["blockers"]
+    assert not any(call[0] == "allocate" for call in provider.calls)
 
 
 def test_smoke_evidence_rejects_surrogate_actions_and_missing_steps():

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "source_sha", "image_digest", "allocation_key", "allocation_id",
-    "launch_nonce", "runtime_health_passed", "review_media_valid",
+    "launch_nonce", "teardown_owner", "runtime_health_passed", "review_media_valid",
     "allocation_still_owned", "teardown_requested"
   ],
   "properties": {
@@ -16,6 +16,7 @@
     "allocation_key": {"type": "string", "minLength": 1},
     "allocation_id": {"type": "string", "minLength": 1},
     "launch_nonce": {"type": "string", "minLength": 1},
+    "teardown_owner": {"type": "string", "minLength": 1},
     "runtime_health_passed": {"const": true},
     "review_media_valid": {"const": true},
     "allocation_still_owned": {"const": true},
