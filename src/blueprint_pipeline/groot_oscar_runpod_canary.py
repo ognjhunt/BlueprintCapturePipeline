@@ -254,7 +254,7 @@ def run_canary(
     adapter = run_runpod_provider_adapter(
         provider_launch_request_path=bound_request_out,
         output_path=adapter_output,
-        mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE if execute else "dry-run",
+        mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE,
         allow_runpod_api_call=execute,
         pod_name=pod_name,
         gpu_type_id=prepared["admission"]["gpu_type_id"],

@@ -1546,8 +1546,8 @@ def test_runpod_adapter_builds_image_startup_canary_request(
     )
     persisted = (tmp_path / "canary-shaped.json").read_text(encoding="utf-8")
 
-    assert shaped["status"] == "blocked"
-    assert shaped["reason"] == "runpod_api_gate_blocked"
+    assert shaped["status"] == "dry_run_ready"
+    assert shaped["reason"] == "runpod_request_shape_validated_without_api_call"
     assert shaped["request_blockers"] == []
     body = shaped["runpod_request"]["body"]  # type: ignore[index]
     assert body["name"] == "canary-pod"

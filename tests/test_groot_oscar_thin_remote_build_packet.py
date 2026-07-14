@@ -123,6 +123,26 @@ def test_packet_refuses_dirty_source_and_unstable_refs(tmp_path: Path) -> None:
     assert Path(result["tarball_path"]).is_file()
 
 
+def test_packet_rejects_and_shell_quotes_malicious_image_refs(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    malicious = 'registry.example/foundation:$(touch /tmp/owned)'
+    result = prepare_remote_build_packet(
+        output_dir=tmp_path / "out",
+        repo_root=root,
+        foundation_ref=malicious,
+        release_ref='registry.example/release:v1";touch /tmp/owned;#',
+        source_commit=_head(root),
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
+        source_worktree_dirty=False,
+    )
+    assert result["status"] == "blocked"
+    assert "foundation_image_ref_invalid" in result["blockers"]
+    assert "release_image_ref_invalid" in result["blockers"]
+    script = Path(result["run_script_path"]).read_text(encoding="utf-8")
+    assert "foundation_ref='registry.example/foundation:$(touch /tmp/owned)'" in script
+    subprocess.run(["bash", "-n", result["run_script_path"]], check=True)
+
+
 def test_packet_refuses_commit_that_only_matches_head_prefix(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     head = _head(root)

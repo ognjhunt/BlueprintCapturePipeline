@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -33,6 +35,10 @@ REQUIRED_IMAGE_FILES = (
     "isaac_6_g1_assets.sha256",
     "fetch_pinned_isaac_assets.py",
 )
+_SAFE_VERSIONED_IMAGE_REF = re.compile(
+    r"\A[a-z0-9]+(?:[._:-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})\Z"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -47,6 +53,8 @@ def _versioned_ref_blockers(ref: str, label: str) -> list[str]:
     leaf = ref.rsplit("/", 1)[-1]
     if not ref:
         return [f"missing_{label}_image_ref"]
+    if not _SAFE_VERSIONED_IMAGE_REF.fullmatch(ref):
+        return [f"{label}_image_ref_invalid"]
     if ":" not in leaf and "@sha256:" not in ref:
         return [f"{label}_image_ref_must_be_versioned"]
     if leaf.endswith((":latest", ":local", ":dev", ":test")):
@@ -77,12 +85,16 @@ def _remote_script(
     min_free_gib: int,
     max_release_bytes: int,
 ) -> str:
+    foundation_default = shlex.quote(foundation_ref)
+    release_default = shlex.quote(release_ref)
     return f'''#!/usr/bin/env bash
 set -euo pipefail
 script_dir="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 context_dir="$script_dir/context"
-foundation_ref="${{BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF:-{foundation_ref}}}"
-release_ref="${{BLUEPRINT_GROOT_OSCAR_RELEASE_IMAGE_REF:-{release_ref}}}"
+foundation_ref="${{BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF:-}}"
+release_ref="${{BLUEPRINT_GROOT_OSCAR_RELEASE_IMAGE_REF:-}}"
+[[ -n "$foundation_ref" ]] || foundation_ref={foundation_default}
+[[ -n "$release_ref" ]] || release_ref={release_default}
 min_free_gib="${{BLUEPRINT_GROOT_OSCAR_REMOTE_MIN_FREE_GIB:-{min_free_gib}}}"
 max_release_bytes="${{BLUEPRINT_GROOT_OSCAR_RELEASE_MAX_COMPRESSED_BYTES:-{max_release_bytes}}}"
 result="$script_dir/groot_oscar_thin_remote_build_result.json"

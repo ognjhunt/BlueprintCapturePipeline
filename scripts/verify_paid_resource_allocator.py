@@ -117,11 +117,18 @@ def verify() -> list[str]:
         blockers.append("gpu_watchdog_teardown_error_evidence_missing")
     if 'item.get("size")' not in thin_release:
         blockers.append("thin_release_native_registry_layer_size_missing")
+    packet_builder = (
+        ROOT / "src/blueprint_pipeline/groot_oscar_thin_remote_build_packet.py"
+    ).read_text(encoding="utf-8")
+    if "_SAFE_VERSIONED_IMAGE_REF" not in packet_builder or "shlex.quote" not in packet_builder:
+        blockers.append("remote_build_packet_image_ref_shell_safety_missing")
     gpu_calls = _function_calls(GPU_ADAPTER)
     if "run_runpod_provider_adapter" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")
     if "require_paid_resource_admission" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_allocator_bypasses_shared_admission")
+    if 'mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE' not in gpu:
+        blockers.append("gpu_canary_dry_run_mode_differs_from_execution")
     return sorted(set(blockers))
 
 

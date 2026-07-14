@@ -1563,7 +1563,9 @@ def run_runpod_provider_adapter(
         )
         return _persist_result(resolved_output, result)
 
-    if mode == "dry-run":
+    if mode == "dry-run" or (
+        mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE and not allow_runpod_api_call
+    ):
         result.update(
             {
                 "status": "dry_run_ready",
