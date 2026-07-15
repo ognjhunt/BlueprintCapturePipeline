@@ -1,9 +1,15 @@
 import os
 
-from blueprint_pipeline.groot_oscar_runpod_preflight import (
-    build_model_volume_watchdog_handoff_evidence,
-    collect_runpod_preflight,
+import pytest
+
+import blueprint_pipeline.groot_oscar_runpod_preflight as preflight_module
+
+build_model_volume_watchdog_handoff_evidence = (
+    preflight_module.build_model_volume_watchdog_handoff_evidence
 )
+collect_runpod_preflight = preflight_module.collect_runpod_preflight
+
+MODEL_VOLUME_WATCHDOG_STATE = "/tmp/model-volume/watchdog_state.json"
 
 
 def _model_volume_handoff(*, deadline_epoch: float = 4000.0) -> dict:
@@ -14,9 +20,32 @@ def _model_volume_handoff(*, deadline_epoch: float = 4000.0) -> dict:
         "preparation_pod_absence_confirmed": True,
         "volume_presence_confirmed": True,
         "teardown_owner": "independent_model_volume_watchdog",
+        "watchdog_pid": os.getpid(),
+        "watchdog_state_path": MODEL_VOLUME_WATCHDOG_STATE,
         "watchdog_deadline_epoch": deadline_epoch,
         "next_owner_must_arm_before_transfer": True,
     }
+
+
+def _watchdog_argv(pid: int, *, canary_deadline_epoch: float) -> tuple[str, ...]:
+    if pid == os.getpid():
+        return (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            MODEL_VOLUME_WATCHDOG_STATE,
+        )
+    return (
+        "python",
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_watchdog",
+        "--pod-name-prefix",
+        "blueprint-groot-oscar-canary-",
+        "--deadline-epoch",
+        str(canary_deadline_epoch),
+    )
 
 
 def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> None:
@@ -63,14 +92,8 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
             "live_resource_count": 0,
         },
         clock=lambda: 1000.0,
-        process_argv_probe=lambda _pid: (
-            "python",
-            "-m",
-            "blueprint_pipeline.groot_oscar_runpod_watchdog",
-            "--pod-name-prefix",
-            "blueprint-groot-oscar-canary-",
-            "--deadline-epoch",
-            "2800.0",
+        process_argv_probe=lambda pid: _watchdog_argv(
+            pid, canary_deadline_epoch=2800.0
         ),
     )
     assert result["status"] == "verified"
@@ -84,11 +107,20 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
     assert result["spend"]["watchdog_armed_before_allocation"] is True
     assert result["spend"]["watchdog_process_identity_verified"] is True
     assert result["model_volume_watchdog_handoff"]["status"] == "verified"
+    assert (
+        result["model_volume_watchdog_handoff"][
+            "watchdog_process_identity_verified"
+        ]
+        is True
+    )
     refreshed_handoff = build_model_volume_watchdog_handoff_evidence(
         handoff=result["model_volume_watchdog_handoff"],
         network_volume_id="volume-1",
         canary_watchdog_deadline_epoch=2800.0,
         clock=lambda: 1001.0,
+        process_argv_probe=lambda pid: _watchdog_argv(
+            pid, canary_deadline_epoch=2800.0
+        ),
     )
     assert refreshed_handoff["status"] == "verified"
 
@@ -123,6 +155,7 @@ def test_preflight_rejects_unrelated_live_process_as_watchdog() -> None:
     assert result["status"] == "blocked"
     assert result["spend"]["watchdog_process_identity_verified"] is False
     assert "runpod_teardown_watchdog_not_armed_before_allocation" in result["blockers"]
+    assert "model_volume_watchdog_process_identity_invalid" in result["blockers"]
 
 
 def test_preflight_rejects_unknown_volume_capacity_inventory_and_watchdog() -> None:
@@ -186,15 +219,36 @@ def test_preflight_rejects_model_volume_watchdog_deadline_before_canary() -> Non
         },
         inventory_probe=lambda _prefix: {"api_confirmed": True, "live_resource_count": 0},
         clock=lambda: 1000.0,
-        process_argv_probe=lambda _pid: (
-            "python",
-            "-m",
-            "blueprint_pipeline.groot_oscar_runpod_watchdog",
-            "--pod-name-prefix",
-            "blueprint-groot-oscar-canary-",
-            "--deadline-epoch",
-            "1900.0",
+        process_argv_probe=lambda pid: _watchdog_argv(
+            pid, canary_deadline_epoch=1900.0
         ),
     )
     assert result["status"] == "blocked"
     assert "model_volume_watchdog_ttl_does_not_cover_canary" in result["blockers"]
+
+
+def test_model_volume_handoff_rejects_dead_watchdog_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_pid = 4242
+    handoff = _model_volume_handoff()
+    handoff["watchdog_pid"] = model_pid
+
+    def kill(pid: int, _signal: int) -> None:
+        if pid == model_pid:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(preflight_module.os, "kill", kill)
+    result = build_model_volume_watchdog_handoff_evidence(
+        handoff=handoff,
+        network_volume_id="volume-1",
+        canary_watchdog_deadline_epoch=2800.0,
+        clock=lambda: 1000.0,
+        process_argv_probe=lambda pid: _watchdog_argv(
+            pid, canary_deadline_epoch=2800.0
+        ),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["watchdog_process_identity_verified"] is False
+    assert "model_volume_watchdog_process_not_alive" in result["blockers"]

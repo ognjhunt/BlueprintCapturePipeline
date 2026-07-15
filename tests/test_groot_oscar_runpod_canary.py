@@ -10,6 +10,28 @@ from blueprint_pipeline.groot_oscar_runpod_canary import (
 
 
 DIGEST = "docker.io/example/release@sha256:" + "a" * 64
+MODEL_VOLUME_WATCHDOG_STATE = "/tmp/model-volume/watchdog_state.json"
+
+
+def _watchdog_argv(pid: int) -> tuple[str, ...]:
+    if pid == os.getpid():
+        return (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            MODEL_VOLUME_WATCHDOG_STATE,
+        )
+    return (
+        "python",
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_watchdog",
+        "--pod-name-prefix",
+        "blueprint-groot-oscar-canary-",
+        "--deadline-epoch",
+        "1900.0",
+    )
 
 
 def test_submitted_canary_without_pod_id_fails_closed(tmp_path) -> None:
@@ -75,7 +97,7 @@ def _preflight() -> dict:
             "one_resource_limit": True,
             "independent_teardown_watchdog": True,
             "watchdog_armed_before_allocation": True,
-            "watchdog_pid": os.getpid(),
+            "watchdog_pid": 1,
             "watchdog_deadline_epoch": 1900.0,
             "watchdog_pod_name_prefix": "blueprint-groot-oscar-canary-",
         },
@@ -86,6 +108,8 @@ def _preflight() -> dict:
             "preparation_pod_absence_confirmed": True,
             "volume_presence_confirmed": True,
             "teardown_owner": "independent_model_volume_watchdog",
+            "watchdog_pid": os.getpid(),
+            "watchdog_state_path": MODEL_VOLUME_WATCHDOG_STATE,
             "watchdog_deadline_epoch": 2800.0,
             "next_owner_must_arm_before_transfer": True,
         },
@@ -220,15 +244,7 @@ def test_execute_refresh_rechecks_every_mutable_provider_fact() -> None:
         capacity_probe=capacity_probe,
         inventory_probe=inventory_probe,
         clock=lambda: 1000.0,
-        process_argv_probe=lambda _pid: (
-            "python",
-            "-m",
-            "blueprint_pipeline.groot_oscar_runpod_watchdog",
-            "--pod-name-prefix",
-            "blueprint-groot-oscar-canary-",
-            "--deadline-epoch",
-            "1900.0",
-        ),
+        process_argv_probe=_watchdog_argv,
     )
     assert result["status"] == "verified"
     assert result["observed_at_epoch"] == 1000.0

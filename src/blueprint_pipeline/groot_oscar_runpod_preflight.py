@@ -24,6 +24,9 @@ from .groot_oscar_infrastructure_admission import (
 
 SCHEMA_VERSION = "groot_oscar_runpod_preflight_bundle.v1"
 WATCHDOG_MODULE = "blueprint_pipeline.groot_oscar_runpod_watchdog"
+MODEL_VOLUME_WATCHDOG_MODULE = (
+    "blueprint_pipeline.groot_oscar_runpod_model_volume"
+)
 MODEL_VOLUME_HANDOFF_SCHEMA_VERSION = "groot_oscar_model_volume_watchdog_handoff.v1"
 MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS = 60
 
@@ -49,6 +52,18 @@ def _read_linux_process_argv(pid: int) -> tuple[str, ...]:
     return tuple(part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part)
 
 
+def _process_alive(pid: Any) -> bool:
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _watchdog_process_matches(
     *,
     argv: Sequence[str],
@@ -68,6 +83,25 @@ def _watchdog_process_matches(
     return observed_prefix == pod_name_prefix and observed_deadline == deadline_epoch
 
 
+def _model_volume_watchdog_process_matches(
+    *, argv: Sequence[str], state_path: str
+) -> bool:
+    tokens = tuple(str(token) for token in argv)
+    try:
+        module_index = tokens.index(MODEL_VOLUME_WATCHDOG_MODULE)
+        state_index = tokens.index("--state", module_index + 2) + 1
+    except (ValueError, IndexError):
+        return False
+    return bool(
+        module_index > 0
+        and tokens[module_index - 1] == "-m"
+        and module_index + 1 < len(tokens)
+        and tokens[module_index + 1] == "watchdog"
+        and state_index < len(tokens)
+        and tokens[state_index] == state_path
+    )
+
+
 def build_watchdog_spend_evidence(
     *,
     watchdog: Mapping[str, Any],
@@ -79,17 +113,8 @@ def build_watchdog_spend_evidence(
     deadline = watchdog.get("deadline_epoch")
     pid = watchdog.get("pid")
     ttl = int(float(deadline) - clock()) if isinstance(deadline, (int, float)) else 0
-    process_alive = False
+    process_alive = _process_alive(pid)
     process_identity_verified = False
-    if type(pid) is int and pid > 0:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            process_alive = False
-        except PermissionError:
-            process_alive = True
-        else:
-            process_alive = True
     pod_name_prefix = str(watchdog.get("pod_name_prefix") or "").strip()
     if process_alive and isinstance(deadline, (int, float)):
         process_identity_verified = _watchdog_process_matches(
@@ -127,12 +152,24 @@ def build_model_volume_watchdog_handoff_evidence(
     network_volume_id: str,
     canary_watchdog_deadline_epoch: float,
     clock: Callable[[], float] = time.time,
+    process_argv_probe: Callable[[int], Sequence[str]] = _read_linux_process_argv,
 ) -> dict[str, Any]:
     """Prove the retained volume watchdog cannot delete cache during canary use."""
 
     deadline = handoff.get("watchdog_deadline_epoch")
     deadline_value = float(deadline) if isinstance(deadline, (int, float)) else 0.0
     remaining_ttl_seconds = max(0, int(deadline_value - clock()))
+    watchdog_pid = handoff.get("watchdog_pid")
+    watchdog_state_path = str(handoff.get("watchdog_state_path") or "").strip()
+    process_alive = _process_alive(watchdog_pid)
+    process_identity_verified = bool(
+        process_alive
+        and watchdog_state_path
+        and _model_volume_watchdog_process_matches(
+            argv=process_argv_probe(watchdog_pid),
+            state_path=watchdog_state_path,
+        )
+    )
     blockers: list[str] = []
     if handoff.get("schema_version") != MODEL_VOLUME_HANDOFF_SCHEMA_VERSION:
         blockers.append("model_volume_watchdog_handoff_schema_invalid")
@@ -146,6 +183,10 @@ def build_model_volume_watchdog_handoff_evidence(
         blockers.append("model_volume_presence_not_confirmed_at_handoff")
     if handoff.get("teardown_owner") != "independent_model_volume_watchdog":
         blockers.append("model_volume_watchdog_teardown_owner_invalid")
+    if not process_alive:
+        blockers.append("model_volume_watchdog_process_not_alive")
+    elif not process_identity_verified:
+        blockers.append("model_volume_watchdog_process_identity_invalid")
     if handoff.get("next_owner_must_arm_before_transfer") is not True:
         blockers.append("model_volume_watchdog_transfer_contract_missing")
     if deadline_value < (
@@ -162,6 +203,9 @@ def build_model_volume_watchdog_handoff_evidence(
         "required_canary_deadline_epoch": canary_watchdog_deadline_epoch,
         "required_margin_seconds": MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS,
         "teardown_owner": handoff.get("teardown_owner"),
+        "watchdog_pid": watchdog_pid if process_alive else None,
+        "watchdog_state_path": watchdog_state_path or None,
+        "watchdog_process_identity_verified": process_identity_verified,
         "preparation_pod_absence_confirmed": handoff.get(
             "preparation_pod_absence_confirmed"
         )
@@ -234,6 +278,7 @@ def collect_runpod_preflight(
         network_volume_id=network_volume_id,
         canary_watchdog_deadline_epoch=float(spend.get("watchdog_deadline_epoch") or 0),
         clock=lambda: observed_at_epoch,
+        process_argv_probe=process_argv_probe,
     )
     blockers: list[str] = []
     if volume.get("status") != "verified":

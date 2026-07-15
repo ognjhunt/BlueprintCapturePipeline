@@ -371,11 +371,30 @@ def verify() -> list[str]:
     if "groot_oscar_model_volume_watchdog_handoff.v1" not in model_volume:
         blockers.append("model_volume_watchdog_handoff_schema_missing")
     if not all(
+        marker in model_volume
+        for marker in ("watchdog_pid", "watchdog_state_path", "watchdog_nonce")
+    ):
+        blockers.append("model_volume_watchdog_process_handoff_missing")
+    if "model_volume_runpod_api_key_unavailable" not in model_volume:
+        blockers.append("model_volume_missing_key_terminal_evidence_missing")
+    if not all(
+        marker in model_volume
+        for marker in (
+            "_watchdog_process_running",
+            "ModelVolumeWatchdogExitedBeforeHandoff",
+            "watchdog_retained",
+        )
+    ):
+        blockers.append("model_volume_ready_handoff_liveness_guard_missing")
+    if not all(
         marker in runpod_preflight
         for marker in (
             "build_model_volume_watchdog_handoff_evidence",
             "model_volume_watchdog_handoff_volume_mismatch",
             "model_volume_watchdog_ttl_does_not_cover_canary",
+            "model_volume_watchdog_process_not_alive",
+            "model_volume_watchdog_process_identity_invalid",
+            "watchdog_process_identity_verified",
             "MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS",
         )
     ):
@@ -465,6 +484,33 @@ def verify() -> list[str]:
     ).read_text(encoding="utf-8")
     if "_SAFE_VERSIONED_IMAGE_REF" not in packet_builder or "shlex.quote" not in packet_builder:
         blockers.append("remote_build_packet_image_ref_shell_safety_missing")
+    try:
+        release_candidate_at = packet_builder.index(
+            '-t "$release_candidate_ref" --push'
+        )
+        release_validation_at = packet_builder.index("validate-thin-release")
+        release_contract_at = packet_builder.index(
+            "thin_release_contract_not_passed"
+        )
+        release_promotion_at = packet_builder.index(
+            'imagetools create --tag "$release_ref" "$release_exact"'
+        )
+        terminal_result_at = packet_builder.index(
+            'mv "$validation_result" "$result"'
+        )
+    except ValueError:
+        blockers.append("remote_build_final_tag_promotion_guard_missing")
+    else:
+        if not (
+            release_candidate_at
+            < release_validation_at
+            < release_contract_at
+            < release_promotion_at
+            < terminal_result_at
+        ):
+            blockers.append("remote_build_final_tag_promotion_order_invalid")
+    if '-t "$release_ref" --push' in packet_builder:
+        blockers.append("remote_build_pushes_unvalidated_final_release_tag")
     gpu_calls = _function_calls(GPU_ADAPTER)
     if "run_runpod_provider_adapter" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")
