@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from blueprint_pipeline.groot_oscar_model_cache import (
+    COSMOS_MODEL_FILES,
+    COSMOS_MODEL_RELATIVE_ROOT,
     MANIFEST_NAME,
     MODEL_PINS,
     REQUIRED_MODEL_FILES,
@@ -174,9 +176,14 @@ def test_prepare_uses_runtime_allowlists_and_atomically_replaces_cache(
     assert verify_model_cache(root)["status"] == "passed"
     assert json.loads((root / "sonic/config.json").read_text(encoding="utf-8"))[
         "model_name"
-    ] == str(root / "cosmos")
+    ] == str(root / COSMOS_MODEL_RELATIVE_ROOT)
+    assert "nvidia/Cosmos-Reason2" in str(root / COSMOS_MODEL_RELATIVE_ROOT)
+    assert (root / COSMOS_MODEL_RELATIVE_ROOT / "model.safetensors").is_file()
     assert calls == [
-        (repo_id, REQUIRED_MODEL_FILES[name])
+        (
+            repo_id,
+            COSMOS_MODEL_FILES if name == "cosmos" else REQUIRED_MODEL_FILES[name],
+        )
         for name, repo_id, _ in MODEL_PINS
         if name != "gear_sonic"
     ]

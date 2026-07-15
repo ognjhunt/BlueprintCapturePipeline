@@ -35,6 +35,19 @@ GEAR_FILES = (
     "observation_config.yaml",
     "planner_sonic.onnx",
 )
+COSMOS_MODEL_FILES = (
+    "config.json",
+    "chat_template.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "video_preprocessor_config.json",
+    "vocab.json",
+)
+COSMOS_MODEL_RELATIVE_ROOT = Path("cosmos/nvidia/Cosmos-Reason2-2B")
 REQUIRED_MODEL_FILES: dict[str, tuple[str, ...]] = {
     "sonic": (
         "config.json",
@@ -50,17 +63,8 @@ REQUIRED_MODEL_FILES: dict[str, tuple[str, ...]] = {
         "processor/processor_config.json",
         "processor/statistics.json",
     ),
-    "cosmos": (
-        "config.json",
-        "chat_template.json",
-        "generation_config.json",
-        "merges.txt",
-        "model.safetensors",
-        "preprocessor_config.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "video_preprocessor_config.json",
-        "vocab.json",
+    "cosmos": tuple(
+        f"nvidia/Cosmos-Reason2-2B/{relative}" for relative in COSMOS_MODEL_FILES
     ),
     "oscar": (
         "case_map.json",
@@ -306,8 +310,8 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
         snapshot_download(  # nosec B615
             repo_id=pins["cosmos"][0],
             revision=pins["cosmos"][1],
-            local_dir=str(staging / "cosmos"),
-            allow_patterns=list(REQUIRED_MODEL_FILES["cosmos"]),
+            local_dir=str(staging / COSMOS_MODEL_RELATIVE_ROOT),
+            allow_patterns=list(COSMOS_MODEL_FILES),
             token=token,
         )
         snapshot_download(  # nosec B615
@@ -340,7 +344,11 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
             raise RuntimeError("unexpected_sonic_nested_model")
         sonic_config["blueprint_original_model_name"] = pins["cosmos"][0]
         sonic_config["blueprint_model_revision"] = pins["cosmos"][1]
-        sonic_config["model_name"] = str(root / "cosmos")
+        # Isaac-GR00T selects the Qwen3 backbone from the literal
+        # ``nvidia/Cosmos-Reason2`` token and then passes this value to
+        # Transformers. Keep that provider identity in the path while making
+        # it an exact local directory so runtime remains fully offline.
+        sonic_config["model_name"] = str(root / COSMOS_MODEL_RELATIVE_ROOT)
         sonic_config_path.write_text(
             json.dumps(sonic_config, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
