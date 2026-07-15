@@ -15,6 +15,7 @@ def _ledger(tmp_path, *, used: int = 8_815, spent: float = 3.0):
         tmp_path / "campaign-budget.json",
         initial_spent_usd=spent,
         initial_used_gpu_seconds=used,
+        combined_gpu_wall_cap_seconds=10_980,
     )
 
 
@@ -72,6 +73,25 @@ def test_duplicate_reservation_is_idempotent_but_conflict_is_rejected(tmp_path) 
     with pytest.raises(ValueError, match="reservation_id_conflict"):
         ledger.reserve(
             reservation_id="qualification-one", gpu_seconds=101, max_hourly_rate_usd=1.0
+        )
+
+
+def test_settled_reservation_id_cannot_be_reused(tmp_path) -> None:
+    ledger = _ledger(tmp_path)
+    ledger.reserve(
+        reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0
+    )
+    ledger.settle(
+        reservation_id="qualification-one",
+        charged_gpu_seconds=0,
+        charged_usd=0,
+        outcome="no_allocation",
+    )
+    with pytest.raises(ValueError, match="reservation_id_already_settled"):
+        ledger.reserve(
+            reservation_id="qualification-one",
+            gpu_seconds=100,
+            max_hourly_rate_usd=1.0,
         )
 
 

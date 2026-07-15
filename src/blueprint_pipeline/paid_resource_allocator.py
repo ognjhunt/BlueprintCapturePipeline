@@ -35,6 +35,8 @@ from .paid_resource_admission import require_paid_resource_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
+MIN_RECONCILED_CAMPAIGN_SPEND_USD = 11.57
+MIN_RECONCILED_GPU_SECONDS = 11_619
 
 
 def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
@@ -253,6 +255,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
     gpu.add_argument("--execute", action="store_true")
+    gpu.add_argument("--campaign-budget-ledger")
+    gpu.add_argument("--campaign-initial-spent-usd", type=float)
+    gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
+    gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
+    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=16_800)
+    gpu.add_argument("--campaign-reservation-seconds", type=int, default=5_400)
+    gpu.add_argument("--campaign-max-hourly-rate-usd", type=float)
     for name, hidden in (("model-volume", False), ("model-volume-run", True)):
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
         model.add_argument("--output-dir", required=True)
@@ -323,17 +332,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
-        result = run_canary(
-            provider_launch_request=args.provider_launch_request,
-            release_evidence=args.release_evidence,
-            model_cache_evidence=args.model_cache_evidence,
-            preflight_bundle=args.preflight_bundle,
-            admission_out=args.admission_out,
-            bound_request_out=args.bound_request_out,
-            adapter_output=args.adapter_output,
-            pod_name=args.pod_name,
-            execute=args.execute,
+        budget_arguments = (
+            args.campaign_budget_ledger,
+            args.campaign_initial_spent_usd,
+            args.campaign_initial_used_gpu_seconds,
+            args.campaign_max_hourly_rate_usd,
         )
+        if args.execute and any(value is None for value in budget_arguments):
+            result = {
+                "status": "blocked",
+                "blockers": ["gpu_canary_cumulative_budget_arguments_missing"],
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(args.admission_out), result)
+        else:
+            result = run_canary(
+                provider_launch_request=args.provider_launch_request,
+                release_evidence=args.release_evidence,
+                model_cache_evidence=args.model_cache_evidence,
+                preflight_bundle=args.preflight_bundle,
+                admission_out=args.admission_out,
+                bound_request_out=args.bound_request_out,
+                adapter_output=args.adapter_output,
+                pod_name=args.pod_name,
+                execute=args.execute,
+                campaign_budget=(
+                    {
+                        "ledger_path": args.campaign_budget_ledger,
+                        "initial_spent_usd": args.campaign_initial_spent_usd,
+                        "initial_used_gpu_seconds": args.campaign_initial_used_gpu_seconds,
+                        "total_spend_cap_usd": args.campaign_total_spend_cap_usd,
+                        "combined_gpu_wall_cap_seconds": args.campaign_wall_cap_seconds,
+                        "reservation_gpu_seconds": args.campaign_reservation_seconds,
+                        "max_hourly_rate_usd": args.campaign_max_hourly_rate_usd,
+                        "minimum_reconciled_spend_usd": MIN_RECONCILED_CAMPAIGN_SPEND_USD,
+                        "minimum_reconciled_gpu_seconds": MIN_RECONCILED_GPU_SECONDS,
+                    }
+                    if args.execute
+                    else None
+                ),
+            )
         success = result.get("status") in {"dry_run_ready", "submitted"}
     elif args.command == "model-volume":
         vector = [

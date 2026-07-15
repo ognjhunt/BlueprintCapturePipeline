@@ -3,10 +3,56 @@ import os
 
 from blueprint_pipeline.groot_oscar_runpod_canary import (
     _finalize_adapter_allocation,
+    _reserve_campaign_budget,
+    _settle_zero_budget,
     prepare_canary_launch,
     refresh_runpod_preflight,
     run_canary,
 )
+
+
+def _budget_config(tmp_path, **overrides):
+    config = {
+        "ledger_path": str(tmp_path / "campaign-budget.json"),
+        "initial_spent_usd": 11.57,
+        "initial_used_gpu_seconds": 11_619,
+        "total_spend_cap_usd": 20.0,
+        "combined_gpu_wall_cap_seconds": 16_800,
+        "reservation_gpu_seconds": 5_400,
+        "max_hourly_rate_usd": 1.99,
+        "minimum_reconciled_spend_usd": 11.57,
+        "minimum_reconciled_gpu_seconds": 11_619,
+    }
+    config.update(overrides)
+    return config
+
+
+def test_campaign_budget_blocks_current_280_minute_cap_before_handoff(tmp_path) -> None:
+    result = _reserve_campaign_budget(
+        _budget_config(tmp_path), reservation_id="blueprint-canary-budget-blocked"
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["campaign_gpu_wall_time_cap_exceeded"]
+
+
+def test_campaign_budget_rejects_understated_baseline(tmp_path) -> None:
+    result = _reserve_campaign_budget(
+        _budget_config(tmp_path, initial_used_gpu_seconds=11_618),
+        reservation_id="blueprint-canary-understated",
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["gpu_canary_cumulative_baseline_understated"]
+
+
+def test_confirmed_pre_provider_block_settles_zero(tmp_path) -> None:
+    context = _reserve_campaign_budget(
+        _budget_config(tmp_path, reservation_gpu_seconds=100),
+        reservation_id="blueprint-canary-zero-settlement",
+    )
+    assert context["status"] == "reserved"
+    settlement = _settle_zero_budget(context, outcome="test_no_mutation")
+    assert settlement["status"] == "settled"
+    assert settlement["charged_gpu_seconds"] == 0
 
 
 DIGEST = "docker.io/example/release@sha256:" + "a" * 64

@@ -32,7 +32,7 @@ class ScalePool(Protocol):
 class RunPodAutoscalerAuthorization:
     allow_paid: bool = False
     total_spend_cap_usd: float = 20.0
-    combined_gpu_wall_time_cap_seconds: int = 10_980
+    combined_gpu_wall_time_cap_seconds: int = 16_800
     spent_usd: float = 0.0
     used_gpu_wall_time_seconds: int = 0
     attempt_wall_time_limit_seconds: int = 300
@@ -45,8 +45,8 @@ class RunPodAutoscalerAuthorization:
             blockers.append("paid_runpod_autoscaling_not_authorized")
         if not 0 < float(self.total_spend_cap_usd) <= 20:
             blockers.append("total_spend_cap_exceeds_authorized_usd_20")
-        if not 0 < int(self.combined_gpu_wall_time_cap_seconds) <= 10_980:
-            blockers.append("gpu_wall_time_cap_exceeds_authorized_10980_seconds")
+        if not 0 < int(self.combined_gpu_wall_time_cap_seconds) <= 16_800:
+            blockers.append("gpu_wall_time_cap_exceeds_authorized_16800_seconds")
         if float(self.spent_usd) >= float(self.total_spend_cap_usd):
             blockers.append("total_spend_cap_exhausted")
         worst_case_attempt_spend = (

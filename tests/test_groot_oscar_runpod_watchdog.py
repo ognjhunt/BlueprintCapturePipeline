@@ -5,6 +5,7 @@ from blueprint_pipeline.groot_oscar_runpod_watchdog import (
     run_watchdog,
     terminate_canary_resources,
 )
+from blueprint_pipeline.production_gpu_campaign_budget import ProductionGpuCampaignBudget
 
 
 class _Provider:
@@ -95,12 +96,37 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
         encoding="utf-8",
     )
     receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    ledger_path = tmp_path / "campaign-budget.json"
+    ledger = ProductionGpuCampaignBudget(
+        ledger_path,
+        initial_spent_usd=11.57,
+        initial_used_gpu_seconds=11_619,
+        combined_gpu_wall_cap_seconds=16_800,
+    )
+    reservation = ledger.reserve(
+        reservation_id="watchdog-budget-test",
+        gpu_seconds=100,
+        max_hourly_rate_usd=1.99,
+    )
     receipt = {
         "lease_path": str(tmp_path / "lane.lease.json"),
         "owner_pid": 222,
         "pod_pending_teardown_record": str(pending_path),
         "pod_id": "pod-1",
         "pod_name_prefix": "blueprint-groot-oscar-canary-attempt-",
+        "campaign_budget": {
+            "status": "reserved",
+            "ledger_path": str(ledger_path),
+            "reservation_id": "watchdog-budget-test",
+            "reserved_at_epoch": 9_999_999_900.0,
+            "reservation": reservation,
+            "identity": {
+                "initial_spent_usd": 11.57,
+                "initial_used_gpu_seconds": 11_619,
+                "total_spend_cap_usd": 20.0,
+                "combined_gpu_wall_cap_seconds": 16_800,
+            },
+        },
     }
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     os.chmod(receipt_path, 0o600)
@@ -143,3 +169,5 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
     assert result["control_plane_terminal"] is True
     assert result["pod_pending_teardown_close"]["status"] == "closed"
     assert result["provider_lane_owner_return"]["status"] == "restored"
+    assert result["campaign_budget_settlement"]["status"] == "settled"
+    assert result["campaign_budget_settlement"]["charged_gpu_seconds"] == 100

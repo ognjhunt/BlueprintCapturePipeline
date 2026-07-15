@@ -23,8 +23,8 @@ from .common import utc_now_iso
 
 SCHEMA_VERSION = "production_gpu_campaign_budget.v1"
 AUTHORIZED_SPEND_CAP_USD = 20.0
-AUTHORIZED_GPU_WALL_CAP_SECONDS = 10_980
-MAX_HOURLY_RATE_USD = 1.0
+AUTHORIZED_GPU_WALL_CAP_SECONDS = 16_800
+MAX_HOURLY_RATE_USD = 1.99
 
 
 def _number(value: object, *, field: str) -> float:
@@ -224,6 +224,8 @@ class ProductionGpuCampaignBudget:
             self._validate_identity(state)
             for row in state["reservations"]:
                 if row.get("reservation_id") == key:
+                    if row.get("status") != "open":
+                        raise ValueError("campaign_budget_reservation_id_already_settled")
                     if (
                         row.get("reserved_gpu_seconds") != seconds
                         or row.get("max_hourly_rate_usd") != rate

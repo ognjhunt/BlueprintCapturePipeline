@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -136,6 +137,7 @@ def run_watchdog(
             armed=armed,
         )
     receipt_path = root / "provider_lane_handoff_receipt.json"
+    receipt: dict[str, Any] = {}
     receipt_control_required = receipt_path.exists() or receipt_path.is_symlink()
     receipt_safe = False
     if receipt_control_required:
@@ -180,13 +182,18 @@ def run_watchdog(
                     pod_name_prefix
                 )
             )
-            if pending_valid and receipt.get("pod_id"):
+            receipt_pod_id = str(receipt.get("pod_id") or "")
+            pending_pod_id = str(pending_record.get("instance_id") or "")
+            if receipt_pod_id and pending_pod_id and receipt_pod_id != pending_pod_id:
+                pending_valid = False
+            effective_pod_id = receipt_pod_id or pending_pod_id
+            if pending_valid and effective_pod_id:
                 pending_close = close_pending_teardown(
                     pending_path,
                     {
                         "status": "PASS",
                         "provider_absence_confirmed": True,
-                        "instance_id": receipt.get("pod_id"),
+                        "instance_id": effective_pod_id,
                     },
                 )
             elif pending_valid:
@@ -214,6 +221,55 @@ def run_watchdog(
             result["control_plane_terminal"] = False
         else:
             result["control_plane_terminal"] = True
+    budget_context = receipt.get("campaign_budget") if isinstance(receipt, Mapping) else None
+    if (
+        isinstance(budget_context, Mapping)
+        and budget_context.get("status") == "reserved"
+        and result.get("provider_absence_confirmed") is True
+        and result.get("control_plane_terminal") is True
+    ):
+        try:
+            from .production_gpu_campaign_budget import ProductionGpuCampaignBudget
+
+            identity = budget_context["identity"]
+            reservation = budget_context["reservation"]
+            elapsed = max(
+                0,
+                math.ceil(clock() - float(budget_context["reserved_at_epoch"])),
+            )
+            charged_seconds = min(
+                elapsed, int(reservation["reserved_gpu_seconds"])
+            )
+            charged_usd = round(
+                min(
+                    float(reservation["reserved_usd"]),
+                    float(reservation["max_hourly_rate_usd"])
+                    * charged_seconds
+                    / 3600.0,
+                ),
+                6,
+            )
+            budget = ProductionGpuCampaignBudget(
+                budget_context["ledger_path"],
+                initial_spent_usd=identity["initial_spent_usd"],
+                initial_used_gpu_seconds=identity["initial_used_gpu_seconds"],
+                total_spend_cap_usd=identity["total_spend_cap_usd"],
+                combined_gpu_wall_cap_seconds=identity[
+                    "combined_gpu_wall_cap_seconds"
+                ],
+            )
+            result["campaign_budget_settlement"] = budget.settle(
+                reservation_id=budget_context["reservation_id"],
+                charged_gpu_seconds=charged_seconds,
+                charged_usd=charged_usd,
+                outcome="canary_watchdog_provider_and_control_plane_terminal",
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            result["campaign_budget_settlement"] = {
+                "status": "retained_open",
+                "error_type": type(exc).__name__,
+            }
+            result["status"] = "provider_terminal_budget_settlement_unverified"
     write_json(root / EVIDENCE_NAME, result)
     return result
 

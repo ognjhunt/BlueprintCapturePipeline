@@ -36,6 +36,10 @@ from .paid_provider_lane_lease import (
     accept_paid_provider_lane_lease_handoff,
     restore_paid_provider_lane_lease_to_retained_watchdog,
 )
+from .production_gpu_campaign_budget import (
+    CampaignBudgetExceeded,
+    ProductionGpuCampaignBudget,
+)
 from .groot_oscar_runpod_preflight import collect_runpod_preflight
 from .groot_oscar_runpod_watchdog import terminate_canary_resources
 from .runpod_provider_adapter import (
@@ -114,6 +118,72 @@ def _write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _reserve_campaign_budget(
+    config: Mapping[str, Any], *, reservation_id: str
+) -> dict[str, Any]:
+    try:
+        if (
+            float(config.get("initial_spent_usd") or 0)
+            < float(config.get("minimum_reconciled_spend_usd") or 0)
+            or int(config.get("initial_used_gpu_seconds") or 0)
+            < int(config.get("minimum_reconciled_gpu_seconds") or 0)
+        ):
+            raise ValueError("gpu_canary_cumulative_baseline_understated")
+        budget = ProductionGpuCampaignBudget(
+            str(config.get("ledger_path") or ""),
+            initial_spent_usd=float(config["initial_spent_usd"]),
+            initial_used_gpu_seconds=int(config["initial_used_gpu_seconds"]),
+            total_spend_cap_usd=float(config["total_spend_cap_usd"]),
+            combined_gpu_wall_cap_seconds=int(config["combined_gpu_wall_cap_seconds"]),
+        )
+        reservation = budget.reserve(
+            reservation_id=reservation_id,
+            gpu_seconds=int(config["reservation_gpu_seconds"]),
+            max_hourly_rate_usd=float(config["max_hourly_rate_usd"]),
+        )
+    except (CampaignBudgetExceeded, KeyError, TypeError, ValueError) as exc:
+        admission = getattr(exc, "admission", {})
+        return {"status": "blocked", "blockers": [str(admission.get("blocker") or exc)]}
+    if reservation.get("status") != "open":
+        return {"status": "blocked", "blockers": ["campaign_budget_reservation_not_open"]}
+    return {
+        "status": "reserved",
+        "ledger_path": str(Path(str(config["ledger_path"])).expanduser().resolve()),
+        "reservation_id": reservation_id,
+        "reserved_at_epoch": time.time(),
+        "reservation": reservation,
+        "identity": {
+            key: config[key]
+            for key in (
+                "initial_spent_usd",
+                "initial_used_gpu_seconds",
+                "total_spend_cap_usd",
+                "combined_gpu_wall_cap_seconds",
+            )
+        },
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _settle_zero_budget(context: Mapping[str, Any], *, outcome: str) -> dict[str, Any]:
+    if context.get("status") != "reserved":
+        return {"status": "not_reserved"}
+    identity = context["identity"]
+    budget = ProductionGpuCampaignBudget(
+        context["ledger_path"],
+        initial_spent_usd=identity["initial_spent_usd"],
+        initial_used_gpu_seconds=identity["initial_used_gpu_seconds"],
+        total_spend_cap_usd=identity["total_spend_cap_usd"],
+        combined_gpu_wall_cap_seconds=identity["combined_gpu_wall_cap_seconds"],
+    )
+    return budget.settle(
+        reservation_id=str(context["reservation_id"]),
+        charged_gpu_seconds=0,
+        charged_usd=0,
+        outcome=outcome,
+    )
 
 
 def bind_canary_request(
@@ -259,11 +329,13 @@ def run_canary(
     adapter_output: str | Path,
     pod_name: str,
     execute: bool,
+    campaign_budget: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the adapter only through the canonical GPU-canary allocator."""
 
     preflight = _read(preflight_bundle)
     provider = None
+    budget_context: dict[str, Any] = {}
     refresh_path = Path(adapter_output).resolve().parent / "runpod_preflight_launch_refresh.json"
     if execute:
         provider = get_render_provider("runpod")
@@ -327,6 +399,34 @@ def run_canary(
             }
             write_json(Path(admission_out), prepared)
             return prepared
+        budget_context = _reserve_campaign_budget(
+            campaign_budget or {}, reservation_id=pod_name
+        )
+        try:
+            write_json(
+                Path(adapter_output).resolve().parent
+                / "campaign_budget_reservation.json",
+                budget_context,
+            )
+        except Exception as exc:  # noqa: BLE001 - no provider mutation has occurred
+            _settle_zero_budget(
+                budget_context, outcome="budget_evidence_write_failed_no_mutation"
+            )
+            return {
+                "status": "blocked",
+                "blockers": ["campaign_budget_reservation_evidence_write_failed"],
+                "provider_mutations_performed": 0,
+                "error_type": type(exc).__name__,
+            }
+        if budget_context.get("status") != "reserved":
+            prepared = {
+                **prepared,
+                "status": "blocked",
+                "blockers": list(budget_context.get("blockers") or []),
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(admission_out), prepared)
+            return prepared
         volume_handoff = preflight.get("model_volume_watchdog_handoff")
         volume_handoff = (
             volume_handoff if isinstance(volume_handoff, Mapping) else {}
@@ -354,6 +454,9 @@ def run_canary(
             acceptance,
         )
         if acceptance.get("status") != "accepted":
+            _settle_zero_budget(
+                budget_context, outcome="handoff_rejected_before_provider_mutation"
+            )
             prepared = {
                 **prepared,
                 "status": "blocked",
@@ -370,22 +473,39 @@ def run_canary(
             }
             write_json(Path(admission_out), prepared)
             return prepared
-    require_paid_resource_admission(
-        prepared["admission"],
-        resource_class="gpu_canary",
-        expected_schema_version=SERVE_SCHEMA_VERSION,
-    )
-    adapter_admission = build_paid_lane_admission(
-        resource_class="runpod_provider_adapter",
-        blockers=list(prepared.get("blockers") or []),
-    )
-    adapter_grant = require_paid_resource_admission(
-        adapter_admission,
-        resource_class="runpod_provider_adapter",
-        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
-    )
-    write_json(Path(bound_request_out), prepared["bound_request"])
+    try:
+        require_paid_resource_admission(
+            prepared["admission"],
+            resource_class="gpu_canary",
+            expected_schema_version=SERVE_SCHEMA_VERSION,
+        )
+        adapter_admission = build_paid_lane_admission(
+            resource_class="runpod_provider_adapter",
+            blockers=list(prepared.get("blockers") or []),
+        )
+        adapter_grant = require_paid_resource_admission(
+            adapter_admission,
+            resource_class="runpod_provider_adapter",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        )
+        write_json(Path(bound_request_out), prepared["bound_request"])
+    except Exception as exc:  # noqa: BLE001 - provider call has not occurred
+        if execute:
+            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
+            _settle_zero_budget(
+                budget_context, outcome="local_pre_provider_failure_no_mutation"
+            )
+        blocked = {
+            **prepared,
+            "status": "blocked",
+            "blockers": ["runpod_canary_local_pre_provider_failure"],
+            "provider_mutations_performed": 0,
+            "error_type": type(exc).__name__,
+        }
+        write_json(Path(admission_out), blocked)
+        return blocked
     pod_pending = None
+    no_create_terminal = False
     if execute:
         try:
             pod_pending = open_pending_teardown(
@@ -401,6 +521,9 @@ def run_canary(
             )
         except Exception as exc:  # noqa: BLE001 - no provider mutation has occurred
             restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
+            _settle_zero_budget(
+                budget_context, outcome="pending_teardown_open_failed_no_mutation"
+            )
             blocked = {
                 **prepared,
                 "status": "blocked",
@@ -420,6 +543,7 @@ def run_canary(
                         "pod_pending_teardown_record": pod_pending["path"],
                         "pod_id": None,
                         "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
+                        "campaign_budget": budget_context,
                     },
                 )
             except Exception as exc:  # noqa: BLE001 - still before provider call
@@ -429,6 +553,9 @@ def run_canary(
                     evidence={"error_type": type(exc).__name__},
                 )
                 restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
+                _settle_zero_budget(
+                    budget_context, outcome="receipt_write_failed_no_mutation"
+                )
                 blocked = {
                     **prepared,
                     "status": "blocked",
@@ -468,14 +595,6 @@ def run_canary(
                 "provider_mutations_performed": 0,
             }
         )
-        if immediate_cleanup.get("provider_absence_confirmed") is True:
-            if pod_pending is not None:
-                cancel_pending_teardown(
-                    pod_pending["path"],
-                    reason="runpod_canary_immediate_reconciliation_verified_zero",
-                    evidence={"provider_absence_confirmed": True},
-                )
-            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
         failed = {
             "status": "failed",
             "blockers": ["runpod_canary_adapter_failed_or_ambiguous"],
@@ -501,6 +620,10 @@ def run_canary(
                 evidence={"adapter_status": adapter.get("status")},
             )
             restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
+            _settle_zero_budget(
+                budget_context, outcome="adapter_confirmed_no_create"
+            )
+            no_create_terminal = True
         else:
             mark_pending_teardown_ambiguous(
                 pod_pending["path"],
@@ -509,15 +632,30 @@ def run_canary(
             )
         if watchdog_out_dir:
             receipt_path = Path(watchdog_out_dir) / "provider_lane_handoff_receipt.json"
-            _write_private_json(
-                receipt_path,
-                {
-                    **acceptance,
-                    "pod_pending_teardown_record": pod_pending["path"],
-                    "pod_id": pod_id or None,
-                    "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
-                },
-            )
+            if no_create_terminal:
+                receipt_path.unlink(missing_ok=True)
+                return dict(adapter)
+            try:
+                _write_private_json(
+                    receipt_path,
+                    {
+                        **acceptance,
+                        "pod_pending_teardown_record": pod_pending["path"],
+                        "pod_id": pod_id or None,
+                        "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
+                        "campaign_budget": budget_context,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - pre-receipt remains authoritative
+                failed = {
+                    "status": "failed",
+                    "blockers": ["runpod_canary_post_create_receipt_update_failed"],
+                    "provider_allocation_ambiguous": True,
+                    "provider_mutations_performed": 1,
+                    "error_type": type(exc).__name__,
+                }
+                write_json(Path(adapter_output), failed)
+                return failed
     if execute and adapter.get("status") == "submitted":
         return _finalize_adapter_allocation(
             adapter=adapter,

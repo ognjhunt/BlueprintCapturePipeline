@@ -171,4 +171,4 @@ def test_provider_confirmed_no_allocation_releases_reserved_campaign_budget(
     )
 
     assert result["campaign_budget_settlement"]["status"] == "settled"
-    assert ledger.snapshot()["remaining_gpu_seconds"] == 2_165
+    assert ledger.snapshot()["remaining_gpu_seconds"] == 7_985
