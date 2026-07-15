@@ -23,7 +23,7 @@ from .common import utc_now_iso
 
 SCHEMA_VERSION = "production_gpu_campaign_budget.v1"
 AUTHORIZED_SPEND_CAP_USD = 20.0
-AUTHORIZED_GPU_WALL_CAP_SECONDS = 16_800
+AUTHORIZED_GPU_WALL_CAP_SECONDS = 18_000
 MAX_HOURLY_RATE_USD = 1.99
 
 

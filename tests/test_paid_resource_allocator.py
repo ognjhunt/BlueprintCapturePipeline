@@ -355,3 +355,54 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert exit_code == 0
     assert observed["probe_kind"] == "strict-policy-smoke"
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_canary_strict_defaults_bind_300_minute_campaign_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_canary(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "submitted"}
+
+    monkeypatch.setattr(allocator, "run_canary", fake_run_canary)
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request", "request.json",
+            "--release-evidence", "release.json",
+            "--model-cache-evidence", "models.json",
+            "--preflight-bundle", "preflight.json",
+            "--admission-out", "admission.json",
+            "--bound-request-out", "bound.json",
+            "--adapter-output", "adapter.json",
+            "--pod-name", "strict-smoke-pod",
+            "--probe-kind", "strict-policy-smoke",
+            "--campaign-budget-ledger", "budget.json",
+            "--campaign-initial-spent-usd", "12.712289",
+            "--campaign-initial-used-gpu-seconds", "12632",
+            "--campaign-max-hourly-rate-usd", "1.99",
+            "--authorize-reduced-canary-timeout",
+            "--execute",
+        ]
+    )
+    assert exit_code == 0
+    campaign_budget = observed["campaign_budget"]
+    assert isinstance(campaign_budget, dict)
+    assert campaign_budget["combined_gpu_wall_cap_seconds"] == 18_000
+    assert campaign_budget["reservation_gpu_seconds"] == 480
+    assert campaign_budget["maximum_canary_reservation_gpu_seconds"] == 480
+    assert campaign_budget["future_campaign_allowance_gpu_seconds"] == 3_900
+    assert campaign_budget["minimum_reconciled_spend_usd"] == 12.712289
+    assert campaign_budget["minimum_reconciled_gpu_seconds"] == 12_632
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_strict_probe_runbook_arms_watchdog_within_budget_reservation() -> None:
+    runbook = (Path(__file__).parents[1] / "docs/runbooks/groot-oscar-thin-release.md").read_text(
+        encoding="utf-8"
+    )
+    assert 'deadline="$(( $(date +%s) + 480 ))"' in runbook
+    assert 'deadline="$(( $(date +%s) + 900 ))"' not in runbook

@@ -5,7 +5,10 @@ from blueprint_pipeline.production_gpu_warm_watchdog import (
     run_watchdog,
     terminate_at_watchdog_boundary,
 )
-from blueprint_pipeline.production_gpu_campaign_budget import ProductionGpuCampaignBudget
+from blueprint_pipeline.production_gpu_campaign_budget import (
+    AUTHORIZED_GPU_WALL_CAP_SECONDS,
+    ProductionGpuCampaignBudget,
+)
 
 
 class Provider:
@@ -171,4 +174,6 @@ def test_provider_confirmed_no_allocation_releases_reserved_campaign_budget(
     )
 
     assert result["campaign_budget_settlement"]["status"] == "settled"
-    assert ledger.snapshot()["remaining_gpu_seconds"] == 7_985
+    assert ledger.snapshot()["remaining_gpu_seconds"] == (
+        AUTHORIZED_GPU_WALL_CAP_SECONDS - 8_815
+    )

@@ -25,6 +25,9 @@ from blueprint_pipeline.paid_lane_guard import (
     open_pending_teardown,
 )
 from blueprint_pipeline.paid_provider_lane_lease import lease_path, read_lease
+from blueprint_pipeline.production_gpu_campaign_budget import (
+    AUTHORIZED_GPU_WALL_CAP_SECONDS,
+)
 from blueprint_pipeline.provider_race import race_launch
 from scripts import gpu_spend_guard as guard
 from scripts import run_warm_render_worker as worker
@@ -423,7 +426,9 @@ def test_campaign_budget_is_reserved_before_paid_warm_launch(tmp_path: Path) -> 
 
     assert reservation["status"] == "open"
     assert reservation["ledger_snapshot"]["committed_gpu_seconds"] == 10_815
-    assert reservation["ledger_snapshot"]["remaining_gpu_seconds"] == 5_985
+    assert reservation["ledger_snapshot"]["remaining_gpu_seconds"] == (
+        AUTHORIZED_GPU_WALL_CAP_SECONDS - 10_815
+    )
 
 
 def test_new_campaign_budget_requires_reconciled_baseline(tmp_path: Path) -> None:

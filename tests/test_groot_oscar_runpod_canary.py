@@ -45,8 +45,9 @@ def test_strict_policy_smoke_binding_is_fixed_and_bounded() -> None:
     assert bound["operation"] == "enqueue_runpod_strict_policy_smoke"
     assert bound_shape["operation"] == "enqueue_runpod_strict_policy_smoke"
     assert "command" not in bound_shape
-    assert bound_shape["limits"]["hard_timeout_seconds"] == 300
-    assert bound_shape["limits"]["external_watchdog_ttl_seconds"] == 360
+    assert bound_shape["limits"]["hard_timeout_seconds"] == 420
+    assert bound_shape["limits"]["startup_artifact_timeout_seconds"] == 420
+    assert bound_shape["limits"]["external_watchdog_ttl_seconds"] == 480
     assert bound_shape["claim_boundary"]["strict_policy_smoke_only"] is True
     assert (
         bound_shape["claim_boundary"]["fresh_three_action_policy_smoke_required"]
@@ -102,51 +103,49 @@ def test_strict_policy_smoke_output_requires_exact_three_action_proof(
 def _budget_config(tmp_path, **overrides):
     config = {
         "ledger_path": str(tmp_path / "campaign-budget.json"),
-        "initial_spent_usd": 11.57,
-        "initial_used_gpu_seconds": 11_619,
+        "initial_spent_usd": 12.712289,
+        "initial_used_gpu_seconds": 12_632,
         "total_spend_cap_usd": 20.0,
-        "combined_gpu_wall_cap_seconds": 16_800,
-        "reservation_gpu_seconds": 1_200,
+        "combined_gpu_wall_cap_seconds": 18_000,
+        "reservation_gpu_seconds": 480,
         "campaign_stage": "gpu_canary",
-        "maximum_canary_reservation_gpu_seconds": 1_200,
+        "maximum_canary_reservation_gpu_seconds": 480,
         "future_campaign_allowance_gpu_seconds": 3_900,
         "maximum_future_campaign_allowance_gpu_seconds": 3_900,
-        "maximum_combined_plan_gpu_seconds": 5_100,
+        "maximum_combined_plan_gpu_seconds": 4_380,
         "reduced_canary_timeout_acknowledged": True,
         "max_hourly_rate_usd": 1.99,
-        "minimum_reconciled_spend_usd": 11.57,
-        "minimum_reconciled_gpu_seconds": 11_619,
+        "minimum_reconciled_spend_usd": 12.712289,
+        "minimum_reconciled_gpu_seconds": 12_632,
     }
     config.update(overrides)
     return config
 
 
-def test_original_1500_plus_3900_plan_exceeds_current_authority(tmp_path) -> None:
+def test_strict_probe_cannot_expand_to_the_broader_canary_ceiling(tmp_path) -> None:
     result = _reserve_campaign_budget(
         _budget_config(
             tmp_path,
-            reservation_gpu_seconds=1_500,
-            maximum_canary_reservation_gpu_seconds=1_500,
-            maximum_combined_plan_gpu_seconds=5_400,
+            reservation_gpu_seconds=1_200,
         ),
         reservation_id="blueprint-canary-budget-blocked",
     )
     assert result["status"] == "blocked"
-    assert result["blockers"] == ["combined_gpu_plan_exceeds_campaign_wall_cap"]
+    assert result["blockers"] == ["gpu_canary_stage_reservation_exceeds_plan"]
 
 
-def test_1200_canary_plus_3900_campaign_plan_fits_current_authority(tmp_path) -> None:
+def test_480_strict_probe_plus_3900_campaign_fits_300_minute_authority(tmp_path) -> None:
     result = _reserve_campaign_budget(
         _budget_config(tmp_path),
         reservation_id="blueprint-canary-reduced-ceiling",
     )
     assert result["status"] == "reserved"
-    assert result["reservation"]["reserved_gpu_seconds"] == 1_200
+    assert result["reservation"]["reserved_gpu_seconds"] == 480
     assert result["plan"] == {
         "campaign_stage": "gpu_canary",
-        "canary_reservation_gpu_seconds": 1_200,
+        "canary_reservation_gpu_seconds": 480,
         "future_campaign_allowance_gpu_seconds": 3_900,
-        "combined_plan_gpu_seconds": 5_100,
+        "combined_plan_gpu_seconds": 4_380,
     }
 
 
@@ -170,11 +169,18 @@ def test_reduced_canary_plan_requires_explicit_acknowledgement(tmp_path) -> None
 
 def test_campaign_budget_rejects_understated_baseline(tmp_path) -> None:
     result = _reserve_campaign_budget(
-        _budget_config(tmp_path, initial_used_gpu_seconds=11_618),
+        _budget_config(tmp_path, initial_used_gpu_seconds=12_631),
         reservation_id="blueprint-canary-understated",
     )
     assert result["status"] == "blocked"
     assert result["blockers"] == ["gpu_canary_cumulative_baseline_understated"]
+
+    spend_result = _reserve_campaign_budget(
+        _budget_config(tmp_path, initial_spent_usd=12.712288),
+        reservation_id="blueprint-canary-spend-understated",
+    )
+    assert spend_result["status"] == "blocked"
+    assert spend_result["blockers"] == ["gpu_canary_cumulative_baseline_understated"]
 
 
 def test_confirmed_pre_provider_block_settles_zero(tmp_path) -> None:
@@ -524,8 +530,8 @@ def test_execute_reserves_then_accepts_handoff_before_adapter(
     watchdog_dir.mkdir()
     preflight = _preflight()
     preflight["spend"]["watchdog_out_dir"] = str(watchdog_dir)
-    preflight["spend"]["hard_ttl_seconds"] = 1_200
-    preflight["spend"]["watchdog_deadline_epoch"] = time.time() + 1_100
+    preflight["spend"]["hard_ttl_seconds"] = 420
+    preflight["spend"]["watchdog_deadline_epoch"] = time.time() + 400
     preflight["model_volume_watchdog_handoff"]["provider_lane_handoff"] = {
         "binding": {"volume_id": "volume-1"}
     }
@@ -615,9 +621,9 @@ def test_execute_reserves_then_accepts_handoff_before_adapter(
     )
     assert receipt["campaign_budget"]["status"] == "reserved"
     contract = receipt["campaign_budget"]["watchdog_contract"]
-    assert contract["hard_ttl_seconds"] == 1_200
-    assert contract["reserved_gpu_seconds"] == 1_200
-    assert 1 <= contract["watchdog_remaining_seconds_at_reservation"] <= 1_200
+    assert contract["hard_ttl_seconds"] == 420
+    assert contract["reserved_gpu_seconds"] == 480
+    assert 1 <= contract["watchdog_remaining_seconds_at_reservation"] <= 480
 
 
 def test_handoff_rejection_blocks_adapter_and_settles_zero(tmp_path, monkeypatch) -> None:
@@ -626,8 +632,8 @@ def test_handoff_rejection_blocks_adapter_and_settles_zero(tmp_path, monkeypatch
     watchdog_dir.mkdir()
     preflight = _preflight()
     preflight["spend"]["watchdog_out_dir"] = str(watchdog_dir)
-    preflight["spend"]["hard_ttl_seconds"] = 1_200
-    preflight["spend"]["watchdog_deadline_epoch"] = time.time() + 1_100
+    preflight["spend"]["hard_ttl_seconds"] = 420
+    preflight["spend"]["watchdog_deadline_epoch"] = time.time() + 400
     preflight["model_volume_watchdog_handoff"]["provider_lane_handoff"] = {
         "binding": {"volume_id": "volume-1"}
     }
@@ -712,7 +718,7 @@ def test_handoff_rejection_blocks_adapter_and_settles_zero(tmp_path, monkeypatch
 
 @pytest.mark.parametrize(
     ("hard_ttl_seconds", "deadline_offset"),
-    [(1_201, 100), (1_200, 1_300)],
+    [(481, 100), (480, 500)],
     ids=["ttl_exceeds_reservation", "deadline_exceeds_reservation"],
 )
 def test_watchdog_contract_exceeding_reservation_blocks_before_handoff(

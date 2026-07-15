@@ -35,9 +35,10 @@ from .paid_resource_admission import require_paid_resource_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
-MIN_RECONCILED_CAMPAIGN_SPEND_USD = 11.57
-MIN_RECONCILED_GPU_SECONDS = 11_619
+MIN_RECONCILED_CAMPAIGN_SPEND_USD = 12.712289
+MIN_RECONCILED_GPU_SECONDS = 12_632
 GPU_CANARY_RESERVATION_SECONDS = 1_200
+STRICT_POLICY_SMOKE_RESERVATION_SECONDS = 480
 FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_900
 COMBINED_GPU_PLAN_SECONDS = (
     GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
@@ -269,11 +270,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--campaign-initial-spent-usd", type=float)
     gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
     gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
-    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=16_800)
+    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=18_000)
     gpu.add_argument(
         "--campaign-reservation-seconds",
         type=int,
-        default=GPU_CANARY_RESERVATION_SECONDS,
+        default=None,
     )
     gpu.add_argument(
         "--future-campaign-allowance-seconds",
@@ -352,6 +353,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        strict_policy_smoke = args.probe_kind == "strict-policy-smoke"
+        maximum_canary_reservation_seconds = (
+            STRICT_POLICY_SMOKE_RESERVATION_SECONDS
+            if strict_policy_smoke
+            else GPU_CANARY_RESERVATION_SECONDS
+        )
+        reservation_seconds = (
+            args.campaign_reservation_seconds
+            if args.campaign_reservation_seconds is not None
+            else maximum_canary_reservation_seconds
+        )
         budget_arguments = (
             args.campaign_budget_ledger,
             args.campaign_initial_spent_usd,
@@ -384,16 +396,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "initial_used_gpu_seconds": args.campaign_initial_used_gpu_seconds,
                         "total_spend_cap_usd": args.campaign_total_spend_cap_usd,
                         "combined_gpu_wall_cap_seconds": args.campaign_wall_cap_seconds,
-                        "reservation_gpu_seconds": args.campaign_reservation_seconds,
+                        "reservation_gpu_seconds": reservation_seconds,
                         "campaign_stage": "gpu_canary",
-                        "maximum_canary_reservation_gpu_seconds": GPU_CANARY_RESERVATION_SECONDS,
+                        "maximum_canary_reservation_gpu_seconds": (
+                            maximum_canary_reservation_seconds
+                        ),
                         "future_campaign_allowance_gpu_seconds": (
                             args.future_campaign_allowance_seconds
                         ),
                         "maximum_future_campaign_allowance_gpu_seconds": (
                             FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
                         ),
-                        "maximum_combined_plan_gpu_seconds": COMBINED_GPU_PLAN_SECONDS,
+                        "maximum_combined_plan_gpu_seconds": (
+                            STRICT_POLICY_SMOKE_RESERVATION_SECONDS
+                            + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
+                            if strict_policy_smoke
+                            else COMBINED_GPU_PLAN_SECONDS
+                        ),
                         "reduced_canary_timeout_acknowledged": (
                             args.authorize_reduced_canary_timeout
                         ),
