@@ -59,7 +59,7 @@ same deficit.
 
 ## 1. Classify and preload the immutable release
 
-The current exact release is
+The legacy exact monolithic release is
 `docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:ab8fbccb714242b55811aa5142933001dfba76d56b5cc29dead4d0bdf1346e88`.
 Its measured compressed size is 47,101,357,226 bytes and its largest layer is
 14,083,497,680 bytes. The serving contract classifies it as
@@ -74,9 +74,14 @@ python -m blueprint_pipeline.production_gpu_image_contract \
   --out production_gpu_image_serving_contract.json
 ```
 
-A future scale-to-zero candidate must stay below the configured total/layer
-budgets and externalize models behind an immutable model manifest. Passing
-those static budgets still does not prove a live startup SLO.
+The durable packaging path is documented in
+[`groot-oscar-thin-release.md`](groot-oscar-thin-release.md). It caches the
+digest-pinned Isaac/robot-runtime foundation on GPU hosts, externalizes every
+checkpoint behind an immutable byte-level model manifest on the provider
+volume, consolidates compatible OSCAR/GR00T dependencies in one environment,
+and limits the frequently pulled Blueprint release delta to 2 GiB. Passing
+that static delta budget still does not prove a live startup SLO or permit a
+customer request to provision a cold host.
 
 ### Optional provider-owned host image
 

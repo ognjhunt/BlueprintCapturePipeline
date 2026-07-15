@@ -465,7 +465,10 @@ def test_race_opens_pending_teardown_for_winner_and_closes_loser(
         [fast, dud],
         request={"spec": 1},
         marker_check=_marker_check,
-        marker_timeout=0.05,
+        # Pending-teardown records are fsynced before provider launch. Leave enough
+        # wall-clock headroom for a contended CI filesystem; the injected no-op
+        # sleep still keeps this unit test fast and deterministic.
+        marker_timeout=1,
         job_dir=tmp_path,
         poll_interval=0.01,
         prelaunch_guard={"can_launch": True, "blockers": []},
@@ -667,6 +670,25 @@ def test_race_marker_probe_cannot_exceed_absolute_wall_clock_deadline(
         poll_interval=0.01,
     )
     assert calls == 0
+
+
+def test_marker_timeout_starts_after_provider_allocation_returns(tmp_path: Path) -> None:
+    class SlowLaunchProvider(FakeProvider):
+        def launch(self, job_dir, request, *, cold=False):
+            time.sleep(0.06)
+            return super().launch(job_dir, request, cold=cold)
+
+    result = race_launch(
+        [SlowLaunchProvider("slow-create", boots=True, marker_after=1)],
+        request={},
+        marker_check=_marker_check,
+        marker_timeout=0.05,
+        job_dir=tmp_path,
+        poll_interval=0.01,
+    )
+
+    assert result["status"] == "launched"
+    assert result["provider"] == "slow-create"
 
 
 def test_pending_close_error_does_not_skip_remaining_race_cleanup(

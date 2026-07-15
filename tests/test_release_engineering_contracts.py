@@ -63,9 +63,7 @@ def test_uv_lock_and_frozen_exports_are_release_contracts() -> None:
             assert "uv sync --frozen" in text, workflow
 
     for workflow_name in ("sim-only-local-gate.yml", "python-compatibility.yml"):
-        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
-            encoding="utf-8"
-        )
+        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
         assert '"uv.lock"' in workflow
 
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -78,9 +76,7 @@ def test_uv_lock_and_frozen_exports_are_release_contracts() -> None:
 
 
 def test_full_lane_has_no_free_form_test_reduction_input() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "full-test-lane.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github" / "workflows" / "full-test-lane.yml").read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
     assert "pytest_args" not in workflow
@@ -92,6 +88,18 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "scripts/verify_full_lane_collection.py" in workflow
     assert "full-test-lane-planned.json" in workflow
     assert "full-test-lane-executed.json" in workflow
+
+
+def test_groot_oscar_disk_admission_measures_every_write_filesystem() -> None:
+    script = (ROOT / "scripts" / "build_push_groot_oscar_closed_loop_image.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "docker info --format '{{.DockerRootDir}}'" in script
+    assert 'build_temp_root="${TMPDIR:-/tmp}"' in script
+    assert '("source_and_evidence", "docker_buildkit", "build_and_scan_temp")' in script
+    assert "shutil.disk_usage(path).free" in script
+    assert 'evidence["limiting_storage_path"]' in script
 
 
 def test_full_lane_collection_verifier_requires_exact_nodeids(tmp_path: Path) -> None:
@@ -220,9 +228,7 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
 
     for dockerfile_path in dockerfiles:
         text = dockerfile_path.read_text(encoding="utf-8")
-        defaults = dict(
-            re.findall(r"^ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", text, re.MULTILINE)
-        )
+        defaults = dict(re.findall(r"^ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", text, re.MULTILINE))
         from_lines = re.findall(r"^FROM\s+(.+)$", text, re.MULTILINE)
         stage_names = {
             match.group(1)
@@ -239,12 +245,8 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
             resolved = defaults.get(variable.group(1), "") if variable else image
             assert digest_pattern.search(resolved), (dockerfile_path, from_line, resolved)
 
-    deepprivacy = (ROOT / "deploy/docker/deepprivacy2/Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    video_to_world = (ROOT / "deploy/docker/video_to_world/Dockerfile").read_text(
-        encoding="utf-8"
-    )
+    deepprivacy = (ROOT / "deploy/docker/deepprivacy2/Dockerfile").read_text(encoding="utf-8")
+    video_to_world = (ROOT / "deploy/docker/video_to_world/Dockerfile").read_text(encoding="utf-8")
     groot_oscar = (
         ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
     ).read_text(encoding="utf-8")
@@ -253,7 +255,7 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     ).read_text(encoding="utf-8")
 
     assert "DEEPPRIVACY2_SOURCE_REF=" in deepprivacy
-    assert 'checkout --detach FETCH_HEAD' in deepprivacy
+    assert "checkout --detach FETCH_HEAD" in deepprivacy
     assert "git clone --branch main" not in video_to_world
     for source_ref in (
         "VIDEO_TO_WORLD_SOURCE_REF",
@@ -282,6 +284,90 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
     assert "nvinfer nvinfer_plugin nvonnxparser/" in groot_oscar
     assert 'revision=os.environ["SONIC_CHECKPOINT_REVISION"]' in groot_oscar
     assert 'revision=os.environ["GROOT_CHECKPOINT_REVISION"]' in groot_wam
+
+
+def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
+    foundation = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "FROM ${ISAAC_SIM_BASE_IMAGE} AS tensorrt-base" in foundation
+    assert "ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba" in foundation
+    assert "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb" in foundation
+    assert "FROM tensorrt-base AS wbc-builder" in foundation
+    wbc_builder = foundation.split("FROM tensorrt-base AS wbc-builder", 1)[1].split(
+        "FROM tensorrt-base", 1
+    )[0]
+    assert "ca-certificates sudo" in wbc_builder
+    assert "sha256:a1bc93654f31669fd964ea3011a5e5e9676b9b6f8adcd762606e5140632ea72d" in wbc_builder
+    assert "sha256:b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e" in wbc_builder
+    assert "cppzmq-dev" in wbc_builder
+    assert "test ! -d third_party/cppzmq/.git" in wbc_builder
+    assert foundation.count("apt-cache madison libnvinfer10") == 2
+    assert foundation.count("'$3 == version { found=1 } END { exit !found }'") == 3
+    assert foundation.count("libnvinfer10=${TENSORRT_VERSION}") == 2
+    assert "ARG CUDA_CUDART_VERSION=12.6.77-1" in foundation
+    assert "apt-cache madison cuda-cudart-12-6" in foundation
+    assert "cuda-cudart-12-6=${CUDA_CUDART_VERSION}" in foundation
+    assert "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8" in foundation
+    assert "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.6" not in foundation
+    assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in foundation
+    assert "libnvonnxparsers10=${TENSORRT_VERSION}" in foundation
+    assert "uv venv /opt/oscar-venv --python 3.10 --seed" in foundation
+    assert "uv venv /opt/gr00t-venv --python 3.10 --seed" in foundation
+    assert "requirements_uv_bootstrap.txt" in foundation
+    assert "--require-hashes -r /tmp/requirements_uv_bootstrap.txt" in foundation
+    assert "/tmp/oscar/requirements_minimal.txt" in foundation
+    assert "requirements_oscar_foundation.lock" in foundation
+    assert "uv pip install --require-hashes" in foundation
+    assert "uv sync --project /tmp/gr00t --active --no-dev --frozen" in foundation
+    assert "Tag: cp36-cp36m-manylinux2010_x86_64" in foundation
+    assert "Tag: py3-none-manylinux2010_x86_64" in foundation
+    assert "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python" in foundation
+    assert (
+        "COPY --from=robot-env-builder --chown=blueprint:blueprint "
+        "/opt/uv-python /opt/uv-python"
+    ) in foundation
+    assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in foundation
+    assert "tee /tmp/g1_deploy_onnx_ref.ldd" in foundation
+    assert foundation.count("/opt/oscar-venv/bin/python -m pip check") == 2
+    assert foundation.count("/opt/gr00t-venv/bin/python -m pip check") == 2
+    assert "/opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py" in foundation
+    assert "cp -a build target g1 scripts reference" not in foundation
+    assert "COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime" in foundation
+    assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation
+
+
+def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
+    lock = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_oscar_foundation.lock"
+    ).read_text(encoding="utf-8")
+    requirement_lines = [
+        line for line in lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)
+    ]
+    assert len(requirement_lines) >= 100
+    assert lock.count("--hash=sha256:") >= len(requirement_lines)
+    assert "torch==2.10.0+cu128" in lock
+    assert "torchvision==0.25.0+cu128" in lock
+    assert "mujoco==" in lock
+    assert "msgpack-numpy==0.4.8" in lock
+    assert (
+        "# blueprint-input-sha256 oscar-requirements-minimal "
+        "6002a7c982b96435f995d765306785f4835e404ea41308d4864f59bc8e34d117"
+        in lock
+    )
+    runtime_requirements = (
+        ROOT
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_robot_runtime.txt"
+    ).read_bytes()
+    assert (
+        "# blueprint-input-sha256 requirements-robot-runtime "
+        + hashlib.sha256(runtime_requirements).hexdigest()
+        in lock
+    )
 
 
 def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:
@@ -485,39 +571,63 @@ def test_groot_oscar_healthcheck_kit_dir_writability_probe() -> None:
             readonly_dir.chmod(0o755)
 
 
-def test_groot_oscar_release_push_requires_real_oci_runtime_smoke() -> None:
-    """A release push may happen only after exercising the finished image.
+def test_groot_oscar_release_acceptance_requires_real_oci_runtime_smoke() -> None:
+    """Release acceptance requires exercising the finished immutable image.
 
     ``runuser`` during a Docker build resolves supplementary groups differently
     from an OCI runtime when Dockerfile ``USER`` includes an explicit group.
-    The release script therefore has to load and run the final image before it
-    can push it.
+    The release path therefore loads and smokes the finished local closure
+    before its release tag can be pushed. The attested registry export must
+    then bind its runnable config digest back to that smoke-tested image ID.
     """
-    script = (
-        ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh"
-    ).read_text(encoding="utf-8")
+    script = (ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh").read_text(
+        encoding="utf-8"
+    )
 
-    build_at = script.index('"${build_args[@]}"')
-    smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$image_ref"')
-    push_at = script.index('docker push "$image_ref"')
-    assert build_at < smoke_at < push_at
-    assert "build_args+=(--load)" in script
-    assert "build_args+=(--push)" not in script
+    build_at = script.index('"${local_build_args[@]}"')
+    smoke_at = script.index('docker run --rm --entrypoint /bin/bash "$runtime_image_ref"')
+    publish_at = script.index('"${publish_build_args[@]}"')
+    digest_at = script.index('runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"')
+    binding_at = script.index('published_config_digest="$(python3')
+    binding_check_at = script.index(
+        'if [[ "$published_config_digest" != "$smoked_local_image_id" ]]'
+    )
+    registry_scan_at = script.index('syft "registry:${exact_digest_ref}"')
+    provenance_gate_at = script.index("validate_buildkit_provenance_binding(")
+    identity_recheck_at = script.index('source_identity_after_json="$(')
+    promotion_at = script.index('docker buildx imagetools create --tag "$image_ref"')
+    assert (
+        build_at
+        < smoke_at
+        < publish_at
+        < digest_at
+        < binding_at
+        < binding_check_at
+        < registry_scan_at
+        < provenance_gate_at
+        < identity_recheck_at
+        < promotion_at
+    )
+    assert "--load" in script[build_at - 500 : smoke_at]
+    assert "--push" in script[publish_at - 500 : digest_at]
+    assert '-t "$publish_staging_ref"' in script[publish_at - 500 : publish_at]
+    assert '-t "$image_ref"' not in script[publish_at - 500 : publish_at]
+    assert 'publish_staging_ref="${image_ref}-candidate-${source_commit:0:12}"' in script
+    assert '--image "$runtime_image_ref" --output "$registry_manifest_output"' in script
+    assert 'if [[ "$promoted_digest" != "$build_digest" ]]' in script
+    assert '"$source_identity_after_json" == "$source_identity_json"' in script
     assert 'test "$(id -un)" = blueprint' in script
-    assert 'grep -Fx isaac-sim' in script
+    assert "grep -Fx isaac-sim" in script
     assert "/isaac-sim/python.sh" in script
     assert "/opt/oscar-venv/bin/python" in script
     assert "/opt/gr00t-venv/bin/python" in script
     assert "groot_oscar_closed_loop_oci_runtime_smoke_failed" in script
     assert '"oci_runtime_smoke": {' in script
     assert 'runtime_smoke.get("status")' in script
-    assert re.search(
-        r'if \[\[ "\$runtime_smoke_exit" -ne 0 \]\]; then.*?exit 2.*?fi'
-        r'.*?if \[\[ "\$allow_push" == "true" \]\]; then\s*'
-        r'docker push "\$image_ref"',
-        script,
-        re.DOTALL,
-    )
+    smoke_failure_at = script.index('if [[ "$runtime_smoke_exit" -ne 0 ]]')
+    smoke_failure_exit_at = script.index("exit 2", smoke_failure_at)
+    assert smoke_failure_at < smoke_failure_exit_at < publish_at
+    assert "published_runtime_identity_matches_smoked_local_image" in script
 
 
 def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
@@ -544,16 +654,12 @@ def test_groot_oscar_release_ref_requires_tag_on_final_path_component(
             "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF": (
                 "registry.example:5000/blueprint/groot-oscar"
             ),
-            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
-                manifest_path
-            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(manifest_path),
         },
     )
     assert completed.returncode == 2
-    assert "image ref must be versioned" in completed.stderr
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["blockers"] == [
-        "groot_oscar_closed_loop_image_ref_must_be_versioned"
-    ]
+    assert "legacy build path disabled" in completed.stderr
+    assert not manifest_path.exists()
 
 
 def test_groot_oscar_release_push_requires_digest_pinned_base_image(
@@ -578,19 +684,13 @@ def test_groot_oscar_release_push_requires_digest_pinned_base_image(
             ),
             "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_BASE_IMAGE": mutable_base,
             "BLUEPRINT_ALLOW_GROOT_OSCAR_CLOSED_LOOP_IMAGE_PUSH": "true",
-            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(
-                manifest_path
-            ),
+            "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_MANIFEST_OUTPUT": str(manifest_path),
         },
     )
 
     assert completed.returncode == 2
-    assert "release image push requires a digest-pinned base image" in completed.stderr
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["base_image"] == mutable_base
-    assert manifest["blockers"] == [
-        "groot_oscar_closed_loop_base_image_must_be_digest_pinned"
-    ]
+    assert "legacy build path disabled" in completed.stderr
+    assert not manifest_path.exists()
 
 
 def test_dependabot_covers_every_dockerfile_directory() -> None:
@@ -598,9 +698,7 @@ def test_dependabot_covers_every_dockerfile_directory() -> None:
     dockerfiles = [ROOT / "Dockerfile"]
     dockerfiles.extend(sorted((ROOT / "deploy" / "docker").rglob("Dockerfile")))
     dockerfile_directories = {
-        f"/{path.parent.relative_to(ROOT).as_posix()}"
-        if path.parent != ROOT
-        else "/"
+        f"/{path.parent.relative_to(ROOT).as_posix()}" if path.parent != ROOT else "/"
         for path in dockerfiles
     }
 

@@ -47,6 +47,19 @@ This repo must stay aligned with:
 
 ## Commands
 
+Paid resource allocation:
+
+```bash
+python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
+python -m blueprint_pipeline.paid_resource_allocator model-volume <arguments>
+python -m blueprint_pipeline.paid_resource_allocator gpu-canary <arguments>
+```
+
+These are the only supported CPU-build, model-volume, and GPU-canary allocation commands.
+Provider-specific builder/canary modules are adapters and must not be invoked
+as launchers. Every new paid-resource path must pass the shared fail-closed
+admission seam and the CI bypass verifier.
+
 Install:
 
 ```bash

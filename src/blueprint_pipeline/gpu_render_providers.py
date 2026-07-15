@@ -38,6 +38,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline import safe_outbound_http
+from blueprint_pipeline.paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 
 SCHEMA_VERSION = "gpu_render_providers.v1"
 SECRETS = Path.home() / ".blueprint-secrets"
@@ -63,6 +68,7 @@ def _read_secret(name: str) -> str | None:
 DEFAULT_RUNPOD_RENDER_GPU_TYPES: tuple = (
     "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
     "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition",
 )
 
 
@@ -140,6 +146,7 @@ class GpuRenderProvider:
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
         raise NotImplementedError
 
@@ -395,6 +402,18 @@ class RunPodRenderProvider(GpuRenderProvider):
         requested_types = tuple(
             _string_list(req.get("gpuTypeIds")) or _runpod_gpu_types_from_env()
         )
+        requested_data_centers = _string_list(req.get("dataCenterIds"))
+        requested_cuda_versions = _string_list(req.get("allowedCudaVersions"))
+        data_center_filter = (
+            f", dataCenterId: {json.dumps(','.join(requested_data_centers))}"
+            if requested_data_centers
+            else ""
+        )
+        cuda_filter = (
+            f", allowedCudaVersions: {json.dumps(requested_cuda_versions)}"
+            if requested_cuda_versions
+            else ""
+        )
         min_gpu_ram_mb = _positive_int(req.get("min_gpu_ram_mb")) or 0
         requires_rtx = req.get("requires_rtx") is not False
         query = f"""
@@ -405,7 +424,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             memoryInGb
             secureCloud
             communityCloud
-            lowestPrice(input: {{gpuCount: 1, secureCloud: {secure_literal}}}) {{
+            lowestPrice(input: {{gpuCount: 1, secureCloud: {secure_literal}{data_center_filter}{cuda_filter}}}) {{
               stockStatus
               uninterruptablePrice
               availableGpuCounts
@@ -448,6 +467,23 @@ class RunPodRenderProvider(GpuRenderProvider):
                 if isinstance(value, int) and not isinstance(value, bool)
             ]
             single_gpu_count_known = bool(counts)
+            # ``lowestPrice`` was queried with ``gpuCount: 1``. RunPod now
+            # returns ``availableGpuCounts: null`` for otherwise valid exact
+            # datacenter/CUDA offers, so that nullable catalog field cannot be
+            # required as duplicate proof. A non-None stock label plus an
+            # on-demand price is the provider's advisory one-GPU offer; only
+            # the subsequent create response remains authoritative.
+            single_gpu_offer_available = bool(
+                stock.strip()
+                and stock.lower() != "none"
+                and _positive_float(price.get("uninterruptablePrice")) is not None
+                and (not counts or 1 in counts)
+            )
+            capacity_data_center_id = (
+                requested_data_centers[0]
+                if len(requested_data_centers) == 1
+                else None
+            )
             record = {
                 "gpu_type_id": gpu_type,
                 "display_name": row.get("displayName"),
@@ -455,11 +491,16 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "secure_cloud": row.get("secureCloud") is True,
                 "community_cloud": row.get("communityCloud") is True,
                 "cloud_type": cloud_type,
+                "capacity_data_center_ids": requested_data_centers,
+                "capacity_data_center_id": capacity_data_center_id,
+                "capacity_allowed_cuda_versions": requested_cuda_versions,
                 "requested_pool_capable": pool_capable,
                 "stock_status": stock,
                 "catalog_reported_stock": stock,
                 "available_gpu_counts": counts,
                 "single_gpu_count_known": single_gpu_count_known,
+                "single_gpu_offer_requested": True,
+                "single_gpu_offer_available": single_gpu_offer_available,
                 "reservation_proven": False,
                 "on_demand_price_usd_per_hour": price.get("uninterruptablePrice"),
                 "rtx_required": requires_rtx,
@@ -484,12 +525,12 @@ class RunPodRenderProvider(GpuRenderProvider):
             record["blockers"] = blockers
             if blockers:
                 record["capacity_confidence"] = "unavailable"
-            elif single_gpu_count_known and 1 in counts:
+            elif single_gpu_offer_available:
                 record["capacity_confidence"] = "advisory"
             else:
-                # A textual stock label ("Medium") with an empty per-count list
-                # is NOT immediate availability — attempt 021 got HTTP 500 on
-                # create in exactly this state.
+                # The read-only probe is never a reservation. Keep any shape
+                # that does not constitute the exact one-GPU offer unknown and
+                # let the paid admission seam fail closed.
                 record["capacity_confidence"] = "unknown"
             if not blockers:
                 viable.append(record)
@@ -506,6 +547,8 @@ class RunPodRenderProvider(GpuRenderProvider):
             "cloud_type": cloud_type,
             "blockers": [] if viable else ["runpod_secure_rtx_capacity_unavailable"],
             "requested_gpu_types": list(requested_types),
+            "requested_data_center_ids": requested_data_centers,
+            "requested_allowed_cuda_versions": requested_cuda_versions,
             "min_gpu_ram_mb": min_gpu_ram_mb,
             "requires_rtx": requires_rtx,
             "viable_gpu_types": viable,
@@ -562,8 +605,16 @@ class RunPodRenderProvider(GpuRenderProvider):
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
         """Warm-host restart first (no image pull); else cold on-demand create."""
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="gpu_render",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["runpod_api_key_missing"]}
@@ -928,9 +979,17 @@ class VastRenderProvider(GpuRenderProvider):
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
         """Search RT-capable offers under rate, then create an instance from the cheapest.
         Vast is always on-demand cold create; ``cold`` is accepted for a uniform signature."""
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="gpu_render",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["vast_api_key_missing"]}
@@ -1620,7 +1679,15 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="gpu_render",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         token = self._token()
         if not token:
             return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}

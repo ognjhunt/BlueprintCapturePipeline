@@ -14,6 +14,11 @@ from pathlib import Path
 
 from blueprint_pipeline import paid_lane_guard
 from blueprint_pipeline import runpod_wam_async_runner as runner
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV
 
 
@@ -36,6 +41,18 @@ def _enable_paid_gates(monkeypatch) -> None:
             "runpod-secret-not-persisted",
             {"api_key_configured": True, "raw_secret_values_recorded": False},
         ),
+    )
+
+
+def _paid_grant():
+    admission = build_paid_lane_admission(
+        resource_class="runpod_wam_async",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="runpod_wam_async",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
     )
 
 
@@ -95,6 +112,7 @@ def test_wam_create_opens_pending_teardown_and_binds_pod_id(
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
+        paid_resource_admission_grant=_paid_grant(),
     )
     assert manifest["status"] == "pod_created"
     assert manifest["pre_spend_preflight"]["status"] == "PASS"
@@ -132,6 +150,7 @@ def test_wam_create_http_error_cancels_unbound_pending_record(
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
+        paid_resource_admission_grant=_paid_grant(),
     )
     assert manifest["status"] == "blocked"
     assert paid_lane_guard.load_pending_teardowns() == []

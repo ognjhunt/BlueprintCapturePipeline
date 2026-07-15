@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline import safe_outbound_http
+from blueprint_pipeline.paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 
 from .gpu_render_providers import (
     GpuRenderProvider,
@@ -107,12 +112,26 @@ test -f /etc/blueprint/worker-image-ref
 test "$(cat /etc/blueprint/worker-image-ref)" = {image}
 docker image inspect {image} >/dev/null
 python3 - <<'PY'
-import json, subprocess
+import json, pathlib, subprocess
 argv = json.load(open('/root/blueprint_argv.json'))
+worker_env = dict(
+    line.rstrip('\n').split('=', 1)
+    for line in open('/root/blueprint_worker.env', encoding='utf-8')
+    if '=' in line
+)
 cmd = ['docker', 'run', '-d', '--gpus', 'all', '--name', 'blueprint-worker',
        '--env-file', '/root/blueprint_worker.env', '-v', '/workspace:/workspace',
        '--workdir', '/workspace', '--shm-size=8g', '--entrypoint', {entrypoint},
-       {image}, *argv]
+]
+if worker_env.get('BLUEPRINT_GROOT_OSCAR_MODEL_CACHE'):
+    model_root = pathlib.Path('/var/lib/blueprint/models')
+    container_cache = pathlib.PurePosixPath(worker_env['BLUEPRINT_GROOT_OSCAR_MODEL_CACHE'])
+    try: cache_relative = container_cache.relative_to('/models')
+    except ValueError: raise RuntimeError('container_external_model_cache_must_be_under_models')
+    if not (model_root / cache_relative / 'groot_oscar_model_cache_manifest.json').is_file():
+        raise RuntimeError('host_external_model_cache_manifest_missing')
+    cmd.extend(['-v', str(model_root) + ':/models:ro'])
+cmd.extend([{image}, *argv])
 subprocess.check_call(cmd)
 PY
 """
@@ -480,7 +499,11 @@ class GCPRenderProvider(GpuRenderProvider):
             "raw_provider_response_recorded": False,
         }
 
-    def launch(self, job_dir: Path, request: dict, *, cold: bool = False, allow_cold_fallback: bool = True) -> dict:
+    def launch(self, job_dir: Path, request: dict, *, cold: bool = False, allow_cold_fallback: bool = True, paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None) -> dict:
+        try:
+            require_paid_resource_admission_grant(paid_resource_admission_grant, resource_class="gpu_render")
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         blockers = [
             *_string_list(request.get("configuration_blockers")),
             *_render_prelaunch_guard_blockers(request, provider_name="gcp"),
@@ -681,7 +704,11 @@ class AWSRenderProvider(GpuRenderProvider):
             checks["error_type"] = type(exc).__name__
         return {"status": "available" if not blockers else "blocked", "provider": self.name, "region": req.get("region") or self._config()["region"], "checks": checks, "quota_verified": bool(_mapping(checks.get("quota")).get("verified")), "capacity_reservation_proven": False, "blockers": list(dict.fromkeys(blockers)), "api_confirmed": not blockers, "raw_provider_response_recorded": False}
 
-    def launch(self, job_dir: Path, request: dict, *, cold: bool = False, allow_cold_fallback: bool = True) -> dict:
+    def launch(self, job_dir: Path, request: dict, *, cold: bool = False, allow_cold_fallback: bool = True, paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None) -> dict:
+        try:
+            require_paid_resource_admission_grant(paid_resource_admission_grant, resource_class="gpu_render")
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         blockers = [*_string_list(request.get("configuration_blockers")), *_render_prelaunch_guard_blockers(request, provider_name="aws")]
         if blockers:
             return {"status": "blocked", "blockers": list(dict.fromkeys(blockers)), "allocation_created": False}

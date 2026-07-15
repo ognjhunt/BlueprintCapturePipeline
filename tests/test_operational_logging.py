@@ -3,8 +3,6 @@ from __future__ import annotations
 import io
 import json
 import logging
-import shlex
-import sys
 from http import HTTPStatus
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -21,6 +19,11 @@ from blueprint_pipeline import (
     video_to_world_runner_service,
 )
 from blueprint_pipeline.common import PipelineError
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from blueprint_pipeline.runtime_service_app import create_runtime_app
 from blueprint_pipeline.robot_eval_provider_launcher import run_gpu_provider_launcher
 from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV, RUNPOD_API_KEY_ENV
@@ -478,23 +481,6 @@ def _ready_runpod_request(path: Path) -> Path:
     return path
 
 
-def _python_command(code: str) -> str:
-    ownership_prefix = (
-        "import json, os, sys; "
-        "p=os.environ['BLUEPRINT_PROVIDER_ALLOCATION_RECORD_PATH']; "
-        "t=p+'.tmp'; "
-        "r={'schema_version':'robot_eval_provider_allocation_record.v1',"
-        "'launch_attempt_id':os.environ['BLUEPRINT_PROVIDER_LAUNCH_ATTEMPT_ID'],"
-        "'provider_resource_id':'test-provider-resource',"
-        "'persisted_before_provider_side_effects':True,"
-        "'teardown_argv':[sys.executable,'-c','raise SystemExit(0)'],"
-        "'verify_absent_argv':[sys.executable,'-c','raise SystemExit(0)']}; "
-        "f=open(t,'w',encoding='utf-8'); json.dump(r,f); f.flush(); "
-        "os.fsync(f.fileno()); f.close(); os.replace(t,p); "
-    )
-    return f"{shlex.quote(sys.executable)} -c {shlex.quote(ownership_prefix + code)}"
-
-
 def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -517,15 +503,22 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     caplog.clear()
     monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH", "true")
     monkeypatch.setenv("RUNPOD_API_KEY", "secret-runpod-key")
+    side_effect = tmp_path / "legacy-launcher-ran"
     with caplog.at_level(logging.INFO):
-        completed = run_gpu_provider_launcher(
+        disabled = run_gpu_provider_launcher(
             provider_launch_request_path=provider_request,
             allow_provider_launch=True,
-            provider_launch_command=_python_command("import os; print(os.environ['RUNPOD_API_KEY'])"),
+            provider_launch_command=f"touch {side_effect}",
         )
 
-    assert completed["status"] == "completed"
-    assert _records(caplog, "robot_eval_provider_launcher.completed")[-1].exit_code == 0
+    assert disabled["status"] == "blocked"
+    assert disabled["reason"] == "legacy_provider_command_launcher_disabled"
+    assert disabled["blockers"] == [
+        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
+    ]
+    assert side_effect.exists() is False
+    disabled_record = _records(caplog, "robot_eval_provider_launcher.blocked")[-1]
+    assert disabled_record.reason == "legacy_provider_command_launcher_disabled"
     assert "secret-runpod-key" not in caplog.text
 
     caplog.clear()
@@ -543,7 +536,7 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
     monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         raise HTTPError(
             request.full_url,
             401,
@@ -552,13 +545,23 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
             fp=SimpleNamespace(read=lambda: b"bad secret-runpod-key"),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
     with caplog.at_level(logging.INFO):
         failed = runpod_provider_adapter.run_runpod_provider_adapter(
             provider_launch_request_path=runpod_request,
             mode="serverless-run",
             allow_runpod_api_call=True,
             endpoint_id="endpoint-123",
+            paid_resource_admission_grant=require_paid_resource_admission(
+                build_paid_lane_admission(
+                    resource_class="runpod_provider_adapter",
+                    blockers=[],
+                ),
+                resource_class="runpod_provider_adapter",
+                expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+            ),
         )
 
     assert failed["status"] == "failed"

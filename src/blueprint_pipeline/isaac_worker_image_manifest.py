@@ -21,6 +21,11 @@ LARGE_TOTAL_BYTES = 8_000_000_000
 LARGE_LAYER_BYTES = 3_000_000_000
 _DIGEST_RE = re.compile(r"^Digest:\s*(sha256:[0-9a-f]{64})\s*$", re.MULTILINE)
 _DIGEST_VALUE_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CUDA_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?(?:[-+._].*)?$")
+_CUDA_ENV_KEYS = (
+    "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION",
+    "CUDA_VERSION",
+)
 
 
 def _digest_ref(image_ref: str, digest: str) -> str:
@@ -100,6 +105,32 @@ def _runnable_child_digest(raw_manifest: Mapping[str, Any]) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def derive_required_cuda_version(
+    image_config: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """Derive the CUDA major/minor contract from immutable image config metadata."""
+    payload = image_config if isinstance(image_config, Mapping) else {}
+    config = payload.get("config")
+    if not isinstance(config, Mapping):
+        config = payload.get("Config")
+    if not isinstance(config, Mapping):
+        config = payload
+    raw_env = config.get("Env")
+    if not isinstance(raw_env, list):
+        raw_env = config.get("env")
+    env: dict[str, str] = {}
+    if isinstance(raw_env, list):
+        for item in raw_env:
+            if isinstance(item, str) and "=" in item:
+                key, value = item.split("=", 1)
+                env[key] = value
+    for key in _CUDA_ENV_KEYS:
+        match = _CUDA_VERSION_RE.fullmatch(env.get(key, "").strip())
+        if match:
+            return f"{match.group(1)}.{match.group(2)}", f"image_config_env:{key}"
+    return None, None
+
+
 def summarize_manifest(
     *,
     image_ref: str,
@@ -147,6 +178,9 @@ def summarize_manifest(
         layers_over_1gb=layers_over_1gb,
     )
     config = image_config if isinstance(image_config, Mapping) else {}
+    required_cuda_version, required_cuda_version_source = derive_required_cuda_version(
+        config
+    )
     raw_history = config.get("history")
     raw_history = raw_history if isinstance(raw_history, list) else []
     nonempty_history = [
@@ -190,6 +224,8 @@ def summarize_manifest(
         "resolved_digest_ref": digest_ref,
         "runnable_platform": runnable_platform,
         "runnable_child_digest": runnable_child_digest,
+        "required_cuda_version": required_cuda_version,
+        "required_cuda_version_source": required_cuda_version_source,
         "history_available": history_available,
         "nonempty_history_count": len(nonempty_history),
         "history_layer_count_matches": bool(

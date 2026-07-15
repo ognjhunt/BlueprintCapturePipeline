@@ -593,7 +593,7 @@ blueprint-run-unitree-unifolm-policy-provider-smoke \
   --mode vla
 ```
 
-The Vast adapter must use the Unitree-specific bundle kind:
+The Vast adapter can validate the Unitree-specific bundle kind in dry-run mode:
 
 ```bash
 python -m blueprint_pipeline.vast_provider_adapter \
@@ -602,23 +602,15 @@ python -m blueprint_pipeline.vast_provider_adapter \
   --provider-bundle /path/to/unitree_unifolm_policy_provider_runtime_bundle.zip
 ```
 
-That path proves remote bundle download, Unitree entrypoint execution, and
-returned policy JSON only after a live provider run returns
+The public Vast mutation mode is hard-disabled until routed through the
+canonical allocator. A future canonical run can prove remote bundle download,
+Unitree entrypoint execution, and returned policy JSON only after it returns
 `unitree_unifolm_policy_provider_output.json`. It does not by itself install
 UnifoLM dependencies or start a checkpoint-backed `/act` server.
 
-The RunPod async runner supports the same Unitree bundle kind:
-
-```bash
-python -m blueprint_pipeline.runpod_wam_async_runner create \
-  --provider-bundle-kind unitree_unifolm \
-  --image-name docker.io/<user>/blueprint-unitree-unifolm:<versioned-tag> \
-  --bundle-path /path/to/unitree_unifolm_policy_provider_runtime_bundle.zip \
-  --provider-bundle-url-file /path/to/provider_bundle_url.txt \
-  --provider-output-put-url-file /path/to/provider_output_put_url.txt \
-  --provider-output-get-url-file /path/to/provider_output_get_url.txt \
-  --allow-paid-runpod-launch
-```
+The RunPod async runner understands the same Unitree bundle kind, but its public
+`create` mode is hard-disabled and cannot allocate a pod. There is currently no
+canonical paid Unitree/UnifoLM allocation route.
 
 Despite the legacy module name, `provider_bundle_kind=unitree_unifolm` selects
 the Unitree entrypoint, forwards Unitree UnifoLM runtime env defaults, and does
@@ -665,17 +657,10 @@ not mounted, the image launcher can download the public
 on the GPU worker when `BLUEPRINT_UNITREE_UNIFOLM_ALLOW_HF_DOWNLOAD=true`.
 Those weights are runtime material, not image-baked artifacts.
 
-For a long-lived RunPod `/act` server, use:
-
-```bash
-export BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true
-export BLUEPRINT_ALLOW_RUNPOD_POD_LAUNCH=true
-
-blueprint-launch-unitree-unifolm-runpod-server launch \
-  --job-dir robot_eval_jobs/unitree_unifolm_runpod_server_<timestamp> \
-  --image-name docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3 \
-  --allow-paid-runpod-launch
-```
+The long-lived RunPod `/act` server remains an architecture target, not a
+supported public allocation command. Its legacy `launch` mode exits with
+`legacy_unitree_unifolm_runpod_launch_cli_disabled`; route it through the
+canonical allocator before attempting a paid launch.
 
 The launch manifest writes a proxy URL shaped like
 `https://<pod_id>-8777.proxy.runpod.net/act`. Point the local command adapter at

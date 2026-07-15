@@ -110,9 +110,7 @@ def _write_fixture(tmp_path: Path) -> dict[str, Any]:
     route_path = tmp_path / "route.json"
     route_path.write_text(json.dumps(linked), encoding="utf-8")
     contract_path = tmp_path / "task_success_contract.json"
-    contract_path.write_text(
-        json.dumps({"task_id": "microwave_door", **linked}), encoding="utf-8"
-    )
+    contract_path.write_text(json.dumps({"task_id": "microwave_door", **linked}), encoding="utf-8")
     kitchen_path = tmp_path / "kitchen_inventory.json"
     kitchen_path.write_text(json.dumps({"members": []}), encoding="utf-8")
     bundle_path = tmp_path / "payload_bundle.zip"
@@ -153,14 +151,10 @@ def _write_fixture(tmp_path: Path) -> dict[str, Any]:
     return {
         "manifest_path": manifest_path,
         "bundle_path": bundle_path,
-        "launch_image_ref": (
-            f"docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:{IMAGE_HASH}"
-        ),
+        "launch_image_ref": (f"docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:{IMAGE_HASH}"),
         "registry_evidence": {
             "schema_version": REGISTRY_EVIDENCE_SCHEMA_VERSION,
-            "image_ref": (
-                f"docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:{IMAGE_HASH}"
-            ),
+            "image_ref": (f"docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:{IMAGE_HASH}"),
             "digest": f"sha256:{IMAGE_HASH}",
             "source": "registry_api",
         },
@@ -215,9 +209,7 @@ def test_missing_registry_evidence_blocks(tmp_path: Path) -> None:
     fixture = _write_fixture(tmp_path)
     result = _gate(fixture, registry_image_evidence=None)
     assert result["status"] == "BLOCKED"
-    assert any(
-        "registry_image_evidence_missing" in item for item in result["blockers"]
-    )
+    assert any("registry_image_evidence_missing" in item for item in result["blockers"])
 
 
 def test_revalidation_detects_post_gate_artifact_mutation(tmp_path: Path) -> None:
@@ -239,9 +231,7 @@ def test_old_commit_and_wrong_patch_hash_block(tmp_path: Path) -> None:
         },
     )
     assert wrong_commit["status"] == "BLOCKED"
-    assert any(
-        "source_commit_mismatch" in item for item in wrong_commit["blockers"]
-    )
+    assert any("source_commit_mismatch" in item for item in wrong_commit["blockers"])
     wrong_patch = _gate(
         fixture,
         expected_source_identity={
@@ -250,9 +240,7 @@ def test_old_commit_and_wrong_patch_hash_block(tmp_path: Path) -> None:
         },
     )
     assert wrong_patch["status"] == "BLOCKED"
-    assert any(
-        "source_dirty_patch_mismatch" in item for item in wrong_patch["blockers"]
-    )
+    assert any("source_dirty_patch_mismatch" in item for item in wrong_patch["blockers"])
 
 
 def test_swapped_bundle_bytes_block(tmp_path: Path) -> None:
@@ -261,10 +249,7 @@ def test_swapped_bundle_bytes_block(tmp_path: Path) -> None:
         zf.writestr("extra.txt", "swapped")
     result = _gate(fixture)
     assert result["status"] == "BLOCKED"
-    assert any(
-        "attempt_artifact_sha256_mismatch:bundle" in item
-        for item in result["blockers"]
-    )
+    assert any("attempt_artifact_sha256_mismatch:bundle" in item for item in result["blockers"])
 
 
 def test_incompatible_bundle_schema_blocks(tmp_path: Path) -> None:
@@ -289,10 +274,7 @@ def test_incompatible_bundle_schema_blocks(tmp_path: Path) -> None:
     fixture["manifest_path"].write_text(json.dumps(payload), encoding="utf-8")
     result = _gate(fixture)
     assert result["status"] == "BLOCKED"
-    assert any(
-        "g1_bundle_schema_incompatible:review_media" in item
-        for item in result["blockers"]
-    )
+    assert any("g1_bundle_schema_incompatible:review_media" in item for item in result["blockers"])
 
 
 def test_sealed_healthcheck_payload_passes_real_evidence_validator() -> None:
@@ -335,14 +317,16 @@ def test_sealed_healthcheck_claims_stay_distinct() -> None:
 # read as evidence of a dirty build.
 # ---------------------------------------------------------------------------
 
+
 def test_canonical_clean_patch_digest_matches_hashing_scheme() -> None:
     from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
         CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
     )
 
-    assert CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256 == hashlib.sha256(
-        b"staged\0" + b"unstaged\0"
-    ).hexdigest()
+    assert (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
+        == hashlib.sha256(b"staged\0" + b"unstaged\0").hexdigest()
+    )
     # The exact value the 2026-07-11 b15624 build manifest recorded; it was a
     # CLEAN build, not a dirty one.
     assert CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256 == (
@@ -370,20 +354,14 @@ def test_clean_and_dirty_source_tree_identity_end_to_end(tmp_path: Path) -> None
     clean = build_source_tree_identity(repo)
     assert clean["dirty"] is False
     assert clean["untracked_file_count"] == 0
-    assert clean["source_dirty_patch_sha256"] == (
-        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
-    )
-    assert clean["canonical_clean_patch_sha256"] == (
-        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
-    )
+    assert clean["source_dirty_patch_sha256"] == (CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256)
+    assert clean["canonical_clean_patch_sha256"] == (CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256)
 
     (repo / "b.txt").write_text("untracked\n", encoding="utf-8")
     dirty = build_source_tree_identity(repo)
     assert dirty["dirty"] is True
     assert dirty["untracked_file_count"] == 1
-    assert dirty["source_dirty_patch_sha256"] != (
-        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
-    )
+    assert dirty["source_dirty_patch_sha256"] != (CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256)
 
 
 def test_release_image_source_identity_gate_accepts_clean_blocks_dirty() -> None:
@@ -399,26 +377,20 @@ def test_release_image_source_identity_gate_accepts_clean_blocks_dirty() -> None
         "untracked_file_count": 0,
         "identity_includes_staged_unstaged_and_untracked": True,
     }
-    accepted = evaluate_release_image_source_identity(
-        clean_identity, push_requested=True
-    )
+    accepted = evaluate_release_image_source_identity(clean_identity, push_requested=True)
     assert accepted["status"] == "passed"
     assert accepted["source_worktree_dirty"] is False
     assert accepted["patch_sha256_is_canonical_clean"] is True
     assert accepted["dirty_build_override_used"] is False
 
     dirty_identity = dict(clean_identity, dirty=True, source_dirty_patch_sha256="f" * 64)
-    rejected = evaluate_release_image_source_identity(
-        dirty_identity, push_requested=True
-    )
+    rejected = evaluate_release_image_source_identity(dirty_identity, push_requested=True)
     assert rejected["status"] == "blocked"
     assert rejected["blockers"] == ["release_image_requires_clean_source_worktree"]
     assert rejected["patch_sha256_is_canonical_clean"] is False
 
     # Local-only (no push) dirty builds stay allowed for iteration.
-    local = evaluate_release_image_source_identity(
-        dirty_identity, push_requested=False
-    )
+    local = evaluate_release_image_source_identity(dirty_identity, push_requested=False)
     assert local["status"] == "passed"
 
     # The debug override is explicit and recorded; never silent.
@@ -451,7 +423,8 @@ def test_build_script_records_full_source_identity_and_gates_dirty_push() -> Non
     assert 'registry.get("checkpoint_ownership_copyup_detected") is False' in script
     assert "groot_oscar_closed_loop_registry_diagnostic_command_failed" in script
     assert 'git -C "$repo_root" archive --format=tar "$source_commit"' in script
-    assert '--metadata-file "$build_metadata_file"' in script
+    assert '--metadata-file "$local_build_metadata_file"' in script
+    assert '--metadata-file "$publish_build_metadata_file"' in script
     assert 'build_metadata.get("containerimage.digest")' in script
     assert "groot_oscar_closed_loop_buildx_registry_digest_mismatch" in script
     assert "groot_oscar_closed_loop_image_build_requires_clean_source_worktree" in script

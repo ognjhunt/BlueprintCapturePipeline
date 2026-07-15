@@ -1,0 +1,1101 @@
+"""Provider-neutral, checkpointed control plane for paid GPU campaigns.
+
+The public interface is intentionally small: construct :class:`CampaignConfig`,
+provide a :class:`CampaignProviderAdapter`, and call :meth:`CampaignMachine.run`.
+Every externally visible transition is persisted before the next stage starts.
+
+The module proves control-plane behavior only. A completed stage is not policy,
+media, semantic-task, safety, deployment, or physical-robot proof.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import fcntl
+import math
+import queue
+import re
+import signal
+import threading
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Mapping, Protocol, Sequence
+
+
+SCHEMA_VERSION = "provider_neutral_gpu_campaign.v1"
+CONFIG_SCHEMA_VERSION = "provider_neutral_gpu_campaign_config.v1"
+LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES = 20 * 1024**3
+
+
+def _finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _positive_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+class CampaignBlocked(RuntimeError):
+    """A fail-closed campaign terminal condition."""
+
+
+class CampaignProviderAdapter(Protocol):
+    """The provider seam. Production and in-memory adapters share it."""
+
+    provider_name: str
+
+    def inventory(self, allocation_key: str) -> Sequence[Mapping[str, Any]]:
+        raise NotImplementedError
+
+    def allocate(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    def run_stage(
+        self,
+        allocation_id: str,
+        stage: str,
+        *,
+        deadline_seconds: int,
+        config: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    def retrieve(
+        self, allocation_id: str, config: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    def terminate(self, allocation_id: str) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    def inspect(self, allocation_id: str) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CampaignConfig:
+    campaign_id: str
+    allocation_key: str
+    source_sha: str
+    image_digest: str
+    hourly_rate_usd: float
+    max_provider_seconds: int
+    spend_authorization_usd: float
+    image_total_compressed_bytes: int
+    image_largest_layer_bytes: int
+    image_residency_evidence: Mapping[str, Any] | None
+    prior_exposure_usd: float = 0.0
+    smoke_seed: int = 1000
+    episode_seeds: tuple[int, ...] = (1001, 1002, 1003)
+    stage_deadlines_seconds: Mapping[str, int] = field(
+        default_factory=lambda: {
+            "host_ready": 600,
+            "image_ready": 1200,
+            "runtime_health": 300,
+            "canary": 300,
+            "smoke": 300,
+            "episodes": 2700,
+            "artifact_retrieval": 300,
+            "teardown": 300,
+        }
+    )
+    reuse_validated_same_allocation_canary: bool = False
+    canary_handoff: Mapping[str, Any] | None = None
+
+    def payload(self) -> dict[str, Any]:
+        result = asdict(self)
+        result["schema_version"] = CONFIG_SCHEMA_VERSION
+        result["episode_seeds"] = list(self.episode_seeds)
+        return result
+
+    def validate(self) -> list[str]:
+        blockers: list[str] = []
+        if not isinstance(self.campaign_id, str) or not self.campaign_id.strip():
+            blockers.append("campaign_id_missing")
+        if not isinstance(self.allocation_key, str) or not self.allocation_key.strip():
+            blockers.append("allocation_key_missing")
+        if (
+            not isinstance(self.source_sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", self.source_sha) is None
+        ):
+            blockers.append("source_sha_invalid")
+        if (
+            not isinstance(self.image_digest, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None
+        ):
+            blockers.append("image_digest_invalid")
+        hourly_rate_valid = _finite_number(self.hourly_rate_usd) and self.hourly_rate_usd > 0
+        provider_seconds_valid = _positive_integer(self.max_provider_seconds)
+        prior_exposure_valid = (
+            _finite_number(self.prior_exposure_usd) and self.prior_exposure_usd >= 0
+        )
+        authorization_valid = (
+            _finite_number(self.spend_authorization_usd) and self.spend_authorization_usd >= 0
+        )
+        total_size_valid = _positive_integer(self.image_total_compressed_bytes)
+        largest_size_valid = _positive_integer(self.image_largest_layer_bytes)
+        if not hourly_rate_valid or not provider_seconds_valid:
+            blockers.append("paid_runtime_bound_invalid")
+        if not prior_exposure_valid:
+            blockers.append("campaign_prior_exposure_invalid")
+        if not authorization_valid:
+            blockers.append("campaign_spend_authorization_invalid")
+        if not total_size_valid or not largest_size_valid:
+            blockers.append("image_closure_size_missing")
+        elif self.image_largest_layer_bytes > self.image_total_compressed_bytes:
+            blockers.append("image_largest_layer_exceeds_total")
+        if (
+            total_size_valid
+            and self.image_total_compressed_bytes >= LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES
+        ):
+            blockers.extend(validate_preloaded_image_evidence(self, self.image_residency_evidence))
+        if all(
+            (hourly_rate_valid, provider_seconds_valid, prior_exposure_valid, authorization_valid)
+        ):
+            teardown_reserve = (
+                self.stage_deadlines_seconds.get("teardown")
+                if isinstance(self.stage_deadlines_seconds, Mapping)
+                else None
+            )
+            teardown_reserve_valid = _positive_integer(teardown_reserve)
+            maximum = self.prior_exposure_usd + (
+                self.hourly_rate_usd
+                * (self.max_provider_seconds + (teardown_reserve if teardown_reserve_valid else 0))
+                / 3600
+            )
+            if maximum > self.spend_authorization_usd:
+                blockers.append("campaign_maximum_exceeds_spend_authorization")
+        required = {
+            "host_ready",
+            "image_ready",
+            "runtime_health",
+            "canary",
+            "smoke",
+            "episodes",
+            "artifact_retrieval",
+            "teardown",
+        }
+        if not isinstance(self.stage_deadlines_seconds, Mapping):
+            blockers.append("stage_deadlines_incomplete")
+        elif required - set(self.stage_deadlines_seconds):
+            blockers.append("stage_deadlines_incomplete")
+        elif any(not _positive_integer(value) for value in self.stage_deadlines_seconds.values()):
+            blockers.append("stage_deadline_invalid")
+        smoke_seed_valid = isinstance(self.smoke_seed, int) and not isinstance(
+            self.smoke_seed, bool
+        )
+        episode_seed_values_valid = isinstance(self.episode_seeds, (tuple, list)) and all(
+            isinstance(seed, int) and not isinstance(seed, bool) for seed in self.episode_seeds
+        )
+        if not smoke_seed_valid or not episode_seed_values_valid:
+            blockers.append("campaign_seed_invalid")
+        elif not self.episode_seeds:
+            blockers.append("campaign_episode_seeds_missing")
+        elif len(set((self.smoke_seed, *self.episode_seeds))) != 1 + len(self.episode_seeds):
+            blockers.append("campaign_seeds_not_independent")
+        if self.reuse_validated_same_allocation_canary:
+            blockers.extend(validate_same_allocation_canary_handoff(self, self.canary_handoff))
+        return blockers
+
+
+def validate_preloaded_image_evidence(
+    config: CampaignConfig, evidence: Mapping[str, Any] | None
+) -> list[str]:
+    """Require a large exact digest to be resident before paid allocation.
+
+    A registry manifest is intentionally insufficient: it proves availability,
+    not that a provider host can start the image without a paid cold pull.
+    """
+
+    if not isinstance(evidence, Mapping):
+        return ["large_image_preload_evidence_missing"]
+    blockers: list[str] = []
+    if evidence.get("schema_version") != "preloaded_worker_image.v1":
+        blockers.append("large_image_preload_schema_invalid")
+    for key, expected in {
+        "source_sha": config.source_sha,
+        "image_digest": config.image_digest,
+        "allocation_key": config.allocation_key,
+    }.items():
+        if evidence.get(key) != expected:
+            blockers.append(f"large_image_preload_{key}_mismatch")
+    if not str(evidence.get("host_image_id") or "").strip():
+        blockers.append("large_image_preload_host_image_id_missing")
+    for field_name in ("host_self_test_sha256", "runtime_health_sha256"):
+        value = str(evidence.get(field_name) or "")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            blockers.append(f"large_image_preload_{field_name}_invalid")
+    for field_name in (
+        "image_present_before_allocation",
+        "local_digest_inspect_passed",
+        "runtime_health_preflight_passed",
+    ):
+        if evidence.get(field_name) is not True:
+            blockers.append(f"large_image_preload_{field_name}_not_proven")
+    if evidence.get("cold_pull_required_during_campaign") is not False:
+        blockers.append("large_image_cold_pull_still_required")
+    return blockers
+
+
+def validate_image_ready_result(config: CampaignConfig, result: Mapping[str, Any]) -> list[str]:
+    """Re-verify residency on the allocated host before runtime startup."""
+
+    blockers: list[str] = []
+    if result.get("image_digest") != config.image_digest:
+        blockers.append("image_ready_digest_mismatch")
+    if result.get("local_digest_inspect_passed") is not True:
+        blockers.append("image_ready_local_digest_inspect_not_passed")
+    if config.image_total_compressed_bytes >= LARGE_IMAGE_PRELOAD_THRESHOLD_BYTES:
+        if result.get("digest_already_local_at_allocation") is not True:
+            blockers.append("large_image_not_local_at_allocation")
+        if result.get("cold_pull_performed_during_campaign") is not False:
+            blockers.append("large_image_paid_cold_pull_detected")
+        evidence = config.image_residency_evidence or {}
+        if result.get("host_image_id") != evidence.get("host_image_id"):
+            blockers.append("large_image_host_image_identity_mismatch")
+    return blockers
+
+
+def _canonical_sha(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_same_allocation_canary_handoff(
+    config: CampaignConfig, evidence: Mapping[str, Any] | None
+) -> list[str]:
+    """Validate the explicit schema for canary-to-smoke allocation reuse."""
+
+    if not isinstance(evidence, Mapping):
+        return ["same_allocation_canary_handoff_missing"]
+    blockers: list[str] = []
+    if evidence.get("schema_version") != "same_allocation_canary_handoff.v1":
+        blockers.append("same_allocation_canary_handoff_schema_invalid")
+    expected = {
+        "source_sha": config.source_sha,
+        "image_digest": config.image_digest,
+        "allocation_key": config.allocation_key,
+    }
+    for key, value in expected.items():
+        if evidence.get(key) != value:
+            blockers.append(f"same_allocation_canary_{key}_mismatch")
+    if not str(evidence.get("allocation_id") or "").strip():
+        blockers.append("same_allocation_canary_allocation_id_missing")
+    if not str(evidence.get("launch_nonce") or "").strip():
+        blockers.append("same_allocation_canary_launch_nonce_missing")
+    if not str(evidence.get("teardown_owner") or "").strip():
+        blockers.append("same_allocation_canary_teardown_owner_missing")
+    provider_started_at = evidence.get("provider_started_at_epoch_seconds")
+    if (
+        not isinstance(provider_started_at, (int, float))
+        or isinstance(provider_started_at, bool)
+        or provider_started_at <= 0
+    ):
+        blockers.append("same_allocation_canary_provider_started_at_invalid")
+    if evidence.get("runtime_health_passed") is not True:
+        blockers.append("same_allocation_canary_runtime_health_not_passed")
+    if evidence.get("review_media_valid") is not True:
+        blockers.append("same_allocation_canary_review_media_not_valid")
+    if evidence.get("allocation_still_owned") is not True:
+        blockers.append("same_allocation_canary_allocation_not_owned")
+    if evidence.get("teardown_requested") is not False:
+        blockers.append("same_allocation_canary_teardown_already_requested")
+    return blockers
+
+
+def validate_smoke_result(result: Mapping[str, Any]) -> list[str]:
+    """Require real simulator/policy evidence before episode admission."""
+
+    blockers: list[str] = []
+    if result.get("status") not in {"passed", "completed"}:
+        blockers.append("smoke_status_not_passed")
+    if result.get("command_return_code") != 0:
+        blockers.append("smoke_command_return_code_not_zero")
+    if int(result.get("simulator_steps") or 0) < 3:
+        blockers.append("smoke_real_simulator_steps_below_three")
+    for evidence_field in (
+        "manifest_valid",
+        "learned_policy_request_response_valid",
+        "fresh_policy_conditioning_valid",
+        "action_trace_nonempty",
+        "real_task_executor_measurement",
+        "artifact_output_present",
+    ):
+        if result.get(evidence_field) is not True:
+            blockers.append(f"smoke_{evidence_field}_not_proven")
+    if int(result.get("learned_policy_action_count") or 0) < 3:
+        blockers.append("smoke_learned_policy_actions_below_three")
+    raw_sources = result.get("action_sources")
+    sources = (
+        [source.lower() for source in raw_sources]
+        if isinstance(raw_sources, Sequence)
+        and not isinstance(raw_sources, (str, bytes))
+        and all(isinstance(source, str) and source.strip() for source in raw_sources)
+        else []
+    )
+    if not sources or any("surrogate" in source or "fixture" in source for source in sources):
+        blockers.append("smoke_action_sources_not_real")
+    return blockers
+
+
+class CampaignMachine:
+    """Run or resume one campaign while preserving one teardown owner."""
+
+    _STAGES = (
+        "host_ready",
+        "image_ready",
+        "runtime_health",
+        "canary",
+        "smoke",
+        "episodes",
+        "artifact_retrieval",
+    )
+
+    def __init__(
+        self,
+        *,
+        config: CampaignConfig,
+        adapter: CampaignProviderAdapter,
+        state_dir: str | Path,
+        teardown_owner: str | None = None,
+        clock: Any = time.monotonic,
+        wall_clock: Any = time.time,
+    ) -> None:
+        self.config = config
+        self.adapter = adapter
+        self.state_dir = Path(state_dir)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.state_path = self.state_dir / "campaign_state.json"
+        self.config_path = self.state_dir / "immutable_config_manifest.json"
+        recorded_owner = ""
+        if teardown_owner is None and self.state_path.exists():
+            try:
+                recorded_owner = str(
+                    json.loads(self.state_path.read_text()).get("teardown_owner") or ""
+                )
+            except (OSError, json.JSONDecodeError):
+                recorded_owner = ""
+        handoff_owner = ""
+        if self.config.reuse_validated_same_allocation_canary and isinstance(
+            self.config.canary_handoff, Mapping
+        ):
+            handoff_owner = str(self.config.canary_handoff.get("teardown_owner") or "")
+        self.teardown_owner = teardown_owner or recorded_owner or handoff_owner or str(uuid.uuid4())
+        self.clock = clock
+        self.wall_clock = wall_clock
+
+    def _write(self, path: Path, payload: Mapping[str, Any]) -> None:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        temporary.replace(path)
+
+    def _write_best_effort(self, path: Path, state: dict[str, Any]) -> bool:
+        """Persist terminal evidence without ever preempting provider teardown."""
+
+        try:
+            self._write(path, state)
+            return True
+        except Exception as exc:  # noqa: BLE001 - teardown must still run
+            blocker = f"state_persistence_exception:{type(exc).__name__}:{exc}"
+            if blocker not in state["blockers"]:
+                state["blockers"].append(blocker)
+            return False
+
+    @staticmethod
+    def _provider_evidence_mapping(value: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+        payload = dict(value)
+        try:
+            json.dumps(payload, sort_keys=True)
+            return payload
+        except (TypeError, ValueError) as exc:
+            summary = {
+                key: payload[key]
+                for key in ("status", "http", "absent", "allocation_id", "id")
+                if key in payload and isinstance(payload[key], (str, int, float, bool, type(None)))
+            }
+            summary.update(
+                {
+                    "provider_response_unserializable": True,
+                    "response_label": label,
+                    "error_type": type(exc).__name__,
+                }
+            )
+            return summary
+
+    @classmethod
+    def _provider_evidence_list(
+        cls, values: Sequence[Mapping[str, Any]], *, label: str
+    ) -> list[dict[str, Any]]:
+        return [
+            cls._provider_evidence_mapping(value, label=f"{label}[{index}]")
+            for index, value in enumerate(values)
+        ]
+
+    def _initial_state(self, config_sha: str) -> dict[str, Any]:
+        deadlines = self.config.stage_deadlines_seconds
+        teardown_deadline = (
+            deadlines.get("teardown", 300) if isinstance(deadlines, Mapping) else 300
+        )
+        if not _positive_integer(teardown_deadline):
+            teardown_deadline = 300
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "campaign_id": self.config.campaign_id,
+            "provider": self.adapter.provider_name,
+            "allocation_key": self.config.allocation_key,
+            "config_sha256": config_sha,
+            "teardown_owner": self.teardown_owner,
+            "allocation_id": None,
+            "allocation_mutation_pending": False,
+            "provider_started_at_epoch_seconds": None,
+            "teardown_deadline_seconds": teardown_deadline,
+            "completed_stages": [],
+            "stage_results": {},
+            "status": "running",
+            "blockers": [],
+            "teardown": None,
+            "final_inventory": None,
+            "claim_boundary": {
+                "control_plane_completion_is_not_semantic_task_success": True,
+                "simulator_evidence_is_not_physical_robot_readiness": True,
+            },
+        }
+
+    def _load(self) -> tuple[dict[str, Any], str]:
+        config_payload = self.config.payload()
+        try:
+            config_sha = _canonical_sha(config_payload)
+        except (TypeError, ValueError) as exc:
+            raise CampaignBlocked("immutable_campaign_config_not_json_serializable") from exc
+        if self.config_path.exists():
+            try:
+                recorded = json.loads(self.config_path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                raise CampaignBlocked("immutable_campaign_config_manifest_unreadable") from exc
+            if not isinstance(recorded, Mapping):
+                raise CampaignBlocked("immutable_campaign_config_manifest_invalid")
+            if recorded.get("config_sha256") != config_sha:
+                raise CampaignBlocked("immutable_campaign_config_changed")
+        else:
+            self._write(
+                self.config_path,
+                {"config": config_payload, "config_sha256": config_sha},
+            )
+        if not self.state_path.exists():
+            return self._initial_state(config_sha), config_sha
+        state = json.loads(self.state_path.read_text())
+        if state.get("config_sha256") != config_sha:
+            raise CampaignBlocked("campaign_checkpoint_config_mismatch")
+        if state.get("teardown_owner") != self.teardown_owner:
+            raise CampaignBlocked("campaign_teardown_owned_by_another_controller")
+        return state, config_sha
+
+    def _checkpoint(self, state: dict[str, Any], stage: str, result: Mapping[str, Any]) -> None:
+        result_copy = dict(result)
+        # Validate external provider data before touching the live checkpoint.
+        # A failed serialization must leave state clean enough to persist the
+        # finally-equivalent teardown proof.
+        json.dumps(result_copy, sort_keys=True)
+        state["stage_results"][stage] = result_copy
+        if stage not in state["completed_stages"]:
+            state["completed_stages"].append(stage)
+        self._write(self.state_path, state)
+
+    def _provider_elapsed_seconds(self, state: Mapping[str, Any]) -> float:
+        started_at = state.get("provider_started_at_epoch_seconds")
+        if (
+            not isinstance(started_at, (int, float))
+            or isinstance(started_at, bool)
+            or started_at <= 0
+        ):
+            raise CampaignBlocked("campaign_provider_start_time_missing")
+        elapsed = float(self.wall_clock()) - float(started_at)
+        if elapsed < 0:
+            raise CampaignBlocked("campaign_provider_start_time_in_future")
+        return elapsed
+
+    def _enforce_provider_lifetime(self, state: Mapping[str, Any]) -> None:
+        if self._provider_elapsed_seconds(state) > self.config.max_provider_seconds:
+            raise CampaignBlocked("campaign_provider_lifetime_exceeded")
+
+    def _authorized_stage_deadline_seconds(self, state: Mapping[str, Any], stage: str) -> int:
+        """Cap every paid operation to both its stage and provider lifetime."""
+
+        remaining_lifetime = float(
+            self.config.max_provider_seconds
+        ) - self._provider_elapsed_seconds(state)
+        # Adapter deadlines are integral seconds. Refuse to begin work when
+        # less than one authorized second remains instead of rounding up past
+        # the paid lifetime ceiling.
+        remaining_whole_seconds = int(remaining_lifetime)
+        if remaining_whole_seconds <= 0:
+            raise CampaignBlocked("campaign_provider_lifetime_exceeded")
+        return min(
+            int(self.config.stage_deadlines_seconds[stage]),
+            remaining_whole_seconds,
+        )
+
+    @staticmethod
+    def _stage_passed(stage: str, result: Mapping[str, Any]) -> bool:
+        allowed = {
+            "host_ready": {"ready", "passed", "completed"},
+            "image_ready": {"ready", "passed", "completed"},
+            "runtime_health": {"ready", "passed", "completed"},
+            "canary": {"passed", "completed"},
+            "smoke": {"passed", "completed"},
+            "episodes": {"passed", "completed"},
+            "artifact_retrieval": {"retrieved", "passed", "completed"},
+        }
+        return result.get("status") in allowed.get(stage, set())
+
+    def _allocate_with_deadline(self, timeout_seconds: float) -> Mapping[str, Any]:
+        """Never abandon a provider create operation in a daemon thread.
+
+        Main-thread controllers use the signal-backed deadline. Service-thread
+        controllers must supply an adapter operation whose deadline and
+        idempotency are enforced by the provider client itself; otherwise the
+        create is rejected before any paid mutation is attempted.
+        """
+
+        if threading.current_thread() is threading.main_thread():
+            return self._call_with_deadline(
+                timeout_seconds, self.adapter.allocate, self.config.payload()
+            )
+        operation = getattr(self.adapter, "allocate_with_deadline", None)
+        supported = getattr(self.adapter, "supports_provider_enforced_allocation_deadline", False)
+        if not callable(operation) or supported is not True:
+            raise CampaignBlocked("service_thread_allocation_requires_provider_enforced_deadline")
+        return operation(self.config.payload(), deadline_seconds=max(1, int(timeout_seconds)))
+
+    def _run_stage_with_deadline(
+        self, allocation_id: str, stage: str, timeout_seconds: int
+    ) -> Mapping[str, Any]:
+        if threading.current_thread() is threading.main_thread():
+            return self._call_with_deadline(
+                timeout_seconds,
+                lambda: self.adapter.run_stage(
+                    allocation_id,
+                    stage,
+                    deadline_seconds=timeout_seconds,
+                    config=self.config.payload(),
+                ),
+            )
+        operation = getattr(self.adapter, "run_stage_with_deadline", None)
+        supported = getattr(self.adapter, "supports_provider_enforced_stage_deadline", False)
+        if not callable(operation) or supported is not True:
+            raise CampaignBlocked("service_thread_stage_requires_provider_enforced_deadline")
+        return operation(
+            allocation_id,
+            stage,
+            deadline_seconds=timeout_seconds,
+            config=self.config.payload(),
+        )
+
+    def _retrieve_with_deadline(
+        self, allocation_id: str, timeout_seconds: int
+    ) -> Mapping[str, Any]:
+        if threading.current_thread() is threading.main_thread():
+            return self._call_with_deadline(
+                timeout_seconds,
+                self.adapter.retrieve,
+                allocation_id,
+                self.config.payload(),
+            )
+        operation = getattr(self.adapter, "retrieve_with_deadline", None)
+        supported = getattr(self.adapter, "supports_provider_enforced_retrieval_deadline", False)
+        if not callable(operation) or supported is not True:
+            raise CampaignBlocked("service_thread_retrieval_requires_provider_enforced_deadline")
+        return operation(
+            allocation_id,
+            deadline_seconds=timeout_seconds,
+            config=self.config.payload(),
+        )
+
+    def _teardown(self, state: dict[str, Any], *, allocation_key: str | None = None) -> None:
+        teardown_started = self.clock()
+        raw_deadline = state.get("teardown_deadline_seconds")
+        if raw_deadline is None:
+            raw_deadline = self.config.stage_deadlines_seconds.get("teardown", 300)
+        try:
+            teardown_deadline = float(raw_deadline)
+        except (TypeError, ValueError):
+            teardown_deadline = 300.0
+        if teardown_deadline <= 0:
+            teardown_deadline = 300.0
+
+        def bounded(operation: Any, *args: Any) -> Any:
+            remaining = teardown_deadline - (self.clock() - teardown_started)
+            return self._call_with_deadline(remaining, operation, *args)
+
+        inventory_key = allocation_key or self.config.allocation_key
+        allocation_id = str(state.get("allocation_id") or "")
+        if not allocation_id:
+            discovered_inventory = list(bounded(self.adapter.inventory, inventory_key))
+            delete_requests: list[dict[str, Any]] = []
+            inspections: list[dict[str, Any]] = []
+            discovered_ids = [
+                str(item.get("allocation_id") or item.get("id") or "").strip()
+                for item in discovered_inventory
+                if isinstance(item, Mapping)
+            ]
+            can_delete_discovered = bool(state.get("allocation_mutation_pending"))
+            if can_delete_discovered and discovered_inventory and all(discovered_ids):
+                for discovered_id in discovered_ids:
+                    delete_raw = dict(bounded(self.adapter.terminate, discovered_id))
+                    inspect_raw = dict(bounded(self.adapter.inspect, discovered_id))
+                    delete_requests.append(
+                        self._provider_evidence_mapping(delete_raw, label="teardown_delete_request")
+                    )
+                    inspections.append(
+                        self._provider_evidence_mapping(
+                            inspect_raw, label="teardown_provider_inspection"
+                        )
+                    )
+                final_inventory = list(bounded(self.adapter.inventory, inventory_key))
+            else:
+                final_inventory = discovered_inventory
+            discovered_absent = bool(inspections) and all(
+                item.get("absent") is True or item.get("http") == 404 for item in inspections
+            )
+            teardown_passed = bool(
+                can_delete_discovered
+                and discovered_inventory
+                and all(discovered_ids)
+                and discovered_absent
+                and not final_inventory
+            )
+            # An empty immediate inventory cannot prove absence after an
+            # ambiguous create; provider listings may be eventually consistent.
+            # Keep teardown retryable until an ID is discovered/deleted or an
+            # independent terminal inventory proof clears the mutation window.
+            not_required = not discovered_inventory and not can_delete_discovered
+            state["teardown"] = {
+                "status": (
+                    "passed" if teardown_passed else "not_required" if not_required else "blocked"
+                ),
+                "billing_stopped": bool(not_required or teardown_passed),
+                "teardown_owner": self.teardown_owner,
+                "allocation_mutation_pending": can_delete_discovered,
+                "discovered_inventory": self._provider_evidence_list(
+                    discovered_inventory, label="discovered_inventory"
+                ),
+                "delete_requests": delete_requests,
+                "provider_inspections": inspections,
+                "elapsed_seconds": round(self.clock() - teardown_started, 3),
+                "deadline_seconds": int(teardown_deadline),
+            }
+            state["final_inventory"] = self._provider_evidence_list(
+                final_inventory, label="final_inventory"
+            )
+            if final_inventory and "provider_final_inventory_not_zero" not in state["blockers"]:
+                state["blockers"].append("provider_final_inventory_not_zero")
+            if teardown_passed:
+                state["allocation_mutation_pending"] = False
+            self._write_best_effort(self.state_path, state)
+            return
+        teardown_raw = dict(bounded(self.adapter.terminate, allocation_id))
+        inspection_raw = dict(bounded(self.adapter.inspect, allocation_id))
+        absent = inspection_raw.get("absent") is True or inspection_raw.get("http") == 404
+        final_inventory = list(bounded(self.adapter.inventory, inventory_key))
+        state["teardown"] = {
+            "status": "passed" if absent and not final_inventory else "blocked",
+            "delete_request": self._provider_evidence_mapping(
+                teardown_raw, label="teardown_delete_request"
+            ),
+            "provider_inspection": self._provider_evidence_mapping(
+                inspection_raw, label="teardown_provider_inspection"
+            ),
+            "billing_stopped": absent,
+            "teardown_owner": self.teardown_owner,
+            "elapsed_seconds": round(self.clock() - teardown_started, 3),
+            "deadline_seconds": int(teardown_deadline),
+        }
+        state["final_inventory"] = self._provider_evidence_list(
+            final_inventory, label="final_inventory"
+        )
+        if not absent:
+            state["blockers"].append("provider_teardown_ambiguous")
+        if final_inventory:
+            state["blockers"].append("provider_final_inventory_not_zero")
+        self._write_best_effort(self.state_path, state)
+
+    @staticmethod
+    def _call_with_deadline(timeout_seconds: float, operation: Any, *args: Any) -> Any:
+        """Interrupt a blocking provider teardown call on the controller thread."""
+
+        if timeout_seconds <= 0:
+            raise CampaignBlocked("campaign_teardown_deadline_exceeded")
+        if threading.current_thread() is not threading.main_thread():
+            # Signal timers are restricted to Python's main thread. Controllers
+            # hosted by a service still need bounded teardown, so isolate the
+            # provider call in a daemon thread. A late delete remains safe and
+            # useful; the controller returns blocked/ambiguous at the deadline.
+            outcome: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+            def invoke() -> None:
+                try:
+                    outcome.put(("result", operation(*args)))
+                except Exception as exc:
+                    outcome.put(("error", exc))
+
+            worker = threading.Thread(target=invoke, daemon=True)
+            worker.start()
+            worker.join(timeout_seconds)
+            if worker.is_alive():
+                raise CampaignBlocked("campaign_teardown_deadline_exceeded")
+            kind, value = outcome.get_nowait()
+            if kind == "error":
+                raise value
+            return value
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+        started = time.monotonic()
+
+        def deadline_handler(_signum: int, _frame: Any) -> None:
+            raise CampaignBlocked("campaign_teardown_deadline_exceeded")
+
+        signal.signal(signal.SIGALRM, deadline_handler)
+        signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+        try:
+            return operation(*args)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            if previous_delay > 0:
+                elapsed = time.monotonic() - started
+                signal.setitimer(
+                    signal.ITIMER_REAL,
+                    max(0.000001, previous_delay - elapsed),
+                    previous_interval,
+                )
+
+    def _recorded_checkpoint_for_teardown(
+        self,
+    ) -> tuple[dict[str, Any], str] | None:
+        """Read only the persisted identity needed for emergency teardown.
+
+        This deliberately precedes current-config validation. A changed or now
+        invalid resume config must never hide an allocation that the previous
+        process already checkpointed.
+        """
+
+        def fallback_allocation_key() -> str:
+            if self.config_path.exists():
+                try:
+                    manifest = json.loads(self.config_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    manifest = {}
+                recorded_config = manifest.get("config") if isinstance(manifest, dict) else {}
+                if isinstance(recorded_config, Mapping):
+                    key = recorded_config.get("allocation_key")
+                    if isinstance(key, str) and key.strip():
+                        return key.strip()
+            key = self.config.allocation_key
+            return key.strip() if isinstance(key, str) else ""
+
+        if not self.state_path.exists():
+            return None
+        try:
+            state = json.loads(self.state_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            allocation_key = fallback_allocation_key()
+            if not allocation_key:
+                return None
+            state = self._initial_state("unreadable_checkpoint")
+            state["campaign_id"] = str(self.config.campaign_id)
+            state["allocation_key"] = allocation_key
+            state["status"] = "blocked"
+            state["allocation_mutation_pending"] = True
+            state["checkpoint_unreadable"] = True
+            state["blockers"] = [f"campaign_checkpoint_unreadable:{type(exc).__name__}"]
+            return state, allocation_key
+        if not isinstance(state, dict):
+            allocation_key = fallback_allocation_key()
+            if not allocation_key:
+                return None
+            state = self._initial_state("invalid_checkpoint")
+            state["campaign_id"] = str(self.config.campaign_id)
+            state["allocation_key"] = allocation_key
+            state["status"] = "blocked"
+            state["allocation_mutation_pending"] = True
+            state["checkpoint_unreadable"] = True
+            state["blockers"] = ["campaign_checkpoint_not_object"]
+            return state, allocation_key
+        if state.get("teardown_owner") != self.teardown_owner:
+            raise CampaignBlocked("campaign_teardown_owned_by_another_controller")
+        if state.get("provider") != self.adapter.provider_name:
+            raise CampaignBlocked("campaign_provider_adapter_mismatch")
+        allocation_key = str(state.get("allocation_key") or "").strip()
+        if not allocation_key:
+            allocation_key = fallback_allocation_key()
+        if not allocation_key:
+            return None
+        return state, allocation_key
+
+    def _block_and_teardown_recorded_checkpoint(
+        self,
+        state: dict[str, Any],
+        *,
+        allocation_key: str,
+        blocker: str,
+    ) -> dict[str, Any]:
+        state["status"] = "blocked"
+        state.setdefault("blockers", [])
+        if blocker not in state["blockers"]:
+            state["blockers"].append(blocker)
+        self._write_best_effort(self.state_path, state)
+        try:
+            self._teardown(state, allocation_key=allocation_key)
+        except Exception as exc:
+            teardown_blocker = f"provider_teardown_exception:{type(exc).__name__}:{exc}"
+            if teardown_blocker not in state["blockers"]:
+                state["blockers"].append(teardown_blocker)
+            state["teardown"] = {
+                "status": "blocked",
+                "billing_stopped": False,
+                "teardown_owner": self.teardown_owner,
+                "exception": f"{type(exc).__name__}:{exc}",
+            }
+            state["final_inventory"] = None
+        self._write_best_effort(self.state_path, state)
+        return state
+
+    @staticmethod
+    def _recorded_checkpoint_needs_teardown(state: Mapping[str, Any]) -> bool:
+        teardown = state.get("teardown")
+        teardown = teardown if isinstance(teardown, Mapping) else {}
+        paid_mutation_may_exist = bool(
+            state.get("allocation_id") or state.get("allocation_mutation_pending")
+        )
+        return paid_mutation_may_exist and teardown.get("status") not in {
+            "passed",
+            "not_required",
+        }
+
+    def run(self) -> dict[str, Any]:
+        """Run with an OS-released exclusive lock as the teardown owner."""
+
+        lock_path = self.state_dir / "campaign_controller.lock"
+        lock_handle = lock_path.open("a+")
+        try:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise CampaignBlocked("campaign_controller_already_running") from exc
+            return self._run_owned()
+        finally:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_handle.close()
+
+    def _run_owned(self) -> dict[str, Any]:
+        recorded_checkpoint = self._recorded_checkpoint_for_teardown()
+        try:
+            blockers = self.config.validate()
+        except Exception as exc:
+            # Dataclass type hints are not runtime validation. A malformed
+            # decoded config must still enter the recorded-allocation teardown
+            # path instead of escaping and leaving paid compute alive.
+            blockers = [f"campaign_config_validation_exception:{type(exc).__name__}:{exc}"]
+        if blockers:
+            if recorded_checkpoint is not None:
+                state, allocation_key = recorded_checkpoint
+                if self._recorded_checkpoint_needs_teardown(state):
+                    return self._block_and_teardown_recorded_checkpoint(
+                        state,
+                        allocation_key=allocation_key,
+                        blocker="campaign_config_invalid:" + ",".join(blockers),
+                    )
+            raise CampaignBlocked(",".join(blockers))
+        if recorded_checkpoint is not None:
+            state, allocation_key = recorded_checkpoint
+            if state.get("checkpoint_unreadable") is True:
+                return self._block_and_teardown_recorded_checkpoint(
+                    state,
+                    allocation_key=allocation_key,
+                    blocker="campaign_checkpoint_unreadable_requires_teardown",
+                )
+        try:
+            state, _ = self._load()
+        except CampaignBlocked as exc:
+            if recorded_checkpoint is not None:
+                state, allocation_key = recorded_checkpoint
+                if self._recorded_checkpoint_needs_teardown(state):
+                    return self._block_and_teardown_recorded_checkpoint(
+                        state,
+                        allocation_key=allocation_key,
+                        blocker=str(exc),
+                    )
+            raise
+        if state.get("status") == "completed":
+            return state
+        if state.get("status") == "blocked":
+            teardown = state.get("teardown") or {}
+            if teardown.get("status") in {"passed", "not_required"}:
+                return state
+            try:
+                self._teardown(state)
+            except Exception as exc:
+                state["teardown"] = {
+                    "status": "blocked",
+                    "billing_stopped": False,
+                    "teardown_owner": self.teardown_owner,
+                    "exception": f"{type(exc).__name__}:{exc}",
+                }
+                state["final_inventory"] = None
+            self._write_best_effort(self.state_path, state)
+            return state
+        try:
+            if not state.get("allocation_id"):
+                if self.config.reuse_validated_same_allocation_canary:
+                    handoff = self.config.canary_handoff or {}
+                    allocation_id = str(handoff.get("allocation_id") or "").strip()
+                    if str(handoff.get("teardown_owner") or "") != self.teardown_owner:
+                        raise CampaignBlocked("same_allocation_teardown_owner_mismatch")
+                    allocation = {
+                        "status": "completed",
+                        "allocation_id": allocation_id,
+                        "adopted_canary_handoff": True,
+                        "launch_nonce": handoff.get("launch_nonce"),
+                        "teardown_owner": self.teardown_owner,
+                    }
+                    provider_started_at = handoff.get("provider_started_at_epoch_seconds")
+                    # Once ownership is proven by the signed handoff contract,
+                    # persist its exact allocation ID before consulting the
+                    # eventually-consistent provider inventory. Any rejection
+                    # below must still reach finally-equivalent deletion.
+                    state["allocation_id"] = allocation_id
+                    state["allocation_mutation_pending"] = False
+                    state["provider_started_at_epoch_seconds"] = provider_started_at
+                    self._checkpoint(state, "allocation", allocation)
+                    inventory = list(
+                        self._call_with_deadline(
+                            self._authorized_stage_deadline_seconds(state, "host_ready"),
+                            self.adapter.inventory,
+                            self.config.allocation_key,
+                        )
+                    )
+                    inventory_ids = {
+                        str(item.get("allocation_id") or item.get("id") or "").strip()
+                        for item in inventory
+                    }
+                    if inventory_ids != {allocation_id}:
+                        raise CampaignBlocked("same_allocation_handoff_inventory_mismatch")
+                else:
+                    inventory = list(self.adapter.inventory(self.config.allocation_key))
+                    if inventory:
+                        raise CampaignBlocked("duplicate_paid_allocation_detected")
+                    if state.get("allocation_mutation_pending") is True:
+                        raise CampaignBlocked(
+                            "provider_allocation_mutation_pending_requires_teardown"
+                        )
+                    if (
+                        threading.current_thread() is not threading.main_thread()
+                        and getattr(
+                            self.adapter,
+                            "supports_provider_enforced_allocation_deadline",
+                            False,
+                        )
+                        is not True
+                    ):
+                        raise CampaignBlocked(
+                            "service_thread_allocation_requires_provider_enforced_deadline"
+                        )
+                    # Record the conservative lifetime baseline before the paid
+                    # provider mutation. It remains valid across controller
+                    # crashes and process resumes.
+                    provider_started_at = float(self.wall_clock())
+                    state["allocation_mutation_pending"] = True
+                    self._write(self.state_path, state)
+                    allocation = dict(
+                        self._allocate_with_deadline(float(self.config.max_provider_seconds))
+                    )
+                    allocation_id = str(
+                        allocation.get("allocation_id") or allocation.get("id") or ""
+                    ).strip()
+                    if not allocation_id:
+                        raise CampaignBlocked("provider_allocation_id_missing")
+                if "allocation" not in state["completed_stages"]:
+                    state["allocation_id"] = allocation_id
+                    state["allocation_mutation_pending"] = False
+                    state["provider_started_at_epoch_seconds"] = provider_started_at
+                    self._checkpoint(state, "allocation", allocation)
+
+            allocation_id = str(state["allocation_id"])
+            self._enforce_provider_lifetime(state)
+            if self.config.reuse_validated_same_allocation_canary:
+                handoff = self.config.canary_handoff or {}
+                if allocation_id != str(handoff.get("allocation_id") or ""):
+                    raise CampaignBlocked("same_allocation_handoff_checkpoint_mismatch")
+                if self.teardown_owner != str(handoff.get("teardown_owner") or ""):
+                    raise CampaignBlocked("same_allocation_teardown_owner_mismatch")
+            for stage in self._STAGES:
+                if stage in state["completed_stages"]:
+                    continue
+                self._enforce_provider_lifetime(state)
+                authorized_deadline = self._authorized_stage_deadline_seconds(state, stage)
+                stage_started = self.clock()
+                if stage == "canary" and self.config.reuse_validated_same_allocation_canary:
+                    result = {"status": "passed", "reused_handoff": True}
+                elif stage == "artifact_retrieval":
+                    result = dict(self._retrieve_with_deadline(allocation_id, authorized_deadline))
+                else:
+                    result = dict(
+                        self._run_stage_with_deadline(allocation_id, stage, authorized_deadline)
+                    )
+                elapsed = self.clock() - stage_started
+                if elapsed > authorized_deadline:
+                    raise CampaignBlocked(f"campaign_stage_deadline_exceeded:{stage}")
+                result.setdefault("authorized_deadline_seconds", authorized_deadline)
+                result.setdefault("elapsed_seconds", round(elapsed, 3))
+                if not self._stage_passed(stage, result):
+                    raise CampaignBlocked(f"campaign_stage_failed:{stage}")
+                if stage == "image_ready":
+                    image_blockers = validate_image_ready_result(self.config, result)
+                    if image_blockers:
+                        raise CampaignBlocked(
+                            "image_ready_gate_blocked:" + ",".join(image_blockers)
+                        )
+                if stage == "smoke":
+                    smoke_blockers = validate_smoke_result(result)
+                    if smoke_blockers:
+                        raise CampaignBlocked("smoke_gate_blocked:" + ",".join(smoke_blockers))
+                self._checkpoint(state, stage, result)
+                self._enforce_provider_lifetime(state)
+            state["status"] = "teardown_pending"
+        except Exception as exc:  # fail closed, including provider ambiguity
+            state["status"] = "blocked"
+            blocker = (
+                str(exc) if isinstance(exc, CampaignBlocked) else f"{type(exc).__name__}:{exc}"
+            )
+            if blocker not in state["blockers"]:
+                state["blockers"].append(blocker)
+        finally:
+            self._write_best_effort(self.state_path, state)
+            try:
+                self._teardown(state)
+            except Exception as exc:
+                blocker = f"provider_teardown_exception:{type(exc).__name__}:{exc}"
+                if blocker not in state["blockers"]:
+                    state["blockers"].append(blocker)
+                state["teardown"] = {
+                    "status": "blocked",
+                    "billing_stopped": False,
+                    "teardown_owner": self.teardown_owner,
+                    "exception": f"{type(exc).__name__}:{exc}",
+                }
+                state["final_inventory"] = None
+            if state["teardown"]["status"] == "passed" and state["status"] == "teardown_pending":
+                state["status"] = "completed"
+            elif state["teardown"]["status"] != "passed":
+                state["status"] = "blocked"
+            self._write_best_effort(self.state_path, state)
+        return state

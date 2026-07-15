@@ -82,6 +82,31 @@ def _execute(request, **kwargs):
     )
 
 
+def test_pinned_controller_revision_accepts_runtime_marker_without_git(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "wbc"
+    root.mkdir()
+    (root / ".blueprint-source-revision").write_text(
+        contract.PINNED_WBC_SOURCE_REVISION + "\n", encoding="utf-8"
+    )
+    assert executor._pinned_controller_revision(root) == (
+        contract.PINNED_WBC_SOURCE_REVISION
+    )
+
+
+def test_pinned_controller_revision_rejects_wrong_runtime_marker(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "wbc"
+    root.mkdir()
+    (root / ".blueprint-source-revision").write_text("wrong\n", encoding="utf-8")
+    with pytest.raises(
+        RuntimeError, match="official_gear_sonic_controller_revision_mismatch"
+    ):
+        executor._pinned_controller_revision(root)
+
+
 @pytest.fixture()
 def wbc_env(tmp_path, monkeypatch):
     root, model = _install_model(tmp_path)
@@ -151,6 +176,16 @@ def test_executor_rejects_unpinned_installed_controller_revision(wbc_env) -> Non
             fk_solver=_fake_fk,
             controller_revision_resolver=lambda _root: "unreviewed-revision",
         )
+
+
+def test_sealed_revision_marker_replaces_runtime_git_history(wbc_env) -> None:
+    root, _ = wbc_env
+    marker = root / executor.SEALED_REVISION_FILE
+    marker.write_text(contract.PINNED_WBC_SOURCE_REVISION + "\n", encoding="utf-8")
+    assert executor._pinned_controller_revision(root) == contract.PINNED_WBC_SOURCE_REVISION
+    marker.write_text("0" * 40 + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="controller_revision_mismatch"):
+        executor._pinned_controller_revision(root)
 
 
 def test_executor_validates_live_isaac_articulation_joints(wbc_env) -> None:

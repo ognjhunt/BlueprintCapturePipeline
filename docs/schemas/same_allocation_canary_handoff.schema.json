@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/same_allocation_canary_handoff.v1.json",
+  "title": "Same-allocation canary continuation evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "source_sha", "image_digest", "allocation_key", "allocation_id",
+    "launch_nonce", "teardown_owner", "provider_started_at_epoch_seconds",
+    "runtime_health_passed", "review_media_valid",
+    "allocation_still_owned", "teardown_requested"
+  ],
+  "properties": {
+    "schema_version": {"const": "same_allocation_canary_handoff.v1"},
+    "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "image_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "allocation_key": {"type": "string", "minLength": 1},
+    "allocation_id": {"type": "string", "minLength": 1},
+    "launch_nonce": {"type": "string", "minLength": 1},
+    "teardown_owner": {"type": "string", "minLength": 1},
+    "provider_started_at_epoch_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "runtime_health_passed": {"const": true},
+    "review_media_valid": {"const": true},
+    "allocation_still_owned": {"const": true},
+    "teardown_requested": {"const": false}
+  }
+}

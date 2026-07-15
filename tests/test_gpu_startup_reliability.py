@@ -423,7 +423,7 @@ def test_campaign_budget_is_reserved_before_paid_warm_launch(tmp_path: Path) -> 
 
     assert reservation["status"] == "open"
     assert reservation["ledger_snapshot"]["committed_gpu_seconds"] == 10_815
-    assert reservation["ledger_snapshot"]["remaining_gpu_seconds"] == 165
+    assert reservation["ledger_snapshot"]["remaining_gpu_seconds"] == 5_985
 
 
 def test_new_campaign_budget_requires_reconciled_baseline(tmp_path: Path) -> None:

@@ -12,9 +12,11 @@ IMAGE = "docker.io/blueprint/worker@sha256:" + "a" * 64
 class Pool:
     def __init__(self, image: str = IMAGE) -> None:
         self.image = image
+        self.claims = 0
         self.released: list[dict] = []
 
     def claim_scale_request(self, *, autoscaler_id: str, lease_seconds: float = 120) -> dict:
+        self.claims += 1
         return {
             "scale_request_id": "gps-1",
             "scale_token": "gsc-token",
@@ -33,7 +35,7 @@ def _auth(**changes) -> RunPodAutoscalerAuthorization:
     values = {
         "allow_paid": True,
         "total_spend_cap_usd": 20,
-        "combined_gpu_wall_time_cap_seconds": 10_980,
+        "combined_gpu_wall_time_cap_seconds": 16_800,
         "spent_usd": 1,
         "used_gpu_wall_time_seconds": 7_745,
         "attempt_wall_time_limit_seconds": 300,
@@ -42,23 +44,26 @@ def _auth(**changes) -> RunPodAutoscalerAuthorization:
     return RunPodAutoscalerAuthorization(**values)
 
 
-def test_l40s_is_the_only_first_attempt() -> None:
+def test_legacy_autoscaler_never_calls_launcher() -> None:
     calls: list[tuple[str, ...]] = []
 
     def launch(_claim, gpu_types, _limit):
         calls.append(tuple(gpu_types))
         return {"instance_id": "pod-1", "status": "launched"}
 
+    pool = Pool()
     result = reconcile_one_scale_request(
-        pool=Pool(), autoscaler_id="autoscaler-1", exact_worker_image_ref=IMAGE,
+        pool=pool, autoscaler_id="autoscaler-1", exact_worker_image_ref=IMAGE,
         authorization=_auth(), launcher=launch,
     )
 
-    assert calls == [("NVIDIA L40S",)]
-    assert result["status"] == "capacity_launched_waiting_for_worker_registration"
+    assert calls == []
+    assert pool.claims == 0
+    assert result["status"] == "blocked_before_scale_claim"
+    assert "legacy_runpod_autoscaler_disabled_use_paid_resource_allocator" in result["blockers"]
 
 
-def test_a40_fallback_requires_authoritative_no_allocation_capacity_rejection() -> None:
+def test_legacy_autoscaler_never_reaches_fallback() -> None:
     outcomes = [
         {
             "capacity_outcome": True,
@@ -78,11 +83,11 @@ def test_a40_fallback_requires_authoritative_no_allocation_capacity_rejection() 
         authorization=_auth(), launcher=launch,
     )
 
-    assert calls == [("NVIDIA L40S",), ("NVIDIA A40",)]
-    assert result["instance_id"] == "pod-a40"
+    assert calls == []
+    assert result["provider_calls_performed"] == 0
 
 
-def test_ambiguous_l40s_outcome_never_falls_back_or_releases_claim() -> None:
+def test_legacy_autoscaler_does_not_create_ambiguous_provider_outcome() -> None:
     pool = Pool()
     calls: list[tuple[str, ...]] = []
 
@@ -95,8 +100,8 @@ def test_ambiguous_l40s_outcome_never_falls_back_or_releases_claim() -> None:
         authorization=_auth(), launcher=launch,
     )
 
-    assert calls == [("NVIDIA L40S",)]
-    assert result["status"] == "manual_provider_reconciliation_required"
+    assert calls == []
+    assert result["status"] == "blocked_before_scale_claim"
     assert pool.released == []
 
 
@@ -118,7 +123,7 @@ def test_no_paid_mutation_or_claim_without_explicit_authorization() -> None:
 def test_combined_wall_time_cap_is_enforced_before_claim() -> None:
     result = reconcile_one_scale_request(
         pool=Pool(), autoscaler_id="autoscaler-1", exact_worker_image_ref=IMAGE,
-        authorization=_auth(used_gpu_wall_time_seconds=10_800),
+        authorization=_auth(used_gpu_wall_time_seconds=16_600),
         launcher=lambda *_args: {},
     )
 
@@ -151,5 +156,6 @@ def test_concrete_l40s_fingerprint_cannot_silently_accept_a40_fallback() -> None
         authorization=_auth(), launcher=lambda *_args: calls.append(True) or {},
     )
 
-    assert result["status"] == "blocked_gpu_pool_class_mismatch"
+    assert result["status"] == "blocked_before_scale_claim"
+    assert pool.claims == 0
     assert calls == []

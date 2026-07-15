@@ -2,10 +2,27 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline import unitree_unifolm_runpod_server as server
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 
 import pytest
 
 pytestmark = pytest.mark.slow
+
+
+def _paid_grant():
+    admission = build_paid_lane_admission(
+        resource_class="unitree_unifolm_runpod",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="unitree_unifolm_runpod",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 class _FakeHTTPResponse:
@@ -90,6 +107,7 @@ def test_unitree_unifolm_runpod_server_launch_writes_proxy_url_without_secret_va
         max_spend_usd=0.75,
         allow_paid_runpod_launch=True,
         generated_at="now",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert manifest["status"] == "pod_created"
@@ -143,6 +161,7 @@ def test_unitree_unifolm_runpod_server_launch_blocks_before_post_without_budget(
         gpu_type_ids=["NVIDIA GeForce RTX 4090"],
         allow_paid_runpod_launch=True,
         generated_at="now",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert manifest["status"] == "blocked"
@@ -180,6 +199,7 @@ def test_unitree_unifolm_runpod_server_launch_accepts_budget_from_env(
         gpu_type_ids=["NVIDIA GeForce RTX 4090"],
         allow_paid_runpod_launch=True,
         generated_at="now",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert manifest["status"] == "pod_created"

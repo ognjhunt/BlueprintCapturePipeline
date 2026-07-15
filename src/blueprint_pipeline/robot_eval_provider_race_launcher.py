@@ -848,6 +848,13 @@ def run_robot_eval_provider_race_launcher(
     live_gate_open = bool(
         allow_live_provider_race and _env_truthy(ALLOW_PROVIDER_RACE_LAUNCH_ENV)
     )
+    if live_gate_open:
+        runtime_blockers.append(
+            "legacy_provider_race_launcher_disabled_use_paid_resource_allocator"
+        )
+        blockers = _dedupe([*structural_blockers, *runtime_blockers])
+        ready = False
+        live_gate_open = False
     result.update(
         {
             "status": "ready_for_live_provider_race" if ready else "blocked",

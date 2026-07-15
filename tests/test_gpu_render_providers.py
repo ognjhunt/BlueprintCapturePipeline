@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.gpu_render_providers import (
+    DigitalOceanRenderProvider,
     RenderLaunchSpec,
     RunPodRenderProvider,
     VastRenderProvider,
@@ -25,6 +26,36 @@ from blueprint_pipeline.gpu_render_providers import (
     validate_runpod_restart_storage_contract,
 )
 from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
+
+
+_ORIGINAL_PROVIDER_LAUNCHES = {
+    RunPodRenderProvider: RunPodRenderProvider.launch,
+    VastRenderProvider: VastRenderProvider.launch,
+    DigitalOceanRenderProvider: DigitalOceanRenderProvider.launch,
+    AWSRenderProvider: AWSRenderProvider.launch,
+    GCPRenderProvider: GCPRenderProvider.launch,
+}
+
+
+@pytest.fixture(autouse=True)
+def _issue_test_only_provider_grant(monkeypatch: pytest.MonkeyPatch) -> None:
+    admission = build_paid_lane_admission(resource_class="gpu_render", blockers=[])
+    grant = require_paid_resource_admission(
+        admission,
+        resource_class="gpu_render",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    for provider_class, original in _ORIGINAL_PROVIDER_LAUNCHES.items():
+        def granted_launch(self, *args, _original=original, **kwargs):
+            kwargs.setdefault("paid_resource_admission_grant", grant)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(provider_class, "launch", granted_launch)
 
 
 def _spec(**over) -> RenderLaunchSpec:
@@ -40,6 +71,23 @@ def _spec(**over) -> RenderLaunchSpec:
     )
     base.update(over)
     return RenderLaunchSpec(**base)
+
+
+@pytest.mark.parametrize("provider_class", list(_ORIGINAL_PROVIDER_LAUNCHES))
+def test_legacy_provider_launch_requires_opaque_grant_before_network(
+    provider_class,
+    tmp_path: Path,
+) -> None:
+    provider = provider_class()
+    result = _ORIGINAL_PROVIDER_LAUNCHES[provider_class](
+        provider,
+        tmp_path,
+        {},
+    )
+    assert result["status"] == "blocked"
+    assert result["allocation_created"] is False
+    assert "legacy_gpu_render_provider_launch_disabled" in result["blockers"]
+    assert "paid_resource_admission_grant_missing" in result["blockers"]
 
 
 def _passing_prelaunch_guard() -> dict[str, object]:
@@ -227,13 +275,64 @@ def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> Non
     )
 
     assert result["status"] == "available"
+    assert result["capacity_confidence"] == "advisory"
     assert [row["gpu_type_id"] for row in result["viable_gpu_types"]] == ["NVIDIA L40S"]
     assert result["viable_gpu_types"][0]["available_gpu_counts"] == []
+    assert result["viable_gpu_types"][0]["single_gpu_offer_available"] is True
     a6000 = next(
         row for row in result["considered_gpu_types"]
         if row["gpu_type_id"] == "NVIDIA RTX A6000"
     )
     assert "single_gpu_stock_unavailable" in a6000["blockers"]
+
+
+def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        del timeout
+        assert key == "rp-key"
+        assert 'dataCenterId: "US-TX-3"' in query
+        assert 'allowedCudaVersions: ["12.6"]' in query
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA A40",
+                        "displayName": "A40",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "High",
+                            "uninterruptablePrice": 0.44,
+                            "availableGpuCounts": [1],
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "gpuTypeIds": ["NVIDIA A40"],
+            "dataCenterIds": ["US-TX-3"],
+            "allowedCudaVersions": ["12.6"],
+            "requires_rtx": True,
+        }
+    )
+    assert result["status"] == "available"
+    assert result["requested_data_center_ids"] == ["US-TX-3"]
+    assert result["requested_allowed_cuda_versions"] == ["12.6"]
+    assert result["viable_gpu_types"][0]["capacity_data_center_id"] == "US-TX-3"
+    assert result["viable_gpu_types"][0]["capacity_allowed_cuda_versions"] == [
+        "12.6"
+    ]
 
 
 def test_runpod_capacity_preflight_supports_explicit_community_pool(monkeypatch) -> None:
@@ -276,13 +375,12 @@ def test_runpod_capacity_preflight_supports_explicit_community_pool(monkeypatch)
 
     assert result["status"] == "available"
     assert result["cloud_type"] == "COMMUNITY"
-    assert result["capacity_confidence"] == "unknown"
+    assert result["capacity_confidence"] == "advisory"
     assert result["viable_gpu_types"][0]["on_demand_price_usd_per_hour"] == 0.74
 
 
 def test_runpod_capacity_preflight_reports_honest_confidence(monkeypatch) -> None:
-    """P1-1: a textual stock label with an empty count list is advisory-at-best
-    'unknown', never 'immediately available'; only create is authoritative."""
+    """The exact one-GPU offer is advisory; only create is authoritative."""
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
 
     def fake_graphql(query, *, key, timeout=60):
@@ -335,13 +433,109 @@ def test_runpod_capacity_preflight_reports_honest_confidence(monkeypatch) -> Non
     a40 = by_id["NVIDIA A40"]
     assert a40["catalog_reported_stock"] == "Medium"
     assert a40["single_gpu_count_known"] is False
+    assert a40["single_gpu_offer_requested"] is True
+    assert a40["single_gpu_offer_available"] is True
     assert a40["reservation_proven"] is False
-    assert a40["capacity_confidence"] == "unknown"
+    assert a40["capacity_confidence"] == "advisory"
     a6000 = by_id["NVIDIA RTX A6000"]
     assert a6000["single_gpu_count_known"] is True
     assert a6000["capacity_confidence"] == "advisory"
     # Overall confidence never exceeds advisory: the probe is not a reservation.
     assert result["capacity_confidence"] == "advisory"
+
+
+def test_runpod_capacity_preflight_registers_rtx_pro_6000_blackwell(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        del timeout
+        assert key == "rp-key"
+        assert "gpuCount: 1" in query
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                        "displayName": "RTX PRO 6000",
+                        "memoryInGb": 96,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "Medium",
+                            "uninterruptablePrice": 1.99,
+                            "availableGpuCounts": None,
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "gpuTypeIds": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"],
+            "dataCenterIds": ["US-NC-2"],
+            "allowedCudaVersions": ["12.8"],
+            "min_gpu_ram_mb": 48000,
+            "requires_rtx": True,
+        }
+    )
+
+    row = result["viable_gpu_types"][0]
+    assert result["capacity_confidence"] == "advisory"
+    assert row["memory_in_gb"] == 96
+    assert row["single_gpu_count_known"] is False
+    assert row["single_gpu_offer_available"] is True
+
+
+def test_runpod_exact_one_gpu_offer_requires_explicit_stock_label(monkeypatch) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        del query, timeout
+        assert key == "rp-key"
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA A40",
+                        "displayName": "A40",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": None,
+                            "uninterruptablePrice": 0.44,
+                            "availableGpuCounts": None,
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "gpuTypeIds": ["NVIDIA A40"],
+            "dataCenterIds": ["US-NC-2"],
+            "allowedCudaVersions": ["12.8"],
+            "requires_rtx": True,
+        }
+    )
+
+    row = result["considered_gpu_types"][0]
+    assert row["single_gpu_offer_requested"] is True
+    assert row["single_gpu_offer_available"] is False
+    assert "single_gpu_stock_unavailable" in row["blockers"]
+    assert row["capacity_confidence"] == "unavailable"
+    assert result["status"] == "blocked"
+    assert result["capacity_confidence"] == "unavailable"
 
 
 def test_runpod_create_capacity_failure_is_capacity_outcome_not_spend(
@@ -1735,6 +1929,7 @@ def test_default_runpod_gpu_types_exclude_consumer_4090_pool(monkeypatch) -> Non
     assert set(spec.gpu_types) == {
         "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
         "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     }
     assert not any(("H100" in g or "H200" in g) for g in spec.gpu_types)
     assert all(("GeForce" not in g) for g in spec.gpu_types)

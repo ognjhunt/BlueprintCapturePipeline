@@ -6,6 +6,12 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline import runpod_live_execution_proof as runpod_proof
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    PaidResourceAdmissionGrant,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from blueprint_pipeline.runpod_live_execution_proof import (
     RUNPOD_GPU_LAUNCH_GATE_ENV,
     collect_runpod_live_execution_proof,
@@ -22,6 +28,18 @@ from blueprint_pipeline.runpod_provider_adapter import (
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _paid_grant() -> PaidResourceAdmissionGrant:
+    admission = build_paid_lane_admission(
+        resource_class="runpod_live_execution",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="runpod_live_execution",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 def _provider_launch_request(path: Path) -> Path:
@@ -123,6 +141,7 @@ def test_runpod_live_execution_proof_lists_stops_and_redacts_secret(
         output_path=tmp_path / "runpod_live_execution_proof.json",
         stop_pod=True,
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_live_execution_proof.json").read_text(encoding="utf-8")
@@ -200,6 +219,7 @@ def test_runpod_live_execution_proof_stops_on_startup_artifact_timeout(
         poll_interval_seconds=0,
         stop_on_startup_artifact_timeout=True,
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_live_execution_proof.json").read_text(
@@ -225,6 +245,37 @@ def test_runpod_live_execution_proof_stops_on_startup_artifact_timeout(
         "https://rest.runpod.io/v1/pods",
     ]
     assert "secret-runpod-key" not in persisted
+
+
+def test_runpod_live_execution_proof_blocks_mutation_without_shared_admission(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _provider_launch_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_GPU_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    def api_must_not_run(*_args, **_kwargs):
+        raise AssertionError("RunPod mutation reached without shared admission")
+
+    monkeypatch.setattr("urllib.request.urlopen", api_must_not_run)
+    result = collect_runpod_live_execution_proof(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "blocked.json",
+        pod_id="pod-123",
+        stop_pod=True,
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["api_call_performed"] is False
+    assert "runpod_live_execution_shared_admission_missing_or_invalid" in result[
+        "blockers"
+    ]
+    assert result["pod_stop_performed"] is False
+    assert result["shutdown_or_termination_proof"] is False
+    assert result["production_runpod_worker_execution_proven"] is False
 
 
 def test_runpod_live_execution_proof_can_terminate_on_startup_artifact_timeout(
@@ -285,6 +336,7 @@ def test_runpod_live_execution_proof_can_terminate_on_startup_artifact_timeout(
         stop_on_startup_artifact_timeout=True,
         terminate_pod=True,
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert result["status"] == "blocked"
@@ -532,6 +584,7 @@ def test_runpod_live_execution_proof_combines_runtime_manifest_for_production_pr
         output_path=tmp_path / "runpod_live_execution_proof.json",
         stop_pod=True,
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_live_execution_proof.json").read_text(encoding="utf-8")
@@ -718,6 +771,7 @@ def test_runpod_live_execution_proof_records_missing_stop_and_runtime_manifest(
         output_path=tmp_path / "runpod_live_execution_proof.json",
         stop_pod=True,
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert result["status"] == "blocked"
@@ -777,6 +831,7 @@ def test_runpod_live_execution_proof_records_unverified_counts_and_increased_aft
         pod_id="pod-123",
         stop_pod=True,
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
     assert "active_pod_count_increased_after_stop" in increased["blockers"]
 

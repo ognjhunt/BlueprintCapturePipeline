@@ -242,6 +242,9 @@ def open_pending_teardown(
     lane: str,
     run_id: str,
     instance_id: str = "",
+    resource_kind: str = "compute_instance",
+    resource_name: str = "",
+    provider_location: str = "",
     job_dir: str | Path | None = None,
     max_age_seconds: int = DEFAULT_PENDING_TEARDOWN_MAX_AGE_SECONDS,
     registry_dir: str | Path | None = None,
@@ -262,6 +265,9 @@ def open_pending_teardown(
         "lane": str(lane or "").strip(),
         "run_id": str(run_id or "").strip(),
         "instance_id": str(instance_id or "").strip() or None,
+        "resource_kind": str(resource_kind or "compute_instance").strip(),
+        "resource_name": str(resource_name or "").strip() or None,
+        "provider_location": str(provider_location or "").strip() or None,
         "job_dir": str(job_dir) if job_dir else None,
         "started_at": utc_now_iso(),
         "started_at_epoch": time.time(),
@@ -424,6 +430,91 @@ def _reap_one(
         "open_billing_risk": False,
         "teardown_proof": None,
     }
+    if record.get("resource_kind") == "network_volume" and provider == "runpod":
+        from .gpu_render_providers import _runpod_call
+
+        key = client._key() if client is not None else None  # type: ignore[attr-defined]
+        if not key:
+            entry["outcome"] = "provider_client_unavailable"
+            entry["open_billing_risk"] = True
+            return entry
+        if not instance_id:
+            inventory_http, inventory = _runpod_call(
+                "GET", "/networkvolumes", None, key=key, timeout=30
+            )
+            expected_name = str(record.get("resource_name") or "")
+            expected_location = str(record.get("provider_location") or "")
+            inventory_rows = inventory if isinstance(inventory, list) else []
+            matches = [
+                str(row.get("id"))
+                for row in inventory_rows
+                if inventory_http == 200
+                and isinstance(row, Mapping)
+                and row.get("name") == expected_name
+                and row.get("dataCenterId") == expected_location
+                and row.get("id")
+            ]
+            if inventory_http == 200 and not matches:
+                cancel_pending_teardown(
+                    str(record.get("path")),
+                    reason="provider_inventory_verified_no_matching_network_volume",
+                    evidence={
+                        "inventory_http": inventory_http,
+                        "resource_name": expected_name,
+                        "provider_location": expected_location,
+                        "matching_resource_count": 0,
+                    },
+                )
+                entry["outcome"] = "network_volume_absence_verified"
+                return entry
+            if len(matches) != 1:
+                entry["outcome"] = "network_volume_identity_unresolved"
+                entry["open_billing_risk"] = True
+                return entry
+            instance_id = matches[0]
+            entry["instance_id"] = instance_id
+            bind_pending_teardown_instance(str(record.get("path")), instance_id)
+        pre_http, _pre = _runpod_call(
+            "GET", f"/networkvolumes/{instance_id}", None, key=key, timeout=30
+        )
+        entry["pre_terminate_state"] = {
+            "provider_status": "not_found" if pre_http == 404 else "present",
+            "api_confirmed": pre_http in {200, 404},
+            "http": pre_http,
+        }
+        if dry_run:
+            entry["outcome"] = "would_delete_network_volume"
+            return entry
+        delete_http, _delete = _runpod_call(
+            "DELETE", f"/networkvolumes/{instance_id}", None, key=key, timeout=30
+        )
+        verify_http, _verify = _runpod_call(
+            "GET", f"/networkvolumes/{instance_id}", None, key=key, timeout=30
+        )
+        entry["terminate_result"] = {"delete_http": delete_http}
+        entry["post_terminate_state"] = {
+            "provider_status": "not_found" if verify_http == 404 else "present",
+            "api_confirmed": verify_http in {200, 404},
+            "http": verify_http,
+        }
+        proof = build_teardown_proof(
+            provider=provider,
+            allocation_id=instance_id,
+            terminate_requested=True,
+            provider_terminal_status="not_found" if verify_http == 404 else "present",
+            verified_at=utc_now_iso() if verify_http == 404 else None,
+            status_source=TEARDOWN_STATUS_SOURCE_PROVIDER_API
+            if verify_http == 404
+            else None,
+        )
+        entry["teardown_proof"] = proof
+        if proof.get("status") == "PASS":
+            close_pending_teardown(str(record.get("path")), proof)
+            entry["outcome"] = "network_volume_deleted_and_verified"
+        else:
+            entry["outcome"] = "network_volume_teardown_unverified"
+            entry["open_billing_risk"] = True
+        return entry
     if not instance_id:
         entry["outcome"] = "unresolvable_instance_id_missing"
         entry["open_billing_risk"] = True
@@ -513,7 +604,12 @@ def reap_orphans(
             except ValueError:
                 client = None
         entries.append(_reap_one(record, client=client, now_epoch=now, dry_run=dry_run))
-    reaped = [e for e in entries if e.get("outcome") == "reaped_terminal_proven"]
+    reaped_outcomes = {
+        "reaped_terminal_proven",
+        "network_volume_absence_verified",
+        "network_volume_deleted_and_verified",
+    }
+    reaped = [e for e in entries if e.get("outcome") in reaped_outcomes]
     risks = [e for e in entries if e.get("open_billing_risk")]
     return {
         "schema_version": ORPHAN_REAP_REPORT_SCHEMA_VERSION,

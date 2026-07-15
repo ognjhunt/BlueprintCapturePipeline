@@ -22,6 +22,11 @@ from blueprint_pipeline.g1_kitchen_worker_image_evidence import (
 )
 from blueprint_pipeline import groot_oscar_digitalocean_job_inputs as J_INPUTS
 from blueprint_pipeline.kitchen_attempt_lineage import build_attempt_input_manifest
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 
 
 IMAGE_HASH = "b" * 64
@@ -32,6 +37,15 @@ TASK_PROMPT = (
     "Open the dishwasher door; if the dishwasher is already open, close the dishwasher door."
 )
 REAL_CONSISTENCY_COMMAND = "python -m owner_runtime.shared_model_inverse_scorer"
+
+
+def _gpu_render_grant():
+    admission = build_paid_lane_admission(resource_class="gpu_render", blockers=[])
+    return require_paid_resource_admission(
+        admission,
+        resource_class="gpu_render",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -1304,7 +1318,7 @@ def test_worker_bootstrap_runs_healthcheck_groot_and_task_adaptive_closed_loop()
 
     assert "upload_phase container_bash_started" in script
     assert "groot_oscar_closed_loop_image_healthcheck.py --require-cuda" in script
-    assert "/opt/gr00t/.venv/bin/python /opt/gr00t/gr00t/eval/run_gr00t_server.py" in script
+    assert "/opt/gr00t-venv/bin/python -m gr00t.eval.run_gr00t_server" in script
     assert "BLUEPRINT_CLOSED_LOOP_RC=\"$RC\" python /workspace/write_result.py" in script
     assert "upload_phase runner_done" in script
     assert "--require-fresh-learned-policy-requery" in script
@@ -1519,6 +1533,7 @@ def test_digitalocean_provider_blocks_20gb_fallback_before_create(
             },
         },
         cold=True,
+        paid_resource_admission_grant=_gpu_render_grant(),
     )
 
     assert launch["status"] == "blocked"

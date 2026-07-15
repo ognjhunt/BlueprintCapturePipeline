@@ -174,7 +174,7 @@ def test_launch_plan_blocked_when_not_sealed(tmp_path):
     assert plan["blockers"]
 
 
-def test_launch_plan_groot_server_command_uses_baked_venv_and_checkpoint():
+def test_launch_plan_groot_server_command_uses_shared_runtime_and_checkpoint():
     plan = gocl.build_sealed_launch_plan(
         env=_active_env(),
         start_frame="/w/frame.png",
@@ -187,8 +187,11 @@ def test_launch_plan_groot_server_command_uses_baked_venv_and_checkpoint():
     )
     assert plan["sealed_active"] is True
     cmd = plan["groot_server_command"]
-    assert cmd[0] == "/opt/gr00t/.venv/bin/python"
-    assert cmd[1] == "/opt/gr00t/gr00t/eval/run_gr00t_server.py"
+    assert cmd[:3] == [
+        "/opt/gr00t-venv/bin/python",
+        "-m",
+        "gr00t.eval.run_gr00t_server",
+    ]
     assert "--model-path" in cmd
     assert cmd[cmd.index("--model-path") + 1] == "/opt/blueprint/ckpts/sonic"
     assert cmd[cmd.index("--embodiment-tag") + 1] == "UNITREE_G1_SONIC"
@@ -236,7 +239,10 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert cmd[cmd.index("--wam-consistency-timeout-seconds") + 1] == "300.0"
     assert "--require-generated-video-success-label" not in cmd
     assert plan["gear_sonic_controller_command"][0:2] == ["bash", "-lc"]
-    assert "deploy.sh sim" in plan["gear_sonic_controller_command"][2]
+    assert "target/release/g1_deploy_onnx_ref" in plan[
+        "gear_sonic_controller_command"
+    ][2]
+    assert "just build" not in plan["gear_sonic_controller_command"][2]
     assert plan["env"]["BLUEPRINT_GEAR_SONIC_ROOT"] == "/opt/wbc"
     assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == "nvidia/GEAR-SONIC"
     assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (
@@ -436,6 +442,35 @@ def test_image_makes_gear_sonic_build_tree_runtime_user_writable():
     assert "chown -R blueprint:blueprint /opt/wbc/gear_sonic_deploy/build" in dockerfile
 
 
+def test_wbc_compiler_toolchain_is_confined_to_disposable_builder_stage():
+    dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "AS gear_sonic_builder" in dockerfile
+    assert "AS runtime" in dockerfile
+    builder_start = dockerfile.index("AS gear_sonic_builder")
+    runtime_start = dockerfile.index("AS runtime")
+    assert builder_start < runtime_start
+    builder = dockerfile[builder_start:runtime_start]
+    runtime = dockerfile[runtime_start:]
+    assert "scripts/install_deps.sh" in builder
+    assert "just build" in builder
+    assert "scripts/install_deps.sh" not in runtime
+    assert "libnvinfer-dev=${TENSORRT_VERSION}" not in runtime
+    assert "COPY --from=gear_sonic_builder" in runtime
+    assert "COPY --from=gear_sonic_builder /opt/wbc/gear_sonic /opt/wbc/gear_sonic" in runtime
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in runtime
+    assert "from gear_sonic.utils.teleop.zmq.zmq_planner_sender import" in runtime
+    assert "/opt/wbc/.blueprint-source-revision" in builder
+    assert "COPY --from=gear_sonic_builder /opt/wbc/.blueprint-source-revision" in runtime
+    assert 'cat /opt/wbc/.blueprint-source-revision' in runtime
+    assert "COPY --from=gear_sonic_builder /opt/wbc/.git" not in runtime
+    assert "libcudart.so* /usr/local/lib/" in runtime
+    assert "ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in runtime
+    assert "grep -F 'not found'" in runtime
+    assert "rm -f /usr/local/cuda*/bin/nvcc" in runtime
+    assert "rm -rf /usr/local/cuda*/include /usr/local/cuda*/lib64/stubs" in runtime
+    assert "find /usr/local/cuda* -type f -name '*.a' -delete" in runtime
+
+
 def test_image_healthcheck_enforces_runtime_service_dependencies():
     healthcheck = (IMAGE_ROOT / "groot_oscar_closed_loop_image_healthcheck.py").read_text(
         encoding="utf-8"
@@ -448,6 +483,10 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "cosmos_backbone_not_sealed_in_hf_cache" in healthcheck
     assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
     assert "groot_nested_processor_not_offline_constructible" in healthcheck
+    assert "official_gear_sonic_source_revision_mismatch" in healthcheck
+    assert "gear_sonic_zmq_python_runtime_not_importable" in healthcheck
+    assert "cuda_compiler_or_development_files_present" in healthcheck
+    assert 'wbc_root / ".blueprint-source-revision"' in healthcheck
     assert "model_encoder.onnx" in healthcheck
     assert "model_decoder.onnx" in healthcheck
     assert "planner_sonic.onnx" in healthcheck

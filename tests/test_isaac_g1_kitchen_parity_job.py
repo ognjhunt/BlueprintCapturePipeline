@@ -327,6 +327,12 @@ def test_production_warm_serve_launch_spec_carries_exact_release_and_probe_flag(
     assert spec.env["BLUEPRINT_GPU_POOL_CLASS"] == (
         "runpod-secure-l40s-preferred-a40-fallback"
     )
+    assert "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST" not in spec.env
+    assert "BLUEPRINT_GROOT_OSCAR_MODEL_CACHE" not in spec.env
+    assert "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST" in J.BOOTSTRAP
+    assert "if expected_model_manifest_digest:" in J.BOOTSTRAP
+    assert "else:\n        required_model_paths=" in J.BOOTSTRAP
+    assert "/opt/blueprint/ckpts/sonic/config.json" in J.BOOTSTRAP
     assert "--serve-production-warmup-before-ready" in str(spec.bootstrap_argv)
     assert "production_cache_evidence.json" in str(spec.bootstrap_argv)
 

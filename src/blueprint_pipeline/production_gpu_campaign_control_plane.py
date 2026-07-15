@@ -54,6 +54,7 @@ CAMPAIGN_STATES = (
     "running_episodes",
     "collecting",
     "validating",
+    "teardown_pending",
     "completed",
     "failed",
     "cancelled",
@@ -76,8 +77,6 @@ REQUIRED_ARTIFACTS = (
     "frame_manifest",
     "review_video",
     "attempt_manifest",
-    "provider_result",
-    "teardown_proof",
 )
 
 
@@ -121,8 +120,9 @@ def build_campaign_spec(
     model_asset_revisions: Mapping[str, str],
     smoke_seed: int = 1000,
     episode_seeds: Sequence[int] = (1001, 1002, 1003),
-    episode_timeout_seconds: int = 1800,
-    queue_timeout_seconds: int = 900,
+    smoke_timeout_seconds: int = 300,
+    episode_timeout_seconds: int = 900,
+    queue_timeout_seconds: int = 300,
     width: int = 640,
     height: int = 480,
 ) -> dict[str, Any]:
@@ -150,7 +150,9 @@ def build_campaign_spec(
     seeds = [int(value) for value in episode_seeds]
     if len(seeds) != 3 or len(set(seeds + [int(smoke_seed)])) != 4:
         blockers.append("one_smoke_and_three_unique_episode_seeds_required")
-    if not 1 <= int(episode_timeout_seconds) <= 1800:
+    if not 30 <= int(smoke_timeout_seconds) <= 300:
+        blockers.append("smoke_timeout_out_of_range")
+    if not 60 <= int(episode_timeout_seconds) <= 900:
         blockers.append("episode_timeout_out_of_range")
     if not 30 <= int(queue_timeout_seconds) <= 1800:
         blockers.append("queue_timeout_out_of_range")
@@ -174,6 +176,7 @@ def build_campaign_spec(
         "runtime": {
             "dynamic_episode_termination": True,
             "stop_immediately_on_declared_completion": True,
+            "smoke_timeout_seconds": int(smoke_timeout_seconds),
             "episode_timeout_seconds": int(episode_timeout_seconds),
             "queue_timeout_seconds": int(queue_timeout_seconds),
             "review_width": int(width),
@@ -236,6 +239,10 @@ class ProductionGpuCampaignControlPlane:
             CREATE TABLE IF NOT EXISTS gpu_campaign_events(
               sequence INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, attempt_id TEXT,
               event TEXT NOT NULL, detail_json TEXT NOT NULL, created_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS gpu_campaign_finalization(
+              campaign_id TEXT PRIMARY KEY, provider_result_json TEXT NOT NULL,
+              teardown_proof_json TEXT NOT NULL, provider_result_sha256 TEXT NOT NULL,
+              teardown_proof_sha256 TEXT NOT NULL, verified_at REAL NOT NULL);
             """)
 
     @contextmanager
@@ -310,80 +317,124 @@ class ProductionGpuCampaignControlPlane:
         if next_state not in ATTEMPT_STATES:
             raise ValueError("attempt_state_invalid")
         now = float(self._clock())
+        deadline_blocker: str | None = None
         with self._transaction() as connection:
+            deadline_reasons = self._reconcile_deadlines_locked(connection, campaign, now)
             row = connection.execute(
                 "SELECT * FROM gpu_attempts WHERE campaign_id=? AND attempt_id=?",
                 (campaign, attempt),
             ).fetchone()
             if row is None:
                 raise CampaignControlPlaneError("attempt_unknown")
-            current = str(row["state"])
-            if next_state not in ALLOWED_ATTEMPT_TRANSITIONS.get(current, set()):
-                raise CampaignControlPlaneError(
-                    f"attempt_transition_invalid:{current}->{next_state}"
+            if attempt in deadline_reasons:
+                deadline_blocker = f"attempt_deadline_enforced:{deadline_reasons[attempt]}"
+            else:
+                self._transition_attempt_locked(
+                    connection,
+                    campaign=campaign,
+                    attempt=attempt,
+                    row=row,
+                    next_state=next_state,
+                    terminal_reason=terminal_reason,
+                    semantic_task_success=semantic_task_success,
+                    simulator_steps=simulator_steps,
+                    policy_actions=policy_actions,
+                    now=now,
                 )
-            if row["kind"] == "episode":
-                smoke = connection.execute(
-                    "SELECT state FROM gpu_attempts WHERE campaign_id=? AND kind='smoke'",
-                    (campaign,),
-                ).fetchone()
-                if next_state in {"running", "collecting", "validating", "passed"} and (
-                    smoke is None or smoke[0] != "passed"
-                ):
-                    raise CampaignControlPlaneError("full_episode_blocked_until_smoke_passes")
-            if next_state == "passed":
-                missing = self._missing_artifacts(connection, campaign, attempt)
-                if missing:
-                    raise CampaignControlPlaneError(
-                        "attempt_artifacts_incomplete:" + ",".join(missing)
-                    )
-                if (
-                    int(
-                        simulator_steps
-                        if simulator_steps is not None
-                        else row["simulator_steps"] or 0
-                    )
-                    <= 0
-                ):
-                    raise CampaignControlPlaneError("simulator_steps_required_for_pass")
-                if (
-                    int(
-                        policy_actions if policy_actions is not None else row["policy_actions"] or 0
-                    )
-                    <= 0
-                ):
-                    raise CampaignControlPlaneError("policy_actions_required_for_pass")
-            if next_state in TERMINAL_ATTEMPT_STATES and not str(terminal_reason or "").strip():
-                raise CampaignControlPlaneError("terminal_reason_required")
-            started = (
-                now if next_state == "running" and row["started_at"] is None else row["started_at"]
-            )
-            ended = now if next_state in TERMINAL_ATTEMPT_STATES else None
-            connection.execute(
-                """UPDATE gpu_attempts SET state=?,terminal_reason=?,semantic_task_success=?,
+        if deadline_blocker is not None:
+            raise CampaignControlPlaneError(deadline_blocker)
+        return self.snapshot(campaign)
+
+    def _transition_attempt_locked(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        campaign: str,
+        attempt: str,
+        row: sqlite3.Row,
+        next_state: str,
+        terminal_reason: str | None,
+        semantic_task_success: bool | None,
+        simulator_steps: int | None,
+        policy_actions: int | None,
+        now: float,
+    ) -> None:
+        current = str(row["state"])
+        if next_state not in ALLOWED_ATTEMPT_TRANSITIONS.get(current, set()):
+            raise CampaignControlPlaneError(f"attempt_transition_invalid:{current}->{next_state}")
+        if row["kind"] == "episode":
+            smoke = connection.execute(
+                "SELECT state FROM gpu_attempts WHERE campaign_id=? AND kind='smoke'",
+                (campaign,),
+            ).fetchone()
+            if next_state in {"running", "collecting", "validating", "passed"} and (
+                smoke is None or smoke[0] != "passed"
+            ):
+                raise CampaignControlPlaneError("full_episode_blocked_until_smoke_passes")
+        if next_state == "passed":
+            missing = self._missing_artifacts(connection, campaign, attempt)
+            if missing:
+                raise CampaignControlPlaneError("attempt_artifacts_incomplete:" + ",".join(missing))
+            minimum_activity = 3 if row["kind"] == "smoke" else 1
+            if (
+                int(simulator_steps if simulator_steps is not None else row["simulator_steps"] or 0)
+                < minimum_activity
+            ):
+                raise CampaignControlPlaneError(
+                    "smoke_simulator_steps_below_three"
+                    if row["kind"] == "smoke"
+                    else "simulator_steps_required_for_pass"
+                )
+            if (
+                int(policy_actions if policy_actions is not None else row["policy_actions"] or 0)
+                < minimum_activity
+            ):
+                raise CampaignControlPlaneError(
+                    "smoke_policy_actions_below_three"
+                    if row["kind"] == "smoke"
+                    else "policy_actions_required_for_pass"
+                )
+        if next_state in TERMINAL_ATTEMPT_STATES and not str(terminal_reason or "").strip():
+            raise CampaignControlPlaneError("terminal_reason_required")
+        started = (
+            now if next_state == "running" and row["started_at"] is None else row["started_at"]
+        )
+        ended = now if next_state in TERMINAL_ATTEMPT_STATES else None
+        connection.execute(
+            """UPDATE gpu_attempts SET state=?,terminal_reason=?,semantic_task_success=?,
                 simulator_steps=COALESCE(?,simulator_steps),policy_actions=COALESCE(?,policy_actions),
                 started_at=?,ended_at=COALESCE(?,ended_at) WHERE campaign_id=? AND attempt_id=?""",
-                (
-                    next_state,
-                    terminal_reason,
-                    None if semantic_task_success is None else int(semantic_task_success),
-                    simulator_steps,
-                    policy_actions,
-                    started,
-                    ended,
-                    campaign,
-                    attempt,
-                ),
-            )
-            self._derive_campaign_state(connection, campaign)
-            self._event(
-                connection,
+            (
+                next_state,
+                terminal_reason,
+                None if semantic_task_success is None else int(semantic_task_success),
+                simulator_steps,
+                policy_actions,
+                started,
+                ended,
                 campaign,
                 attempt,
-                "attempt_transition",
-                {"from": current, "to": next_state},
+            ),
+        )
+        if row["kind"] == "smoke" and next_state in {
+            "failed",
+            "timed_out",
+            "cancelled",
+        }:
+            connection.execute(
+                "UPDATE gpu_attempts SET state='cancelled',terminal_reason=?,ended_at=? "
+                "WHERE campaign_id=? AND kind='episode' "
+                "AND state IN ('planned','waiting_for_worker')",
+                (terminal_reason, now, campaign),
             )
-        return self.snapshot(campaign)
+        self._derive_campaign_state(connection, campaign)
+        self._event(
+            connection,
+            campaign,
+            attempt,
+            "attempt_transition",
+            {"from": current, "to": next_state},
+        )
 
     def _derive_campaign_state(self, connection: sqlite3.Connection, campaign: str) -> None:
         rows = connection.execute(
@@ -396,7 +447,14 @@ class ProductionGpuCampaignControlPlane:
         elif smoke != "passed":
             state = "running_smoke" if smoke != "planned" else "queued"
         elif all(value in TERMINAL_ATTEMPT_STATES for value in episodes):
-            state = "completed" if all(value == "passed" for value in episodes) else "failed"
+            if all(value == "passed" for value in episodes):
+                finalized = connection.execute(
+                    "SELECT 1 FROM gpu_campaign_finalization WHERE campaign_id=?",
+                    (campaign,),
+                ).fetchone()
+                state = "completed" if finalized else "teardown_pending"
+            else:
+                state = "failed"
         elif any(value == "validating" for value in episodes):
             state = "validating"
         elif any(value == "collecting" for value in episodes):
@@ -404,11 +462,109 @@ class ProductionGpuCampaignControlPlane:
         elif any(value == "running" for value in episodes):
             state = "running_episodes"
         else:
-            state = "queued"
+            state = "running_episodes"
         connection.execute(
             "UPDATE gpu_campaigns SET state=?,updated_at=? WHERE campaign_id=?",
             (state, float(self._clock()), campaign),
         )
+
+    def finalize_campaign(
+        self,
+        campaign_id: str,
+        *,
+        provider_result: Mapping[str, Any],
+        teardown_proof: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Complete a passed campaign only after provider absence is proven."""
+
+        campaign = _identifier(campaign_id, "campaign_id")
+        provider_payload = dict(provider_result)
+        teardown_payload = dict(teardown_proof)
+        with self._connect() as connection:
+            campaign_row = connection.execute(
+                "SELECT spec_json FROM gpu_campaigns WHERE campaign_id=?",
+                (campaign,),
+            ).fetchone()
+        if campaign_row is None:
+            raise CampaignControlPlaneError("campaign_unknown")
+        spec = json.loads(campaign_row["spec_json"])
+        allocation_id = str(provider_payload.get("allocation_id") or "").strip()
+        if provider_payload.get("schema_version") != "production_gpu_provider_result.v1":
+            raise CampaignControlPlaneError("provider_result_schema_invalid")
+        if provider_payload.get("status") != "provider_terminal":
+            raise CampaignControlPlaneError("provider_result_not_terminal")
+        if provider_payload.get("campaign_id") != campaign:
+            raise CampaignControlPlaneError("provider_result_campaign_mismatch")
+        if provider_payload.get("source_sha") != spec["source_sha"]:
+            raise CampaignControlPlaneError("provider_result_source_mismatch")
+        if provider_payload.get("worker_image_ref") != spec["worker_image_ref"]:
+            raise CampaignControlPlaneError("provider_result_image_mismatch")
+        if not allocation_id:
+            raise CampaignControlPlaneError("provider_result_allocation_id_missing")
+        if provider_payload.get("raw_secret_values_recorded") is not False:
+            raise CampaignControlPlaneError("provider_result_secret_boundary_unverified")
+        if teardown_payload.get("schema_version") != "production_gpu_teardown_proof.v1":
+            raise CampaignControlPlaneError("teardown_proof_schema_invalid")
+        if teardown_payload.get("status") != "PASS":
+            raise CampaignControlPlaneError("teardown_proof_status_invalid")
+        if teardown_payload.get("campaign_id") != campaign:
+            raise CampaignControlPlaneError("teardown_proof_campaign_mismatch")
+        if teardown_payload.get("allocation_id") != allocation_id:
+            raise CampaignControlPlaneError("teardown_proof_allocation_mismatch")
+        if teardown_payload.get("raw_secret_values_recorded") is not False:
+            raise CampaignControlPlaneError("teardown_proof_secret_boundary_unverified")
+        if teardown_payload.get("provider_absence_confirmed") is not True:
+            raise CampaignControlPlaneError("provider_absence_proof_required")
+        if teardown_payload.get("billing_stopped") is not True:
+            raise CampaignControlPlaneError("billing_stop_proof_required")
+        final_inventory = teardown_payload.get("final_inventory")
+        final_inventory = final_inventory if isinstance(final_inventory, Mapping) else {}
+        if not (
+            final_inventory.get("api_confirmed") is True
+            and final_inventory.get("live_resource_count") == 0
+        ):
+            raise CampaignControlPlaneError("provider_final_inventory_not_zero")
+        now = float(self._clock())
+        with self._transaction() as connection:
+            states = connection.execute(
+                "SELECT state FROM gpu_attempts WHERE campaign_id=?",
+                (campaign,),
+            ).fetchall()
+            if len(states) != 4 or any(row[0] != "passed" for row in states):
+                raise CampaignControlPlaneError("all_attempts_must_pass_before_finalization")
+            provider_json = _canonical(provider_payload)
+            teardown_json = _canonical(teardown_payload)
+            existing = connection.execute(
+                "SELECT provider_result_json,teardown_proof_json "
+                "FROM gpu_campaign_finalization WHERE campaign_id=?",
+                (campaign,),
+            ).fetchone()
+            inserted = existing is None
+            if existing is not None:
+                if existing[0] != provider_json or existing[1] != teardown_json:
+                    raise CampaignControlPlaneError("campaign_finalization_evidence_conflict")
+            else:
+                connection.execute(
+                    "INSERT INTO gpu_campaign_finalization VALUES(?,?,?,?,?,?)",
+                    (
+                        campaign,
+                        provider_json,
+                        teardown_json,
+                        hashlib.sha256(provider_json.encode()).hexdigest(),
+                        hashlib.sha256(teardown_json.encode()).hexdigest(),
+                        now,
+                    ),
+                )
+            self._derive_campaign_state(connection, campaign)
+            if inserted:
+                self._event(
+                    connection,
+                    campaign,
+                    None,
+                    "campaign_provider_teardown_verified",
+                    {"provider_absence_confirmed": True},
+                )
+        return self.snapshot(campaign)
 
     def begin_artifact(
         self,
@@ -563,6 +719,11 @@ class ProductionGpuCampaignControlPlane:
                     "SELECT COUNT(*) FROM gpu_campaign_events WHERE campaign_id=?", (campaign,)
                 ).fetchone()[0]
             )
+            finalization = connection.execute(
+                "SELECT provider_result_sha256,teardown_proof_sha256,verified_at "
+                "FROM gpu_campaign_finalization WHERE campaign_id=?",
+                (campaign,),
+            ).fetchone()
             spec = json.loads(root["spec_json"])
         return {
             "schema_version": SCHEMA_VERSION,
@@ -577,6 +738,16 @@ class ProductionGpuCampaignControlPlane:
             "worker_image_ref": spec["worker_image_ref"],
             "terminal": root["state"] in TERMINAL_CAMPAIGN_STATES,
             "attempts": attempts,
+            "finalization": (
+                {
+                    "provider_result_sha256": finalization[0],
+                    "teardown_proof_sha256": finalization[1],
+                    "verified_at_epoch": finalization[2],
+                    "provider_absence_confirmed": True,
+                }
+                if finalization is not None
+                else None
+            ),
             "event_count": events,
             "provider_calls_performed": 0,
             "provider_credentials_accepted": False,
@@ -593,6 +764,7 @@ class ProductionGpuCampaignControlPlane:
             "running_episodes": ("running", "Running evaluation episodes"),
             "collecting": ("processing", "Retrieving episode evidence"),
             "validating": ("processing", "Validating videos and results"),
+            "teardown_pending": ("processing", "Verifying provider teardown"),
             "completed": ("completed", "Evaluation complete"),
             "smoke_blocked": ("failed", "Startup validation failed"),
             "failed": ("failed", "Evaluation did not complete"),
@@ -602,7 +774,9 @@ class ProductionGpuCampaignControlPlane:
         semantic_success: bool | None = None
         if snapshot["terminal"]:
             semantic_success = any(
-                row["semantic_task_success"] is True for row in snapshot["attempts"]
+                row["semantic_task_success"] is True
+                for row in snapshot["attempts"]
+                if row["kind"] == "episode"
             )
         return {
             "schema_version": CUSTOMER_STATUS_SCHEMA_VERSION,
@@ -619,36 +793,101 @@ class ProductionGpuCampaignControlPlane:
         }
 
     def reconcile_deadlines(self, campaign_id: str) -> dict[str, Any]:
-        """Fail a campaign that never obtained a warm worker inside its queue SLO."""
+        """Enforce queue, smoke, and episode deadlines from durable timestamps."""
 
         campaign = _identifier(campaign_id, "campaign_id")
         now = float(self._clock())
         with self._transaction() as connection:
-            row = connection.execute(
-                "SELECT * FROM gpu_campaigns WHERE campaign_id=?", (campaign,)
-            ).fetchone()
-            if row is None:
-                raise CampaignControlPlaneError("campaign_unknown")
-            spec = json.loads(row["spec_json"])
-            deadline = float(row["created_at"]) + int(spec["runtime"]["queue_timeout_seconds"])
-            if row["state"] in {"accepted", "queued"} and now >= deadline:
-                connection.execute(
-                    "UPDATE gpu_campaigns SET state='failed',blocker='queue_timeout',updated_at=? WHERE campaign_id=?",
-                    (now, campaign),
-                )
-                connection.execute(
-                    "UPDATE gpu_attempts SET state='cancelled',terminal_reason='queue_timeout',ended_at=? "
-                    "WHERE campaign_id=? AND state IN ('planned','waiting_for_worker')",
-                    (now, campaign),
-                )
-                self._event(
-                    connection,
-                    campaign,
-                    None,
-                    "campaign_queue_timeout",
-                    {"queue_deadline_epoch": deadline},
-                )
+            self._reconcile_deadlines_locked(connection, campaign, now)
         return self.snapshot(campaign)
+
+    def _reconcile_deadlines_locked(
+        self, connection: sqlite3.Connection, campaign: str, now: float
+    ) -> dict[str, str]:
+        """Apply all elapsed deadlines inside the caller's write transaction."""
+
+        row = connection.execute(
+            "SELECT * FROM gpu_campaigns WHERE campaign_id=?", (campaign,)
+        ).fetchone()
+        if row is None:
+            raise CampaignControlPlaneError("campaign_unknown")
+        spec = json.loads(row["spec_json"])
+        enforced: dict[str, str] = {}
+        deadline = float(row["created_at"]) + int(spec["runtime"]["queue_timeout_seconds"])
+        smoke_state = connection.execute(
+            "SELECT attempt_id,state FROM gpu_attempts WHERE campaign_id=? AND kind='smoke'",
+            (campaign,),
+        ).fetchone()
+        if (
+            row["state"] in {"accepted", "queued"}
+            and smoke_state is not None
+            and smoke_state["state"] in {"planned", "waiting_for_worker"}
+            and now >= deadline
+        ):
+            connection.execute(
+                "UPDATE gpu_campaigns SET state='failed',blocker='queue_timeout',updated_at=? WHERE campaign_id=?",
+                (now, campaign),
+            )
+            connection.execute(
+                "UPDATE gpu_attempts SET state='cancelled',terminal_reason='queue_timeout',ended_at=? "
+                "WHERE campaign_id=? AND state IN ('planned','waiting_for_worker')",
+                (now, campaign),
+            )
+            enforced[str(smoke_state["attempt_id"])] = "queue_timeout"
+            self._event(
+                connection,
+                campaign,
+                None,
+                "campaign_queue_timeout",
+                {"queue_deadline_epoch": deadline},
+            )
+        active = connection.execute(
+            "SELECT * FROM gpu_attempts WHERE campaign_id=? "
+            "AND state IN ('running','collecting','validating')",
+            (campaign,),
+        ).fetchall()
+        for active_attempt in active:
+            kind = str(active_attempt["kind"])
+            timeout_field = (
+                "smoke_timeout_seconds" if kind == "smoke" else "episode_timeout_seconds"
+            )
+            attempt_deadline = float(active_attempt["started_at"]) + int(
+                spec["runtime"][timeout_field]
+            )
+            if now < attempt_deadline:
+                continue
+            reason = "smoke_timeout" if kind == "smoke" else "episode_timeout"
+            cursor = connection.execute(
+                "UPDATE gpu_attempts SET state='timed_out',terminal_reason=?,ended_at=? "
+                "WHERE campaign_id=? AND attempt_id=? "
+                "AND state IN ('running','collecting','validating')",
+                (reason, now, campaign, active_attempt["attempt_id"]),
+            )
+            if cursor.rowcount != 1:
+                continue
+            enforced[str(active_attempt["attempt_id"])] = reason
+            self._event(
+                connection,
+                campaign,
+                str(active_attempt["attempt_id"]),
+                "attempt_deadline_exceeded",
+                {"deadline_epoch": attempt_deadline, "terminal_reason": reason},
+            )
+            if kind == "smoke":
+                connection.execute(
+                    "UPDATE gpu_attempts SET state='cancelled',"
+                    "terminal_reason='smoke_timeout',ended_at=? "
+                    "WHERE campaign_id=? AND kind='episode' "
+                    "AND state IN ('planned','waiting_for_worker')",
+                    (now, campaign),
+                )
+                connection.execute(
+                    "UPDATE gpu_campaigns SET blocker='smoke_timeout' WHERE campaign_id=?",
+                    (campaign,),
+                )
+        if active:
+            self._derive_campaign_state(connection, campaign)
+        return enforced
 
 
 def _read_api_token(explicit: str | None) -> str:
@@ -773,6 +1012,25 @@ def create_production_gpu_campaign_app(
                 chunk_sha256=str(payload.get("chunk_sha256") or ""),
             )
         except (TypeError, ValueError, CampaignControlPlaneError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT) from exc
+
+    @app.post(
+        "/v1/campaigns/{campaign_id}/finalize",
+        dependencies=[Depends(authorize)],
+    )
+    def finalize(campaign_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return control.finalize_campaign(
+                campaign_id,
+                provider_result=dict(payload.get("provider_result") or {}),
+                teardown_proof=dict(payload.get("teardown_proof") or {}),
+            )
+        except (
+            TypeError,
+            ValueError,
+            CampaignControlPlaneError,
+            sqlite3.IntegrityError,
+        ) as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT) from exc
 
     return app

@@ -8,6 +8,12 @@ from urllib.error import HTTPError
 import pytest
 
 from blueprint_pipeline import runpod_provider_adapter as adapter
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    PaidResourceAdmissionGrant,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from blueprint_pipeline.runpod_provider_adapter import (
     RUNPOD_API_GATE_ENV,
     RUNPOD_API_KEY_ENV,
@@ -28,6 +34,60 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _paid_grant() -> PaidResourceAdmissionGrant:
+    admission = build_paid_lane_admission(
+        resource_class="runpod_provider_adapter",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="runpod_provider_adapter",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+
+
+def test_runpod_http_transport_rejects_non_runpod_origins_before_network() -> None:
+    with pytest.raises(
+        adapter.safe_outbound_http.SafeOutboundHttpError,
+        match="outbound_http_host_not_allowed",
+    ):
+        adapter._http_json(
+            url="https://rest.runpod.io.evil.example/v1/pods",
+            payload={},
+            api_key="secret-runpod-key",
+            timeout_seconds=5,
+        )
+
+
+def test_runpod_http_policy_allows_configured_https_rest_origin(monkeypatch) -> None:
+    monkeypatch.setattr(
+        adapter, "RUNPOD_REST_API_BASE", "https://runpod-proxy.example/v1"
+    )
+
+    policy = adapter._runpod_provider_api_policy()
+
+    assert "runpod-proxy.example" in policy.allowed_hosts
+
+
+@pytest.mark.parametrize(
+    "base",
+    (
+        "http://runpod-proxy.example/v1",
+        "https://user:secret@runpod-proxy.example/v1",
+        "runpod-proxy.example/v1",
+    ),
+)
+def test_runpod_http_policy_rejects_unsafe_configured_rest_origin(
+    monkeypatch, base: str
+) -> None:
+    monkeypatch.setattr(adapter, "RUNPOD_REST_API_BASE", base)
+
+    with pytest.raises(
+        ValueError, match="RUNPOD_REST_API_BASE_must_be_credential_free_https_origin"
+    ):
+        adapter._runpod_provider_api_policy()
 
 
 def _ready_runpod_request(path: Path) -> Path:
@@ -267,6 +327,30 @@ def test_runpod_adapter_dry_run_writes_serverless_and_pod_shapes(
     assert "RUNPOD_API_KEY" not in json.dumps(persisted)
 
 
+def test_runpod_pod_payload_attaches_existing_volume_and_cuda_dc_constraints(
+    tmp_path: Path,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "request.json")
+    request = _read_json(request_path)
+    shape = request["provider_request_shape"]
+    assert isinstance(shape, dict)
+    shape.update(
+        {
+            "network_volume_id": "volume-1",
+            "data_center_id": "US-TX-3",
+            "allowed_cuda_versions": ["12.6"],
+        }
+    )
+    _write_json(request_path, request)
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path, mode="dry-run"
+    )
+    body = result["runpod_request"]["on_demand_pod"]["body"]
+    assert body["networkVolumeId"] == "volume-1"
+    assert body["dataCenterIds"] == ["US-TX-3"]
+    assert body["allowedCudaVersions"] == ["12.6"]
+
+
 def test_runpod_adapter_blocks_when_prelaunch_spend_guard_is_false(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -347,16 +431,19 @@ def test_runpod_adapter_forwards_allowed_secret_env_with_redaction(
         def read(self) -> bytes:
             return json.dumps({"id": "pod-secret-env"}).encode()
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
         mode="on-demand-pod",
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
     persisted = _read_json(tmp_path / "runpod_provider_adapter_result.json")
 
@@ -368,6 +455,32 @@ def test_runpod_adapter_forwards_allowed_secret_env_with_redaction(
     )
     assert result["status"] == "submitted"
     assert secret_value not in json.dumps(persisted)
+
+
+def test_runpod_adapter_blocks_missing_shared_admission_before_api_call(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    def api_must_not_run(*_args, **_kwargs):
+        raise AssertionError("RunPod mutation reached without shared admission")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy",
+        api_must_not_run,
+    )
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="on-demand-pod",
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["api_call_performed"] is False
+    assert "runpod_provider_shared_admission_missing_or_invalid" in result["blockers"]
 
 
 def test_runpod_adapter_blocks_missing_cost_control_limits(
@@ -524,6 +637,9 @@ def test_runpod_adapter_uses_provider_gpu_priority_and_cache_env(
             "policy_files": "/cache/policies",
             "converted_scenes": "/cache/scenes",
             "worker_deps": "/cache/deps",
+            "groot_oscar_models": (
+                "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
+            ),
         }
     }
     _write_json(request_path, request)
@@ -541,6 +657,9 @@ def test_runpod_adapter_uses_provider_gpu_priority_and_cache_env(
     assert pod["env"]["BLUEPRINT_POLICY_CACHE"] == "/cache/policies"
     assert pod["env"]["BLUEPRINT_CONVERTED_SCENE_CACHE"] == "/cache/scenes"
     assert pod["env"]["BLUEPRINT_WORKER_DEPS_CACHE"] == "/cache/deps"
+    assert pod["env"]["BLUEPRINT_GROOT_OSCAR_MODEL_CACHE"] == (
+        "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
+    )
 
 
 def test_runpod_adapter_forwards_declared_plaintext_env_values(tmp_path: Path) -> None:
@@ -773,7 +892,7 @@ def test_runpod_adapter_submits_serverless_run_with_redacted_error(
 
     captured: dict[str, object] = {}
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
@@ -785,13 +904,16 @@ def test_runpod_adapter_submits_serverless_run_with_redacted_error(
             fp=SimpleNamespace(read=lambda: b"bad secret-runpod-key"),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
         mode="serverless-run",
         allow_runpod_api_call=True,
         endpoint_id="endpoint-123",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_provider_adapter_result.json").read_text(
@@ -869,19 +991,22 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
                 }
             ).encode("utf-8")
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
         mode="on-demand-pod",
         allow_runpod_api_call=True,
         pod_name="blueprint-test-pod",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert captured["url"] == "https://rest.runpod.io/v1/pods"
@@ -972,17 +1097,20 @@ def test_runpod_adapter_accepts_api_key_file_without_persisting_secret(
         def read(self) -> bytes:
             return b'{"id":"pod-file"}'
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["headers"] = dict(request.header_items())
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
         mode="on-demand-pod",
         allow_runpod_api_call=True,
         pod_name="blueprint-test-pod",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_provider_adapter_result.json").read_text(
@@ -1019,17 +1147,20 @@ def test_runpod_adapter_accepts_runpod_config_without_persisting_secret(
         def read(self) -> bytes:
             return b'{"id":"pod-config"}'
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         captured["headers"] = dict(request.header_items())
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
         mode="on-demand-pod",
         allow_runpod_api_call=True,
         pod_name="blueprint-test-pod",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_provider_adapter_result.json").read_text(
@@ -1297,12 +1428,16 @@ def test_runpod_adapter_empty_http_response_is_submitted_with_empty_body(
         def read(self) -> bytes:
             return b""
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy",
+        lambda request, timeout, policy: FakeResponse(),
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
         mode="on-demand-pod",
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert result["status"] == "submitted"
@@ -1428,7 +1563,7 @@ def test_runpod_adapter_updates_and_starts_existing_pod(
         def read(self) -> bytes:
             return json.dumps(self.body).encode("utf-8")
 
-    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
         body = json.loads(request.data.decode("utf-8")) if request.data else None
         calls.append(
             {
@@ -1443,7 +1578,9 @@ def test_runpod_adapter_updates_and_starts_existing_pod(
             return FakeResponse(200, {"id": "pod-123", "desiredStatus": "RUNNING"})
         raise AssertionError(request.full_url)
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
+    )
 
     result = run_runpod_provider_adapter(
         provider_launch_request_path=request_path,
@@ -1452,6 +1589,7 @@ def test_runpod_adapter_updates_and_starts_existing_pod(
         existing_pod_id="pod-123",
         pod_name="reused-pod",
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert result["status"] == "submitted"
@@ -1516,8 +1654,8 @@ def test_runpod_adapter_builds_image_startup_canary_request(
     )
     persisted = (tmp_path / "canary-shaped.json").read_text(encoding="utf-8")
 
-    assert shaped["status"] == "blocked"
-    assert shaped["reason"] == "runpod_api_gate_blocked"
+    assert shaped["status"] == "dry_run_ready"
+    assert shaped["reason"] == "runpod_request_shape_validated_without_api_call"
     assert shaped["request_blockers"] == []
     body = shaped["runpod_request"]["body"]  # type: ignore[index]
     assert body["name"] == "canary-pod"
@@ -1541,6 +1679,22 @@ def test_runpod_adapter_builds_image_startup_canary_request(
     )
     assert "secret-signature" not in persisted
     assert "secret-runpod-key" not in persisted
+
+    provider_shape["docker_entrypoint"] = [
+        "/opt/blueprint/thin_release_entrypoint.sh"
+    ]
+    _write_json(request_path, request)
+    thin = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "thin-canary-shaped.json",
+        mode=adapter.RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+        pod_name="thin-canary-pod",
+    )
+    thin_body = thin["runpod_request"]["body"]  # type: ignore[index]
+    assert thin_body["dockerEntrypoint"] == [
+        "/opt/blueprint/thin_release_entrypoint.sh"
+    ]
+    assert thin_body["dockerStartCmd"][:2] == ["bash", "-lc"]
 
 
 def test_runpod_adapter_main_errors_and_env_request_path(

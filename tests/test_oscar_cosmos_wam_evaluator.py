@@ -1796,7 +1796,9 @@ def test_oscar_cosmos_wam_evaluator_helper_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert evaluator._repo_root().name == "BlueprintCapturePipeline"
+    repo_root = evaluator._repo_root()
+    assert (repo_root / "pyproject.toml").is_file()
+    assert (repo_root / "src" / "blueprint_pipeline").is_dir()
     assert evaluator._timestamp().endswith("Z")
     assert evaluator._string_list("one") == ["one"]
     assert evaluator._load_json(tmp_path / "missing.json") == {}

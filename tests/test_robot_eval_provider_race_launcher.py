@@ -21,6 +21,15 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _assert_legacy_race_disabled(result: dict[str, object]) -> None:
+    assert result["status"] == "blocked"
+    assert result["provider_race_execution_performed"] is False
+    assert result["live_provider_calls_performed"] is False
+    assert result["blockers"] == [
+        "legacy_provider_race_launcher_disabled_use_paid_resource_allocator"
+    ]
+
+
 def _launch_request(path: Path, *, can_launch: bool = True) -> Path:
     _write_json(
         path,
@@ -209,37 +218,10 @@ def test_provider_race_launcher_executes_live_gated_serial_failover(
         timeout_seconds=5,
     )
 
-    assert result["status"] == "completed"
-    assert result["provider_race_execution_performed"] is True
-    assert result["provider_race_execution_proven"] is True
-    assert result["live_provider_calls_performed"] is True
-    assert result["winning_provider"] == "vast"
-    assert [attempt["provider"] for attempt in result["failover_attempts"]] == [
-        "runpod",
-        "vast",
-    ]
-    assert result["failover_attempts"][0]["status"] == "failed"
-    assert result["failover_attempts"][1]["status"] == "won"
-    assert all(
-        attempt["command"]["adapter_registry_owned"] is True
-        and attempt["command"]["raw_candidate_command_executed"] is False
-        for attempt in result["failover_attempts"]
-    )
-    assert (tmp_path / "runpod-attempt").read_text(encoding="utf-8") == "failed"
-    assert (tmp_path / "vast-attempt").read_text(encoding="utf-8") == "won"
-    assert result["remote_cloud_execution_proven"] is False
-    persisted = _read_json(tmp_path / "gpu_provider_race_launcher_result.json")
-    assert persisted["status"] == "completed"
-    assert persisted["winning_provider"] == "vast"
-    replay = run_robot_eval_provider_race_launcher(
-        provider_launch_request_path=request_path,
-        handoff_path=handoff_path,
-        allow_live_provider_race=True,
-        timeout_seconds=5,
-    )
-    assert replay["idempotent_replay"] is True
-    assert replay["provider_adapter_commands_executed_on_replay"] is False
-    assert adapter_calls == ["runpod", "vast"]
+    _assert_legacy_race_disabled(result)
+    assert adapter_calls == []
+    assert not (tmp_path / "runpod-attempt").exists()
+    assert not (tmp_path / "vast-attempt").exists()
 
 
 def test_provider_race_launcher_blocks_on_blocked_handoff(tmp_path: Path) -> None:
@@ -294,6 +276,8 @@ def test_provider_race_exit_zero_without_terminal_artifact_has_no_winner(
     handoff_path = _handoff(tmp_path / "gpu_provider_race_handoff.json")
     monkeypatch.setenv(ALLOW_PROVIDER_RACE_LAUNCH_ENV, "true")
 
+    adapter_calls: list[str] = []
+
     def no_artifact(**kwargs: object) -> dict[str, object]:
         stdout_path = Path(str(kwargs["stdout_path"]))
         argv = list(kwargs["argv"])  # type: ignore[arg-type]
@@ -302,6 +286,7 @@ def test_provider_race_exit_zero_without_terminal_artifact_has_no_winner(
             for name, adapter in PROVIDER_ADAPTER_REGISTRY.items()
             if adapter["executable"] == argv[0]
         )
+        adapter_calls.append(provider)
         _write_json(
             stdout_path.parent / PROVIDER_ADAPTER_REGISTRY[provider]["result_filename"],
             {
@@ -319,14 +304,8 @@ def test_provider_race_exit_zero_without_terminal_artifact_has_no_winner(
         handoff_path=handoff_path,
         allow_live_provider_race=True,
     )
-    assert result["status"] == "failed"
-    assert result["provider_race_execution_proven"] is False
-    assert result["winning_provider"] is None
-    assert len(result["failover_attempts"]) == 2
-    assert all(
-        "provider_terminal_artifact_missing" in attempt["blockers"]
-        for attempt in result["failover_attempts"]
-    )
+    _assert_legacy_race_disabled(result)
+    assert adapter_calls == []
 
 
 def test_provider_race_timeout_tears_down_before_failover(
@@ -400,9 +379,8 @@ def test_provider_race_timeout_tears_down_before_failover(
         handoff_path=handoff_path,
         allow_live_provider_race=True,
     )
-    assert result["status"] == "completed"
-    assert result["winning_provider"] == "vast"
-    assert calls == ["run:runpod", "teardown:runpod", "run:vast", "teardown:vast"]
+    _assert_legacy_race_disabled(result)
+    assert calls == []
 
 
 def test_provider_race_stops_failover_when_teardown_is_unverified(
@@ -450,10 +428,8 @@ def test_provider_race_stops_failover_when_teardown_is_unverified(
         handoff_path=handoff_path,
         allow_live_provider_race=True,
     )
-    assert result["status"] == "failed"
-    assert result["reason"] == "provider_teardown_unverified_failover_stopped"
-    assert result["provider_race_execution_proven"] is False
-    assert adapter_calls == ["runpod"]
+    _assert_legacy_race_disabled(result)
+    assert adapter_calls == []
 
 
 def test_provider_race_rejects_candidate_command_and_output_path_escape(

@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shlex
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -21,7 +22,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
+from .paid_resource_admission import (
+    PaidResourceAdmissionGrant,
+    PaidResourceAdmissionBlocked,
+    require_paid_resource_admission_grant,
+)
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
+from . import safe_outbound_http
 
 
 RUNPOD_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "runpod_provider_adapter_result.v1"
@@ -38,6 +45,26 @@ RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 RUNPOD_REST_API_BASE_ENV = "RUNPOD_REST_API_BASE"
 RUNPOD_REST_API_BASE = os.getenv(RUNPOD_REST_API_BASE_ENV, "https://rest.runpod.io/v1").rstrip("/")
 RUNPOD_SERVERLESS_API_BASE = "https://api.runpod.ai/v2"
+
+
+def _runpod_provider_api_policy() -> safe_outbound_http.OutboundHttpPolicy:
+    """Allow only RunPod's fixed hosts and the configured HTTPS REST origin."""
+
+    configured = urlparse(RUNPOD_REST_API_BASE)
+    configured_host = configured.hostname
+    if (
+        configured.scheme != "https"
+        or not configured_host
+        or configured.username is not None
+        or configured.password is not None
+    ):
+        raise ValueError(f"{RUNPOD_REST_API_BASE_ENV}_must_be_credential_free_https_origin")
+    return safe_outbound_http.OutboundHttpPolicy(
+        allowed_hosts=frozenset(
+            {"rest.runpod.io", "api.runpod.ai", configured_host.lower()}
+        ),
+        max_response_bytes=8 * 1024 * 1024,
+    )
 RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
 RUNPOD_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_EXISTING_POD_ID"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
@@ -942,6 +969,10 @@ def _pod_env(request: Mapping[str, Any]) -> list[dict[str, str]]:
         "policy_files": "BLUEPRINT_POLICY_CACHE",
         "converted_scenes": "BLUEPRINT_CONVERTED_SCENE_CACHE",
         "worker_deps": "BLUEPRINT_WORKER_DEPS_CACHE",
+        # RunPod exposes its persistent network volume at /workspace. Thin
+        # GR00T+OSCAR releases point this at a pre-populated subdirectory;
+        # the image entrypoint verifies the immutable byte manifest offline.
+        "groot_oscar_models": "BLUEPRINT_GROOT_OSCAR_MODEL_CACHE",
     }
     for cache_key, env_name in cache_env_by_key.items():
         value = _string(cache_paths.get(cache_key))
@@ -1018,6 +1049,17 @@ def _pod_payload(
         "volumeMountPath": "/workspace",
         "env": env,
     }
+    network_volume_id = _string(provider_shape.get("network_volume_id"))
+    data_center_id = _string(provider_shape.get("data_center_id"))
+    allowed_cuda_versions = _string_list(
+        provider_shape.get("allowed_cuda_versions")
+    )
+    if network_volume_id:
+        input_payload["networkVolumeId"] = network_volume_id
+    if data_center_id:
+        input_payload["dataCenterIds"] = [data_center_id]
+    if allowed_cuda_versions:
+        input_payload["allowedCudaVersions"] = allowed_cuda_versions
     if docker_entrypoint:
         input_payload["dockerEntrypoint"] = docker_entrypoint
     if container_registry_auth_id:
@@ -1148,10 +1190,16 @@ def _image_startup_canary_pod_payload(
         env["BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS"] = canary_hold_seconds
     else:
         env.setdefault("BLUEPRINT_CANARY_POST_UPLOAD_SLEEP_SECONDS", "5")
+    thin_entrypoint = ["/opt/blueprint/thin_release_entrypoint.sh"]
+    use_thin_entrypoint = body.get("dockerEntrypoint") == thin_entrypoint
     body.update(
         {
-            "dockerEntrypoint": ["bash"],
-            "dockerStartCmd": ["-lc", _image_startup_canary_command()],
+            "dockerEntrypoint": thin_entrypoint if use_thin_entrypoint else ["bash"],
+            "dockerStartCmd": (
+                ["bash", "-lc", _image_startup_canary_command()]
+                if use_thin_entrypoint
+                else ["-lc", _image_startup_canary_command()]
+            ),
             "env": env,
         }
     )
@@ -1188,6 +1236,9 @@ def _existing_pod_start_payload(
         "env",
         "imageName",
         "name",
+        "networkVolumeId",
+        "dataCenterIds",
+        "allowedCudaVersions",
         "ports",
         "volumeInGb",
         "volumeMountPath",
@@ -1388,9 +1439,13 @@ def _http_json(
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        status_code = int(getattr(response, "status", 200))
-        response_text = response.read().decode("utf-8", errors="replace")
+    response = safe_outbound_http.open_request(
+        request,
+        policy=_runpod_provider_api_policy(),
+        timeout_seconds=timeout_seconds,
+    )
+    status_code = response.status
+    response_text = response.body.decode("utf-8", errors="replace")
     if not response_text.strip():
         return status_code, {}
     parsed = json.loads(response_text)
@@ -1408,6 +1463,7 @@ def run_runpod_provider_adapter(
     existing_pod_id: str | None = None,
     gpu_type_id: str | None = None,
     timeout_seconds: int = 30,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> Dict[str, Any]:
     request_path = Path(provider_launch_request_path).resolve()
     resolved_output = (
@@ -1545,7 +1601,9 @@ def run_runpod_provider_adapter(
         )
         return _persist_result(resolved_output, result)
 
-    if mode == "dry-run":
+    if mode == "dry-run" or (
+        mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE and not allow_runpod_api_call
+    ):
         result.update(
             {
                 "status": "dry_run_ready",
@@ -1566,6 +1624,26 @@ def run_runpod_provider_adapter(
                 "reason": "runpod_api_gate_blocked",
                 "blockers": gate_blockers,
                 **api_key_meta,
+            }
+        )
+        return _persist_result(resolved_output, result)
+
+    try:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="runpod_provider_adapter",
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        result.update(
+            {
+                "status": "blocked",
+                "reason": "shared_paid_resource_admission_blocked",
+                "blockers": [
+                    "runpod_provider_shared_admission_missing_or_invalid",
+                    *exc.blockers,
+                ],
+                "api_call_performed": False,
+                "runpod_side_effects_may_have_occurred": False,
             }
         )
         return _persist_result(resolved_output, result)
@@ -1696,6 +1774,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Required with {RUNPOD_API_GATE_ENV}=true for live RunPod API calls.",
     )
     args = parser.parse_args(argv)
+    if args.mode != "dry-run":
+        print("legacy_runpod_provider_mutation_cli_disabled", file=sys.stderr)
+        return 2
     try:
         request_path = _request_path_from_args(args)
     except ValueError as exc:

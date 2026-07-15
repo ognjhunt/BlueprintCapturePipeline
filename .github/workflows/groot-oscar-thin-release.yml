@@ -1,0 +1,177 @@
+name: GR00T OSCAR amd64 foundation and thin release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact commit SHA to build
+        required: true
+        type: string
+      foundation_image_ref:
+        description: Versioned foundation repository tag
+        required: true
+        type: string
+      release_image_ref:
+        description: Versioned thin-release repository tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: groot-oscar-amd64-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    # This label denotes a persistent, operator-approved native Docker builder
+    # with >=120 GiB free. RunPod is deliberately absent from this workflow.
+    runs-on: [self-hosted, linux, x64, blueprint-large-docker]
+    environment: groot-oscar-release-build
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+
+      - name: Verify exact clean amd64 build host
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
+          test -z "$(git status --porcelain)"
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          docker info >/dev/null
+          docker buildx version
+          free_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')"
+          test "$free_kib" -ge $((120 * 1024 * 1024))
+
+      - name: Install packet tooling
+        run: python3 -m pip install -e .
+
+      - name: Prepare immutable build packet
+        shell: bash
+        env:
+          FOUNDATION_IMAGE_REF: ${{ inputs.foundation_image_ref }}
+          RELEASE_IMAGE_REF: ${{ inputs.release_image_ref }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          empty_sha="$(python3 -c 'import hashlib; print(hashlib.sha256(b"").hexdigest())')"
+          python3 -m blueprint_pipeline.groot_oscar_thin_remote_build_packet \
+            --output-dir "$RUNNER_TEMP/groot-oscar-packet" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --foundation-ref "$FOUNDATION_IMAGE_REF" \
+            --release-ref "$RELEASE_IMAGE_REF" \
+            --source-commit "$SOURCE_REF" \
+            --source-patch-sha256 "$empty_sha"
+
+      - name: Admit build plane before registry mutation
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$RUNNER_TEMP/registry-secrets"
+          printf '%s' "$REGISTRY_USERNAME" > "$RUNNER_TEMP/registry-secrets/username"
+          printf '%s' "$REGISTRY_PASSWORD" > "$RUNNER_TEMP/registry-secrets/password"
+          chmod 600 "$RUNNER_TEMP/registry-secrets/username" "$RUNNER_TEMP/registry-secrets/password"
+          test -s "$RUNNER_TEMP/registry-secrets/username"
+          test -s "$RUNNER_TEMP/registry-secrets/password"
+          free_bytes="$(python3 -c 'import os; print(os.statvfs(os.environ["RUNNER_TEMP"]).f_bavail * os.statvfs(os.environ["RUNNER_TEMP"]).f_frsize)')"
+          FREE_BYTES="$free_bytes" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "provider": "github_actions",
+              "purpose": "image_build",
+              "platform": "linux/amd64",
+              "docker_daemon_verified": True,
+              "docker_buildx_verified": True,
+              "free_disk_bytes": int(os.environ["FREE_BYTES"]),
+              "registry_push_auth_file_verified": True,
+              "independent_teardown_watchdog": True,
+              "expected_source_commit": os.environ["SOURCE_REF"],
+          }
+          Path(os.environ["RUNNER_TEMP"], "builder.json").write_text(
+              json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+          cat > "$RUNNER_TEMP/build-spend.json" <<JSON
+          {"paid_mutation_authorized":true,"max_spend_usd":1,"hard_ttl_seconds":7200,"one_resource_limit":true,"independent_teardown_watchdog":true}
+          JSON
+          python3 -m blueprint_pipeline.groot_oscar_infrastructure_admission build \
+            --packet "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build_packet_manifest.json" \
+            --builder "$RUNNER_TEMP/builder.json" \
+            --spend "$RUNNER_TEMP/build-spend.json" \
+            --out "$RUNNER_TEMP/groot-oscar-packet/build_plane_admission.json"
+
+      - name: Refresh external prerequisite pins immediately before allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_groot_oscar_live_prerequisites.py \
+            --live \
+            --output "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_live_prerequisites.json"
+
+      - name: Build through canonical CPU allocator
+        shell: bash
+        env:
+          BLUEPRINT_REMOTE_IMAGE_BUILD_DOCKER_LOGIN: "true"
+          BLUEPRINT_DOCKER_USERNAME_FILE: ${{ runner.temp }}/registry-secrets/username
+          BLUEPRINT_DOCKER_PASSWORD_FILE: ${{ runner.temp }}/registry-secrets/password
+          DOCKER_CONFIG: ${{ runner.temp }}/blueprint-docker-config
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$DOCKER_CONFIG"
+          python3 -m blueprint_pipeline.paid_resource_allocator cpu-build \
+            --execution-plane local \
+            --output-dir "$RUNNER_TEMP/groot-oscar-packet/local-cpu-allocation" \
+            --packet-manifest "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build_packet_manifest.json" \
+            --builder-evidence "$RUNNER_TEMP/builder.json" \
+            --spend "$RUNNER_TEMP/build-spend.json" \
+            --mount-path "$RUNNER_TEMP" \
+            --build-workdir "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build" \
+            --build-script "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build/remote_build_groot_oscar_thin_images.sh"
+
+      - name: Upload immutable release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: groot-oscar-amd64-release-${{ inputs.source_ref }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            ${{ runner.temp }}/groot-oscar-packet/build_plane_admission.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_live_prerequisites.json
+            ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/live_machine_capability.json
+            ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/cpu_build_execution_admission.json
+            ${{ runner.temp }}/groot-oscar-packet/local-cpu-allocation/local_cpu_build_allocator_result.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build_packet_manifest.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/foundation_buildx_metadata.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildx_metadata.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/foundation_registry_diagnostic.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_registry_diagnostic.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_sbom.spdx.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_provenance.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_layer_report.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildkit_sbom_attestation.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildkit_provenance_attestation.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildkit_attestation_index.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_supply_chain_manifest.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_supply_chain_disk_admission.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/groot_oscar_thin_remote_build_result.json
+
+      - name: Remove ephemeral registry credentials
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/registry-secrets" "$RUNNER_TEMP/blueprint-docker-config"

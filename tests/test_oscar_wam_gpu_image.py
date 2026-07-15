@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.metadata
 import subprocess
 import sys
 from pathlib import Path
@@ -82,6 +83,8 @@ def test_oscar_wam_gpu_image_context_writes_cuda128_shim_contract(
     assert "from . import distributed, ops" in shim_script
     assert '"pytorch" / "ops" / "__init__.py"' in shim_script
     assert '"pytorch" / "distributed" / "__init__.py"' in shim_script
+    assert '"transformer_engine-2.0.0.dist-info" / "METADATA"' in shim_script
+    assert "Name: transformer-engine" in shim_script
 
     healthcheck = Path(str(manifest["artifact_paths"]["image_healthcheck"])).read_text(
         encoding="utf-8"
@@ -174,6 +177,7 @@ def test_gpu_image_transformer_engine_shim_rope_matches_te_split_half_semantics(
         _purge_transformer_engine_modules()
         from transformer_engine.pytorch.attention import apply_rotary_pos_emb
 
+        assert importlib.metadata.version("transformer-engine") == "2.0.0"
         tensor = torch.arange(36, dtype=torch.float32).reshape(1, 3, 2, 6) / 10.0
         freqs = torch.linspace(0.01, 0.24, steps=12, dtype=torch.float32).reshape(
             3, 1, 1, 4

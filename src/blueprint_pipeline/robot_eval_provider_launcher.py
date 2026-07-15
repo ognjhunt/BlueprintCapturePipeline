@@ -1004,35 +1004,41 @@ def run_gpu_provider_launcher(
     result["pre_spend_preflight"] = pre_spend_preflight
 
     if provider == "vast" and not command_text:
-        return _run_builtin_vast_provider_adapter(
-            request_path=request_path,
-            output_path=resolved_output,
-            request=request,
-            result=result,
-            timeout_seconds=timeout_seconds,
-        )
+        argv: list[str] = []
+    else:
+        try:
+            argv = shlex.split(command_text)
+        except ValueError as exc:
+            result.update(
+                {
+                    "status": "blocked",
+                    "reason": "invalid_gpu_provider_launch_command",
+                    "blockers": ["invalid_gpu_provider_launch_command"],
+                    "command_parse_error": str(exc),
+                }
+            )
+            return _write_result(resolved_output, result)
+        if not argv:
+            result.update(
+                {
+                    "status": "blocked",
+                    "reason": "missing_gpu_provider_launch_command",
+                    "blockers": ["missing_gpu_provider_launch_command"],
+                }
+            )
+            return _write_result(resolved_output, result)
 
-    try:
-        argv = shlex.split(command_text)
-    except ValueError as exc:
-        result.update(
-            {
-                "status": "blocked",
-                "reason": "invalid_gpu_provider_launch_command",
-                "blockers": ["invalid_gpu_provider_launch_command"],
-                "command_parse_error": str(exc),
-            }
-        )
-        return _write_result(resolved_output, result)
-    if not argv:
-        result.update(
-            {
-                "status": "blocked",
-                "reason": "missing_gpu_provider_launch_command",
-                "blockers": ["missing_gpu_provider_launch_command"],
-            }
-        )
-        return _write_result(resolved_output, result)
+    result.update(
+        {
+            "status": "blocked",
+            "reason": "legacy_provider_command_launcher_disabled",
+            "blockers": [
+                "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
+            ],
+            "provider_side_effects_may_have_occurred": False,
+        }
+    )
+    return _write_result(resolved_output, result)
 
     stdout_path = resolved_output.parent / "gpu_provider_launcher.stdout.log"
     stderr_path = resolved_output.parent / "gpu_provider_launcher.stderr.log"

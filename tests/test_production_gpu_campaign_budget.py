@@ -15,6 +15,7 @@ def _ledger(tmp_path, *, used: int = 8_815, spent: float = 3.0):
         tmp_path / "campaign-budget.json",
         initial_spent_usd=spent,
         initial_used_gpu_seconds=used,
+        combined_gpu_wall_cap_seconds=10_980,
     )
 
 
@@ -75,6 +76,25 @@ def test_duplicate_reservation_is_idempotent_but_conflict_is_rejected(tmp_path) 
         )
 
 
+def test_settled_reservation_id_cannot_be_reused(tmp_path) -> None:
+    ledger = _ledger(tmp_path)
+    ledger.reserve(
+        reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0
+    )
+    ledger.settle(
+        reservation_id="qualification-one",
+        charged_gpu_seconds=0,
+        charged_usd=0,
+        outcome="no_allocation",
+    )
+    with pytest.raises(ValueError, match="reservation_id_already_settled"):
+        ledger.reserve(
+            reservation_id="qualification-one",
+            gpu_seconds=100,
+            max_hourly_rate_usd=1.0,
+        )
+
+
 def test_concurrent_reservations_cannot_oversubscribe_wall_cap(tmp_path) -> None:
     ledger = _ledger(tmp_path, used=10_000)
 
@@ -93,3 +113,32 @@ def test_concurrent_reservations_cannot_oversubscribe_wall_cap(tmp_path) -> None
         admitted = list(executor.map(reserve, range(2)))
     assert sorted(admitted) == [False, True]
     assert ledger.snapshot()["committed_gpu_seconds"] == 10_600
+
+
+def test_staged_canary_then_campaign_fits_reduced_combined_plan(tmp_path) -> None:
+    ledger = ProductionGpuCampaignBudget(
+        tmp_path / "staged-campaign-budget.json",
+        initial_spent_usd=11.57,
+        initial_used_gpu_seconds=11_619,
+        combined_gpu_wall_cap_seconds=16_800,
+    )
+    ledger.reserve(
+        reservation_id="startup-canary-stage",
+        gpu_seconds=1_200,
+        max_hourly_rate_usd=1.99,
+    )
+    ledger.settle(
+        reservation_id="startup-canary-stage",
+        charged_gpu_seconds=1_200,
+        charged_usd=round(1.99 * 1_200 / 3_600, 6),
+        outcome="canary_terminal",
+    )
+    campaign = ledger.reserve(
+        reservation_id="full-campaign-stage",
+        gpu_seconds=3_900,
+        max_hourly_rate_usd=1.99,
+    )
+    assert campaign["status"] == "open"
+    snapshot = ledger.snapshot()
+    assert snapshot["committed_gpu_seconds"] == 16_719
+    assert snapshot["remaining_gpu_seconds"] == 81
