@@ -87,7 +87,7 @@ def test_model_volume_admission_rejects_gpu_only_data_center() -> None:
 
 def test_model_volume_admission_rejects_gpu_outside_campaign_contract() -> None:
     admission = _admission(
-        gpu_type_id="NVIDIA GeForce RTX 4090",
+        gpu_type_id="NVIDIA RTX 6000 Ada Generation",
         hourly_rate_usd=0.77,
         max_spend_usd=0.60,
     )
@@ -96,18 +96,6 @@ def test_model_volume_admission_rejects_gpu_outside_campaign_contract() -> None:
         "model_volume_gpu_type_outside_authorized_campaign"
         in admission["blockers"]
     )
-
-
-def test_model_volume_admission_accepts_authorized_rtx_datacenter_fallback() -> None:
-    admission = _admission(
-        data_center_id="US-WA-1",
-        gpu_type_id="NVIDIA RTX 6000 Ada Generation",
-        hourly_rate_usd=0.77,
-        max_spend_usd=0.60,
-    )
-    assert admission["status"] == "admitted"
-
-
 def test_model_volume_admission_rejects_cost_above_cap() -> None:
     admission = _admission(max_spend_usd=0.10)
     assert admission["status"] == "blocked"
@@ -138,8 +126,6 @@ def test_model_volume_accepts_exact_one_gpu_offer_when_counts_are_nullable() -> 
         "single_gpu_offer_requested": True,
         "single_gpu_offer_available": True,
         "capacity_data_center_id": "US-NC-1",
-        "capacity_data_center_catalog_verified": True,
-        "capacity_data_center_storage_support": True,
         "capacity_allowed_cuda_versions": ["12.8"],
     }
     assert _single_gpu_capacity_verified(
