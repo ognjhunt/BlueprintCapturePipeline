@@ -333,8 +333,18 @@ def test_bounded_retention_rejects_unreconciled_spend_before_new_watchdog(
     assert result["provider_mutations_performed"] == 0
 
 
-def test_retention_state_write_failure_keeps_original_owner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_blocker"),
+    [
+        ("unarmed", "bounded_cache_retention_watchdog_not_armed"),
+        ("state_write", "bounded_cache_retention_watchdog_state_write_failed"),
+    ],
+)
+def test_retention_pre_rotation_failure_keeps_original_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+    expected_blocker: str,
 ) -> None:
     source, _lane_handoff = _retention_source(tmp_path)
     retention_root = tmp_path / "retained"
@@ -352,7 +362,7 @@ def test_retention_state_write_failure_keeps_original_owner(
 
         @staticmethod
         def poll():
-            return None
+            return 0 if process_stopped else None
 
         @staticmethod
         def terminate():
@@ -377,7 +387,7 @@ def test_retention_state_write_failure_keeps_original_owner(
             encoding="utf-8",
         )
         return Process(), {
-            "armed": True,
+            "armed": failure_mode != "unarmed",
             "pid": 333,
             "state_path": str(state_path),
             "watchdog_deadline_epoch": 1000.0 + 7 * 24 * 3600,
@@ -389,7 +399,11 @@ def test_retention_state_write_failure_keeps_original_owner(
     real_write_json = storage.write_json
 
     def fail_prepared_state(path, payload):
-        if Path(path) == state_path and "provider_lane_handoff" in payload:
+        if (
+            failure_mode == "state_write"
+            and Path(path) == state_path
+            and "provider_lane_handoff" in payload
+        ):
             raise OSError("disk full")
         return real_write_json(path, payload)
 
@@ -424,10 +438,10 @@ def test_retention_state_write_failure_keeps_original_owner(
         clock=lambda: 1000.0,
     )
     assert result["status"] == "blocked"
-    assert result["blockers"] == [
-        "bounded_cache_retention_watchdog_state_write_failed"
-    ]
+    assert result["blockers"] == [expected_blocker]
     assert process_stopped is True
+    if failure_mode == "unarmed":
+        assert result["retention_watchdog_cleanup_verified"] is True
     assert rotation_called is False
 
 

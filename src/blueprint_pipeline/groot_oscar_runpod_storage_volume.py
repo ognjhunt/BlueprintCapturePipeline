@@ -287,7 +287,23 @@ def retain_verified_model_cache(
         allocation_nonce=allocation_nonce,
     )
     if not watchdog.get("armed"):
-        raise RuntimeError("bounded_cache_retention_watchdog_not_armed")
+        cleanup_verified = False
+        try:
+            watchdog_process.terminate()
+            watchdog_process.wait(timeout=10)
+            cleanup_verified = not _watchdog_process_running(watchdog_process)
+        except Exception:  # noqa: BLE001 - preserve fail-closed evidence
+            cleanup_verified = False
+        result = {
+            "schema_version": RETENTION_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["bounded_cache_retention_watchdog_not_armed"],
+            "retention_watchdog_cleanup_verified": cleanup_verified,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(result_path, result)
+        return result
     retention_watchdog = _retention_watchdog_mapping(watchdog)
     source_watchdog = {
         "watchdog_pid": source_handoff.get("watchdog_pid"),
