@@ -3,8 +3,6 @@ from __future__ import annotations
 import io
 import json
 import logging
-import shlex
-import sys
 from http import HTTPStatus
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -34,10 +32,6 @@ from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV, RUNP
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
 
-def _python_command(source: str) -> list[str]:
-    return [sys.executable, "-c", source]
-
-
 def _records(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogRecord]:
     return [
         record
@@ -52,10 +46,6 @@ def _event_names(caplog: pytest.LogCaptureFixture) -> list[str]:
         for record in caplog.records
         if getattr(record, "blueprint_event", None)
     ]
-
-
-def _python_command(code: str) -> str:
-    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
 def _capture_root(tmp_path: Path) -> Path:
@@ -518,10 +508,7 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
         disabled = run_gpu_provider_launcher(
             provider_launch_request_path=provider_request,
             allow_provider_launch=True,
-            provider_launch_command=_python_command(
-                f"from pathlib import Path; Path({str(side_effect)!r}).touch(); "
-                "import os; print(os.environ['RUNPOD_API_KEY'])"
-            ),
+            provider_launch_command=f"touch {side_effect}",
         )
 
     assert disabled["status"] == "blocked"
