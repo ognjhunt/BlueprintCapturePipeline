@@ -1580,8 +1580,12 @@ are hard-disabled as public launch paths and remain available only for
 dry-run/read-only or allocator-owned internal use. A missing first output zip records
 `provider_pod_startup_or_image_pull_timeout` and can still prove teardown, but
 it is not Isaac Sim execution proof; an empty zip left by a staging PUT probe is
-rejected. The canonical allocator binds an image/container startup canary to
-the same launch request and its protected release evidence. If that canary
+rejected. The canonical allocator binds an image/container startup canary, or
+the closed `--probe-kind strict-policy-smoke` three-action GR00T/SONIC probe,
+to the same launch request and its protected release evidence. The strict
+policy probe uses a fixed adapter-owned command, ignores caller-provided
+commands, uploads an exact three-action result, and does not claim Isaac task
+success or physical robot control. If the startup canary
 times out, the blocker is before user-command
 execution; artifacts record `image_startup_canary_artifact_timeout` and, when
 image metadata shows oversized layers, `prebuilt_isaac_image_layer_pull_exceeded_watchdog`.
@@ -1640,8 +1644,9 @@ secret values and does not mean a live GPU provider call happened. These images
 and launch requests are startup/runtime scaffolds only; provider-native GPU
 evidence remains required for simulator proof.
 
-Only bounded image/startup canaries are currently supported through the
-canonical allocator. A `gpu_provider_launch_request.json` at
+Only bounded image/startup canaries and the fixed three-action learned-policy
+smoke are currently supported through the canonical allocator. A
+`gpu_provider_launch_request.json` at
 `request_manifest_ready` is not authority to run a production robot evaluation:
 general paid provider eval, Vast, and Lambda execution remain disabled until
 each has a canonical allocator route. The old arbitrary provider-command and
@@ -1659,6 +1664,11 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --pod-name <watchdog-bound-pod-name-from-preflight> \
   --execute
 ```
+
+For the model-backed learned-action smoke, add
+`--probe-kind strict-policy-smoke`. This remains a bounded policy-action probe;
+general paid robot evaluation and dynamic episode execution are still disabled
+until their own fixed canonical route exists.
 
 Omit `--execute` for admission/binding validation without a provider mutation.
 The RunPod adapter remains useful for dry-run request-shape inspection, but its

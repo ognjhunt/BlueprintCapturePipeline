@@ -549,7 +549,15 @@ def verify() -> list[str]:
         blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")
     if "require_paid_resource_admission" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_allocator_bypasses_shared_admission")
-    if 'mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE' not in gpu:
+    if not all(
+        marker in gpu
+        for marker in (
+            "RUNPOD_IMAGE_STARTUP_CANARY_MODE",
+            "RUNPOD_STRICT_POLICY_SMOKE_MODE",
+            "if probe_kind == STRICT_POLICY_SMOKE_PROBE_KIND",
+            "else RUNPOD_IMAGE_STARTUP_CANARY_MODE",
+        )
+    ):
         blockers.append("gpu_canary_dry_run_mode_differs_from_execution")
     runpod_adapter = (
         ROOT / "src/blueprint_pipeline/runpod_provider_adapter.py"

@@ -3,7 +3,8 @@
 The provider adapter is unreachable until the exact release, model cache,
 existing network volume, GPU/CUDA constraints, budget, and already-armed
 watchdog produce an admitted record.  This launcher is intentionally scoped to
-the startup canary; it is not an image builder or a customer cold-start path.
+the startup canary and the fixed three-action policy smoke; it is not an image
+builder, a general robot-evaluation launcher, or a customer cold-start path.
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import stat
 import time
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -45,8 +48,16 @@ from .groot_oscar_runpod_preflight import collect_runpod_preflight
 from .groot_oscar_runpod_watchdog import terminate_canary_resources
 from .runpod_provider_adapter import (
     RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+    RUNPOD_STRICT_POLICY_SMOKE_MODE,
     run_runpod_provider_adapter,
 )
+
+STARTUP_PROBE_KIND = "startup"
+STRICT_POLICY_SMOKE_PROBE_KIND = "strict-policy-smoke"
+CANONICAL_PROBE_KINDS = (STARTUP_PROBE_KIND, STRICT_POLICY_SMOKE_PROBE_KIND)
+STRICT_POLICY_SMOKE_RESULT_NAME = "groot_oscar_runpod_strict_policy_smoke.json"
+STRICT_POLICY_SMOKE_LOG_NAME = "gr00t_policy_server.log"
+STRICT_POLICY_SMOKE_MAX_ZIP_BYTES = 16 * 1024 * 1024
 
 
 def refresh_runpod_preflight(
@@ -105,6 +116,79 @@ def _read(path: str | Path) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"expected_json_object:{path}")
     return dict(value)
+
+
+def validate_strict_policy_smoke_output(
+    *, output_zip: str | Path, evidence_out: str | Path
+) -> dict[str, Any]:
+    """Validate the fixed three-action smoke artifact without executing it."""
+
+    source = Path(output_zip).expanduser().resolve()
+    blockers: list[str] = []
+    payload: dict[str, Any] = {}
+    inventory: list[str] = []
+    try:
+        if not source.is_file() or source.stat().st_size > STRICT_POLICY_SMOKE_MAX_ZIP_BYTES:
+            raise ValueError("strict_policy_smoke_zip_missing_or_oversized")
+        with zipfile.ZipFile(source) as archive:
+            infos = archive.infolist()
+            inventory = [info.filename for info in infos]
+            if len(inventory) != len(set(inventory)):
+                blockers.append("strict_policy_smoke_zip_duplicate_member")
+            allowed = {STRICT_POLICY_SMOKE_RESULT_NAME, STRICT_POLICY_SMOKE_LOG_NAME}
+            if not set(inventory).issubset(allowed):
+                blockers.append("strict_policy_smoke_zip_inventory_invalid")
+            for info in infos:
+                mode = info.external_attr >> 16
+                if info.is_dir() or stat.S_ISLNK(mode) or info.filename.startswith(("/", "../")):
+                    blockers.append("strict_policy_smoke_zip_member_type_invalid")
+            if STRICT_POLICY_SMOKE_RESULT_NAME not in inventory:
+                blockers.append("strict_policy_smoke_result_missing")
+            elif not blockers:
+                value = json.loads(archive.read(STRICT_POLICY_SMOKE_RESULT_NAME))
+                payload = dict(value) if isinstance(value, Mapping) else {}
+    except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        blockers.append(f"strict_policy_smoke_zip_invalid:{type(exc).__name__}")
+    actions = payload.get("fresh_learned_action_trace")
+    actions = actions if isinstance(actions, list) else []
+    if payload:
+        if payload.get("schema_version") != "groot_oscar_runpod_strict_policy_smoke.v1":
+            blockers.append("strict_policy_smoke_schema_invalid")
+        if payload.get("status") != "completed":
+            blockers.append("strict_policy_smoke_not_completed")
+        if payload.get("requested_action_count") != 3 or payload.get(
+            "completed_action_count"
+        ) != 3:
+            blockers.append("strict_policy_smoke_action_count_invalid")
+        if len(actions) != 3 or not all(
+            isinstance(action, Mapping)
+            and isinstance(action.get("action_chunk"), list)
+            and bool(action.get("action_chunk"))
+            for action in actions
+        ):
+            blockers.append("strict_policy_smoke_learned_action_trace_invalid")
+        if payload.get("model_execution_proven") is not True or payload.get(
+            "policy_action_model_command_ran"
+        ) is not True:
+            blockers.append("strict_policy_smoke_model_execution_not_proven")
+        if payload.get("physical_robot_control_performed") is not False:
+            blockers.append("strict_policy_smoke_physical_control_boundary_invalid")
+        if payload.get("raw_secret_values_recorded") is not False:
+            blockers.append("strict_policy_smoke_secret_policy_invalid")
+    result = {
+        "schema_version": "groot_oscar_runpod_strict_policy_smoke_validation.v1",
+        "status": "passed" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "output_zip": str(source),
+        "zip_inventory": inventory,
+        "completed_action_count": len(actions),
+        "model_execution_proven": payload.get("model_execution_proven") is True,
+        "task_success_proven": False,
+        "physical_robot_control_performed": False,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(Path(evidence_out), result)
+    return result
 
 
 def _write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -284,7 +368,10 @@ def _recover_accepted_handoff_before_provider_mutation(
 
 
 def bind_canary_request(
-    *, request: Mapping[str, Any], admission: Mapping[str, Any]
+    *,
+    request: Mapping[str, Any],
+    admission: Mapping[str, Any],
+    probe_kind: str = STARTUP_PROBE_KIND,
 ) -> dict[str, Any]:
     """Bind the adapter request to the already-admitted immutable tuple."""
 
@@ -296,6 +383,8 @@ def bind_canary_request(
     configured = str(image.get("configured_image_ref") or "").strip()
     admitted_image = str(admission.get("release_image_ref") or "").strip()
     blockers: list[str] = []
+    if probe_kind not in CANONICAL_PROBE_KINDS:
+        blockers.append("runpod_canary_probe_kind_unsupported")
     if configured != admitted_image:
         blockers.append("runpod_request_release_image_differs_from_admission")
     gpu = shape.get("gpu")
@@ -338,6 +427,27 @@ def bind_canary_request(
     gpu["provider_gpu_priority"] = [admitted_gpu]
     shape["gpu"] = gpu
     shape["image"] = image
+    if probe_kind == STRICT_POLICY_SMOKE_PROBE_KIND:
+        result["operation"] = "enqueue_runpod_strict_policy_smoke"
+        shape["operation"] = "enqueue_runpod_strict_policy_smoke"
+        shape.pop("command", None)
+        limits = shape.get("limits")
+        limits = limits if isinstance(limits, dict) else {}
+        limits["hard_timeout_seconds"] = 300
+        limits["startup_artifact_timeout_seconds"] = 300
+        shape["limits"] = limits
+        claim_boundary = shape.get("claim_boundary")
+        claim_boundary = claim_boundary if isinstance(claim_boundary, dict) else {}
+        claim_boundary.update(
+            {
+                "startup_canary_only": False,
+                "strict_policy_smoke_only": True,
+                "fresh_three_action_policy_smoke_required": True,
+                "does_not_prove_task_success": True,
+                "does_not_prove_physical_robot_control": True,
+            }
+        )
+        shape["claim_boundary"] = claim_boundary
     result["provider_request_shape"] = shape
     return {
         "status": "ready" if not blockers else "blocked",
@@ -352,6 +462,7 @@ def prepare_canary_launch(
     release: Mapping[str, Any],
     model_cache: Mapping[str, Any],
     preflight: Mapping[str, Any],
+    probe_kind: str = STARTUP_PROBE_KIND,
 ) -> dict[str, Any]:
     volume = preflight.get("volume")
     runtime = preflight.get("runtime")
@@ -371,7 +482,11 @@ def prepare_canary_launch(
                 set([*admission.get("blockers", []), "runpod_preflight_bundle_not_verified"])
             ),
         }
-    bound = bind_canary_request(request=request, admission=admission)
+    bound = bind_canary_request(
+        request=request,
+        admission=admission,
+        probe_kind=probe_kind,
+    )
     blockers = list(admission.get("blockers") or []) + list(bound["blockers"])
     return {
         "status": "admitted" if not blockers and admission["status"] == "admitted" else "blocked",
@@ -427,6 +542,7 @@ def run_canary(
     pod_name: str,
     execute: bool,
     campaign_budget: Mapping[str, Any] | None = None,
+    probe_kind: str = STARTUP_PROBE_KIND,
 ) -> dict[str, Any]:
     """Run the adapter only through the canonical GPU-canary allocator."""
 
@@ -467,6 +583,7 @@ def run_canary(
         release=_read(release_evidence),
         model_cache=_read(model_cache_evidence),
         preflight=preflight,
+        probe_kind=probe_kind,
     )
     spend = preflight.get("spend")
     spend = spend if isinstance(spend, Mapping) else {}
@@ -718,7 +835,11 @@ def run_canary(
         adapter = run_runpod_provider_adapter(
             provider_launch_request_path=bound_request_out,
             output_path=adapter_output,
-            mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+            mode=(
+                RUNPOD_STRICT_POLICY_SMOKE_MODE
+                if probe_kind == STRICT_POLICY_SMOKE_PROBE_KIND
+                else RUNPOD_IMAGE_STARTUP_CANARY_MODE
+            ),
             allow_runpod_api_call=execute,
             pod_name=pod_name,
             gpu_type_id=prepared["admission"]["gpu_type_id"],

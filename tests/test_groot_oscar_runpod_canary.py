@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import zipfile
 
 import pytest
 
@@ -9,10 +10,91 @@ from blueprint_pipeline.groot_oscar_runpod_canary import (
     _finalize_adapter_allocation,
     _reserve_campaign_budget,
     _settle_zero_budget,
+    bind_canary_request,
     prepare_canary_launch,
     refresh_runpod_preflight,
     run_canary,
+    validate_strict_policy_smoke_output,
 )
+
+
+def test_strict_policy_smoke_binding_is_fixed_and_bounded() -> None:
+    request = _request()
+    shape = request["provider_request_shape"]
+    shape["command"] = "echo caller-command"
+    admission = {
+        "release_image_ref": DIGEST,
+        "gpu_type_id": "NVIDIA A40",
+        "model_cache_path": "/workspace/models",
+        "model_manifest_digest": "sha256:" + "b" * 64,
+        "network_volume_id": "volume-1",
+        "data_center_id": "US-TX-3",
+        "required_cuda_version": "12.6",
+    }
+
+    result = bind_canary_request(
+        request=request,
+        admission=admission,
+        probe_kind="strict-policy-smoke",
+    )
+
+    assert result["status"] == "ready"
+    bound = result["request"]
+    bound_shape = bound["provider_request_shape"]
+    assert bound["operation"] == "enqueue_runpod_strict_policy_smoke"
+    assert bound_shape["operation"] == "enqueue_runpod_strict_policy_smoke"
+    assert "command" not in bound_shape
+    assert bound_shape["limits"]["hard_timeout_seconds"] == 300
+    assert bound_shape["claim_boundary"]["strict_policy_smoke_only"] is True
+    assert (
+        bound_shape["claim_boundary"]["fresh_three_action_policy_smoke_required"]
+        is True
+    )
+
+
+def test_strict_policy_smoke_output_requires_exact_three_action_proof(
+    tmp_path,
+) -> None:
+    payload = {
+        "schema_version": "groot_oscar_runpod_strict_policy_smoke.v1",
+        "status": "completed",
+        "requested_action_count": 3,
+        "completed_action_count": 3,
+        "fresh_learned_action_trace": [
+            {"action_chunk": [float(index), 0.5]} for index in range(3)
+        ],
+        "model_execution_proven": True,
+        "policy_action_model_command_ran": True,
+        "physical_robot_control_performed": False,
+        "raw_secret_values_recorded": False,
+    }
+    output_zip = tmp_path / "strict-smoke.zip"
+    with zipfile.ZipFile(output_zip, "w") as archive:
+        archive.writestr(
+            "groot_oscar_runpod_strict_policy_smoke.json",
+            json.dumps(payload),
+        )
+    result = validate_strict_policy_smoke_output(
+        output_zip=output_zip,
+        evidence_out=tmp_path / "validation.json",
+    )
+    assert result["status"] == "passed"
+    assert result["completed_action_count"] == 3
+    assert result["model_execution_proven"] is True
+    assert result["task_success_proven"] is False
+
+    with zipfile.ZipFile(output_zip, "w") as archive:
+        archive.writestr(
+            "groot_oscar_runpod_strict_policy_smoke.json",
+            json.dumps(payload | {"completed_action_count": 2}),
+        )
+        archive.writestr("unexpected.sh", "echo bypass")
+    blocked = validate_strict_policy_smoke_output(
+        output_zip=output_zip,
+        evidence_out=tmp_path / "blocked-validation.json",
+    )
+    assert blocked["status"] == "blocked"
+    assert "strict_policy_smoke_zip_inventory_invalid" in blocked["blockers"]
 
 
 def _budget_config(tmp_path, **overrides):

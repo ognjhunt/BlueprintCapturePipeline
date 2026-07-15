@@ -314,6 +314,13 @@ After inspecting the dry-run evidence, rerun this exact command with
 `--execute`; omitting any ledger identity/rate or staged-plan authorization
 argument fails before provider mutation.
 
+After startup-only evidence passes, the same canonical command may run the
+fixed learned-action probe by adding `--probe-kind strict-policy-smoke`. That
+mode ignores request-supplied commands, hard-bounds the probe to three fresh
+GR00T/SONIC actions, and retains the same budget, handoff, pending-teardown, and
+watchdog contracts. Its PASS is policy-model execution evidence only, not Isaac
+task success or authority to run general paid episodes.
+
 The launcher refuses to rewrite a tag into an admitted digest or silently pick
 another GPU. On live submission, before the provider adapter is reachable, it
 reruns every mutable read-only check and writes
