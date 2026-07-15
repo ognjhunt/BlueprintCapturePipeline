@@ -249,7 +249,24 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
     assert result["whitelisted_storage_resource_count"] == 1
     assert result["later_canary_handoff_ready"] is True
     assert result["source_watchdog_stopped"] is True
+    assert result["retention_policy"] == {
+        "zero_paid_compute_required": True,
+        "storage_resource_kind": "runpod_network_volume",
+        "storage_resource_id": "volume-1",
+        "content_digest": "sha256:" + "a" * 64,
+        "content_mutation_policy": "no_writes_after_verification",
+        "automatic_delete_at_deadline": True,
+    }
     assert result["maximum_retention_spend_usd"] == pytest.approx(0.816666666648)
+    admission = json.loads(
+        (retention_root / "bounded_model_cache_retention_admission.json").read_text()
+    )
+    assert admission["provider_inventory"] == {
+        "api_confirmed": True,
+        "live_pod_ids": [],
+        "live_network_volume_ids": ["volume-1"],
+        "whitelisted_network_volume_id": "volume-1",
+    }
     handoff = json.loads((retention_root / "watchdog_handoff.json").read_text())
     assert handoff["status"] == "volume_ready_watchdog_retained"
     assert handoff["retention_class"] == "bounded_persistent_verified_model_cache"

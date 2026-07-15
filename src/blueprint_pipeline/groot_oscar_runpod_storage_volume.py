@@ -246,6 +246,16 @@ def retain_verified_model_cache(
         "maximum_storage_spend_usd": maximum_storage_spend,
         "campaign_spent_to_date_usd": campaign_spent_to_date_usd,
         "campaign_total_spend_cap_usd": campaign_total_spend_cap_usd,
+        "provider_inventory": {
+            "api_confirmed": inventory_verified,
+            "live_pod_ids": live_pods,
+            "live_network_volume_ids": live_volumes,
+            "whitelisted_network_volume_id": volume_id or None,
+        },
+        "s3_visibility": {
+            "status": s3.get("status"),
+            "expected_network_volume_id": volume_id or None,
+        },
         "provider_mutations_performed": 0,
         "raw_secret_values_recorded": False,
     }
@@ -428,6 +438,14 @@ def retain_verified_model_cache(
         "provider_mutations_performed": 0,
         "paid_compute_retained": False,
         "whitelisted_storage_resource_count": 1,
+        "retention_policy": {
+            "zero_paid_compute_required": True,
+            "storage_resource_kind": "runpod_network_volume",
+            "storage_resource_id": volume_id,
+            "content_digest": manifest_digest,
+            "content_mutation_policy": "no_writes_after_verification",
+            "automatic_delete_at_deadline": True,
+        },
         "raw_secret_values_recorded": False,
     }
     write_json(result_path, result)
