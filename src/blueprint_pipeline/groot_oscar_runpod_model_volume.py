@@ -125,6 +125,8 @@ def _single_gpu_capacity_verified(
         and selected.get("single_gpu_offer_requested") is True
         and selected.get("single_gpu_offer_available") is True
         and selected.get("capacity_data_center_id") == data_center_id
+        and selected.get("capacity_data_center_catalog_verified") is True
+        and selected.get("capacity_data_center_storage_support") is True
         and required_cuda_version
         in (selected.get("capacity_allowed_cuda_versions") or [])
     )

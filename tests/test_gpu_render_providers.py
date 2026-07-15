@@ -250,6 +250,9 @@ def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
         assert 'allowedCudaVersions: ["12.6"]' in query
         return 200, {
             "data": {
+                "dataCenters": [
+                    {"id": "US-TX-3", "storageSupport": True},
+                ],
                 "gpuTypes": [
                     {
                         "id": "NVIDIA A40",
@@ -282,6 +285,17 @@ def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
     assert result["requested_data_center_ids"] == ["US-TX-3"]
     assert result["requested_allowed_cuda_versions"] == ["12.6"]
     assert result["viable_gpu_types"][0]["capacity_data_center_id"] == "US-TX-3"
+    assert (
+        result["viable_gpu_types"][0]["capacity_data_center_storage_support"]
+        is True
+    )
+    assert result["requested_data_center_evidence"] == [
+        {
+            "id": "US-TX-3",
+            "provider_catalog_row_present": True,
+            "storage_support": True,
+        }
+    ]
     assert result["viable_gpu_types"][0]["capacity_allowed_cuda_versions"] == [
         "12.6"
     ]
@@ -407,6 +421,9 @@ def test_runpod_capacity_preflight_registers_rtx_pro_6000_blackwell(
         assert "gpuCount: 1" in query
         return 200, {
             "data": {
+                "dataCenters": [
+                    {"id": "US-NC-2", "storageSupport": False},
+                ],
                 "gpuTypes": [
                     {
                         "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
@@ -442,6 +459,8 @@ def test_runpod_capacity_preflight_registers_rtx_pro_6000_blackwell(
     assert row["memory_in_gb"] == 96
     assert row["single_gpu_count_known"] is False
     assert row["single_gpu_offer_available"] is True
+    assert row["capacity_data_center_catalog_verified"] is True
+    assert row["capacity_data_center_storage_support"] is False
 
 
 def test_runpod_exact_one_gpu_offer_requires_explicit_stock_label(monkeypatch) -> None:
