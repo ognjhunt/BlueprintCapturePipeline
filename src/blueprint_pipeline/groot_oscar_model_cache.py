@@ -157,6 +157,7 @@ def verify_model_cache(
     *,
     expected_manifest_digest: str | None = None,
     provider_volume_id: str | None = None,
+    runtime_cache_root: Path | None = None,
 ) -> dict[str, Any]:
     """Verify pins, inventory, byte hashes, and manifest self-digest offline."""
 
@@ -189,6 +190,31 @@ def verify_model_cache(
     expected_digest = str(expected_manifest_digest or "").strip()
     if expected_digest and observed_digest != expected_digest:
         blockers.append("model_cache_manifest_digest_differs_from_admission")
+
+    expected_runtime_root = (
+        runtime_cache_root.expanduser().resolve()
+        if runtime_cache_root is not None
+        else root
+    )
+    expected_runtime_model_path = (
+        expected_runtime_root / COSMOS_RUNTIME_MODEL_RELATIVE_PATH
+    )
+    try:
+        sonic_config = json.loads(
+            (root / "sonic/config.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        sonic_config = {}
+        blockers.append("model_cache_sonic_config_unreadable")
+    if sonic_config.get("model_name") != str(expected_runtime_model_path):
+        blockers.append("model_cache_sonic_runtime_path_mismatch")
+    selector_anchor = root / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH
+    if not selector_anchor.is_file() or selector_anchor.stat().st_size <= 0:
+        blockers.append("model_cache_cosmos_selector_anchor_missing")
+    if expected_runtime_model_path.resolve() != (
+        expected_runtime_root / COSMOS_CACHE_RELATIVE_ROOT
+    ):
+        blockers.append("model_cache_cosmos_runtime_path_escapes_cache_contract")
 
     entries = payload.get("files")
     entries = entries if isinstance(entries, list) else []
@@ -241,7 +267,10 @@ def verify_model_cache(
         "provider_volume_id": str(provider_volume_id or "").strip() or None,
         "verified_file_count": len(declared_paths) if not blockers else 0,
         "verified_size_bytes": verified_bytes if not blockers else 0,
-        "checks": {"models_cached_offline": not blockers},
+        "checks": {
+            "models_cached_offline": not blockers,
+            "runtime_model_path_verified": not blockers,
+        },
         "raw_secret_values_recorded": False,
     }
 
@@ -370,7 +399,9 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
         )
         manifest = build_manifest(staging)
         write_json(staging / MANIFEST_NAME, manifest)
-        staged_verification = verify_model_cache(staging)
+        staged_verification = verify_model_cache(
+            staging, runtime_cache_root=root
+        )
         if staged_verification["status"] != "passed":
             raise RuntimeError(
                 "prepared_model_cache_failed_verification:"
