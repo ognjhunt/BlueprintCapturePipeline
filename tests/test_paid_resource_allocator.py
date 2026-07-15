@@ -395,4 +395,14 @@ def test_gpu_canary_strict_defaults_bind_300_minute_campaign_authority(
     assert campaign_budget["reservation_gpu_seconds"] == 480
     assert campaign_budget["maximum_canary_reservation_gpu_seconds"] == 480
     assert campaign_budget["future_campaign_allowance_gpu_seconds"] == 3_900
+    assert campaign_budget["minimum_reconciled_spend_usd"] == 12.712289
+    assert campaign_budget["minimum_reconciled_gpu_seconds"] == 12_632
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_strict_probe_runbook_arms_watchdog_within_budget_reservation() -> None:
+    runbook = (Path(__file__).parents[1] / "docs/runbooks/groot-oscar-thin-release.md").read_text(
+        encoding="utf-8"
+    )
+    assert 'deadline="$(( $(date +%s) + 480 ))"' in runbook
+    assert 'deadline="$(( $(date +%s) + 900 ))"' not in runbook

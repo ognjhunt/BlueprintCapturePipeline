@@ -241,7 +241,7 @@ name-bound watchdog in a separate process and wait until its evidence says
 deadline, so even an ambiguous create response cannot orphan spend:
 
 ```bash
-deadline="$(( $(date +%s) + 900 ))"
+deadline="$(( $(date +%s) + 480 ))"
 python -m blueprint_pipeline.groot_oscar_runpod_watchdog \
   --out-dir <canary-dir> \
   --pod-name-prefix blueprint-groot-oscar-canary-<attempt> \

@@ -115,8 +115,8 @@ def _budget_config(tmp_path, **overrides):
         "maximum_combined_plan_gpu_seconds": 4_380,
         "reduced_canary_timeout_acknowledged": True,
         "max_hourly_rate_usd": 1.99,
-        "minimum_reconciled_spend_usd": 11.57,
-        "minimum_reconciled_gpu_seconds": 11_619,
+        "minimum_reconciled_spend_usd": 12.712289,
+        "minimum_reconciled_gpu_seconds": 12_632,
     }
     config.update(overrides)
     return config
@@ -169,11 +169,18 @@ def test_reduced_canary_plan_requires_explicit_acknowledgement(tmp_path) -> None
 
 def test_campaign_budget_rejects_understated_baseline(tmp_path) -> None:
     result = _reserve_campaign_budget(
-        _budget_config(tmp_path, initial_used_gpu_seconds=11_618),
+        _budget_config(tmp_path, initial_used_gpu_seconds=12_631),
         reservation_id="blueprint-canary-understated",
     )
     assert result["status"] == "blocked"
     assert result["blockers"] == ["gpu_canary_cumulative_baseline_understated"]
+
+    spend_result = _reserve_campaign_budget(
+        _budget_config(tmp_path, initial_spent_usd=12.712288),
+        reservation_id="blueprint-canary-spend-understated",
+    )
+    assert spend_result["status"] == "blocked"
+    assert spend_result["blockers"] == ["gpu_canary_cumulative_baseline_understated"]
 
 
 def test_confirmed_pre_provider_block_settles_zero(tmp_path) -> None:
