@@ -6,6 +6,12 @@ PACKET = Path("src/blueprint_pipeline/groot_oscar_thin_remote_build_packet.py")
 FOUNDATION = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
 )
+ENTRYPOINT = Path(
+    "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh"
+)
+RELEASE = Path(
+    "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile"
+)
 
 
 def test_legacy_monolithic_build_is_fail_closed() -> None:
@@ -36,3 +42,13 @@ def test_foundation_uses_runtime_only_wbc_multistage_closure() -> None:
     runtime = text.index("FROM tensorrt-base\n")
     assert "COPY --from=wbc-builder" in text[runtime:]
     assert "cuda-compiler" not in text[runtime:]
+
+
+def test_thin_entrypoint_uses_installed_absolute_worker_executable() -> None:
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    assert "/opt/oscar-venv/bin/blueprint-run-robot-eval-worker" in text
+    assert "set -- blueprint-run-robot-eval-worker" not in text
+    assert (
+        "test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker"
+        in RELEASE.read_text(encoding="utf-8")
+    )

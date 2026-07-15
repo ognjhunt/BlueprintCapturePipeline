@@ -51,9 +51,11 @@ class CampaignProviderAdapter(Protocol):
 
     provider_name: str
 
-    def inventory(self, allocation_key: str) -> Sequence[Mapping[str, Any]]: ...
+    def inventory(self, allocation_key: str) -> Sequence[Mapping[str, Any]]:
+        raise NotImplementedError
 
-    def allocate(self, config: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def allocate(self, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        raise NotImplementedError
 
     def run_stage(
         self,
@@ -62,13 +64,19 @@ class CampaignProviderAdapter(Protocol):
         *,
         deadline_seconds: int,
         config: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
 
-    def retrieve(self, allocation_id: str, config: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def retrieve(
+        self, allocation_id: str, config: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
 
-    def terminate(self, allocation_id: str) -> Mapping[str, Any]: ...
+    def terminate(self, allocation_id: str) -> Mapping[str, Any]:
+        raise NotImplementedError
 
-    def inspect(self, allocation_id: str) -> Mapping[str, Any]: ...
+    def inspect(self, allocation_id: str) -> Mapping[str, Any]:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)

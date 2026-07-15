@@ -228,16 +228,28 @@ def watchdog(*, state_path: Path) -> int:
     handoff = root / "watchdog_handoff.json"
     while time.time() < deadline:
         if handoff.is_file():
-            write_json(
-                root / "watchdog_result.json",
-                {
-                    "schema_version": WATCHDOG_SCHEMA_VERSION,
-                    "status": "handoff_after_supervisor_teardown",
-                    "provider_mutations_performed": 0,
-                    "raw_secret_values_recorded": False,
-                },
-            )
-            return 0
+            try:
+                handoff_payload = json.loads(handoff.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                handoff_payload = {}
+            terminal_statuses = {
+                "cancelled_before_provider_allocation",
+                "failure_cleanup_provider_terminal",
+            }
+            if (
+                isinstance(handoff_payload, Mapping)
+                and handoff_payload.get("status") in terminal_statuses
+            ):
+                write_json(
+                    root / "watchdog_result.json",
+                    {
+                        "schema_version": WATCHDOG_SCHEMA_VERSION,
+                        "status": "handoff_after_supervisor_teardown",
+                        "provider_mutations_performed": 0,
+                        "raw_secret_values_recorded": False,
+                    },
+                )
+                return 0
         time.sleep(10)
     provider = get_render_provider("runpod")
     key = provider._key()  # type: ignore[attr-defined]
@@ -652,7 +664,25 @@ def run_model_volume(
             and not final_pods
             and not final_volumes
         )
-        if not success and cleanup_terminal and (
+        if success and (
+            final_inventory_verified
+            and not final_pods
+            and final_volumes == [volume_id]
+            and pod_teardown.get("provider_absence_confirmed") is True
+        ):
+            write_json(
+                output / "watchdog_handoff.json",
+                {
+                    "status": "volume_ready_watchdog_retained",
+                    "volume_id": volume_id,
+                    "preparation_pod_absence_confirmed": True,
+                    "volume_presence_confirmed": True,
+                    "teardown_owner": "independent_model_volume_watchdog",
+                    "watchdog_deadline_epoch": deadline,
+                    "next_owner_must_arm_before_transfer": True,
+                },
+            )
+        elif not success and cleanup_terminal and (
             not pod_id or pod_teardown.get("provider_absence_confirmed") is True
         ):
             write_json(
@@ -665,7 +695,15 @@ def run_model_volume(
                 },
             )
     elapsed = max(0.0, time.time() - started)
-    result_success = bool(success and pod_teardown.get("provider_absence_confirmed") is True)
+    handoff_path = output / "watchdog_handoff.json"
+    result_success = bool(
+        success
+        and pod_teardown.get("provider_absence_confirmed") is True
+        and final_inventory_verified
+        and not final_pods
+        and final_volumes == [volume_id]
+        and handoff_path.is_file()
+    )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "completed" if result_success else "failed",

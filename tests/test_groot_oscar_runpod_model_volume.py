@@ -181,7 +181,10 @@ def test_model_volume_watchdog_emits_nonce_bound_armed_handoff(tmp_path: Path) -
         ),
         encoding="utf-8",
     )
-    (tmp_path / "watchdog_handoff.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "watchdog_handoff.json").write_text(
+        json.dumps({"status": "cancelled_before_provider_allocation"}),
+        encoding="utf-8",
+    )
     assert watchdog(state_path=state) == 0
     armed = json.loads((tmp_path / "watchdog_armed.json").read_text())
     assert armed["status"] == "armed"
@@ -201,6 +204,20 @@ def test_model_volume_requires_armed_handoff_before_paid_admission() -> None:
         "require_paid_resource_admission("
     )
     assert "watchdog_armed_before_allocation=watchdog_armed" in run_source
+    assert '"status": "volume_ready_watchdog_retained"' in run_source
+    assert '"teardown_owner": "independent_model_volume_watchdog"' in run_source
+    assert 'final_volumes == [volume_id]' in run_source
+
+
+def test_ready_volume_handoff_does_not_disarm_deadline_watchdog() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+    ).read_text(encoding="utf-8")
+    watchdog_source = source[source.index("def watchdog(") : source.index("def _worker_script(")]
+    assert "volume_ready_watchdog_retained" not in watchdog_source
+    assert "failure_cleanup_provider_terminal" in watchdog_source
+    assert "cancelled_before_provider_allocation" in watchdog_source
 
 
 def test_model_volume_reads_hf_token_before_provider_inventory(

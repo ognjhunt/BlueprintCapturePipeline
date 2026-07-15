@@ -15,6 +15,6 @@ export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT="$model_cache/sonic"
 # The RunPod adapter removes the historical worker executable when the image
 # supplies an ENTRYPOINT. Restore it when only worker flags reach this wrapper.
 if [[ $# -eq 0 || "${1}" == -* ]]; then
-  set -- blueprint-run-robot-eval-worker "$@"
+  set -- /opt/oscar-venv/bin/blueprint-run-robot-eval-worker "$@"
 fi
 exec "$@"

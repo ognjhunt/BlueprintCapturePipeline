@@ -140,7 +140,7 @@ def verify() -> list[str]:
             blockers.append("cpu_registry_secret_fixed_remote_name_missing")
     if "_delete_with_fail_closed_evidence" not in cpu_calls.get("watchdog", set()):
         blockers.append("cpu_watchdog_teardown_error_evidence_missing")
-    if 'set -- blueprint-run-robot-eval-worker "$@"' not in thin_entrypoint:
+    if 'set -- /opt/oscar-venv/bin/blueprint-run-robot-eval-worker "$@"' not in thin_entrypoint:
         blockers.append("thin_release_worker_executable_restore_missing")
     if "teardown_unverified" not in runpod_watchdog:
         blockers.append("gpu_watchdog_teardown_error_evidence_missing")

@@ -14,6 +14,7 @@ RUN /opt/oscar-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
   && /opt/gr00t-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
   && /isaac-sim/python.sh -m pip install --no-deps /tmp/blueprint-release \
   && rm -rf /tmp/blueprint-release /root/.cache \
+  && test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker \
   && test ! -e /opt/blueprint/ckpts
 ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
