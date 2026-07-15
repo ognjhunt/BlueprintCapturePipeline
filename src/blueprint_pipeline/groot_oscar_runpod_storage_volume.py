@@ -105,7 +105,7 @@ def _retention_watchdog_mapping(watchdog: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "watchdog_pid": watchdog.get("pid"),
         "watchdog_state_path": watchdog.get("state_path"),
-        "watchdog_deadline_epoch": watchdog.get("deadline_epoch"),
+        "watchdog_deadline_epoch": watchdog.get("watchdog_deadline_epoch"),
         "pod_name_prefix": watchdog.get("pod_name_prefix"),
         "volume_name": watchdog.get("volume_name"),
         "watchdog_nonce": watchdog.get("watchdog_nonce"),

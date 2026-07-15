@@ -186,7 +186,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
             "armed": True,
             "pid": 333,
             "state_path": str(state_path),
-            "deadline_epoch": 1000.0 + 7 * 24 * 3600,
+            "watchdog_deadline_epoch": 1000.0 + 7 * 24 * 3600,
             "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
             "volume_name": "blueprint-groot-oscar-models-nonce1",
             "watchdog_nonce": "new-nonce",
