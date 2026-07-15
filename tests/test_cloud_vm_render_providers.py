@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
 from blueprint_pipeline.gpu_render_providers import RenderLaunchSpec
 from blueprint_pipeline import provider_closure_audit
@@ -17,10 +19,6 @@ _ORIGINAL_CLOUD_LAUNCHES = {
     AWSRenderProvider: AWSRenderProvider.launch,
     GCPRenderProvider: GCPRenderProvider.launch,
 }
-
-
-import pytest
-
 
 @pytest.fixture(autouse=True)
 def _issue_test_only_provider_grant(monkeypatch: pytest.MonkeyPatch) -> None:
