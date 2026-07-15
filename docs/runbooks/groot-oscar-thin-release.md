@@ -266,7 +266,7 @@ python -m blueprint_pipeline.groot_oscar_runpod_preflight \
 
 The command makes only read-only calls. It requires RunPod's exact network
 volume response (ID, size, and datacenter), a one-GPU stock row with an hourly
-rate, provider-confirmed zero matching billable pods, and a live independent
+rate, provider-confirmed account-global zero billable resources, and a live independent
 watchdog whose deadline is already counting down. It binds the canary create
 request to the volume datacenter through `dataCenterIds` and to the image CUDA
 family through `allowedCudaVersions`. The stock and price query itself is
@@ -294,26 +294,34 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --pod-name blueprint-groot-oscar-canary-<attempt> \
   --campaign-budget-ledger <durable-campaign-budget.json> \
   --campaign-initial-spent-usd 11.57 \
-  --campaign-initial-used-gpu-seconds 10815 \
+  --campaign-initial-used-gpu-seconds 11619 \
   --campaign-total-spend-cap-usd 20.00 \
   --campaign-wall-cap-seconds 16800 \
-  --campaign-reservation-seconds 5985 \
+  --campaign-reservation-seconds 1200 \
+  --future-campaign-allowance-seconds 3900 \
+  --authorize-reduced-canary-timeout \
   --campaign-max-hourly-rate-usd '<capacity-verified-rate-at-or-below-1.99>'
 ```
 
-The `11.57` USD and `10815` GPU-second values are the reconciled campaign
-baselines, not a fresh allowance. The command reserves the remaining 5,985
-GPU-seconds against the 16,800-second campaign ceiling. After inspecting the
-dry-run evidence, rerun this exact command with `--execute`; omitting any of
-the four ledger identity/rate arguments fails before provider mutation.
+The `11.57` USD and `11619` GPU-second values are the conservative reconciled
+campaign baselines, not a fresh allowance. The canary reserves at most 1,200
+GPU-seconds while preserving a separately bounded 3,900-second future campaign
+allowance; the combined plan is 5,100 seconds against the 16,800-second
+campaign ceiling. The actual canary watchdog shown above remains 900 seconds,
+leaving 300 seconds of reservation for teardown/control closure. The explicit
+reduced-timeout flag records the operator's authorization for this staged plan.
+After inspecting the dry-run evidence, rerun this exact command with
+`--execute`; omitting any ledger identity/rate or staged-plan authorization
+argument fails before provider mutation.
 
 The launcher refuses to rewrite a tag into an admitted digest or silently pick
 another GPU. On live submission, before the provider adapter is reachable, it
 reruns every mutable read-only check and writes
 `runpod_preflight_launch_refresh.json`. This refresh revalidates the volume,
-datacenter/CUDA-filtered capacity, zero matching billable pods, and the live
+datacenter/CUDA-filtered capacity, account-global zero billable resources, and the live
 watchdog process with its remaining deadline. The watchdog PID is accepted only
-when its live Linux command line is the canonical name-bound watchdog with the
+when its live process argv (Linux `/proc` or the fail-closed macOS `ps -ww`
+fallback) is the canonical name-bound watchdog with the
 exact admitted pod prefix and deadline; any changed, forged, or expired evidence
 rejects without a create call. It then records `warm_serve_pod.json` beside the
 watchdog evidence so the independent watchdog can terminate the exact pod and
