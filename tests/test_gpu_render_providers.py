@@ -250,9 +250,11 @@ def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
         assert 'allowedCudaVersions: ["12.6"]' in query
         return 200, {
             "data": {
-                "dataCenters": [
-                    {"id": "US-TX-3", "storageSupport": True},
-                ],
+                "myself": {
+                    "datacenters": [
+                        {"id": "US-TX-3", "storageSupport": True},
+                    ]
+                },
                 "gpuTypes": [
                     {
                         "id": "NVIDIA A40",
@@ -421,9 +423,11 @@ def test_runpod_capacity_preflight_registers_rtx_pro_6000_blackwell(
         assert "gpuCount: 1" in query
         return 200, {
             "data": {
-                "dataCenters": [
-                    {"id": "US-NC-2", "storageSupport": False},
-                ],
+                "myself": {
+                    "datacenters": [
+                        {"id": "US-NC-2", "storageSupport": False},
+                    ]
+                },
                 "gpuTypes": [
                     {
                         "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",

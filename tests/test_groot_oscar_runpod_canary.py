@@ -171,6 +171,8 @@ def test_execute_refresh_rechecks_every_mutable_provider_fact() -> None:
                         "allowedCudaVersions"
                     ],
                     "available_gpu_counts": [1],
+                    "single_gpu_offer_requested": True,
+                    "single_gpu_offer_available": True,
                     "on_demand_price_usd_per_hour": 0.44,
                 }
             ],

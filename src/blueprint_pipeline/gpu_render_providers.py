@@ -412,9 +412,11 @@ class RunPodRenderProvider(GpuRenderProvider):
         requires_rtx = req.get("requires_rtx") is not False
         query = f"""
         query BlueprintRenderCapacity {{
-          dataCenters {{
-            id
-            storageSupport
+          myself {{
+            datacenters {{
+              id
+              storageSupport
+            }}
           }}
           gpuTypes {{
             id
@@ -439,7 +441,7 @@ class RunPodRenderProvider(GpuRenderProvider):
         ]
         data_center_rows = [
             dict(row)
-            for row in data.get("dataCenters", [])
+            for row in _mapping(data.get("myself")).get("datacenters", [])
             if isinstance(row, Mapping)
         ]
         data_centers_by_id = {
