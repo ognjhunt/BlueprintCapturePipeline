@@ -415,6 +415,40 @@ def test_runpod_transfer_config_passes_exact_constructor_values(
     assert config.multipart_chunksize == 128 * 1024**2
 
 
+def test_missing_transfer_config_blocks_before_any_s3_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3()
+
+    def unavailable() -> object:
+        raise RuntimeError("boto3_required_for_runpod_s3")
+
+    monkeypatch.setattr(s3_transport, "_runpod_transfer_config", unavailable)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["runpod_s3_transfer_config_unavailable"]
+    assert result["error_type"] == "RuntimeError"
+    assert result["provider_mutations_performed"] == 0
+    assert result["outer_volume_deletion_required"] is True
+    assert client.multipart_list_calls == 0
+    assert client.upload_calls == 0
+    assert client.delete_calls == 0
+
+
 def test_s3_failure_evidence_preserves_only_sanitized_provider_metadata() -> None:
     class ProviderError(RuntimeError):
         operation_name = "UploadPart"

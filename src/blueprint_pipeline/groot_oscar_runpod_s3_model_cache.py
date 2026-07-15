@@ -601,7 +601,21 @@ def _upload_and_verify_model_cache_impl(
     upload_attempt_count = 0
     upload_success_count = 0
     transfer_contract = _runpod_transfer_contract()
-    transfer_config = _runpod_transfer_config()
+    try:
+        transfer_config = _runpod_transfer_config()
+    except Exception as exc:  # noqa: BLE001 - no-mutation terminal evidence
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["runpod_s3_transfer_config_unavailable"],
+            **_sanitized_s3_exception(exc),
+            "provider_volume_id": volume,
+            "provider_mutations_performed": 0,
+            "upload_transfer_contract": transfer_contract,
+            "outer_volume_deletion_required": True,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
     multipart_checks: list[Mapping[str, Any]] = []
     try:
         existing_keys = _remote_keys(s3, volume_id=volume)
