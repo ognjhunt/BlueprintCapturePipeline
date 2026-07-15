@@ -363,13 +363,25 @@ def verify() -> list[str]:
             '-t "$release_candidate_ref" --push'
         )
         release_validation_at = packet_builder.index("validate-thin-release")
+        release_contract_at = packet_builder.index(
+            "thin_release_contract_not_passed"
+        )
         release_promotion_at = packet_builder.index(
             'imagetools create --tag "$release_ref" "$release_exact"'
+        )
+        terminal_result_at = packet_builder.index(
+            'mv "$validation_result" "$result"'
         )
     except ValueError:
         blockers.append("remote_build_final_tag_promotion_guard_missing")
     else:
-        if not release_candidate_at < release_validation_at < release_promotion_at:
+        if not (
+            release_candidate_at
+            < release_validation_at
+            < release_contract_at
+            < release_promotion_at
+            < terminal_result_at
+        ):
             blockers.append("remote_build_final_tag_promotion_order_invalid")
     if '-t "$release_ref" --push' in packet_builder:
         blockers.append("remote_build_pushes_unvalidated_final_release_tag")

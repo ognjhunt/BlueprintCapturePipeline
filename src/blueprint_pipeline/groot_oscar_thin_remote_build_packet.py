@@ -146,6 +146,7 @@ chmod 700 "$syft_bin"
 
 foundation_metadata="$script_dir/foundation_buildx_metadata.json"
 release_metadata="$script_dir/release_buildx_metadata.json"
+validation_result="$script_dir/groot_oscar_thin_remote_build_validation.json"
 docker buildx build --platform linux/amd64 --progress plain --metadata-file "$foundation_metadata" \
   --attest type=sbom --attest type=provenance,mode=max \
   -f "$context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile" \
@@ -193,17 +194,7 @@ PYTHONPATH="$context_dir/src" python3 -m blueprint_pipeline.groot_oscar_release_
   --layer-report-output "$script_dir/release_layer_report.json" \
   --manifest-output "$script_dir/release_supply_chain_manifest.json"
 
-# Final tags become visible only after the immutable candidate digests pass
-# registry, disk, SBOM, provenance, layer, and thin-release validation.
-docker buildx imagetools create --tag "$release_ref" "$release_exact"
-promoted_release_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$release_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted release digest missing" >&2; exit 2; }}
-[[ "$promoted_release_digest" == "$release_digest" ]] || {{ echo "promoted release digest mismatch" >&2; exit 2; }}
-docker buildx imagetools create --tag "$foundation_ref" "$foundation_exact"
-promoted_foundation_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$foundation_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted foundation digest missing" >&2; exit 2; }}
-[[ "$promoted_foundation_digest" == "$foundation_digest" ]] || {{ echo "promoted foundation digest mismatch" >&2; exit 2; }}
-foundation_exact="$foundation_repository@$promoted_foundation_digest"
-release_exact="$release_repository@$promoted_release_digest"
-PYTHONPATH="$context_dir/src" python3 - "$script_dir" "$result" "$foundation_exact" "$release_exact" "$max_release_bytes" <<'PY'
+PYTHONPATH="$context_dir/src" python3 - "$script_dir" "$validation_result" "$foundation_exact" "$release_exact" "$max_release_bytes" <<'PY'
 import json,sys
 from datetime import datetime,timezone
 from pathlib import Path
@@ -219,6 +210,16 @@ payload={{"schema_version":"groot_oscar_thin_remote_build_result.v1","generated_
 out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\\n",encoding="utf-8")
 raise SystemExit(0 if payload["status"]=="completed" else 2)
 PY
+
+# Final tags become visible only after the immutable candidate digests pass
+# registry, disk, SBOM, provenance, layer, and thin-release contract validation.
+docker buildx imagetools create --tag "$release_ref" "$release_exact"
+promoted_release_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$release_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted release digest missing" >&2; exit 2; }}
+[[ "$promoted_release_digest" == "$release_digest" ]] || {{ echo "promoted release digest mismatch" >&2; exit 2; }}
+docker buildx imagetools create --tag "$foundation_ref" "$foundation_exact"
+promoted_foundation_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$foundation_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted foundation digest missing" >&2; exit 2; }}
+[[ "$promoted_foundation_digest" == "$foundation_digest" ]] || {{ echo "promoted foundation digest mismatch" >&2; exit 2; }}
+mv "$validation_result" "$result"
 '''
 
 

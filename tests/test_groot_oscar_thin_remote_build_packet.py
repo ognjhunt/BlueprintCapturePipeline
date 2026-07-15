@@ -91,13 +91,15 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     foundation_promotion_at = script.index(
         'docker buildx imagetools create --tag "$foundation_ref" "$foundation_exact"'
     )
-    result_at = script.index(
-        'PYTHONPATH="$context_dir/src" python3 - "$script_dir" "$result"'
+    contract_at = script.index(
+        'PYTHONPATH="$context_dir/src" python3 - "$script_dir" "$validation_result"'
     )
+    result_at = script.index('mv "$validation_result" "$result"')
     assert (
         foundation_build_at
         < release_build_at
         < validation_at
+        < contract_at
         < release_promotion_at
         < foundation_promotion_at
         < result_at
