@@ -8,6 +8,7 @@ builder.  It never creates GPU compute and never records credential values.
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import hashlib
 import hmac
 import json
@@ -40,6 +41,8 @@ RUNPOD_S3_MULTIPART_CHUNK_BYTES = 128 * 1024**2
 RUNPOD_S3_MAX_CONCURRENCY = 1
 RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS = 4
 RUNPOD_S3_COMPLETE_MULTIPART_RETRY_HTTP_STATUSES = frozenset({524})
+RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_MAX_ATTEMPTS = 30
+RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_INTERVAL_SECONDS = 2.0
 # RunPod's S3 API has its own documented datacenter list. It is intentionally
 # independent from network-volume creation capability: some volume regions do
 # not expose S3, while live create evidence rejected at least one S3-listed
@@ -177,16 +180,28 @@ def _client(
         endpoint_url=endpoint_for_data_center(data_center_id),
         config=Config(retries={"mode": "standard", "max_attempts": 10}, read_timeout=7200),
     )
+    retry_state: dict[str, Any] = {
+        "gateway_timeout_observed": False,
+        "retry_attempt_count": 0,
+    }
     client.meta.events.register(
         "needs-retry.s3.CompleteMultipartUpload",
-        _retry_runpod_complete_multipart_gateway_timeout,
+        partial(
+            _retry_runpod_complete_multipart_gateway_timeout,
+            retry_state=retry_state,
+        ),
         unique_id="blueprint-runpod-complete-multipart-524",
     )
+    client._blueprint_complete_multipart_retry_state = retry_state
     return client
 
 
 def _retry_runpod_complete_multipart_gateway_timeout(
-    *, response: Any = None, attempts: Any = None, **_kwargs: Any
+    *,
+    response: Any = None,
+    attempts: Any = None,
+    retry_state: dict[str, Any] | None = None,
+    **_kwargs: Any,
 ) -> float | None:
     """Retry RunPod's nonstandard 524 completion timeout with the same upload ID."""
 
@@ -196,7 +211,70 @@ def _retry_runpod_complete_multipart_gateway_timeout(
     status = getattr(http_response, "status_code", None)
     if status not in RUNPOD_S3_COMPLETE_MULTIPART_RETRY_HTTP_STATUSES:
         return None
+    if retry_state is not None:
+        retry_state["gateway_timeout_observed"] = True
+        retry_state["retry_attempt_count"] = max(
+            int(retry_state.get("retry_attempt_count") or 0), attempts
+        )
     return float(min(2 ** max(attempts - 1, 0), 4))
+
+
+def _upload_file_with_ambiguous_completion_recovery(
+    client: Any,
+    *,
+    path: Path,
+    volume_id: str,
+    key: str,
+    transfer_config: Any,
+    sleeper: Any = time.sleep,
+) -> bool:
+    """Recover only a 524-then-InvalidPart completion proven fully materialized.
+
+    RunPod may continue assembling the target after its gateway returns 524.
+    Retrying the same completion request can then return ``InvalidPart`` because
+    the first request already consumed the parts. Exact size and disappearance
+    of the provider's multipart implementation state establish only that the
+    object materialized; the caller still performs the full redownload and
+    manifest SHA256 verification before admitting the cache.
+    """
+
+    state = getattr(client, "_blueprint_complete_multipart_retry_state", None)
+    if isinstance(state, dict):
+        state["gateway_timeout_observed"] = False
+        state["retry_attempt_count"] = 0
+    try:
+        client.upload_file(str(path), volume_id, key, Config=transfer_config)
+        return False
+    except Exception as exc:  # noqa: BLE001 - exact provider ambiguity below
+        detail = _sanitized_s3_exception(exc)
+        recoverable = bool(
+            isinstance(state, Mapping)
+            and state.get("gateway_timeout_observed") is True
+            and detail.get("error_code") == "InvalidPart"
+            and detail.get("error_operation") == "CompleteMultipartUpload"
+        )
+        if not recoverable:
+            raise
+        expected_size = path.stat().st_size
+        for attempt in range(RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_MAX_ATTEMPTS):
+            try:
+                head = client.head_object(Bucket=volume_id, Key=key)
+                exact_size = (
+                    isinstance(head, Mapping)
+                    and head.get("ContentLength") == expected_size
+                )
+                multipart_keys = [
+                    remote_key
+                    for remote_key in _remote_keys(client, volume_id=volume_id)
+                    if ".s3compat_uploads/" in remote_key
+                ]
+                if exact_size and not multipart_keys:
+                    return True
+            except Exception:  # noqa: BLE001 - bounded provider convergence poll
+                pass
+            if attempt + 1 < RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_MAX_ATTEMPTS:
+                sleeper(RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_INTERVAL_SECONDS)
+        raise
 
 
 def _runpod_transfer_contract() -> dict[str, Any]:
@@ -211,6 +289,12 @@ def _runpod_transfer_contract() -> dict[str, Any]:
             RUNPOD_S3_COMPLETE_MULTIPART_RETRY_HTTP_STATUSES
         ),
         "complete_multipart_max_attempts": RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS,
+        "ambiguous_complete_head_max_attempts": (
+            RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_MAX_ATTEMPTS
+        ),
+        "ambiguous_complete_head_interval_seconds": (
+            RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_INTERVAL_SECONDS
+        ),
     }
 
 
@@ -626,6 +710,7 @@ def _upload_and_verify_model_cache_impl(
     uploaded_keys: list[str] = []
     upload_attempt_count = 0
     upload_success_count = 0
+    ambiguous_complete_recovery_count = 0
     transfer_contract = _runpod_transfer_contract()
     try:
         transfer_config = _runpod_transfer_config()
@@ -686,7 +771,14 @@ def _upload_and_verify_model_cache_impl(
         )
         for path, key in zip(files, expected_keys, strict=True):
             upload_attempt_count += 1
-            s3.upload_file(str(path), volume, key, Config=transfer_config)
+            recovered = _upload_file_with_ambiguous_completion_recovery(
+                s3,
+                path=path,
+                volume_id=volume,
+                key=key,
+                transfer_config=transfer_config,
+            )
+            ambiguous_complete_recovery_count += int(recovered)
             uploaded_keys.append(key)
             upload_success_count += 1
         observed_keys = _remote_keys(s3, volume_id=volume, prefix=prefix)
@@ -763,6 +855,9 @@ def _upload_and_verify_model_cache_impl(
             ),
             "upload_attempt_count": upload_attempt_count,
             "upload_success_count": upload_success_count,
+            "ambiguous_complete_recovery_count": (
+                ambiguous_complete_recovery_count
+            ),
             "uploaded_object_count_before_failure": upload_success_count,
             "upload_transfer_contract": transfer_contract,
             **multipart_cleanup,
@@ -789,6 +884,9 @@ def _upload_and_verify_model_cache_impl(
         ),
         "upload_attempt_count": upload_attempt_count,
         "upload_success_count": upload_success_count,
+        "ambiguous_complete_recovery_count": ambiguous_complete_recovery_count,
+        "ambiguous_completion_size_is_integrity_proof": False,
+        "ambiguous_completion_requires_full_redownload_sha256": True,
         "upload_transfer_contract": transfer_contract,
         "multipart_cleanup_required": False,
         **multipart_cleanup,
