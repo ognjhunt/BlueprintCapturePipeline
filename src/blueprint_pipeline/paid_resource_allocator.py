@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
 
 
-def _add_cpu_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--packet-manifest", required=True)
     parser.add_argument("--builder-evidence", required=True)
@@ -43,9 +43,9 @@ def _add_cpu_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--token-file", default="~/.blueprint-secrets/digitalocean_api_token")
     parser.add_argument("--docker-username-file", default="~/.blueprint-secrets/docker_username")
     parser.add_argument("--docker-password-file", default="~/.blueprint-secrets/docker_pat")
-    parser.add_argument("--login-private-key", required=True)
-    parser.add_argument("--host-private-key", required=True)
-    parser.add_argument("--ssh-key-id", required=True, type=int)
+    parser.add_argument("--login-private-key", required=require_provider)
+    parser.add_argument("--host-private-key", required=require_provider)
+    parser.add_argument("--ssh-key-id", required=require_provider, type=int)
     parser.add_argument("--region", default="sfo3")
     parser.add_argument("--allow-paid", action="store_true")
 
@@ -78,6 +78,14 @@ def _cpu_vector(args: argparse.Namespace) -> list[str]:
     if args.allow_paid:
         values.append("--allow-paid")
     return values
+
+
+def _missing_cpu_provider_arguments(args: argparse.Namespace) -> list[str]:
+    return [
+        name
+        for name in ("login_private_key", "host_private_key", "ssh_key_id")
+        if getattr(args, name, None) in (None, "")
+    ]
 
 
 def _run_cpu(args: argparse.Namespace) -> dict:
@@ -198,7 +206,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     cpu = commands.add_parser("cpu-build")
-    _add_cpu_arguments(cpu)
+    _add_cpu_arguments(cpu, require_provider=False)
+    cpu.add_argument(
+        "--execution-plane", choices=("digitalocean", "local"), default="digitalocean"
+    )
+    cpu.add_argument("--mount-path")
+    cpu.add_argument("--build-workdir")
+    cpu.add_argument("--build-script")
     cpu_run = commands.add_parser("cpu-build-run", help=argparse.SUPPRESS)
     _add_cpu_arguments(cpu_run)
     cpu_local = commands.add_parser("cpu-build-local", help=argparse.SUPPRESS)
@@ -234,20 +248,59 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--allow-paid", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "cpu-build":
-        prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
-        if prerequisite.get("status") != "ready":
+        if args.execution_plane == "local":
+            missing = [
+                name
+                for name in ("mount_path", "build_workdir", "build_script")
+                if not getattr(args, name, None)
+            ]
+            if missing:
+                result = {
+                    "status": "blocked_before_local_build",
+                    "blockers": [
+                        f"cpu_build_local_argument_missing:{name}" for name in missing
+                    ],
+                    "provider_mutation_attempted": False,
+                }
+                success = False
+            else:
+                prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
+                if prerequisite.get("status") != "ready":
+                    result = {
+                        "status": "blocked_before_local_build",
+                        "blockers": prerequisite.get(
+                            "blockers", ["groot_oscar_live_prerequisites_not_ready"]
+                        ),
+                        "provider_mutation_attempted": False,
+                    }
+                    success = False
+                else:
+                    result = _run_local_cpu_build(args)
+                    success = result.get("status") == "completed"
+        elif missing := _missing_cpu_provider_arguments(args):
             result = {
                 "status": "blocked_before_supervisor",
-                "blockers": prerequisite.get(
-                    "blockers", ["groot_oscar_live_prerequisites_not_ready"]
-                ),
+                "blockers": [
+                    f"cpu_build_provider_argument_missing:{name}" for name in missing
+                ],
                 "provider_mutation_attempted": False,
             }
+            success = False
         else:
-            result = launch_detached_builder(
-                output_dir=Path(args.output_dir), run_arguments=_cpu_vector(args)
-            )
-        success = result.get("status") == "supervisor_started"
+            prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
+            if prerequisite.get("status") != "ready":
+                result = {
+                    "status": "blocked_before_supervisor",
+                    "blockers": prerequisite.get(
+                        "blockers", ["groot_oscar_live_prerequisites_not_ready"]
+                    ),
+                    "provider_mutation_attempted": False,
+                }
+            else:
+                result = launch_detached_builder(
+                    output_dir=Path(args.output_dir), run_arguments=_cpu_vector(args)
+                )
+            success = result.get("status") == "supervisor_started"
     elif args.command == "cpu-build-run":
         result = _run_cpu(args)
         success = result.get("status") == "completed"

@@ -96,10 +96,11 @@ def verify() -> list[str]:
         ):
             blockers.append("legacy_cpu_build_script_not_hard_disabled")
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    if "paid_resource_allocator cpu-build-local" not in workflow:
+    canonical_workflow_command = "paid_resource_allocator cpu-build"
+    if canonical_workflow_command not in workflow or "--execution-plane local" not in workflow:
         blockers.append("release_workflow_bypasses_canonical_cpu_allocator")
     prerequisite_index = workflow.find("verify_groot_oscar_live_prerequisites.py")
-    allocator_index = workflow.find("paid_resource_allocator cpu-build-local")
+    allocator_index = workflow.find(canonical_workflow_command)
     if prerequisite_index < 0 or not prerequisite_index < allocator_index:
         blockers.append("release_workflow_live_prerequisite_refresh_missing")
     elif "--live" not in workflow[prerequisite_index:allocator_index]:

@@ -39,6 +39,9 @@ _SAFE_VERSIONED_IMAGE_REF = re.compile(
     r"\A[a-z0-9]+(?:[._:-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
     r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})\Z"
 )
+SYFT_VERSION = "1.44.0"
+SYFT_ARCHIVE_URL = "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_linux_amd64.tar.gz"
+SYFT_ARCHIVE_SHA256 = "0e91737aee2b5baf1d255b959630194a302335d848ff97bb07921eb6205b5f5a"
 
 
 def _sha256(path: Path) -> str:
@@ -100,6 +103,9 @@ max_release_bytes="${{BLUEPRINT_GROOT_OSCAR_RELEASE_MAX_COMPRESSED_BYTES:-{max_r
 result="$script_dir/groot_oscar_thin_remote_build_result.json"
 registry_user_file="${{BLUEPRINT_DOCKER_USERNAME_FILE:-$HOME/.blueprint-secrets/docker_username}}"
 registry_password_file="${{BLUEPRINT_DOCKER_PASSWORD_FILE:-$HOME/.blueprint-secrets/docker_pat}}"
+tools_dir="$script_dir/tools"
+syft_archive="$tools_dir/syft_{SYFT_VERSION}_linux_amd64.tar.gz"
+syft_bin="$tools_dir/syft"
 
 python3 - "$context_dir" "$script_dir/context_manifest.json" <<'PY'
 import hashlib,json,sys
@@ -124,10 +130,17 @@ if [[ "${{BLUEPRINT_REMOTE_IMAGE_BUILD_DOCKER_LOGIN:-false}}" == true ]]; then
   [[ -f "$registry_user_file" && -f "$registry_password_file" ]] || {{ echo "registry credential files missing" >&2; exit 2; }}
   docker login -u "$(cat "$registry_user_file")" --password-stdin < "$registry_password_file"
 fi
+install -d -m 700 "$tools_dir"
+curl --fail --location --silent --show-error {shlex.quote(SYFT_ARCHIVE_URL)} -o "$syft_archive"
+echo "{SYFT_ARCHIVE_SHA256}  $syft_archive" | sha256sum --check --strict
+tar -xzf "$syft_archive" -C "$tools_dir" syft
+chmod 700 "$syft_bin"
+"$syft_bin" version >/dev/null
 
 foundation_metadata="$script_dir/foundation_buildx_metadata.json"
 release_metadata="$script_dir/release_buildx_metadata.json"
 docker buildx build --platform linux/amd64 --progress plain --metadata-file "$foundation_metadata" \
+  --attest type=sbom --attest type=provenance,mode=max \
   -f "$context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile" \
   -t "$foundation_ref" --push "$context_dir"
 foundation_digest="$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(p.get("containerimage.digest") or p.get("containerimage.descriptor",{{}}).get("digest") or "")' "$foundation_metadata")"
@@ -135,6 +148,7 @@ foundation_digest="$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));
 foundation_exact="$(python3 -c 'import sys;ref=sys.argv[1].split("@",1)[0];leaf=ref.rsplit("/",1)[-1];print((ref.rsplit(":",1)[0] if ":" in leaf else ref)+"@"+sys.argv[2])' "$foundation_ref" "$foundation_digest")"
 
 docker buildx build --platform linux/amd64 --progress plain --metadata-file "$release_metadata" \
+  --attest type=sbom --attest type=provenance,mode=max \
   --build-arg "FOUNDATION_IMAGE=$foundation_exact" \
   --build-arg "BLUEPRINT_SOURCE_COMMIT={source_commit}" \
   --build-arg "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256={source_patch_sha256}" \
@@ -146,6 +160,31 @@ release_exact="$(python3 -c 'import sys;ref=sys.argv[1].split("@",1)[0];leaf=ref
 
 PYTHONPATH="$context_dir/src" python3 -m blueprint_pipeline.isaac_worker_image_manifest --image "$foundation_exact" --output "$script_dir/foundation_registry_diagnostic.json"
 PYTHONPATH="$context_dir/src" python3 -m blueprint_pipeline.isaac_worker_image_manifest --image "$release_exact" --output "$script_dir/release_registry_diagnostic.json"
+docker buildx imagetools inspect --format '{{{{json .SBOM}}}}' "$release_exact" > "$script_dir/release_buildkit_sbom_attestation.json"
+docker buildx imagetools inspect --format '{{{{json .Provenance}}}}' "$release_exact" > "$script_dir/release_buildkit_provenance_attestation.json"
+docker buildx imagetools inspect --raw "$release_exact" > "$script_dir/release_buildkit_attestation_index.json"
+PYTHONPATH="$context_dir/src" python3 - "$script_dir/release_registry_diagnostic.json" "$script_dir/release_supply_chain_disk_admission.json" "$script_dir" <<'PY'
+import json,os,sys
+from pathlib import Path
+from blueprint_pipeline.groot_oscar_release_hardening import DiskAdmission
+registry=json.load(open(sys.argv[1])); root=Path(sys.argv[3]); stats=os.statvfs(root)
+compressed=int(registry.get("total_compressed_size_bytes") or 0)
+evidence=DiskAdmission(available_bytes=stats.f_bavail*stats.f_frsize,image_compressed_bytes=compressed,image_unpacked_bytes=compressed).evidence()
+Path(sys.argv[2]).write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+raise SystemExit(0 if compressed > 0 and evidence["status"] == "passed" else 2)
+PY
+"$syft_bin" "registry:$release_exact" -o "spdx-json=$script_dir/release_sbom.spdx.json"
+PYTHONPATH="$context_dir/src" python3 -m blueprint_pipeline.groot_oscar_release_hardening validate-thin-release \
+  --digest-ref "$release_exact" \
+  --registry-diagnostic "$script_dir/release_registry_diagnostic.json" \
+  --buildx-metadata "$release_metadata" \
+  --spdx "$script_dir/release_sbom.spdx.json" \
+  --buildkit-sbom "$script_dir/release_buildkit_sbom_attestation.json" \
+  --buildkit-provenance "$script_dir/release_buildkit_provenance_attestation.json" \
+  --buildkit-index "$script_dir/release_buildkit_attestation_index.json" \
+  --provenance-output "$script_dir/release_provenance.json" \
+  --layer-report-output "$script_dir/release_layer_report.json" \
+  --manifest-output "$script_dir/release_supply_chain_manifest.json"
 PYTHONPATH="$context_dir/src" python3 - "$script_dir" "$result" "$foundation_exact" "$release_exact" "$max_release_bytes" <<'PY'
 import json,sys
 from datetime import datetime,timezone

@@ -157,6 +157,14 @@ REMOTE_BUILD_REQUIRED_RESULTS = (
     "release_buildx_metadata.json",
     "foundation_registry_diagnostic.json",
     "release_registry_diagnostic.json",
+    "release_sbom.spdx.json",
+    "release_provenance.json",
+    "release_layer_report.json",
+    "release_buildkit_sbom_attestation.json",
+    "release_buildkit_provenance_attestation.json",
+    "release_buildkit_attestation_index.json",
+    "release_supply_chain_manifest.json",
+    "release_supply_chain_disk_admission.json",
 )
 
 
@@ -184,6 +192,12 @@ def validate_remote_build_results(results_dir: Path) -> dict[str, Any]:
     result = payloads.get("groot_oscar_thin_remote_build_result.json")
     if result is not None and result.get("status") != "completed":
         blockers.append("remote_build_result_not_completed")
+    supply_chain = payloads.get("release_supply_chain_manifest.json")
+    if supply_chain is not None and supply_chain.get("status") != "passed":
+        blockers.append("remote_build_supply_chain_not_passed")
+    disk_admission = payloads.get("release_supply_chain_disk_admission.json")
+    if disk_admission is not None and disk_admission.get("status") != "passed":
+        blockers.append("remote_build_supply_chain_disk_admission_not_passed")
     return {
         "schema_version": "groot_oscar_remote_build_results_verification.v1",
         "status": "verified" if not blockers else "blocked",

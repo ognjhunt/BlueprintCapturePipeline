@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from blueprint_pipeline.groot_oscar_release_hardening import (
@@ -15,6 +17,7 @@ from blueprint_pipeline.groot_oscar_release_hardening import (
     validate_registry_mirror_equivalence,
     validate_spdx_document,
     validate_startup_timing,
+    validate_thin_release_supply_chain,
 )
 
 
@@ -82,6 +85,65 @@ def test_buildkit_provenance_binds_actual_predicate_to_runnable_manifest():
     assert "buildkit_provenance_slsa_predicate_missing" in (
         validate_buildkit_provenance_binding({}, index, runnable)
     )
+
+
+def test_thin_release_supply_chain_binds_all_artifacts_to_digest(tmp_path):
+    runnable = "sha256:" + "b" * 64
+    paths = {name: tmp_path / name for name in (
+        "registry.json", "metadata.json", "sbom.json", "buildkit-sbom.json",
+        "buildkit-provenance.json", "index.json", "provenance.json",
+        "layers.json", "manifest.json",
+    )}
+    payloads = {
+        "registry.json": {
+            "resolved_digest_ref": REF,
+            "runnable_child_digest": runnable,
+            "layers": [{"digest": "sha256:" + "c" * 64, "size": 100}],
+        },
+        "metadata.json": {"containerimage.digest": DIGEST},
+        "sbom.json": {
+            "spdxVersion": "SPDX-2.3",
+            "documentNamespace": "urn:blueprint:test",
+            "packages": [{}],
+        },
+        "buildkit-sbom.json": {"SPDX": {"packages": [{}]}},
+        "buildkit-provenance.json": {
+            "SLSA": {
+                "buildType": "https://mobyproject.org/buildkit@v1",
+                "invocation": {"environment": {"platform": "linux/amd64"}},
+            }
+        },
+        "index.json": {
+            "manifests": [
+                {"digest": runnable, "platform": {"os": "linux", "architecture": "amd64"}},
+                {
+                    "digest": "sha256:" + "d" * 64,
+                    "annotations": {
+                        "vnd.docker.reference.type": "attestation-manifest",
+                        "vnd.docker.reference.digest": runnable,
+                    },
+                },
+            ]
+        },
+    }
+    for name, payload in payloads.items():
+        paths[name].write_text(json.dumps(payload), encoding="utf-8")
+    result = validate_thin_release_supply_chain(
+        digest_ref=REF,
+        registry_diagnostic_path=paths["registry.json"],
+        buildx_metadata_path=paths["metadata.json"],
+        spdx_path=paths["sbom.json"],
+        buildkit_sbom_path=paths["buildkit-sbom.json"],
+        buildkit_provenance_path=paths["buildkit-provenance.json"],
+        buildkit_index_path=paths["index.json"],
+        provenance_output_path=paths["provenance.json"],
+        layer_report_output_path=paths["layers.json"],
+        manifest_output_path=paths["manifest.json"],
+    )
+    assert result["status"] == "passed"
+    assert result["scan_source"] == "registry_digest"
+    assert result["syft_daemon_export_allowed"] is False
+    assert DIGEST in paths["provenance.json"].read_text(encoding="utf-8")
 
 
 def test_registry_mirror_requires_per_platform_digest_equivalence():

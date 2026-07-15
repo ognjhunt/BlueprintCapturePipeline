@@ -83,6 +83,14 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     assert "--push" in script
     assert "hf_token" not in script
     assert "snapshot_download" not in script
+    assert script.count("--attest type=sbom --attest type=provenance,mode=max") == 2
+    assert '"registry:$release_exact"' in script
+    assert "release_sbom.spdx.json" in script
+    assert "release_provenance.json" in script
+    assert "release_supply_chain_manifest.json" in script
+    assert "release_supply_chain_disk_admission.json" in script
+    assert "syft_1.44.0_linux_amd64.tar.gz" in script
+    assert "0e91737aee2b5baf1d255b959630194a302335d848ff97bb07921eb6205b5f5a" in script
 
     packet = Path(result["packet_dir"])
     context_manifest = json.loads(

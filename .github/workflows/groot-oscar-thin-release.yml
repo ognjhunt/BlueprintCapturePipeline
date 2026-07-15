@@ -129,9 +129,12 @@ jobs:
           BLUEPRINT_REMOTE_IMAGE_BUILD_DOCKER_LOGIN: "true"
           BLUEPRINT_DOCKER_USERNAME_FILE: ${{ runner.temp }}/registry-secrets/username
           BLUEPRINT_DOCKER_PASSWORD_FILE: ${{ runner.temp }}/registry-secrets/password
+          DOCKER_CONFIG: ${{ runner.temp }}/blueprint-docker-config
         run: |
           set -euo pipefail
-          python3 -m blueprint_pipeline.paid_resource_allocator cpu-build-local \
+          install -d -m 700 "$DOCKER_CONFIG"
+          python3 -m blueprint_pipeline.paid_resource_allocator cpu-build \
+            --execution-plane local \
             --output-dir "$RUNNER_TEMP/groot-oscar-packet/local-cpu-allocation" \
             --packet-manifest "$RUNNER_TEMP/groot-oscar-packet/groot_oscar_thin_remote_build_packet_manifest.json" \
             --builder-evidence "$RUNNER_TEMP/builder.json" \
@@ -158,4 +161,17 @@ jobs:
             ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildx_metadata.json
             ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/foundation_registry_diagnostic.json
             ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_registry_diagnostic.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_sbom.spdx.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_provenance.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_layer_report.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildkit_sbom_attestation.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildkit_provenance_attestation.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_buildkit_attestation_index.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_supply_chain_manifest.json
+            ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/release_supply_chain_disk_admission.json
             ${{ runner.temp }}/groot-oscar-packet/groot_oscar_thin_remote_build/groot_oscar_thin_remote_build_result.json
+
+      - name: Remove ephemeral registry credentials
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/registry-secrets" "$RUNNER_TEMP/blueprint-docker-config"

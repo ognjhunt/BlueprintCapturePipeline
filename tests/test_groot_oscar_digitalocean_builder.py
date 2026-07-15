@@ -403,7 +403,15 @@ def test_remote_build_results_must_be_complete_and_completed(tmp_path: Path) -> 
     )
 
     for name in blocked["required_results"]:
-        payload = {"status": "completed"} if name.startswith("groot_oscar_thin") else {}
+        if name.startswith("groot_oscar_thin"):
+            payload = {"status": "completed"}
+        elif name in {
+            "release_supply_chain_manifest.json",
+            "release_supply_chain_disk_admission.json",
+        }:
+            payload = {"status": "passed"}
+        else:
+            payload = {}
         (results / name).write_text(json.dumps(payload), encoding="utf-8")
     assert validate_remote_build_results(results)["status"] == "verified"
 

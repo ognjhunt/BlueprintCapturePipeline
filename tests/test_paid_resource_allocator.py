@@ -145,12 +145,19 @@ def test_local_cpu_allocator_rejects_before_build_process_when_not_admitted(
 def test_allocator_cli_never_prints_provider_result_secrets(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         allocator,
+        "_run_cpu_prerequisite_gate",
+        lambda _output: {"status": "ready", "blockers": []},
+    )
+    monkeypatch.setattr(
+        allocator,
         "_run_local_cpu_build",
         lambda _args: {"status": "completed", "password": "do-not-print"},
     )
     exit_code = allocator.main(
         [
-            "cpu-build-local",
+            "cpu-build",
+            "--execution-plane",
+            "local",
             "--output-dir",
             "out",
             "--packet-manifest",

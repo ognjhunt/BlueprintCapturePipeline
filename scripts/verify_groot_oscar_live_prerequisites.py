@@ -29,6 +29,9 @@ ISAAC_ASSET_MANIFEST = IMAGE_ROOT / "isaac_6_g1_assets.sha256"
 UV_BOOTSTRAP = IMAGE_ROOT / "requirements_uv_bootstrap.txt"
 OSCAR_FOUNDATION_LOCK = IMAGE_ROOT / "requirements_oscar_foundation.lock"
 ROBOT_RUNTIME_REQUIREMENTS = IMAGE_ROOT / "requirements_robot_runtime.txt"
+THIN_REMOTE_BUILD_PACKET = (
+    ROOT / "src/blueprint_pipeline/groot_oscar_thin_remote_build_packet.py"
+)
 
 SCHEMA = "groot_oscar_live_prerequisites.v1"
 CUDA_REPOSITORY = "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64"
@@ -52,6 +55,11 @@ ARTIFACTS = (
         "2735cc9dc39457c9cf64d1ce2ba5a9a8ecbb103d0fb64b052bf33ba3d669/"
         "uv-0.10.7-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
         "89de2504407dcf04aece914c6ca3b9d8e60cf9ff39a13031c1df1f7c040cea81",
+    ),
+    (
+        "https://github.com/anchore/syft/releases/download/v1.44.0/"
+        "syft_1.44.0_linux_amd64.tar.gz",
+        "0e91737aee2b5baf1d255b959630194a302335d848ff97bb07921eb6205b5f5a",
     ),
 )
 SOURCE_PINS = (
@@ -235,9 +243,15 @@ def _asset_rows() -> list[tuple[str, int, str]]:
 def verify_static() -> list[str]:
     blockers: list[str] = []
     dockerfile = FOUNDATION.read_text(encoding="utf-8")
-    bootstrap_contract = dockerfile + "\n" + UV_BOOTSTRAP.read_text(encoding="utf-8")
+    bootstrap_contract = "\n".join(
+        (
+            dockerfile,
+            UV_BOOTSTRAP.read_text(encoding="utf-8"),
+            THIN_REMOTE_BUILD_PACKET.read_text(encoding="utf-8"),
+        )
+    )
     for url, digest in ARTIFACTS:
-        if url not in bootstrap_contract or f"sha256:{digest}" not in bootstrap_contract:
+        if url not in bootstrap_contract or digest not in bootstrap_contract:
             blockers.append(f"dockerfile_artifact_pin_mismatch:{url}")
     for repository, revision in SOURCE_PINS:
         if revision not in dockerfile or repository.split("/", 1)[1] not in dockerfile:

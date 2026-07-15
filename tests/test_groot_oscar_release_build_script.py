@@ -1,54 +1,38 @@
 from pathlib import Path
 
 
-SCRIPT = Path("scripts/build_push_groot_oscar_closed_loop_image.sh")
+LEGACY_SCRIPT = Path("scripts/build_push_groot_oscar_closed_loop_image.sh")
+PACKET = Path("src/blueprint_pipeline/groot_oscar_thin_remote_build_packet.py")
+FOUNDATION = Path(
+    "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
+)
 
 
-def test_official_build_enables_buildkit_attestations_and_scans_registry_digest():
-    text = SCRIPT.read_text(encoding="utf-8")
-    assert "--attest type=sbom" in " ".join(text.split())
-    assert "--provenance mode=max" in " ".join(text.split())
-    assert 'syft "registry:${exact_digest_ref}"' in text
-    assert 'syft "$image_ref"' not in text
-    assert "groot_oscar_closed_loop_supply_chain_evidence_failed" in text
-    assert "groot_oscar_closed_loop_disk_admission.json" in text
-    assert "expected_unpacked_gib" in text
-    assert "--format '{{json .SBOM}}'" in text
-    assert "--format '{{json .Provenance}}'" in text
-    assert '"WBC_SOURCE_REF=$wbc_ref"' in text
-    assert '"GEAR_SONIC_CHECKPOINT_REVISION=$gear_checkpoint_revision"' in text
-    assert '"size_bytes": row.get("size")' in text
-    assert '"size_bytes": row.get("size_bytes")' not in text
+def test_legacy_monolithic_build_is_fail_closed() -> None:
+    lines = LEGACY_SCRIPT.read_text(encoding="utf-8").splitlines()
+    disable = lines.index(
+        'echo "legacy build path disabled; use paid_resource_allocator cpu-build" >&2'
+    )
+    assert lines[disable + 1] == "exit 2"
+    assert disable < 20
 
 
-def test_release_runtime_smoke_precedes_push_and_binds_published_digest():
-    text = SCRIPT.read_text(encoding="utf-8")
-    smoke_index = text.index('docker run --rm --entrypoint /bin/bash "$runtime_image_ref"')
-    publish_index = text.index("publish_build_args=(")
-    assert smoke_index < publish_index
-    assert "--load" in text[smoke_index - 2500 : smoke_index]
-    assert "--push" in text[publish_index : publish_index + 800]
-    assert 'runtime_image_ref="${runtime_image_ref%:*}@${build_digest}"' in text
-    assert "published_config_digest" in text
-    assert "published_runtime_identity_matches_smoked_local_image" in text
-    assert 'docker pull "$runtime_image_ref"' not in text
-    assert 'payload.get("manifest") or payload.get("Manifest")' in text
+def test_canonical_thin_build_attests_and_scans_only_registry_digest() -> None:
+    text = PACKET.read_text(encoding="utf-8")
+    compact = " ".join(text.split())
+    assert "--attest type=sbom --attest type=provenance,mode=max" in compact
+    assert '\"registry:$release_exact\"' in text
+    assert 'syft_bin\" \"$release_exact' not in text
+    assert "release_supply_chain_disk_admission.json" in text
+    assert "release_buildkit_sbom_attestation.json" in text
+    assert "release_buildkit_provenance_attestation.json" in text
+    assert "release_supply_chain_manifest.json" in text
+    assert "SYFT_ARCHIVE_SHA256" in text
 
 
-def test_release_image_uses_runtime_only_wbc_multistage_closure():
-    dockerfile = Path(
-        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
-    ).read_text(encoding="utf-8")
-    from_line = "FROM --platform=linux/amd64 ${ISAAC_SIM_BASE_IMAGE}"
-    assert dockerfile.count(from_line) == 2
-    assert "AS gear_sonic_builder" in dockerfile
-    assert "AS runtime" in dockerfile
-    assert "COPY --from=gear_sonic_builder /opt/wbc/gear_sonic_deploy" in dockerfile
-
-
-def test_oscar_checkpoint_override_is_the_runtime_provenance_revision():
-    dockerfile = Path(
-        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Dockerfile"
-    ).read_text(encoding="utf-8")
-    assert "ARG OSCAR_CHECKPOINT_REVISION=" in dockerfile
-    assert "BLUEPRINT_OSCAR_WAM_HF_REVISION=${OSCAR_CHECKPOINT_REVISION}" in dockerfile
+def test_foundation_uses_runtime_only_wbc_multistage_closure() -> None:
+    text = FOUNDATION.read_text(encoding="utf-8")
+    assert "AS wbc-builder" in text
+    runtime = text.index("FROM tensorrt-base\n")
+    assert "COPY --from=wbc-builder" in text[runtime:]
+    assert "cuda-compiler" not in text[runtime:]

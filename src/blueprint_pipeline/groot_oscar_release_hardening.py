@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
@@ -131,6 +135,118 @@ def validate_buildkit_provenance_binding(
     if not bound_attestations:
         blockers.append("buildkit_attestation_subject_binding_missing")
     return blockers
+
+
+def _load_json_object(path: str | Path) -> dict[str, Any]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected_json_object:{path}")
+    return payload
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_thin_release_supply_chain(
+    *,
+    digest_ref: str,
+    registry_diagnostic_path: str | Path,
+    buildx_metadata_path: str | Path,
+    spdx_path: str | Path,
+    buildkit_sbom_path: str | Path,
+    buildkit_provenance_path: str | Path,
+    buildkit_index_path: str | Path,
+    provenance_output_path: str | Path,
+    layer_report_output_path: str | Path,
+    manifest_output_path: str | Path,
+) -> dict[str, Any]:
+    """Validate and bind the canonical thin release's supply-chain evidence."""
+
+    _, separator, expected_digest = digest_ref.rpartition("@")
+    blockers: list[str] = []
+    if separator != "@" or not _DIGEST.fullmatch(expected_digest):
+        blockers.append("thin_release_digest_ref_invalid")
+
+    registry = _load_json_object(registry_diagnostic_path)
+    metadata = _load_json_object(buildx_metadata_path)
+    spdx = _load_json_object(spdx_path)
+    buildkit_sbom = _load_json_object(buildkit_sbom_path)
+    buildkit_provenance = _load_json_object(buildkit_provenance_path)
+    image_index = _load_json_object(buildkit_index_path)
+
+    if registry.get("resolved_digest_ref") != digest_ref:
+        blockers.append("registry_diagnostic_digest_ref_mismatch")
+    metadata_digest = metadata.get("containerimage.digest")
+    if metadata_digest is None and isinstance(metadata.get("containerimage.descriptor"), Mapping):
+        metadata_digest = metadata["containerimage.descriptor"].get("digest")
+    if metadata_digest != expected_digest:
+        blockers.append("buildx_metadata_digest_mismatch")
+    blockers.extend(validate_spdx_document(spdx))
+    if not buildkit_sbom:
+        blockers.append("buildkit_sbom_attestation_empty")
+    runnable_digest = str(registry.get("runnable_child_digest") or "")
+    blockers.extend(
+        validate_buildkit_provenance_binding(
+            buildkit_provenance,
+            image_index,
+            runnable_digest,
+        )
+    )
+
+    layer_report = build_layer_report(registry.get("layers") or [])
+    if layer_report["status"] != "passed":
+        blockers.extend(layer_report["blockers"])
+    Path(layer_report_output_path).write_text(
+        json.dumps(layer_report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    provenance = {
+        "schema_version": "groot_oscar_thin_release_provenance.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "resolved_digest_ref": digest_ref,
+        "resolved_digest": expected_digest,
+        "runnable_child_digest": runnable_digest,
+        "buildx_metadata_sha256": _file_sha256(buildx_metadata_path),
+        "registry_diagnostic_sha256": _file_sha256(registry_diagnostic_path),
+        "spdx_sha256": _file_sha256(spdx_path),
+        "buildkit_sbom_attestation_sha256": _file_sha256(buildkit_sbom_path),
+        "buildkit_provenance_attestation_sha256": _file_sha256(buildkit_provenance_path),
+        "buildkit_attestation_index_sha256": _file_sha256(buildkit_index_path),
+    }
+    Path(provenance_output_path).write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    blockers.extend(validate_provenance_digest(provenance, expected_digest))
+
+    manifest = {
+        "schema_version": "groot_oscar_thin_release_supply_chain.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "passed" if not blockers else "blocked",
+        "resolved_digest_ref": digest_ref,
+        "scan_source": "registry_digest",
+        "syft_daemon_export_allowed": False,
+        "artifacts": {
+            "spdx": {"path": str(spdx_path), "sha256": _file_sha256(spdx_path)},
+            "provenance": {
+                "path": str(provenance_output_path),
+                "sha256": _file_sha256(provenance_output_path),
+            },
+            "layer_report": {
+                "path": str(layer_report_output_path),
+                "sha256": _file_sha256(layer_report_output_path),
+            },
+        },
+        "blockers": sorted(set(blockers)),
+    }
+    Path(manifest_output_path).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return manifest
 
 
 def validate_registry_mirror_equivalence(
@@ -394,3 +510,38 @@ def evaluate_release_slos(
         "documentation_only_change_rebuilds_image": False,
         "blockers": blockers,
     }
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    validate = subparsers.add_parser("validate-thin-release")
+    validate.add_argument("--digest-ref", required=True)
+    validate.add_argument("--registry-diagnostic", required=True)
+    validate.add_argument("--buildx-metadata", required=True)
+    validate.add_argument("--spdx", required=True)
+    validate.add_argument("--buildkit-sbom", required=True)
+    validate.add_argument("--buildkit-provenance", required=True)
+    validate.add_argument("--buildkit-index", required=True)
+    validate.add_argument("--provenance-output", required=True)
+    validate.add_argument("--layer-report-output", required=True)
+    validate.add_argument("--manifest-output", required=True)
+    args = parser.parse_args(argv)
+    result = validate_thin_release_supply_chain(
+        digest_ref=args.digest_ref,
+        registry_diagnostic_path=args.registry_diagnostic,
+        buildx_metadata_path=args.buildx_metadata,
+        spdx_path=args.spdx,
+        buildkit_sbom_path=args.buildkit_sbom,
+        buildkit_provenance_path=args.buildkit_provenance,
+        buildkit_index_path=args.buildkit_index,
+        provenance_output_path=args.provenance_output,
+        layer_report_output_path=args.layer_report_output,
+        manifest_output_path=args.manifest_output,
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result["status"] == "passed" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
