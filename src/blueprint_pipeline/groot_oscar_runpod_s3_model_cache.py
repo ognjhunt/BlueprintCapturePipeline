@@ -38,6 +38,8 @@ REMOTE_SAFETY_HEADROOM_BYTES = 5 * 1024**3
 RUNPOD_S3_MULTIPART_THRESHOLD_BYTES = 64 * 1024**2
 RUNPOD_S3_MULTIPART_CHUNK_BYTES = 128 * 1024**2
 RUNPOD_S3_MAX_CONCURRENCY = 1
+RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS = 4
+RUNPOD_S3_COMPLETE_MULTIPART_RETRY_HTTP_STATUSES = frozenset({524})
 # RunPod's S3 API has its own documented datacenter list. It is intentionally
 # independent from network-volume creation capability: some volume regions do
 # not expose S3, while live create evidence rejected at least one S3-listed
@@ -167,7 +169,7 @@ def _client(
         from botocore.config import Config
     except ImportError as exc:  # pragma: no cover - operational dependency
         raise RuntimeError("boto3_required_for_runpod_s3") from exc
-    return boto3.client(
+    client = boto3.client(
         "s3",
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
@@ -175,6 +177,26 @@ def _client(
         endpoint_url=endpoint_for_data_center(data_center_id),
         config=Config(retries={"mode": "standard", "max_attempts": 10}, read_timeout=7200),
     )
+    client.meta.events.register(
+        "needs-retry.s3.CompleteMultipartUpload",
+        _retry_runpod_complete_multipart_gateway_timeout,
+        unique_id="blueprint-runpod-complete-multipart-524",
+    )
+    return client
+
+
+def _retry_runpod_complete_multipart_gateway_timeout(
+    *, response: Any = None, attempts: Any = None, **_kwargs: Any
+) -> float | None:
+    """Retry RunPod's nonstandard 524 completion timeout with the same upload ID."""
+
+    if type(attempts) is not int or attempts >= RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS:
+        return None
+    http_response = response[0] if isinstance(response, tuple) and response else None
+    status = getattr(http_response, "status_code", None)
+    if status not in RUNPOD_S3_COMPLETE_MULTIPART_RETRY_HTTP_STATUSES:
+        return None
+    return float(min(2 ** max(attempts - 1, 0), 4))
 
 
 def _runpod_transfer_contract() -> dict[str, Any]:
@@ -185,6 +207,10 @@ def _runpod_transfer_contract() -> dict[str, Any]:
         "use_threads": False,
         "client_retry_mode": "standard",
         "client_max_attempts": 10,
+        "complete_multipart_retry_http_statuses": sorted(
+            RUNPOD_S3_COMPLETE_MULTIPART_RETRY_HTTP_STATUSES
+        ),
+        "complete_multipart_max_attempts": RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS,
     }
 
 

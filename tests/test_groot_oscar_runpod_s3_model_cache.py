@@ -27,12 +27,15 @@ from blueprint_pipeline.groot_oscar_runpod_s3_model_cache import (
     DEFAULT_REMOTE_PREFIX,
     REMOTE_SAFETY_HEADROOM_BYTES,
     RUNPOD_S3_MAX_CONCURRENCY,
+    RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS,
     RUNPOD_S3_MULTIPART_CHUNK_BYTES,
     RUNPOD_S3_MULTIPART_THRESHOLD_BYTES,
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
     _TransportExecutionCapability,
+    _client,
     _issue_transport_execution_capability,
     _runpod_transfer_contract,
+    _retry_runpod_complete_multipart_gateway_timeout,
     _sanitized_s3_exception,
     _upload_and_verify_model_cache_impl,
     endpoint_for_data_center,
@@ -377,6 +380,8 @@ def test_upload_requires_full_redownload_and_manifest_hash_verification(
         "use_threads": False,
         "client_retry_mode": "standard",
         "client_max_attempts": 10,
+        "complete_multipart_retry_http_statuses": [524],
+        "complete_multipart_max_attempts": 4,
     }
     assert result["multipart_cleanup_required"] is False
     assert result["multipart_listing_supported"] is True
@@ -393,7 +398,78 @@ def test_runpod_transfer_contract_is_large_chunked_and_single_threaded() -> None
         "use_threads": False,
         "client_retry_mode": "standard",
         "client_max_attempts": 10,
+        "complete_multipart_retry_http_statuses": [524],
+        "complete_multipart_max_attempts": 4,
     }
+
+
+def test_runpod_client_registers_bounded_complete_multipart_524_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registrations: list[tuple[str, object, str]] = []
+    captured: dict[str, object] = {}
+
+    class Events:
+        def register(self, name: str, handler: object, *, unique_id: str) -> None:
+            registrations.append((name, handler, unique_id))
+
+    fake_client = SimpleNamespace(meta=SimpleNamespace(events=Events()))
+
+    def client(name: str, **kwargs: object) -> object:
+        captured.update({"name": name, **kwargs})
+        return fake_client
+
+    class Config:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    boto3_module = ModuleType("boto3")
+    boto3_module.client = client  # type: ignore[attr-defined]
+    botocore_module = ModuleType("botocore")
+    botocore_module.__path__ = []  # type: ignore[attr-defined]
+    config_module = ModuleType("botocore.config")
+    config_module.Config = Config  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "boto3", boto3_module)
+    monkeypatch.setitem(sys.modules, "botocore", botocore_module)
+    monkeypatch.setitem(sys.modules, "botocore.config", config_module)
+
+    result = _client(
+        data_center_id="US-WA-1", access_key="access", secret_key="secret"
+    )
+
+    assert result is fake_client
+    assert captured["name"] == "s3"
+    assert captured["endpoint_url"] == "https://s3api-us-wa-1.runpod.io/"
+    assert registrations == [
+        (
+            "needs-retry.s3.CompleteMultipartUpload",
+            _retry_runpod_complete_multipart_gateway_timeout,
+            "blueprint-runpod-complete-multipart-524",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "attempts", "expected"),
+    [
+        (524, 1, 1.0),
+        (524, 2, 2.0),
+        (524, 3, 4.0),
+        (524, RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS, None),
+        (504, 1, None),
+        (524, None, None),
+    ],
+)
+def test_complete_multipart_retry_is_exact_and_bounded(
+    status: int, attempts: int | None, expected: float | None
+) -> None:
+    response = (SimpleNamespace(status_code=status), {})
+    assert (
+        _retry_runpod_complete_multipart_gateway_timeout(
+            response=response, attempts=attempts
+        )
+        == expected
+    )
 
 
 def test_runpod_transfer_config_passes_exact_constructor_values(
