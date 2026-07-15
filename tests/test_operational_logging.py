@@ -3,8 +3,6 @@ from __future__ import annotations
 import io
 import json
 import logging
-import shlex
-import sys
 from http import HTTPStatus
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -483,23 +481,6 @@ def _ready_runpod_request(path: Path) -> Path:
     return path
 
 
-def _python_command(code: str) -> str:
-    ownership_prefix = (
-        "import json, os, sys; "
-        "p=os.environ['BLUEPRINT_PROVIDER_ALLOCATION_RECORD_PATH']; "
-        "t=p+'.tmp'; "
-        "r={'schema_version':'robot_eval_provider_allocation_record.v1',"
-        "'launch_attempt_id':os.environ['BLUEPRINT_PROVIDER_LAUNCH_ATTEMPT_ID'],"
-        "'provider_resource_id':'test-provider-resource',"
-        "'persisted_before_provider_side_effects':True,"
-        "'teardown_argv':[sys.executable,'-c','raise SystemExit(0)'],"
-        "'verify_absent_argv':[sys.executable,'-c','raise SystemExit(0)']}; "
-        "f=open(t,'w',encoding='utf-8'); json.dump(r,f); f.flush(); "
-        "os.fsync(f.fileno()); f.close(); os.replace(t,p); "
-    )
-    return f"{shlex.quote(sys.executable)} -c {shlex.quote(ownership_prefix + code)}"
-
-
 def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -523,14 +504,19 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH", "true")
     monkeypatch.setenv("RUNPOD_API_KEY", "secret-runpod-key")
     with caplog.at_level(logging.INFO):
-        completed = run_gpu_provider_launcher(
+        legacy_blocked = run_gpu_provider_launcher(
             provider_launch_request_path=provider_request,
             allow_provider_launch=True,
-            provider_launch_command=_python_command("import os; print(os.environ['RUNPOD_API_KEY'])"),
+            provider_launch_command="python -c pass",
         )
 
-    assert completed["status"] == "completed"
-    assert _records(caplog, "robot_eval_provider_launcher.completed")[-1].exit_code == 0
+    assert legacy_blocked["status"] == "blocked"
+    assert legacy_blocked["reason"] == "legacy_provider_command_launcher_disabled"
+    assert legacy_blocked["blockers"] == [
+        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
+    ]
+    legacy_record = _records(caplog, "robot_eval_provider_launcher.blocked")[-1]
+    assert legacy_record.reason == "legacy_provider_command_launcher_disabled"
     assert "secret-runpod-key" not in caplog.text
 
     caplog.clear()
