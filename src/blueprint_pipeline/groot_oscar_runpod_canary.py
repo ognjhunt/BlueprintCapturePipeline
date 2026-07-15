@@ -630,7 +630,7 @@ def run_canary(
             )
             no_create_terminal = bool(
                 cancel_result.get("status") == "cancelled_no_allocation"
-                and restore_result.get("status") in {"restored", "already_released"}
+                and restore_result.get("status") == "restored"
                 and settlement.get("status") == "settled"
             )
             no_create_control_failure = not no_create_terminal

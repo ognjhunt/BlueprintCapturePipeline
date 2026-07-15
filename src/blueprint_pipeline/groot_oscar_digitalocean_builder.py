@@ -1481,7 +1481,6 @@ def run_builder(
     teardown: dict[str, Any] = {"provider_absence_confirmed": False}
     capability_path: Path | None = None
     local_capability_cleanup_verified = True
-    local_capability_cleanup_ever_failed = False
     try:
         deadline = started + ttl
         readiness_deadline = min(deadline, started + READINESS_TIMEOUT_SECONDS)
@@ -1648,7 +1647,6 @@ def run_builder(
                 capability_path.unlink(missing_ok=True)
             except OSError as exc:
                 local_capability_cleanup_verified = False
-                local_capability_cleanup_ever_failed = True
                 raise RuntimeError(
                     "digitalocean_builder_local_capability_cleanup_failed"
                 ) from exc
@@ -1822,11 +1820,10 @@ def run_builder(
                 capability_path.unlink(missing_ok=True)
             except OSError:
                 local_capability_cleanup_verified = False
-                local_capability_cleanup_ever_failed = True
             else:
                 local_capability_cleanup_verified = (
-                    not capability_path.exists()
-                    and not local_capability_cleanup_ever_failed
+                    local_capability_cleanup_verified
+                    and not capability_path.exists()
                 )
         teardown = _delete_with_fail_closed_evidence(
             token=token, droplet_id=droplet_id

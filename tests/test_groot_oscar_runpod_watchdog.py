@@ -100,7 +100,7 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
     ledger = ProductionGpuCampaignBudget(
         ledger_path,
         initial_spent_usd=11.57,
-        initial_used_gpu_seconds=11_619,
+        initial_used_gpu_seconds=10_815,
         combined_gpu_wall_cap_seconds=16_800,
     )
     reservation = ledger.reserve(
@@ -122,7 +122,7 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
             "reservation": reservation,
             "identity": {
                 "initial_spent_usd": 11.57,
-                "initial_used_gpu_seconds": 11_619,
+                "initial_used_gpu_seconds": 10_815,
                 "total_spend_cap_usd": 20.0,
                 "combined_gpu_wall_cap_seconds": 16_800,
             },
@@ -171,3 +171,43 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
     assert result["provider_lane_owner_return"]["status"] == "restored"
     assert result["campaign_budget_settlement"]["status"] == "settled"
     assert result["campaign_budget_settlement"]["charged_gpu_seconds"] == 100
+
+    retried = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=receipt["pod_name_prefix"],
+        deadline_epoch=10_000_000_000.0,
+        provider_factory=lambda _name: EmptyProvider(),
+        clock=lambda: 10_000_000_000.0,
+        sleeper=lambda _seconds: None,
+    )
+    assert retried["campaign_budget_settlement"]["status"] == "settled"
+
+
+def test_unverified_teardown_retains_open_campaign_reservation(tmp_path) -> None:
+    ledger = ProductionGpuCampaignBudget(
+        tmp_path / "campaign-budget.json",
+        initial_spent_usd=11.57,
+        initial_used_gpu_seconds=10_815,
+        combined_gpu_wall_cap_seconds=16_800,
+    )
+    ledger.reserve(
+        reservation_id="unverified-watchdog",
+        gpu_seconds=100,
+        max_hourly_rate_usd=1.99,
+    )
+
+    class UnverifiedProvider:
+        def billable_inventory(self, *, name_prefix: str):
+            del name_prefix
+            raise TimeoutError
+
+    result = run_watchdog(
+        out_dir=tmp_path / "watchdog",
+        pod_name_prefix="blueprint-groot-oscar-canary-unverified-",
+        deadline_epoch=10_000_000_000.0,
+        provider_factory=lambda _name: UnverifiedProvider(),
+        clock=lambda: 10_000_000_000.0,
+        sleeper=lambda _seconds: None,
+    )
+    assert result["status"] == "teardown_unverified"
+    assert ledger.snapshot()["open_reservation_count"] == 1

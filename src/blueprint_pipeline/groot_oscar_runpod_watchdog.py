@@ -213,8 +213,7 @@ def run_watchdog(
             receipt_safe
             and result.get("pod_pending_teardown_close", {}).get("status")
             in {"closed", "cancelled_no_allocation"}
-            and result.get("provider_lane_owner_return", {}).get("status")
-            in {"restored", "already_released"}
+            and result.get("provider_lane_owner_return", {}).get("status") == "restored"
         )
         if not control_terminal:
             result["status"] = "provider_terminal_control_plane_open"

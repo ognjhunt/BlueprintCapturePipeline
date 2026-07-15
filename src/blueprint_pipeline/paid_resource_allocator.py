@@ -36,7 +36,7 @@ from .paid_resource_admission import require_paid_resource_admission
 ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
 MIN_RECONCILED_CAMPAIGN_SPEND_USD = 11.57
-MIN_RECONCILED_GPU_SECONDS = 11_619
+MIN_RECONCILED_GPU_SECONDS = 10_815
 
 
 def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
@@ -260,7 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
     gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=16_800)
-    gpu.add_argument("--campaign-reservation-seconds", type=int, default=5_400)
+    gpu.add_argument("--campaign-reservation-seconds", type=int, default=5_985)
     gpu.add_argument("--campaign-max-hourly-rate-usd", type=float)
     for name, hidden in (("model-volume", False), ("model-volume-run", True)):
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
