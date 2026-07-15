@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,6 +28,26 @@ LEGACY_BUILD_SCRIPTS = (
     ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh",
 )
 RELEASE_WORKFLOW = ROOT / ".github/workflows/groot-oscar-thin-release.yml"
+MUTATION_SURFACE_MANIFEST = (
+    ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
+)
+APPROVED_ADMISSION_ISSUERS = {
+    "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
+    "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
+    "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py",
+    "src/blueprint_pipeline/paid_resource_allocator.py",
+}
+APPROVED_LANE_ADMISSION_BUILDERS = {
+    "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
+}
+SURFACE_CLASSIFICATIONS = {
+    "canonical_allocator",
+    "canonical_adapter",
+    "grant_gated_legacy_adapter",
+    "hard_disabled_legacy_launcher",
+    "legacy_orchestrator_no_grant_issuer",
+    "read_only_provider_inventory",
+}
 
 
 def _function_calls(path: Path) -> dict[str, set[str]]:
@@ -46,8 +68,150 @@ def _function_calls(path: Path) -> dict[str, set[str]]:
     return result
 
 
-def verify() -> list[str]:
+def _all_calls(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        target = node.func
+        if isinstance(target, ast.Name):
+            calls.add(target.id)
+        elif isinstance(target, ast.Attribute):
+            calls.add(target.attr)
+    return calls
+
+
+def _direct_paid_mutation_signals(source: str) -> set[str]:
+    signals: set[str] = set()
+    runpod_api_named = "RUNPOD_REST_API_BASE" in source or "api.runpod.io" in source
+    runpod_post_named = 'method="POST"' in source or '"method": "POST"' in source
+    if (
+        re.search(r"[\"']POST[\"']\s*,\s*(?:f)?[\"']/pods", source)
+        or ('path="/pods"' in source and 'method="POST"' in source)
+        or (runpod_api_named and "/pods" in source and runpod_post_named)
+    ):
+        signals.add("runpod_pod_create")
+    if re.search(r"[\"']POST[\"']\s*,\s*[\"']/networkvolumes", source):
+        signals.add("runpod_volume_create")
+    if "api.digitalocean.com" in source and (
+        'method="POST", path="/droplets"' in source
+        or '"POST", "/v2/droplets"' in source
+        or '"POST", "/droplets"' in source
+    ):
+        signals.add("digitalocean_droplet_create")
+    if re.search(r"method=[\"']PUT[\"']\s*,\s*\n?\s*path=f?[\"']/asks/", source):
+        signals.add("vast_instance_create")
+    if "instance-operations/launch" in source and '"method": "POST"' in source:
+        signals.add("lambda_instance_create")
+    if ".run_instances(" in source:
+        signals.add("aws_instance_create")
+    if "compute.googleapis.com" in source and re.search(
+        r"_call\([\"']POST[\"'].{0,160}/instances", source
+    ):
+        signals.add("gcp_instance_create")
+    return signals
+
+
+def _unclassified_direct_mutators(
+    source_by_path: dict[str, str], known_paths: set[str]
+) -> set[str]:
+    return {
+        path
+        for path, source in source_by_path.items()
+        if _direct_paid_mutation_signals(source) and path not in known_paths
+    }
+
+
+def _verify_mutation_surface_contract() -> list[str]:
     blockers: list[str] = []
+    try:
+        manifest = json.loads(MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ["paid_resource_mutation_surface_manifest_unreadable"]
+    if manifest.get("schema_version") != "paid_resource_mutation_surfaces.v1":
+        blockers.append("paid_resource_mutation_surface_manifest_schema_invalid")
+    issuer_allowlist = manifest.get("issuer_allowlist") or {}
+    if set(issuer_allowlist.get("require_paid_resource_admission") or []) != (
+        APPROVED_ADMISSION_ISSUERS
+    ):
+        blockers.append("paid_resource_admission_issuer_allowlist_changed")
+    if set(issuer_allowlist.get("build_paid_lane_admission") or []) != (
+        APPROVED_LANE_ADMISSION_BUILDERS
+    ):
+        blockers.append("paid_lane_admission_builder_allowlist_changed")
+
+    rows = manifest.get("surfaces")
+    rows = rows if isinstance(rows, list) else []
+    by_path: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+            blockers.append("paid_resource_mutation_surface_row_invalid")
+            continue
+        relative = row["path"]
+        if relative in by_path:
+            blockers.append("paid_resource_mutation_surface_duplicate:" + relative)
+            continue
+        by_path[relative] = row
+        classification = row.get("classification")
+        if classification not in SURFACE_CLASSIFICATIONS:
+            blockers.append("paid_resource_mutation_surface_class_invalid:" + relative)
+        path = ROOT / relative
+        if not path.is_file():
+            blockers.append("paid_resource_mutation_surface_missing:" + relative)
+            continue
+        source = path.read_text(encoding="utf-8")
+        for marker in row.get("required_markers") or []:
+            if not isinstance(marker, str) or marker not in source:
+                blockers.append("paid_resource_mutation_surface_marker_missing:" + relative)
+        calls = _all_calls(path)
+        if classification == "grant_gated_legacy_adapter" and (
+            "require_paid_resource_admission_grant" not in calls
+        ):
+            blockers.append("legacy_paid_adapter_grant_validation_missing:" + relative)
+        if classification in {
+            "grant_gated_legacy_adapter",
+            "hard_disabled_legacy_launcher",
+            "legacy_orchestrator_no_grant_issuer",
+            "read_only_provider_inventory",
+        } and calls & {"require_paid_resource_admission", "build_paid_lane_admission"}:
+            blockers.append("legacy_paid_surface_can_issue_its_own_grant:" + relative)
+
+    observed_admission_issuers: set[str] = set()
+    observed_lane_builders: set[str] = set()
+    source_by_path: dict[str, str] = {}
+    observed_direct_mutators: dict[str, set[str]] = {}
+    source_root = ROOT / "src/blueprint_pipeline"
+    for path in source_root.glob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        source = path.read_text(encoding="utf-8")
+        source_by_path[relative] = source
+        calls = _all_calls(path)
+        if "require_paid_resource_admission" in calls:
+            observed_admission_issuers.add(relative)
+        if "build_paid_lane_admission" in calls:
+            observed_lane_builders.add(relative)
+        signals = _direct_paid_mutation_signals(source)
+        if signals:
+            observed_direct_mutators[relative] = signals
+    if observed_admission_issuers != APPROVED_ADMISSION_ISSUERS:
+        blockers.append("paid_resource_admission_issuer_set_mismatch")
+    if observed_lane_builders != APPROVED_LANE_ADMISSION_BUILDERS:
+        blockers.append("paid_lane_admission_builder_set_mismatch")
+    for relative in sorted(_unclassified_direct_mutators(source_by_path, set(by_path))):
+        blockers.append("unclassified_paid_resource_mutation_surface:" + relative)
+    for relative in sorted(observed_direct_mutators):
+        row = by_path.get(relative)
+        if row is not None and row.get("classification") not in {
+            "canonical_adapter",
+            "grant_gated_legacy_adapter",
+        }:
+            blockers.append("direct_paid_mutator_classification_invalid:" + relative)
+    return blockers
+
+
+def verify() -> list[str]:
+    blockers: list[str] = _verify_mutation_surface_contract()
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")

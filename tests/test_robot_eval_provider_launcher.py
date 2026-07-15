@@ -26,6 +26,16 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _assert_legacy_launcher_disabled(result: dict[str, object]) -> None:
+    assert result["status"] == "blocked"
+    assert result["reason"] == "legacy_provider_command_launcher_disabled"
+    assert result["execution_performed"] is False
+    assert result["provider_launcher_command_executed"] is False
+    assert result["blockers"] == [
+        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
+    ]
+
+
 def _ready_provider_launch_request(
     path: Path,
     *,
@@ -567,13 +577,9 @@ def test_provider_launcher_serial_override_requires_env_and_cli(
         provider_launch_command=_python_command("print('serial override accepted')"),
     )
 
-    assert result["status"] == "completed"
-    assert result["execution_performed"] is True
-    assert result["provider_launcher_command_executed"] is True
+    _assert_legacy_launcher_disabled(result)
     assert result["provider_race_required_for_customer_path"] is True
-    assert (tmp_path / "gpu_provider_launcher.stdout.log").read_text(
-        encoding="utf-8"
-    ).strip() == "serial override accepted"
+    assert not (tmp_path / "gpu_provider_launcher.stdout.log").exists()
 
 
 def test_provider_launcher_blocks_provider_race_when_handoff_is_missing(
@@ -626,32 +632,9 @@ def test_provider_launcher_executes_operator_command_with_redacted_artifact(
 
     output_path = tmp_path / "gpu_provider_launcher_result.json"
     persisted = output_path.read_text(encoding="utf-8")
-    stdout = (tmp_path / "gpu_provider_launcher.stdout.log").read_text(
-        encoding="utf-8"
-    )
-    assert result["status"] == "completed"
-    assert result["execution_performed"] is True
-    assert result["provider_launcher_command_executed"] is True
-    assert result["provider_side_effects_may_have_occurred"] is True
-    assert result["live_provider_calls_performed_by_launcher_module"] is False
-    assert result["provider_allocation_proven"] is False
-    assert result["simulator_execution_proven"] is False
-    assert result["rank_fidelity_result_proven"] is False
-    assert result["public_claim_upgrade_allowed"] is False
-    assert result["secret_values_in_artifact"] is False
-    assert result["stdout_stderr_secret_redaction_enabled"] is True
-    assert "RUNPOD_API_KEY" in result["redacted_secret_env_var_names"]
-    assert result["redacted_secret_value_count"] >= 1
-    assert result["command"]["raw_command_stored"] is False  # type: ignore[index]
-    assert "raw_command" not in result
-    assert "runpod" in stdout
-    assert "launcher-job-1" in stdout
-    assert "isaac-eval-worker:2026-06-12" in stdout
-    assert "120" in stdout
-    assert "180" in stdout
-    assert "<redacted:RUNPOD_API_KEY>" in stdout
+    _assert_legacy_launcher_disabled(result)
+    assert not (tmp_path / "gpu_provider_launcher.stdout.log").exists()
     assert "secret-value-that-must-not-appear" not in persisted
-    assert "secret-value-that-must-not-appear" not in stdout
 
 
 def test_provider_launcher_invokes_builtin_vast_adapter_without_operator_command(
@@ -694,18 +677,8 @@ def test_provider_launcher_invokes_builtin_vast_adapter_without_operator_command
         allow_provider_launch=True,
     )
 
-    assert result["status"] == "completed"
-    assert result["execution_performed"] is True
-    assert result["provider_launcher_command_executed"] is False
-    assert result["builtin_provider_adapter_executed"] is True
-    assert result["live_provider_calls_performed_by_launcher_module"] is True
-    assert result["provider_allocation_proven"] is True
-    assert result["vast_instance_ids"] == ["vast-1"]
-    assert result["all_vast_instances_destroyed_by_adapter"] is True
-    assert calls
-    assert calls[0]["mode"] == "live-startup-probe"
-    assert calls[0]["allow_vast_api_call"] is True
-    assert calls[0]["allow_instance_launch"] is True
+    _assert_legacy_launcher_disabled(result)
+    assert calls == []
 
 
 def test_provider_launcher_builtin_vast_adapter_requires_boolean_proof_flags(
@@ -738,12 +711,7 @@ def test_provider_launcher_builtin_vast_adapter_requires_boolean_proof_flags(
         allow_provider_launch=True,
     )
 
-    assert result["status"] == "completed"
-    assert result["live_provider_calls_performed_by_launcher_module"] is True
-    assert result["live_provider_call_proven"] is False
-    assert result["provider_allocation_proven"] is False
-    assert result["vast_instance_ids"] == []
-    assert result["all_vast_instances_destroyed_by_adapter"] == "true"
+    _assert_legacy_launcher_disabled(result)
 
 
 def test_provider_launcher_records_command_failure(
@@ -761,14 +729,8 @@ def test_provider_launcher_records_command_failure(
         provider_launch_command=_python_command("import sys; print('bad'); sys.exit(7)"),
     )
 
-    assert result["status"] == "failed"
-    assert result["exit_code"] == 7
-    assert result["execution_performed"] is True
-    assert result["provider_launcher_command_executed"] is True
-    assert "gpu_provider_launch_command_failed" in result["blockers"]
-    assert (tmp_path / "gpu_provider_launcher.stdout.log").read_text(
-        encoding="utf-8"
-    ).strip() == "bad"
+    _assert_legacy_launcher_disabled(result)
+    assert not (tmp_path / "gpu_provider_launcher.stdout.log").exists()
 
 
 def test_provider_launcher_cli_uses_job_dir(
@@ -796,9 +758,9 @@ def test_provider_launcher_cli_uses_job_dir(
 
     result = _read_json(job_dir / "gpu_provider_launcher_result.json")
     captured = capsys.readouterr()
-    assert exit_code == 0
-    assert result["status"] == "completed"
-    assert "status=completed" in captured.out
+    assert exit_code == 1
+    _assert_legacy_launcher_disabled(result)
+    assert "status=blocked" in captured.out
 
 
 def test_provider_launcher_blocks_invalid_request_payloads(tmp_path: Path) -> None:
@@ -917,8 +879,7 @@ def test_provider_launcher_records_command_not_found_and_timeout(
         allow_provider_launch=True,
         provider_launch_command=str(tmp_path / "definitely-not-a-real-blueprint-launcher-binary"),
     )
-    assert missing["status"] == "blocked"
-    assert missing["reason"] == "gpu_provider_launch_command_not_found"
+    _assert_legacy_launcher_disabled(missing)
 
     resource_path = tmp_path / "provider-resource"
     child_pid_path = tmp_path / "provider-child.pid"
@@ -933,20 +894,9 @@ def test_provider_launcher_records_command_not_found_and_timeout(
         timeout_seconds=1,
     )
 
-    assert timed_out["status"] == "failed"
-    assert timed_out["reason"] == "provider_launcher_command_timeout"
-    assert timed_out["execution_performed"] is True
-    assert timed_out["local_process_cleanup"]["process_group_absent_verified"] is True
-    assert timed_out["provider_cleanup"]["provider_absence_verified"] is True
-    assert timed_out["provider_absence_verified"] is True
+    _assert_legacy_launcher_disabled(timed_out)
     assert not resource_path.exists()
-    assert child_pid_path.is_file()
-    assert "partial out" in (tmp_path / "gpu_provider_launcher.stdout.log").read_text(
-        encoding="utf-8"
-    )
-    assert "partial err" in (tmp_path / "gpu_provider_launcher.stderr.log").read_text(
-        encoding="utf-8"
-    )
+    assert not child_pid_path.exists()
 
 
 def test_provider_launcher_cli_provider_request_and_error_paths(
@@ -1034,7 +984,7 @@ def test_provider_launcher_records_passing_unified_preflight(
         provider_launch_command=_python_command("print('ok')"),
     )
 
-    assert result["status"] == "completed"
+    _assert_legacy_launcher_disabled(result)
     preflight = result["pre_spend_preflight"]
     assert preflight["status"] == "PASS"
     assert preflight["lane"] == "robot_eval_provider_launcher"

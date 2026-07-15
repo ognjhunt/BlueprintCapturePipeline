@@ -102,6 +102,14 @@ def reconcile_one_scale_request(
             "blockers": blockers,
             "provider_calls_performed": 0,
         }
+    return {
+        "schema_version": AUTOSCALER_SCHEMA_VERSION,
+        "status": "blocked_before_scale_claim",
+        "blockers": [
+            "legacy_runpod_autoscaler_disabled_use_paid_resource_allocator"
+        ],
+        "provider_calls_performed": 0,
+    }
     claim = pool.claim_scale_request(
         autoscaler_id=autoscaler_id,
         lease_seconds=float(authorization.attempt_wall_time_limit_seconds + 60),

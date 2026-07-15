@@ -15,6 +15,11 @@ from blueprint_pipeline.lambda_provider_adapter import (
     main as lambda_adapter_main,
     run_lambda_provider_adapter,
 )
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -24,6 +29,15 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _lambda_grant():  # type: ignore[no-untyped-def]
+    admission = build_paid_lane_admission(resource_class="lambda_provider_adapter")
+    return require_paid_resource_admission(
+        admission,
+        resource_class="lambda_provider_adapter",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 def _ready_lambda_request(path: Path) -> Path:
@@ -311,6 +325,7 @@ def test_launch_instance_submits_with_explicit_gates_and_redacts(
         output_path=tmp_path / "out.json",
         mode="launch-instance",
         allow_lambda_api_call=True,
+        paid_resource_admission_grant=_lambda_grant(),
         region_name="us-west-1",
         instance_type_name="gpu_1x_a10",
         ssh_key_name="blueprint-key",
@@ -337,6 +352,35 @@ def test_launch_instance_submits_with_explicit_gates_and_redacts(
     assert "secret_file_value" not in payload
     assert "#!/usr/bin/env bash" not in payload
     assert persisted["lambda_request"]["body"]["user_data"] == "<redacted:user_data>"
+
+
+def test_launch_instance_missing_grant_blocks_before_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("provider transport called"),
+    )
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=_ready_lambda_request(tmp_path / "request.json"),
+        output_path=tmp_path / "out.json",
+        mode="launch-instance",
+        allow_lambda_api_call=True,
+        region_name="us-west-1",
+        instance_type_name="gpu_1x_a10",
+        ssh_key_name="blueprint-key",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert "paid_resource_admission_grant_missing" in result["blockers"]
 
 
 def test_terminate_instances_writes_teardown_manifest(

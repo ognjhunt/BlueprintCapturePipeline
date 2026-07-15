@@ -13,6 +13,7 @@ PAID_RESOURCE_CLASSES = frozenset(
         "gpu_canary",
         "model_volume",
         "gpu_render",
+        "lambda_provider_adapter",
         "runpod_provider_adapter",
         "runpod_live_execution",
         "runpod_wam_async",
