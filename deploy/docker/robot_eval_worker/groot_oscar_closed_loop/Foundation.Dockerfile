@@ -171,7 +171,7 @@ COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/isaac_6_g1_assets.s
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/fetch_pinned_isaac_assets.py /opt/blueprint/fetch_pinned_isaac_assets.py
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
     BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8 \
-    PYTORCH_ALLOC_CONF=expandable_segments:True PYTHONPATH=/opt/OSCAR \
+    PYTORCH_ALLOC_CONF=expandable_segments:True PYTHONPATH=/opt/wbc:/opt/OSCAR \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
     BLUEPRINT_GROOT_OSCAR_MODEL_CACHE=/models/blueprint-groot-oscar-v1 \
     BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR \
@@ -187,7 +187,8 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
     BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
     BLUEPRINT_FOUNDATION_GROOT_SOURCE_REF=${GROOT_SOURCE_REF} \
     BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF=${OSCAR_SOURCE_REF} \
-    BLUEPRINT_FOUNDATION_WBC_SOURCE_REF=${WBC_SOURCE_REF}
+    BLUEPRINT_FOUNDATION_WBC_SOURCE_REF=${WBC_SOURCE_REF} \
+    BLUEPRINT_GEAR_SONIC_SOURCE_REVISION=${WBC_SOURCE_REF}
 RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
       --manifest /opt/blueprint/isaac_6_g1_assets.sha256 \
       --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \

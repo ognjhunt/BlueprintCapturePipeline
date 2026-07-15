@@ -42,6 +42,8 @@ def test_foundation_uses_runtime_only_wbc_multistage_closure() -> None:
     runtime = text.index("FROM tensorrt-base\n")
     assert "COPY --from=wbc-builder" in text[runtime:]
     assert "cuda-compiler" not in text[runtime:]
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in text
+    assert "BLUEPRINT_GEAR_SONIC_SOURCE_REVISION=${WBC_SOURCE_REF}" in text
 
 
 def test_thin_entrypoint_uses_installed_absolute_worker_executable() -> None:

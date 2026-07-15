@@ -255,36 +255,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not getattr(args, name, None)
             ]
             if missing:
-                result = {
-                    "status": "blocked_before_local_build",
-                    "blockers": [
-                        f"cpu_build_local_argument_missing:{name}" for name in missing
-                    ],
-                    "provider_mutation_attempted": False,
-                }
                 success = False
             else:
                 prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))
                 if prerequisite.get("status") != "ready":
-                    result = {
-                        "status": "blocked_before_local_build",
-                        "blockers": prerequisite.get(
-                            "blockers", ["groot_oscar_live_prerequisites_not_ready"]
-                        ),
-                        "provider_mutation_attempted": False,
-                    }
                     success = False
                 else:
                     result = _run_local_cpu_build(args)
                     success = result.get("status") == "completed"
         elif missing := _missing_cpu_provider_arguments(args):
-            result = {
-                "status": "blocked_before_supervisor",
-                "blockers": [
-                    f"cpu_build_provider_argument_missing:{name}" for name in missing
-                ],
-                "provider_mutation_attempted": False,
-            }
             success = False
         else:
             prerequisite = _run_cpu_prerequisite_gate(Path(args.output_dir))

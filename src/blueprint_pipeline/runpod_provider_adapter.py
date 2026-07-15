@@ -39,10 +39,26 @@ RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 RUNPOD_REST_API_BASE_ENV = "RUNPOD_REST_API_BASE"
 RUNPOD_REST_API_BASE = os.getenv(RUNPOD_REST_API_BASE_ENV, "https://rest.runpod.io/v1").rstrip("/")
 RUNPOD_SERVERLESS_API_BASE = "https://api.runpod.ai/v2"
-RUNPOD_PROVIDER_API_POLICY = safe_outbound_http.OutboundHttpPolicy(
-    allowed_hosts=frozenset({"rest.runpod.io", "api.runpod.ai"}),
-    max_response_bytes=8 * 1024 * 1024,
-)
+
+
+def _runpod_provider_api_policy() -> safe_outbound_http.OutboundHttpPolicy:
+    """Allow only RunPod's fixed hosts and the configured HTTPS REST origin."""
+
+    configured = urlparse(RUNPOD_REST_API_BASE)
+    configured_host = configured.hostname
+    if (
+        configured.scheme != "https"
+        or not configured_host
+        or configured.username is not None
+        or configured.password is not None
+    ):
+        raise ValueError(f"{RUNPOD_REST_API_BASE_ENV}_must_be_credential_free_https_origin")
+    return safe_outbound_http.OutboundHttpPolicy(
+        allowed_hosts=frozenset(
+            {"rest.runpod.io", "api.runpod.ai", configured_host.lower()}
+        ),
+        max_response_bytes=8 * 1024 * 1024,
+    )
 RUNPOD_CONTAINER_REGISTRY_AUTH_ID_ENV = "BLUEPRINT_RUNPOD_CONTAINER_REGISTRY_AUTH_ID"
 RUNPOD_EXISTING_POD_ID_ENV = "BLUEPRINT_RUNPOD_EXISTING_POD_ID"
 PROVIDER_LAUNCH_REQUEST_ENV = "BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST"
@@ -1419,7 +1435,7 @@ def _http_json(
     )
     response = safe_outbound_http.open_request(
         request,
-        policy=RUNPOD_PROVIDER_API_POLICY,
+        policy=_runpod_provider_api_policy(),
         timeout_seconds=timeout_seconds,
     )
     status_code = response.status

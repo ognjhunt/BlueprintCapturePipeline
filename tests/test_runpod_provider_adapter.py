@@ -43,6 +43,35 @@ def test_runpod_http_transport_rejects_non_runpod_origins_before_network() -> No
         )
 
 
+def test_runpod_http_policy_allows_configured_https_rest_origin(monkeypatch) -> None:
+    monkeypatch.setattr(
+        adapter, "RUNPOD_REST_API_BASE", "https://runpod-proxy.example/v1"
+    )
+
+    policy = adapter._runpod_provider_api_policy()
+
+    assert "runpod-proxy.example" in policy.allowed_hosts
+
+
+@pytest.mark.parametrize(
+    "base",
+    (
+        "http://runpod-proxy.example/v1",
+        "https://user:secret@runpod-proxy.example/v1",
+        "runpod-proxy.example/v1",
+    ),
+)
+def test_runpod_http_policy_rejects_unsafe_configured_rest_origin(
+    monkeypatch, base: str
+) -> None:
+    monkeypatch.setattr(adapter, "RUNPOD_REST_API_BASE", base)
+
+    with pytest.raises(
+        ValueError, match="RUNPOD_REST_API_BASE_must_be_credential_free_https_origin"
+    ):
+        adapter._runpod_provider_api_policy()
+
+
 def _ready_runpod_request(path: Path) -> Path:
     _write_json(
         path,
