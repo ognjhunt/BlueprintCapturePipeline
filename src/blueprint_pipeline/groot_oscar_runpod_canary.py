@@ -9,6 +9,7 @@ the startup canary; it is not an image builder or a customer cold-start path.
 from __future__ import annotations
 
 import json
+import os
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -36,6 +37,7 @@ from .paid_provider_lane_lease import (
     restore_paid_provider_lane_lease_to_retained_watchdog,
 )
 from .groot_oscar_runpod_preflight import collect_runpod_preflight
+from .groot_oscar_runpod_watchdog import terminate_canary_resources
 from .runpod_provider_adapter import (
     RUNPOD_IMAGE_STARTUP_CANARY_MODE,
     run_runpod_provider_adapter,
@@ -66,6 +68,7 @@ def refresh_runpod_preflight(
         "pid": spend.get("watchdog_pid"),
         "deadline_epoch": spend.get("watchdog_deadline_epoch"),
         "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
+        "watchdog_out_dir": spend.get("watchdog_out_dir"),
     }
     kwargs: dict[str, Any] = {}
     if process_argv_probe is not None:
@@ -97,6 +100,20 @@ def _read(path: str | Path) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"expected_json_object:{path}")
     return dict(value)
+
+
+def _write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(dict(payload), handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def bind_canary_request(
@@ -246,6 +263,7 @@ def run_canary(
     """Run the adapter only through the canonical GPU-canary allocator."""
 
     preflight = _read(preflight_bundle)
+    provider = None
     refresh_path = Path(adapter_output).resolve().parent / "runpod_preflight_launch_refresh.json"
     if execute:
         provider = get_render_provider("runpod")
@@ -299,6 +317,16 @@ def run_canary(
     if prepared["status"] != "admitted":
         return prepared
     if execute:
+        watchdog_out_dir = str(spend.get("watchdog_out_dir") or "").strip()
+        if not watchdog_out_dir or not Path(watchdog_out_dir).is_absolute():
+            prepared = {
+                **prepared,
+                "status": "blocked",
+                "blockers": ["runpod_canary_watchdog_out_dir_unverified"],
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(admission_out), prepared)
+            return prepared
         volume_handoff = preflight.get("model_volume_watchdog_handoff")
         volume_handoff = (
             volume_handoff if isinstance(volume_handoff, Mapping) else {}
@@ -382,6 +410,34 @@ def run_canary(
             }
             write_json(Path(admission_out), blocked)
             return blocked
+        if watchdog_out_dir:
+            receipt_path = Path(watchdog_out_dir) / "provider_lane_handoff_receipt.json"
+            try:
+                _write_private_json(
+                    receipt_path,
+                    {
+                        **acceptance,
+                        "pod_pending_teardown_record": pod_pending["path"],
+                        "pod_id": None,
+                        "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - still before provider call
+                cancel_pending_teardown(
+                    pod_pending["path"],
+                    reason="runpod_canary_receipt_write_failed_before_create",
+                    evidence={"error_type": type(exc).__name__},
+                )
+                restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
+                blocked = {
+                    **prepared,
+                    "status": "blocked",
+                    "blockers": ["runpod_canary_handoff_receipt_write_failed"],
+                    "provider_mutations_performed": 0,
+                    "error_type": type(exc).__name__,
+                }
+                write_json(Path(admission_out), blocked)
+                return blocked
     try:
         adapter = run_runpod_provider_adapter(
             provider_launch_request_path=bound_request_out,
@@ -399,12 +455,36 @@ def run_canary(
                 reason="runpod_canary_adapter_raised_after_create_boundary",
                 evidence={"error_type": type(exc).__name__},
             )
+        immediate_cleanup = (
+            terminate_canary_resources(
+                provider=provider,
+                pod_name_prefix=pod_name,
+                armed={"status": "armed", "pod_name_prefix": pod_name},
+            )
+            if execute and provider is not None
+            else {
+                "status": "not_attempted_dry_run",
+                "provider_absence_confirmed": False,
+                "provider_mutations_performed": 0,
+            }
+        )
+        if immediate_cleanup.get("provider_absence_confirmed") is True:
+            if pod_pending is not None:
+                cancel_pending_teardown(
+                    pod_pending["path"],
+                    reason="runpod_canary_immediate_reconciliation_verified_zero",
+                    evidence={"provider_absence_confirmed": True},
+                )
+            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
         failed = {
             "status": "failed",
             "blockers": ["runpod_canary_adapter_failed_or_ambiguous"],
             "provider_allocation_ambiguous": True,
-            "provider_mutations_performed": 1,
+            "provider_mutations_performed": immediate_cleanup.get(
+                "provider_mutations_performed", 0
+            ),
             "error_type": type(exc).__name__,
+            "immediate_cleanup": immediate_cleanup,
         }
         write_json(Path(adapter_output), failed)
         return failed
@@ -427,14 +507,15 @@ def run_canary(
                 reason="runpod_canary_create_result_missing_pod_id",
                 evidence={"adapter_status": adapter.get("status")},
             )
-        watchdog_out_dir = str(spend.get("watchdog_out_dir") or "").strip()
         if watchdog_out_dir:
-            write_json(
-                Path(watchdog_out_dir) / "provider_lane_handoff_receipt.json",
+            receipt_path = Path(watchdog_out_dir) / "provider_lane_handoff_receipt.json"
+            _write_private_json(
+                receipt_path,
                 {
                     **acceptance,
                     "pod_pending_teardown_record": pod_pending["path"],
                     "pod_id": pod_id or None,
+                    "pod_name_prefix": spend.get("watchdog_pod_name_prefix"),
                 },
             )
     if execute and adapter.get("status") == "submitted":

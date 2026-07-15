@@ -324,7 +324,7 @@ def test_ready_volume_handoff_still_deletes_volume_at_deadline(
             return "runpod-test-key"
 
     inventories = iter(
-        [([], ["volume-1"], True), ([], [], True)]
+        [([], ["volume-1"], True), ([], [], True), ([], [], True)]
     )
     deleted: list[str] = []
     monkeypatch.setattr(model_volume, "get_render_provider", lambda _name: Provider())

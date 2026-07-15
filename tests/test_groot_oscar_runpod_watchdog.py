@@ -1,4 +1,5 @@
 import json
+import os
 
 from blueprint_pipeline.groot_oscar_runpod_watchdog import (
     run_watchdog,
@@ -75,3 +76,70 @@ def test_watchdog_persists_provider_factory_error(tmp_path) -> None:
     assert persisted["status"] == "teardown_unverified"
     assert persisted["teardown_error_type"] == "TimeoutError"
     assert "secret provider initialization" not in json.dumps(persisted)
+
+
+def test_watchdog_closes_pod_record_and_returns_lane_owner(
+    tmp_path, monkeypatch
+) -> None:
+    pending_path = tmp_path / "pending.json"
+    pending_path.write_text(
+        json.dumps(
+            {
+                "status": "open",
+                "provider": "runpod",
+                "lane": "groot_oscar_gpu_canary",
+                "resource_kind": "compute_instance",
+                "resource_name": "blueprint-groot-oscar-canary-attempt-pod",
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    receipt = {
+        "lease_path": str(tmp_path / "lane.lease.json"),
+        "owner_pid": 222,
+        "pod_pending_teardown_record": str(pending_path),
+        "pod_id": "pod-1",
+        "pod_name_prefix": "blueprint-groot-oscar-canary-attempt-",
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    os.chmod(receipt_path, 0o600)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_lane_guard.close_pending_teardown",
+        lambda path, evidence: {
+            "status": "closed",
+            "path": path,
+            "evidence": evidence,
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_provider_lane_lease.restore_paid_provider_lane_lease_to_retained_watchdog",
+        lambda observed: {
+            "status": "restored",
+            "restored": observed == receipt,
+        },
+    )
+
+    class EmptyProvider:
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            assert name_prefix == receipt["pod_name_prefix"]
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=receipt["pod_name_prefix"],
+        deadline_epoch=10_000_000_000.0,
+        provider_factory=lambda _name: EmptyProvider(),
+        clock=lambda: 10_000_000_000.0,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["control_plane_terminal"] is True
+    assert result["pod_pending_teardown_close"]["status"] == "closed"
+    assert result["provider_lane_owner_return"]["status"] == "restored"

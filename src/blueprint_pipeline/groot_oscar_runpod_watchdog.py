@@ -33,6 +33,7 @@ def arm_watchdog(
         "armed_at": utc_now_iso(),
         "deadline_epoch": float(deadline_epoch),
         "pod_name_prefix": pod_name_prefix,
+        "watchdog_out_dir": str(root),
         "provider_mutations_performed": 0,
         "raw_secret_values_recorded": False,
     }
@@ -134,6 +135,85 @@ def run_watchdog(
             pod_name_prefix=pod_name_prefix,
             armed=armed,
         )
+    receipt_path = root / "provider_lane_handoff_receipt.json"
+    receipt_control_required = receipt_path.exists() or receipt_path.is_symlink()
+    receipt_safe = False
+    if receipt_control_required:
+        try:
+            receipt_stat = receipt_path.lstat()
+            receipt_safe = bool(
+                receipt_path.is_file()
+                and not receipt_path.is_symlink()
+                and not receipt_stat.st_mode & 0o077
+            )
+        except OSError:
+            receipt_safe = False
+    if receipt_safe and result.get("provider_absence_confirmed") is True:
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            receipt = {}
+        if (
+            isinstance(receipt, Mapping)
+            and receipt.get("pod_name_prefix") == pod_name_prefix
+        ):
+            from .paid_lane_guard import (
+                cancel_pending_teardown,
+                close_pending_teardown,
+            )
+            from .paid_provider_lane_lease import (
+                restore_paid_provider_lane_lease_to_retained_watchdog,
+            )
+
+            pending_path = str(receipt.get("pod_pending_teardown_record") or "")
+            try:
+                pending_record = json.loads(Path(pending_path).read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                pending_record = {}
+            pending_valid = bool(
+                isinstance(pending_record, Mapping)
+                and pending_record.get("status") == "open"
+                and pending_record.get("provider") == "runpod"
+                and pending_record.get("lane") == "groot_oscar_gpu_canary"
+                and pending_record.get("resource_kind") == "compute_instance"
+                and str(pending_record.get("resource_name") or "").startswith(
+                    pod_name_prefix
+                )
+            )
+            if pending_valid and receipt.get("pod_id"):
+                pending_close = close_pending_teardown(
+                    pending_path,
+                    {
+                        "status": "PASS",
+                        "provider_absence_confirmed": True,
+                        "instance_id": receipt.get("pod_id"),
+                    },
+                )
+            elif pending_valid:
+                pending_close = cancel_pending_teardown(
+                    pending_path,
+                    reason="canary_watchdog_provider_inventory_verified_zero",
+                    evidence={"provider_absence_confirmed": True},
+                )
+            else:
+                pending_close = {"status": "invalid"}
+            result["pod_pending_teardown_close"] = pending_close
+            result["provider_lane_owner_return"] = (
+                restore_paid_provider_lane_lease_to_retained_watchdog(receipt)
+            )
+    if receipt_control_required:
+        control_terminal = bool(
+            receipt_safe
+            and result.get("pod_pending_teardown_close", {}).get("status")
+            in {"closed", "cancelled_no_allocation"}
+            and result.get("provider_lane_owner_return", {}).get("status")
+            in {"restored", "already_released"}
+        )
+        if not control_terminal:
+            result["status"] = "provider_terminal_control_plane_open"
+            result["control_plane_terminal"] = False
+        else:
+            result["control_plane_terminal"] = True
     write_json(root / EVIDENCE_NAME, result)
     return result
 

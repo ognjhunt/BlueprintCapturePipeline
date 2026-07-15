@@ -857,6 +857,7 @@ def accept_paid_provider_lane_lease_handoff(
         "owner_pid": canary_watchdog_pid,
         "retained_teardown_owner_pid": source_owner_pid,
         "binding": canonical,
+        "capability_digest": handoff.get("capability_digest"),
         "capability_consumed": True,
         "raw_capability_recorded": False,
     }
@@ -917,7 +918,28 @@ def restore_paid_provider_lane_lease_to_retained_watchdog(
             return {"status": "already_released", "restored": False}
         retained_pid = int(current.get("retained_teardown_owner_pid") or 0)
         canary_pid = int(receipt.get("owner_pid") or 0)
-        if current.get("owner_pid") != canary_pid or not _pid_is_alive(retained_pid):
+        accepted_handoff = current.get("handoff")
+        accepted_handoff = (
+            accepted_handoff if isinstance(accepted_handoff, Mapping) else {}
+        )
+        if (
+            current.get("owner_pid") != canary_pid
+            or accepted_handoff.get("status") != "accepted"
+            or accepted_handoff.get("canary_watchdog_pid") != canary_pid
+            or accepted_handoff.get("capability_digest")
+            != receipt.get("capability_digest")
+            or _canonical_handoff_binding(
+                accepted_handoff.get("binding")
+                if isinstance(accepted_handoff.get("binding"), Mapping)
+                else {}
+            )
+            != _canonical_handoff_binding(
+                receipt.get("binding")
+                if isinstance(receipt.get("binding"), Mapping)
+                else {}
+            )
+            or not _pid_is_alive(retained_pid)
+        ):
             return {"status": "refused_identity_mismatch", "restored": False}
         current.update(
             {

@@ -23,6 +23,7 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     lease_path,
     read_lease,
     release_paid_provider_lane_lease,
+    restore_paid_provider_lane_lease_to_retained_watchdog,
     transfer_paid_provider_lane_lease_to_watchdog,
 )
 from blueprint_pipeline.paid_lane_guard import (
@@ -217,6 +218,23 @@ def test_watchdog_handoff_is_one_time_bound_and_has_no_unowned_gap(
     current = read_lease("runpod", "groot_oscar_model_volume", tmp_path)
     assert current["owner_pid"] == 222
     assert current["retained_teardown_owner_pid"] == 111
+
+    forged_restore = restore_paid_provider_lane_lease_to_retained_watchdog(
+        {**accepted, "capability_digest": "forged"}
+    )
+    assert forged_restore == {
+        "status": "refused_identity_mismatch",
+        "restored": False,
+    }
+    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)[
+        "owner_pid"
+    ] == 222
+
+    restored = restore_paid_provider_lane_lease_to_retained_watchdog(accepted)
+    assert restored == {"status": "restored", "restored": True, "owner_pid": 111}
+    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)[
+        "owner_pid"
+    ] == 111
 
     reused = accept_paid_provider_lane_lease_handoff(
         handoff,
