@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tarfile
 from pathlib import Path
@@ -80,7 +81,11 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
         capture_output=True,
         text=True,
     )
-    assert '+"\\n",encoding="utf-8")' in script
+    embedded_python = re.findall(r"<<'PY'\n(.*?)\nPY", script, flags=re.DOTALL)
+    assert len(embedded_python) == 3
+    for index, program in enumerate(embedded_python):
+        compile(program, f"generated_remote_build_heredoc_{index}.py", "exec")
+    assert script.count('+"\\n",encoding="utf-8")') == 2
     assert "--push" in script
     foundation_build_at = script.index('-t "$foundation_candidate_ref" --push')
     release_build_at = script.index('-t "$release_candidate_ref" --push')

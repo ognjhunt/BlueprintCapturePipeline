@@ -178,7 +178,7 @@ from blueprint_pipeline.groot_oscar_release_hardening import DiskAdmission
 registry=json.load(open(sys.argv[1])); root=Path(sys.argv[3]); stats=os.statvfs(root)
 compressed=int(registry.get("total_compressed_size_bytes") or 0)
 evidence=DiskAdmission(available_bytes=stats.f_bavail*stats.f_frsize,image_compressed_bytes=compressed,image_unpacked_bytes=compressed).evidence()
-Path(sys.argv[2]).write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+Path(sys.argv[2]).write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\\n",encoding="utf-8")
 raise SystemExit(0 if compressed > 0 and evidence["status"] == "passed" else 2)
 PY
 "$syft_bin" "registry:$release_exact" -o "spdx-json=$script_dir/release_sbom.spdx.json"
