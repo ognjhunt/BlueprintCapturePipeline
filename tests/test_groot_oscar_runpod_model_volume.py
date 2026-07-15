@@ -76,6 +76,15 @@ def test_model_volume_admission_rejects_unbounded_or_duplicate_resources() -> No
         raise AssertionError("blocked admission reached paid mutation seam")
 
 
+def test_model_volume_admission_rejects_gpu_only_data_center() -> None:
+    admission = _admission(data_center_id="US-NC-2")
+    assert admission["status"] == "blocked"
+    assert (
+        "model_volume_data_center_not_network_volume_capable"
+        in admission["blockers"]
+    )
+
+
 def test_model_volume_admission_rejects_cost_above_cap() -> None:
     admission = _admission(max_spend_usd=0.10)
     assert admission["status"] == "blocked"

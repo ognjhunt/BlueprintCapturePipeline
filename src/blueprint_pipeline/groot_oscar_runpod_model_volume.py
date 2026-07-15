@@ -42,6 +42,33 @@ MAX_TTL_SECONDS = 3600
 EVIDENCE_PORT = 8765
 POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
+# RunPod's create API returned this authoritative network-volume-capable set on
+# 2026-07-14. The general datacenter catalog includes additional GPU locations
+# that reject network-volume creation, so fail closed until this provider list
+# is deliberately refreshed.
+RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS = frozenset(
+    {
+        "AP-IN-2",
+        "AP-JP-1",
+        "CA-MTL-3",
+        "CA-MTL-4",
+        "EU-CZ-1",
+        "EU-FR-1",
+        "EU-NL-1",
+        "EU-RO-1",
+        "EUR-IS-1",
+        "EUR-IS-3",
+        "EUR-NO-1",
+        "EUR-NO-2",
+        "US-CA-2",
+        "US-IL-1",
+        "US-MO-2",
+        "US-NC-1",
+        "US-NE-1",
+        "US-TX-3",
+        "US-WA-1",
+    }
+)
 _DIGEST_REF = re.compile(r"\A[^\s@]+@sha256:[0-9a-f]{64}\Z")
 _RUNPOD_ID = re.compile(r"\A[A-Za-z0-9._-]{1,256}\Z")
 _SECRET_ERROR_PATTERNS = (
@@ -124,6 +151,8 @@ def build_model_volume_admission(
         blockers.append("model_volume_release_image_not_digest_pinned")
     if not data_center_id:
         blockers.append("model_volume_data_center_missing")
+    elif data_center_id not in RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS:
+        blockers.append("model_volume_data_center_not_network_volume_capable")
     if not gpu_type_id:
         blockers.append("model_volume_gpu_type_missing")
     if required_cuda_version != "12.8":
