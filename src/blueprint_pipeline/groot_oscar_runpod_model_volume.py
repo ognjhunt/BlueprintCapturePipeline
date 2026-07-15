@@ -44,6 +44,11 @@ POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
 _DIGEST_REF = re.compile(r"\A[^\s@]+@sha256:[0-9a-f]{64}\Z")
 _RUNPOD_ID = re.compile(r"\A[A-Za-z0-9._-]{1,256}\Z")
+_SECRET_ERROR_PATTERNS = (
+    re.compile(r"(?i)\bBearer\s+\S+"),
+    re.compile(r"(?i)\b(?:api[_-]?key|authorization|token)\s*[=:]\s*\S+"),
+    re.compile(r"\b(?:hf|rpa|rp)_[A-Za-z0-9._-]{8,}\b"),
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -55,6 +60,26 @@ def _read_secret(path: str | Path) -> str:
     if not value:
         raise ValueError("model_volume_secret_file_empty")
     return value
+
+
+def _safe_provider_error_summary(payload: Any) -> str | None:
+    """Keep provider diagnosis without persisting request bodies or secrets."""
+
+    if not isinstance(payload, Mapping):
+        return None
+    parts: list[str] = []
+    for field in ("code", "statusCode", "error", "message", "detail", "title"):
+        value = payload.get(field)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            text_value = str(value).strip()
+            if text_value:
+                parts.append(f"{field}={text_value}")
+    if not parts:
+        return None
+    summary = "; ".join(parts)[:1000]
+    for pattern in _SECRET_ERROR_PATTERNS:
+        summary = pattern.sub("[REDACTED]", summary)
+    return summary
 
 
 def _single_gpu_capacity_verified(
@@ -549,12 +574,15 @@ def run_model_volume(
         )
         volume_id = _extract_id(_mapping(volume_response))
         if volume_http not in {200, 201} or not volume_id:
+            provider_error_summary = _safe_provider_error_summary(volume_response)
             provider_failure = {
                 "operation": "create_network_volume",
                 "http_status": volume_http,
-                "provider_error_recorded": False,
+                "provider_error_summary": provider_error_summary,
+                "provider_error_recorded": provider_error_summary is not None,
                 "allocation_created": bool(volume_id),
                 "spend_occurred": False if not volume_id else None,
+                "raw_provider_response_recorded": False,
             }
             raise RuntimeError("runpod_network_volume_create_failed_or_ambiguous")
         get_http, volume_row = _runpod_call(
@@ -603,12 +631,15 @@ def run_model_volume(
         )
         pod_id = _extract_id(_mapping(pod_response))
         if pod_http not in {200, 201} or not pod_id:
+            provider_error_summary = _safe_provider_error_summary(pod_response)
             provider_failure = {
                 "operation": "create_preparation_pod",
                 "http_status": pod_http,
-                "provider_error_recorded": False,
+                "provider_error_summary": provider_error_summary,
+                "provider_error_recorded": provider_error_summary is not None,
                 "allocation_created": bool(pod_id),
                 "spend_occurred": False if not pod_id else None,
+                "raw_provider_response_recorded": False,
             }
             raise RuntimeError("runpod_model_volume_pod_create_failed_or_ambiguous")
         compute_started = True

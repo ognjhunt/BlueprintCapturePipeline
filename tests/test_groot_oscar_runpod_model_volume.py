@@ -10,6 +10,7 @@ from blueprint_pipeline.groot_oscar_runpod_model_volume import (
     SCHEMA_VERSION,
     _extract_id,
     _matching_resources,
+    _safe_provider_error_summary,
     _single_gpu_capacity_verified,
     build_model_volume_admission,
     launch_detached,
@@ -180,6 +181,22 @@ def test_model_volume_rejects_provider_ids_that_can_escape_urls() -> None:
     assert _extract_id({"id": "safe-pod_123"}) == "safe-pod_123"
     assert _extract_id({"id": "../../pods/other"}) == ""
     assert _extract_id({"id": True}) == ""
+
+
+def test_model_volume_records_sanitized_provider_error_without_request_body() -> None:
+    summary = _safe_provider_error_summary(
+        {
+            "statusCode": 500,
+            "message": "No network volume capacity; token=hf_secretvalue123456",
+            "request": {"env": {"HF_TOKEN": "must-not-be-recorded"}},
+        }
+    )
+    assert summary == (
+        "statusCode=500; message=No network volume capacity; [REDACTED]"
+    )
+    assert "request" not in summary
+    assert "secretvalue" not in summary
+    assert _safe_provider_error_summary({"request": {"unsafe": "body"}}) is None
 
 
 def test_model_volume_detached_launch_is_single_supervisor(

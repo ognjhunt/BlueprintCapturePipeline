@@ -481,11 +481,13 @@ def test_runpod_exact_one_gpu_offer_requires_explicit_stock_label(monkeypatch) -
         }
     )
 
-    row = result["viable_gpu_types"][0]
+    row = result["considered_gpu_types"][0]
     assert row["single_gpu_offer_requested"] is True
     assert row["single_gpu_offer_available"] is False
-    assert row["capacity_confidence"] == "unknown"
-    assert result["capacity_confidence"] == "unknown"
+    assert "single_gpu_stock_unavailable" in row["blockers"]
+    assert row["capacity_confidence"] == "unavailable"
+    assert result["status"] == "blocked"
+    assert result["capacity_confidence"] == "unavailable"
 
 
 def test_runpod_create_capacity_failure_is_capacity_outcome_not_spend(
