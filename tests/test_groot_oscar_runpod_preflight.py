@@ -10,6 +10,7 @@ build_model_volume_watchdog_handoff_evidence = (
 collect_runpod_preflight = preflight_module.collect_runpod_preflight
 
 MODEL_VOLUME_WATCHDOG_STATE = "/tmp/model-volume/watchdog_state.json"
+CANARY_WATCHDOG_OUT_DIR = "/tmp/canary-watchdog"
 
 
 def _model_volume_handoff(*, deadline_epoch: float = 4000.0) -> dict:
@@ -41,6 +42,8 @@ def _watchdog_argv(pid: int, *, canary_deadline_epoch: float) -> tuple[str, ...]
         "python",
         "-m",
         "blueprint_pipeline.groot_oscar_runpod_watchdog",
+        "--out-dir",
+        CANARY_WATCHDOG_OUT_DIR,
         "--pod-name-prefix",
         "blueprint-groot-oscar-canary-",
         "--deadline-epoch",
@@ -62,6 +65,7 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
             "pid": 1,
             "deadline_epoch": 2800.0,
             "pod_name_prefix": "blueprint-groot-oscar-canary-",
+            "watchdog_out_dir": CANARY_WATCHDOG_OUT_DIR,
         },
         model_volume_watchdog_handoff=_model_volume_handoff(),
         max_spend_usd=1.0,
@@ -139,6 +143,7 @@ def test_preflight_rejects_unrelated_live_process_as_watchdog() -> None:
             "pid": os.getpid(),
             "deadline_epoch": 2800.0,
             "pod_name_prefix": "blueprint-groot-oscar-canary-",
+            "watchdog_out_dir": CANARY_WATCHDOG_OUT_DIR,
         },
         model_volume_watchdog_handoff=_model_volume_handoff(),
         max_spend_usd=1.0,
@@ -195,6 +200,7 @@ def test_preflight_rejects_model_volume_watchdog_deadline_before_canary() -> Non
             "pid": 1,
             "deadline_epoch": 1900.0,
             "pod_name_prefix": "blueprint-groot-oscar-canary-",
+            "watchdog_out_dir": CANARY_WATCHDOG_OUT_DIR,
         },
         model_volume_watchdog_handoff=_model_volume_handoff(deadline_epoch=1950.0),
         max_spend_usd=1.0,

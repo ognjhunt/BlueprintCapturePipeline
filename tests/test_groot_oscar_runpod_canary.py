@@ -11,6 +11,7 @@ from blueprint_pipeline.groot_oscar_runpod_canary import (
 
 DIGEST = "docker.io/example/release@sha256:" + "a" * 64
 MODEL_VOLUME_WATCHDOG_STATE = "/tmp/model-volume/watchdog_state.json"
+CANARY_WATCHDOG_OUT_DIR = "/tmp/canary-watchdog"
 
 
 def _watchdog_argv(pid: int) -> tuple[str, ...]:
@@ -27,6 +28,8 @@ def _watchdog_argv(pid: int) -> tuple[str, ...]:
         "python",
         "-m",
         "blueprint_pipeline.groot_oscar_runpod_watchdog",
+        "--out-dir",
+        CANARY_WATCHDOG_OUT_DIR,
         "--pod-name-prefix",
         "blueprint-groot-oscar-canary-",
         "--deadline-epoch",
@@ -100,6 +103,7 @@ def _preflight() -> dict:
             "watchdog_pid": 1,
             "watchdog_deadline_epoch": 1900.0,
             "watchdog_pod_name_prefix": "blueprint-groot-oscar-canary-",
+            "watchdog_out_dir": CANARY_WATCHDOG_OUT_DIR,
         },
         "model_volume_watchdog_handoff": {
             "schema_version": "groot_oscar_model_volume_watchdog_handoff.v1",

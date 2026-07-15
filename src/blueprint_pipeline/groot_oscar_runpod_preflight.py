@@ -69,6 +69,7 @@ def _watchdog_process_matches(
     argv: Sequence[str],
     pod_name_prefix: str,
     deadline_epoch: float,
+    watchdog_out_dir: str,
 ) -> bool:
     tokens = tuple(str(token) for token in argv)
     if WATCHDOG_MODULE not in tokens:
@@ -76,11 +77,17 @@ def _watchdog_process_matches(
     try:
         prefix_index = tokens.index("--pod-name-prefix") + 1
         deadline_index = tokens.index("--deadline-epoch") + 1
+        out_dir_index = tokens.index("--out-dir") + 1
         observed_prefix = tokens[prefix_index]
         observed_deadline = float(tokens[deadline_index])
     except (ValueError, IndexError):
         return False
-    return observed_prefix == pod_name_prefix and observed_deadline == deadline_epoch
+    return bool(
+        observed_prefix == pod_name_prefix
+        and observed_deadline == deadline_epoch
+        and Path(tokens[out_dir_index]).expanduser().resolve()
+        == Path(watchdog_out_dir).expanduser().resolve()
+    )
 
 
 def _model_volume_watchdog_process_matches(
@@ -116,11 +123,13 @@ def build_watchdog_spend_evidence(
     process_alive = _process_alive(pid)
     process_identity_verified = False
     pod_name_prefix = str(watchdog.get("pod_name_prefix") or "").strip()
+    watchdog_out_dir = str(watchdog.get("watchdog_out_dir") or "").strip()
     if process_alive and isinstance(deadline, (int, float)):
         process_identity_verified = _watchdog_process_matches(
             argv=process_argv_probe(pid),
             pod_name_prefix=pod_name_prefix,
             deadline_epoch=float(deadline),
+            watchdog_out_dir=watchdog_out_dir,
         )
     armed = bool(
         watchdog.get("schema_version") == "groot_oscar_runpod_canary_watchdog.v1"
@@ -129,6 +138,7 @@ def build_watchdog_spend_evidence(
         and process_alive
         and process_identity_verified
         and ttl > 60
+        and bool(watchdog_out_dir)
     )
     return {
         "schema_version": "groot_oscar_runpod_spend_evidence.v1",
