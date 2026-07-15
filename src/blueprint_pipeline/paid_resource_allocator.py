@@ -29,7 +29,10 @@ from .groot_oscar_runpod_canary import run_canary
 from .groot_oscar_runpod_storage_volume import (
     launch_detached as launch_detached_model_volume,
 )
-from .groot_oscar_runpod_storage_volume import run_storage_model_volume
+from .groot_oscar_runpod_storage_volume import (
+    retain_verified_model_cache,
+    run_storage_model_volume,
+)
 from .paid_resource_admission import require_paid_resource_admission
 
 
@@ -287,13 +290,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
         model.add_argument("--output-dir", required=True)
         model.add_argument("--repo-root", default=str(ROOT))
-        model.add_argument("--data-center-id", required=True)
+        model.add_argument("--data-center-id")
         model.add_argument("--volume-size-gib", type=int, default=50)
         model.add_argument("--storage-hourly-rate-usd", type=float, required=True)
         model.add_argument("--storage-ttl-seconds", type=int, default=14_400)
         model.add_argument("--max-storage-spend-usd", type=float, default=0.05)
-        model.add_argument("--builder-evidence", required=True)
-        model.add_argument("--builder-spend", required=True)
+        model.add_argument("--builder-evidence")
+        model.add_argument("--builder-spend")
         model.add_argument(
             "--digitalocean-token-file",
             default="~/.blueprint-secrets/digitalocean_api_token",
@@ -307,12 +310,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--runpod-s3-secret-key-file",
             default="~/.blueprint-secrets/runpod_s3_secret_key",
         )
-        model.add_argument("--login-private-key", required=True)
-        model.add_argument("--host-private-key", required=True)
-        model.add_argument("--ssh-key-id", required=True, type=int)
+        model.add_argument("--login-private-key")
+        model.add_argument("--host-private-key")
+        model.add_argument("--ssh-key-id", type=int)
         model.add_argument("--region", default="sfo3")
         model.add_argument("--allow-paid", action="store_true")
+        model.add_argument("--retain-existing-output")
+        model.add_argument(
+            "--retention-ttl-seconds", type=int, default=7 * 24 * 60 * 60
+        )
+        model.add_argument("--retention-max-spend-usd", type=float, default=1.0)
+        model.add_argument("--campaign-spent-to-date-usd", type=float)
+        model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
+    if args.command in {"model-volume", "model-volume-run"} and not (
+        args.command == "model-volume" and args.retain_existing_output
+    ):
+        missing_model_volume_inputs = [
+            name
+            for name in (
+                "data_center_id",
+                "builder_evidence",
+                "builder_spend",
+                "login_private_key",
+                "host_private_key",
+                "ssh_key_id",
+            )
+            if getattr(args, name, None) in {None, ""}
+        ]
+        if missing_model_volume_inputs:
+            print(json.dumps({"success": False}, sort_keys=True))
+            return 2
     if args.command == "cpu-build":
         if args.execution_plane == "local":
             missing = [
@@ -426,6 +454,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         success = result.get("status") in {"dry_run_ready", "submitted"}
     elif args.command == "model-volume":
+        if args.retain_existing_output:
+            if args.campaign_spent_to_date_usd is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": ["bounded_cache_retention_campaign_spend_missing"],
+                }
+            else:
+                result = retain_verified_model_cache(
+                    output_dir=Path(args.output_dir),
+                    source_output_dir=Path(args.retain_existing_output),
+                    retention_ttl_seconds=args.retention_ttl_seconds,
+                    storage_hourly_rate_usd=args.storage_hourly_rate_usd,
+                    max_retention_spend_usd=args.retention_max_spend_usd,
+                    campaign_spent_to_date_usd=args.campaign_spent_to_date_usd,
+                    campaign_total_spend_cap_usd=args.campaign_total_spend_cap_usd,
+                    runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
+                    runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
+                    allow_paid=args.allow_paid,
+                )
+            success = result.get("status") == "retained"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         vector = [
             "--output-dir", args.output_dir,
             "--repo-root", args.repo_root,

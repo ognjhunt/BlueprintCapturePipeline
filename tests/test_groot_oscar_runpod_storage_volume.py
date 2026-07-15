@@ -1,20 +1,45 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline import groot_oscar_runpod_storage_volume as storage
+from blueprint_pipeline import groot_oscar_runpod_preflight as preflight
 from blueprint_pipeline.groot_oscar_runpod_storage_volume import (
     build_storage_volume_admission,
     launch_detached,
+    retain_verified_model_cache,
     run_storage_model_volume,
 )
 from blueprint_pipeline.paid_resource_admission import (
     require_paid_resource_admission,
 )
+
+
+VERIFY_RETAINED_REMOTE = storage._verify_retained_model_cache_remote
+
+
+def _patch_retention_remote_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        storage,
+        "_verify_retained_model_cache_remote",
+        lambda **_kwargs: {
+            "schema_version": storage.RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION,
+            "status": "passed",
+            "blockers": [],
+            "model_manifest_digest": "sha256:" + "a" * 64,
+            "verified_file_count": 1,
+            "verified_size_bytes": 7,
+            "verification_method": "full_s3_streaming_sha256_manifest_verification",
+            "provider_mutations_performed": 0,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        },
+    )
 
 
 def _admission(**overrides):
@@ -57,6 +82,474 @@ def test_storage_volume_admission_rejects_one_hour_and_near_canary_deadlines() -
     )
     near = _admission(storage_ttl_seconds=10_000)
     assert "storage_model_volume_ttl_does_not_cover_builder_and_canary" in near["blockers"]
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_retention_streams_every_remote_object_and_rejects_digest_tamper(
+    tmp_path: Path, tamper: bool
+) -> None:
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access", encoding="utf-8")
+    secret.write_text("secret", encoding="utf-8")
+    access.chmod(0o600)
+    secret.chmod(0o600)
+    content = b"verified model bytes"
+    manifest = {
+        "schema_version": "groot_oscar_external_model_cache.v2",
+        "generated_at": "2026-07-15T00:00:00Z",
+        "repositories": {},
+        "required_files": ["model.bin"],
+        "files": [
+            {
+                "path": "model.bin",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            }
+        ],
+        "file_count": 1,
+        "total_size_bytes": len(content),
+        "network_download_allowed_at_runtime": False,
+        "models_embedded_in_release_image": False,
+    }
+    manifest["manifest_digest"] = storage._canonical_digest(manifest)
+    manifest_bytes = json.dumps(manifest).encode()
+    prefix = storage.DEFAULT_REMOTE_PREFIX
+
+    class Client:
+        @staticmethod
+        def get_object(*, Bucket, Key):
+            assert Bucket == "volume-1"
+            if Key == f"{prefix}/{storage.RETENTION_MANIFEST_NAME}":
+                value = manifest_bytes
+            else:
+                assert Key == f"{prefix}/model.bin"
+                value = b"tampered model bytes" if tamper else content
+            return {"Body": io.BytesIO(value)}
+
+        @staticmethod
+        def list_objects_v2(**kwargs):
+            assert kwargs == {"Bucket": "volume-1", "Prefix": prefix + "/"}
+            return {
+                "IsTruncated": False,
+                "Contents": [
+                    {"Key": f"{prefix}/{storage.RETENTION_MANIFEST_NAME}"},
+                    {"Key": f"{prefix}/model.bin"},
+                ],
+            }
+
+    result = VERIFY_RETAINED_REMOTE(
+        volume_id="volume-1",
+        data_center_id="EUR-IS-1",
+        expected_manifest_digest=manifest["manifest_digest"],
+        access_key_file=access,
+        secret_key_file=secret,
+        client=Client(),
+    )
+    assert result["provider_mutations_performed"] == 0
+    assert result["raw_secret_values_recorded"] is False
+    if tamper:
+        assert result["status"] == "blocked"
+        assert result["verified_file_count"] == 0
+        assert result["verified_size_bytes"] == 0
+        assert any(
+            blocker.startswith("bounded_cache_retention_remote_verification_failed")
+            for blocker in result["blockers"]
+        )
+    else:
+        assert result["status"] == "passed"
+        assert result["model_manifest_digest"] == manifest["manifest_digest"]
+        assert result["verified_file_count"] == 1
+        assert result["verified_size_bytes"] == len(content)
+
+
+def _retention_source(tmp_path: Path) -> tuple[Path, dict]:
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = "sha256:" + "a" * 64
+    pending = tmp_path / "pending.json"
+    pending.write_text(
+        json.dumps(
+            {
+                "status": "open",
+                "provider": "runpod",
+                "lane": storage.PROVIDER_LANE,
+                "resource_kind": "network_volume",
+                "instance_id": "volume-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    binding = {
+        "provider": "runpod",
+        "lane": storage.PROVIDER_LANE,
+        "volume_id": "volume-1",
+        "pending_teardown_record": str(pending),
+        "watchdog_nonce": "old-nonce",
+        "watchdog_deadline_epoch": 20_000.0,
+    }
+    lane_handoff = {
+        "schema_version": "paid_provider_lane_lease_handoff.v1",
+        "status": "pending_canary_acceptance",
+        "lease_path": str(tmp_path / "provider.lease.json"),
+        "source_owner_pid": 111,
+        "binding": binding,
+    }
+    rows = {
+        "model_volume_result.json": {
+            "status": "completed",
+            "volume_id": "volume-1",
+            "model_manifest_digest": manifest,
+        },
+        "network_volume_evidence.json": {
+            "status": "verified",
+            "id": "volume-1",
+            "name": "blueprint-groot-oscar-models-nonce1",
+            "data_center_id": "EUR-IS-1",
+            "size_bytes": 50 * 1024**3,
+            "allocation_nonce": "nonce1",
+        },
+        "model_cache_verification.json": {
+            "status": "passed",
+            "provider_volume_id": "volume-1",
+            "model_manifest_digest": manifest,
+            "cache_root": storage.MODEL_CACHE_PATH,
+            "runtime_path_mapping_verified": True,
+        },
+        "model_cache_transport_result.json": {
+            "status": "completed",
+            "provider_volume_id": "volume-1",
+            "model_manifest_digest": manifest,
+            "multipart_absence_verified": True,
+            "multipart_cleanup_required": False,
+            "cleanup_delete_attempt_count": 0,
+            "cleanup_delete_success_count": 0,
+        },
+        "watchdog_handoff.json": {
+            "schema_version": storage.WATCHDOG_HANDOFF_SCHEMA_VERSION,
+            "status": "volume_ready_watchdog_retained",
+            "volume_id": "volume-1",
+            "volume_name": "blueprint-groot-oscar-models-nonce1",
+            "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+            "watchdog_pid": 111,
+            "watchdog_state_path": str(source / "watchdog_state.json"),
+            "watchdog_nonce": "old-nonce",
+            "watchdog_deadline_epoch": 20_000.0,
+            "provider_lane_handoff": lane_handoff,
+        },
+    }
+    for name, row in rows.items():
+        (source / name).write_text(json.dumps(row), encoding="utf-8")
+    return source, lane_handoff
+
+
+def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _lane_handoff = _retention_source(tmp_path)
+    live = {111, 333}
+
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-key"
+
+    class Process:
+        pid = 333
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            live.discard(333)
+
+        @staticmethod
+        def wait(timeout):
+            del timeout
+            return 0
+
+    retention_root = tmp_path / "retained"
+
+    def arm(**kwargs):
+        del kwargs
+        retention_root.mkdir(exist_ok=True)
+        state_path = retention_root / "watchdog_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "deadline_epoch": 1000.0 + 7 * 24 * 3600,
+                    "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+                    "volume_name": "blueprint-groot-oscar-models-nonce1",
+                    "watchdog_nonce": "new-nonce",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return Process(), {
+            "armed": True,
+            "pid": 333,
+            "state_path": str(state_path),
+            "watchdog_deadline_epoch": 1000.0 + 7 * 24 * 3600,
+            "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+            "volume_name": "blueprint-groot-oscar-models-nonce1",
+            "watchdog_nonce": "new-nonce",
+        }
+
+    monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
+    )
+    monkeypatch.setattr(
+        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
+    )
+    _patch_retention_remote_verification(monkeypatch)
+    monkeypatch.setattr(storage, "_arm_watchdog", arm)
+    monkeypatch.setattr(storage, "_pid_is_alive", lambda pid: pid in live)
+    def rotate(_handoff, **kwargs):
+        prepared_state = json.loads(
+            (retention_root / "watchdog_state.json").read_text(encoding="utf-8")
+        )
+        assert prepared_state["provider_lane_handoff"]["lease_path"] == str(
+            tmp_path / "provider.lease.json"
+        )
+        assert prepared_state["pending_teardown_record"] == kwargs[
+            "retention_binding"
+        ]["pending_teardown_record"]
+        return {
+            "schema_version": "paid_provider_lane_lease_handoff.v1",
+            "status": "pending_canary_acceptance",
+            "source_owner_pid": 333,
+            "binding": kwargs["retention_binding"],
+        }
+
+    monkeypatch.setattr(
+        storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate
+    )
+
+    def argv(pid):
+        state = (
+            source / "watchdog_state.json"
+            if pid == 111
+            else retention_root / "watchdog_state.json"
+        )
+        return (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            str(state.resolve()),
+        )
+
+    result = retain_verified_model_cache(
+        output_dir=retention_root,
+        source_output_dir=source,
+        retention_ttl_seconds=7 * 24 * 3600,
+        storage_hourly_rate_usd=0.004861111111,
+        max_retention_spend_usd=1.0,
+        campaign_spent_to_date_usd=13.0,
+        campaign_total_spend_cap_usd=20.0,
+        runpod_s3_access_key_file=tmp_path / "access",
+        runpod_s3_secret_key_file=tmp_path / "secret",
+        allow_paid=True,
+        clock=lambda: 1000.0,
+        sleeper=lambda _seconds: None,
+        process_argv_probe=argv,
+        process_signaler=lambda pid, _sig: live.discard(pid),
+    )
+
+    assert result["status"] == "retained"
+    assert result["paid_compute_retained"] is False
+    assert result["whitelisted_storage_resource_count"] == 1
+    assert result["later_canary_handoff_ready"] is True
+    assert result["source_watchdog_stopped"] is True
+    assert result["retention_policy"] == {
+        "zero_paid_compute_required": True,
+        "storage_resource_kind": "runpod_network_volume",
+        "storage_resource_id": "volume-1",
+        "content_digest": "sha256:" + "a" * 64,
+        "content_mutation_policy": "no_writes_after_verification",
+        "automatic_delete_at_deadline": True,
+    }
+    assert result["maximum_retention_spend_usd"] == pytest.approx(0.816666666648)
+    admission = json.loads(
+        (retention_root / "bounded_model_cache_retention_admission.json").read_text()
+    )
+    assert admission["provider_inventory"] == {
+        "api_confirmed": True,
+        "live_pod_ids": [],
+        "live_network_volume_ids": ["volume-1"],
+        "whitelisted_network_volume_id": "volume-1",
+    }
+    handoff = json.loads((retention_root / "watchdog_handoff.json").read_text())
+    assert handoff["status"] == "volume_ready_watchdog_retained"
+    assert handoff["retention_class"] == "bounded_persistent_verified_model_cache"
+    assert handoff["provider_lane_handoff"]["source_owner_pid"] == 333
+    monkeypatch.setattr(preflight, "_process_alive", lambda _pid: True)
+    later_canary = preflight.build_model_volume_watchdog_handoff_evidence(
+        handoff=handoff,
+        network_volume_id="volume-1",
+        canary_watchdog_deadline_epoch=2000.0,
+        clock=lambda: 1000.0,
+        process_argv_probe=argv,
+    )
+    assert later_canary["status"] == "verified"
+    assert later_canary["provider_lane_handoff"]["source_owner_pid"] == 333
+
+
+def test_bounded_retention_rejects_unreconciled_spend_before_new_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _lane_handoff = _retention_source(tmp_path)
+
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-key"
+
+    monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
+    )
+    monkeypatch.setattr(
+        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
+    )
+    _patch_retention_remote_verification(monkeypatch)
+    monkeypatch.setattr(
+        storage,
+        "_arm_watchdog",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("watchdog started")),
+    )
+    result = retain_verified_model_cache(
+        output_dir=tmp_path / "retained",
+        source_output_dir=source,
+        retention_ttl_seconds=7 * 24 * 3600,
+        storage_hourly_rate_usd=0.004861111111,
+        max_retention_spend_usd=1.0,
+        campaign_spent_to_date_usd=1.0,
+        campaign_total_spend_cap_usd=20.0,
+        runpod_s3_access_key_file=tmp_path / "access",
+        runpod_s3_secret_key_file=tmp_path / "secret",
+        allow_paid=True,
+        clock=lambda: 1000.0,
+    )
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_blocker"),
+    [
+        ("unarmed", "bounded_cache_retention_watchdog_not_armed"),
+        ("state_write", "bounded_cache_retention_watchdog_state_write_failed"),
+    ],
+)
+def test_retention_pre_rotation_failure_keeps_original_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+    expected_blocker: str,
+) -> None:
+    source, _lane_handoff = _retention_source(tmp_path)
+    retention_root = tmp_path / "retained"
+    state_path = retention_root / "watchdog_state.json"
+    process_stopped = False
+    rotation_called = False
+
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-key"
+
+    class Process:
+        pid = 333
+
+        @staticmethod
+        def poll():
+            return 0 if process_stopped else None
+
+        @staticmethod
+        def terminate():
+            nonlocal process_stopped
+            process_stopped = True
+
+        @staticmethod
+        def wait(timeout):
+            del timeout
+            return 0
+
+    def arm(**_kwargs):
+        state_path.write_text(
+            json.dumps(
+                {
+                    "deadline_epoch": 1000.0 + 7 * 24 * 3600,
+                    "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+                    "volume_name": "blueprint-groot-oscar-models-nonce1",
+                    "watchdog_nonce": "new-nonce",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return Process(), {
+            "armed": failure_mode != "unarmed",
+            "pid": 333,
+            "state_path": str(state_path),
+            "watchdog_deadline_epoch": 1000.0 + 7 * 24 * 3600,
+            "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+            "volume_name": "blueprint-groot-oscar-models-nonce1",
+            "watchdog_nonce": "new-nonce",
+        }
+
+    real_write_json = storage.write_json
+
+    def fail_prepared_state(path, payload):
+        if (
+            failure_mode == "state_write"
+            and Path(path) == state_path
+            and "provider_lane_handoff" in payload
+        ):
+            raise OSError("disk full")
+        return real_write_json(path, payload)
+
+    def rotate(*_args, **_kwargs):
+        nonlocal rotation_called
+        rotation_called = True
+        return {}
+
+    monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
+    )
+    monkeypatch.setattr(
+        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
+    )
+    _patch_retention_remote_verification(monkeypatch)
+    monkeypatch.setattr(storage, "_arm_watchdog", arm)
+    monkeypatch.setattr(storage, "write_json", fail_prepared_state)
+    monkeypatch.setattr(
+        storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate
+    )
+    result = retain_verified_model_cache(
+        output_dir=retention_root,
+        source_output_dir=source,
+        retention_ttl_seconds=7 * 24 * 3600,
+        storage_hourly_rate_usd=0.004861111111,
+        max_retention_spend_usd=1.0,
+        campaign_spent_to_date_usd=13.0,
+        campaign_total_spend_cap_usd=20.0,
+        runpod_s3_access_key_file=tmp_path / "access",
+        runpod_s3_secret_key_file=tmp_path / "secret",
+        allow_paid=True,
+        clock=lambda: 1000.0,
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [expected_blocker]
+    assert process_stopped is True
+    if failure_mode == "unarmed":
+        assert result["retention_watchdog_cleanup_verified"] is True
+    assert rotation_called is False
 
 
 def test_storage_route_has_watchdog_lease_ledger_and_no_pod_create() -> None:

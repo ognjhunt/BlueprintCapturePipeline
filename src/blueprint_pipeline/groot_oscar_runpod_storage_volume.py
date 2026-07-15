@@ -14,10 +14,12 @@ import hashlib
 import json
 import os
 import secrets
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
@@ -34,6 +36,7 @@ from .groot_oscar_infrastructure_admission import (
     build_build_plane_admission,
     build_runpod_network_volume_evidence,
 )
+from .groot_oscar_model_cache import _canonical_digest
 from .groot_oscar_model_cache_s3_remote_packet import (
     prepare_remote_model_cache_packet,
 )
@@ -48,7 +51,12 @@ from .groot_oscar_runpod_model_volume import (
     _matching_resources,
     _watchdog_process_running,
 )
-from .groot_oscar_runpod_s3_model_cache import preflight_runpod_s3
+from .groot_oscar_runpod_s3_model_cache import (
+    DEFAULT_REMOTE_PREFIX,
+    _client as _runpod_s3_client,
+    _secret_file as _runpod_s3_secret_file,
+    preflight_runpod_s3,
+)
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
@@ -60,13 +68,16 @@ from .paid_lane_guard import (
 from .paid_provider_lane_lease import (
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
+    read_process_argv,
     release_paid_provider_lane_lease,
+    rotate_paid_provider_lane_lease_to_retention_watchdog,
     transfer_paid_provider_lane_lease_to_watchdog,
 )
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     require_paid_resource_admission,
 )
+from .render_lock import _pid_is_alive
 
 
 SCHEMA_VERSION = "groot_oscar_storage_model_volume_admission.v1"
@@ -75,11 +86,24 @@ MIN_VOLUME_GIB = 30
 MAX_VOLUME_GIB = 100
 MIN_STORAGE_TTL_SECONDS = 2 * 60 * 60
 MAX_STORAGE_TTL_SECONDS = 4 * 60 * 60
+MIN_CACHE_RETENTION_SECONDS = 4 * 60 * 60
+MAX_CACHE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+MAX_CACHE_RETENTION_SPEND_USD = 1.0
+MIN_RECONCILED_CAMPAIGN_SPEND_USD = 12.712289
 BUILDER_TO_VOLUME_MARGIN_SECONDS = 35 * 60
 CANARY_AND_HANDOFF_MARGIN_SECONDS = 30 * 60
 MIN_LOCAL_STAGING_BYTES = 1024**3
 NO_POD_PREFIX = "blueprint-storage-only-no-pod-"
 PROVIDER_LANE = "groot_oscar_model_volume"
+RETENTION_SCHEMA_VERSION = "groot_oscar_bounded_model_cache_retention.v1"
+RETENTION_ADMISSION_SCHEMA_VERSION = (
+    "groot_oscar_bounded_model_cache_retention_admission.v1"
+)
+RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION = (
+    "groot_oscar_bounded_model_cache_remote_verification.v1"
+)
+RETENTION_STREAM_CHUNK_BYTES = 8 * 1024**2
+RETENTION_MANIFEST_NAME = "groot_oscar_model_cache_manifest.json"
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -87,6 +111,586 @@ def _load(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("storage_model_volume_json_not_object")
     return value
+
+
+def _retention_watchdog_mapping(watchdog: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "watchdog_pid": watchdog.get("pid"),
+        "watchdog_state_path": watchdog.get("state_path"),
+        "watchdog_deadline_epoch": watchdog.get("watchdog_deadline_epoch"),
+        "pod_name_prefix": watchdog.get("pod_name_prefix"),
+        "volume_name": watchdog.get("volume_name"),
+        "watchdog_nonce": watchdog.get("watchdog_nonce"),
+    }
+
+
+def _stream_sha256(body: Any) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        chunk = body.read(RETENTION_STREAM_CHUNK_BYTES)
+        if not chunk:
+            return digest.hexdigest(), size
+        if not isinstance(chunk, bytes):
+            raise TypeError("bounded_cache_retention_s3_body_not_bytes")
+        digest.update(chunk)
+        size += len(chunk)
+
+
+def _verify_retained_model_cache_remote(
+    *,
+    volume_id: str,
+    data_center_id: str,
+    expected_manifest_digest: str,
+    access_key_file: Path,
+    secret_key_file: Path,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Stream and hash every retained object before rotating teardown ownership."""
+
+    blockers: list[str] = []
+    access_key, access_meta = _runpod_s3_secret_file(
+        access_key_file, label="runpod_s3_access_key"
+    )
+    secret_key, secret_meta = _runpod_s3_secret_file(
+        secret_key_file, label="runpod_s3_secret_key"
+    )
+    blockers.extend(access_meta.get("blockers") or [])
+    blockers.extend(secret_meta.get("blockers") or [])
+    s3 = client
+    if not blockers and s3 is None:
+        try:
+            s3 = _runpod_s3_client(
+                data_center_id=data_center_id,
+                access_key=access_key,
+                secret_key=secret_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - secret-free evidence
+            blockers.append(
+                f"bounded_cache_retention_s3_client_failed:{type(exc).__name__}"
+            )
+    manifest: dict[str, Any] = {}
+    manifest_key = f"{DEFAULT_REMOTE_PREFIX}/{RETENTION_MANIFEST_NAME}"
+    if not blockers:
+        try:
+            response = s3.get_object(Bucket=volume_id, Key=manifest_key)
+            body = response["Body"]
+            try:
+                raw_manifest = body.read(1024**2 + 1)
+            finally:
+                close = getattr(body, "close", None)
+                if callable(close):
+                    close()
+            if not isinstance(raw_manifest, bytes) or len(raw_manifest) > 1024**2:
+                raise ValueError("retained_manifest_size_invalid")
+            parsed = json.loads(raw_manifest.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("retained_manifest_not_object")
+            manifest = parsed
+        except Exception as exc:  # noqa: BLE001 - persist only exception class
+            blockers.append(
+                f"bounded_cache_retention_manifest_read_failed:{type(exc).__name__}"
+            )
+    entries = manifest.get("files")
+    entries = entries if isinstance(entries, list) else []
+    expected_rows: dict[str, tuple[int, str]] = {}
+    if not blockers:
+        observed_digest = str(manifest.get("manifest_digest") or "")
+        if (
+            observed_digest != expected_manifest_digest
+            or observed_digest != _canonical_digest(manifest)
+        ):
+            blockers.append("bounded_cache_retention_manifest_digest_mismatch")
+        for entry in entries:
+            entry = entry if isinstance(entry, Mapping) else {}
+            relative = str(entry.get("path") or "")
+            path = PurePosixPath(relative)
+            size = entry.get("size_bytes")
+            digest = str(entry.get("sha256") or "")
+            if not bool(
+                relative
+                and not path.is_absolute()
+                and ".." not in path.parts
+                and relative == path.as_posix()
+                and relative not in expected_rows
+                and type(size) is int
+                and size >= 0
+                and len(digest) == 64
+                and all(character in "0123456789abcdef" for character in digest)
+            ):
+                blockers.append("bounded_cache_retention_manifest_entry_invalid")
+                continue
+            expected_rows[relative] = (size, digest)
+        if (
+            manifest.get("file_count") != len(expected_rows)
+            or manifest.get("total_size_bytes")
+            != sum(size for size, _digest in expected_rows.values())
+        ):
+            blockers.append("bounded_cache_retention_manifest_totals_invalid")
+    verified_files = 0
+    verified_bytes = 0
+    if not blockers:
+        try:
+            remote_keys: list[str] = []
+            token: str | None = None
+            while True:
+                request: dict[str, Any] = {
+                    "Bucket": volume_id,
+                    "Prefix": DEFAULT_REMOTE_PREFIX + "/",
+                }
+                if token:
+                    request["ContinuationToken"] = token
+                page = s3.list_objects_v2(**request)
+                remote_keys.extend(
+                    str(row.get("Key"))
+                    for row in page.get("Contents", [])
+                    if isinstance(row, Mapping) and row.get("Key")
+                )
+                if page.get("IsTruncated") is not True:
+                    break
+                next_token = str(page.get("NextContinuationToken") or "")
+                if not next_token or next_token == token:
+                    raise ValueError("retained_inventory_pagination_invalid")
+                token = next_token
+            expected_keys = {
+                manifest_key,
+                *(
+                    f"{DEFAULT_REMOTE_PREFIX}/{relative}"
+                    for relative in expected_rows
+                ),
+            }
+            if set(remote_keys) != expected_keys or len(remote_keys) != len(expected_keys):
+                raise ValueError("retained_inventory_mismatch")
+            for relative, (expected_size, expected_digest) in sorted(
+                expected_rows.items()
+            ):
+                response = s3.get_object(
+                    Bucket=volume_id,
+                    Key=f"{DEFAULT_REMOTE_PREFIX}/{relative}",
+                )
+                body = response["Body"]
+                try:
+                    observed_digest, observed_size = _stream_sha256(body)
+                finally:
+                    close = getattr(body, "close", None)
+                    if callable(close):
+                        close()
+                if (
+                    observed_size != expected_size
+                    or observed_digest != expected_digest
+                ):
+                    raise ValueError("retained_object_digest_mismatch")
+                verified_files += 1
+                verified_bytes += observed_size
+        except Exception as exc:  # noqa: BLE001 - persist only exception class
+            blockers.append(
+                f"bounded_cache_retention_remote_verification_failed:{type(exc).__name__}"
+            )
+    return {
+        "schema_version": RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION,
+        "status": "passed" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "provider_volume_id": volume_id or None,
+        "data_center_id": data_center_id or None,
+        "remote_prefix": DEFAULT_REMOTE_PREFIX,
+        "model_manifest_digest": manifest.get("manifest_digest"),
+        "expected_model_manifest_digest": expected_manifest_digest or None,
+        "verified_file_count": verified_files if not blockers else 0,
+        "verified_size_bytes": verified_bytes if not blockers else 0,
+        "verification_method": "full_s3_streaming_sha256_manifest_verification",
+        "provider_mutations_performed": 0,
+        "gpu_compute_allocated": False,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def retain_verified_model_cache(
+    *,
+    output_dir: Path,
+    source_output_dir: Path,
+    retention_ttl_seconds: int,
+    storage_hourly_rate_usd: float,
+    max_retention_spend_usd: float,
+    campaign_spent_to_date_usd: float,
+    campaign_total_spend_cap_usd: float,
+    runpod_s3_access_key_file: Path,
+    runpod_s3_secret_key_file: Path,
+    allow_paid: bool,
+    clock: Any = time.time,
+    sleeper: Any = time.sleep,
+    process_argv_probe: Any = read_process_argv,
+    process_signaler: Any = os.kill,
+) -> dict[str, Any]:
+    """Rotate a verified cache into one bounded, later-canary-ready owner."""
+
+    output = output_dir.expanduser().resolve()
+    source = source_output_dir.expanduser().resolve()
+    ensure_dir(output)
+    result_path = output / "bounded_model_cache_retention.json"
+    if result_path.exists():
+        return _load(result_path)
+    blockers: list[str] = []
+    try:
+        source_result = _load(source / "model_volume_result.json")
+        volume = _load(source / "network_volume_evidence.json")
+        cache = _load(source / "model_cache_verification.json")
+        transport = _load(source / "model_cache_transport_result.json")
+        source_handoff = _load(source / "watchdog_handoff.json")
+    except (OSError, ValueError, json.JSONDecodeError):
+        source_result = {}
+        volume = {}
+        cache = {}
+        transport = {}
+        source_handoff = {}
+        blockers.append("bounded_cache_retention_source_evidence_unreadable")
+    volume_id = str(source_result.get("volume_id") or "")
+    volume_name = str(volume.get("name") or "")
+    data_center_id = str(volume.get("data_center_id") or "")
+    manifest_digest = str(source_result.get("model_manifest_digest") or "")
+    lane_handoff = source_handoff.get("provider_lane_handoff")
+    lane_handoff = lane_handoff if isinstance(lane_handoff, Mapping) else {}
+    binding = lane_handoff.get("binding")
+    binding = binding if isinstance(binding, Mapping) else {}
+    if source_result.get("status") != "completed":
+        blockers.append("bounded_cache_retention_source_not_completed")
+    if not bool(
+        volume.get("status") == "verified"
+        and volume.get("id") == volume_id
+        and volume_name
+        and data_center_id in RUNPOD_S3_VOLUME_DATA_CENTER_IDS
+        and type(volume.get("size_bytes")) is int
+        and int(volume.get("size_bytes") or 0) > 0
+    ):
+        blockers.append("bounded_cache_retention_volume_evidence_invalid")
+    if not bool(
+        cache.get("status") == "passed"
+        and cache.get("provider_volume_id") == volume_id
+        and cache.get("model_manifest_digest") == manifest_digest
+        and cache.get("cache_root") == MODEL_CACHE_PATH
+        and cache.get("runtime_path_mapping_verified") is True
+        and transport.get("status") == "completed"
+        and transport.get("provider_volume_id") == volume_id
+        and transport.get("model_manifest_digest") == manifest_digest
+        and transport.get("multipart_absence_verified") is True
+        and transport.get("multipart_cleanup_required") is False
+        and transport.get("cleanup_delete_attempt_count") == 0
+        and transport.get("cleanup_delete_success_count") == 0
+        and transport.get("outer_volume_deletion_required") in (None, False)
+    ):
+        blockers.append("bounded_cache_retention_cache_verification_invalid")
+    if not bool(
+        source_handoff.get("schema_version") == WATCHDOG_HANDOFF_SCHEMA_VERSION
+        and source_handoff.get("status") == "volume_ready_watchdog_retained"
+        and source_handoff.get("volume_id") == volume_id
+        and lane_handoff.get("status") == "pending_canary_acceptance"
+        and binding.get("volume_id") == volume_id
+    ):
+        blockers.append("bounded_cache_retention_handoff_invalid")
+    if not MIN_CACHE_RETENTION_SECONDS <= retention_ttl_seconds <= MAX_CACHE_RETENTION_SECONDS:
+        blockers.append("bounded_cache_retention_ttl_out_of_bounds")
+    maximum_storage_spend = (
+        storage_hourly_rate_usd * retention_ttl_seconds / 3600
+    )
+    if not bool(
+        0 < storage_hourly_rate_usd <= 0.01
+        and 0 < max_retention_spend_usd <= MAX_CACHE_RETENTION_SPEND_USD
+        and maximum_storage_spend <= max_retention_spend_usd
+    ):
+        blockers.append("bounded_cache_retention_storage_spend_invalid")
+    if not bool(
+        campaign_spent_to_date_usd >= MIN_RECONCILED_CAMPAIGN_SPEND_USD
+        and campaign_total_spend_cap_usd == 20.0
+        and campaign_spent_to_date_usd + maximum_storage_spend
+        <= campaign_total_spend_cap_usd
+    ):
+        blockers.append("bounded_cache_retention_campaign_spend_invalid")
+    if allow_paid is not True:
+        blockers.append("bounded_cache_retention_paid_authorization_missing")
+
+    provider = get_render_provider("runpod")
+    key = provider._key()  # type: ignore[attr-defined]
+    if not key:
+        blockers.append("runpod_api_key_missing")
+        live_pods: list[str] = []
+        live_volumes: list[str] = []
+        inventory_verified = False
+    else:
+        live_pods, live_volumes, inventory_verified = _matching_resources(
+            key=key, pod_prefix=None, volume_prefix=None
+        )
+    if not inventory_verified or live_pods or live_volumes != [volume_id]:
+        blockers.append("bounded_cache_retention_global_inventory_invalid")
+    s3 = preflight_runpod_s3(
+        data_center_id=data_center_id,
+        access_key_file=runpod_s3_access_key_file,
+        secret_key_file=runpod_s3_secret_key_file,
+        expected_volume_id=volume_id or None,
+        perform_live_probe=bool(volume_id and data_center_id),
+    )
+    if s3.get("status") != "ready":
+        blockers.append("bounded_cache_retention_s3_visibility_unverified")
+    remote_verification = _verify_retained_model_cache_remote(
+        volume_id=volume_id,
+        data_center_id=data_center_id,
+        expected_manifest_digest=manifest_digest,
+        access_key_file=runpod_s3_access_key_file,
+        secret_key_file=runpod_s3_secret_key_file,
+    )
+    if remote_verification.get("status") != "passed":
+        blockers.append("bounded_cache_retention_remote_cache_unverified")
+    admission = {
+        "schema_version": RETENTION_ADMISSION_SCHEMA_VERSION,
+        "resource_class": "model_volume",
+        "status": "admitted" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "volume_id": volume_id or None,
+        "data_center_id": data_center_id or None,
+        "model_manifest_digest": manifest_digest or None,
+        "retention_ttl_seconds": retention_ttl_seconds,
+        "maximum_storage_spend_usd": maximum_storage_spend,
+        "campaign_spent_to_date_usd": campaign_spent_to_date_usd,
+        "campaign_total_spend_cap_usd": campaign_total_spend_cap_usd,
+        "provider_inventory": {
+            "api_confirmed": inventory_verified,
+            "live_pod_ids": live_pods,
+            "live_network_volume_ids": live_volumes,
+            "whitelisted_network_volume_id": volume_id or None,
+        },
+        "s3_visibility": {
+            "status": s3.get("status"),
+            "expected_network_volume_id": volume_id or None,
+        },
+        "remote_cache_verification": remote_verification,
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(output / "bounded_model_cache_retention_admission.json", admission)
+    try:
+        require_paid_resource_admission(
+            admission,
+            resource_class="model_volume",
+            expected_schema_version=RETENTION_ADMISSION_SCHEMA_VERSION,
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        result = {
+            "schema_version": RETENTION_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": list(exc.blockers),
+            "provider_mutations_performed": 0,
+            "paid_compute_retained": False,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(result_path, result)
+        return result
+
+    deadline = float(clock()) + retention_ttl_seconds
+    allocation_nonce = str(volume.get("allocation_nonce") or "")
+    watchdog_process, watchdog = _arm_watchdog(
+        output=output,
+        deadline=deadline,
+        volume_name=volume_name,
+        allocation_nonce=allocation_nonce,
+    )
+    if not watchdog.get("armed"):
+        cleanup_verified = False
+        try:
+            watchdog_process.terminate()
+            watchdog_process.wait(timeout=10)
+            cleanup_verified = not _watchdog_process_running(watchdog_process)
+        except Exception:  # noqa: BLE001 - preserve fail-closed evidence
+            cleanup_verified = False
+        result = {
+            "schema_version": RETENTION_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["bounded_cache_retention_watchdog_not_armed"],
+            "retention_watchdog_cleanup_verified": cleanup_verified,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(result_path, result)
+        return result
+    retention_watchdog = _retention_watchdog_mapping(watchdog)
+    source_watchdog = {
+        "watchdog_pid": source_handoff.get("watchdog_pid"),
+        "watchdog_state_path": source_handoff.get("watchdog_state_path"),
+        "watchdog_deadline_epoch": source_handoff.get("watchdog_deadline_epoch"),
+        "pod_name_prefix": source_handoff.get("pod_name_prefix"),
+        "volume_name": source_handoff.get("volume_name"),
+        "watchdog_nonce": source_handoff.get("watchdog_nonce"),
+    }
+    retention_binding = {
+        "provider": "runpod",
+        "lane": PROVIDER_LANE,
+        "volume_id": volume_id,
+        "pending_teardown_record": binding.get("pending_teardown_record"),
+        "watchdog_nonce": watchdog.get("watchdog_nonce"),
+        "watchdog_deadline_epoch": deadline,
+    }
+    state_path = Path(str(watchdog["state_path"]))
+    try:
+        write_json(
+            state_path,
+            {
+                **_load(state_path),
+                # Deadline cleanup only needs the canonical lease path and lane
+                # binding.  Persist those before ownership rotates so a local
+                # write failure leaves the original watchdog as exact owner.
+                "provider_lane_handoff": {
+                    "status": "retention_state_prepared",
+                    "lease_path": lane_handoff.get("lease_path"),
+                    "binding": retention_binding,
+                },
+                "pending_teardown_record": binding.get("pending_teardown_record"),
+                "volume_id": volume_id,
+                "retention_class": "bounded_persistent_verified_model_cache",
+                "model_manifest_digest": manifest_digest,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - source watchdog remains exact owner
+        watchdog_process.terminate()
+        watchdog_process.wait(timeout=10)
+        result = {
+            "schema_version": RETENTION_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["bounded_cache_retention_watchdog_state_write_failed"],
+            "error_type": type(exc).__name__,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(result_path, result)
+        return result
+    try:
+        rotated = rotate_paid_provider_lane_lease_to_retention_watchdog(
+            lane_handoff,
+            source_watchdog=source_watchdog,
+            retention_watchdog=retention_watchdog,
+            expected_binding=binding,
+            retention_binding=retention_binding,
+            process_argv_probe=process_argv_probe,
+            clock=clock,
+        )
+    except Exception as exc:  # noqa: BLE001 - source watchdog remains the owner
+        rotated = {
+            "status": "blocked",
+            "blockers": ["bounded_cache_retention_lease_rotation_failed"],
+            "error_type": type(exc).__name__,
+        }
+    if rotated.get("status") != "pending_canary_acceptance":
+        watchdog_process.terminate()
+        watchdog_process.wait(timeout=10)
+        write_json(
+            result_path,
+            {
+                "schema_version": RETENTION_SCHEMA_VERSION,
+                "status": "blocked",
+                "blockers": list(rotated.get("blockers") or []),
+                "provider_mutations_performed": 0,
+                "raw_secret_values_recorded": False,
+            },
+        )
+        return _load(result_path)
+    source_pid = int(source_watchdog["watchdog_pid"])
+    source_argv = [str(item) for item in process_argv_probe(source_pid)]
+    source_state_path = str(Path(str(source_watchdog["watchdog_state_path"])).resolve())
+    canonical_suffix = [
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "watchdog",
+        "--state",
+        source_state_path,
+    ]
+    source_identity_verified = any(
+        source_argv[index : index + len(canonical_suffix)] == canonical_suffix
+        for index in range(len(source_argv))
+    )
+    source_stopped = False
+    termination_signal = None
+    termination_error_type = None
+    if source_identity_verified:
+        try:
+            process_signaler(source_pid, signal.SIGTERM)
+            termination_signal = "SIGTERM"
+            for _ in range(100):
+                if not _pid_is_alive(source_pid):
+                    source_stopped = True
+                    break
+                sleeper(0.05)
+            if not source_stopped:
+                process_signaler(source_pid, signal.SIGKILL)
+                termination_signal = "SIGKILL"
+                for _ in range(100):
+                    if not _pid_is_alive(source_pid):
+                        source_stopped = True
+                        break
+                    sleeper(0.05)
+        except Exception as exc:  # noqa: BLE001 - new watchdog remains fail-safe
+            termination_error_type = type(exc).__name__
+    terminal = bool(source_stopped and _watchdog_process_running(watchdog_process))
+    handoff = {
+        "schema_version": WATCHDOG_HANDOFF_SCHEMA_VERSION,
+        "status": (
+            "volume_ready_watchdog_retained"
+            if terminal
+            else "retention_owner_transition_incomplete"
+        ),
+        "volume_id": volume_id,
+        "volume_name": volume_name,
+        "pod_name_prefix": watchdog.get("pod_name_prefix"),
+        "teardown_owner": "independent_model_volume_watchdog",
+        "watchdog_pid": watchdog.get("pid"),
+        "watchdog_state_path": watchdog.get("state_path"),
+        "watchdog_nonce": watchdog.get("watchdog_nonce"),
+        "watchdog_deadline_epoch": deadline,
+        "preparation_pod_absence_confirmed": True,
+        "volume_presence_confirmed": True,
+        "next_owner_must_arm_before_transfer": True,
+        "provider_lane_handoff": rotated,
+        "retention_class": "bounded_persistent_verified_model_cache",
+        "model_manifest_digest": manifest_digest,
+        "data_center_id": data_center_id,
+        "size_bytes": volume.get("size_bytes"),
+        "storage_hourly_rate_usd": storage_hourly_rate_usd,
+        "maximum_retention_spend_usd": maximum_storage_spend,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(output / "watchdog_handoff.json", handoff)
+    result = {
+        "schema_version": RETENTION_SCHEMA_VERSION,
+        "status": "retained" if terminal else "control_plane_open",
+        "blockers": [] if terminal else ["bounded_cache_retention_owner_transition_incomplete"],
+        "volume_id": volume_id,
+        "volume_name": volume_name,
+        "data_center_id": data_center_id,
+        "size_bytes": volume.get("size_bytes"),
+        "model_manifest_digest": manifest_digest,
+        "retention_deadline_epoch": deadline,
+        "retention_ttl_seconds": retention_ttl_seconds,
+        "storage_hourly_rate_usd": storage_hourly_rate_usd,
+        "maximum_retention_spend_usd": maximum_storage_spend,
+        "campaign_spent_to_date_usd": campaign_spent_to_date_usd,
+        "campaign_total_spend_cap_usd": campaign_total_spend_cap_usd,
+        "source_watchdog_pid": source_pid,
+        "source_watchdog_identity_verified": source_identity_verified,
+        "source_watchdog_stopped": source_stopped,
+        "source_watchdog_termination_signal": termination_signal,
+        "source_watchdog_termination_error_type": termination_error_type,
+        "retention_watchdog_pid": watchdog.get("pid"),
+        "later_canary_handoff_ready": terminal,
+        "provider_mutations_performed": 0,
+        "paid_compute_retained": False,
+        "whitelisted_storage_resource_count": 1,
+        "retention_policy": {
+            "zero_paid_compute_required": True,
+            "storage_resource_kind": "runpod_network_volume",
+            "storage_resource_id": volume_id,
+            "content_digest": manifest_digest,
+            "content_mutation_policy": "no_writes_after_verification",
+            "automatic_delete_at_deadline": True,
+        },
+        "raw_secret_values_recorded": False,
+    }
+    write_json(result_path, result)
+    return result
 
 
 def _source_identity(root: Path) -> tuple[str, str, bool]:
