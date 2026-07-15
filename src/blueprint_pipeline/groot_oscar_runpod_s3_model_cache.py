@@ -35,6 +35,9 @@ SCHEMA_VERSION = "groot_oscar_runpod_s3_model_cache.v1"
 PREFLIGHT_SCHEMA_VERSION = "groot_oscar_runpod_s3_preflight.v1"
 DEFAULT_REMOTE_PREFIX = ".blueprint-model-cache/blueprint-groot-oscar-v1"
 REMOTE_SAFETY_HEADROOM_BYTES = 5 * 1024**3
+RUNPOD_S3_MULTIPART_THRESHOLD_BYTES = 64 * 1024**2
+RUNPOD_S3_MULTIPART_CHUNK_BYTES = 128 * 1024**2
+RUNPOD_S3_MAX_CONCURRENCY = 1
 # RunPod's S3 API has its own documented datacenter list. It is intentionally
 # independent from network-volume creation capability: some volume regions do
 # not expose S3, while live create evidence rejected at least one S3-listed
@@ -172,6 +175,113 @@ def _client(
         endpoint_url=endpoint_for_data_center(data_center_id),
         config=Config(retries={"mode": "standard", "max_attempts": 10}, read_timeout=7200),
     )
+
+
+def _runpod_transfer_contract() -> dict[str, Any]:
+    return {
+        "multipart_threshold_bytes": RUNPOD_S3_MULTIPART_THRESHOLD_BYTES,
+        "multipart_chunk_bytes": RUNPOD_S3_MULTIPART_CHUNK_BYTES,
+        "max_concurrency": RUNPOD_S3_MAX_CONCURRENCY,
+        "use_threads": False,
+        "client_retry_mode": "standard",
+        "client_max_attempts": 10,
+    }
+
+
+def _runpod_transfer_config() -> Any:
+    try:
+        from boto3.s3.transfer import TransferConfig
+    except ImportError as exc:  # pragma: no cover - operational dependency
+        raise RuntimeError("boto3_required_for_runpod_s3") from exc
+    return TransferConfig(
+        multipart_threshold=RUNPOD_S3_MULTIPART_THRESHOLD_BYTES,
+        multipart_chunksize=RUNPOD_S3_MULTIPART_CHUNK_BYTES,
+        max_concurrency=RUNPOD_S3_MAX_CONCURRENCY,
+        use_threads=False,
+    )
+
+
+def _sanitized_s3_exception(exc: BaseException) -> dict[str, Any]:
+    result: dict[str, Any] = {"error_type": type(exc).__name__}
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    for _ in range(5):
+        if current is None or id(current) in visited:
+            break
+        visited.add(id(current))
+        response = getattr(current, "response", None)
+        response = response if isinstance(response, Mapping) else {}
+        error = response.get("Error")
+        error = error if isinstance(error, Mapping) else {}
+        metadata = response.get("ResponseMetadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        if error.get("Code"):
+            result["error_code"] = str(error["Code"])
+        if getattr(current, "operation_name", None):
+            result["error_operation"] = str(current.operation_name)
+        if type(metadata.get("HTTPStatusCode")) is int:
+            result["error_http_status"] = metadata["HTTPStatusCode"]
+        if type(metadata.get("RetryAttempts")) is int:
+            result["error_retry_attempts"] = metadata["RetryAttempts"]
+        current = current.__cause__ or current.__context__
+    return result
+
+
+def _abort_visible_multipart_uploads(
+    client: Any, *, volume_id: str
+) -> dict[str, Any]:
+    attempts = 0
+    successes = 0
+    listing_supported = True
+    absence_verified = False
+    try:
+        response = client.list_multipart_uploads(Bucket=volume_id)
+        uploads = response.get("Uploads", []) if isinstance(response, Mapping) else []
+        for row in uploads if isinstance(uploads, list) else []:
+            if not isinstance(row, Mapping) or not row.get("Key") or not row.get("UploadId"):
+                continue
+            attempts += 1
+            try:
+                client.abort_multipart_upload(
+                    Bucket=volume_id,
+                    Key=str(row["Key"]),
+                    UploadId=str(row["UploadId"]),
+                )
+                successes += 1
+            except Exception:  # noqa: BLE001 - whole-volume deletion remains fail-safe
+                pass
+        after = client.list_multipart_uploads(Bucket=volume_id)
+        remaining = after.get("Uploads", []) if isinstance(after, Mapping) else []
+        absence_verified = bool(
+            isinstance(remaining, list)
+            and not remaining
+            and after.get("IsTruncated") is not True
+        )
+    except Exception:  # noqa: BLE001 - provider may not implement multipart listing
+        listing_supported = False
+    return {
+        "multipart_listing_supported": listing_supported,
+        "multipart_absence_verified": absence_verified,
+        "multipart_abort_attempt_count": attempts,
+        "multipart_abort_success_count": successes,
+    }
+
+
+def _combine_multipart_cleanup(*rows: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "multipart_listing_supported": all(
+            row.get("multipart_listing_supported") is True for row in rows
+        ),
+        "multipart_absence_verified": all(
+            row.get("multipart_absence_verified") is True for row in rows
+        ),
+        "multipart_abort_attempt_count": sum(
+            int(row.get("multipart_abort_attempt_count") or 0) for row in rows
+        ),
+        "multipart_abort_success_count": sum(
+            int(row.get("multipart_abort_success_count") or 0) for row in rows
+        ),
+    }
 
 
 def _filesystem_available_bytes(path: Path) -> int:
@@ -490,6 +600,23 @@ def _upload_and_verify_model_cache_impl(
     uploaded_keys: list[str] = []
     upload_attempt_count = 0
     upload_success_count = 0
+    transfer_contract = _runpod_transfer_contract()
+    try:
+        transfer_config = _runpod_transfer_config()
+    except Exception as exc:  # noqa: BLE001 - no-mutation terminal evidence
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["runpod_s3_transfer_config_unavailable"],
+            **_sanitized_s3_exception(exc),
+            "provider_volume_id": volume,
+            "provider_mutations_performed": 0,
+            "upload_transfer_contract": transfer_contract,
+            "outer_volume_deletion_required": True,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
+    multipart_checks: list[Mapping[str, Any]] = []
     try:
         existing_keys = _remote_keys(s3, volume_id=volume)
         if existing_keys:
@@ -503,12 +630,37 @@ def _upload_and_verify_model_cache_impl(
                 "gpu_compute_allocated": False,
                 "raw_secret_values_recorded": False,
             }
+        pre_upload_multipart = _abort_visible_multipart_uploads(
+            s3,
+            volume_id=volume,
+        )
+        multipart_checks.append(pre_upload_multipart)
+        if not (
+            pre_upload_multipart["multipart_listing_supported"]
+            and pre_upload_multipart["multipart_absence_verified"]
+            and pre_upload_multipart["multipart_abort_attempt_count"]
+            == pre_upload_multipart["multipart_abort_success_count"]
+        ):
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "blocked",
+                "blockers": ["runpod_s3_dedicated_volume_multipart_state_unverified"],
+                "provider_volume_id": volume,
+                "provider_mutations_performed": int(
+                    pre_upload_multipart["multipart_abort_attempt_count"]
+                ),
+                "upload_transfer_contract": transfer_contract,
+                **pre_upload_multipart,
+                "outer_volume_deletion_required": True,
+                "gpu_compute_allocated": False,
+                "raw_secret_values_recorded": False,
+            }
         verification = Path(
             tempfile.mkdtemp(prefix="runpod-s3-verify-", dir=verification_parent)
         )
         for path, key in zip(files, expected_keys, strict=True):
             upload_attempt_count += 1
-            s3.upload_file(str(path), volume, key)
+            s3.upload_file(str(path), volume, key, Config=transfer_config)
             uploaded_keys.append(key)
             upload_success_count += 1
         observed_keys = _remote_keys(s3, volume_id=volume, prefix=prefix)
@@ -526,7 +678,25 @@ def _upload_and_verify_model_cache_impl(
         )
         if remote["status"] != "passed":
             raise RuntimeError("runpod_s3_redownload_verification_failed")
+        terminal_multipart = _abort_visible_multipart_uploads(
+            s3,
+            volume_id=volume,
+        )
+        multipart_checks.append(terminal_multipart)
+        if not (
+            terminal_multipart["multipart_listing_supported"]
+            and terminal_multipart["multipart_absence_verified"]
+            and terminal_multipart["multipart_abort_attempt_count"] == 0
+        ):
+            raise RuntimeError("runpod_s3_terminal_multipart_state_unverified")
     except Exception as exc:  # noqa: BLE001 - preserve secret-free terminal evidence
+        multipart_checks.append(
+            _abort_visible_multipart_uploads(
+                s3,
+                volume_id=volume,
+            )
+        )
+        multipart_cleanup = _combine_multipart_cleanup(*multipart_checks)
         delete_attempt_count = 0
         delete_success_count = 0
         for key in reversed(uploaded_keys):
@@ -537,7 +707,13 @@ def _upload_and_verify_model_cache_impl(
             except Exception:  # noqa: BLE001 - report uncertain remote state
                 pass
         try:
-            cleanup_verified = not _remote_keys(s3, volume_id=volume)
+            cleanup_verified = bool(
+                multipart_cleanup["multipart_listing_supported"]
+                and multipart_cleanup["multipart_absence_verified"]
+                and multipart_cleanup["multipart_abort_attempt_count"]
+                == multipart_cleanup["multipart_abort_success_count"]
+                and not _remote_keys(s3, volume_id=volume)
+            )
         except Exception:  # noqa: BLE001 - absence must be provider-observed
             cleanup_verified = False
         return {
@@ -551,12 +727,18 @@ def _upload_and_verify_model_cache_impl(
                     else []
                 ),
             ],
-            "error_type": type(exc).__name__,
+            **_sanitized_s3_exception(exc),
             "provider_volume_id": volume,
-            "provider_mutations_performed": upload_attempt_count + delete_attempt_count,
+            "provider_mutations_performed": (
+                upload_attempt_count
+                + delete_attempt_count
+                + int(multipart_cleanup["multipart_abort_attempt_count"])
+            ),
             "upload_attempt_count": upload_attempt_count,
             "upload_success_count": upload_success_count,
             "uploaded_object_count_before_failure": upload_success_count,
+            "upload_transfer_contract": transfer_contract,
+            **multipart_cleanup,
             "cleanup_delete_attempt_count": delete_attempt_count,
             "cleanup_delete_success_count": delete_success_count,
             "partial_upload_cleanup_verified": cleanup_verified,
@@ -565,6 +747,7 @@ def _upload_and_verify_model_cache_impl(
             "gpu_compute_allocated": False,
             "raw_secret_values_recorded": False,
         }
+    multipart_cleanup = _combine_multipart_cleanup(*multipart_checks)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "completed",
@@ -574,9 +757,14 @@ def _upload_and_verify_model_cache_impl(
         "endpoint_url": endpoint_for_data_center(data_center_id),
         "remote_prefix": prefix,
         "remote_object_count": len(expected_keys),
-        "provider_mutations_performed": upload_attempt_count,
+        "provider_mutations_performed": (
+            upload_attempt_count + multipart_cleanup["multipart_abort_attempt_count"]
+        ),
         "upload_attempt_count": upload_attempt_count,
         "upload_success_count": upload_success_count,
+        "upload_transfer_contract": transfer_contract,
+        "multipart_cleanup_required": False,
+        **multipart_cleanup,
         "cleanup_delete_attempt_count": 0,
         "cleanup_delete_success_count": 0,
         "storage_mutations_performed": True,

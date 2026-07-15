@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import inspect
+import json
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -21,9 +24,14 @@ from blueprint_pipeline.groot_oscar_model_cache import (
 from blueprint_pipeline.groot_oscar_runpod_s3_model_cache import (
     DEFAULT_REMOTE_PREFIX,
     REMOTE_SAFETY_HEADROOM_BYTES,
+    RUNPOD_S3_MAX_CONCURRENCY,
+    RUNPOD_S3_MULTIPART_CHUNK_BYTES,
+    RUNPOD_S3_MULTIPART_THRESHOLD_BYTES,
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
     _TransportExecutionCapability,
     _issue_transport_execution_capability,
+    _runpod_transfer_contract,
+    _sanitized_s3_exception,
     _upload_and_verify_model_cache_impl,
     endpoint_for_data_center,
     main,
@@ -38,6 +46,7 @@ from blueprint_pipeline.paid_resource_admission import (
 
 
 ALLOCATION_NONCE = "nonce1234"
+_REAL_RUNPOD_TRANSFER_CONFIG_FACTORY = s3_transport._runpod_transfer_config
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +55,16 @@ def _large_test_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
         s3_transport,
         "_filesystem_available_bytes",
         lambda _path: 100 * 1024**3,
+    )
+    monkeypatch.setattr(
+        s3_transport,
+        "_runpod_transfer_config",
+        lambda: SimpleNamespace(
+            multipart_threshold=RUNPOD_S3_MULTIPART_THRESHOLD_BYTES,
+            multipart_chunksize=RUNPOD_S3_MULTIPART_CHUNK_BYTES,
+            max_concurrency=RUNPOD_S3_MAX_CONCURRENCY,
+            use_threads=False,
+        ),
     )
 
 
@@ -119,6 +138,9 @@ class FakeS3:
         fail_upload_on: int | None = None,
         write_before_upload_failure: bool = False,
         fail_delete: bool = False,
+        fail_multipart_listing: bool = False,
+        fail_multipart_listing_on: int | None = None,
+        visible_multipart_uploads: int = 0,
     ) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.corrupt_download = corrupt_download
@@ -126,8 +148,15 @@ class FakeS3:
         self.fail_upload_on = fail_upload_on
         self.write_before_upload_failure = write_before_upload_failure
         self.fail_delete = fail_delete
+        self.fail_multipart_listing = fail_multipart_listing
+        self.fail_multipart_listing_on = fail_multipart_listing_on
+        self.visible_multipart_uploads = visible_multipart_uploads
         self.upload_calls = 0
         self.delete_calls = 0
+        self.abort_calls = 0
+        self.multipart_list_calls = 0
+        self.multipart_list_kwargs: list[dict[str, object]] = []
+        self.upload_configs: list[object] = []
 
     def list_buckets(self):  # type: ignore[no-untyped-def]
         return {"Buckets": [{"Name": "volume-1"}]}
@@ -135,8 +164,16 @@ class FakeS3:
     def head_bucket(self, *, Bucket: str) -> None:  # noqa: N803
         assert Bucket == "volume-1"
 
-    def upload_file(self, path: str, bucket: str, key: str) -> None:
+    def upload_file(
+        self,
+        path: str,
+        bucket: str,
+        key: str,
+        *,
+        Config: object | None = None,  # noqa: N803
+    ) -> None:
         self.upload_calls += 1
+        self.upload_configs.append(Config)
         if self.fail_upload_on == self.upload_calls:
             if self.write_before_upload_failure:
                 self.objects[(bucket, key)] = Path(path).read_bytes()
@@ -156,6 +193,24 @@ class FakeS3:
                 if stored_bucket == bucket and key.startswith(prefix)
             ],
         }
+
+    def list_multipart_uploads(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.multipart_list_calls += 1
+        self.multipart_list_kwargs.append(dict(kwargs))
+        if self.fail_multipart_listing or (
+            self.fail_multipart_listing_on == self.multipart_list_calls
+        ):
+            raise RuntimeError("multipart listing unavailable")
+        return {
+            "Uploads": [
+                {"Key": f"multipart-{index}", "UploadId": f"upload-{index}"}
+                for index in range(self.visible_multipart_uploads)
+            ]
+        }
+
+    def abort_multipart_upload(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        self.abort_calls += 1
+        self.visible_multipart_uploads = max(0, self.visible_multipart_uploads - 1)
 
     def download_file(self, bucket: str, key: str, path: str) -> None:
         payload = self.objects[(bucket, key)]
@@ -296,6 +351,220 @@ def test_upload_requires_full_redownload_and_manifest_hash_verification(
     )
     assert result["multipart_etag_used_as_integrity_proof"] is False
     assert client.upload_calls == result["remote_object_count"]
+    assert all(config is not None for config in client.upload_configs)
+    assert all(
+        config.multipart_threshold == RUNPOD_S3_MULTIPART_THRESHOLD_BYTES
+        and config.multipart_chunksize == RUNPOD_S3_MULTIPART_CHUNK_BYTES
+        and config.max_concurrency == RUNPOD_S3_MAX_CONCURRENCY
+        and config.use_threads is False
+        for config in client.upload_configs
+    )
+    assert result["upload_transfer_contract"] == {
+        "multipart_threshold_bytes": RUNPOD_S3_MULTIPART_THRESHOLD_BYTES,
+        "multipart_chunk_bytes": RUNPOD_S3_MULTIPART_CHUNK_BYTES,
+        "max_concurrency": RUNPOD_S3_MAX_CONCURRENCY,
+        "use_threads": False,
+        "client_retry_mode": "standard",
+        "client_max_attempts": 10,
+    }
+    assert result["multipart_cleanup_required"] is False
+    assert result["multipart_listing_supported"] is True
+    assert result["multipart_absence_verified"] is True
+    assert client.multipart_list_calls == 4
+    assert client.multipart_list_kwargs == [{"Bucket": "volume-1"}] * 4
+
+
+def test_runpod_transfer_contract_is_large_chunked_and_single_threaded() -> None:
+    assert _runpod_transfer_contract() == {
+        "multipart_threshold_bytes": 64 * 1024**2,
+        "multipart_chunk_bytes": 128 * 1024**2,
+        "max_concurrency": 1,
+        "use_threads": False,
+        "client_retry_mode": "standard",
+        "client_max_attempts": 10,
+    }
+
+
+def test_runpod_transfer_config_passes_exact_constructor_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_transfer_config(**kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    boto3_module = ModuleType("boto3")
+    boto3_module.__path__ = []  # type: ignore[attr-defined]
+    s3_module = ModuleType("boto3.s3")
+    s3_module.__path__ = []  # type: ignore[attr-defined]
+    transfer_module = ModuleType("boto3.s3.transfer")
+    transfer_module.TransferConfig = fake_transfer_config  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "boto3", boto3_module)
+    monkeypatch.setitem(sys.modules, "boto3.s3", s3_module)
+    monkeypatch.setitem(sys.modules, "boto3.s3.transfer", transfer_module)
+
+    config = _REAL_RUNPOD_TRANSFER_CONFIG_FACTORY()
+
+    assert captured == {
+        "multipart_threshold": 64 * 1024**2,
+        "multipart_chunksize": 128 * 1024**2,
+        "max_concurrency": 1,
+        "use_threads": False,
+    }
+    assert config.multipart_chunksize == 128 * 1024**2
+
+
+def test_missing_transfer_config_blocks_before_any_s3_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3()
+
+    def unavailable() -> object:
+        raise RuntimeError("boto3_required_for_runpod_s3")
+
+    monkeypatch.setattr(s3_transport, "_runpod_transfer_config", unavailable)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["runpod_s3_transfer_config_unavailable"]
+    assert result["error_type"] == "RuntimeError"
+    assert result["provider_mutations_performed"] == 0
+    assert result["outer_volume_deletion_required"] is True
+    assert client.multipart_list_calls == 0
+    assert client.upload_calls == 0
+    assert client.delete_calls == 0
+
+
+def test_s3_failure_evidence_preserves_only_sanitized_provider_metadata() -> None:
+    class ProviderError(RuntimeError):
+        operation_name = "UploadPart"
+        response = {
+            "Error": {"Code": "AccessDenied", "Message": "secret-bearing detail"},
+            "ResponseMetadata": {"HTTPStatusCode": 403, "RetryAttempts": 10},
+        }
+
+    provider_error = ProviderError("secret-bearing detail")
+    wrapper = RuntimeError("secret-bearing wrapper")
+    wrapper.__cause__ = provider_error
+
+    assert _sanitized_s3_exception(wrapper) == {
+        "error_type": "RuntimeError",
+        "error_code": "AccessDenied",
+        "error_operation": "UploadPart",
+        "error_http_status": 403,
+        "error_retry_attempts": 10,
+    }
+    assert "secret-bearing" not in json.dumps(_sanitized_s3_exception(wrapper))
+
+
+def test_visible_multipart_abort_is_counted_as_provider_mutation(tmp_path: Path) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3(fail_upload_on=3, visible_multipart_uploads=1)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["multipart_listing_supported"] is True
+    assert result["multipart_abort_attempt_count"] == 1
+    assert result["multipart_abort_success_count"] == 1
+    assert result["multipart_absence_verified"] is True
+    assert result["provider_mutations_performed"] == 6
+    assert result["partial_upload_cleanup_verified"] is True
+
+
+def test_visible_stale_multipart_is_aborted_before_successful_upload(
+    tmp_path: Path,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3(visible_multipart_uploads=1)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["status"] == "completed"
+    assert result["multipart_abort_attempt_count"] == 1
+    assert result["multipart_abort_success_count"] == 1
+    assert result["multipart_absence_verified"] is True
+    assert result["provider_mutations_performed"] == result["remote_object_count"] + 1
+
+
+def test_unsupported_multipart_listing_requires_outer_volume_deletion(
+    tmp_path: Path,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3(fail_upload_on=3, fail_multipart_listing_on=3)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["multipart_listing_supported"] is False
+    assert result["multipart_absence_verified"] is False
+    assert result["partial_upload_cleanup_verified"] is False
+    assert result["outer_volume_deletion_required"] is True
+
+
+def test_unverified_initial_multipart_state_blocks_before_upload(
+    tmp_path: Path,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3(fail_multipart_listing=True)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "runpod_s3_dedicated_volume_multipart_state_unverified"
+    ]
+    assert result["provider_mutations_performed"] == 0
+    assert result["outer_volume_deletion_required"] is True
+    assert client.upload_calls == 0
 
 
 def test_corrupt_redownload_fails_closed(tmp_path: Path) -> None:
