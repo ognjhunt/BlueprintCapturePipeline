@@ -538,7 +538,6 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert rotated["status"] == "pending_canary_acceptance"
     assert rotated["retention_rotation"] is True
     assert rotated["prior_capability_consumed"] is True
-    assert rotated["prior_capability_cleanup_verified"] is True
     assert rotated["source_owner_pid"] == 333
     assert rotated["binding"]["watchdog_deadline_epoch"] == retention_deadline
     assert capability.is_file()
@@ -547,19 +546,42 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert current["owner_pid"] == 333
     assert current["owner_role"] == "bounded_persistent_cache_watchdog"
     assert current["expires_at_epoch"] == retention_deadline
-    assert current["handoff"] == {
-        key: value for key, value in rotated.items() if key not in {
-            "prior_capability_consumed",
-            "prior_capability_cleanup_verified",
-            "owner_role",
-        }
-    }
+    assert current["handoff"] == rotated
     retained_pending = json.loads(Path(pending["path"]).read_text(encoding="utf-8"))
     assert retained_pending["retention_class"] == (
         "bounded_persistent_verified_model_cache"
     )
     assert retained_pending["retention_deadline_epoch"] == retention_deadline
     assert retained_pending["max_age_seconds"] >= 7 * 24 * 3600 - 1
+
+    live_pids.add(444)
+    canary_deadline = now + 480
+    canary = {
+        "watchdog_pid": 444,
+        "watchdog_pod_name_prefix": "blueprint-groot-oscar-canary-retained-",
+        "watchdog_deadline_epoch": canary_deadline,
+        "watchdog_process_identity_verified": True,
+        "independent_teardown_watchdog": True,
+    }
+    argv[444] = (
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_watchdog",
+        "--pod-name-prefix",
+        canary["watchdog_pod_name_prefix"],
+        "--deadline-epoch",
+        str(canary_deadline),
+    )
+    accepted = accept_paid_provider_lane_lease_handoff(
+        rotated,
+        canary_watchdog=canary,
+        expected_binding=rotated["binding"],
+        process_argv_probe=lambda pid: argv[pid],
+        clock=lambda: now,
+    )
+    assert accepted["status"] == "accepted"
+    assert accepted["owner_pid"] == 444
+    assert not capability.exists()
 
 
 def test_live_same_host_owner_is_never_stale_even_past_expiry(tmp_path: Path) -> None:
