@@ -42,6 +42,7 @@ MAX_TTL_SECONDS = 3600
 EVIDENCE_PORT = 8765
 POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
+AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset({"NVIDIA L40S", "NVIDIA A40"})
 # RunPod's create API returned this authoritative network-volume-capable set on
 # 2026-07-14. The general datacenter catalog includes additional GPU locations
 # that reject network-volume creation, so fail closed until this provider list
@@ -157,6 +158,8 @@ def build_model_volume_admission(
         blockers.append("model_volume_data_center_not_network_volume_capable")
     if not gpu_type_id:
         blockers.append("model_volume_gpu_type_missing")
+    elif gpu_type_id not in AUTHORIZED_MODEL_VOLUME_GPU_TYPES:
+        blockers.append("model_volume_gpu_type_outside_authorized_campaign")
     if required_cuda_version != "12.8":
         blockers.append("model_volume_cuda_version_not_12_8")
     if type(volume_size_gib) is not int or not MIN_VOLUME_GIB <= volume_size_gib <= MAX_VOLUME_GIB:
