@@ -957,11 +957,18 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             "status": "blocked",
             "blockers": ["paid_provider_lane_retention_binding_invalid"],
         }
-    if not _model_volume_watchdog_identity_valid(
-        source_watchdog,
-        process_argv_probe=process_argv_probe,
-        clock=clock,
-    ) or int(source_watchdog["watchdog_pid"]) != handoff.get("source_owner_pid"):
+    if (
+        not _model_volume_watchdog_identity_valid(
+            source_watchdog,
+            process_argv_probe=process_argv_probe,
+            clock=clock,
+        )
+        or int(source_watchdog["watchdog_pid"]) != handoff.get("source_owner_pid")
+        or source_watchdog.get("watchdog_nonce")
+        != current_binding.get("watchdog_nonce")
+        or source_watchdog.get("watchdog_deadline_epoch")
+        != current_binding.get("watchdog_deadline_epoch")
+    ):
         return {
             "status": "blocked",
             "blockers": ["paid_provider_lane_retention_source_watchdog_invalid"],
