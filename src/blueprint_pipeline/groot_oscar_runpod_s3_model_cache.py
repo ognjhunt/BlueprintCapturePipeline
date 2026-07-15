@@ -675,6 +675,7 @@ def _upload_and_verify_model_cache_impl(
             verification,
             expected_manifest_digest=str(local["model_manifest_digest"]),
             provider_volume_id=volume,
+            runtime_cache_root=cache,
         )
         if remote["status"] != "passed":
             raise RuntimeError("runpod_s3_redownload_verification_failed")

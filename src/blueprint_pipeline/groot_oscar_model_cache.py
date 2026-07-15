@@ -35,6 +35,13 @@ GEAR_FILES = (
     "observation_config.yaml",
     "planner_sonic.onnx",
 )
+COSMOS_CACHE_RELATIVE_ROOT = Path("cosmos")
+COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH = Path(
+    "cosmos/nvidia/Cosmos-Reason2-2B/.blueprint-path-anchor"
+)
+COSMOS_RUNTIME_MODEL_RELATIVE_PATH = Path(
+    "cosmos/nvidia/Cosmos-Reason2-2B/../.."
+)
 REQUIRED_MODEL_FILES: dict[str, tuple[str, ...]] = {
     "sonic": (
         "config.json",
@@ -150,6 +157,7 @@ def verify_model_cache(
     *,
     expected_manifest_digest: str | None = None,
     provider_volume_id: str | None = None,
+    runtime_cache_root: Path | None = None,
 ) -> dict[str, Any]:
     """Verify pins, inventory, byte hashes, and manifest self-digest offline."""
 
@@ -182,6 +190,31 @@ def verify_model_cache(
     expected_digest = str(expected_manifest_digest or "").strip()
     if expected_digest and observed_digest != expected_digest:
         blockers.append("model_cache_manifest_digest_differs_from_admission")
+
+    expected_runtime_root = (
+        runtime_cache_root.expanduser().resolve()
+        if runtime_cache_root is not None
+        else root
+    )
+    expected_runtime_model_path = (
+        expected_runtime_root / COSMOS_RUNTIME_MODEL_RELATIVE_PATH
+    )
+    try:
+        sonic_config = json.loads(
+            (root / "sonic/config.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        sonic_config = {}
+        blockers.append("model_cache_sonic_config_unreadable")
+    if sonic_config.get("model_name") != str(expected_runtime_model_path):
+        blockers.append("model_cache_sonic_runtime_path_mismatch")
+    selector_anchor = root / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH
+    if not selector_anchor.is_file() or selector_anchor.stat().st_size <= 0:
+        blockers.append("model_cache_cosmos_selector_anchor_missing")
+    if expected_runtime_model_path.resolve() != (
+        expected_runtime_root / COSMOS_CACHE_RELATIVE_ROOT
+    ):
+        blockers.append("model_cache_cosmos_runtime_path_escapes_cache_contract")
 
     entries = payload.get("files")
     entries = entries if isinstance(entries, list) else []
@@ -234,7 +267,10 @@ def verify_model_cache(
         "provider_volume_id": str(provider_volume_id or "").strip() or None,
         "verified_file_count": len(declared_paths) if not blockers else 0,
         "verified_size_bytes": verified_bytes if not blockers else 0,
-        "checks": {"models_cached_offline": not blockers},
+        "checks": {
+            "models_cached_offline": not blockers,
+            "runtime_model_path_verified": not blockers,
+        },
         "raw_secret_values_recorded": False,
     }
 
@@ -306,7 +342,7 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
         snapshot_download(  # nosec B615
             repo_id=pins["cosmos"][0],
             revision=pins["cosmos"][1],
-            local_dir=str(staging / "cosmos"),
+            local_dir=str(staging / COSMOS_CACHE_RELATIVE_ROOT),
             allow_patterns=list(REQUIRED_MODEL_FILES["cosmos"]),
             token=token,
         )
@@ -334,20 +370,38 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
             if metadata_dir.is_dir():
                 shutil.rmtree(metadata_dir)
 
+        selector_anchor = staging / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH
+        selector_anchor.parent.mkdir(parents=True, exist_ok=True)
+        selector_anchor.write_text(
+            "This directory anchors the pinned upstream model selector path.\n",
+            encoding="utf-8",
+        )
+
         sonic_config_path = staging / "sonic" / "config.json"
         sonic_config = json.loads(sonic_config_path.read_text(encoding="utf-8"))
         if sonic_config.get("model_name") != pins["cosmos"][0]:
             raise RuntimeError("unexpected_sonic_nested_model")
         sonic_config["blueprint_original_model_name"] = pins["cosmos"][0]
         sonic_config["blueprint_model_revision"] = pins["cosmos"][1]
-        sonic_config["model_name"] = str(root / "cosmos")
+        # Isaac-GR00T selects the Qwen3 backbone from the literal
+        # ``nvidia/Cosmos-Reason2`` token and then passes this value to
+        # Transformers. Keep that provider identity in the path while making
+        # it an exact local path so runtime remains fully offline. The anchor
+        # directory makes the selector-bearing path resolvable, while ``../..``
+        # preserves the established flat cache layout and release-image contract.
+        runtime_model_path = root / COSMOS_RUNTIME_MODEL_RELATIVE_PATH
+        if runtime_model_path.resolve() != (root / COSMOS_CACHE_RELATIVE_ROOT):
+            raise RuntimeError("cosmos_runtime_model_path_escapes_cache_contract")
+        sonic_config["model_name"] = str(runtime_model_path)
         sonic_config_path.write_text(
             json.dumps(sonic_config, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         manifest = build_manifest(staging)
         write_json(staging / MANIFEST_NAME, manifest)
-        staged_verification = verify_model_cache(staging)
+        staged_verification = verify_model_cache(
+            staging, runtime_cache_root=root
+        )
         if staged_verification["status"] != "passed":
             raise RuntimeError(
                 "prepared_model_cache_failed_verification:"

@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from blueprint_pipeline.groot_oscar_model_cache import (
+    COSMOS_CACHE_RELATIVE_ROOT,
+    COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
+    COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH,
     MANIFEST_NAME,
     MODEL_PINS,
     REQUIRED_MODEL_FILES,
@@ -23,6 +26,15 @@ def _cache(tmp_path: Path) -> Path:
             path = root / model_name / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(f"{model_name}:{relative}".encode())
+    selector_anchor = root / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH
+    selector_anchor.parent.mkdir(parents=True, exist_ok=True)
+    selector_anchor.write_text("selector anchor\n", encoding="utf-8")
+    (root / "sonic/config.json").write_text(
+        json.dumps(
+            {"model_name": str(root.resolve() / COSMOS_RUNTIME_MODEL_RELATIVE_PATH)}
+        ),
+        encoding="utf-8",
+    )
     manifest = build_manifest(root)
     (root / MANIFEST_NAME).write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -35,7 +47,7 @@ def test_external_model_cache_verifies_every_declared_byte(tmp_path: Path) -> No
     result = verify_model_cache(root)
     assert result["status"] == "passed"
     assert result["checks"]["models_cached_offline"] is True
-    assert result["verified_file_count"] == sum(
+    assert result["verified_file_count"] == 1 + sum(
         len(paths) for paths in REQUIRED_MODEL_FILES.values()
     )
     assert str(result["model_manifest_digest"]).startswith("sha256:")
@@ -90,6 +102,36 @@ def test_external_model_cache_rejects_revision_rewrite(tmp_path: Path) -> None:
     assert result["status"] == "blocked"
     assert "model_cache_repository_pins_mismatch" in result["blockers"]
     assert "model_cache_manifest_digest_mismatch" in result["blockers"]
+
+
+def test_external_model_cache_rejects_stale_sonic_runtime_path(tmp_path: Path) -> None:
+    root = _cache(tmp_path)
+    (root / "sonic/config.json").write_text(
+        json.dumps({"model_name": str(root / "cosmos")}), encoding="utf-8"
+    )
+    (root / MANIFEST_NAME).write_text(
+        json.dumps(build_manifest(root), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    result = verify_model_cache(root)
+
+    assert result["status"] == "blocked"
+    assert "model_cache_sonic_runtime_path_mismatch" in result["blockers"]
+
+
+def test_external_model_cache_rejects_missing_selector_anchor(tmp_path: Path) -> None:
+    root = _cache(tmp_path)
+    (root / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH).unlink()
+    (root / MANIFEST_NAME).write_text(
+        json.dumps(build_manifest(root), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    result = verify_model_cache(root)
+
+    assert result["status"] == "blocked"
+    assert "model_cache_cosmos_selector_anchor_missing" in result["blockers"]
 
 
 def test_manifest_builder_rejects_placeholder_roots_without_runtime_assets(
@@ -172,11 +214,25 @@ def test_prepare_uses_runtime_allowlists_and_atomically_replaces_cache(
     assert not (root / "old-cache-marker").exists()
     assert not list(root.rglob(".cache"))
     assert verify_model_cache(root)["status"] == "passed"
-    assert json.loads((root / "sonic/config.json").read_text(encoding="utf-8"))[
-        "model_name"
-    ] == str(root / "cosmos")
+    model_name = json.loads(
+        (root / "sonic/config.json").read_text(encoding="utf-8")
+    )["model_name"]
+    assert model_name == str(root / COSMOS_RUNTIME_MODEL_RELATIVE_PATH)
+    assert "nvidia/Cosmos-Reason2" in model_name
+    assert Path(model_name).resolve() == root / COSMOS_CACHE_RELATIVE_ROOT
+    assert (root / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH).is_file()
+    assert (root / COSMOS_CACHE_RELATIVE_ROOT / "model.safetensors").is_file()
+    assert result["required_files"]["cosmos"] == list(
+        REQUIRED_MODEL_FILES["cosmos"]
+    )
+    assert COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH.as_posix() in {
+        row["path"] for row in result["files"]
+    }
     assert calls == [
-        (repo_id, REQUIRED_MODEL_FILES[name])
+        (
+            repo_id,
+            REQUIRED_MODEL_FILES[name],
+        )
         for name, repo_id, _ in MODEL_PINS
         if name != "gear_sonic"
     ]

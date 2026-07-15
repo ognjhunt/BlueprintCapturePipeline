@@ -16,6 +16,8 @@ from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
 )
 from blueprint_pipeline.groot_oscar_model_cache import (
+    COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
+    COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH,
     MANIFEST_NAME,
     REQUIRED_MODEL_FILES,
     build_manifest,
@@ -242,6 +244,15 @@ def _cache(tmp_path: Path) -> Path:
             path = root / model_name / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(f"{model_name}:{relative}".encode())
+    selector_anchor = root / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH
+    selector_anchor.parent.mkdir(parents=True, exist_ok=True)
+    selector_anchor.write_text("selector anchor\n", encoding="utf-8")
+    (root / "sonic/config.json").write_text(
+        json.dumps(
+            {"model_name": str(root.resolve() / COSMOS_RUNTIME_MODEL_RELATIVE_PATH)}
+        ),
+        encoding="utf-8",
+    )
     write_json(root / MANIFEST_NAME, build_manifest(root))
     return root
 

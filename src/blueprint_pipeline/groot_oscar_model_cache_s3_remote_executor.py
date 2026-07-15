@@ -24,6 +24,7 @@ from typing import Any, Mapping
 
 from .common import ensure_dir, write_json
 from .groot_oscar_model_cache import (
+    COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
     VERIFICATION_SCHEMA_VERSION,
     prepare_model_cache,
     verify_model_cache,
@@ -40,6 +41,7 @@ PACKET_SCHEMA_VERSION = "groot_oscar_model_cache_s3_remote_packet.v1"
 EXECUTION_SCHEMA_VERSION = "groot_oscar_model_cache_s3_remote_execution.v1"
 PARENT_BINDING_SCHEMA_VERSION = "groot_oscar_model_cache_s3_parent_binding.v1"
 RUNTIME_CACHE_ROOT = Path("/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1")
+RUNTIME_COSMOS_MODEL_ROOT = RUNTIME_CACHE_ROOT / COSMOS_RUNTIME_MODEL_RELATIVE_PATH
 VERIFICATION_ROOT = Path("/workspace/.blueprint-model-cache-verification")
 REMOTE_PACKET_ROOT = Path("/root/blueprint-build/run/groot_oscar_model_cache_s3_remote")
 PACKET_PATH = REMOTE_PACKET_ROOT / "packet.json"
@@ -481,7 +483,7 @@ def execute_remote_packet() -> dict[str, Any]:
         _secret(S3_SECRET_KEY_PATH)
         manifest = prepare_model_cache(RUNTIME_CACHE_ROOT, token=hf_token)
         sonic = _load_object(RUNTIME_CACHE_ROOT / "sonic/config.json")
-        if sonic.get("model_name") != str(RUNTIME_CACHE_ROOT / "cosmos"):
+        if sonic.get("model_name") != str(RUNTIME_COSMOS_MODEL_ROOT):
             raise RuntimeError("typed_model_cache_sonic_runtime_path_mismatch")
         local = verify_model_cache(RUNTIME_CACHE_ROOT)
         if (
