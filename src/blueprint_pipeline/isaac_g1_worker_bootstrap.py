@@ -125,29 +125,76 @@ if os.environ.get("PARITY_SERVE_PRODUCTION_WARMUP_BEFORE_READY","")=="1":
     )
     if gpu_query.returncode != 0 or not actual_gpu_model:
         raise RuntimeError("production_runpod_gpu_model_not_allowed")
-    model_cache_root=pathlib.Path(os.environ.get(
-        "BLUEPRINT_GROOT_OSCAR_MODEL_CACHE","/models/blueprint-groot-oscar-v1"
-    ))
-    from blueprint_pipeline.groot_oscar_model_cache import verify_model_cache
-    model_verification=verify_model_cache(model_cache_root)
-    if model_verification.get("status") != "passed":
-        raise RuntimeError("production_model_cache_verification_failed:"+",".join(
-            model_verification.get("blockers") or ["unknown_model_cache_failure"]
+    expected_model_manifest_digest=os.environ.get(
+        "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST",""
+    ).strip()
+    if expected_model_manifest_digest:
+        model_cache_root=pathlib.Path(os.environ.get(
+            "BLUEPRINT_GROOT_OSCAR_MODEL_CACHE","/models/blueprint-groot-oscar-v1"
         ))
-    # WBC runtime binaries remain in the foundation; immutable ONNX/config
-    # assets are linked from the provider volume only after byte verification.
-    gear=model_cache_root/"gear_sonic"
-    model_links={
-        gear/"model_encoder.onnx":pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx"),
-        gear/"model_decoder.onnx":pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx"),
-        gear/"observation_config.yaml":pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/observation_config.yaml"),
-        gear/"planner_sonic.onnx":pathlib.Path("/opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"),
-    }
-    for source,destination in model_links.items():
-        destination.parent.mkdir(parents=True,exist_ok=True)
-        if destination.exists() or destination.is_symlink(): destination.unlink()
-        destination.symlink_to(source)
-    model_manifest_digest=model_verification["model_manifest_digest"]
+        from blueprint_pipeline.groot_oscar_model_cache import verify_model_cache
+        model_verification=verify_model_cache(model_cache_root)
+        if model_verification.get("status") != "passed":
+            raise RuntimeError("production_model_cache_verification_failed:"+",".join(
+                model_verification.get("blockers") or ["unknown_model_cache_failure"]
+            ))
+        if model_verification.get("model_manifest_digest") != expected_model_manifest_digest:
+            raise RuntimeError("production_model_cache_manifest_digest_mismatch")
+        # WBC runtime binaries remain in the foundation; immutable ONNX/config
+        # assets are linked from the provider volume only after byte verification.
+        gear=model_cache_root/"gear_sonic"
+        model_links={
+            gear/"model_encoder.onnx":pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx"),
+            gear/"model_decoder.onnx":pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx"),
+            gear/"observation_config.yaml":pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/observation_config.yaml"),
+            gear/"planner_sonic.onnx":pathlib.Path("/opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"),
+        }
+        for source,destination in model_links.items():
+            destination.parent.mkdir(parents=True,exist_ok=True)
+            if destination.exists() or destination.is_symlink(): destination.unlink()
+            destination.symlink_to(source)
+        model_manifest_digest=model_verification["model_manifest_digest"]
+    else:
+        required_model_paths=[
+            pathlib.Path("/opt/blueprint/ckpts/sonic/config.json"),
+            pathlib.Path("/opt/blueprint/ckpts/oscar"),
+            pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx"),
+            pathlib.Path("/opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx"),
+            pathlib.Path("/opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"),
+        ]
+        missing=[
+            str(path) for path in required_model_paths
+            if not path.exists() or (path.is_dir() and not any(item.is_file() for item in path.rglob("*")))
+        ]
+        sonic_config={}
+        try: sonic_config=json.loads(required_model_paths[0].read_text(encoding="utf-8"))
+        except Exception: missing.append(str(required_model_paths[0])+":invalid_json")
+        nested_model=pathlib.Path(str(sonic_config.get("model_name") or ""))
+        if not nested_model.is_absolute() or not nested_model.is_dir():
+            missing.append("sonic_nested_model_not_local")
+        if missing:
+            raise RuntimeError("production_model_cache_incomplete:"+",".join(missing))
+        model_inventory=[]
+        for path in required_model_paths+[nested_model]:
+            if path.is_file():
+                model_inventory.append({"path":str(path),"kind":"file","size_bytes":path.stat().st_size})
+            else:
+                files=[item for item in path.rglob("*") if item.is_file()]
+                model_inventory.append({
+                    "path":str(path),"kind":"directory","file_count":len(files),
+                    "total_size_bytes":sum(item.stat().st_size for item in files),
+                })
+        model_verification={
+            "schema_version":"production_gpu_model_cache_manifest.v1",
+            "worker_image_ref":worker_image_ref,
+            "items":model_inventory,
+            "sonic_model_revision":sonic_config.get("blueprint_model_revision"),
+            "network_download_allowed":False,
+        }
+        model_manifest_digest="sha256:"+hashlib.sha256(
+            json.dumps(model_verification,sort_keys=True,separators=(",",":")).encode()
+        ).hexdigest()
+        model_verification["model_manifest_digest"]=model_manifest_digest
     pathlib.Path(OUT,"production_model_cache_manifest.json").write_text(
         json.dumps({**model_verification,"worker_image_ref":worker_image_ref},indent=2),
         encoding="utf-8",
