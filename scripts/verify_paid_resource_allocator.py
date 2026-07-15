@@ -15,6 +15,7 @@ CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
 MODEL_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+LAMBDA_ADAPTER = ROOT / "src/blueprint_pipeline/lambda_provider_adapter.py"
 RUNPOD_PREFLIGHT = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_preflight.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
@@ -219,6 +220,7 @@ def verify() -> list[str]:
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
     model_volume = MODEL_VOLUME_ADAPTER.read_text(encoding="utf-8")
+    lambda_adapter = LAMBDA_ADAPTER.read_text(encoding="utf-8")
     runpod_preflight = RUNPOD_PREFLIGHT.read_text(encoding="utf-8")
     thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
     thin_entrypoint = THIN_ENTRYPOINT.read_text(encoding="utf-8")
@@ -279,6 +281,15 @@ def verify() -> list[str]:
         blockers.append("model_volume_global_inventory_guard_missing")
     if "build_runpod_network_volume_evidence(" not in model_volume:
         blockers.append("model_volume_provider_reported_size_guard_missing")
+    if not all(
+        marker in lambda_adapter
+        for marker in (
+            "MUTATING_API_MODES = LIVE_LAUNCH_MODES | {TERMINATE_MODE}",
+            "if mode in MUTATING_API_MODES:",
+            "if args.mode in MUTATING_API_MODES:",
+        )
+    ):
+        blockers.append("lambda_termination_shared_admission_guard_missing")
     if "python -m blueprint_pipeline.paid_resource_allocator" not in runbook:
         blockers.append("canonical_allocator_command_missing_from_runbook")
     if "--model-volume-watchdog-handoff" not in runbook:

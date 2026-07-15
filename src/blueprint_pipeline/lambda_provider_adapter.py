@@ -84,7 +84,8 @@ READ_ONLY_API_MODES = {
     "list-regions",
 }
 TERMINATE_MODE = "terminate-instances"
-API_MODES = LIVE_LAUNCH_MODES | READ_ONLY_API_MODES | {TERMINATE_MODE}
+MUTATING_API_MODES = LIVE_LAUNCH_MODES | {TERMINATE_MODE}
+API_MODES = MUTATING_API_MODES | READ_ONLY_API_MODES
 LAMBDA_TERMINAL_INSTANCE_STATUSES = {
     "deleted",
     "destroyed",
@@ -1454,7 +1455,7 @@ def run_lambda_provider_adapter(
         )
         return _persist_result(resolved_output, result)
 
-    if mode in LIVE_LAUNCH_MODES:
+    if mode in MUTATING_API_MODES:
         try:
             require_paid_resource_admission_grant(
                 paid_resource_admission_grant,
@@ -1523,8 +1524,7 @@ def run_lambda_provider_adapter(
                 "reason": "lambda_api_http_error",
                 "blockers": ["lambda_api_http_error"],
                 "api_call_performed": True,
-                "lambda_side_effects_may_have_occurred": mode in LIVE_LAUNCH_MODES
-                or mode == TERMINATE_MODE,
+                "lambda_side_effects_may_have_occurred": mode in MUTATING_API_MODES,
                 "http_status_code": exc.code,
                 "lambda_api_error": _redact_runtime_value(parsed_error, api_key=api_key),
             }
@@ -1537,8 +1537,7 @@ def run_lambda_provider_adapter(
                 "reason": "lambda_api_request_failed",
                 "blockers": ["lambda_api_request_failed"],
                 "api_call_performed": True,
-                "lambda_side_effects_may_have_occurred": mode in LIVE_LAUNCH_MODES
-                or mode == TERMINATE_MODE,
+                "lambda_side_effects_may_have_occurred": mode in MUTATING_API_MODES,
                 "error_type": type(exc).__name__,
                 "error": _redact_text(str(exc), api_key=api_key),
             }
@@ -1690,7 +1689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Required with {LAMBDA_API_GATE_ENV}=true for Lambda Cloud API calls.",
     )
     args = parser.parse_args(argv)
-    if args.mode in LIVE_LAUNCH_MODES or args.mode == "auto":
+    if args.mode in MUTATING_API_MODES:
         print("legacy_lambda_provider_mutation_cli_disabled", file=sys.stderr)
         return 2
     try:
