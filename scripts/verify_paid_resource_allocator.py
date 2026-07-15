@@ -84,7 +84,9 @@ def _all_calls(path: Path) -> set[str]:
 
 def _direct_paid_mutation_signals(source: str) -> set[str]:
     signals: set[str] = set()
-    runpod_api_named = "RUNPOD_REST_API_BASE" in source or "api.runpod.io" in source
+    runpod_api_named = "RUNPOD_REST_API_BASE" in source or bool(
+        re.search(r"https://api\.runpod\.io(?:[/:\"']|$)", source)
+    )
     runpod_post_named = 'method="POST"' in source or '"method": "POST"' in source
     if (
         re.search(r"[\"']POST[\"']\s*,\s*(?:f)?[\"']/pods", source)
@@ -94,7 +96,7 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("runpod_pod_create")
     if re.search(r"[\"']POST[\"']\s*,\s*[\"']/networkvolumes", source):
         signals.add("runpod_volume_create")
-    if "api.digitalocean.com" in source and (
+    if re.search(r"https://api\.digitalocean\.com(?:[/:\"']|$)", source) and (
         'method="POST", path="/droplets"' in source
         or '"POST", "/v2/droplets"' in source
         or '"POST", "/droplets"' in source
@@ -106,7 +108,7 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("lambda_instance_create")
     if ".run_instances(" in source:
         signals.add("aws_instance_create")
-    if "compute.googleapis.com" in source and re.search(
+    if re.search(r"https://compute\.googleapis\.com(?:[/:\"']|$)", source) and re.search(
         r"_call\([\"']POST[\"'].{0,160}/instances", source
     ):
         signals.add("gcp_instance_create")
