@@ -180,7 +180,10 @@ def retain_verified_model_cache(
         and transport.get("provider_volume_id") == volume_id
         and transport.get("model_manifest_digest") == manifest_digest
         and transport.get("multipart_absence_verified") is True
-        and transport.get("outer_volume_deletion_required") is False
+        and transport.get("multipart_cleanup_required") is False
+        and transport.get("cleanup_delete_attempt_count") == 0
+        and transport.get("cleanup_delete_success_count") == 0
+        and transport.get("outer_volume_deletion_required") in (None, False)
     ):
         blockers.append("bounded_cache_retention_cache_verification_invalid")
     if not bool(

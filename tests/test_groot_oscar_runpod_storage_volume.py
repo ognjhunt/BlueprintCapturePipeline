@@ -119,7 +119,9 @@ def _retention_source(tmp_path: Path) -> tuple[Path, dict]:
             "provider_volume_id": "volume-1",
             "model_manifest_digest": manifest,
             "multipart_absence_verified": True,
-            "outer_volume_deletion_required": False,
+            "multipart_cleanup_required": False,
+            "cleanup_delete_attempt_count": 0,
+            "cleanup_delete_success_count": 0,
         },
         "watchdog_handoff.json": {
             "schema_version": storage.WATCHDOG_HANDOFF_SCHEMA_VERSION,
