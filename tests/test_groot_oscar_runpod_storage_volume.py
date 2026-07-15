@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 
@@ -17,6 +18,28 @@ from blueprint_pipeline.groot_oscar_runpod_storage_volume import (
 from blueprint_pipeline.paid_resource_admission import (
     require_paid_resource_admission,
 )
+
+
+VERIFY_RETAINED_REMOTE = storage._verify_retained_model_cache_remote
+
+
+def _patch_retention_remote_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        storage,
+        "_verify_retained_model_cache_remote",
+        lambda **_kwargs: {
+            "schema_version": storage.RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION,
+            "status": "passed",
+            "blockers": [],
+            "model_manifest_digest": "sha256:" + "a" * 64,
+            "verified_file_count": 1,
+            "verified_size_bytes": 7,
+            "verification_method": "full_s3_streaming_sha256_manifest_verification",
+            "provider_mutations_performed": 0,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        },
+    )
 
 
 def _admission(**overrides):
@@ -59,6 +82,85 @@ def test_storage_volume_admission_rejects_one_hour_and_near_canary_deadlines() -
     )
     near = _admission(storage_ttl_seconds=10_000)
     assert "storage_model_volume_ttl_does_not_cover_builder_and_canary" in near["blockers"]
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_retention_streams_every_remote_object_and_rejects_digest_tamper(
+    tmp_path: Path, tamper: bool
+) -> None:
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access", encoding="utf-8")
+    secret.write_text("secret", encoding="utf-8")
+    access.chmod(0o600)
+    secret.chmod(0o600)
+    content = b"verified model bytes"
+    manifest = {
+        "schema_version": "groot_oscar_external_model_cache.v2",
+        "generated_at": "2026-07-15T00:00:00Z",
+        "repositories": {},
+        "required_files": ["model.bin"],
+        "files": [
+            {
+                "path": "model.bin",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            }
+        ],
+        "file_count": 1,
+        "total_size_bytes": len(content),
+        "network_download_allowed_at_runtime": False,
+        "models_embedded_in_release_image": False,
+    }
+    manifest["manifest_digest"] = storage._canonical_digest(manifest)
+    manifest_bytes = json.dumps(manifest).encode()
+    prefix = storage.DEFAULT_REMOTE_PREFIX
+
+    class Client:
+        @staticmethod
+        def get_object(*, Bucket, Key):
+            assert Bucket == "volume-1"
+            if Key == f"{prefix}/{storage.RETENTION_MANIFEST_NAME}":
+                value = manifest_bytes
+            else:
+                assert Key == f"{prefix}/model.bin"
+                value = b"tampered model bytes" if tamper else content
+            return {"Body": io.BytesIO(value)}
+
+        @staticmethod
+        def list_objects_v2(**kwargs):
+            assert kwargs == {"Bucket": "volume-1", "Prefix": prefix + "/"}
+            return {
+                "IsTruncated": False,
+                "Contents": [
+                    {"Key": f"{prefix}/{storage.RETENTION_MANIFEST_NAME}"},
+                    {"Key": f"{prefix}/model.bin"},
+                ],
+            }
+
+    result = VERIFY_RETAINED_REMOTE(
+        volume_id="volume-1",
+        data_center_id="EUR-IS-1",
+        expected_manifest_digest=manifest["manifest_digest"],
+        access_key_file=access,
+        secret_key_file=secret,
+        client=Client(),
+    )
+    assert result["provider_mutations_performed"] == 0
+    assert result["raw_secret_values_recorded"] is False
+    if tamper:
+        assert result["status"] == "blocked"
+        assert result["verified_file_count"] == 0
+        assert result["verified_size_bytes"] == 0
+        assert any(
+            blocker.startswith("bounded_cache_retention_remote_verification_failed")
+            for blocker in result["blockers"]
+        )
+    else:
+        assert result["status"] == "passed"
+        assert result["model_manifest_digest"] == manifest["manifest_digest"]
+        assert result["verified_file_count"] == 1
+        assert result["verified_size_bytes"] == len(content)
 
 
 def _retention_source(tmp_path: Path) -> tuple[Path, dict]:
@@ -202,6 +304,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
     monkeypatch.setattr(
         storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
     )
+    _patch_retention_remote_verification(monkeypatch)
     monkeypatch.setattr(storage, "_arm_watchdog", arm)
     monkeypatch.setattr(storage, "_pid_is_alive", lambda pid: pid in live)
     def rotate(_handoff, **kwargs):
@@ -313,6 +416,7 @@ def test_bounded_retention_rejects_unreconciled_spend_before_new_watchdog(
     monkeypatch.setattr(
         storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
     )
+    _patch_retention_remote_verification(monkeypatch)
     monkeypatch.setattr(
         storage,
         "_arm_watchdog",
@@ -421,6 +525,7 @@ def test_retention_pre_rotation_failure_keeps_original_owner(
     monkeypatch.setattr(
         storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
     )
+    _patch_retention_remote_verification(monkeypatch)
     monkeypatch.setattr(storage, "_arm_watchdog", arm)
     monkeypatch.setattr(storage, "write_json", fail_prepared_state)
     monkeypatch.setattr(

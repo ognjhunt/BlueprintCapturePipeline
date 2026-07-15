@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
@@ -35,6 +36,7 @@ from .groot_oscar_infrastructure_admission import (
     build_build_plane_admission,
     build_runpod_network_volume_evidence,
 )
+from .groot_oscar_model_cache import _canonical_digest
 from .groot_oscar_model_cache_s3_remote_packet import (
     prepare_remote_model_cache_packet,
 )
@@ -49,7 +51,12 @@ from .groot_oscar_runpod_model_volume import (
     _matching_resources,
     _watchdog_process_running,
 )
-from .groot_oscar_runpod_s3_model_cache import preflight_runpod_s3
+from .groot_oscar_runpod_s3_model_cache import (
+    DEFAULT_REMOTE_PREFIX,
+    _client as _runpod_s3_client,
+    _secret_file as _runpod_s3_secret_file,
+    preflight_runpod_s3,
+)
 from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
@@ -92,6 +99,11 @@ RETENTION_SCHEMA_VERSION = "groot_oscar_bounded_model_cache_retention.v1"
 RETENTION_ADMISSION_SCHEMA_VERSION = (
     "groot_oscar_bounded_model_cache_retention_admission.v1"
 )
+RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION = (
+    "groot_oscar_bounded_model_cache_remote_verification.v1"
+)
+RETENTION_STREAM_CHUNK_BYTES = 8 * 1024**2
+RETENTION_MANIFEST_NAME = "groot_oscar_model_cache_manifest.json"
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -109,6 +121,186 @@ def _retention_watchdog_mapping(watchdog: Mapping[str, Any]) -> dict[str, Any]:
         "pod_name_prefix": watchdog.get("pod_name_prefix"),
         "volume_name": watchdog.get("volume_name"),
         "watchdog_nonce": watchdog.get("watchdog_nonce"),
+    }
+
+
+def _stream_sha256(body: Any) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        chunk = body.read(RETENTION_STREAM_CHUNK_BYTES)
+        if not chunk:
+            return digest.hexdigest(), size
+        if not isinstance(chunk, bytes):
+            raise TypeError("bounded_cache_retention_s3_body_not_bytes")
+        digest.update(chunk)
+        size += len(chunk)
+
+
+def _verify_retained_model_cache_remote(
+    *,
+    volume_id: str,
+    data_center_id: str,
+    expected_manifest_digest: str,
+    access_key_file: Path,
+    secret_key_file: Path,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Stream and hash every retained object before rotating teardown ownership."""
+
+    blockers: list[str] = []
+    access_key, access_meta = _runpod_s3_secret_file(
+        access_key_file, label="runpod_s3_access_key"
+    )
+    secret_key, secret_meta = _runpod_s3_secret_file(
+        secret_key_file, label="runpod_s3_secret_key"
+    )
+    blockers.extend(access_meta.get("blockers") or [])
+    blockers.extend(secret_meta.get("blockers") or [])
+    s3 = client
+    if not blockers and s3 is None:
+        try:
+            s3 = _runpod_s3_client(
+                data_center_id=data_center_id,
+                access_key=access_key,
+                secret_key=secret_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - secret-free evidence
+            blockers.append(
+                f"bounded_cache_retention_s3_client_failed:{type(exc).__name__}"
+            )
+    manifest: dict[str, Any] = {}
+    manifest_key = f"{DEFAULT_REMOTE_PREFIX}/{RETENTION_MANIFEST_NAME}"
+    if not blockers:
+        try:
+            response = s3.get_object(Bucket=volume_id, Key=manifest_key)
+            body = response["Body"]
+            try:
+                raw_manifest = body.read(1024**2 + 1)
+            finally:
+                close = getattr(body, "close", None)
+                if callable(close):
+                    close()
+            if not isinstance(raw_manifest, bytes) or len(raw_manifest) > 1024**2:
+                raise ValueError("retained_manifest_size_invalid")
+            parsed = json.loads(raw_manifest.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("retained_manifest_not_object")
+            manifest = parsed
+        except Exception as exc:  # noqa: BLE001 - persist only exception class
+            blockers.append(
+                f"bounded_cache_retention_manifest_read_failed:{type(exc).__name__}"
+            )
+    entries = manifest.get("files")
+    entries = entries if isinstance(entries, list) else []
+    expected_rows: dict[str, tuple[int, str]] = {}
+    if not blockers:
+        observed_digest = str(manifest.get("manifest_digest") or "")
+        if (
+            observed_digest != expected_manifest_digest
+            or observed_digest != _canonical_digest(manifest)
+        ):
+            blockers.append("bounded_cache_retention_manifest_digest_mismatch")
+        for entry in entries:
+            entry = entry if isinstance(entry, Mapping) else {}
+            relative = str(entry.get("path") or "")
+            path = PurePosixPath(relative)
+            size = entry.get("size_bytes")
+            digest = str(entry.get("sha256") or "")
+            if not bool(
+                relative
+                and not path.is_absolute()
+                and ".." not in path.parts
+                and relative == path.as_posix()
+                and relative not in expected_rows
+                and type(size) is int
+                and size >= 0
+                and len(digest) == 64
+                and all(character in "0123456789abcdef" for character in digest)
+            ):
+                blockers.append("bounded_cache_retention_manifest_entry_invalid")
+                continue
+            expected_rows[relative] = (size, digest)
+        if (
+            manifest.get("file_count") != len(expected_rows)
+            or manifest.get("total_size_bytes")
+            != sum(size for size, _digest in expected_rows.values())
+        ):
+            blockers.append("bounded_cache_retention_manifest_totals_invalid")
+    verified_files = 0
+    verified_bytes = 0
+    if not blockers:
+        try:
+            remote_keys: list[str] = []
+            token: str | None = None
+            while True:
+                request: dict[str, Any] = {
+                    "Bucket": volume_id,
+                    "Prefix": DEFAULT_REMOTE_PREFIX + "/",
+                }
+                if token:
+                    request["ContinuationToken"] = token
+                page = s3.list_objects_v2(**request)
+                remote_keys.extend(
+                    str(row.get("Key"))
+                    for row in page.get("Contents", [])
+                    if isinstance(row, Mapping) and row.get("Key")
+                )
+                if page.get("IsTruncated") is not True:
+                    break
+                next_token = str(page.get("NextContinuationToken") or "")
+                if not next_token or next_token == token:
+                    raise ValueError("retained_inventory_pagination_invalid")
+                token = next_token
+            expected_keys = {
+                manifest_key,
+                *(
+                    f"{DEFAULT_REMOTE_PREFIX}/{relative}"
+                    for relative in expected_rows
+                ),
+            }
+            if set(remote_keys) != expected_keys or len(remote_keys) != len(expected_keys):
+                raise ValueError("retained_inventory_mismatch")
+            for relative, (expected_size, expected_digest) in sorted(
+                expected_rows.items()
+            ):
+                response = s3.get_object(
+                    Bucket=volume_id,
+                    Key=f"{DEFAULT_REMOTE_PREFIX}/{relative}",
+                )
+                body = response["Body"]
+                try:
+                    observed_digest, observed_size = _stream_sha256(body)
+                finally:
+                    close = getattr(body, "close", None)
+                    if callable(close):
+                        close()
+                if (
+                    observed_size != expected_size
+                    or observed_digest != expected_digest
+                ):
+                    raise ValueError("retained_object_digest_mismatch")
+                verified_files += 1
+                verified_bytes += observed_size
+        except Exception as exc:  # noqa: BLE001 - persist only exception class
+            blockers.append(
+                f"bounded_cache_retention_remote_verification_failed:{type(exc).__name__}"
+            )
+    return {
+        "schema_version": RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION,
+        "status": "passed" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "provider_volume_id": volume_id or None,
+        "data_center_id": data_center_id or None,
+        "remote_prefix": DEFAULT_REMOTE_PREFIX,
+        "model_manifest_digest": manifest.get("manifest_digest"),
+        "expected_model_manifest_digest": expected_manifest_digest or None,
+        "verified_file_count": verified_files if not blockers else 0,
+        "verified_size_bytes": verified_bytes if not blockers else 0,
+        "verification_method": "full_s3_streaming_sha256_manifest_verification",
+        "provider_mutations_performed": 0,
+        "gpu_compute_allocated": False,
+        "raw_secret_values_recorded": False,
     }
 
 
@@ -237,6 +429,15 @@ def retain_verified_model_cache(
     )
     if s3.get("status") != "ready":
         blockers.append("bounded_cache_retention_s3_visibility_unverified")
+    remote_verification = _verify_retained_model_cache_remote(
+        volume_id=volume_id,
+        data_center_id=data_center_id,
+        expected_manifest_digest=manifest_digest,
+        access_key_file=runpod_s3_access_key_file,
+        secret_key_file=runpod_s3_secret_key_file,
+    )
+    if remote_verification.get("status") != "passed":
+        blockers.append("bounded_cache_retention_remote_cache_unverified")
     admission = {
         "schema_version": RETENTION_ADMISSION_SCHEMA_VERSION,
         "resource_class": "model_volume",
@@ -259,6 +460,7 @@ def retain_verified_model_cache(
             "status": s3.get("status"),
             "expected_network_volume_id": volume_id or None,
         },
+        "remote_cache_verification": remote_verification,
         "provider_mutations_performed": 0,
         "raw_secret_values_recorded": False,
     }
