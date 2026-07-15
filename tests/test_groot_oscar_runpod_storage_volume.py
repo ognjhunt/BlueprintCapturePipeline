@@ -89,6 +89,7 @@ def _retention_source(tmp_path: Path) -> tuple[Path, dict]:
     lane_handoff = {
         "schema_version": "paid_provider_lane_lease_handoff.v1",
         "status": "pending_canary_acceptance",
+        "lease_path": str(tmp_path / "provider.lease.json"),
         "source_owner_pid": 111,
         "binding": binding,
     }
@@ -201,15 +202,25 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
     )
     monkeypatch.setattr(storage, "_arm_watchdog", arm)
     monkeypatch.setattr(storage, "_pid_is_alive", lambda pid: pid in live)
-    monkeypatch.setattr(
-        storage,
-        "rotate_paid_provider_lane_lease_to_retention_watchdog",
-        lambda _handoff, **kwargs: {
+    def rotate(_handoff, **kwargs):
+        prepared_state = json.loads(
+            (retention_root / "watchdog_state.json").read_text(encoding="utf-8")
+        )
+        assert prepared_state["provider_lane_handoff"]["lease_path"] == str(
+            tmp_path / "provider.lease.json"
+        )
+        assert prepared_state["pending_teardown_record"] == kwargs[
+            "retention_binding"
+        ]["pending_teardown_record"]
+        return {
             "schema_version": "paid_provider_lane_lease_handoff.v1",
             "status": "pending_canary_acceptance",
             "source_owner_pid": 333,
             "binding": kwargs["retention_binding"],
-        },
+        }
+
+    monkeypatch.setattr(
+        storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate
     )
 
     def argv(pid):
@@ -320,6 +331,104 @@ def test_bounded_retention_rejects_unreconciled_spend_before_new_watchdog(
     )
     assert result["status"] == "blocked"
     assert result["provider_mutations_performed"] == 0
+
+
+def test_retention_state_write_failure_keeps_original_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _lane_handoff = _retention_source(tmp_path)
+    retention_root = tmp_path / "retained"
+    state_path = retention_root / "watchdog_state.json"
+    process_stopped = False
+    rotation_called = False
+
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-key"
+
+    class Process:
+        pid = 333
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            nonlocal process_stopped
+            process_stopped = True
+
+        @staticmethod
+        def wait(timeout):
+            del timeout
+            return 0
+
+    def arm(**_kwargs):
+        state_path.write_text(
+            json.dumps(
+                {
+                    "deadline_epoch": 1000.0 + 7 * 24 * 3600,
+                    "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+                    "volume_name": "blueprint-groot-oscar-models-nonce1",
+                    "watchdog_nonce": "new-nonce",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return Process(), {
+            "armed": True,
+            "pid": 333,
+            "state_path": str(state_path),
+            "watchdog_deadline_epoch": 1000.0 + 7 * 24 * 3600,
+            "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+            "volume_name": "blueprint-groot-oscar-models-nonce1",
+            "watchdog_nonce": "new-nonce",
+        }
+
+    real_write_json = storage.write_json
+
+    def fail_prepared_state(path, payload):
+        if Path(path) == state_path and "provider_lane_handoff" in payload:
+            raise OSError("disk full")
+        return real_write_json(path, payload)
+
+    def rotate(*_args, **_kwargs):
+        nonlocal rotation_called
+        rotation_called = True
+        return {}
+
+    monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
+    )
+    monkeypatch.setattr(
+        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
+    )
+    monkeypatch.setattr(storage, "_arm_watchdog", arm)
+    monkeypatch.setattr(storage, "write_json", fail_prepared_state)
+    monkeypatch.setattr(
+        storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate
+    )
+    result = retain_verified_model_cache(
+        output_dir=retention_root,
+        source_output_dir=source,
+        retention_ttl_seconds=7 * 24 * 3600,
+        storage_hourly_rate_usd=0.004861111111,
+        max_retention_spend_usd=1.0,
+        campaign_spent_to_date_usd=13.0,
+        campaign_total_spend_cap_usd=20.0,
+        runpod_s3_access_key_file=tmp_path / "access",
+        runpod_s3_secret_key_file=tmp_path / "secret",
+        allow_paid=True,
+        clock=lambda: 1000.0,
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "bounded_cache_retention_watchdog_state_write_failed"
+    ]
+    assert process_stopped is True
+    assert rotation_called is False
 
 
 def test_storage_route_has_watchdog_lease_ledger_and_no_pod_create() -> None:

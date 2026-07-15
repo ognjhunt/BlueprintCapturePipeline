@@ -305,6 +305,39 @@ def retain_verified_model_cache(
         "watchdog_nonce": watchdog.get("watchdog_nonce"),
         "watchdog_deadline_epoch": deadline,
     }
+    state_path = Path(str(watchdog["state_path"]))
+    try:
+        write_json(
+            state_path,
+            {
+                **_load(state_path),
+                # Deadline cleanup only needs the canonical lease path and lane
+                # binding.  Persist those before ownership rotates so a local
+                # write failure leaves the original watchdog as exact owner.
+                "provider_lane_handoff": {
+                    "status": "retention_state_prepared",
+                    "lease_path": lane_handoff.get("lease_path"),
+                    "binding": retention_binding,
+                },
+                "pending_teardown_record": binding.get("pending_teardown_record"),
+                "volume_id": volume_id,
+                "retention_class": "bounded_persistent_verified_model_cache",
+                "model_manifest_digest": manifest_digest,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - source watchdog remains exact owner
+        watchdog_process.terminate()
+        watchdog_process.wait(timeout=10)
+        result = {
+            "schema_version": RETENTION_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["bounded_cache_retention_watchdog_state_write_failed"],
+            "error_type": type(exc).__name__,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(result_path, result)
+        return result
     try:
         rotated = rotate_paid_provider_lane_lease_to_retention_watchdog(
             lane_handoff,
@@ -335,19 +368,6 @@ def retain_verified_model_cache(
             },
         )
         return _load(result_path)
-    state_path = Path(str(watchdog["state_path"]))
-    write_json(
-        state_path,
-        {
-            **_load(state_path),
-            "provider_lane_handoff": rotated,
-            "pending_teardown_record": binding.get("pending_teardown_record"),
-            "volume_id": volume_id,
-            "retention_class": "bounded_persistent_verified_model_cache",
-            "model_manifest_digest": manifest_digest,
-        },
-    )
-
     source_pid = int(source_watchdog["watchdog_pid"])
     source_argv = [str(item) for item in process_argv_probe(source_pid)]
     source_state_path = str(Path(str(source_watchdog["watchdog_state_path"])).resolve())

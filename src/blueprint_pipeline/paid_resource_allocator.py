@@ -290,13 +290,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
         model.add_argument("--output-dir", required=True)
         model.add_argument("--repo-root", default=str(ROOT))
-        model.add_argument("--data-center-id", required=True)
+        model.add_argument("--data-center-id")
         model.add_argument("--volume-size-gib", type=int, default=50)
         model.add_argument("--storage-hourly-rate-usd", type=float, required=True)
         model.add_argument("--storage-ttl-seconds", type=int, default=14_400)
         model.add_argument("--max-storage-spend-usd", type=float, default=0.05)
-        model.add_argument("--builder-evidence", required=True)
-        model.add_argument("--builder-spend", required=True)
+        model.add_argument("--builder-evidence")
+        model.add_argument("--builder-spend")
         model.add_argument(
             "--digitalocean-token-file",
             default="~/.blueprint-secrets/digitalocean_api_token",
@@ -310,9 +310,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--runpod-s3-secret-key-file",
             default="~/.blueprint-secrets/runpod_s3_secret_key",
         )
-        model.add_argument("--login-private-key", required=True)
-        model.add_argument("--host-private-key", required=True)
-        model.add_argument("--ssh-key-id", required=True, type=int)
+        model.add_argument("--login-private-key")
+        model.add_argument("--host-private-key")
+        model.add_argument("--ssh-key-id", type=int)
         model.add_argument("--region", default="sfo3")
         model.add_argument("--allow-paid", action="store_true")
         model.add_argument("--retain-existing-output")
@@ -323,6 +323,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
+    if args.command in {"model-volume", "model-volume-run"} and not (
+        args.command == "model-volume" and args.retain_existing_output
+    ):
+        missing_model_volume_inputs = [
+            name
+            for name in (
+                "data_center_id",
+                "builder_evidence",
+                "builder_spend",
+                "login_private_key",
+                "host_private_key",
+                "ssh_key_id",
+            )
+            if getattr(args, name, None) in {None, ""}
+        ]
+        if missing_model_volume_inputs:
+            print(json.dumps({"success": False}, sort_keys=True))
+            return 2
     if args.command == "cpu-build":
         if args.execution_plane == "local":
             missing = [
