@@ -36,6 +36,7 @@ from .paid_resource_admission import (
 SCHEMA_VERSION = "groot_oscar_runpod_model_volume_admission.v1"
 RESULT_SCHEMA_VERSION = "groot_oscar_runpod_model_volume_result.v1"
 WATCHDOG_SCHEMA_VERSION = "groot_oscar_runpod_model_volume_watchdog.v1"
+WATCHDOG_HANDOFF_SCHEMA_VERSION = "groot_oscar_model_volume_watchdog_handoff.v1"
 MODEL_CACHE_PATH = "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
 MIN_VOLUME_GIB = 30
 MAX_VOLUME_GIB = 100
@@ -746,6 +747,7 @@ def run_model_volume(
             write_json(
                 output / "watchdog_handoff.json",
                 {
+                    "schema_version": WATCHDOG_HANDOFF_SCHEMA_VERSION,
                     "status": "volume_ready_watchdog_retained",
                     "volume_id": volume_id,
                     "preparation_pod_absence_confirmed": True,
@@ -753,6 +755,7 @@ def run_model_volume(
                     "teardown_owner": "independent_model_volume_watchdog",
                     "watchdog_deadline_epoch": deadline,
                     "next_owner_must_arm_before_transfer": True,
+                    "raw_secret_values_recorded": False,
                 },
             )
         elif not success and cleanup_terminal and (
@@ -761,10 +764,12 @@ def run_model_volume(
             write_json(
                 output / "watchdog_handoff.json",
                 {
+                    "schema_version": WATCHDOG_HANDOFF_SCHEMA_VERSION,
                     "status": "failure_cleanup_provider_terminal",
                     "volume_id": volume_id or None,
                     "preparation_pod_absence_confirmed": not final_pods,
                     "failure_volume_absence_confirmed": not final_volumes,
+                    "raw_secret_values_recorded": False,
                 },
             )
     elapsed = max(0.0, time.time() - started)

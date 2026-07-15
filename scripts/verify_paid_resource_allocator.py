@@ -15,6 +15,7 @@ CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
 MODEL_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+RUNPOD_PREFLIGHT = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_preflight.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
 THIN_ENTRYPOINT = (
@@ -94,8 +95,8 @@ def _all_calls(path: Path) -> set[str]:
 
 def _direct_paid_mutation_signals(source: str) -> set[str]:
     signals: set[str] = set()
-    runpod_api_named = "RUNPOD_REST_API_BASE" in source or re.search(
-        r"api[.]runpod[.]io", source
+    runpod_api_named = "RUNPOD_REST_API_BASE" in source or bool(
+        re.search(r"https://api\.runpod\.io(?:[/:\"']|$)", source)
     )
     runpod_post_named = 'method="POST"' in source or '"method": "POST"' in source
     if (
@@ -106,7 +107,7 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("runpod_pod_create")
     if re.search(r"[\"']POST[\"']\s*,\s*[\"']/networkvolumes", source):
         signals.add("runpod_volume_create")
-    if re.search(r"api[.]digitalocean[.]com", source) and (
+    if re.search(r"https://api\.digitalocean\.com(?:[/:\"']|$)", source) and (
         'method="POST", path="/droplets"' in source
         or '"POST", "/v2/droplets"' in source
         or '"POST", "/droplets"' in source
@@ -118,7 +119,7 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("lambda_instance_create")
     if ".run_instances(" in source:
         signals.add("aws_instance_create")
-    if re.search(r"compute[.]googleapis[.]com", source) and re.search(
+    if re.search(r"https://compute\.googleapis\.com(?:[/:\"']|$)", source) and re.search(
         r"_call\([\"']POST[\"'].{0,160}/instances", source
     ):
         signals.add("gcp_instance_create")
@@ -291,6 +292,7 @@ def verify() -> list[str]:
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
     model_volume = MODEL_VOLUME_ADAPTER.read_text(encoding="utf-8")
+    runpod_preflight = RUNPOD_PREFLIGHT.read_text(encoding="utf-8")
     thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
     thin_entrypoint = THIN_ENTRYPOINT.read_text(encoding="utf-8")
     runpod_watchdog = RUNPOD_WATCHDOG.read_text(encoding="utf-8")
@@ -313,12 +315,28 @@ def verify() -> list[str]:
         blockers.append("model_volume_preparation_pod_teardown_missing")
     if "watchdog_handoff.json" not in model_volume:
         blockers.append("model_volume_independent_watchdog_missing")
+    if "groot_oscar_model_volume_watchdog_handoff.v1" not in model_volume:
+        blockers.append("model_volume_watchdog_handoff_schema_missing")
+    if not all(
+        marker in runpod_preflight
+        for marker in (
+            "build_model_volume_watchdog_handoff_evidence",
+            "model_volume_watchdog_handoff_volume_mismatch",
+            "model_volume_watchdog_ttl_does_not_cover_canary",
+            "MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS",
+        )
+    ):
+        blockers.append("gpu_preflight_model_volume_watchdog_handoff_guard_missing")
+    if "model_volume_watchdog_handoff=" not in gpu:
+        blockers.append("gpu_launch_refresh_drops_model_volume_watchdog_handoff")
     if "pod_prefix=None" not in model_volume or "volume_prefix=None" not in model_volume:
         blockers.append("model_volume_global_inventory_guard_missing")
     if "build_runpod_network_volume_evidence(" not in model_volume:
         blockers.append("model_volume_provider_reported_size_guard_missing")
     if "python -m blueprint_pipeline.paid_resource_allocator" not in runbook:
         blockers.append("canonical_allocator_command_missing_from_runbook")
+    if "--model-volume-watchdog-handoff" not in runbook:
+        blockers.append("runbook_model_volume_watchdog_handoff_missing")
     legacy_docs = (
         "python -m blueprint_pipeline.groot_oscar_digitalocean_builder launch",
         "python -m blueprint_pipeline.groot_oscar_runpod_canary",

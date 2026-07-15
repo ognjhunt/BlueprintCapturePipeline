@@ -67,6 +67,11 @@ def refresh_runpod_preflight(
         required_cuda_version=str(runtime.get("required_cuda_version") or ""),
         name_prefix=str(spend.get("watchdog_pod_name_prefix") or ""),
         watchdog=watchdog,
+        model_volume_watchdog_handoff=(
+            preflight.get("model_volume_watchdog_handoff")
+            if isinstance(preflight.get("model_volume_watchdog_handoff"), Mapping)
+            else {}
+        ),
         max_spend_usd=float(spend.get("max_spend_usd") or 0),
         paid_mutation_authorized=spend.get("paid_mutation_authorized") is True,
         volume_getter=volume_getter,

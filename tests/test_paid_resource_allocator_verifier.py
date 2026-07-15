@@ -73,3 +73,11 @@ blueprint-run-runpod-provider-adapter --request x --mode on-demand-pod
     }
     canonical = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary --execute"
     assert verifier._forbidden_operator_doc_commands(canonical) == set()
+
+
+def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
+    blockers = set(verifier.verify())
+    assert "model_volume_watchdog_handoff_schema_missing" not in blockers
+    assert "gpu_preflight_model_volume_watchdog_handoff_guard_missing" not in blockers
+    assert "gpu_launch_refresh_drops_model_volume_watchdog_handoff" not in blockers
+    assert "runbook_model_volume_watchdog_handoff_missing" not in blockers
