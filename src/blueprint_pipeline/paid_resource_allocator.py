@@ -38,8 +38,8 @@ from .paid_resource_admission import require_paid_resource_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
-MIN_RECONCILED_CAMPAIGN_SPEND_USD = 12.712289
-MIN_RECONCILED_GPU_SECONDS = 12_632
+MIN_RECONCILED_CAMPAIGN_SPEND_USD = 13.631100
+MIN_RECONCILED_GPU_SECONDS = 13_949
 GPU_CANARY_RESERVATION_SECONDS = 1_200
 STRICT_POLICY_SMOKE_RESERVATION_SECONDS = 480
 FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_900
@@ -266,14 +266,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument(
         "--probe-kind",
         choices=("startup", "strict-policy-smoke"),
-        default="startup",
+        default="strict-policy-smoke",
     )
     gpu.add_argument("--execute", action="store_true")
     gpu.add_argument("--campaign-budget-ledger")
     gpu.add_argument("--campaign-initial-spent-usd", type=float)
     gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
     gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
-    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=18_000)
+    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=18_329)
     gpu.add_argument(
         "--campaign-reservation-seconds",
         type=int,

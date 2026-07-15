@@ -400,7 +400,7 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
-def test_gpu_canary_strict_defaults_bind_300_minute_campaign_authority(
+def test_gpu_canary_defaults_bind_authorized_strict_staged_plan(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -422,24 +422,24 @@ def test_gpu_canary_strict_defaults_bind_300_minute_campaign_authority(
             "--bound-request-out", "bound.json",
             "--adapter-output", "adapter.json",
             "--pod-name", "strict-smoke-pod",
-            "--probe-kind", "strict-policy-smoke",
             "--campaign-budget-ledger", "budget.json",
-            "--campaign-initial-spent-usd", "12.712289",
-            "--campaign-initial-used-gpu-seconds", "12632",
+            "--campaign-initial-spent-usd", "13.631100",
+            "--campaign-initial-used-gpu-seconds", "13949",
             "--campaign-max-hourly-rate-usd", "1.99",
             "--authorize-reduced-canary-timeout",
             "--execute",
         ]
     )
     assert exit_code == 0
+    assert observed["probe_kind"] == "strict-policy-smoke"
     campaign_budget = observed["campaign_budget"]
     assert isinstance(campaign_budget, dict)
-    assert campaign_budget["combined_gpu_wall_cap_seconds"] == 18_000
+    assert campaign_budget["combined_gpu_wall_cap_seconds"] == 18_329
     assert campaign_budget["reservation_gpu_seconds"] == 480
     assert campaign_budget["maximum_canary_reservation_gpu_seconds"] == 480
     assert campaign_budget["future_campaign_allowance_gpu_seconds"] == 3_900
-    assert campaign_budget["minimum_reconciled_spend_usd"] == 12.712289
-    assert campaign_budget["minimum_reconciled_gpu_seconds"] == 12_632
+    assert campaign_budget["minimum_reconciled_spend_usd"] == 13.631100
+    assert campaign_budget["minimum_reconciled_gpu_seconds"] == 13_949
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
