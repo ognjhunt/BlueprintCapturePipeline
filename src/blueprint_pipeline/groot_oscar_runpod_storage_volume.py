@@ -125,6 +125,54 @@ def _retention_watchdog_mapping(watchdog: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _retention_source_watchdog_mapping(
+    source_handoff: Mapping[str, Any],
+    rotation_handoff: Mapping[str, Any],
+    *,
+    process_argv_probe: Any,
+) -> dict[str, Any]:
+    """Resolve the current retained owner after a terminal canary return."""
+
+    source_watchdog = {
+        "watchdog_pid": source_handoff.get("watchdog_pid"),
+        "watchdog_state_path": source_handoff.get("watchdog_state_path"),
+        "watchdog_deadline_epoch": source_handoff.get("watchdog_deadline_epoch"),
+        "pod_name_prefix": source_handoff.get("pod_name_prefix"),
+        "volume_name": source_handoff.get("volume_name"),
+        "watchdog_nonce": source_handoff.get("watchdog_nonce"),
+    }
+    current_pid = rotation_handoff.get("source_owner_pid")
+    if current_pid == source_watchdog.get("watchdog_pid"):
+        return source_watchdog
+    if type(current_pid) is not int or current_pid <= 0:
+        return {"watchdog_pid": current_pid}
+    argv = [str(item) for item in process_argv_probe(current_pid)]
+    try:
+        module_index = argv.index("-m")
+    except ValueError:
+        return {"watchdog_pid": current_pid}
+    expected_prefix = [
+        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "watchdog",
+        "--state",
+    ]
+    if argv[module_index + 1 : module_index + 4] != expected_prefix or len(argv) != module_index + 5:
+        return {"watchdog_pid": current_pid}
+    state_path = Path(argv[module_index + 4]).expanduser().resolve()
+    try:
+        state = _load(state_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"watchdog_pid": current_pid}
+    return {
+        "watchdog_pid": current_pid,
+        "watchdog_state_path": str(state_path),
+        "watchdog_deadline_epoch": state.get("deadline_epoch"),
+        "pod_name_prefix": state.get("pod_name_prefix"),
+        "volume_name": state.get("volume_name"),
+        "watchdog_nonce": state.get("watchdog_nonce"),
+    }
+
+
 def _stream_sha256(body: Any) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -525,14 +573,11 @@ def retain_verified_model_cache(
         write_json(result_path, result)
         return result
     retention_watchdog = _retention_watchdog_mapping(watchdog)
-    source_watchdog = {
-        "watchdog_pid": source_handoff.get("watchdog_pid"),
-        "watchdog_state_path": source_handoff.get("watchdog_state_path"),
-        "watchdog_deadline_epoch": source_handoff.get("watchdog_deadline_epoch"),
-        "pod_name_prefix": source_handoff.get("pod_name_prefix"),
-        "volume_name": source_handoff.get("volume_name"),
-        "watchdog_nonce": source_handoff.get("watchdog_nonce"),
-    }
+    source_watchdog = _retention_source_watchdog_mapping(
+        source_handoff,
+        rotation_handoff,
+        process_argv_probe=process_argv_probe,
+    )
     retention_binding = {
         "provider": "runpod",
         "lane": PROVIDER_LANE,

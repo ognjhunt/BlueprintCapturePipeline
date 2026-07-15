@@ -294,27 +294,27 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --pod-name blueprint-groot-oscar-canary-<attempt> \
   --probe-kind strict-policy-smoke \
   --campaign-budget-ledger <durable-campaign-budget.json> \
-  --campaign-initial-spent-usd 13.631100 \
-  --campaign-initial-used-gpu-seconds 13949 \
+  --campaign-initial-spent-usd 14.076086 \
+  --campaign-initial-used-gpu-seconds 14754 \
   --campaign-total-spend-cap-usd 20.00 \
-  --campaign-wall-cap-seconds 18329 \
+  --campaign-wall-cap-seconds 18734 \
   --campaign-reservation-seconds 480 \
-  --future-campaign-allowance-seconds 3900 \
+  --future-campaign-allowance-seconds 3500 \
   --authorize-reduced-canary-timeout \
   --campaign-max-hourly-rate-usd '<capacity-verified-rate-at-or-below-1.99>'
 ```
 
-The `13.631100` USD and `13949` GPU-second values are the latest conservative
+The `14.076086` USD and `14754` GPU-second values are the latest conservative
 reconciled campaign baselines, not a fresh allowance. The USD baseline includes
 the latest cache builder's measured cost and the retained volume's full bounded
 pre-handoff exposure. The strict policy probe
 reserves at most 480 GPU-seconds while preserving a separately bounded
-3,900-second future campaign allowance; the combined remaining plan is 4,380
-seconds against the authorized 18,329-second cumulative campaign ceiling. The
+3,500-second future campaign allowance; the combined remaining plan is 3,980
+seconds against the authorized 18,734-second cumulative campaign ceiling. The
 strict work/startup deadline is 420 seconds and the independent watchdog is 480
 seconds, preserving 60 seconds for teardown and control-plane closure. The
 explicit reduced-timeout flag records the operator's authorization for this
-staged plan; 18,329 cumulative seconds is not permission for a single
+staged plan; 18,734 cumulative seconds is not permission for a single
 cap-sized job.
 After inspecting the dry-run evidence, rerun this exact command with
 `--execute`; omitting any ledger identity/rate or staged-plan authorization

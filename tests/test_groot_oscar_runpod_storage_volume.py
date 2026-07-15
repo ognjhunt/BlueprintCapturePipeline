@@ -243,6 +243,58 @@ def _retention_source(tmp_path: Path) -> tuple[Path, dict]:
     return source, lane_handoff
 
 
+def test_retention_resolves_current_watchdog_after_terminal_canary_return(
+    tmp_path: Path,
+) -> None:
+    source, original_handoff = _retention_source(tmp_path)
+    current = tmp_path / "current-retention"
+    current.mkdir()
+    state_path = current / "watchdog_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "deadline_epoch": 30_000.0,
+                "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+                "volume_name": "blueprint-groot-oscar-models-nonce1",
+                "watchdog_nonce": "current-nonce",
+            }
+        ),
+        encoding="utf-8",
+    )
+    current_handoff = {
+        **original_handoff,
+        "status": "accepted",
+        "source_owner_pid": 222,
+        "binding": {
+            **original_handoff["binding"],
+            "watchdog_nonce": "current-nonce",
+            "watchdog_deadline_epoch": 30_000.0,
+        },
+    }
+
+    observed = storage._retention_source_watchdog_mapping(
+        json.loads((source / "watchdog_handoff.json").read_text()),
+        current_handoff,
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            str(state_path),
+        ),
+    )
+
+    assert observed == {
+        "watchdog_pid": 222,
+        "watchdog_state_path": str(state_path.resolve()),
+        "watchdog_deadline_epoch": 30_000.0,
+        "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+        "volume_name": "blueprint-groot-oscar-models-nonce1",
+        "watchdog_nonce": "current-nonce",
+    }
+
+
 def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

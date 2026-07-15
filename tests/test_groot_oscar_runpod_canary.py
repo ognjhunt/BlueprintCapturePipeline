@@ -103,20 +103,20 @@ def test_strict_policy_smoke_output_requires_exact_three_action_proof(
 def _budget_config(tmp_path, **overrides):
     config = {
         "ledger_path": str(tmp_path / "campaign-budget.json"),
-        "initial_spent_usd": 13.631100,
-        "initial_used_gpu_seconds": 13_949,
+        "initial_spent_usd": 14.076086,
+        "initial_used_gpu_seconds": 14_754,
         "total_spend_cap_usd": 20.0,
-        "combined_gpu_wall_cap_seconds": 18_329,
+        "combined_gpu_wall_cap_seconds": 18_734,
         "reservation_gpu_seconds": 480,
         "campaign_stage": "gpu_canary",
         "maximum_canary_reservation_gpu_seconds": 480,
-        "future_campaign_allowance_gpu_seconds": 3_900,
-        "maximum_future_campaign_allowance_gpu_seconds": 3_900,
-        "maximum_combined_plan_gpu_seconds": 4_380,
+        "future_campaign_allowance_gpu_seconds": 3_500,
+        "maximum_future_campaign_allowance_gpu_seconds": 3_500,
+        "maximum_combined_plan_gpu_seconds": 3_980,
         "reduced_canary_timeout_acknowledged": True,
         "max_hourly_rate_usd": 1.99,
-        "minimum_reconciled_spend_usd": 13.631100,
-        "minimum_reconciled_gpu_seconds": 13_949,
+        "minimum_reconciled_spend_usd": 14.076086,
+        "minimum_reconciled_gpu_seconds": 14_754,
     }
     config.update(overrides)
     return config
@@ -134,7 +134,7 @@ def test_strict_probe_cannot_expand_to_the_broader_canary_ceiling(tmp_path) -> N
     assert result["blockers"] == ["gpu_canary_stage_reservation_exceeds_plan"]
 
 
-def test_480_strict_probe_plus_3900_campaign_fits_300_minute_authority(tmp_path) -> None:
+def test_480_strict_probe_plus_3500_campaign_fits_reconciled_authority(tmp_path) -> None:
     result = _reserve_campaign_budget(
         _budget_config(tmp_path),
         reservation_id="blueprint-canary-reduced-ceiling",
@@ -144,8 +144,8 @@ def test_480_strict_probe_plus_3900_campaign_fits_300_minute_authority(tmp_path)
     assert result["plan"] == {
         "campaign_stage": "gpu_canary",
         "canary_reservation_gpu_seconds": 480,
-        "future_campaign_allowance_gpu_seconds": 3_900,
-        "combined_plan_gpu_seconds": 4_380,
+        "future_campaign_allowance_gpu_seconds": 3_500,
+        "combined_plan_gpu_seconds": 3_980,
     }
 
 
