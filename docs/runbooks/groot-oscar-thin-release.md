@@ -292,24 +292,27 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --bound-request-out <canary-dir>/bound_provider_request.json \
   --adapter-output <canary-dir>/runpod_adapter_result.json \
   --pod-name blueprint-groot-oscar-canary-<attempt> \
+  --probe-kind strict-policy-smoke \
   --campaign-budget-ledger <durable-campaign-budget.json> \
-  --campaign-initial-spent-usd 11.57 \
-  --campaign-initial-used-gpu-seconds 11619 \
+  --campaign-initial-spent-usd 12.712289 \
+  --campaign-initial-used-gpu-seconds 12632 \
   --campaign-total-spend-cap-usd 20.00 \
-  --campaign-wall-cap-seconds 16800 \
-  --campaign-reservation-seconds 1200 \
+  --campaign-wall-cap-seconds 18000 \
+  --campaign-reservation-seconds 480 \
   --future-campaign-allowance-seconds 3900 \
   --authorize-reduced-canary-timeout \
   --campaign-max-hourly-rate-usd '<capacity-verified-rate-at-or-below-1.99>'
 ```
 
-The `11.57` USD and `11619` GPU-second values are the conservative reconciled
-campaign baselines, not a fresh allowance. The canary reserves at most 1,200
-GPU-seconds while preserving a separately bounded 3,900-second future campaign
-allowance; the combined plan is 5,100 seconds against the 16,800-second
-campaign ceiling. The actual canary watchdog shown above remains 900 seconds,
-leaving 300 seconds of reservation for teardown/control closure. The explicit
-reduced-timeout flag records the operator's authorization for this staged plan.
+The `12.712289` USD and `12632` GPU-second values are the latest conservative
+reconciled campaign baselines, not a fresh allowance. The strict policy probe
+reserves at most 480 GPU-seconds while preserving a separately bounded
+3,900-second future campaign allowance; the combined remaining plan is 4,380
+seconds against the authorized 18,000-second cumulative campaign ceiling. The
+strict work/startup deadline is 420 seconds and the independent watchdog is 480
+seconds, preserving 60 seconds for teardown and control-plane closure. The
+explicit reduced-timeout flag records the operator's authorization for this
+staged plan; 18,000 seconds is not permission for a single 300-minute job.
 After inspecting the dry-run evidence, rerun this exact command with
 `--execute`; omitting any ledger identity/rate or staged-plan authorization
 argument fails before provider mutation.

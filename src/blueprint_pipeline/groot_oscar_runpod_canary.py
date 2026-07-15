@@ -58,6 +58,9 @@ CANONICAL_PROBE_KINDS = (STARTUP_PROBE_KIND, STRICT_POLICY_SMOKE_PROBE_KIND)
 STRICT_POLICY_SMOKE_RESULT_NAME = "groot_oscar_runpod_strict_policy_smoke.json"
 STRICT_POLICY_SMOKE_LOG_NAME = "gr00t_policy_server.log"
 STRICT_POLICY_SMOKE_MAX_ZIP_BYTES = 16 * 1024 * 1024
+STRICT_POLICY_SMOKE_HARD_TIMEOUT_SECONDS = 420
+STRICT_POLICY_SMOKE_STARTUP_ARTIFACT_TIMEOUT_SECONDS = 420
+STRICT_POLICY_SMOKE_WATCHDOG_TTL_SECONDS = 480
 
 
 def refresh_runpod_preflight(
@@ -433,10 +436,12 @@ def bind_canary_request(
         shape.pop("command", None)
         limits = shape.get("limits")
         limits = limits if isinstance(limits, dict) else {}
-        limits["hard_timeout_seconds"] = 300
-        limits["startup_artifact_timeout_seconds"] = 300
-        limits["external_watchdog_ttl_seconds"] = max(
-            int(limits.get("external_watchdog_ttl_seconds") or 0), 360
+        limits["hard_timeout_seconds"] = STRICT_POLICY_SMOKE_HARD_TIMEOUT_SECONDS
+        limits["startup_artifact_timeout_seconds"] = (
+            STRICT_POLICY_SMOKE_STARTUP_ARTIFACT_TIMEOUT_SECONDS
+        )
+        limits["external_watchdog_ttl_seconds"] = (
+            STRICT_POLICY_SMOKE_WATCHDOG_TTL_SECONDS
         )
         shape["limits"] = limits
         claim_boundary = shape.get("claim_boundary")
