@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import inspect
 
 import pytest
+
+import blueprint_pipeline.groot_oscar_runpod_s3_model_cache as s3_transport
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.groot_oscar_infrastructure_admission import (
@@ -18,12 +22,16 @@ from blueprint_pipeline.groot_oscar_runpod_s3_model_cache import (
     DEFAULT_REMOTE_PREFIX,
     REMOTE_SAFETY_HEADROOM_BYTES,
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
+    _TransportExecutionCapability,
+    _issue_transport_execution_capability,
+    _upload_and_verify_model_cache_impl,
     endpoint_for_data_center,
     main,
     preflight_runpod_s3,
     upload_and_verify_model_cache,
 )
 from blueprint_pipeline.paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
     require_paid_resource_admission,
 )
@@ -32,16 +40,92 @@ from blueprint_pipeline.paid_resource_admission import (
 ALLOCATION_NONCE = "nonce1234"
 
 
+@pytest.fixture(autouse=True)
+def _large_test_filesystem(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        s3_transport,
+        "_filesystem_available_bytes",
+        lambda _path: 100 * 1024**3,
+    )
+
+
+def test_public_upload_api_has_no_caller_claimed_disk_headroom_override() -> None:
+    assert "available_bytes" not in inspect.signature(upload_and_verify_model_cache).parameters
+
+
+def _direct_transport(capability: object | None) -> dict:
+    return _upload_and_verify_model_cache_impl(
+        cache_root="/does/not/matter",
+        verification_root="/also/unused",
+        volume_id="!invalid",
+        data_center_id="US-WA-1",
+        access_key_file="/missing",
+        secret_key_file="/missing",
+        volume_evidence={},
+        allocation_nonce="invalid",
+        execution_capability=capability,  # type: ignore[arg-type]
+    )
+
+
+def test_private_transport_rejects_missing_and_forged_capability_before_network() -> None:
+    missing = _direct_transport(None)
+    forged = _direct_transport(_TransportExecutionCapability(object()))
+    assert missing["blockers"] == ["runpod_s3_transport_execution_capability_invalid"]
+    assert forged["blockers"] == ["runpod_s3_transport_execution_capability_invalid"]
+    assert missing["provider_mutations_performed"] == 0
+    assert forged["provider_mutations_performed"] == 0
+    with pytest.raises(PaidResourceAdmissionBlocked):
+        _issue_transport_execution_capability()
+    with pytest.raises(PaidResourceAdmissionBlocked):
+        _issue_transport_execution_capability(
+            remote_parent_binding={},
+            remote_parent_capability=b"x" * 32,
+            remote_packet={},
+        )
+
+
+def test_private_transport_capability_is_one_shot_and_concurrency_safe() -> None:
+    capability = _issue_transport_execution_capability(
+        paid_resource_admission_grant=_grant()
+    )
+    first = _direct_transport(capability)
+    second = _direct_transport(capability)
+    assert "runpod_s3_volume_id_invalid" in first["blockers"]
+    assert second["blockers"] == ["runpod_s3_transport_execution_capability_invalid"]
+
+    concurrent_capability = _issue_transport_execution_capability(
+        paid_resource_admission_grant=_grant()
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                _direct_transport,
+                [concurrent_capability, concurrent_capability],
+            )
+        )
+    assert sum(
+        result["blockers"] == ["runpod_s3_transport_execution_capability_invalid"]
+        for result in results
+    ) == 1
+    assert all(result["provider_mutations_performed"] == 0 for result in results)
+
+
 class FakeS3:
     def __init__(
         self,
         *,
         corrupt_download: bool = False,
         fail_cleanup_list: bool = False,
+        fail_upload_on: int | None = None,
+        write_before_upload_failure: bool = False,
+        fail_delete: bool = False,
     ) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.corrupt_download = corrupt_download
         self.fail_cleanup_list = fail_cleanup_list
+        self.fail_upload_on = fail_upload_on
+        self.write_before_upload_failure = write_before_upload_failure
+        self.fail_delete = fail_delete
         self.upload_calls = 0
         self.delete_calls = 0
 
@@ -53,6 +137,10 @@ class FakeS3:
 
     def upload_file(self, path: str, bucket: str, key: str) -> None:
         self.upload_calls += 1
+        if self.fail_upload_on == self.upload_calls:
+            if self.write_before_upload_failure:
+                self.objects[(bucket, key)] = Path(path).read_bytes()
+            raise RuntimeError("injected upload failure")
         self.objects[(bucket, key)] = Path(path).read_bytes()
 
     def list_objects_v2(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -77,6 +165,8 @@ class FakeS3:
 
     def delete_object(self, *, Bucket: str, Key: str) -> None:  # noqa: N803
         self.delete_calls += 1
+        if self.fail_delete:
+            raise RuntimeError("injected delete failure")
         self.objects.pop((Bucket, Key), None)
 
 
@@ -198,7 +288,6 @@ def test_upload_requires_full_redownload_and_manifest_hash_verification(
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=client,
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "completed"
@@ -221,13 +310,55 @@ def test_corrupt_redownload_fails_closed(tmp_path: Path) -> None:
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=FakeS3(corrupt_download=True),
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "failed"
     assert result["error_type"] == "RuntimeError"
     assert result["gpu_compute_allocated"] is False
     assert result["partial_upload_cleanup_verified"] is True
+
+
+@pytest.mark.parametrize(
+    ("client", "delete_successes", "prefix_empty", "outer_delete"),
+    [
+        (FakeS3(fail_upload_on=3), 2, True, False),
+        (FakeS3(fail_upload_on=3, fail_delete=True), 0, False, True),
+        (
+            FakeS3(fail_upload_on=3, write_before_upload_failure=True),
+            2,
+            False,
+            True,
+        ),
+    ],
+)
+def test_partial_upload_failure_accounts_for_cleanup_and_observed_state(
+    tmp_path: Path,
+    client: FakeS3,
+    delete_successes: int,
+    prefix_empty: bool,
+    outer_delete: bool,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["status"] == "failed"
+    assert result["upload_attempt_count"] == 3
+    assert result["upload_success_count"] == 2
+    assert result["cleanup_delete_attempt_count"] == 2
+    assert result["cleanup_delete_success_count"] == delete_successes
+    assert result["provider_mutations_performed"] == 5
+    assert result["final_provider_observed_prefix_empty"] is prefix_empty
+    assert result["outer_volume_deletion_required"] is outer_delete
 
 
 def test_source_and_verification_roots_must_not_overlap(tmp_path: Path) -> None:
@@ -243,7 +374,6 @@ def test_source_and_verification_roots_must_not_overlap(tmp_path: Path) -> None:
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=FakeS3(),
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "blocked"
@@ -265,7 +395,6 @@ def test_unmanifested_extra_file_is_not_uploaded(tmp_path: Path) -> None:
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=client,
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "completed"
@@ -299,7 +428,6 @@ def test_nonempty_dedicated_volume_blocks_before_upload(tmp_path: Path) -> None:
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=client,
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "blocked"
@@ -321,7 +449,6 @@ def test_failed_cleanup_requires_outer_volume_deletion(tmp_path: Path) -> None:
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=client,
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "failed"
@@ -342,7 +469,6 @@ def test_missing_grant_blocks_before_s3_mutation(tmp_path: Path) -> None:
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=client,
-        available_bytes=100 * 1024**3,
     )
     assert result["status"] == "blocked"
     assert "paid_resource_admission_grant_missing" in result["blockers"]
@@ -370,7 +496,6 @@ def test_remote_capacity_requires_cache_bytes_plus_headroom(tmp_path: Path) -> N
         volume_evidence=evidence,
         allocation_nonce=ALLOCATION_NONCE,
         client=client,
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "blocked"
@@ -395,7 +520,6 @@ def test_allocation_nonce_mismatch_blocks_before_s3_mutation(tmp_path: Path) -> 
         volume_evidence=evidence,
         allocation_nonce=ALLOCATION_NONCE,
         client=client,
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "blocked"
@@ -420,7 +544,6 @@ def test_verification_parent_is_never_recursively_deleted(tmp_path: Path) -> Non
         volume_evidence=_volume_evidence(),
         allocation_nonce=ALLOCATION_NONCE,
         client=FakeS3(),
-        available_bytes=100 * 1024**3,
         paid_resource_admission_grant=_grant(),
     )
     assert result["status"] == "completed"

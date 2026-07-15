@@ -54,6 +54,33 @@ def test_unmanifested_script_mutator_is_rejected() -> None:
     assert verifier._unclassified_direct_mutators({path: source}, set()) == {path}
 
 
+def test_third_s3_capability_or_transport_caller_is_rejected() -> None:
+    sources = {
+        "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py": """
+def upload_and_verify_model_cache():
+    _issue_transport_execution_capability()
+    _upload_and_verify_model_cache_impl()
+""",
+        "src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py": """
+def execute_remote_packet():
+    _issue_transport_execution_capability()
+    _upload_and_verify_model_cache_impl()
+""",
+        "scripts/new_bypass.py": """
+from blueprint_pipeline.groot_oscar_runpod_s3_model_cache import (
+    _issue_transport_execution_capability as mint,
+    _upload_and_verify_model_cache_impl as mutate,
+)
+def bypass():
+    mint()
+    mutate()
+""",
+    }
+    assert verifier._s3_transport_capability_callers(sources) != (
+        verifier.APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS
+    )
+
+
 def test_production_scan_recurses_through_source_and_scripts(tmp_path: Path) -> None:
     source = tmp_path / "src/blueprint_pipeline/nested/adapter.py"
     script = tmp_path / "scripts/nested/executor.py"

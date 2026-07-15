@@ -244,6 +244,41 @@ def test_cpu_build_cli_rechecks_prerequisites_before_detached_supervisor(
     assert supervisor_called is False
 
 
+def test_cpu_build_run_forwards_fixed_model_cache_secret_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    observed = {}
+    monkeypatch.setattr(
+        allocator, "_run_cpu_prerequisite_gate", lambda _output: {"status": "ready"}
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_builder",
+        lambda **kwargs: observed.update(kwargs) or {"status": "completed"},
+    )
+    args = Namespace(
+        output_dir=str(tmp_path / "out"),
+        packet_manifest="packet.json",
+        builder_evidence="builder.json",
+        spend="spend.json",
+        token_file="do-token",
+        docker_username_file="docker-user",
+        docker_password_file="docker-pat",
+        hf_token_file="hf-token",
+        runpod_s3_access_key_file="s3-access",
+        runpod_s3_secret_key_file="s3-secret",
+        login_private_key="login-key",
+        host_private_key="host-key",
+        ssh_key_id=7,
+        region="sfo3",
+        allow_paid=True,
+    )
+    assert allocator._run_cpu(args)["status"] == "completed"
+    assert observed["hf_token_file"] == Path("hf-token")
+    assert observed["runpod_s3_access_key_file"] == Path("s3-access")
+    assert observed["runpod_s3_secret_key_file"] == Path("s3-secret")
+
+
 def test_model_volume_run_forwards_verified_storage_rate(monkeypatch, capsys) -> None:
     observed = {}
 

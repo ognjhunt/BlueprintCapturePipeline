@@ -50,6 +50,28 @@ RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS = frozenset(
         "US-WA-1",
     }
 )
+RUNPOD_S3_DATA_CENTER_IDS = frozenset(
+    {
+        "EU-CZ-1",
+        "EU-RO-1",
+        "EUR-IS-1",
+        "EUR-NO-1",
+        "US-CA-2",
+        "US-GA-2",
+        "US-IL-1",
+        "US-KS-2",
+        "US-MD-1",
+        "US-MO-1",
+        "US-MO-2",
+        "US-NC-1",
+        "US-NC-2",
+        "US-NE-1",
+        "US-WA-1",
+    }
+)
+RUNPOD_S3_VOLUME_DATA_CENTER_IDS = (
+    RUNPOD_S3_DATA_CENTER_IDS & RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS
+)
 
 BUILD_SCHEMA_VERSION = "groot_oscar_build_plane_admission.v1"
 SERVE_SCHEMA_VERSION = "groot_oscar_runpod_serve_plane_admission.v1"
@@ -94,6 +116,8 @@ def build_live_machine_capability_evidence(
     *,
     minimum_free_bytes: int = MIN_BUILD_FREE_BYTES,
     required_architecture: str = "x86_64",
+    packet_kind: str = "thin_release",
+    expected_s3_endpoint_host: str | None = None,
 ) -> dict[str, Any]:
     """Validate facts measured by a probe running on the machine itself.
 
@@ -115,12 +139,31 @@ def build_live_machine_capability_evidence(
     free_bytes = observation.get("free_bytes")
     if type(free_bytes) is not int or free_bytes < minimum_free_bytes:
         blockers.append("live_machine_free_space_below_minimum")
-    if observation.get("docker_cli_present") is not True:
-        blockers.append("live_machine_docker_cli_missing")
-    if observation.get("docker_daemon_responding") is not True:
-        blockers.append("live_machine_docker_daemon_unavailable")
-    if observation.get("docker_buildx_available") is not True:
-        blockers.append("live_machine_docker_buildx_unavailable")
+    if packet_kind not in {"thin_release", "model_cache_s3"}:
+        blockers.append("live_machine_packet_kind_unsupported")
+    if packet_kind == "thin_release":
+        if observation.get("docker_cli_present") is not True:
+            blockers.append("live_machine_docker_cli_missing")
+        if observation.get("docker_daemon_responding") is not True:
+            blockers.append("live_machine_docker_daemon_unavailable")
+        if observation.get("docker_buildx_available") is not True:
+            blockers.append("live_machine_docker_buildx_unavailable")
+    elif packet_kind == "model_cache_s3":
+        if observation.get("python3_available") is not True:
+            blockers.append("live_machine_python3_missing")
+        if observation.get("python_version") != "3.12":
+            blockers.append("live_machine_python_version_mismatch")
+        if observation.get("python_venv_available") is not True:
+            blockers.append("live_machine_python_venv_missing")
+        if observation.get("dns_resolution_verified") is not True:
+            blockers.append("live_machine_dns_resolution_unverified")
+        if observation.get("outbound_https_verified") is not True:
+            blockers.append("live_machine_outbound_https_unverified")
+        if (
+            not expected_s3_endpoint_host
+            or observation.get("s3_endpoint_host") != expected_s3_endpoint_host
+        ):
+            blockers.append("live_machine_s3_endpoint_binding_mismatch")
     if observation.get("builder_ready_marker") is not True:
         blockers.append("live_machine_builder_initialization_incomplete")
     return {
@@ -135,7 +178,14 @@ def build_live_machine_capability_evidence(
         "docker_cli_present": observation.get("docker_cli_present"),
         "docker_daemon_responding": observation.get("docker_daemon_responding"),
         "docker_buildx_available": observation.get("docker_buildx_available"),
+        "python3_available": observation.get("python3_available"),
+        "python_version": observation.get("python_version"),
+        "python_venv_available": observation.get("python_venv_available"),
+        "dns_resolution_verified": observation.get("dns_resolution_verified"),
+        "outbound_https_verified": observation.get("outbound_https_verified"),
+        "s3_endpoint_host": observation.get("s3_endpoint_host"),
         "builder_ready_marker": observation.get("builder_ready_marker"),
+        "packet_kind": packet_kind,
         "minimum_free_bytes": minimum_free_bytes,
         "required_architecture": required_architecture,
         "claim_boundary": {
@@ -161,6 +211,15 @@ def build_cpu_build_execution_admission(
         blockers.append("cpu_builder_live_capability_schema_invalid")
     if live_machine.get("status") != "verified":
         blockers.append("cpu_builder_live_capability_not_verified")
+    allocation_packet_kind = (
+        allocation_admission.get("checks", {}).get("packet_kind")
+        if isinstance(allocation_admission.get("checks"), Mapping)
+        else None
+    )
+    if allocation_packet_kind is None:
+        allocation_packet_kind = "thin_release"
+    if live_machine.get("packet_kind") != allocation_packet_kind:
+        blockers.append("cpu_builder_live_capability_packet_kind_mismatch")
     blockers.extend(f"live_capability:{item}" for item in live_machine.get("blockers", []))
     return {
         "schema_version": CPU_BUILD_EXECUTION_SCHEMA_VERSION,
@@ -352,20 +411,50 @@ def build_build_plane_admission(
 
     blockers: list[str] = []
     provider = _string(builder.get("provider")).lower()
+    packet_kind = _string(packet.get("packet_kind")) or "thin_release"
+    if packet_kind not in {"thin_release", "model_cache_s3"}:
+        blockers.append("builder_packet_kind_unsupported")
+    expected_purpose = {
+        "thin_release": "image_build",
+        "model_cache_s3": "model_cache_s3",
+    }.get(packet_kind)
     if provider in {"runpod", "runpod_pod", "runpod-pod"}:
         blockers.append("runpod_pods_are_serve_plane_not_image_build_plane")
-    if _string(builder.get("purpose")) != "image_build":
-        blockers.append("builder_purpose_must_be_image_build")
+    if expected_purpose is not None and _string(builder.get("purpose")) != expected_purpose:
+        blockers.append("builder_purpose_does_not_match_packet_kind")
     if _string(builder.get("platform")) != "linux/amd64":
         blockers.append("builder_native_linux_amd64_not_verified")
-    if builder.get("docker_daemon_verified") is not True:
-        blockers.append("builder_docker_daemon_not_verified")
-    if builder.get("docker_buildx_verified") is not True:
-        blockers.append("builder_docker_buildx_not_verified")
+    if packet_kind == "thin_release":
+        if builder.get("docker_daemon_verified") is not True:
+            blockers.append("builder_docker_daemon_not_verified")
+        if builder.get("docker_buildx_verified") is not True:
+            blockers.append("builder_docker_buildx_not_verified")
+    elif packet_kind == "model_cache_s3":
+        packet_data_center = _string(packet.get("data_center_id"))
+        if packet_data_center not in RUNPOD_S3_VOLUME_DATA_CENTER_IDS:
+            blockers.append("builder_model_cache_s3_data_center_unsupported")
+        if builder.get("python_runtime_verified") is not True:
+            blockers.append("builder_python_runtime_not_verified")
+        if builder.get("python_version") != "3.12":
+            blockers.append("builder_python_version_mismatch")
+        if builder.get("dependency_lock_verified") is not True:
+            blockers.append("builder_dependency_lock_not_verified")
+        if builder.get("dependency_wheelhouse_verified") is not True:
+            blockers.append("builder_dependency_wheelhouse_not_verified")
+        if builder.get("dns_resolution_verified") is not True:
+            blockers.append("builder_dns_resolution_not_verified")
+        if builder.get("outbound_https_verified") is not True:
+            blockers.append("builder_outbound_https_not_verified")
+        expected_s3_host = "s3api-" + packet_data_center.lower() + ".runpod.io"
+        if builder.get("s3_endpoint_host") != expected_s3_host:
+            blockers.append("builder_s3_endpoint_binding_mismatch")
     free_bytes = builder.get("free_disk_bytes")
     if type(free_bytes) is not int or free_bytes < MIN_BUILD_FREE_BYTES:
         blockers.append("builder_free_disk_below_120_gib")
-    if builder.get("registry_push_auth_file_verified") is not True:
+    if (
+        packet_kind == "thin_release"
+        and builder.get("registry_push_auth_file_verified") is not True
+    ):
         blockers.append("builder_file_based_registry_push_auth_not_verified")
     if builder.get("independent_teardown_watchdog") is not True:
         blockers.append("builder_independent_teardown_watchdog_missing")
@@ -410,11 +499,25 @@ def build_build_plane_admission(
     checks = {
         "runpod_excluded_from_build_plane": provider not in {"runpod", "runpod_pod", "runpod-pod"},
         "native_linux_amd64": _string(builder.get("platform")) == "linux/amd64",
-        "docker_buildx_ready": builder.get("docker_daemon_verified") is True
-        and builder.get("docker_buildx_verified") is True,
+        "execution_runtime_ready": (
+            builder.get("docker_daemon_verified") is True
+            and builder.get("docker_buildx_verified") is True
+            if packet_kind == "thin_release"
+            else builder.get("python_runtime_verified") is True
+            and builder.get("python_version") == "3.12"
+            and builder.get("dependency_lock_verified") is True
+            and builder.get("dependency_wheelhouse_verified") is True
+            and builder.get("dns_resolution_verified") is True
+            and builder.get("outbound_https_verified") is True
+            and builder.get("s3_endpoint_host")
+            == "s3api-" + _string(packet.get("data_center_id")).lower() + ".runpod.io"
+        ),
         "free_disk_at_least_120_gib": type(free_bytes) is int
         and free_bytes >= MIN_BUILD_FREE_BYTES,
         "source_bound": builder.get("expected_source_commit") == packet_commit,
+        "packet_kind": packet_kind,
+        "builder_purpose_matches_packet_kind": expected_purpose is not None
+        and _string(builder.get("purpose")) == expected_purpose,
         "paid_envelope_bound": spend.get("paid_mutation_authorized") is True
         and _positive_number(max_spend)
         and type(ttl) is int

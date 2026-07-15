@@ -522,15 +522,25 @@ def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     caplog.clear()
     monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH", "true")
     monkeypatch.setenv("RUNPOD_API_KEY", "secret-runpod-key")
+    side_effect = tmp_path / "legacy-launcher-ran"
     with caplog.at_level(logging.INFO):
-        completed = run_gpu_provider_launcher(
+        disabled = run_gpu_provider_launcher(
             provider_launch_request_path=provider_request,
             allow_provider_launch=True,
-            provider_launch_command=_python_command("import os; print(os.environ['RUNPOD_API_KEY'])"),
+            provider_launch_command=_python_command(
+                f"from pathlib import Path; Path({str(side_effect)!r}).touch(); "
+                "import os; print(os.environ['RUNPOD_API_KEY'])"
+            ),
         )
 
-    assert completed["status"] == "completed"
-    assert _records(caplog, "robot_eval_provider_launcher.completed")[-1].exit_code == 0
+    assert disabled["status"] == "blocked"
+    assert disabled["reason"] == "legacy_provider_command_launcher_disabled"
+    assert disabled["blockers"] == [
+        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
+    ]
+    assert side_effect.exists() is False
+    disabled_record = _records(caplog, "robot_eval_provider_launcher.blocked")[-1]
+    assert disabled_record.reason == "legacy_provider_command_launcher_disabled"
     assert "secret-runpod-key" not in caplog.text
 
     caplog.clear()

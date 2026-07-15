@@ -50,6 +50,32 @@ def test_cpu_build_execution_requires_verified_live_machine() -> None:
     assert result["status"] == "admitted"
 
 
+def test_cpu_build_execution_rejects_explicit_packet_kind_mismatch() -> None:
+    live = build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": 200 * 1024**3,
+            "docker_cli_present": True,
+            "docker_daemon_responding": True,
+            "docker_buildx_available": True,
+            "builder_ready_marker": True,
+        }
+    )
+    result = build_cpu_build_execution_admission(
+        allocation_admission={
+            "schema_version": "groot_oscar_build_plane_admission.v1",
+            "status": "admitted",
+            "checks": {"packet_kind": "model_cache_s3"},
+        },
+        live_machine=live,
+    )
+    assert result["status"] == "blocked"
+    assert "cpu_builder_live_capability_packet_kind_mismatch" in result["blockers"]
+
+
 COMMIT = "a" * 40
 DIGEST_REF = "docker.io/example/release@sha256:" + "b" * 64
 MANIFEST_DIGEST = "sha256:" + "c" * 64
@@ -174,6 +200,76 @@ def test_build_plane_refuses_tofu_and_insufficient_disk() -> None:
     assert "builder_free_disk_below_120_gib" in result["blockers"]
     assert "builder_ssh_host_key_not_independently_verified" in result["blockers"]
     assert "builder_ssh_host_key_verification_method_unsafe" in result["blockers"]
+
+
+def test_build_plane_rejects_unknown_packet_kind() -> None:
+    packet = {**_packet(), "packet_kind": "arbitrary_script"}
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "blocked"
+    assert "builder_packet_kind_unsupported" in result["blockers"]
+
+
+def test_model_cache_build_plane_requires_python_contract_not_docker() -> None:
+    packet = {
+        **_packet(),
+        "packet_kind": "model_cache_s3",
+        "data_center_id": "US-WA-1",
+    }
+    builder = {
+        **_builder(),
+        "purpose": "model_cache_s3",
+        "docker_daemon_verified": False,
+        "docker_buildx_verified": False,
+        "registry_push_auth_file_verified": False,
+        "python_runtime_verified": True,
+        "python_version": "3.12",
+        "dependency_lock_verified": True,
+        "dependency_wheelhouse_verified": True,
+        "dns_resolution_verified": True,
+        "outbound_https_verified": True,
+        "s3_endpoint_host": "s3api-us-wa-1.runpod.io",
+    }
+    result = build_build_plane_admission(packet=packet, builder=builder, spend=_spend())
+    assert result["status"] == "admitted"
+    assert result["checks"]["execution_runtime_ready"] is True
+
+    builder["dependency_wheelhouse_verified"] = False
+    blocked = build_build_plane_admission(packet=packet, builder=builder, spend=_spend())
+    assert blocked["status"] == "blocked"
+    assert "builder_dependency_wheelhouse_not_verified" in blocked["blockers"]
+
+
+def test_model_cache_live_capability_does_not_require_docker() -> None:
+    observation = {
+        "observation_source": "live_machine_probe",
+        "system": "Linux",
+        "architecture": "x86_64",
+        "mount_path": "/",
+        "free_bytes": MIN_BUILD_FREE_BYTES,
+        "docker_cli_present": False,
+        "docker_daemon_responding": False,
+        "docker_buildx_available": False,
+        "python3_available": True,
+        "python_version": "3.12",
+        "python_venv_available": True,
+        "dns_resolution_verified": True,
+        "outbound_https_verified": True,
+        "s3_endpoint_host": "s3api-us-wa-1.runpod.io",
+        "builder_ready_marker": True,
+    }
+    result = build_live_machine_capability_evidence(
+        observation,
+        packet_kind="model_cache_s3",
+        expected_s3_endpoint_host="s3api-us-wa-1.runpod.io",
+    )
+    assert result["status"] == "verified"
+
+    blocked = build_live_machine_capability_evidence(
+        {**observation, "python_venv_available": False},
+        packet_kind="model_cache_s3",
+        expected_s3_endpoint_host="s3api-us-wa-1.runpod.io",
+    )
+    assert "live_machine_python_venv_missing" in blocked["blockers"]
 
 
 def test_known_digitalocean_cpu_builder_profile_requires_live_catalog_match() -> None:

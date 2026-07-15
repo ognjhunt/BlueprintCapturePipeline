@@ -35,7 +35,12 @@
     {
       "path": "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py",
       "classification": "grant_gated_legacy_adapter",
-      "required_markers": ["require_paid_resource_admission_grant", "legacy_runpod_s3_model_cache_mutation_cli_disabled_use_paid_resource_allocator", "upload_file", "delete_object"]
+      "required_markers": ["require_paid_resource_admission_grant", "_transport_capability_valid", "legacy_runpod_s3_model_cache_mutation_cli_disabled_use_paid_resource_allocator", "upload_file", "delete_object"]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["_issue_transport_execution_capability", "_upload_and_verify_model_cache_impl", "typed_model_cache_parent_binding_hmac_invalid"]
     },
     {
       "path": "src/blueprint_pipeline/runpod_provider_adapter.py",

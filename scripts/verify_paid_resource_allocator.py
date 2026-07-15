@@ -50,6 +50,16 @@ APPROVED_ADMISSION_ISSUERS = {
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
 }
+APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
+    (
+        "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py",
+        "upload_and_verify_model_cache",
+    ),
+    (
+        "src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py",
+        "execute_remote_packet",
+    ),
+}
 SURFACE_CLASSIFICATIONS = {
     "canonical_allocator",
     "canonical_adapter",
@@ -136,6 +146,39 @@ def _unclassified_direct_mutators(
         for path, source in source_by_path.items()
         if _direct_paid_mutation_signals(source) and path not in known_paths
     }
+
+
+def _s3_transport_capability_callers(
+    source_by_path: dict[str, str],
+) -> set[tuple[str, str]]:
+    observed: set[tuple[str, str]] = set()
+    protected = {
+        "_issue_transport_execution_capability",
+        "_upload_and_verify_model_cache_impl",
+    }
+    for relative, source in source_by_path.items():
+        tree = ast.parse(source, filename=relative)
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in protected:
+                        aliases[alias.asname or alias.name] = alias.name
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            references: set[str] = set()
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name):
+                    references.add(aliases.get(child.id, child.id))
+                elif isinstance(child, ast.Attribute):
+                    references.add(child.attr)
+                elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                    if child.value in protected:
+                        references.add(child.value)
+            if references & protected:
+                observed.add((relative, node.name))
+    return observed
 
 
 def _production_python_paths(root: Path = ROOT) -> list[Path]:
@@ -270,6 +313,16 @@ def _verify_mutation_surface_contract() -> list[str]:
         blockers.append("paid_resource_admission_issuer_set_mismatch")
     if observed_lane_builders != APPROVED_LANE_ADMISSION_BUILDERS:
         blockers.append("paid_lane_admission_builder_set_mismatch")
+    observed_s3_capability_callers = _s3_transport_capability_callers(source_by_path)
+    if observed_s3_capability_callers != APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS:
+        blockers.append("runpod_s3_transport_capability_caller_set_mismatch")
+    transport_module = "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py"
+    for relative, source in source_by_path.items():
+        if relative != transport_module and (
+            "_TRANSPORT_CAPABILITY_ISSUER" in source
+            or "_TransportExecutionCapability" in source
+        ):
+            blockers.append("runpod_s3_transport_capability_private_state_imported")
     for relative in sorted(_unclassified_direct_mutators(source_by_path, set(by_path))):
         blockers.append("unclassified_paid_resource_mutation_surface:" + relative)
     for relative in sorted(observed_direct_mutators):

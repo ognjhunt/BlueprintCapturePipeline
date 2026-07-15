@@ -43,6 +43,15 @@ def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: boo
     parser.add_argument("--token-file", default="~/.blueprint-secrets/digitalocean_api_token")
     parser.add_argument("--docker-username-file", default="~/.blueprint-secrets/docker_username")
     parser.add_argument("--docker-password-file", default="~/.blueprint-secrets/docker_pat")
+    parser.add_argument("--hf-token-file", default="~/.blueprint-secrets/hf_token")
+    parser.add_argument(
+        "--runpod-s3-access-key-file",
+        default="~/.blueprint-secrets/runpod_s3_access_key",
+    )
+    parser.add_argument(
+        "--runpod-s3-secret-key-file",
+        default="~/.blueprint-secrets/runpod_s3_secret_key",
+    )
     parser.add_argument("--login-private-key", required=require_provider)
     parser.add_argument("--host-private-key", required=require_provider)
     parser.add_argument("--ssh-key-id", required=require_provider, type=int)
@@ -66,6 +75,12 @@ def _cpu_vector(args: argparse.Namespace) -> list[str]:
         args.docker_username_file,
         "--docker-password-file",
         args.docker_password_file,
+        "--hf-token-file",
+        args.hf_token_file,
+        "--runpod-s3-access-key-file",
+        args.runpod_s3_access_key_file,
+        "--runpod-s3-secret-key-file",
+        args.runpod_s3_secret_key_file,
         "--login-private-key",
         args.login_private_key,
         "--host-private-key",
@@ -112,6 +127,9 @@ def _run_cpu(args: argparse.Namespace) -> dict:
         ssh_key_id=args.ssh_key_id,
         region=args.region,
         allow_paid=args.allow_paid,
+        hf_token_file=Path(args.hf_token_file),
+        runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
+        runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
     )
 
 

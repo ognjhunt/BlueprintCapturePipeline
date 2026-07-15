@@ -8,16 +8,22 @@ builder.  It never creates GPU compute and never records credential values.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import re
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_infrastructure_admission import (
-    RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
+    RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS as RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
+    RUNPOD_S3_DATA_CENTER_IDS as RUNPOD_S3_DATA_CENTER_IDS,
+    RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
 )
 from .groot_oscar_model_cache import MANIFEST_NAME, verify_model_cache
 from .paid_resource_admission import (
@@ -35,31 +41,89 @@ REMOTE_SAFETY_HEADROOM_BYTES = 5 * 1024**3
 # independent from network-volume creation capability: some volume regions do
 # not expose S3, while live create evidence rejected at least one S3-listed
 # region. Only the intersection is safe for storage-only preparation.
-RUNPOD_S3_DATA_CENTER_IDS = frozenset(
-    {
-        "EU-CZ-1",
-        "EU-RO-1",
-        "EUR-IS-1",
-        "EUR-NO-1",
-        "US-CA-2",
-        "US-GA-2",
-        "US-IL-1",
-        "US-KS-2",
-        "US-MD-1",
-        "US-MO-1",
-        "US-MO-2",
-        "US-NC-1",
-        "US-NC-2",
-        "US-NE-1",
-        "US-WA-1",
-    }
-)
-RUNPOD_S3_VOLUME_DATA_CENTER_IDS = (
-    RUNPOD_S3_DATA_CENTER_IDS & RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS
-)
 _SAFE_VOLUME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,127}")
 _SAFE_PREFIX = re.compile(r"[A-Za-z0-9.][A-Za-z0-9._/-]{0,254}")
 _SAFE_NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
+_TRANSPORT_CAPABILITY_ISSUER = object()
+
+
+class _TransportExecutionCapability:
+    __slots__ = ("_consumed", "_issuer", "_lock")
+
+    def __init__(self, issuer: object) -> None:
+        self._issuer = issuer
+        self._consumed = False
+        self._lock = threading.Lock()
+
+    def consume(self) -> bool:
+        with self._lock:
+            if self._issuer is not _TRANSPORT_CAPABILITY_ISSUER or self._consumed:
+                return False
+            self._consumed = True
+            return True
+
+
+def _issue_transport_execution_capability(
+    *,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
+    remote_parent_binding: Mapping[str, Any] | None = None,
+    remote_parent_capability: bytes | None = None,
+    remote_packet: Mapping[str, Any] | None = None,
+) -> _TransportExecutionCapability:
+    """Issue from an opaque paid grant or HMAC-bound fixed remote contract."""
+
+    if paid_resource_admission_grant is not None:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="model_volume",
+        )
+        return _TransportExecutionCapability(_TRANSPORT_CAPABILITY_ISSUER)
+    binding = remote_parent_binding
+    capability = remote_parent_capability
+    packet = remote_packet
+    blockers: list[str] = []
+    if not isinstance(binding, Mapping) or not isinstance(packet, Mapping):
+        blockers.append("runpod_s3_remote_parent_contract_missing")
+    if not isinstance(capability, bytes) or len(capability) < 32:
+        blockers.append("runpod_s3_remote_parent_capability_invalid")
+    if not blockers:
+        assert binding is not None and packet is not None and capability is not None
+        if (
+            binding.get("schema_version")
+            != "groot_oscar_model_cache_s3_parent_binding.v1"
+            or binding.get("packet_kind") != "model_cache_s3"
+            or binding.get("raw_secret_values_recorded") is not False
+            or packet.get("packet_kind") != "model_cache_s3"
+            or packet.get("raw_secret_values_recorded") is not False
+        ):
+            blockers.append("runpod_s3_remote_parent_contract_invalid")
+        if hashlib.sha256(capability).hexdigest() != binding.get("capability_sha256"):
+            blockers.append("runpod_s3_remote_parent_capability_digest_mismatch")
+        signed = {key: value for key, value in binding.items() if key != "binding_hmac_sha256"}
+        expected = hmac.new(
+            capability,
+            json.dumps(signed, sort_keys=True, separators=(",", ":")).encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(
+            expected, str(binding.get("binding_hmac_sha256") or "")
+        ):
+            blockers.append("runpod_s3_remote_parent_binding_hmac_invalid")
+        volume = packet.get("volume_evidence")
+        volume = volume if isinstance(volume, Mapping) else {}
+        if (
+            binding.get("provider_volume_id") != volume.get("id")
+            or binding.get("allocation_nonce") != packet.get("allocation_nonce")
+            or volume.get("allocation_nonce") != packet.get("allocation_nonce")
+        ):
+            blockers.append("runpod_s3_remote_parent_volume_binding_mismatch")
+    if blockers:
+        raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
+    return _TransportExecutionCapability(_TRANSPORT_CAPABILITY_ISSUER)
+
+
+def _transport_capability_valid(value: object) -> bool:
+    return isinstance(value, _TransportExecutionCapability) and value.consume()
 
 
 def endpoint_for_data_center(data_center_id: str) -> str:
@@ -112,6 +176,11 @@ def _client(
     )
 
 
+def _filesystem_available_bytes(path: Path) -> int:
+    stats = os.statvfs(path)
+    return stats.f_bavail * stats.f_frsize
+
+
 def preflight_runpod_s3(
     *,
     data_center_id: str,
@@ -120,6 +189,9 @@ def preflight_runpod_s3(
     perform_live_probe: bool = True,
     expected_volume_id: str | None = None,
     client: Any | None = None,
+    live_probe_attempts: int = 1,
+    live_probe_interval_seconds: float = 0.0,
+    sleeper: Any = time.sleep,
 ) -> dict[str, Any]:
     """Validate file-backed S3 credentials and optionally list visible volumes."""
 
@@ -141,32 +213,38 @@ def preflight_runpod_s3(
     visible_volume_count: int | None = None
     live_probe_performed = False
     if not blockers and perform_live_probe:
-        try:
-            s3 = client or _client(
-                data_center_id=data_center,
-                access_key=access_key,
-                secret_key=secret_key,
-            )
-            live_probe_performed = True
-            response = s3.list_buckets()
-            buckets = response.get("Buckets") if isinstance(response, Mapping) else None
-            if not isinstance(buckets, list):
-                raise ValueError("runpod_s3_list_buckets_shape_invalid")
-            visible_volume_count = len(buckets)
-            if expected_volume_id:
-                visible = {
-                    str(row.get("Name") or "")
-                    for row in buckets
-                    if isinstance(row, Mapping)
-                }
-                if expected_volume_id not in visible:
-                    raise ValueError("runpod_s3_expected_volume_not_visible")
-                s3.head_bucket(Bucket=expected_volume_id)
-        except Exception as exc:  # noqa: BLE001 - live capability must fail closed
-            blockers.append("runpod_s3_live_credential_probe_failed")
-            probe_error_type = type(exc).__name__
-        else:
-            probe_error_type = None
+        attempts = max(1, min(30, int(live_probe_attempts)))
+        for attempt in range(attempts):
+            try:
+                s3 = client or _client(
+                    data_center_id=data_center,
+                    access_key=access_key,
+                    secret_key=secret_key,
+                )
+                live_probe_performed = True
+                response = s3.list_buckets()
+                buckets = response.get("Buckets") if isinstance(response, Mapping) else None
+                if not isinstance(buckets, list):
+                    raise ValueError("runpod_s3_list_buckets_shape_invalid")
+                visible_volume_count = len(buckets)
+                if expected_volume_id:
+                    visible = {
+                        str(row.get("Name") or "")
+                        for row in buckets
+                        if isinstance(row, Mapping)
+                    }
+                    if expected_volume_id not in visible:
+                        raise ValueError("runpod_s3_expected_volume_not_visible")
+                    s3.head_bucket(Bucket=expected_volume_id)
+            except Exception as exc:  # noqa: BLE001 - capability fails closed
+                probe_error_type = type(exc).__name__
+                if attempt + 1 < attempts:
+                    sleeper(max(0.0, float(live_probe_interval_seconds)))
+                    continue
+                blockers.append("runpod_s3_live_credential_probe_failed")
+            else:
+                probe_error_type = None
+                break
     else:
         probe_error_type = None
     return {
@@ -226,10 +304,75 @@ def upload_and_verify_model_cache(
     allocation_nonce: str,
     remote_prefix: str = DEFAULT_REMOTE_PREFIX,
     client: Any | None = None,
-    available_bytes: int | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
+    live_probe_attempts: int = 1,
+    live_probe_interval_seconds: float = 0.0,
 ) -> dict[str, Any]:
-    """Upload every manifest-bound file, re-download it, and hash it again."""
+    """Grant-gated in-process wrapper for the storage transport."""
+
+    try:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="model_volume",
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": [
+                "runpod_s3_shared_admission_missing_or_invalid",
+                *exc.blockers,
+            ],
+            "provider_mutations_performed": 0,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
+    return _upload_and_verify_model_cache_impl(
+        cache_root=cache_root,
+        verification_root=verification_root,
+        volume_id=volume_id,
+        data_center_id=data_center_id,
+        access_key_file=access_key_file,
+        secret_key_file=secret_key_file,
+        volume_evidence=volume_evidence,
+        allocation_nonce=allocation_nonce,
+        remote_prefix=remote_prefix,
+        client=client,
+        live_probe_attempts=live_probe_attempts,
+        live_probe_interval_seconds=live_probe_interval_seconds,
+        execution_capability=_issue_transport_execution_capability(
+            paid_resource_admission_grant=paid_resource_admission_grant
+        ),
+    )
+
+
+def _upload_and_verify_model_cache_impl(
+    *,
+    cache_root: str | Path,
+    verification_root: str | Path,
+    volume_id: str,
+    data_center_id: str,
+    access_key_file: str | Path,
+    secret_key_file: str | Path,
+    volume_evidence: Mapping[str, Any],
+    allocation_nonce: str,
+    remote_prefix: str = DEFAULT_REMOTE_PREFIX,
+    client: Any | None = None,
+    live_probe_attempts: int = 1,
+    live_probe_interval_seconds: float = 0.0,
+    execution_capability: _TransportExecutionCapability | None = None,
+) -> dict[str, Any]:
+    """Private transport used by grant wrapper and fixed remote adapter only."""
+
+    if not _transport_capability_valid(execution_capability):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["runpod_s3_transport_execution_capability_invalid"],
+            "provider_mutations_performed": 0,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
 
     volume = str(volume_id or "").strip()
     prefix = str(remote_prefix or "").strip().strip("/")
@@ -274,6 +417,8 @@ def upload_and_verify_model_cache(
         secret_key_file=secret_key_file,
         expected_volume_id=volume,
         client=client,
+        live_probe_attempts=live_probe_attempts,
+        live_probe_interval_seconds=live_probe_interval_seconds,
     )
     if preflight["status"] != "ready":
         return {**preflight, "schema_version": SCHEMA_VERSION}
@@ -315,11 +460,7 @@ def upload_and_verify_model_cache(
         }
     required_free = int(local["verified_size_bytes"]) + REMOTE_SAFETY_HEADROOM_BYTES
     ensure_dir(verification_parent)
-    if available_bytes is None:
-        stats = os.statvfs(verification_parent)
-        available = stats.f_bavail * stats.f_frsize
-    else:
-        available = int(available_bytes)
+    available = _filesystem_available_bytes(verification_parent)
     if available < required_free:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -349,6 +490,8 @@ def upload_and_verify_model_cache(
     files = [*files, manifest_path]
     expected_keys = [f"{prefix}/{path.relative_to(cache).as_posix()}" for path in files]
     uploaded_keys: list[str] = []
+    upload_attempt_count = 0
+    upload_success_count = 0
     try:
         existing_keys = _remote_keys(s3, volume_id=volume)
         if existing_keys:
@@ -362,30 +505,14 @@ def upload_and_verify_model_cache(
                 "gpu_compute_allocated": False,
                 "raw_secret_values_recorded": False,
             }
-        try:
-            require_paid_resource_admission_grant(
-                paid_resource_admission_grant,
-                resource_class="model_volume",
-            )
-        except PaidResourceAdmissionBlocked as exc:
-            return {
-                "schema_version": SCHEMA_VERSION,
-                "status": "blocked",
-                "blockers": [
-                    "runpod_s3_shared_admission_missing_or_invalid",
-                    *exc.blockers,
-                ],
-                "provider_volume_id": volume,
-                "provider_mutations_performed": 0,
-                "gpu_compute_allocated": False,
-                "raw_secret_values_recorded": False,
-            }
         verification = Path(
             tempfile.mkdtemp(prefix="runpod-s3-verify-", dir=verification_parent)
         )
         for path, key in zip(files, expected_keys, strict=True):
+            upload_attempt_count += 1
             s3.upload_file(str(path), volume, key)
             uploaded_keys.append(key)
+            upload_success_count += 1
         observed_keys = _remote_keys(s3, volume_id=volume, prefix=prefix)
         if observed_keys != sorted(expected_keys):
             raise RuntimeError("runpod_s3_remote_inventory_mismatch")
@@ -402,9 +529,13 @@ def upload_and_verify_model_cache(
         if remote["status"] != "passed":
             raise RuntimeError("runpod_s3_redownload_verification_failed")
     except Exception as exc:  # noqa: BLE001 - preserve secret-free terminal evidence
+        delete_attempt_count = 0
+        delete_success_count = 0
         for key in reversed(uploaded_keys):
+            delete_attempt_count += 1
             try:
                 s3.delete_object(Bucket=volume, Key=key)
+                delete_success_count += 1
             except Exception:  # noqa: BLE001 - report uncertain remote state
                 pass
         try:
@@ -424,9 +555,14 @@ def upload_and_verify_model_cache(
             ],
             "error_type": type(exc).__name__,
             "provider_volume_id": volume,
-            "provider_mutations_performed": len(uploaded_keys),
-            "uploaded_object_count_before_failure": len(uploaded_keys),
+            "provider_mutations_performed": upload_attempt_count + delete_attempt_count,
+            "upload_attempt_count": upload_attempt_count,
+            "upload_success_count": upload_success_count,
+            "uploaded_object_count_before_failure": upload_success_count,
+            "cleanup_delete_attempt_count": delete_attempt_count,
+            "cleanup_delete_success_count": delete_success_count,
             "partial_upload_cleanup_verified": cleanup_verified,
+            "final_provider_observed_prefix_empty": cleanup_verified,
             "outer_volume_deletion_required": not cleanup_verified,
             "gpu_compute_allocated": False,
             "raw_secret_values_recorded": False,
@@ -440,10 +576,20 @@ def upload_and_verify_model_cache(
         "endpoint_url": endpoint_for_data_center(data_center_id),
         "remote_prefix": prefix,
         "remote_object_count": len(expected_keys),
-        "provider_mutations_performed": len(expected_keys),
+        "provider_mutations_performed": upload_attempt_count,
+        "upload_attempt_count": upload_attempt_count,
+        "upload_success_count": upload_success_count,
+        "cleanup_delete_attempt_count": 0,
+        "cleanup_delete_success_count": 0,
         "storage_mutations_performed": True,
         "model_manifest_digest": local["model_manifest_digest"],
         "verified_size_bytes": remote["verified_size_bytes"],
+        "remote_verified_file_count": remote["verified_file_count"],
+        "remote_model_manifest_digest": remote["model_manifest_digest"],
+        "remote_provider_volume_id": remote["provider_volume_id"],
+        "remote_verification_sha256": hashlib.sha256(
+            json.dumps(remote, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
         "verification_method": "full_s3_redownload_and_sha256_manifest_verification",
         "multipart_etag_used_as_integrity_proof": False,
         "gpu_compute_allocated": False,
