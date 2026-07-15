@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from blueprint_pipeline.groot_oscar_model_cache import (
-    COSMOS_MODEL_FILES,
-    COSMOS_MODEL_RELATIVE_ROOT,
+    COSMOS_CACHE_RELATIVE_ROOT,
+    COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
+    COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH,
     MANIFEST_NAME,
     MODEL_PINS,
     REQUIRED_MODEL_FILES,
@@ -174,15 +175,24 @@ def test_prepare_uses_runtime_allowlists_and_atomically_replaces_cache(
     assert not (root / "old-cache-marker").exists()
     assert not list(root.rglob(".cache"))
     assert verify_model_cache(root)["status"] == "passed"
-    assert json.loads((root / "sonic/config.json").read_text(encoding="utf-8"))[
-        "model_name"
-    ] == str(root / COSMOS_MODEL_RELATIVE_ROOT)
-    assert "nvidia/Cosmos-Reason2" in str(root / COSMOS_MODEL_RELATIVE_ROOT)
-    assert (root / COSMOS_MODEL_RELATIVE_ROOT / "model.safetensors").is_file()
+    model_name = json.loads(
+        (root / "sonic/config.json").read_text(encoding="utf-8")
+    )["model_name"]
+    assert model_name == str(root / COSMOS_RUNTIME_MODEL_RELATIVE_PATH)
+    assert "nvidia/Cosmos-Reason2" in model_name
+    assert Path(model_name).resolve() == root / COSMOS_CACHE_RELATIVE_ROOT
+    assert (root / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH).is_file()
+    assert (root / COSMOS_CACHE_RELATIVE_ROOT / "model.safetensors").is_file()
+    assert result["required_files"]["cosmos"] == list(
+        REQUIRED_MODEL_FILES["cosmos"]
+    )
+    assert COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH.as_posix() in {
+        row["path"] for row in result["files"]
+    }
     assert calls == [
         (
             repo_id,
-            COSMOS_MODEL_FILES if name == "cosmos" else REQUIRED_MODEL_FILES[name],
+            REQUIRED_MODEL_FILES[name],
         )
         for name, repo_id, _ in MODEL_PINS
         if name != "gear_sonic"

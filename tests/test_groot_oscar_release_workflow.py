@@ -6,14 +6,9 @@ import pytest
 
 from scripts.verify_groot_oscar_live_prerequisites import (
     _AllowlistedRedirectHandler,
-    _required_model_source_files,
     _verify_isaac_base_image,
     summarize_required_model_metadata,
     verify_static,
-)
-from blueprint_pipeline.groot_oscar_model_cache import (
-    COSMOS_MODEL_FILES,
-    REQUIRED_MODEL_FILES,
 )
 from scripts.verify_groot_oscar_thin_architecture import verify
 
@@ -98,15 +93,6 @@ def test_model_metadata_sizing_fails_closed_for_missing_or_unknown_sizes() -> No
     assert missing == ["tokenizer.json"]
     assert invalid_sizes == ["config.json"]
     assert required_bytes == 123
-
-
-def test_cosmos_repository_paths_are_distinct_from_local_selector_layout() -> None:
-    source_files = _required_model_source_files(REQUIRED_MODEL_FILES)
-
-    assert source_files["cosmos"] == COSMOS_MODEL_FILES
-    assert REQUIRED_MODEL_FILES["cosmos"] == tuple(
-        f"nvidia/Cosmos-Reason2-2B/{path}" for path in COSMOS_MODEL_FILES
-    )
 
 
 def test_prerequisite_redirect_handler_reapplies_outbound_allowlist() -> None:

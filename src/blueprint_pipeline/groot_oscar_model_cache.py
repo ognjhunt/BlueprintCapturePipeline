@@ -35,19 +35,13 @@ GEAR_FILES = (
     "observation_config.yaml",
     "planner_sonic.onnx",
 )
-COSMOS_MODEL_FILES = (
-    "config.json",
-    "chat_template.json",
-    "generation_config.json",
-    "merges.txt",
-    "model.safetensors",
-    "preprocessor_config.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "video_preprocessor_config.json",
-    "vocab.json",
+COSMOS_CACHE_RELATIVE_ROOT = Path("cosmos")
+COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH = Path(
+    "cosmos/nvidia/Cosmos-Reason2-2B/.blueprint-path-anchor"
 )
-COSMOS_MODEL_RELATIVE_ROOT = Path("cosmos/nvidia/Cosmos-Reason2-2B")
+COSMOS_RUNTIME_MODEL_RELATIVE_PATH = Path(
+    "cosmos/nvidia/Cosmos-Reason2-2B/../.."
+)
 REQUIRED_MODEL_FILES: dict[str, tuple[str, ...]] = {
     "sonic": (
         "config.json",
@@ -64,16 +58,16 @@ REQUIRED_MODEL_FILES: dict[str, tuple[str, ...]] = {
         "processor/statistics.json",
     ),
     "cosmos": (
-        "nvidia/Cosmos-Reason2-2B/config.json",
-        "nvidia/Cosmos-Reason2-2B/chat_template.json",
-        "nvidia/Cosmos-Reason2-2B/generation_config.json",
-        "nvidia/Cosmos-Reason2-2B/merges.txt",
-        "nvidia/Cosmos-Reason2-2B/model.safetensors",
-        "nvidia/Cosmos-Reason2-2B/preprocessor_config.json",
-        "nvidia/Cosmos-Reason2-2B/tokenizer.json",
-        "nvidia/Cosmos-Reason2-2B/tokenizer_config.json",
-        "nvidia/Cosmos-Reason2-2B/video_preprocessor_config.json",
-        "nvidia/Cosmos-Reason2-2B/vocab.json",
+        "config.json",
+        "chat_template.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "video_preprocessor_config.json",
+        "vocab.json",
     ),
     "oscar": (
         "case_map.json",
@@ -319,8 +313,8 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
         snapshot_download(  # nosec B615
             repo_id=pins["cosmos"][0],
             revision=pins["cosmos"][1],
-            local_dir=str(staging / COSMOS_MODEL_RELATIVE_ROOT),
-            allow_patterns=list(COSMOS_MODEL_FILES),
+            local_dir=str(staging / COSMOS_CACHE_RELATIVE_ROOT),
+            allow_patterns=list(REQUIRED_MODEL_FILES["cosmos"]),
             token=token,
         )
         snapshot_download(  # nosec B615
@@ -347,6 +341,13 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
             if metadata_dir.is_dir():
                 shutil.rmtree(metadata_dir)
 
+        selector_anchor = staging / COSMOS_SELECTOR_ANCHOR_RELATIVE_PATH
+        selector_anchor.parent.mkdir(parents=True, exist_ok=True)
+        selector_anchor.write_text(
+            "This directory anchors the pinned upstream model selector path.\n",
+            encoding="utf-8",
+        )
+
         sonic_config_path = staging / "sonic" / "config.json"
         sonic_config = json.loads(sonic_config_path.read_text(encoding="utf-8"))
         if sonic_config.get("model_name") != pins["cosmos"][0]:
@@ -356,8 +357,13 @@ def prepare_model_cache(root: Path, *, token: str | None = None) -> dict[str, An
         # Isaac-GR00T selects the Qwen3 backbone from the literal
         # ``nvidia/Cosmos-Reason2`` token and then passes this value to
         # Transformers. Keep that provider identity in the path while making
-        # it an exact local directory so runtime remains fully offline.
-        sonic_config["model_name"] = str(root / COSMOS_MODEL_RELATIVE_ROOT)
+        # it an exact local path so runtime remains fully offline. The anchor
+        # directory makes the selector-bearing path resolvable, while ``../..``
+        # preserves the established flat cache layout and release-image contract.
+        runtime_model_path = root / COSMOS_RUNTIME_MODEL_RELATIVE_PATH
+        if runtime_model_path.resolve() != (root / COSMOS_CACHE_RELATIVE_ROOT):
+            raise RuntimeError("cosmos_runtime_model_path_escapes_cache_contract")
+        sonic_config["model_name"] = str(runtime_model_path)
         sonic_config_path.write_text(
             json.dumps(sonic_config, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

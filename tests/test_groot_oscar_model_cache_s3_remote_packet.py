@@ -30,10 +30,11 @@ NONCE = "cacheprep1234"
 
 
 def test_remote_executor_binds_sonic_to_selector_compatible_local_model() -> None:
-    assert RUNTIME_COSMOS_MODEL_ROOT == (
-        RUNTIME_CACHE_ROOT / "cosmos/nvidia/Cosmos-Reason2-2B"
+    assert RUNTIME_COSMOS_MODEL_ROOT == RUNTIME_CACHE_ROOT / (
+        "cosmos/nvidia/Cosmos-Reason2-2B/../.."
     )
     assert "nvidia/Cosmos-Reason2" in str(RUNTIME_COSMOS_MODEL_ROOT)
+    assert RUNTIME_COSMOS_MODEL_ROOT.resolve() == RUNTIME_CACHE_ROOT / "cosmos"
 
 
 def _wheelhouse(tmp_path: Path, *, startup_hook: bool = False) -> tuple[Path, Path]:
