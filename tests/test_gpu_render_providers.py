@@ -444,6 +444,50 @@ def test_runpod_capacity_preflight_registers_rtx_pro_6000_blackwell(
     assert row["single_gpu_offer_available"] is True
 
 
+def test_runpod_exact_one_gpu_offer_requires_explicit_stock_label(monkeypatch) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        del query, timeout
+        assert key == "rp-key"
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA A40",
+                        "displayName": "A40",
+                        "memoryInGb": 48,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": None,
+                            "uninterruptablePrice": 0.44,
+                            "availableGpuCounts": None,
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "gpuTypeIds": ["NVIDIA A40"],
+            "dataCenterIds": ["US-NC-2"],
+            "allowedCudaVersions": ["12.8"],
+            "requires_rtx": True,
+        }
+    )
+
+    row = result["viable_gpu_types"][0]
+    assert row["single_gpu_offer_requested"] is True
+    assert row["single_gpu_offer_available"] is False
+    assert row["capacity_confidence"] == "unknown"
+    assert result["capacity_confidence"] == "unknown"
+
+
 def test_runpod_create_capacity_failure_is_capacity_outcome_not_spend(
     tmp_path: Path, monkeypatch
 ) -> None:

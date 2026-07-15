@@ -468,7 +468,8 @@ class RunPodRenderProvider(GpuRenderProvider):
             # on-demand price is the provider's advisory one-GPU offer; only
             # the subsequent create response remains authoritative.
             single_gpu_offer_available = bool(
-                stock.lower() != "none"
+                stock.strip()
+                and stock.lower() != "none"
                 and _positive_float(price.get("uninterruptablePrice")) is not None
                 and (not counts or 1 in counts)
             )
