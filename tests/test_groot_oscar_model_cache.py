@@ -241,7 +241,10 @@ def test_thin_image_contract_separates_foundation_models_and_release() -> None:
     assert 'export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT="$model_cache/oscar"' in entrypoint
     assert 'export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT="$model_cache/sonic"' in entrypoint
     assert 'if [[ $# -eq 0 || "${1}" == -* ]]' in entrypoint
-    assert 'set -- blueprint-run-robot-eval-worker "$@"' in entrypoint
+    assert (
+        'set -- /opt/oscar-venv/bin/blueprint-run-robot-eval-worker "$@"'
+        in entrypoint
+    )
 
 
 def test_release_builder_enforces_digest_foundation_and_two_gib_budget() -> None:
