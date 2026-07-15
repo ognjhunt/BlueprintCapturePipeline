@@ -40,3 +40,6 @@ def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
     assert "gpu_preflight_model_volume_watchdog_handoff_guard_missing" not in blockers
     assert "gpu_launch_refresh_drops_model_volume_watchdog_handoff" not in blockers
     assert "runbook_model_volume_watchdog_handoff_missing" not in blockers
+    assert "remote_build_final_tag_promotion_guard_missing" not in blockers
+    assert "remote_build_final_tag_promotion_order_invalid" not in blockers
+    assert "remote_build_pushes_unvalidated_final_release_tag" not in blockers

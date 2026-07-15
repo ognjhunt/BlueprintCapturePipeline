@@ -58,6 +58,8 @@ def _versioned_ref_blockers(ref: str, label: str) -> list[str]:
         return [f"missing_{label}_image_ref"]
     if not _SAFE_VERSIONED_IMAGE_REF.fullmatch(ref):
         return [f"{label}_image_ref_invalid"]
+    if "@sha256:" in ref:
+        return [f"{label}_image_ref_must_use_tag"]
     if ":" not in leaf and "@sha256:" not in ref:
         return [f"{label}_image_ref_must_be_versioned"]
     if leaf.endswith((":latest", ":local", ":dev", ":test")):
@@ -98,6 +100,11 @@ foundation_ref="${{BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF:-}}"
 release_ref="${{BLUEPRINT_GROOT_OSCAR_RELEASE_IMAGE_REF:-}}"
 [[ -n "$foundation_ref" ]] || foundation_ref={foundation_default}
 [[ -n "$release_ref" ]] || release_ref={release_default}
+source_commit={shlex.quote(source_commit)}
+foundation_repository="$(python3 -c 'import sys;ref=sys.argv[1];leaf=ref.rsplit("/",1)[-1];print(ref.rsplit(":",1)[0] if ":" in leaf else ref)' "$foundation_ref")"
+release_repository="$(python3 -c 'import sys;ref=sys.argv[1];leaf=ref.rsplit("/",1)[-1];print(ref.rsplit(":",1)[0] if ":" in leaf else ref)' "$release_ref")"
+foundation_candidate_ref="$foundation_repository:blueprint-foundation-candidate-${{source_commit:0:12}}"
+release_candidate_ref="$release_repository:blueprint-release-candidate-${{source_commit:0:12}}"
 min_free_gib="${{BLUEPRINT_GROOT_OSCAR_REMOTE_MIN_FREE_GIB:-{min_free_gib}}}"
 max_release_bytes="${{BLUEPRINT_GROOT_OSCAR_RELEASE_MAX_COMPRESSED_BYTES:-{max_release_bytes}}}"
 result="$script_dir/groot_oscar_thin_remote_build_result.json"
@@ -142,10 +149,10 @@ release_metadata="$script_dir/release_buildx_metadata.json"
 docker buildx build --platform linux/amd64 --progress plain --metadata-file "$foundation_metadata" \
   --attest type=sbom --attest type=provenance,mode=max \
   -f "$context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile" \
-  -t "$foundation_ref" --push "$context_dir"
+  -t "$foundation_candidate_ref" --push "$context_dir"
 foundation_digest="$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(p.get("containerimage.digest") or p.get("containerimage.descriptor",{{}}).get("digest") or "")' "$foundation_metadata")"
 [[ "$foundation_digest" =~ ^sha256:[0-9a-f]{{64}}$ ]] || {{ echo "foundation digest missing" >&2; exit 2; }}
-foundation_exact="$(python3 -c 'import sys;ref=sys.argv[1].split("@",1)[0];leaf=ref.rsplit("/",1)[-1];print((ref.rsplit(":",1)[0] if ":" in leaf else ref)+"@"+sys.argv[2])' "$foundation_ref" "$foundation_digest")"
+foundation_exact="$foundation_repository@$foundation_digest"
 
 docker buildx build --platform linux/amd64 --progress plain --metadata-file "$release_metadata" \
   --attest type=sbom --attest type=provenance,mode=max \
@@ -153,10 +160,10 @@ docker buildx build --platform linux/amd64 --progress plain --metadata-file "$re
   --build-arg "BLUEPRINT_SOURCE_COMMIT={source_commit}" \
   --build-arg "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256={source_patch_sha256}" \
   -f "$context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile" \
-  -t "$release_ref" --push "$context_dir"
+  -t "$release_candidate_ref" --push "$context_dir"
 release_digest="$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(p.get("containerimage.digest") or p.get("containerimage.descriptor",{{}}).get("digest") or "")' "$release_metadata")"
 [[ "$release_digest" =~ ^sha256:[0-9a-f]{{64}}$ ]] || {{ echo "release digest missing" >&2; exit 2; }}
-release_exact="$(python3 -c 'import sys;ref=sys.argv[1].split("@",1)[0];leaf=ref.rsplit("/",1)[-1];print((ref.rsplit(":",1)[0] if ":" in leaf else ref)+"@"+sys.argv[2])' "$release_ref" "$release_digest")"
+release_exact="$release_repository@$release_digest"
 
 PYTHONPATH="$context_dir/src" python3 -m blueprint_pipeline.isaac_worker_image_manifest --image "$foundation_exact" --output "$script_dir/foundation_registry_diagnostic.json"
 PYTHONPATH="$context_dir/src" python3 -m blueprint_pipeline.isaac_worker_image_manifest --image "$release_exact" --output "$script_dir/release_registry_diagnostic.json"
@@ -185,6 +192,17 @@ PYTHONPATH="$context_dir/src" python3 -m blueprint_pipeline.groot_oscar_release_
   --provenance-output "$script_dir/release_provenance.json" \
   --layer-report-output "$script_dir/release_layer_report.json" \
   --manifest-output "$script_dir/release_supply_chain_manifest.json"
+
+# Final tags become visible only after the immutable candidate digests pass
+# registry, disk, SBOM, provenance, layer, and thin-release validation.
+docker buildx imagetools create --tag "$release_ref" "$release_exact"
+promoted_release_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$release_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted release digest missing" >&2; exit 2; }}
+[[ "$promoted_release_digest" == "$release_digest" ]] || {{ echo "promoted release digest mismatch" >&2; exit 2; }}
+docker buildx imagetools create --tag "$foundation_ref" "$foundation_exact"
+promoted_foundation_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$foundation_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted foundation digest missing" >&2; exit 2; }}
+[[ "$promoted_foundation_digest" == "$foundation_digest" ]] || {{ echo "promoted foundation digest mismatch" >&2; exit 2; }}
+foundation_exact="$foundation_repository@$promoted_foundation_digest"
+release_exact="$release_repository@$promoted_release_digest"
 PYTHONPATH="$context_dir/src" python3 - "$script_dir" "$result" "$foundation_exact" "$release_exact" "$max_release_bytes" <<'PY'
 import json,sys
 from datetime import datetime,timezone

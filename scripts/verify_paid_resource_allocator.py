@@ -358,6 +358,21 @@ def verify() -> list[str]:
     ).read_text(encoding="utf-8")
     if "_SAFE_VERSIONED_IMAGE_REF" not in packet_builder or "shlex.quote" not in packet_builder:
         blockers.append("remote_build_packet_image_ref_shell_safety_missing")
+    try:
+        release_candidate_at = packet_builder.index(
+            '-t "$release_candidate_ref" --push'
+        )
+        release_validation_at = packet_builder.index("validate-thin-release")
+        release_promotion_at = packet_builder.index(
+            'imagetools create --tag "$release_ref" "$release_exact"'
+        )
+    except ValueError:
+        blockers.append("remote_build_final_tag_promotion_guard_missing")
+    else:
+        if not release_candidate_at < release_validation_at < release_promotion_at:
+            blockers.append("remote_build_final_tag_promotion_order_invalid")
+    if '-t "$release_ref" --push' in packet_builder:
+        blockers.append("remote_build_pushes_unvalidated_final_release_tag")
     gpu_calls = _function_calls(GPU_ADAPTER)
     if "run_runpod_provider_adapter" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")

@@ -9,6 +9,7 @@ from pathlib import Path
 from blueprint_pipeline.groot_oscar_thin_remote_build_packet import (
     REQUIRED_IMAGE_FILES,
     REQUIRED_ROOT_FILES,
+    _versioned_ref_blockers,
     prepare_remote_build_packet,
 )
 
@@ -81,6 +82,30 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     )
     assert '+"\\n",encoding="utf-8")' in script
     assert "--push" in script
+    foundation_build_at = script.index('-t "$foundation_candidate_ref" --push')
+    release_build_at = script.index('-t "$release_candidate_ref" --push')
+    validation_at = script.index("validate-thin-release")
+    release_promotion_at = script.index(
+        'docker buildx imagetools create --tag "$release_ref" "$release_exact"'
+    )
+    foundation_promotion_at = script.index(
+        'docker buildx imagetools create --tag "$foundation_ref" "$foundation_exact"'
+    )
+    result_at = script.index(
+        'PYTHONPATH="$context_dir/src" python3 - "$script_dir" "$result"'
+    )
+    assert (
+        foundation_build_at
+        < release_build_at
+        < validation_at
+        < release_promotion_at
+        < foundation_promotion_at
+        < result_at
+    )
+    assert '-t "$release_ref" --push' not in script
+    assert '-t "$foundation_ref" --push' not in script
+    assert '[[ "$promoted_release_digest" == "$release_digest" ]]' in script
+    assert '[[ "$promoted_foundation_digest" == "$foundation_digest" ]]' in script
     assert "hf_token" not in script
     assert "snapshot_download" not in script
     assert script.count("--attest type=sbom --attest type=provenance,mode=max") == 2
@@ -111,6 +136,13 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
         "groot_oscar_thin_remote_build/remote_build_groot_oscar_thin_images.sh"
         in names
     )
+
+
+def test_packet_build_outputs_require_promotable_tags() -> None:
+    digest_ref = "registry.example/blueprint/release@sha256:" + "a" * 64
+    assert _versioned_ref_blockers(digest_ref, "release") == [
+        "release_image_ref_must_use_tag"
+    ]
 
 
 def test_packet_refuses_dirty_source_and_unstable_refs(tmp_path: Path) -> None:
