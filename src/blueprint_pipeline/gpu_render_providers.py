@@ -412,10 +412,6 @@ class RunPodRenderProvider(GpuRenderProvider):
         requires_rtx = req.get("requires_rtx") is not False
         query = f"""
         query BlueprintRenderCapacity {{
-          dataCenters {{
-            id
-            storageSupport
-          }}
           gpuTypes {{
             id
             displayName
@@ -437,14 +433,6 @@ class RunPodRenderProvider(GpuRenderProvider):
             for row in data.get("gpuTypes", [])
             if isinstance(row, Mapping)
         ]
-        data_center_rows = [
-            dict(row)
-            for row in data.get("dataCenters", [])
-            if isinstance(row, Mapping)
-        ]
-        data_centers_by_id = {
-            str(row.get("id") or ""): row for row in data_center_rows
-        }
         if status != 200 or not rows or _mapping(payload).get("errors"):
             return {
                 "status": "blocked",
@@ -490,13 +478,6 @@ class RunPodRenderProvider(GpuRenderProvider):
                 if len(requested_data_centers) == 1
                 else None
             )
-            data_center_row = _mapping(
-                data_centers_by_id.get(str(capacity_data_center_id or ""))
-            )
-            storage_support = data_center_row.get("storageSupport")
-            storage_support = (
-                storage_support if isinstance(storage_support, bool) else None
-            )
             record = {
                 "gpu_type_id": gpu_type,
                 "display_name": row.get("displayName"),
@@ -506,8 +487,6 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "cloud_type": cloud_type,
                 "capacity_data_center_ids": requested_data_centers,
                 "capacity_data_center_id": capacity_data_center_id,
-                "capacity_data_center_catalog_verified": bool(data_center_row),
-                "capacity_data_center_storage_support": storage_support,
                 "capacity_allowed_cuda_versions": requested_cuda_versions,
                 "requested_pool_capable": pool_capable,
                 "stock_status": stock,
@@ -564,26 +543,6 @@ class RunPodRenderProvider(GpuRenderProvider):
             "requested_gpu_types": list(requested_types),
             "requested_data_center_ids": requested_data_centers,
             "requested_allowed_cuda_versions": requested_cuda_versions,
-            "requested_data_center_evidence": [
-                {
-                    "id": data_center_id,
-                    "provider_catalog_row_present": data_center_id
-                    in data_centers_by_id,
-                    "storage_support": (
-                        data_centers_by_id.get(data_center_id, {}).get(
-                            "storageSupport"
-                        )
-                        if isinstance(
-                            data_centers_by_id.get(data_center_id, {}).get(
-                                "storageSupport"
-                            ),
-                            bool,
-                        )
-                        else None
-                    ),
-                }
-                for data_center_id in requested_data_centers
-            ],
             "min_gpu_ram_mb": min_gpu_ram_mb,
             "requires_rtx": requires_rtx,
             "viable_gpu_types": viable,
