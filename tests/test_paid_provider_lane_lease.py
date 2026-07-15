@@ -538,6 +538,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert rotated["status"] == "pending_canary_acceptance"
     assert rotated["retention_rotation"] is True
     assert rotated["prior_capability_consumed"] is True
+    assert rotated["prior_capability_cleanup_verified"] is True
     assert rotated["source_owner_pid"] == 333
     assert rotated["binding"]["watchdog_deadline_epoch"] == retention_deadline
     assert capability.is_file()
@@ -549,6 +550,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert current["handoff"] == {
         key: value for key, value in rotated.items() if key not in {
             "prior_capability_consumed",
+            "prior_capability_cleanup_verified",
             "owner_role",
         }
     }

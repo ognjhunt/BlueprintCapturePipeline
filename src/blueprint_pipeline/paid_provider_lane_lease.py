@@ -1094,11 +1094,19 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             _write_lease(Path(current_binding["pending_teardown_record"]), pending)
             os.replace(consumed, capability_path)
             raise
-        consumed.unlink(missing_ok=True)
+        try:
+            consumed.unlink(missing_ok=True)
+            prior_capability_cleanup_verified = True
+        except OSError:
+            # The old token is no longer usable because the lease now binds the
+            # fresh handoff exactly.  Preserve that cleanup failure as evidence
+            # without killing the new teardown owner after the atomic commit.
+            prior_capability_cleanup_verified = False
     return {
         **new_handoff,
         "status": "pending_canary_acceptance",
         "prior_capability_consumed": True,
+        "prior_capability_cleanup_verified": prior_capability_cleanup_verified,
         "owner_role": "bounded_persistent_cache_watchdog",
     }
 
