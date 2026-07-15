@@ -352,7 +352,7 @@
             {
               "artifact_id": "REL-01-AC-01-EV-02",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -840,7 +840,7 @@
             {
               "artifact_id": "REL-05-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3503,7 +3503,7 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-02",
               "path": "tests/test_oscar_cosmos_wam_evaluator.py",
-              "sha256": "sha256:0ad3241dbf835e0f3d16c10da932f84f0a7be918544936f9dc01ddf728e77b1f",
+              "sha256": "sha256:5d5aa448f2c3541148d077b681073758643a18beb9470cd30e9c3542ad2b10fa",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4011,7 +4011,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-02",
               "path": "tests/test_robot_eval_job_orchestrator.py",
-              "sha256": "sha256:e5754bcf531c924bd702f8c9113d0b6c5d233dfd4957009e4417229fc45136c7",
+              "sha256": "sha256:952412eb7998a06a3dc9579608fe21676c9c3000f786edc467982c3c2bde5cd3",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5021,7 +5021,7 @@
             {
               "artifact_id": "REL-06-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5416,7 +5416,7 @@
             {
               "artifact_id": "REL-09-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5549,7 +5549,7 @@
             {
               "artifact_id": "REL-10-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5696,7 +5696,7 @@
             {
               "artifact_id": "REL-11-AC-01-EV-04",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5961,7 +5961,7 @@
             {
               "artifact_id": "REL-13-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -6223,7 +6223,7 @@
             {
               "artifact_id": "REL-15-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10781,7 +10781,7 @@
             {
               "artifact_id": "P2-01-AC-01-EV-04",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10913,7 +10913,7 @@
             {
               "artifact_id": "P2-02-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11060,7 +11060,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-04",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11291,7 +11291,7 @@
             {
               "artifact_id": "P2-05-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11537,7 +11537,7 @@
             {
               "artifact_id": "P2-07-AC-01-EV-02",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:6743e19ce51bab33fa442059ed652f6bafa6029f247ef37e6f382f9da0916da0",
+              "sha256": "sha256:c16098bfca3fa10aa9ab4535ebcbcee31a932a30cd71b7029a4aae8f198171df",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

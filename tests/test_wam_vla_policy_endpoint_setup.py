@@ -51,7 +51,9 @@ def _write_openvla_provider_smoke_job(job_dir: Path) -> Path:
 
 def test_wam_vla_policy_endpoint_setup_writes_contracts(tmp_path: Path) -> None:
     assert len(endpoint_setup._timestamp()) == len("20260620T010203Z")
-    assert endpoint_setup._repo_root().name == "BlueprintCapturePipeline"
+    repo_root = endpoint_setup._repo_root()
+    assert (repo_root / "pyproject.toml").is_file()
+    assert (repo_root / "src" / "blueprint_pipeline").is_dir()
     summary = build_wam_vla_policy_endpoint_setup(
         output_dir=tmp_path / "setup",
         generated_at="now",

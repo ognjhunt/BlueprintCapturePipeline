@@ -15,6 +15,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -38,16 +39,13 @@ G1_USD = os.environ.get(
     "/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd",
 )
 WBC_ROOT = os.environ.get("BLUEPRINT_GEAR_SONIC_ROOT", "/opt/wbc")
-GEAR_SONIC_CHECKPOINT_REPO = os.environ.get(
-    "GEAR_SONIC_CHECKPOINT_REPO", "nvidia/GEAR-SONIC"
-)
+WBC_SOURCE_REVISION = os.environ.get("BLUEPRINT_GEAR_SONIC_SOURCE_REVISION", "")
+GEAR_SONIC_CHECKPOINT_REPO = os.environ.get("GEAR_SONIC_CHECKPOINT_REPO", "nvidia/GEAR-SONIC")
 GEAR_SONIC_CHECKPOINT_REVISION = os.environ.get(
     "GEAR_SONIC_CHECKPOINT_REVISION",
     "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f",
 )
-COSMOS_BACKBONE_REPO = os.environ.get(
-    "COSMOS_BACKBONE_REPO", "nvidia/Cosmos-Reason2-2B"
-)
+COSMOS_BACKBONE_REPO = os.environ.get("COSMOS_BACKBONE_REPO", "nvidia/Cosmos-Reason2-2B")
 COSMOS_BACKBONE_REVISION = os.environ.get("COSMOS_BACKBONE_REVISION", "")
 
 # IMGFIX-004: the Isaac 6 kit creates DerivedDataCache under kit/cache and
@@ -109,9 +107,7 @@ def compute_asset_binding(env=None) -> tuple[dict, bool]:
             },
             False,
         )
-    return asset_binding_check(
-        runtime_env=dict(env or os.environ), path_exists=Path.exists
-    )
+    return asset_binding_check(runtime_env=dict(env or os.environ), path_exists=Path.exists)
 
 
 def build_runtime_metadata(
@@ -134,9 +130,7 @@ def build_runtime_metadata(
         "image_family": env.get("BLUEPRINT_WORKER_IMAGE_FAMILY"),
         "image_variant": env.get("BLUEPRINT_WORKER_IMAGE_VARIANT"),
         "simulator_family": env.get("BLUEPRINT_SIMULATOR_FRAMEWORK"),
-        "simulator_major_version": int(
-            env.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "0") or 0
-        ),
+        "simulator_major_version": int(env.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "0") or 0),
         "blueprint_pipeline_imported": isaac_imported,
         "configured_g1_usd_exists": g1_exists,
         "configured_g1_asset_binding_valid": asset_binding_valid,
@@ -160,13 +154,17 @@ def main() -> int:
         "raw_secret_values_recorded": False,
     }
     source_commit = os.environ.get("BLUEPRINT_SOURCE_COMMIT", "").strip()
-    dirty_patch = os.environ.get(
-        "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256", ""
-    ).strip()
+    worker_image_digest = os.environ.get("BLUEPRINT_WORKER_IMAGE_DIGEST", "").strip()
+    if "@sha256:" in worker_image_digest:
+        worker_image_digest = worker_image_digest.rsplit("@", 1)[1]
+    payload["worker_image_digest"] = worker_image_digest
+    dirty_patch = os.environ.get("BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256", "").strip()
     if not source_commit:
         blockers.append("blueprint_source_commit_missing")
     if len(dirty_patch) != 64:
         blockers.append("blueprint_source_dirty_patch_sha256_missing")
+    if args.require_cuda and re.fullmatch(r"sha256:[0-9a-f]{64}", worker_image_digest) is None:
+        blockers.append("blueprint_worker_image_digest_missing_or_invalid")
 
     # --- main env: torch (from base) ---
     try:
@@ -191,6 +189,35 @@ def main() -> int:
         payload["main_env_imports"][label] = spec is not None
         if spec is None:
             blockers.append(f"{label}_not_importable")
+
+    try:
+        from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (  # type: ignore
+            build_command_message,
+            pack_pose_message,
+        )
+
+        payload["gear_sonic_zmq_python_runtime_importable"] = bool(
+            callable(build_command_message) and callable(pack_pose_message)
+        )
+    except Exception as exc:  # pragma: no cover - image-only path
+        payload["gear_sonic_zmq_python_runtime_importable"] = False
+        payload["gear_sonic_zmq_python_runtime_error_type"] = type(exc).__name__
+    if not payload["gear_sonic_zmq_python_runtime_importable"]:
+        blockers.append("gear_sonic_zmq_python_runtime_not_importable")
+
+    cuda_development_markers: set[str] = set()
+    for cuda_root in Path("/usr/local").glob("cuda*"):
+        for marker in (cuda_root / "bin/nvcc", cuda_root / "include", cuda_root / "lib64/stubs"):
+            if marker.exists():
+                cuda_development_markers.add(str(marker.resolve()))
+        if cuda_root.is_dir():
+            cuda_development_markers.update(
+                str(path.resolve()) for path in cuda_root.rglob("*.a") if path.is_file()
+            )
+    payload["cuda_compiler_or_development_markers"] = sorted(cuda_development_markers)
+    payload["cuda_compiler_and_development_files_removed"] = not cuda_development_markers
+    if cuda_development_markers:
+        blockers.append("cuda_compiler_or_development_files_present")
 
     # --- OSCAR source on PYTHONPATH ---
     oscar_entrypoint = Path(OSCAR_REPO) / "inference" / "inference_oscar.py"
@@ -247,7 +274,17 @@ def main() -> int:
     }
     payload["gear_sonic_checkpoint_repo"] = GEAR_SONIC_CHECKPOINT_REPO
     payload["gear_sonic_checkpoint_revision"] = GEAR_SONIC_CHECKPOINT_REVISION
+    revision_marker = wbc_root / ".blueprint-source-revision"
+    sealed_wbc_revision = (
+        revision_marker.read_text(encoding="utf-8").strip().lower()
+        if revision_marker.is_file()
+        else ""
+    )
+    payload["gear_sonic_source_revision"] = sealed_wbc_revision
+    payload["gear_sonic_source_revision_marker"] = str(revision_marker)
     payload["gear_sonic_deployment_assets"] = wbc_asset_checks
+    if not WBC_SOURCE_REVISION or sealed_wbc_revision != WBC_SOURCE_REVISION.lower():
+        blockers.append("official_gear_sonic_source_revision_mismatch")
     if not GEAR_SONIC_CHECKPOINT_REVISION:
         blockers.append("gear_sonic_checkpoint_revision_missing")
     if not all(wbc_asset_checks.values()):
@@ -297,9 +334,7 @@ def main() -> int:
             check=False,
             env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
         )
-        payload["groot_nested_processor_offline_constructible"] = (
-            processor_proc.returncode == 0
-        )
+        payload["groot_nested_processor_offline_constructible"] = processor_proc.returncode == 0
         if processor_proc.returncode != 0:
             payload["groot_nested_processor_stderr_tail"] = processor_proc.stderr[-1000:]
             blockers.append("groot_nested_processor_not_offline_constructible")

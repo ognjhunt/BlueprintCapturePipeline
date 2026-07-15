@@ -18,6 +18,20 @@
 
 ### Employee-Facing
 
+- Added the next-release GR00T+OSCAR reliability closure after the July 13 G4
+  campaign: the official image path now emits BuildKit SBOM/provenance
+  attestations, scans only the immutable registry digest, admits disk for both
+  build and scan scratch, records layer/startup evidence, and runs the finished
+  digest as the OCI runtime user. The worker closure also pins and verifies the
+  WBC/GEAR runtime assets, resolves the Cosmos processor from its offline
+  snapshot, and composes the pinned G1 USD when a scenario omits `/World/G1`.
+- Added a provider-neutral, resumable GPU campaign state machine with immutable
+  configuration, OS-level single ownership, budget and duplicate-allocation
+  gates, strict smoke-to-episode admission, paid-lifetime-capped stage
+  deadlines, explicit same-allocation canary handoff schemas, and
+  finally-equivalent teardown. Added a pinned GCP G4 host-image template,
+  startup self-test, regional mirror equivalence/planning contracts, release
+  SLO instrumentation, and focused regression/contract tests.
 - Added a GCP Packer contract for an immutable GPU host image containing the
   driver payload, Docker, NVIDIA Container Toolkit, and exact digest-pinned
   worker cache. GCP/AWS VM startup now verifies the baked image marker and local
@@ -54,6 +68,11 @@
 
 ### Future-Agent-Facing
 
+- These changes are next-release source hardening. They do not alter the July
+  13 immutable release candidate or upgrade its blocked kitchen campaign into
+  simulator-step, learned-action, semantic-success, buyer-claim, or physical
+  robot evidence. A new image build, host image, mirror copy, and live campaign
+  remain separately gated provider operations.
 - Treat the immutable 20–25 minute cold-start campaign as release-engineering
   evidence, not the production-serving architecture. Packer build and local
   pool tests do not prove a live GPU host image, warm capacity, or latency SLO;
@@ -101,7 +120,6 @@
   Before upgrading their status, run focused adapter/spend tests and bind any
   provider claim to authenticated inventory, exact resource identity, teardown,
   and absence verification.
-
 ## 2026-07-12
 
 ### User-Facing
