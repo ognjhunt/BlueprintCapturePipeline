@@ -606,7 +606,8 @@ def observe_local_machine(
             socket.getaddrinfo(s3_endpoint_host, 443)
             dns_verified = True
         except OSError:
-            pass
+            # Fail closed: the default remains unverified when DNS probing fails.
+            dns_verified = False
         try:
             with urllib.request.urlopen(  # nosec B310 - fixed RunPod endpoint
                 "https://" + str(s3_endpoint_host) + "/", timeout=15
@@ -615,7 +616,8 @@ def observe_local_machine(
         except urllib.error.HTTPError:
             https_verified = True
         except (OSError, urllib.error.URLError):
-            pass
+            # Fail closed: the default remains unverified on transport failure.
+            https_verified = False
     with tempfile.TemporaryDirectory(prefix="blueprint-venv-probe-") as probe_dir:
         venv_verified = succeeds([sys.executable, "-m", "venv", probe_dir]) and (
             Path(probe_dir) / "bin/pip"

@@ -672,7 +672,7 @@ def run_storage_model_volume(
             success = False
             for candidate in final_volumes or ([volume_id] if volume_id else []):
                 volume_teardown = _delete_volume(key=key, volume_id=candidate)
-            final_pods, final_volumes, final_inventory_verified = _matching_resources(
+            _, final_volumes, _ = _matching_resources(
                 key=key,
                 pod_prefix=watchdog["pod_name_prefix"],
                 volume_prefix=volume_name,
@@ -703,11 +703,6 @@ def run_storage_model_volume(
                 error_type = "PaidProviderLaneHandoffBlocked"
                 for candidate in final_volumes or ([volume_id] if volume_id else []):
                     volume_teardown = _delete_volume(key=key, volume_id=candidate)
-                final_pods, final_volumes, final_inventory_verified = _matching_resources(
-                    key=key,
-                    pod_prefix=watchdog["pod_name_prefix"],
-                    volume_prefix=volume_name,
-                )
             else:
                 watchdog_state = _load(Path(watchdog["state_path"]))
                 write_json(

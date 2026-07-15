@@ -336,6 +336,8 @@ def run_canary(
     preflight = _read(preflight_bundle)
     provider = None
     budget_context: dict[str, Any] = {}
+    acceptance: dict[str, Any] = {}
+    watchdog_out_dir = ""
     refresh_path = Path(adapter_output).resolve().parent / "runpod_preflight_launch_refresh.json"
     if execute:
         provider = get_render_provider("runpod")

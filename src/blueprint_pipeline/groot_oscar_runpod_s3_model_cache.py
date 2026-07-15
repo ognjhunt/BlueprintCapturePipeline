@@ -21,8 +21,6 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_infrastructure_admission import (
-    RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS as RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
-    RUNPOD_S3_DATA_CENTER_IDS as RUNPOD_S3_DATA_CENTER_IDS,
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
 )
 from .groot_oscar_model_cache import MANIFEST_NAME, verify_model_cache
