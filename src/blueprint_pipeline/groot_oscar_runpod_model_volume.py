@@ -42,7 +42,17 @@ MAX_TTL_SECONDS = 3600
 EVIDENCE_PORT = 8765
 POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
-AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset({"NVIDIA L40S", "NVIDIA A40"})
+# Standing user authorization on 2026-07-14 covers the qualified RTX datacenter
+# fallbacks needed to complete this bounded model-volume/canary campaign. Spend,
+# CUDA, storage-datacenter, one-resource, and watchdog gates still apply.
+AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset(
+    {
+        "NVIDIA A40",
+        "NVIDIA L40S",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    }
+)
 # RunPod's create API returned this authoritative network-volume-capable set on
 # 2026-07-14. The general datacenter catalog includes additional GPU locations
 # that reject network-volume creation, so fail closed until this provider list
