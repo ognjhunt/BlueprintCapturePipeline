@@ -506,6 +506,7 @@ def run_canary(
         return blocked
     pod_pending = None
     no_create_terminal = False
+    no_create_control_failure = False
     if execute:
         try:
             pod_pending = open_pending_teardown(
@@ -614,16 +615,23 @@ def run_canary(
         if pod_id:
             bind_pending_teardown_instance(pod_pending["path"], pod_id)
         elif adapter.get("status") in {"blocked", "dry_run"}:
-            cancel_pending_teardown(
+            cancel_result = cancel_pending_teardown(
                 pod_pending["path"],
                 reason="runpod_canary_adapter_confirmed_no_create",
                 evidence={"adapter_status": adapter.get("status")},
             )
-            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
-            _settle_zero_budget(
+            restore_result = restore_paid_provider_lane_lease_to_retained_watchdog(
+                acceptance
+            )
+            settlement = _settle_zero_budget(
                 budget_context, outcome="adapter_confirmed_no_create"
             )
-            no_create_terminal = True
+            no_create_terminal = bool(
+                cancel_result.get("status") == "cancelled_no_allocation"
+                and restore_result.get("status") in {"restored", "already_released"}
+                and settlement.get("status") == "settled"
+            )
+            no_create_control_failure = not no_create_terminal
         else:
             mark_pending_teardown_ambiguous(
                 pod_pending["path"],
@@ -656,6 +664,14 @@ def run_canary(
                 }
                 write_json(Path(adapter_output), failed)
                 return failed
+        if no_create_control_failure:
+            failed = {
+                "status": "failed",
+                "blockers": ["runpod_canary_no_create_control_plane_open"],
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(adapter_output), failed)
+            return failed
     if execute and adapter.get("status") == "submitted":
         return _finalize_adapter_allocation(
             adapter=adapter,
