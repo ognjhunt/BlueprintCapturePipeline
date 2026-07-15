@@ -246,7 +246,12 @@ def build_runpod_gpu_runtime_evidence(
     counts = selected.get("available_gpu_counts")
     counts = counts if isinstance(counts, list) else []
     confidence = _string(selected.get("capacity_confidence"))
-    single_available = confidence == "advisory" and 1 in counts
+    single_available = bool(
+        confidence == "advisory"
+        and selected.get("single_gpu_offer_requested") is True
+        and selected.get("single_gpu_offer_available") is True
+        and (not counts or 1 in counts)
+    )
     capacity_data_center_id = _string(selected.get("capacity_data_center_id"))
     capacity_cuda_versions = selected.get("capacity_allowed_cuda_versions")
     capacity_cuda_versions = (
