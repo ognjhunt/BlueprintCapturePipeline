@@ -144,12 +144,12 @@ def test_staged_canary_then_campaign_fits_reduced_combined_plan(tmp_path) -> Non
     assert snapshot["remaining_gpu_seconds"] == 81
 
 
-def test_new_300_minute_authority_is_exact_and_not_per_attempt(tmp_path) -> None:
+def test_new_18329_second_authority_is_exact_and_not_per_attempt(tmp_path) -> None:
     ledger = ProductionGpuCampaignBudget(
-        tmp_path / "authorized-300-minute-budget.json",
-        initial_spent_usd=12.712289,
-        initial_used_gpu_seconds=12_632,
-        combined_gpu_wall_cap_seconds=18_000,
+        tmp_path / "authorized-18329-second-budget.json",
+        initial_spent_usd=13.631100,
+        initial_used_gpu_seconds=13_949,
+        combined_gpu_wall_cap_seconds=18_329,
     )
     strict = ledger.reserve(
         reservation_id="strict-policy-smoke",
@@ -159,8 +159,8 @@ def test_new_300_minute_authority_is_exact_and_not_per_attempt(tmp_path) -> None
     assert strict["reserved_gpu_seconds"] == 480
     with pytest.raises(CampaignBudgetExceeded):
         ledger.reserve(
-            reservation_id="single-300-minute-job",
-            gpu_seconds=18_000,
+            reservation_id="single-cap-sized-job",
+            gpu_seconds=18_329,
             max_hourly_rate_usd=1.99,
         )
 
@@ -169,5 +169,5 @@ def test_new_300_minute_authority_is_exact_and_not_per_attempt(tmp_path) -> None
             tmp_path / "over-authorized-budget.json",
             initial_spent_usd=0,
             initial_used_gpu_seconds=0,
-            combined_gpu_wall_cap_seconds=18_001,
+            combined_gpu_wall_cap_seconds=18_330,
         )
