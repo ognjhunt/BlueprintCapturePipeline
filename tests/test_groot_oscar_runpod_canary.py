@@ -22,6 +22,7 @@ def test_strict_policy_smoke_binding_is_fixed_and_bounded() -> None:
     request = _request()
     shape = request["provider_request_shape"]
     shape["command"] = "echo caller-command"
+    shape.setdefault("limits", {})["external_watchdog_ttl_seconds"] = 180
     admission = {
         "release_image_ref": DIGEST,
         "gpu_type_id": "NVIDIA A40",
@@ -45,6 +46,7 @@ def test_strict_policy_smoke_binding_is_fixed_and_bounded() -> None:
     assert bound_shape["operation"] == "enqueue_runpod_strict_policy_smoke"
     assert "command" not in bound_shape
     assert bound_shape["limits"]["hard_timeout_seconds"] == 300
+    assert bound_shape["limits"]["external_watchdog_ttl_seconds"] == 360
     assert bound_shape["claim_boundary"]["strict_policy_smoke_only"] is True
     assert (
         bound_shape["claim_boundary"]["fresh_three_action_policy_smoke_required"]

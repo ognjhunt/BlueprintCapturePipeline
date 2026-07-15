@@ -435,6 +435,9 @@ def bind_canary_request(
         limits = limits if isinstance(limits, dict) else {}
         limits["hard_timeout_seconds"] = 300
         limits["startup_artifact_timeout_seconds"] = 300
+        limits["external_watchdog_ttl_seconds"] = max(
+            int(limits.get("external_watchdog_ttl_seconds") or 0), 360
+        )
         shape["limits"] = limits
         claim_boundary = shape.get("claim_boundary")
         claim_boundary = claim_boundary if isinstance(claim_boundary, dict) else {}
