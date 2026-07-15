@@ -34,7 +34,9 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
                     "capacity_allowed_cuda_versions": request[
                         "allowedCudaVersions"
                     ],
-                    "available_gpu_counts": [1],
+                    "available_gpu_counts": [],
+                    "single_gpu_offer_requested": True,
+                    "single_gpu_offer_available": True,
                     "on_demand_price_usd_per_hour": 0.44,
                 }
             ],
@@ -61,6 +63,7 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
         "dataCenterIds": ["US-TX-3"],
         "allowedCudaVersions": ["12.6"],
     }
+    assert result["runtime"]["single_gpu_available"] is True
     assert result["spend"]["watchdog_armed_before_allocation"] is True
     assert result["spend"]["watchdog_process_identity_verified"] is True
 

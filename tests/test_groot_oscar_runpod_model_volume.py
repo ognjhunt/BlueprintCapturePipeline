@@ -96,8 +96,6 @@ def test_model_volume_admission_rejects_gpu_outside_campaign_contract() -> None:
         "model_volume_gpu_type_outside_authorized_campaign"
         in admission["blockers"]
     )
-
-
 def test_model_volume_admission_rejects_cost_above_cap() -> None:
     admission = _admission(max_spend_usd=0.10)
     assert admission["status"] == "blocked"
