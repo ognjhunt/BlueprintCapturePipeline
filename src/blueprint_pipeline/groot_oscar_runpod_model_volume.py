@@ -1,9 +1,10 @@
-"""Canonical bounded preparation of the GR00T + OSCAR RunPod model volume.
+"""Retained RunPod volume watchdog and disabled legacy GPU preparation seam.
 
-The allocator creates one network volume and one temporary preparation Pod.
-An independent deadline watchdog owns both names before either create call.
-The Pod exposes only a token-authenticated verification response, and the
-supervisor deletes the Pod before handing the verified volume to the canary.
+The supported model-volume command is storage-only and lives in
+``groot_oscar_runpod_storage_volume``. This module keeps the independent
+deadline watchdog and compatibility admission helpers, but contains no RunPod
+Pod create path. The legacy preparation callable always fails before provider
+inventory or mutation.
 """
 
 from __future__ import annotations
@@ -11,25 +12,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import secrets
-import subprocess
-import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import safe_outbound_http
 from .common import ensure_dir, write_json
 from .gpu_render_providers import _runpod_call, get_render_provider
 from .groot_oscar_infrastructure_admission import (
     RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
-    build_runpod_network_volume_evidence,
-)
-from .paid_resource_admission import (
-    PaidResourceAdmissionBlocked,
-    require_paid_resource_admission,
 )
 
 
@@ -41,13 +31,8 @@ MODEL_CACHE_PATH = "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
 MIN_VOLUME_GIB = 30
 MAX_VOLUME_GIB = 100
 MAX_TTL_SECONDS = 3600
-EVIDENCE_PORT = 8765
 POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
-# The user's standing 2026-07-14 authorization explicitly covers everything
-# needed to complete this bounded campaign, including these qualified RTX
-# datacenter fallbacks. Spend, CUDA, storage-datacenter, one-resource, and
-# watchdog gates still apply independently.
 AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset(
     {
         "NVIDIA A40",
@@ -56,7 +41,6 @@ AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset(
         "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     }
 )
-_DIGEST_REF = re.compile(r"\A[^\s@]+@sha256:[0-9a-f]{64}\Z")
 _RUNPOD_ID = re.compile(r"\A[A-Za-z0-9._-]{1,256}\Z")
 _SECRET_ERROR_PATTERNS = (
     re.compile(r"(?i)\bBearer\s+\S+"),
@@ -65,29 +49,16 @@ _SECRET_ERROR_PATTERNS = (
 )
 
 
-def _mapping(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _read_secret(path: str | Path) -> str:
-    value = Path(path).expanduser().read_text(encoding="utf-8").strip()
-    if not value:
-        raise ValueError("model_volume_secret_file_empty")
-    return value
-
-
 def _safe_provider_error_summary(payload: Any) -> str | None:
-    """Keep provider diagnosis without persisting request bodies or secrets."""
-
     if not isinstance(payload, Mapping):
         return None
     parts: list[str] = []
     for field in ("code", "statusCode", "error", "message", "detail", "title"):
         value = payload.get(field)
         if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-            text_value = str(value).strip()
-            if text_value:
-                parts.append(f"{field}={text_value}")
+            text = str(value).strip()
+            if text:
+                parts.append(f"{field}={text}")
     if not parts:
         return None
     summary = "; ".join(parts)[:1000]
@@ -103,13 +74,7 @@ def _single_gpu_capacity_verified(
     data_center_id: str,
     required_cuda_version: str,
 ) -> bool:
-    """Accept the exact one-GPU offer while keeping it advisory, not reserved.
-
-    Network-volume support is gated separately by the provider-derived
-    ``RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS`` set. RunPod's account
-    ``myself.datacenters`` response can omit a datacenter where this account
-    has just created a volume, so it is not a reliable duplicate launch gate.
-    """
+    """Legacy admission compatibility only; storage preparation uses no GPU."""
 
     return bool(
         capacity.get("status") == "available"
@@ -139,16 +104,13 @@ def build_model_volume_admission(
     paid_mutation_authorized: bool,
     watchdog_armed_before_allocation: bool,
 ) -> dict[str, Any]:
+    """Preserve the old evidence parser while permanently blocking allocation."""
+
+    del release_image_ref
     blockers: list[str] = []
-    if not _DIGEST_REF.fullmatch(release_image_ref):
-        blockers.append("model_volume_release_image_not_digest_pinned")
-    if not data_center_id:
-        blockers.append("model_volume_data_center_missing")
-    elif data_center_id not in RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS:
+    if data_center_id not in RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS:
         blockers.append("model_volume_data_center_not_network_volume_capable")
-    if not gpu_type_id:
-        blockers.append("model_volume_gpu_type_missing")
-    elif gpu_type_id not in AUTHORIZED_MODEL_VOLUME_GPU_TYPES:
+    if gpu_type_id not in AUTHORIZED_MODEL_VOLUME_GPU_TYPES:
         blockers.append("model_volume_gpu_type_outside_authorized_campaign")
     if required_cuda_version != "12.8":
         blockers.append("model_volume_cuda_version_not_12_8")
@@ -156,10 +118,6 @@ def build_model_volume_admission(
         blockers.append("model_volume_size_outside_30_to_100_gib")
     if type(hard_ttl_seconds) is not int or not 60 < hard_ttl_seconds <= MAX_TTL_SECONDS:
         blockers.append("model_volume_ttl_outside_guardrail")
-    if not isinstance(max_spend_usd, (int, float)) or max_spend_usd <= 0:
-        blockers.append("model_volume_max_spend_missing")
-    if not isinstance(hourly_rate_usd, (int, float)) or hourly_rate_usd <= 0:
-        blockers.append("model_volume_hourly_rate_missing")
     if (
         not isinstance(volume_hourly_rate_usd, (int, float))
         or volume_hourly_rate_usd <= 0
@@ -184,40 +142,27 @@ def build_model_volume_admission(
         blockers.append("model_volume_watchdog_not_armed_before_allocation")
     return {
         "schema_version": SCHEMA_VERSION,
+        "resource_class": "model_volume",
         "status": "admitted" if not blockers else "blocked",
         "blockers": sorted(set(blockers)),
-        "release_image_ref": release_image_ref,
-        "data_center_id": data_center_id,
-        "gpu_type_id": gpu_type_id,
-        "required_cuda_version": required_cuda_version,
-        "volume_size_gib": volume_size_gib,
-        "limits": {
-            "hard_ttl_seconds": hard_ttl_seconds,
-            "max_spend_usd": max_spend_usd,
-            "gpu_hourly_rate_usd": hourly_rate_usd,
-            "volume_hourly_rate_usd": volume_hourly_rate_usd,
-            "one_volume_limit": True,
-            "one_preparation_pod_limit": True,
-        },
         "raw_secret_values_recorded": False,
     }
 
 
 def _delete_pod(*, key: str, pod_id: str) -> dict[str, Any]:
+    """Cleanup-only compatibility; this module cannot create a Pod."""
+
     delete_http, _ = _runpod_call("DELETE", f"/pods/{pod_id}", None, key=key, timeout=30)
     verify_http = 0
     for _attempt in range(6):
-        verify_http, _ = _runpod_call(
-            "GET", f"/pods/{pod_id}", None, key=key, timeout=30
-        )
+        verify_http, _ = _runpod_call("GET", f"/pods/{pod_id}", None, key=key, timeout=30)
         if verify_http == 404:
             break
         time.sleep(2)
-    absent = verify_http == 404
     return {
         "delete_http": delete_http,
         "verify_http": verify_http,
-        "provider_absence_confirmed": absent,
+        "provider_absence_confirmed": verify_http == 404,
     }
 
 
@@ -233,11 +178,10 @@ def _delete_volume(*, key: str, volume_id: str) -> dict[str, Any]:
         if verify_http == 404:
             break
         time.sleep(2)
-    absent = verify_http == 404
     return {
         "delete_http": delete_http,
         "verify_http": verify_http,
-        "provider_absence_confirmed": absent,
+        "provider_absence_confirmed": verify_http == 404,
     }
 
 
@@ -248,24 +192,22 @@ def _matching_resources(
     volumes_http, volumes_payload = _runpod_call(
         "GET", "/networkvolumes", None, key=key, timeout=30
     )
-    inventory_verified = (
+    verified = (
         pods_http == 200
         and isinstance(pods_payload, list)
         and volumes_http == 200
         and isinstance(volumes_payload, list)
     )
-    pod_rows = pods_payload if pods_http == 200 and isinstance(pods_payload, list) else []
-    volume_rows = (
-        volumes_payload if volumes_http == 200 and isinstance(volumes_payload, list) else []
-    )
-    pod_ids = [
+    pod_rows = pods_payload if isinstance(pods_payload, list) else []
+    volume_rows = volumes_payload if isinstance(volumes_payload, list) else []
+    pods = [
         str(row.get("id"))
         for row in pod_rows
         if isinstance(row, Mapping)
         and (pod_prefix is None or str(row.get("name") or "").startswith(pod_prefix))
-        and str(row.get("id") or "")
+        and row.get("id")
     ]
-    volume_ids = [
+    volumes = [
         str(row.get("id"))
         for row in volume_rows
         if isinstance(row, Mapping)
@@ -273,9 +215,9 @@ def _matching_resources(
             volume_prefix is None
             or str(row.get("name") or "").startswith(volume_prefix)
         )
-        and str(row.get("id") or "")
+        and row.get("id")
     ]
-    return pod_ids, volume_ids, inventory_verified
+    return pods, volumes, verified
 
 
 def watchdog(*, state_path: Path) -> int:
@@ -299,17 +241,13 @@ def watchdog(*, state_path: Path) -> int:
     while time.time() < deadline:
         if handoff.is_file():
             try:
-                handoff_payload = json.loads(handoff.read_text(encoding="utf-8"))
+                payload = json.loads(handoff.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
-                handoff_payload = {}
-            terminal_statuses = {
+                payload = {}
+            if isinstance(payload, Mapping) and payload.get("status") in {
                 "cancelled_before_provider_allocation",
                 "failure_cleanup_provider_terminal",
-            }
-            if (
-                isinstance(handoff_payload, Mapping)
-                and handoff_payload.get("status") in terminal_statuses
-            ):
+            }:
                 write_json(
                     root / "watchdog_result.json",
                     {
@@ -324,13 +262,15 @@ def watchdog(*, state_path: Path) -> int:
     provider = get_render_provider("runpod")
     key = provider._key()  # type: ignore[attr-defined]
     if not key:
-        result = {
-            "schema_version": WATCHDOG_SCHEMA_VERSION,
-            "status": "teardown_unverified",
-            "blockers": ["runpod_api_key_missing"],
-            "raw_secret_values_recorded": False,
-        }
-        write_json(root / "watchdog_result.json", result)
+        write_json(
+            root / "watchdog_result.json",
+            {
+                "schema_version": WATCHDOG_SCHEMA_VERSION,
+                "status": "teardown_unverified",
+                "blockers": ["runpod_api_key_missing"],
+                "raw_secret_values_recorded": False,
+            },
+        )
         return 2
     pod_ids, volume_ids, inventory_verified = _matching_resources(
         key=key,
@@ -350,57 +290,72 @@ def watchdog(*, state_path: Path) -> int:
         and not final_pods
         and not final_volumes
     )
-    result = {
-        "schema_version": WATCHDOG_SCHEMA_VERSION,
-        "status": "provider_terminal" if terminal else "teardown_unverified",
-        "pod_terminations": pod_results,
-        "volume_deletions": volume_results,
-        "provider_absence_confirmed": terminal,
-        "raw_secret_values_recorded": False,
-    }
-    write_json(root / "watchdog_result.json", result)
-    return 0 if terminal else 2
+    ledger_close: dict[str, Any] = {}
+    lease_release: dict[str, Any] = {}
+    if terminal:
+        try:
+            refreshed_state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            refreshed_state = {}
+        global_pods, global_volumes, global_verified = _matching_resources(
+            key=key,
+            pod_prefix=None,
+            volume_prefix=None,
+        )
+        terminal = bool(global_verified and not global_pods and not global_volumes)
+        if terminal and isinstance(refreshed_state, Mapping):
+            from .paid_lane_guard import close_pending_teardown, load_pending_teardowns
+            from .paid_provider_lane_lease import (
+                build_paid_provider_lane_reconciliation,
+                release_transferred_paid_provider_lane_lease,
+            )
 
-
-def _worker_script() -> str:
-    return r'''set -euo pipefail
-export HF_HUB_DISABLE_TELEMETRY=1
-export ROOT=/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1
-export EVIDENCE=/workspace/.blueprint-model-cache/preparation-evidence
-mkdir -p "$EVIDENCE"
-/opt/gr00t-venv/bin/python -m blueprint_pipeline.groot_oscar_model_cache prepare --root "$ROOT" --out "$EVIDENCE/manifest.json"
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 /opt/gr00t-venv/bin/python -m blueprint_pipeline.groot_oscar_model_cache verify --root "$ROOT" --provider-volume-id "$BLUEPRINT_GROOT_OSCAR_PROVIDER_VOLUME_ID" --out "$EVIDENCE/verification.json"
-/opt/gr00t-venv/bin/python - <<'PY'
-import http.server, json, os
-from pathlib import Path
-token = os.environ["BLUEPRINT_MODEL_VOLUME_EVIDENCE_TOKEN"]
-evidence = Path(os.environ["EVIDENCE"])
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path != "/verification" or self.headers.get("Authorization") != "Bearer " + token:
-            self.send_response(404); self.end_headers(); return
-        body = json.dumps({
-            "verification": json.loads((evidence / "verification.json").read_text()),
-            "manifest": json.loads((evidence / "manifest.json").read_text()),
-        }, sort_keys=True).encode()
-        self.send_response(200); self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-    def log_message(self, *_args):
-        return
-http.server.ThreadingHTTPServer(("0.0.0.0", 8765), Handler).serve_forever()
-PY'''
-
-
-def _fetch_verification(*, pod_id: str, token: str, timeout_seconds: int = 20) -> dict[str, Any]:
-    url = f"https://{pod_id}-{EVIDENCE_PORT}.proxy.runpod.net/verification"
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    response = safe_outbound_http.open_request(
-        request,
-        policy=safe_outbound_http.service_endpoint_policy(url, max_response_bytes=4 * 1024 * 1024),
-        timeout_seconds=timeout_seconds,
+            pending_path = str(refreshed_state.get("pending_teardown_record") or "")
+            lane_handoff = refreshed_state.get("provider_lane_handoff")
+            lane_handoff = lane_handoff if isinstance(lane_handoff, Mapping) else {}
+            binding = lane_handoff.get("binding")
+            binding = binding if isinstance(binding, Mapping) else {}
+            if pending_path:
+                ledger_close = close_pending_teardown(
+                    pending_path,
+                    {
+                        "status": "PASS",
+                        "provider_absence_confirmed": True,
+                        "instance_id": refreshed_state.get("volume_id"),
+                    },
+                )
+            reconciliation = build_paid_provider_lane_reconciliation(
+                provider="runpod",
+                lane=str(binding.get("lane") or "groot_oscar_model_volume"),
+                provider_inventory={
+                    "api_confirmed": True,
+                    "live_resource_count": 0,
+                    "resources": [],
+                },
+                open_pending_teardowns=load_pending_teardowns(),
+            )
+            lease_path_value = str(lane_handoff.get("lease_path") or "")
+            if lease_path_value:
+                lease_release = release_transferred_paid_provider_lane_lease(
+                    lease_path_value=lease_path_value,
+                    teardown_owner_pid=os.getpid(),
+                    terminal_reconciliation=reconciliation,
+                    reason="retained_volume_watchdog_provider_terminal",
+                )
+    write_json(
+        root / "watchdog_result.json",
+        {
+            "schema_version": WATCHDOG_SCHEMA_VERSION,
+            "status": "provider_terminal" if terminal else "teardown_unverified",
+            "pod_terminations": pod_results,
+            "volume_deletions": volume_results,
+            "provider_absence_confirmed": terminal,
+            "pending_teardown_close": ledger_close,
+            "provider_lane_lease_release": lease_release,
+            "raw_secret_values_recorded": False,
+        },
     )
-    value = json.loads(response.body.decode("utf-8"))
-    return dict(value) if isinstance(value, Mapping) else {}
+    return 0 if terminal else 2
 
 
 def _extract_id(payload: Mapping[str, Any]) -> str:
@@ -411,450 +366,23 @@ def _extract_id(payload: Mapping[str, Any]) -> str:
 
 
 def _watchdog_process_running(process: Any) -> bool:
-    if process is None:
-        return False
     try:
-        return process.poll() is None
+        return process is not None and process.poll() is None
     except (OSError, ValueError):
         return False
 
 
-def run_model_volume(
-    *,
-    output_dir: Path,
-    release_image_ref: str,
-    data_center_id: str,
-    gpu_type_id: str,
-    required_cuda_version: str,
-    volume_size_gib: int,
-    hard_ttl_seconds: int,
-    max_spend_usd: float,
-    volume_hourly_rate_usd: float,
-    hf_token_file: Path,
-    allow_paid: bool,
-) -> dict[str, Any]:
+def run_model_volume(*, output_dir: Path, **_legacy_arguments: Any) -> dict[str, Any]:
     output = output_dir.expanduser().resolve()
     ensure_dir(output)
-    provider = get_render_provider("runpod")
-    key = provider._key()  # type: ignore[attr-defined]
-    if not key:
-        result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "blocked_before_allocation",
-            "blockers": ["model_volume_runpod_api_key_unavailable"],
-            "provider_mutation_attempted": False,
-            "maximum_compute_spend_usd": 0.0,
-            "maximum_storage_spend_usd": 0.0,
-            "error_type": "MissingRunPodAPIKey",
-            "raw_secret_values_recorded": False,
-        }
-        write_json(output / "model_volume_result.json", result)
-        return result
-    try:
-        hf_token = _read_secret(hf_token_file)
-    except Exception as exc:  # noqa: BLE001 - stop before inventory or allocation
-        result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "blocked_before_allocation",
-            "blockers": ["model_volume_hf_token_unavailable"],
-            "provider_mutation_attempted": False,
-            "maximum_compute_spend_usd": 0.0,
-            "maximum_storage_spend_usd": 0.0,
-            "error_type": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-        write_json(output / "model_volume_result.json", result)
-        return result
-    suffix = secrets.token_hex(5)
-    pod_prefix = f"{POD_NAME_PREFIX}{suffix}"
-    pod_name = pod_prefix
-    volume_name = f"{VOLUME_NAME_PREFIX}{suffix}"
-    existing_pods, existing_volumes, inventory_verified = _matching_resources(
-        key=key,
-        pod_prefix=None,
-        volume_prefix=None,
-    )
-    capacity = provider.capacity_preflight(
-        {
-            "cloudType": "SECURE",
-            "gpuTypeIds": [gpu_type_id],
-            "dataCenterIds": [data_center_id],
-            "allowedCudaVersions": [required_cuda_version],
-            "requires_rtx": True,
-        }
-    )
-    viable = capacity.get("viable_gpu_types")
-    viable = viable if isinstance(viable, list) else []
-    selected = next(
-        (row for row in viable if isinstance(row, Mapping) and row.get("gpu_type_id") == gpu_type_id),
-        {},
-    )
-    hourly_rate = float(selected.get("on_demand_price_usd_per_hour") or 0)
-    capacity_verified = _single_gpu_capacity_verified(
-        capacity=capacity,
-        selected=selected,
-        data_center_id=data_center_id,
-        required_cuda_version=required_cuda_version,
-    )
-    deadline = time.time() + hard_ttl_seconds
-    watchdog_nonce = secrets.token_hex(16)
-    state_path = output / "watchdog_state.json"
-    write_json(
-        state_path,
-        {
-            "deadline_epoch": deadline,
-            "pod_name_prefix": pod_prefix,
-            "volume_name": volume_name,
-            "watchdog_nonce": watchdog_nonce,
-        },
-    )
-    watchdog_armed = False
-    watchdog_pid: int | None = None
-    watch: Any = None
-    stale_watchdog_state = any(
-        (output / name).exists()
-        for name in ("watchdog_armed.json", "watchdog_handoff.json", "watchdog.pid")
-    )
-    if not stale_watchdog_state:
-        try:
-            with (output / "watchdog.log").open("ab") as log:
-                watch = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-m",
-                        "blueprint_pipeline.groot_oscar_runpod_model_volume",
-                        "watchdog",
-                        "--state",
-                        str(state_path),
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-            watchdog_pid = watch.pid
-            (output / "watchdog.pid").write_text(f"{watch.pid}\n", encoding="utf-8")
-            armed_path = output / "watchdog_armed.json"
-            watchdog_start_deadline = time.time() + 10
-            while time.time() < watchdog_start_deadline:
-                if armed_path.is_file() and watch.poll() is None:
-                    try:
-                        armed = json.loads(armed_path.read_text(encoding="utf-8"))
-                    except (OSError, ValueError, json.JSONDecodeError):
-                        armed = {}
-                    watchdog_armed = bool(
-                        isinstance(armed, Mapping)
-                        and armed.get("schema_version") == WATCHDOG_SCHEMA_VERSION
-                        and armed.get("status") == "armed"
-                        and armed.get("pid") == watch.pid
-                        and armed.get("watchdog_nonce") == watchdog_nonce
-                        and armed.get("pod_name_prefix") == pod_prefix
-                        and armed.get("volume_name") == volume_name
-                    )
-                    if watchdog_armed:
-                        break
-                if watch.poll() is not None:
-                    break
-                time.sleep(0.05)
-        except Exception:  # noqa: BLE001 - admission remains blocked without handoff
-            watchdog_armed = False
-    admission = build_model_volume_admission(
-        release_image_ref=release_image_ref,
-        data_center_id=data_center_id,
-        gpu_type_id=gpu_type_id,
-        required_cuda_version=required_cuda_version,
-        volume_size_gib=volume_size_gib,
-        hard_ttl_seconds=hard_ttl_seconds,
-        max_spend_usd=max_spend_usd,
-        hourly_rate_usd=hourly_rate,
-        volume_hourly_rate_usd=volume_hourly_rate_usd,
-        capacity_verified=capacity_verified,
-        inventory_verified_zero=(
-            inventory_verified and not existing_pods and not existing_volumes
-        ),
-        paid_mutation_authorized=allow_paid,
-        watchdog_armed_before_allocation=watchdog_armed,
-    )
-    write_json(output / "model_volume_admission.json", admission)
-    try:
-        require_paid_resource_admission(
-            admission,
-            resource_class="model_volume",
-            expected_schema_version=SCHEMA_VERSION,
-        )
-    except PaidResourceAdmissionBlocked:
-        write_json(
-            output / "watchdog_handoff.json",
-            {"status": "cancelled_before_provider_allocation"},
-        )
-        result = {
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "blocked_before_allocation",
-            "blockers": admission.get("blockers") or [
-                "model_volume_paid_resource_admission_blocked"
-            ],
-            "provider_mutation_attempted": False,
-            "maximum_compute_spend_usd": 0.0,
-            "maximum_storage_spend_usd": 0.0,
-            "raw_secret_values_recorded": False,
-        }
-        write_json(output / "model_volume_result.json", result)
-        return result
-    started = time.time()
-    volume_id = ""
-    pod_id = ""
-    success = False
-    pod_teardown: dict[str, Any] = {"provider_absence_confirmed": False}
-    volume_teardown: dict[str, Any] | None = None
-    verification: dict[str, Any] = {}
-    manifest: dict[str, Any] = {}
-    error_type: str | None = None
-    provider_failure: dict[str, Any] = {}
-    compute_started = False
-    try:
-        volume_http, volume_response = _runpod_call(
-            "POST",
-            "/networkvolumes",
-            {"dataCenterId": data_center_id, "name": volume_name, "size": volume_size_gib},
-            key=key,
-            timeout=45,
-        )
-        volume_id = _extract_id(_mapping(volume_response))
-        if volume_http not in {200, 201} or not volume_id:
-            provider_error_summary = _safe_provider_error_summary(volume_response)
-            provider_failure = {
-                "operation": "create_network_volume",
-                "http_status": volume_http,
-                "provider_error_summary": provider_error_summary,
-                "provider_error_recorded": provider_error_summary is not None,
-                "allocation_created": bool(volume_id),
-                "spend_occurred": False if not volume_id else None,
-                "raw_provider_response_recorded": False,
-            }
-            raise RuntimeError("runpod_network_volume_create_failed_or_ambiguous")
-        get_http, volume_row = _runpod_call(
-            "GET", f"/networkvolumes/{volume_id}", None, key=key, timeout=30
-        )
-        volume_evidence = build_runpod_network_volume_evidence(
-            provider_payload=_mapping(volume_row),
-            expected_volume_id=volume_id,
-            model_cache_path=MODEL_CACHE_PATH,
-            expected_name=volume_name,
-            allocation_nonce=suffix,
-        )
-        if (
-            get_http != 200
-            or volume_evidence["status"] != "verified"
-            or volume_evidence["data_center_id"] != data_center_id
-            or volume_evidence["size_bytes"] != volume_size_gib * 1024**3
-        ):
-            raise RuntimeError("runpod_network_volume_post_create_verification_failed")
-        write_json(output / "network_volume_evidence.json", volume_evidence)
-        evidence_token = secrets.token_urlsafe(32)
-        pod_body = {
-            "cloudType": "SECURE",
-            "computeType": "GPU",
-            "gpuCount": 1,
-            "gpuTypeIds": [gpu_type_id],
-            "gpuTypePriority": "availability",
-            "containerDiskInGb": 80,
-            "minVCPUPerGPU": 4,
-            "minRAMPerGPU": 16,
-            "name": pod_name,
-            "imageName": release_image_ref,
-            "dockerEntrypoint": ["bash", "-lc"],
-            "dockerStartCmd": [_worker_script()],
-            "ports": [f"{EVIDENCE_PORT}/http"],
-            "volumeMountPath": "/workspace",
-            "networkVolumeId": volume_id,
-            "dataCenterIds": [data_center_id],
-            "allowedCudaVersions": [required_cuda_version],
-            "env": {
-                "HF_TOKEN": hf_token,
-                "BLUEPRINT_MODEL_VOLUME_EVIDENCE_TOKEN": evidence_token,
-                "BLUEPRINT_GROOT_OSCAR_PROVIDER_VOLUME_ID": volume_id,
-            },
-        }
-        pod_http, pod_response = _runpod_call(
-            "POST", "/pods", pod_body, key=key, timeout=90
-        )
-        pod_id = _extract_id(_mapping(pod_response))
-        if pod_http not in {200, 201} or not pod_id:
-            provider_error_summary = _safe_provider_error_summary(pod_response)
-            provider_failure = {
-                "operation": "create_preparation_pod",
-                "http_status": pod_http,
-                "provider_error_summary": provider_error_summary,
-                "provider_error_recorded": provider_error_summary is not None,
-                "allocation_created": bool(pod_id),
-                "spend_occurred": False if not pod_id else None,
-                "raw_provider_response_recorded": False,
-            }
-            raise RuntimeError("runpod_model_volume_pod_create_failed_or_ambiguous")
-        compute_started = True
-        write_json(
-            output / "preparation_pod.json",
-            {
-                "status": "allocated",
-                "pod_id": pod_id,
-                "pod_name": pod_name,
-                "volume_id": volume_id,
-                "raw_secret_values_recorded": False,
-            },
-        )
-        while time.time() < deadline - 60:
-            try:
-                response = _fetch_verification(pod_id=pod_id, token=evidence_token)
-            except (OSError, ValueError, json.JSONDecodeError, urllib.error.HTTPError):
-                time.sleep(10)
-                continue
-            verification = _mapping(response.get("verification"))
-            manifest = _mapping(response.get("manifest"))
-            if (
-                verification.get("status") == "passed"
-                and verification.get("schema_version") == "groot_oscar_external_model_cache_verification.v2"
-                and verification.get("provider_volume_id") == volume_id
-                and verification.get("cache_root") == MODEL_CACHE_PATH
-                and str(verification.get("model_manifest_digest") or "")
-                == str(manifest.get("manifest_digest") or "")
-            ):
-                success = True
-                break
-            raise RuntimeError("runpod_model_volume_verification_invalid")
-        if not success:
-            raise RuntimeError("runpod_model_volume_verification_timeout")
-        write_json(output / "model_cache_verification.json", verification)
-        write_json(output / "model_cache_manifest.json", manifest)
-    except Exception as exc:  # noqa: BLE001 - terminal evidence and cleanup are mandatory
-        error_type = type(exc).__name__
-        write_json(
-            output / "model_volume_error.json",
-            {
-                "error_type": error_type,
-                "error": str(exc),
-                "provider_failure": provider_failure or None,
-                "raw_secret_values_recorded": False,
-            },
-        )
-    finally:
-        if pod_id:
-            pod_teardown = _delete_pod(key=key, pod_id=pod_id)
-        else:
-            matching_pods, _, _ = _matching_resources(
-                key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
-            )
-            for item in matching_pods:
-                pod_teardown = _delete_pod(key=key, pod_id=item)
-        if not success:
-            volume_ids = [volume_id] if volume_id else []
-            if not volume_ids:
-                _, volume_ids, _ = _matching_resources(
-                    key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
-                )
-            for item in volume_ids:
-                volume_teardown = _delete_volume(key=key, volume_id=item)
-        final_pods, final_volumes, final_inventory_verified = _matching_resources(
-            key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
-        )
-        watchdog_retained = bool(
-            watchdog_armed and _watchdog_process_running(watch)
-        )
-        if success and not watchdog_retained:
-            success = False
-            error_type = "ModelVolumeWatchdogExitedBeforeHandoff"
-            write_json(
-                output / "model_volume_error.json",
-                {
-                    "error_type": error_type,
-                    "error": "model_volume_watchdog_exited_before_handoff",
-                    "provider_failure": None,
-                    "raw_secret_values_recorded": False,
-                },
-            )
-            retained_volume_ids = final_volumes or ([volume_id] if volume_id else [])
-            for item in retained_volume_ids:
-                volume_teardown = _delete_volume(key=key, volume_id=item)
-            final_pods, final_volumes, final_inventory_verified = _matching_resources(
-                key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
-            )
-        cleanup_terminal = bool(
-            final_inventory_verified
-            and not final_pods
-            and not final_volumes
-        )
-        if success and (
-            watchdog_retained
-            and watchdog_pid is not None
-            and final_inventory_verified
-            and not final_pods
-            and final_volumes == [volume_id]
-            and pod_teardown.get("provider_absence_confirmed") is True
-        ):
-            write_json(
-                output / "watchdog_handoff.json",
-                {
-                    "schema_version": WATCHDOG_HANDOFF_SCHEMA_VERSION,
-                    "status": "volume_ready_watchdog_retained",
-                    "volume_id": volume_id,
-                    "preparation_pod_absence_confirmed": True,
-                    "volume_presence_confirmed": True,
-                    "teardown_owner": "independent_model_volume_watchdog",
-                    "watchdog_pid": watchdog_pid,
-                    "watchdog_state_path": str(state_path),
-                    "watchdog_nonce": watchdog_nonce,
-                    "watchdog_deadline_epoch": deadline,
-                    "next_owner_must_arm_before_transfer": True,
-                    "raw_secret_values_recorded": False,
-                },
-            )
-        elif not success and cleanup_terminal and (
-            not pod_id or pod_teardown.get("provider_absence_confirmed") is True
-        ):
-            write_json(
-                output / "watchdog_handoff.json",
-                {
-                    "schema_version": WATCHDOG_HANDOFF_SCHEMA_VERSION,
-                    "status": "failure_cleanup_provider_terminal",
-                    "volume_id": volume_id or None,
-                    "preparation_pod_absence_confirmed": not final_pods,
-                    "failure_volume_absence_confirmed": not final_volumes,
-                    "raw_secret_values_recorded": False,
-                },
-            )
-    elapsed = max(0.0, time.time() - started)
-    handoff_path = output / "watchdog_handoff.json"
-    result_success = bool(
-        success
-        and pod_teardown.get("provider_absence_confirmed") is True
-        and final_inventory_verified
-        and not final_pods
-        and final_volumes == [volume_id]
-        and handoff_path.is_file()
-    )
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
-        "status": "completed" if result_success else "failed",
-        "blockers": [] if result_success else [
-            "runpod_model_volume_preparation_failed"
-            if not success
-            else "runpod_model_volume_pod_teardown_unverified"
+        "status": "blocked_before_allocation",
+        "blockers": [
+            "legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator"
         ],
-        "volume_id": volume_id or None,
-        "data_center_id": data_center_id,
-        "model_cache_path": MODEL_CACHE_PATH,
-        "model_manifest_digest": verification.get("model_manifest_digest"),
-        "preparation_pod_id": pod_id or None,
-        "preparation_pod_teardown": pod_teardown,
-        "failure_volume_teardown": volume_teardown,
-        "elapsed_seconds": elapsed,
-        "maximum_compute_spend_usd": (
-            hourly_rate * elapsed / 3600 if compute_started else 0.0
-        ),
-        "maximum_total_spend_usd": (
-            (hourly_rate + volume_hourly_rate_usd) * hard_ttl_seconds / 3600
-        ),
-        "watchdog_retained_until_epoch": deadline if result_success else None,
-        "error_type": error_type,
+        "provider_mutation_attempted": False,
+        "gpu_compute_allocated": False,
         "raw_secret_values_recorded": False,
     }
     write_json(output / "model_volume_result.json", result)
@@ -862,39 +390,21 @@ def run_model_volume(
 
 
 def launch_detached(*, output_dir: Path, run_arguments: Sequence[str]) -> dict[str, Any]:
+    """Compatibility launcher is disabled; use the canonical allocator."""
+
+    del run_arguments
     output = output_dir.expanduser().resolve()
     ensure_dir(output)
-    if (output / "model_volume_result.json").exists():
-        raise ValueError("model_volume_output_already_terminal")
-    lock_path = output / "supervisor.lock"
-    try:
-        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as exc:
-        raise ValueError("model_volume_output_already_has_supervisor") from exc
-    with os.fdopen(lock_fd, "w", encoding="utf-8") as lock:
-        lock.write(f"created_by_pid={os.getpid()}\n")
-    with (output / "supervisor.log").open("ab") as log:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "blueprint_pipeline.paid_resource_allocator",
-                "model-volume-run",
-                *run_arguments,
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
     result = {
-        "schema_version": "groot_oscar_runpod_model_volume_supervisor.v1",
-        "status": "supervisor_started",
-        "pid": process.pid,
-        "start_new_session": True,
+        "schema_version": "groot_oscar_legacy_model_volume_launcher.v1",
+        "status": "blocked",
+        "blockers": [
+            "legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator"
+        ],
+        "provider_mutation_attempted": False,
         "raw_secret_values_recorded": False,
     }
-    write_json(output / "supervisor_launch.json", result)
+    write_json(output / "legacy_launcher_result.json", result)
     return result
 
 

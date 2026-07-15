@@ -207,7 +207,7 @@ def test_model_volume_global_inventory_counts_unrelated_names(monkeypatch) -> No
 def test_model_volume_uses_provider_reported_volume_size() -> None:
     source = (
         Path(__file__).resolve().parents[1]
-        / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+        / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
     ).read_text(encoding="utf-8")
     assert "build_runpod_network_volume_evidence(" in source
     assert '"size_bytes": volume_size_gib * 1024**3' not in source
@@ -239,14 +239,10 @@ def test_model_volume_records_sanitized_provider_error_without_request_body() ->
 def test_model_volume_detached_launch_is_single_supervisor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class Process:
-        pid = 1234
-
-    monkeypatch.setattr(model_volume.subprocess, "Popen", lambda *args, **kwargs: Process())
+    del monkeypatch
     launched = launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])
-    assert launched["status"] == "supervisor_started"
-    with pytest.raises(ValueError, match="already_has_supervisor"):
-        launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])
+    assert launched["status"] == "blocked"
+    assert launched["provider_mutation_attempted"] is False
 
 
 def test_model_volume_watchdog_emits_nonce_bound_armed_handoff(tmp_path: Path) -> None:
@@ -276,19 +272,19 @@ def test_model_volume_watchdog_emits_nonce_bound_armed_handoff(tmp_path: Path) -
 def test_model_volume_requires_armed_handoff_before_paid_admission() -> None:
     source = (
         Path(__file__).resolve().parents[1]
-        / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+        / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
     ).read_text(encoding="utf-8")
     run_source = source[
-        source.index("def run_model_volume(") : source.index("def launch_detached(")
+        source.index("def run_storage_model_volume(") : source.index("def launch_detached(")
     ]
-    assert run_source.index('armed_path = output / "watchdog_armed.json"') < run_source.index(
+    assert run_source.index("_arm_watchdog(") < run_source.index(
         "require_paid_resource_admission("
     )
-    assert "watchdog_armed_before_allocation=watchdog_armed" in run_source
+    assert 'watchdog_armed_before_allocation=watchdog["armed"]' in run_source
     assert '"status": "volume_ready_watchdog_retained"' in run_source
     assert '"teardown_owner": "independent_model_volume_watchdog"' in run_source
-    assert '"watchdog_pid": watchdog_pid' in run_source
-    assert '"watchdog_state_path": str(state_path)' in run_source
+    assert '"watchdog_pid": watchdog["pid"]' in run_source
+    assert '"watchdog_state_path": watchdog["state_path"]' in run_source
     assert 'final_volumes == [volume_id]' in run_source
 
 
@@ -297,7 +293,7 @@ def test_ready_volume_handoff_does_not_disarm_deadline_watchdog() -> None:
         Path(__file__).resolve().parents[1]
         / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
     ).read_text(encoding="utf-8")
-    watchdog_source = source[source.index("def watchdog(") : source.index("def _worker_script(")]
+    watchdog_source = source[source.index("def watchdog(") : source.index("def _extract_id(")]
     assert "volume_ready_watchdog_retained" not in watchdog_source
     assert "failure_cleanup_provider_terminal" in watchdog_source
     assert "cancelled_before_provider_allocation" in watchdog_source
@@ -377,7 +373,9 @@ def test_model_volume_reads_hf_token_before_provider_inventory(
         allow_paid=True,
     )
     assert result["status"] == "blocked_before_allocation"
-    assert result["blockers"] == ["model_volume_hf_token_unavailable"]
+    assert result["blockers"] == [
+        "legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator"
+    ]
     assert result["provider_mutation_attempted"] is False
 
 
@@ -411,7 +409,9 @@ def test_model_volume_persists_blocked_result_when_runpod_key_is_missing(
     )
 
     assert result["status"] == "blocked_before_allocation"
-    assert result["blockers"] == ["model_volume_runpod_api_key_unavailable"]
+    assert result["blockers"] == [
+        "legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator"
+    ]
     assert result["provider_mutation_attempted"] is False
     assert json.loads((output / "model_volume_result.json").read_text()) == result
 
@@ -425,13 +425,13 @@ def test_model_volume_dead_watchdog_forces_failure_cleanup_before_handoff() -> N
     assert _watchdog_process_running(Process()) is False
     source = (
         Path(__file__).resolve().parents[1]
-        / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+        / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
     ).read_text(encoding="utf-8")
     run_source = source[
-        source.index("def run_model_volume(") : source.index("def launch_detached(")
+        source.index("def run_storage_model_volume(") : source.index("def launch_detached(")
     ]
-    dead_guard = run_source.index("if success and not watchdog_retained:")
-    failure_cleanup = run_source.index("retained_volume_ids =", dead_guard)
+    dead_guard = run_source.index("if success and not retained:")
+    failure_cleanup = run_source.index("for candidate in final_volumes", dead_guard)
     ready_handoff = run_source.index('"status": "volume_ready_watchdog_retained"')
     assert dead_guard < failure_cleanup < ready_handoff
-    assert "and watchdog_pid is not None" in run_source
+    assert "_watchdog_process_running(watch)" in run_source

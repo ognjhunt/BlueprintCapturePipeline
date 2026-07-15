@@ -72,6 +72,11 @@ class FakeProviderClient:
         return self.terminate_result
 
 
+class FakeRunPodVolumeClient:
+    def _key(self) -> str:
+        return "test-runpod-key"
+
+
 def _observed(desired_status: str) -> dict:
     return {"status": "observed", "http": 200, "desiredStatus": desired_status}
 
@@ -291,7 +296,152 @@ def _aged_record(tmp_path: Path, *, run_id: str = "crashed-run", instance_id: st
     return stored | {"path": str(path)}
 
 
+def _aged_network_volume_record(
+    tmp_path: Path,
+    *,
+    run_id: str,
+    instance_id: str = "",
+) -> dict:
+    record = open_pending_teardown(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        run_id=run_id,
+        instance_id=instance_id,
+        resource_kind="network_volume",
+        resource_name="blueprint-model-cache-test",
+        provider_location="US-WA-1",
+        max_age_seconds=1,
+        registry_dir=tmp_path,
+    )
+    path = Path(record["path"])
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    stored["started_at_epoch"] = time.time() - 10_000
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    return stored | {"path": str(path)}
+
+
 class TestReapOrphans:
+    def test_bound_network_volume_is_deleted_and_404_closes_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _aged_network_volume_record(
+            tmp_path, run_id="bound-volume", instance_id="volume-123"
+        )
+        calls = []
+        responses = iter([(200, {"id": "volume-123"}), (204, {}), (404, {})])
+
+        def fake_call(method, path, body, **kwargs):
+            calls.append((method, path, body, kwargs))
+            return next(responses)
+
+        monkeypatch.setattr(
+            "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
+        )
+        report = reap_orphans(
+            registry_dir=tmp_path,
+            provider_clients={"runpod": FakeRunPodVolumeClient()},
+        )
+        assert [call[:2] for call in calls] == [
+            ("GET", "/networkvolumes/volume-123"),
+            ("DELETE", "/networkvolumes/volume-123"),
+            ("GET", "/networkvolumes/volume-123"),
+        ]
+        assert report["records"][0]["outcome"] == "network_volume_deleted_and_verified"
+        assert report["reaped_count"] == 1
+        assert load_pending_teardowns(registry_dir=tmp_path) == []
+
+    def test_lost_create_network_volume_is_recovered_by_exact_name_and_location(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _aged_network_volume_record(tmp_path, run_id="lost-create-volume")
+        responses = iter(
+            [
+                (
+                    200,
+                    [
+                        {
+                            "id": "volume-recovered",
+                            "name": "blueprint-model-cache-test",
+                            "dataCenterId": "US-WA-1",
+                        }
+                    ],
+                ),
+                (200, {"id": "volume-recovered"}),
+                (204, {}),
+                (404, {}),
+            ]
+        )
+        monkeypatch.setattr(
+            "blueprint_pipeline.gpu_render_providers._runpod_call",
+            lambda *args, **kwargs: next(responses),
+        )
+        report = reap_orphans(
+            registry_dir=tmp_path,
+            provider_clients={"runpod": FakeRunPodVolumeClient()},
+        )
+        assert report["records"][0]["instance_id"] == "volume-recovered"
+        assert report["records"][0]["outcome"] == "network_volume_deleted_and_verified"
+        assert load_pending_teardowns(registry_dir=tmp_path) == []
+
+    def test_verified_zero_network_volume_matches_cancels_unbound_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _aged_network_volume_record(tmp_path, run_id="no-volume-created")
+        monkeypatch.setattr(
+            "blueprint_pipeline.gpu_render_providers._runpod_call",
+            lambda *args, **kwargs: (200, []),
+        )
+        report = reap_orphans(
+            registry_dir=tmp_path,
+            provider_clients={"runpod": FakeRunPodVolumeClient()},
+        )
+        assert report["records"][0]["outcome"] == "network_volume_absence_verified"
+        assert report["open_billing_risk_count"] == 0
+        assert load_pending_teardowns(registry_dir=tmp_path) == []
+
+    def test_multiple_network_volume_matches_remain_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _aged_network_volume_record(tmp_path, run_id="ambiguous-volume")
+        rows = [
+            {
+                "id": volume_id,
+                "name": "blueprint-model-cache-test",
+                "dataCenterId": "US-WA-1",
+            }
+            for volume_id in ("volume-a", "volume-b")
+        ]
+        monkeypatch.setattr(
+            "blueprint_pipeline.gpu_render_providers._runpod_call",
+            lambda *args, **kwargs: (200, rows),
+        )
+        report = reap_orphans(
+            registry_dir=tmp_path,
+            provider_clients={"runpod": FakeRunPodVolumeClient()},
+        )
+        assert report["records"][0]["outcome"] == "network_volume_identity_unresolved"
+        assert report["open_billing_risk_count"] == 1
+        assert load_pending_teardowns(registry_dir=tmp_path) != []
+
+    def test_failed_network_volume_delete_stays_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _aged_network_volume_record(
+            tmp_path, run_id="delete-failed", instance_id="volume-stuck"
+        )
+        responses = iter([(200, {"id": "volume-stuck"}), (500, {}), (200, {})])
+        monkeypatch.setattr(
+            "blueprint_pipeline.gpu_render_providers._runpod_call",
+            lambda *args, **kwargs: next(responses),
+        )
+        report = reap_orphans(
+            registry_dir=tmp_path,
+            provider_clients={"runpod": FakeRunPodVolumeClient()},
+        )
+        assert report["records"][0]["outcome"] == "network_volume_teardown_unverified"
+        assert report["open_billing_risk_count"] == 1
+        assert load_pending_teardowns(registry_dir=tmp_path) != []
+
     def test_crashed_launch_is_reaped_and_proven_terminal(self, tmp_path: Path) -> None:
         _aged_record(tmp_path)
         client = FakeProviderClient(

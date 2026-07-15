@@ -118,22 +118,9 @@ def _download(url: str, *, maximum_bytes: int) -> bytes:
     return response.body
 
 
-def build_model_cache_wheelhouse(
-    *,
-    lockfile_path: str | Path,
-    output_dir: str | Path,
-    downloader: Callable[..., bytes] = _download,
-) -> dict[str, Any]:
-    """Materialize the exact target closure from uv.lock without resolving anew."""
+def plan_model_cache_wheelhouse(lock_bytes: bytes) -> dict[str, Any]:
+    """Derive the canonical target closure and wheel metadata without I/O."""
 
-    lockfile = Path(lockfile_path).expanduser().resolve()
-    output = Path(output_dir).expanduser().resolve()
-    if output.exists():
-        raise ValueError("model_cache_wheelhouse_output_already_exists")
-    output.mkdir(parents=True, mode=0o700)
-    wheel_directory = output / "wheels"
-    wheel_directory.mkdir(mode=0o700)
-    lock_bytes = lockfile.read_bytes()
     lock = tomllib.loads(lock_bytes.decode("utf-8"))
     packages = lock.get("package") if isinstance(lock, Mapping) else None
     packages = packages if isinstance(packages, list) else []
@@ -141,9 +128,10 @@ def build_model_cache_wheelhouse(
     for package in packages:
         if isinstance(package, Mapping):
             by_name.setdefault(_normalize(package.get("name")), []).append(package)
-
     selected: dict[str, Mapping[str, Any]] = {}
-    pending: list[tuple[str, str | None]] = [(name, None) for name in ROOT_DISTRIBUTIONS]
+    pending: list[tuple[str, str | None]] = [
+        (name, None) for name in ROOT_DISTRIBUTIONS
+    ]
     while pending:
         name, version = pending.pop()
         normalized = _normalize(name)
@@ -153,9 +141,13 @@ def build_model_cache_wheelhouse(
             continue
         candidates = by_name.get(normalized, [])
         if version:
-            candidates = [row for row in candidates if str(row.get("version")) == version]
+            candidates = [
+                row for row in candidates if str(row.get("version")) == version
+            ]
         if len(candidates) != 1:
-            raise ValueError("model_cache_wheelhouse_locked_package_ambiguous:" + normalized)
+            raise ValueError(
+                "model_cache_wheelhouse_locked_package_ambiguous:" + normalized
+            )
         package = candidates[0]
         selected[normalized] = package
         dependencies = package.get("dependencies")
@@ -173,15 +165,11 @@ def build_model_cache_wheelhouse(
                     else None,
                 )
             )
-
     requirements = [
         {"name": name, "version": str(package.get("version") or "")}
         for name, package in sorted(selected.items())
     ]
-    closure_bytes = (
-        json.dumps(requirements, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode()
-    wheel_rows: list[dict[str, Any]] = []
+    wheels: list[dict[str, Any]] = []
     observed_filenames: set[str] = set()
     for name, package in sorted(selected.items()):
         filename, wheel = _select_locked_wheel(
@@ -192,9 +180,62 @@ def build_model_cache_wheelhouse(
         observed_filenames.add(filename)
         digest = str(wheel.get("hash") or "").removeprefix("sha256:")
         size = wheel.get("size")
-        if _HEX64.fullmatch(digest) is None or type(size) is not int or size <= 0:
-            raise ValueError("model_cache_wheelhouse_locked_wheel_metadata_invalid")
         url = str(wheel.get("url") or "")
+        if (
+            _HEX64.fullmatch(digest) is None
+            or type(size) is not int
+            or size <= 0
+            or not url.startswith("https://files.pythonhosted.org/")
+        ):
+            raise ValueError("model_cache_wheelhouse_locked_wheel_metadata_invalid")
+        wheels.append(
+            {
+                "distribution": name,
+                "version": str(package.get("version") or ""),
+                "filename": filename,
+                "sha256": digest,
+                "bytes": size,
+                "url": url,
+            }
+        )
+    closure_bytes = (
+        json.dumps(requirements, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    return {
+        "requirements": requirements,
+        "requirements_closure_sha256": hashlib.sha256(closure_bytes).hexdigest(),
+        "wheels": wheels,
+    }
+
+
+def build_model_cache_wheelhouse(
+    *,
+    lockfile_path: str | Path,
+    output_dir: str | Path,
+    downloader: Callable[..., bytes] = _download,
+) -> dict[str, Any]:
+    """Materialize the exact target closure from uv.lock without resolving anew."""
+
+    lockfile = Path(lockfile_path).expanduser().resolve()
+    output = Path(output_dir).expanduser().resolve()
+    if output.exists():
+        raise ValueError("model_cache_wheelhouse_output_already_exists")
+    output.mkdir(parents=True, mode=0o700)
+    wheel_directory = output / "wheels"
+    wheel_directory.mkdir(mode=0o700)
+    lock_bytes = lockfile.read_bytes()
+    plan = plan_model_cache_wheelhouse(lock_bytes)
+    requirements = plan["requirements"]
+    closure_bytes = (
+        json.dumps(requirements, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    wheel_rows: list[dict[str, Any]] = []
+    for planned in plan["wheels"]:
+        name = planned["distribution"]
+        filename = planned["filename"]
+        digest = planned["sha256"]
+        size = planned["bytes"]
+        url = planned["url"]
         try:
             body = downloader(url, maximum_bytes=size + 1)
         except Exception:
@@ -226,7 +267,7 @@ def build_model_cache_wheelhouse(
         wheel_rows.append(
             {
                 "distribution": name,
-                "version": str(package.get("version") or ""),
+                "version": planned["version"],
                 "filename": filename,
                 "sha256": digest,
                 "bytes": size,

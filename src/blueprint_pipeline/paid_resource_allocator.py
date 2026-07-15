@@ -26,8 +26,10 @@ from .groot_oscar_infrastructure_admission import (
     build_cpu_build_execution_admission,
 )
 from .groot_oscar_runpod_canary import run_canary
-from .groot_oscar_runpod_model_volume import launch_detached as launch_detached_model_volume
-from .groot_oscar_runpod_model_volume import run_model_volume
+from .groot_oscar_runpod_storage_volume import (
+    launch_detached as launch_detached_model_volume,
+)
+from .groot_oscar_runpod_storage_volume import run_storage_model_volume
 from .paid_resource_admission import require_paid_resource_admission
 
 
@@ -254,15 +256,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name, hidden in (("model-volume", False), ("model-volume-run", True)):
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
         model.add_argument("--output-dir", required=True)
-        model.add_argument("--release-image-ref", required=True)
+        model.add_argument("--repo-root", default=str(ROOT))
         model.add_argument("--data-center-id", required=True)
-        model.add_argument("--gpu-type-id", required=True)
-        model.add_argument("--required-cuda-version", default="12.8")
         model.add_argument("--volume-size-gib", type=int, default=50)
-        model.add_argument("--volume-hourly-rate-usd", type=float, required=True)
-        model.add_argument("--hard-ttl-seconds", type=int, default=2700)
-        model.add_argument("--max-spend-usd", type=float, default=0.40)
+        model.add_argument("--storage-hourly-rate-usd", type=float, required=True)
+        model.add_argument("--storage-ttl-seconds", type=int, default=14_400)
+        model.add_argument("--max-storage-spend-usd", type=float, default=0.05)
+        model.add_argument("--builder-evidence", required=True)
+        model.add_argument("--builder-spend", required=True)
+        model.add_argument(
+            "--digitalocean-token-file",
+            default="~/.blueprint-secrets/digitalocean_api_token",
+        )
         model.add_argument("--hf-token-file", default="~/.blueprint-secrets/hf_token")
+        model.add_argument(
+            "--runpod-s3-access-key-file",
+            default="~/.blueprint-secrets/runpod_s3_access_key",
+        )
+        model.add_argument(
+            "--runpod-s3-secret-key-file",
+            default="~/.blueprint-secrets/runpod_s3_secret_key",
+        )
+        model.add_argument("--login-private-key", required=True)
+        model.add_argument("--host-private-key", required=True)
+        model.add_argument("--ssh-key-id", required=True, type=int)
+        model.add_argument("--region", default="sfo3")
         model.add_argument("--allow-paid", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "cpu-build":
@@ -320,15 +338,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "model-volume":
         vector = [
             "--output-dir", args.output_dir,
-            "--release-image-ref", args.release_image_ref,
+            "--repo-root", args.repo_root,
             "--data-center-id", args.data_center_id,
-            "--gpu-type-id", args.gpu_type_id,
-            "--required-cuda-version", args.required_cuda_version,
             "--volume-size-gib", str(args.volume_size_gib),
-            "--volume-hourly-rate-usd", str(args.volume_hourly_rate_usd),
-            "--hard-ttl-seconds", str(args.hard_ttl_seconds),
-            "--max-spend-usd", str(args.max_spend_usd),
+            "--storage-hourly-rate-usd", str(args.storage_hourly_rate_usd),
+            "--storage-ttl-seconds", str(args.storage_ttl_seconds),
+            "--max-storage-spend-usd", str(args.max_storage_spend_usd),
+            "--builder-evidence", args.builder_evidence,
+            "--builder-spend", args.builder_spend,
+            "--digitalocean-token-file", args.digitalocean_token_file,
             "--hf-token-file", args.hf_token_file,
+            "--runpod-s3-access-key-file", args.runpod_s3_access_key_file,
+            "--runpod-s3-secret-key-file", args.runpod_s3_secret_key_file,
+            "--login-private-key", args.login_private_key,
+            "--host-private-key", args.host_private_key,
+            "--ssh-key-id", str(args.ssh_key_id),
+            "--region", args.region,
         ]
         if args.allow_paid:
             vector.append("--allow-paid")
@@ -337,17 +362,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         success = result.get("status") == "supervisor_started"
     else:
-        result = run_model_volume(
+        result = run_storage_model_volume(
             output_dir=Path(args.output_dir),
-            release_image_ref=args.release_image_ref,
+            repo_root=Path(args.repo_root),
             data_center_id=args.data_center_id,
-            gpu_type_id=args.gpu_type_id,
-            required_cuda_version=args.required_cuda_version,
             volume_size_gib=args.volume_size_gib,
-            volume_hourly_rate_usd=args.volume_hourly_rate_usd,
-            hard_ttl_seconds=args.hard_ttl_seconds,
-            max_spend_usd=args.max_spend_usd,
+            storage_ttl_seconds=args.storage_ttl_seconds,
+            storage_hourly_rate_usd=args.storage_hourly_rate_usd,
+            max_storage_spend_usd=args.max_storage_spend_usd,
+            builder_evidence_path=Path(args.builder_evidence),
+            builder_spend_path=Path(args.builder_spend),
+            digitalocean_token_file=Path(args.digitalocean_token_file),
             hf_token_file=Path(args.hf_token_file),
+            runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
+            runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
+            login_private_key=Path(args.login_private_key),
+            host_private_key=Path(args.host_private_key),
+            ssh_key_id=args.ssh_key_id,
+            region=args.region,
             allow_paid=args.allow_paid,
         )
         success = result.get("status") == "completed"

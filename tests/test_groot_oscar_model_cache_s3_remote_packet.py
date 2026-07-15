@@ -81,6 +81,25 @@ def _packet(
     wheelhouse, dependency_manifest = _wheelhouse(
         tmp_path, startup_hook=startup_hook
     )
+    dependency = json.loads(dependency_manifest.read_text(encoding="utf-8"))
+    synthetic_plan = {
+        "requirements": dependency["requirements"],
+        "wheels": [
+            {
+                **row,
+                "url": "https://files.pythonhosted.org/" + row["filename"],
+            }
+            for row in dependency["wheels"]
+        ],
+    }
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_model_cache_s3_remote_packet.plan_model_cache_wheelhouse",
+        lambda _lock: synthetic_plan,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder.plan_model_cache_wheelhouse",
+        lambda _lock: synthetic_plan,
+    )
     return prepare_remote_model_cache_packet(
         output_dir=tmp_path / "packet-output",
         repo_root=Path(__file__).resolve().parents[1],
@@ -190,3 +209,85 @@ def test_parent_rejects_extra_or_nonregular_tar_member(
     result = verify_packet_tarball(packet)
     assert result["status"] == "blocked"
     assert "digitalocean_model_cache_archive_inventory_mismatch" in result["blockers"]
+
+
+def test_packet_rejects_manifest_wheel_not_selected_by_locked_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(tmp_path, monkeypatch)
+    manifest_path = Path(packet["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert packet["status"] == "ready"
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_model_cache_s3_remote_packet._source_identity",
+        lambda _root: (COMMIT, False),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_model_cache_s3_remote_packet.plan_model_cache_wheelhouse",
+        lambda _lock: {
+            "requirements": [{"name": "botocore", "version": "9.9"}],
+            "wheels": [
+                {
+                    "distribution": "botocore",
+                    "version": "9.9",
+                    "filename": "botocore-9.9-py3-none-any.whl",
+                    "sha256": "f" * 64,
+                    "bytes": 12,
+                    "url": "https://files.pythonhosted.org/botocore-9.9-py3-none-any.whl",
+                }
+            ],
+        },
+    )
+    output = tmp_path / "mismatch-output"
+    result = prepare_remote_model_cache_packet(
+        output_dir=output,
+        repo_root=Path(__file__).resolve().parents[1],
+        source_commit=COMMIT,
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
+        source_worktree_dirty=False,
+        volume_evidence={
+            "schema_version": "groot_oscar_runpod_network_volume_evidence.v1",
+            "status": "verified",
+            "id": "volume-1",
+            "data_center_id": "US-WA-1",
+            "allocation_nonce": NONCE,
+            "allocation_name_verified": True,
+        },
+        volume_watchdog_handoff={
+            "schema_version": "groot_oscar_model_volume_watchdog_handoff.v1",
+            "status": "storage_preparation_watchdog_armed",
+            "volume_id": "volume-1",
+        },
+        allocation_nonce=NONCE,
+        data_center_id="US-WA-1",
+        dependency_wheelhouse=tmp_path / "wheelhouse",
+        dependency_manifest_path=tmp_path / "dependency_manifest.json",
+    )
+    assert result["status"] == "blocked"
+    assert "model_cache_packet_dependency_wheels_not_locked" in result["blockers"]
+    assert manifest["status"] == "ready"
+
+
+def test_parent_preallocation_rejects_manifest_not_derived_from_embedded_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "blueprint_pipeline.groot_oscar_digitalocean_builder.plan_model_cache_wheelhouse",
+        lambda _lock: {
+            "requirements": [{"name": "botocore", "version": "9.9"}],
+            "wheels": [
+                {
+                    "distribution": "botocore",
+                    "version": "9.9",
+                    "filename": "botocore-9.9-py3-none-any.whl",
+                    "sha256": "f" * 64,
+                    "bytes": 12,
+                    "url": "https://files.pythonhosted.org/botocore-9.9-py3-none-any.whl",
+                }
+            ],
+        },
+    )
+    result = verify_packet_tarball(packet)
+    assert result["status"] == "blocked"
+    assert "digitalocean_model_cache_dependency_wheels_not_locked" in result["blockers"]

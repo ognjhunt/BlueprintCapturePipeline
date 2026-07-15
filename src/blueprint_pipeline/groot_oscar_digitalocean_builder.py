@@ -43,7 +43,10 @@ from .groot_oscar_infrastructure_admission import (
     build_digitalocean_cpu_builder_profile_evidence,
     build_live_machine_capability_evidence,
 )
-from .groot_oscar_model_cache_wheelhouse import _wheel_compatible
+from .groot_oscar_model_cache_wheelhouse import (
+    _wheel_compatible,
+    plan_model_cache_wheelhouse,
+)
 from .paid_resource_admission import require_paid_resource_admission
 
 SCHEMA_VERSION = "groot_oscar_digitalocean_builder_run.v1"
@@ -266,6 +269,22 @@ def _validate_model_cache_archive(
         != inner_packet.get("dependency_lock_sha256")
     ):
         blockers.append("digitalocean_model_cache_dependency_lock_digest_mismatch")
+    if lock_body is not None:
+        try:
+            locked_plan = plan_model_cache_wheelhouse(lock_body)
+        except (ValueError, UnicodeDecodeError):
+            blockers.append("digitalocean_model_cache_dependency_lock_plan_invalid")
+        else:
+            locked_wheels = [
+                {key: value for key, value in row.items() if key != "url"}
+                for row in locked_plan["wheels"]
+            ]
+            if dependencies.get("requirements") != locked_plan["requirements"]:
+                blockers.append(
+                    "digitalocean_model_cache_dependency_closure_not_locked"
+                )
+            if dependency_rows != locked_wheels:
+                blockers.append("digitalocean_model_cache_dependency_wheels_not_locked")
     if (
         closure_body is None
         or hashlib.sha256(closure_body).hexdigest()

@@ -279,30 +279,40 @@ def test_cpu_build_run_forwards_fixed_model_cache_secret_files(
     assert observed["runpod_s3_secret_key_file"] == Path("s3-secret")
 
 
-def test_model_volume_run_forwards_verified_storage_rate(monkeypatch, capsys) -> None:
+def test_model_volume_run_forwards_storage_only_composite_arguments(
+    monkeypatch, capsys
+) -> None:
     observed = {}
 
     def fake_run_model_volume(**kwargs):
         observed.update(kwargs)
         return {"status": "completed"}
 
-    monkeypatch.setattr(allocator, "run_model_volume", fake_run_model_volume)
+    monkeypatch.setattr(allocator, "run_storage_model_volume", fake_run_model_volume)
     exit_code = allocator.main(
         [
             "model-volume-run",
             "--output-dir",
             "out",
-            "--release-image-ref",
-            "docker.io/example/worker@sha256:" + "a" * 64,
             "--data-center-id",
-            "US-TX-3",
-            "--gpu-type-id",
-            "NVIDIA L40S",
-            "--volume-hourly-rate-usd",
+            "US-WA-1",
+            "--storage-hourly-rate-usd",
             "0.004861111111",
+            "--builder-evidence",
+            "builder.json",
+            "--builder-spend",
+            "spend.json",
+            "--login-private-key",
+            "login-key",
+            "--host-private-key",
+            "host-key",
+            "--ssh-key-id",
+            "7",
             "--allow-paid",
         ]
     )
     assert exit_code == 0
-    assert observed["volume_hourly_rate_usd"] == pytest.approx(0.004861111111)
+    assert observed["storage_hourly_rate_usd"] == pytest.approx(0.004861111111)
+    assert observed["builder_evidence_path"] == Path("builder.json")
+    assert observed["builder_spend_path"] == Path("spend.json")
     assert json.loads(capsys.readouterr().out) == {"success": True}

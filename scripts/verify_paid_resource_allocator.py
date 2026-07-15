@@ -15,6 +15,9 @@ CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
 MODEL_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+STORAGE_VOLUME_ADAPTER = (
+    ROOT / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
+)
 RUNPOD_PREFLIGHT = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_preflight.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
@@ -44,7 +47,7 @@ PRODUCTION_SCAN_EXCLUSIONS = {
 APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
-    "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py",
+    "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
     "src/blueprint_pipeline/paid_resource_allocator.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
@@ -345,6 +348,7 @@ def verify() -> list[str]:
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
     model_volume = MODEL_VOLUME_ADAPTER.read_text(encoding="utf-8")
+    storage_volume = STORAGE_VOLUME_ADAPTER.read_text(encoding="utf-8")
     runpod_preflight = RUNPOD_PREFLIGHT.read_text(encoding="utf-8")
     thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
     thin_entrypoint = THIN_ENTRYPOINT.read_text(encoding="utf-8")
@@ -359,33 +363,41 @@ def verify() -> list[str]:
         blockers.append("legacy_gpu_canary_not_hard_disabled")
     if not all(item in canonical for item in ("cpu-build", "model-volume", "gpu-canary")):
         blockers.append("canonical_allocator_subcommands_missing")
-    if "run_model_volume(" not in canonical:
+    if "run_storage_model_volume(" not in canonical:
         blockers.append("canonical_allocator_missing_model_volume_route")
-    model_calls = _function_calls(MODEL_VOLUME_ADAPTER)
-    if "require_paid_resource_admission" not in model_calls.get("run_model_volume", set()):
+    model_calls = _function_calls(STORAGE_VOLUME_ADAPTER)
+    storage_calls = model_calls.get("run_storage_model_volume", set())
+    if "require_paid_resource_admission" not in storage_calls:
         blockers.append("model_volume_bypasses_shared_admission")
-    if "_delete_pod" not in model_calls.get("run_model_volume", set()):
-        blockers.append("model_volume_preparation_pod_teardown_missing")
-    if "watchdog_handoff.json" not in model_volume:
+    if "run_builder" not in storage_calls:
+        blockers.append("model_volume_missing_canonical_cpu_builder_route")
+    if '"/pods"' in storage_volume:
+        blockers.append("storage_model_volume_may_allocate_runpod_pod")
+    if "_delete_volume" not in storage_calls:
+        blockers.append("model_volume_failure_volume_teardown_missing")
+    if "watchdog_handoff.json" not in storage_volume:
         blockers.append("model_volume_independent_watchdog_missing")
-    if "groot_oscar_model_volume_watchdog_handoff.v1" not in model_volume:
+    if "WATCHDOG_HANDOFF_SCHEMA_VERSION" not in storage_volume:
         blockers.append("model_volume_watchdog_handoff_schema_missing")
     if not all(
-        marker in model_volume
+        marker in storage_volume
         for marker in ("watchdog_pid", "watchdog_state_path", "watchdog_nonce")
     ):
         blockers.append("model_volume_watchdog_process_handoff_missing")
-    if "model_volume_runpod_api_key_unavailable" not in model_volume:
-        blockers.append("model_volume_missing_key_terminal_evidence_missing")
     if not all(
-        marker in model_volume
+        marker in storage_volume
         for marker in (
             "_watchdog_process_running",
-            "ModelVolumeWatchdogExitedBeforeHandoff",
-            "watchdog_retained",
+            "storage_model_volume_watchdog_exited_before_builder",
+            "volume_ready_watchdog_retained",
         )
     ):
         blockers.append("model_volume_ready_handoff_liveness_guard_missing")
+    if (
+        "legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator"
+        not in model_volume
+    ):
+        blockers.append("legacy_gpu_model_volume_preparation_not_hard_disabled")
     if not all(
         marker in runpod_preflight
         for marker in (
@@ -401,9 +413,9 @@ def verify() -> list[str]:
         blockers.append("gpu_preflight_model_volume_watchdog_handoff_guard_missing")
     if "model_volume_watchdog_handoff=" not in gpu:
         blockers.append("gpu_launch_refresh_drops_model_volume_watchdog_handoff")
-    if "pod_prefix=None" not in model_volume or "volume_prefix=None" not in model_volume:
+    if "pod_prefix=None" not in storage_volume or "volume_prefix=None" not in storage_volume:
         blockers.append("model_volume_global_inventory_guard_missing")
-    if "build_runpod_network_volume_evidence(" not in model_volume:
+    if "build_runpod_network_volume_evidence(" not in storage_volume:
         blockers.append("model_volume_provider_reported_size_guard_missing")
     if "python -m blueprint_pipeline.paid_resource_allocator" not in runbook:
         blockers.append("canonical_allocator_command_missing_from_runbook")

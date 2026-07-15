@@ -142,6 +142,7 @@ def build_watchdog_spend_evidence(
         "watchdog_process_identity_verified": process_identity_verified,
         "watchdog_deadline_epoch": deadline,
         "watchdog_pod_name_prefix": pod_name_prefix,
+        "watchdog_out_dir": watchdog.get("watchdog_out_dir"),
         "raw_secret_values_recorded": False,
     }
 
@@ -215,6 +216,7 @@ def build_model_volume_watchdog_handoff_evidence(
             "next_owner_must_arm_before_transfer"
         )
         is True,
+        "provider_lane_handoff": _mapping(handoff.get("provider_lane_handoff")),
         "raw_secret_values_recorded": False,
     }
 

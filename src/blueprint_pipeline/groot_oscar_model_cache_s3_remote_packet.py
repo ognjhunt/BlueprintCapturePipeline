@@ -22,6 +22,7 @@ from .groot_oscar_model_cache_s3_remote_executor import (
     TRANSPORT_RESULT_NAME,
     VERIFICATION_ROOT,
 )
+from .groot_oscar_model_cache_wheelhouse import plan_model_cache_wheelhouse
 from .groot_oscar_runpod_s3_model_cache import (
     DEFAULT_REMOTE_PREFIX,
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
@@ -203,6 +204,11 @@ def prepare_remote_model_cache_packet(
         blockers.append("model_cache_packet_dependency_lock_missing")
     if dependency_manifest.get("lockfile_sha256") != lock_row["sha256"]:
         blockers.append("model_cache_packet_dependency_lock_digest_mismatch")
+    try:
+        locked_plan = plan_model_cache_wheelhouse(lock_target.read_bytes())
+    except (OSError, ValueError, UnicodeDecodeError):
+        locked_plan = {"requirements": [], "wheels": []}
+        blockers.append("model_cache_packet_dependency_lock_plan_invalid")
     requirements = dependency_manifest.get("requirements")
     requirements = requirements if isinstance(requirements, list) else []
     if not requirements or any(
@@ -219,6 +225,14 @@ def prepare_remote_model_cache_packet(
     closure_digest = hashlib.sha256(closure_bytes).hexdigest()
     if dependency_manifest.get("requirements_closure_sha256") != closure_digest:
         blockers.append("model_cache_packet_dependency_closure_digest_mismatch")
+    if requirements != locked_plan["requirements"]:
+        blockers.append("model_cache_packet_dependency_closure_not_locked")
+    locked_wheels = [
+        {key: value for key, value in row.items() if key != "url"}
+        for row in locked_plan["wheels"]
+    ]
+    if dependency_rows != locked_wheels:
+        blockers.append("model_cache_packet_dependency_wheels_not_locked")
     closure_path = packet_dir / "requirements_closure.json"
     closure_path.write_bytes(closure_bytes)
     wheel_source = Path(dependency_wheelhouse).expanduser().resolve()

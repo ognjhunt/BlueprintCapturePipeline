@@ -7,7 +7,7 @@
     "require_paid_resource_admission": [
       "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
-      "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py",
+      "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
       "src/blueprint_pipeline/paid_resource_allocator.py"
     ]
   },
@@ -24,8 +24,13 @@
     },
     {
       "path": "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py",
+      "classification": "hard_disabled_legacy_launcher",
+      "required_markers": ["legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator", "watchdog_handoff.json"]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
       "classification": "canonical_adapter",
-      "required_markers": ["require_paid_resource_admission", "/networkvolumes"]
+      "required_markers": ["require_paid_resource_admission", "run_builder", "storage_model_volume_preparation_failed", "runpod_gpu_pods_created"]
     },
     {
       "path": "src/blueprint_pipeline/groot_oscar_runpod_canary.py",

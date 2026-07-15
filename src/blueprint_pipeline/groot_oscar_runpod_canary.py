@@ -25,6 +25,16 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
+from .paid_lane_guard import (
+    bind_pending_teardown_instance,
+    cancel_pending_teardown,
+    mark_pending_teardown_ambiguous,
+    open_pending_teardown,
+)
+from .paid_provider_lane_lease import (
+    accept_paid_provider_lane_lease_handoff,
+    restore_paid_provider_lane_lease_to_retained_watchdog,
+)
 from .groot_oscar_runpod_preflight import collect_runpod_preflight
 from .runpod_provider_adapter import (
     RUNPOD_IMAGE_STARTUP_CANARY_MODE,
@@ -288,6 +298,50 @@ def run_canary(
     write_json(Path(admission_out), prepared)
     if prepared["status"] != "admitted":
         return prepared
+    if execute:
+        volume_handoff = preflight.get("model_volume_watchdog_handoff")
+        volume_handoff = (
+            volume_handoff if isinstance(volume_handoff, Mapping) else {}
+        )
+        lane_handoff = volume_handoff.get("provider_lane_handoff")
+        lane_handoff = lane_handoff if isinstance(lane_handoff, Mapping) else {}
+        binding = lane_handoff.get("binding")
+        binding = binding if isinstance(binding, Mapping) else {}
+        volume = preflight.get("volume")
+        volume = volume if isinstance(volume, Mapping) else {}
+        if str(binding.get("volume_id") or "") != str(volume.get("id") or ""):
+            acceptance = {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_handoff_volume_mismatch"],
+            }
+        else:
+            acceptance = accept_paid_provider_lane_lease_handoff(
+                lane_handoff,
+                canary_watchdog=spend,
+                expected_binding=binding,
+            )
+        write_json(
+            Path(adapter_output).resolve().parent
+            / "provider_lane_handoff_acceptance.json",
+            acceptance,
+        )
+        if acceptance.get("status") != "accepted":
+            prepared = {
+                **prepared,
+                "status": "blocked",
+                "blockers": sorted(
+                    set(
+                        [
+                            *prepared.get("blockers", []),
+                            *acceptance.get("blockers", []),
+                            "paid_provider_lane_handoff_not_accepted",
+                        ]
+                    )
+                ),
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(admission_out), prepared)
+            return prepared
     require_paid_resource_admission(
         prepared["admission"],
         resource_class="gpu_canary",
@@ -303,15 +357,86 @@ def run_canary(
         expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
     )
     write_json(Path(bound_request_out), prepared["bound_request"])
-    adapter = run_runpod_provider_adapter(
-        provider_launch_request_path=bound_request_out,
-        output_path=adapter_output,
-        mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE,
-        allow_runpod_api_call=execute,
-        pod_name=pod_name,
-        gpu_type_id=prepared["admission"]["gpu_type_id"],
-        paid_resource_admission_grant=adapter_grant,
-    )
+    pod_pending = None
+    if execute:
+        try:
+            pod_pending = open_pending_teardown(
+                provider="runpod",
+                lane="groot_oscar_gpu_canary",
+                run_id=pod_name,
+                resource_kind="compute_instance",
+                resource_name=pod_name,
+                job_dir=Path(adapter_output).resolve().parent,
+                max_age_seconds=max(
+                    300, int(spend.get("hard_ttl_seconds") or 0) + 600
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - no provider mutation has occurred
+            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
+            blocked = {
+                **prepared,
+                "status": "blocked",
+                "blockers": ["runpod_canary_pending_teardown_open_failed"],
+                "provider_mutations_performed": 0,
+                "error_type": type(exc).__name__,
+            }
+            write_json(Path(admission_out), blocked)
+            return blocked
+    try:
+        adapter = run_runpod_provider_adapter(
+            provider_launch_request_path=bound_request_out,
+            output_path=adapter_output,
+            mode=RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+            allow_runpod_api_call=execute,
+            pod_name=pod_name,
+            gpu_type_id=prepared["admission"]["gpu_type_id"],
+            paid_resource_admission_grant=adapter_grant,
+        )
+    except Exception as exc:  # noqa: BLE001 - create outcome can be ambiguous
+        if pod_pending is not None:
+            mark_pending_teardown_ambiguous(
+                pod_pending["path"],
+                reason="runpod_canary_adapter_raised_after_create_boundary",
+                evidence={"error_type": type(exc).__name__},
+            )
+        failed = {
+            "status": "failed",
+            "blockers": ["runpod_canary_adapter_failed_or_ambiguous"],
+            "provider_allocation_ambiguous": True,
+            "provider_mutations_performed": 1,
+            "error_type": type(exc).__name__,
+        }
+        write_json(Path(adapter_output), failed)
+        return failed
+    if execute and pod_pending is not None:
+        response = adapter.get("runpod_response")
+        response = response if isinstance(response, Mapping) else {}
+        pod_id = str(response.get("id") or "").strip()
+        if pod_id:
+            bind_pending_teardown_instance(pod_pending["path"], pod_id)
+        elif adapter.get("status") in {"blocked", "dry_run"}:
+            cancel_pending_teardown(
+                pod_pending["path"],
+                reason="runpod_canary_adapter_confirmed_no_create",
+                evidence={"adapter_status": adapter.get("status")},
+            )
+            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
+        else:
+            mark_pending_teardown_ambiguous(
+                pod_pending["path"],
+                reason="runpod_canary_create_result_missing_pod_id",
+                evidence={"adapter_status": adapter.get("status")},
+            )
+        watchdog_out_dir = str(spend.get("watchdog_out_dir") or "").strip()
+        if watchdog_out_dir:
+            write_json(
+                Path(watchdog_out_dir) / "provider_lane_handoff_receipt.json",
+                {
+                    **acceptance,
+                    "pod_pending_teardown_record": pod_pending["path"],
+                    "pod_id": pod_id or None,
+                },
+            )
     if execute and adapter.get("status") == "submitted":
         return _finalize_adapter_allocation(
             adapter=adapter,

@@ -11,18 +11,24 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.isaac_g1_kitchen_parity_job as J
+import blueprint_pipeline.paid_provider_lane_lease as lease_module
 from blueprint_pipeline.paid_provider_lane_lease import (
     BLOCKER_ALREADY_OWNED,
     BLOCKER_STALE_REQUIRES_RECONCILIATION,
     PaidProviderLaneLeaseSet,
     STALE_RECLAIM_REQUIRED_EVIDENCE,
+    accept_paid_provider_lane_lease_handoff,
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
     lease_path,
     read_lease,
     release_paid_provider_lane_lease,
+    transfer_paid_provider_lane_lease_to_watchdog,
 )
-from blueprint_pipeline.paid_lane_guard import open_pending_teardown
+from blueprint_pipeline.paid_lane_guard import (
+    bind_pending_teardown_instance,
+    open_pending_teardown,
+)
 
 _SCENARIOS = [
     {
@@ -105,6 +111,166 @@ def test_second_acquire_blocks_while_owner_is_alive(tmp_path: Path) -> None:
     assert second["holder"]["job_dir"] == "a"
     # The live owner's lease is untouched.
     assert read_lease("runpod", "lane", tmp_path)["job_dir"] == "a"
+
+
+def test_watchdog_handoff_is_one_time_bound_and_has_no_unowned_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live_pids = {os.getpid(), 111, 222}
+    monkeypatch.setattr(lease_module, "_pid_is_alive", lambda pid: pid in live_pids)
+    acquired = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        job_dir=str(tmp_path),
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane="groot_oscar_model_volume"),
+    )
+    pending = open_pending_teardown(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        run_id="handoff-test",
+        resource_kind="network_volume",
+        resource_name="model-cache-volume",
+        provider_location="US-WA-1",
+        registry_dir=tmp_path / "pending",
+    )
+    bind_pending_teardown_instance(pending["path"], "volume-1")
+    binding = {
+        "provider": "runpod",
+        "lane": "groot_oscar_model_volume",
+        "volume_id": "volume-1",
+        "pending_teardown_record": pending["path"],
+        "watchdog_nonce": "nonce-1",
+        "watchdog_deadline_epoch": time.time() + 3600,
+    }
+    capability = tmp_path / "provider_lane_handoff.capability"
+    handoff = transfer_paid_provider_lane_lease_to_watchdog(
+        acquired,
+        watchdog_pid=111,
+        capability_path=capability,
+        binding=binding,
+    )
+    assert handoff["status"] == "pending_canary_acceptance"
+    assert capability.stat().st_mode & 0o077 == 0
+    retained = read_lease("runpod", "groot_oscar_model_volume", tmp_path)
+    assert retained["owner_pid"] == 111
+    assert retained["retained_teardown_owner_pid"] == 111
+
+    unrelated = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        job_dir="unrelated",
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane="groot_oscar_model_volume"),
+    )
+    assert unrelated["status"] == "blocked"
+    assert unrelated["blockers"] == [BLOCKER_ALREADY_OWNED]
+
+    forged = accept_paid_provider_lane_lease_handoff(
+        handoff,
+        canary_watchdog={
+            "watchdog_pid": 222,
+            "watchdog_pod_name_prefix": "blueprint-groot-oscar-canary-test-",
+            "watchdog_deadline_epoch": time.time() + 1800,
+            "watchdog_process_identity_verified": True,
+            "independent_teardown_watchdog": True,
+        },
+        expected_binding={**binding, "volume_id": "volume-forged"},
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "--pod-name-prefix",
+            "blueprint-groot-oscar-canary-test-",
+            "--deadline-epoch",
+            str(time.time() + 1800),
+        ),
+    )
+    assert forged["status"] == "blocked"
+    assert capability.exists()
+
+    canary_deadline = time.time() + 1800
+    canary_watchdog = {
+        "watchdog_pid": 222,
+        "watchdog_pod_name_prefix": "blueprint-groot-oscar-canary-test-",
+        "watchdog_deadline_epoch": canary_deadline,
+        "watchdog_process_identity_verified": True,
+        "independent_teardown_watchdog": True,
+    }
+    accepted = accept_paid_provider_lane_lease_handoff(
+        handoff,
+        canary_watchdog=canary_watchdog,
+        expected_binding=binding,
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "--pod-name-prefix",
+            "blueprint-groot-oscar-canary-test-",
+            "--deadline-epoch",
+            str(canary_deadline),
+        ),
+    )
+    assert accepted["status"] == "accepted"
+    assert accepted["capability_consumed"] is True
+    assert not capability.exists()
+    current = read_lease("runpod", "groot_oscar_model_volume", tmp_path)
+    assert current["owner_pid"] == 222
+    assert current["retained_teardown_owner_pid"] == 111
+
+    reused = accept_paid_provider_lane_lease_handoff(
+        handoff,
+        canary_watchdog=canary_watchdog,
+        expected_binding=binding,
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "--pod-name-prefix",
+            "blueprint-groot-oscar-canary-test-",
+            "--deadline-epoch",
+            str(canary_deadline),
+        ),
+    )
+    assert reused["status"] == "blocked"
+
+
+def test_live_retained_watchdog_prevents_parent_exit_stale_reclaim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dead_parent = _dead_pid()
+    monkeypatch.setattr(
+        lease_module,
+        "_pid_is_alive",
+        lambda pid: pid == 111,
+    )
+    path = lease_path("runpod", "groot_oscar_model_volume", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "paid_provider_lane_lease.v1",
+                "provider": "runpod",
+                "lane": "groot_oscar_model_volume",
+                "owner_pid": dead_parent,
+                "retained_teardown_owner_pid": 111,
+                "hostname": "",
+                "job_dir": "exited-storage-supervisor",
+                "started_at_epoch": time.time() - 60,
+                "expires_at_epoch": time.time() + 3600,
+            }
+        ),
+        encoding="utf-8",
+    )
+    blocked = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        job_dir="unrelated",
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane="groot_oscar_model_volume"),
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["blockers"] == [BLOCKER_ALREADY_OWNED]
 
 
 def test_concurrent_process_blocks_before_paid_lane_mutation(tmp_path: Path) -> None:
