@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import inspect
 import json
 import sys
@@ -28,6 +29,8 @@ from blueprint_pipeline.groot_oscar_runpod_s3_model_cache import (
     REMOTE_SAFETY_HEADROOM_BYTES,
     RUNPOD_S3_MAX_CONCURRENCY,
     RUNPOD_S3_COMPLETE_MULTIPART_MAX_ATTEMPTS,
+    RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_INTERVAL_SECONDS,
+    RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_MAX_ATTEMPTS,
     RUNPOD_S3_MULTIPART_CHUNK_BYTES,
     RUNPOD_S3_MULTIPART_THRESHOLD_BYTES,
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
@@ -37,6 +40,7 @@ from blueprint_pipeline.groot_oscar_runpod_s3_model_cache import (
     _runpod_transfer_contract,
     _retry_runpod_complete_multipart_gateway_timeout,
     _sanitized_s3_exception,
+    _upload_file_with_ambiguous_completion_recovery,
     _upload_and_verify_model_cache_impl,
     endpoint_for_data_center,
     main,
@@ -162,6 +166,7 @@ class FakeS3:
         self.multipart_list_calls = 0
         self.multipart_list_kwargs: list[dict[str, object]] = []
         self.upload_configs: list[object] = []
+        self.head_calls = 0
 
     def list_buckets(self):  # type: ignore[no-untyped-def]
         return {"Buckets": [{"Name": "volume-1"}]}
@@ -222,6 +227,10 @@ class FakeS3:
         if self.corrupt_download and key.endswith("config.json"):
             payload += b"corrupt"
         Path(path).write_bytes(payload)
+
+    def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        self.head_calls += 1
+        return {"ContentLength": len(self.objects[(Bucket, Key)])}
 
     def delete_object(self, *, Bucket: str, Key: str) -> None:  # noqa: N803
         self.delete_calls += 1
@@ -382,6 +391,8 @@ def test_upload_requires_full_redownload_and_manifest_hash_verification(
         "client_max_attempts": 10,
         "complete_multipart_retry_http_statuses": [524],
         "complete_multipart_max_attempts": 4,
+        "ambiguous_complete_head_max_attempts": 30,
+        "ambiguous_complete_head_interval_seconds": 2.0,
     }
     assert result["multipart_cleanup_required"] is False
     assert result["multipart_listing_supported"] is True
@@ -400,6 +411,8 @@ def test_runpod_transfer_contract_is_large_chunked_and_single_threaded() -> None
         "client_max_attempts": 10,
         "complete_multipart_retry_http_statuses": [524],
         "complete_multipart_max_attempts": 4,
+        "ambiguous_complete_head_max_attempts": 30,
+        "ambiguous_complete_head_interval_seconds": 2.0,
     }
 
 
@@ -440,13 +453,13 @@ def test_runpod_client_registers_bounded_complete_multipart_524_retry(
     assert result is fake_client
     assert captured["name"] == "s3"
     assert captured["endpoint_url"] == "https://s3api-us-wa-1.runpod.io/"
-    assert registrations == [
-        (
-            "needs-retry.s3.CompleteMultipartUpload",
-            _retry_runpod_complete_multipart_gateway_timeout,
-            "blueprint-runpod-complete-multipart-524",
-        )
-    ]
+    assert len(registrations) == 1
+    name, handler, unique_id = registrations[0]
+    assert name == "needs-retry.s3.CompleteMultipartUpload"
+    assert unique_id == "blueprint-runpod-complete-multipart-524"
+    assert isinstance(handler, partial)
+    assert handler.func is _retry_runpod_complete_multipart_gateway_timeout
+    assert handler.keywords["retry_state"] is result._blueprint_complete_multipart_retry_state
 
 
 @pytest.mark.parametrize(
@@ -470,6 +483,164 @@ def test_complete_multipart_retry_is_exact_and_bounded(
         )
         == expected
     )
+
+
+def test_524_then_invalid_part_recovers_only_after_exact_materialization(
+    tmp_path: Path,
+) -> None:
+    class InvalidPart(RuntimeError):
+        operation_name = "CompleteMultipartUpload"
+        response = {
+            "Error": {"Code": "InvalidPart"},
+            "ResponseMetadata": {"HTTPStatusCode": 400, "RetryAttempts": 1},
+        }
+
+    class AmbiguousS3(FakeS3):
+        def __init__(self) -> None:
+            super().__init__()
+            self._blueprint_complete_multipart_retry_state = {
+                "gateway_timeout_observed": False,
+                "retry_attempt_count": 0,
+            }
+
+        def upload_file(
+            self,
+            path: str,
+            bucket: str,
+            key: str,
+            *,
+            Config: object | None = None,  # noqa: N803
+        ) -> None:
+            self.upload_calls += 1
+            self.upload_configs.append(Config)
+            self.objects[(bucket, key)] = Path(path).read_bytes()
+            self._blueprint_complete_multipart_retry_state.update(
+                gateway_timeout_observed=True,
+                retry_attempt_count=1,
+            )
+            wrapper = RuntimeError("upload failed")
+            wrapper.__cause__ = InvalidPart("provider detail")
+            raise wrapper
+
+    path = tmp_path / "large.bin"
+    path.write_bytes(b"verified later by full redownload")
+    client = AmbiguousS3()
+
+    recovered = _upload_file_with_ambiguous_completion_recovery(
+        client,
+        path=path,
+        volume_id="volume-1",
+        key="cache/large.bin",
+        transfer_config=object(),
+        sleeper=lambda _seconds: None,
+    )
+
+    assert recovered is True
+    assert client.head_calls == 1
+
+
+def test_invalid_part_without_observed_524_is_not_recovered(tmp_path: Path) -> None:
+    class InvalidPart(RuntimeError):
+        operation_name = "CompleteMultipartUpload"
+        response = {
+            "Error": {"Code": "InvalidPart"},
+            "ResponseMetadata": {"HTTPStatusCode": 400, "RetryAttempts": 0},
+        }
+
+    class InvalidPartS3(FakeS3):
+        _blueprint_complete_multipart_retry_state = {
+            "gateway_timeout_observed": False,
+            "retry_attempt_count": 0,
+        }
+
+        def upload_file(self, *_args: object, **_kwargs: object) -> None:
+            raise InvalidPart("provider detail")
+
+    path = tmp_path / "large.bin"
+    path.write_bytes(b"payload")
+
+    with pytest.raises(InvalidPart):
+        _upload_file_with_ambiguous_completion_recovery(
+            InvalidPartS3(),
+            path=path,
+            volume_id="volume-1",
+            key="cache/large.bin",
+            transfer_config=object(),
+            sleeper=lambda _seconds: None,
+        )
+
+    assert RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_MAX_ATTEMPTS == 30
+    assert RUNPOD_S3_AMBIGUOUS_COMPLETE_HEAD_INTERVAL_SECONDS == 2.0
+
+
+@pytest.mark.parametrize(
+    ("corrupt_download", "expected_status"),
+    [(False, "completed"), (True, "failed")],
+)
+def test_ambiguous_completion_still_requires_full_redownload_sha256(
+    tmp_path: Path,
+    corrupt_download: bool,
+    expected_status: str,
+) -> None:
+    class InvalidPart(RuntimeError):
+        operation_name = "CompleteMultipartUpload"
+        response = {
+            "Error": {"Code": "InvalidPart"},
+            "ResponseMetadata": {"HTTPStatusCode": 400, "RetryAttempts": 1},
+        }
+
+    class OneAmbiguousUploadS3(FakeS3):
+        def __init__(self) -> None:
+            super().__init__(corrupt_download=corrupt_download)
+            self._blueprint_complete_multipart_retry_state = {
+                "gateway_timeout_observed": False,
+                "retry_attempt_count": 0,
+            }
+
+        def upload_file(
+            self,
+            path: str,
+            bucket: str,
+            key: str,
+            *,
+            Config: object | None = None,  # noqa: N803
+        ) -> None:
+            self.upload_calls += 1
+            self.upload_configs.append(Config)
+            self.objects[(bucket, key)] = Path(path).read_bytes()
+            if self.upload_calls == 1:
+                self._blueprint_complete_multipart_retry_state.update(
+                    gateway_timeout_observed=True,
+                    retry_attempt_count=1,
+                )
+                wrapper = RuntimeError("upload failed")
+                wrapper.__cause__ = InvalidPart("provider detail")
+                raise wrapper
+
+    access, secret = _credentials(tmp_path)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=OneAmbiguousUploadS3(),
+        paid_resource_admission_grant=_grant(),
+    )
+
+    assert result["status"] == expected_status
+    if expected_status == "completed":
+        assert result["ambiguous_complete_recovery_count"] == 1
+        assert result["ambiguous_completion_size_is_integrity_proof"] is False
+        assert result["ambiguous_completion_requires_full_redownload_sha256"] is True
+        assert result["verification_method"] == (
+            "full_s3_redownload_and_sha256_manifest_verification"
+        )
+    else:
+        assert result["partial_upload_cleanup_verified"] is True
 
 
 def test_runpod_transfer_config_passes_exact_constructor_values(
