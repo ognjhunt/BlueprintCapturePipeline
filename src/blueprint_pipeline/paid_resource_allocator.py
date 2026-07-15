@@ -20,6 +20,13 @@ from .groot_oscar_digitalocean_builder import (
     observe_local_machine,
     run_builder,
 )
+from .groot_oscar_digitalocean_prebaked_host import (
+    DEFAULT_REGION as DIGITALOCEAN_PREBAKE_DEFAULT_REGION,
+    DEFAULT_SIZE as DIGITALOCEAN_PREBAKE_DEFAULT_SIZE,
+    DEFAULT_SOURCE_IMAGE as DIGITALOCEAN_PREBAKE_DEFAULT_SOURCE_IMAGE,
+    DEFAULT_VOLUME_GIB as DIGITALOCEAN_PREBAKE_DEFAULT_VOLUME_GIB,
+    run_prebake as run_digitalocean_prebake,
+)
 from .groot_oscar_infrastructure_admission import (
     BUILD_SCHEMA_VERSION,
     build_build_plane_admission,
@@ -38,8 +45,8 @@ from .paid_resource_admission import require_paid_resource_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
-MIN_RECONCILED_CAMPAIGN_SPEND_USD = 14.308253
-MIN_RECONCILED_GPU_SECONDS = 15_174
+MIN_RECONCILED_CAMPAIGN_SPEND_USD = 14.557003
+MIN_RECONCILED_GPU_SECONDS = 15_624
 GPU_CANARY_RESERVATION_SECONDS = 1_200
 STRICT_POLICY_SMOKE_RESERVATION_SECONDS = 480
 FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
@@ -264,8 +271,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
     gpu.add_argument(
+        "--provider", choices=("runpod", "digitalocean"), default="runpod"
+    )
+    gpu.add_argument(
         "--probe-kind",
-        choices=("startup", "strict-policy-smoke"),
+        choices=("startup", "strict-policy-smoke", "persistent-host-bake"),
         default="strict-policy-smoke",
     )
     gpu.add_argument("--execute", action="store_true")
@@ -273,7 +283,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--campaign-initial-spent-usd", type=float)
     gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
     gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
-    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=19_154)
+    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=21_000)
     gpu.add_argument(
         "--campaign-reservation-seconds",
         type=int,
@@ -286,6 +296,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--authorize-reduced-canary-timeout", action="store_true")
     gpu.add_argument("--campaign-max-hourly-rate-usd", type=float)
+    gpu.add_argument(
+        "--digitalocean-token-file",
+        default="~/.blueprint-secrets/digitalocean_api_token",
+    )
+    gpu.add_argument(
+        "--docker-username-file", default="~/.blueprint-secrets/docker_username"
+    )
+    gpu.add_argument(
+        "--docker-password-file", default="~/.blueprint-secrets/docker_pat"
+    )
+    gpu.add_argument(
+        "--runpod-s3-access-key-file",
+        default="~/.blueprint-secrets/runpod_s3_access_key",
+    )
+    gpu.add_argument(
+        "--runpod-s3-secret-key-file",
+        default="~/.blueprint-secrets/runpod_s3_secret_key",
+    )
+    gpu.add_argument("--login-private-key")
+    gpu.add_argument("--host-private-key")
+    gpu.add_argument("--ssh-key-id", type=int)
+    gpu.add_argument(
+        "--digitalocean-region", default=DIGITALOCEAN_PREBAKE_DEFAULT_REGION
+    )
+    gpu.add_argument(
+        "--digitalocean-size", default=DIGITALOCEAN_PREBAKE_DEFAULT_SIZE
+    )
+    gpu.add_argument(
+        "--digitalocean-source-image",
+        default=DIGITALOCEAN_PREBAKE_DEFAULT_SOURCE_IMAGE,
+    )
+    gpu.add_argument(
+        "--digitalocean-volume-size-gib",
+        type=int,
+        default=DIGITALOCEAN_PREBAKE_DEFAULT_VOLUME_GIB,
+    )
     for name, hidden in (("model-volume", False), ("model-volume-run", True)):
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
         model.add_argument("--output-dir", required=True)
@@ -381,6 +427,82 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == "persistent-host-bake":
+            missing = [
+                name
+                for name in (
+                    "campaign_budget_ledger",
+                    "campaign_initial_spent_usd",
+                    "campaign_initial_used_gpu_seconds",
+                    "campaign_reservation_seconds",
+                    "campaign_max_hourly_rate_usd",
+                    "login_private_key",
+                    "host_private_key",
+                    "ssh_key_id",
+                )
+                if getattr(args, name, None) in {None, ""}
+            ]
+            if args.provider != "digitalocean":
+                missing.append("provider_must_be_digitalocean")
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "digitalocean_prebake_required_arguments_missing:"
+                        + ",".join(sorted(missing))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.adapter_output), result)
+            else:
+                output_dir = Path(args.adapter_output).expanduser().resolve().parent
+                result = run_digitalocean_prebake(
+                    output_dir=output_dir,
+                    release_evidence_path=Path(args.release_evidence),
+                    model_cache_evidence_path=Path(args.model_cache_evidence),
+                    token_file=Path(args.digitalocean_token_file),
+                    docker_username_file=Path(args.docker_username_file),
+                    docker_password_file=Path(args.docker_password_file),
+                    runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
+                    runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
+                    login_private_key=Path(args.login_private_key),
+                    host_private_key=Path(args.host_private_key),
+                    ssh_key_id=args.ssh_key_id,
+                    region=args.digitalocean_region,
+                    size=args.digitalocean_size,
+                    source_image=args.digitalocean_source_image,
+                    volume_size_gib=args.digitalocean_volume_size_gib,
+                    reservation_seconds=args.campaign_reservation_seconds,
+                    future_gpu_seconds=args.future_campaign_allowance_seconds,
+                    campaign_budget_ledger=Path(args.campaign_budget_ledger),
+                    initial_spent_usd=args.campaign_initial_spent_usd,
+                    initial_gpu_seconds=args.campaign_initial_used_gpu_seconds,
+                    total_spend_cap_usd=args.campaign_total_spend_cap_usd,
+                    gpu_wall_cap_seconds=args.campaign_wall_cap_seconds,
+                    max_hourly_rate_usd=args.campaign_max_hourly_rate_usd,
+                    execute=args.execute,
+                )
+                generated = {
+                    Path(args.preflight_bundle): output_dir
+                    / "digitalocean_prebake_preflight.json",
+                    Path(args.admission_out): output_dir
+                    / "digitalocean_prebake_admission.json",
+                    Path(args.bound_request_out): output_dir
+                    / "bound_provider_request.json",
+                    Path(args.adapter_output): output_dir
+                    / "digitalocean_prebaked_host_result.json",
+                }
+                for destination, source in generated.items():
+                    if destination.expanduser().resolve() == source.resolve():
+                        continue
+                    if source.is_file():
+                        write_json(
+                            destination,
+                            json.loads(source.read_text(encoding="utf-8")),
+                        )
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         strict_policy_smoke = args.probe_kind == "strict-policy-smoke"
         maximum_canary_reservation_seconds = (
             STRICT_POLICY_SMOKE_RESERVATION_SECONDS
