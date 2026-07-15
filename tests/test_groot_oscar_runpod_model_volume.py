@@ -220,6 +220,52 @@ def test_ready_volume_handoff_does_not_disarm_deadline_watchdog() -> None:
     assert "cancelled_before_provider_allocation" in watchdog_source
 
 
+def test_ready_volume_handoff_still_deletes_volume_at_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "watchdog_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "deadline_epoch": time.time() + 0.02,
+                "pod_name_prefix": "blueprint-groot-oscar-canary-model-test",
+                "volume_name": "blueprint-groot-oscar-models-test",
+                "watchdog_nonce": "nonce-for-ready-test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "watchdog_handoff.json").write_text(
+        json.dumps({"status": "volume_ready_watchdog_retained"}), encoding="utf-8"
+    )
+
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-test-key"
+
+    inventories = iter(
+        [([], ["volume-1"], True), ([], [], True)]
+    )
+    deleted: list[str] = []
+    monkeypatch.setattr(model_volume, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        model_volume, "_matching_resources", lambda **_kwargs: next(inventories)
+    )
+    monkeypatch.setattr(
+        model_volume,
+        "_delete_volume",
+        lambda **kwargs: deleted.append(kwargs["volume_id"])
+        or {"provider_absence_confirmed": True},
+    )
+    monkeypatch.setattr(model_volume.time, "sleep", lambda _seconds: None)
+
+    assert watchdog(state_path=state) == 0
+    assert deleted == ["volume-1"]
+    result = json.loads((tmp_path / "watchdog_result.json").read_text())
+    assert result["status"] == "provider_terminal"
+
+
 def test_model_volume_reads_hf_token_before_provider_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
