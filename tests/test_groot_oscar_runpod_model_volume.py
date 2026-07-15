@@ -114,20 +114,30 @@ def test_model_volume_accepts_exact_one_gpu_offer_when_counts_are_nullable() -> 
         "available_gpu_counts": [],
         "single_gpu_offer_requested": True,
         "single_gpu_offer_available": True,
-        "capacity_data_center_id": "US-NC-2",
+        "capacity_data_center_id": "US-NC-1",
+        "capacity_data_center_catalog_verified": True,
+        "capacity_data_center_storage_support": True,
         "capacity_allowed_cuda_versions": ["12.8"],
     }
     assert _single_gpu_capacity_verified(
         capacity=capacity,
         selected=selected,
-        data_center_id="US-NC-2",
+        data_center_id="US-NC-1",
         required_cuda_version="12.8",
     )
     selected["single_gpu_offer_available"] = False
     assert not _single_gpu_capacity_verified(
         capacity=capacity,
         selected=selected,
-        data_center_id="US-NC-2",
+        data_center_id="US-NC-1",
+        required_cuda_version="12.8",
+    )
+    selected["single_gpu_offer_available"] = True
+    selected["capacity_data_center_storage_support"] = False
+    assert not _single_gpu_capacity_verified(
+        capacity=capacity,
+        selected=selected,
+        data_center_id="US-NC-1",
         required_cuda_version="12.8",
     )
 
