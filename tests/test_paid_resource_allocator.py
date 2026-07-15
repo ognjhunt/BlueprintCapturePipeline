@@ -316,3 +316,42 @@ def test_model_volume_run_forwards_storage_only_composite_arguments(
     assert observed["builder_evidence_path"] == Path("builder.json")
     assert observed["builder_spend_path"] == Path("spend.json")
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_canary(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_canary", fake_run_canary)
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "strict-smoke-pod",
+            "--probe-kind",
+            "strict-policy-smoke",
+        ]
+    )
+    assert exit_code == 0
+    assert observed["probe_kind"] == "strict-policy-smoke"
+    assert json.loads(capsys.readouterr().out) == {"success": True}

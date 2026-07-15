@@ -259,6 +259,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--bound-request-out", required=True)
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
+    gpu.add_argument(
+        "--probe-kind",
+        choices=("startup", "strict-policy-smoke"),
+        default="startup",
+    )
     gpu.add_argument("--execute", action="store_true")
     gpu.add_argument("--campaign-budget-ledger")
     gpu.add_argument("--campaign-initial-spent-usd", type=float)
@@ -371,6 +376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 adapter_output=args.adapter_output,
                 pod_name=args.pod_name,
                 execute=args.execute,
+                probe_kind=args.probe_kind,
                 campaign_budget=(
                     {
                         "ledger_path": args.campaign_budget_ledger,

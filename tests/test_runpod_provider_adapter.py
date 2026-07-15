@@ -1697,6 +1697,66 @@ def test_runpod_adapter_builds_image_startup_canary_request(
     assert thin_body["dockerStartCmd"][:2] == ["bash", "-lc"]
 
 
+def test_runpod_adapter_builds_only_fixed_strict_policy_smoke_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    request = _read_json(request_path)
+    provider_shape = request["provider_request_shape"]  # type: ignore[index]
+    assert isinstance(provider_shape, dict)
+    provider_shape["command"] = "echo caller-controlled-command-must-not-run"
+    provider_shape["docker_entrypoint"] = [
+        "/opt/blueprint/thin_release_entrypoint.sh"
+    ]
+    provider_shape.pop("local_sim_only_prerequisite", None)
+    _write_json(request_path, request)
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "https://example.test/upload?x-goog-signature=secret-signature",
+    )
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    shaped = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "strict-policy-smoke-shaped.json",
+        mode=adapter.RUNPOD_STRICT_POLICY_SMOKE_MODE,
+        pod_name="strict-policy-smoke-pod",
+    )
+
+    assert shaped["status"] == "dry_run_ready"
+    assert shaped["request_blockers"] == []
+    body = shaped["runpod_request"]["body"]  # type: ignore[index]
+    assert body["dockerEntrypoint"] == [
+        "/opt/blueprint/thin_release_entrypoint.sh"
+    ]
+    assert body["dockerStartCmd"][:2] == ["bash", "-lc"]
+    command = body["dockerStartCmd"][2]
+    assert "caller-controlled-command-must-not-run" not in command
+    assert "groot_oscar_runpod_strict_policy_smoke.v1" in command
+    assert '"requested_action_count": 3' in command
+    assert "while len(actions) < 3" in command
+    assert '"physical_robot_control_performed": False' in command
+    python_source = command.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    compile(python_source, "strict-policy-smoke", "exec")
+
+    def provider_call_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("provider call reached without shared admission grant")
+
+    monkeypatch.setattr(adapter, "_http_json", provider_call_must_not_run)
+    blocked = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        output_path=tmp_path / "strict-policy-smoke-no-grant.json",
+        mode=adapter.RUNPOD_STRICT_POLICY_SMOKE_MODE,
+        pod_name="strict-policy-smoke-pod",
+        allow_runpod_api_call=True,
+    )
+    assert blocked["status"] == "blocked"
+    assert "runpod_provider_shared_admission_missing_or_invalid" in blocked["blockers"]
+    assert blocked["api_call_performed"] is False
+
+
 def test_runpod_adapter_main_errors_and_env_request_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

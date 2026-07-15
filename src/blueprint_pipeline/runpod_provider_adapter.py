@@ -72,6 +72,7 @@ PROVIDER_ADAPTER_OUTPUT_ENV = "BLUEPRINT_GPU_PROVIDER_ADAPTER_OUTPUT"
 RUNPOD_FORWARD_SECRET_ENV_VARS_ENV = "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS"
 GENERIC_WORKER_IMAGE_REF_ENV = "BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF"
 RUNPOD_IMAGE_STARTUP_CANARY_MODE = "image-startup-canary-pod"
+RUNPOD_STRICT_POLICY_SMOKE_MODE = "strict-policy-smoke-pod"
 RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS_ENV = (
     "BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS"
 )
@@ -1215,6 +1216,178 @@ def _image_startup_canary_pod_payload(
     }
 
 
+def _strict_policy_smoke_command() -> str:
+    return r'''set -euo pipefail
+OUT_DIR="${BLUEPRINT_STRICT_POLICY_SMOKE_OUTPUT_DIR:-/workspace/blueprint_strict_policy_smoke}"
+mkdir -p "$OUT_DIR"
+export OUT_DIR
+/opt/oscar-venv/bin/python - <<'PY'
+import json
+import os
+import subprocess
+import time
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from PIL import Image
+from blueprint_pipeline.unitree_groot_n17_sonic_policy_server_command import (
+    REQUIRED_STATE_DIMS,
+    run_policy_server_command,
+)
+out_dir = Path(os.environ["OUT_DIR"])
+cache_root = Path(os.environ["BLUEPRINT_GROOT_OSCAR_MODEL_CACHE"])
+frame_path = out_dir / "strict_policy_smoke_frame.png"
+Image.new("RGB", (640, 480), color=(96, 112, 128)).save(frame_path)
+state = {key: [0.0] * size for key, size in REQUIRED_STATE_DIMS.items()}
+payload = {
+    "observation": {
+        "task_id": "groot_oscar_strict_learned_action_smoke",
+        "task_prompt": "Return one safe simulated Unitree G1 SONIC action chunk.",
+        "visual_observation": {"camera_frame_path": str(frame_path)},
+        "unitree_g1_sonic_state": state,
+        "unitree_g1_sonic_state_source": "canonical_strict_smoke_contract_probe",
+        "unitree_g1_sonic_state_metadata": {"complete": True},
+    }
+}
+server_log_path = out_dir / "gr00t_policy_server.log"
+server_log = server_log_path.open("wb")
+server = subprocess.Popen(
+    [
+        "/opt/gr00t-venv/bin/python",
+        "-m",
+        "gr00t.eval.run_gr00t_server",
+        "--model-path",
+        str(cache_root / "sonic"),
+        "--embodiment-tag",
+        "UNITREE_G1_SONIC",
+        "--device",
+        "cuda:0",
+        "--port",
+        "5550",
+    ],
+    cwd="/opt/gr00t",
+    stdout=server_log,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+)
+actions = []
+attempts = []
+blockers = []
+deadline = time.monotonic() + 240.0
+try:
+    while len(actions) < 3 and time.monotonic() < deadline:
+        result, exit_code = run_policy_server_command(
+            payload=payload,
+            policy_server_url="tcp://127.0.0.1:5550",
+            groot_root="/opt/gr00t",
+            timeout_ms=15_000,
+        )
+        attempt = {
+            "attempt": len(attempts) + 1,
+            "status": result.get("status"),
+            "exit_code": exit_code,
+            "blockers": list(result.get("blockers") or []),
+            "model_ran": result.get("model_ran") is True,
+            "action_present": isinstance(result.get("action"), dict),
+        }
+        attempts.append(attempt)
+        if (
+            exit_code == 0
+            and result.get("status") == "completed"
+            and result.get("model_ran") is True
+            and result.get("unitree_groot_n17_sonic_policy_action_command_ran") is True
+            and isinstance(result.get("action"), dict)
+        ):
+            actions.append(result["action"])
+            continue
+        if server.poll() is not None:
+            blockers.append("strict_policy_smoke_server_exited_before_three_actions")
+            break
+        time.sleep(5)
+    if len(actions) != 3 and not blockers:
+        blockers.append("strict_policy_smoke_three_actions_not_completed_before_deadline")
+finally:
+    if server.poll() is None:
+        server.terminate()
+        try:
+            server.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=10)
+    server_log.close()
+completed = len(actions) == 3 and not blockers
+result = {
+    "schema_version": "groot_oscar_runpod_strict_policy_smoke.v1",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "status": "completed" if completed else "blocked",
+    "policy_id": "unitree_groot_n17_sonic_policy",
+    "requested_action_count": 3,
+    "completed_action_count": len(actions),
+    "fresh_learned_action_trace": actions,
+    "attempts": attempts,
+    "blockers": blockers,
+    "model_execution_proven": completed,
+    "policy_action_model_command_ran": completed,
+    "simulator_execution_proven": False,
+    "task_success_proven": False,
+    "physical_robot_control_performed": False,
+    "raw_secret_values_recorded": False,
+}
+json_path = out_dir / "groot_oscar_runpod_strict_policy_smoke.json"
+json_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+zip_path = out_dir / "groot_oscar_runpod_strict_policy_smoke_output.zip"
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.write(json_path, json_path.name)
+    if server_log_path.is_file():
+        archive.write(server_log_path, server_log_path.name)
+upload_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "")
+if not upload_url:
+    raise SystemExit("missing_BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL")
+data = zip_path.read_bytes()
+request = urllib.request.Request(
+    upload_url,
+    data=data,
+    method="PUT",
+    headers={"Content-Type": "application/zip", "Content-Length": str(len(data))},
+)
+with urllib.request.urlopen(request, timeout=120) as response:
+    response.read()
+raise SystemExit(0 if completed else 2)
+PY'''
+def _strict_policy_smoke_pod_payload(
+    request: Mapping[str, Any],
+    *,
+    pod_name: str | None = None,
+    gpu_type_id: str | None = None,
+) -> Dict[str, Any]:
+    pod_payload = _pod_payload(
+        request,
+        pod_name=pod_name,
+        gpu_type_id=gpu_type_id,
+    )
+    body = _mapping(pod_payload.get("body"))
+    env = _mapping(body.get("env"))
+    env["BLUEPRINT_RUNPOD_STRICT_POLICY_SMOKE"] = "true"
+    body.update(
+        {
+            "dockerEntrypoint": ["/opt/blueprint/thin_release_entrypoint.sh"],
+            "dockerStartCmd": ["bash", "-lc", _strict_policy_smoke_command()],
+            "env": env,
+        }
+    )
+    return {
+        **pod_payload,
+        "body": body,
+        "api_surface": "rest_pods_strict_policy_smoke",
+        "proof_boundary": {
+            "fresh_three_action_policy_smoke_only": True,
+            "simulator_execution_proven": False,
+            "task_success_proven": False,
+        },
+    }
+
+
 def _existing_pod_start_payload(
     request: Mapping[str, Any],
     *,
@@ -1317,6 +1490,7 @@ def _request_blockers(
         "on-demand-pod",
         "existing-pod-start",
         RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+        RUNPOD_STRICT_POLICY_SMOKE_MODE,
     } and not _string(image.get("configured_image_ref")):
         blockers.append("missing_provider_worker_image_ref")
     if mode == "existing-pod-start" and not (
@@ -1348,8 +1522,15 @@ def _request_blockers(
         blockers.append("missing_provider_artifact_output_uri")
     if artifact_output_required is False and not signed_put_url:
         blockers.append("missing_runtime_manifest_signed_put_url_for_artifact_output_optional")
-    if mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE and not signed_put_url:
-        blockers.append("missing_runtime_manifest_signed_put_url_for_image_startup_canary")
+    if mode in {
+        RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+        RUNPOD_STRICT_POLICY_SMOKE_MODE,
+    } and not signed_put_url:
+        blockers.append(
+            "missing_runtime_manifest_signed_put_url_for_image_startup_canary"
+            if mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE
+            else "missing_runtime_manifest_signed_put_url_for_strict_policy_smoke"
+        )
     if (
         artifact_output_uri
         and artifact_output_required is not False
@@ -1370,8 +1551,11 @@ def _request_blockers(
         and not artifact_output_write_auth_ready
     ):
         blockers.append("provider_artifact_output_write_auth_contract_missing")
-    canary_startup_probe = mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE
-    if _string(request.get("provider")) == "runpod" and not canary_startup_probe:
+    canonical_canary_probe = mode in {
+        RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+        RUNPOD_STRICT_POLICY_SMOKE_MODE,
+    }
+    if _string(request.get("provider")) == "runpod" and not canonical_canary_probe:
         if not local_sim_only_prerequisite:
             blockers.append("missing_local_sim_only_provider_prerequisite")
         elif (
@@ -1553,6 +1737,12 @@ def run_runpod_provider_adapter(
             pod_name=pod_name,
             gpu_type_id=gpu_type_id,
         )
+    elif mode == RUNPOD_STRICT_POLICY_SMOKE_MODE:
+        runpod_request = _strict_policy_smoke_pod_payload(
+            request,
+            pod_name=pod_name,
+            gpu_type_id=gpu_type_id,
+        )
     elif mode == "existing-pod-start":
         runpod_request = _existing_pod_start_payload(
             request,
@@ -1602,7 +1792,11 @@ def run_runpod_provider_adapter(
         return _persist_result(resolved_output, result)
 
     if mode == "dry-run" or (
-        mode == RUNPOD_IMAGE_STARTUP_CANARY_MODE and not allow_runpod_api_call
+        mode in {
+            RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+            RUNPOD_STRICT_POLICY_SMOKE_MODE,
+        }
+        and not allow_runpod_api_call
     ):
         result.update(
             {
@@ -1760,6 +1954,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "on-demand-pod",
             "existing-pod-start",
             RUNPOD_IMAGE_STARTUP_CANARY_MODE,
+            RUNPOD_STRICT_POLICY_SMOKE_MODE,
         ],
         default="dry-run",
     )
