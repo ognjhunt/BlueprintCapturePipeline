@@ -6623,46 +6623,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "live-startup-probe":
         print("legacy_vast_provider_mutation_cli_disabled", file=sys.stderr)
         return 2
-    result = run_vast_provider_adapter(
-        job_dir=args.job_dir,
-        mode=args.mode,
-        allow_vast_api_call=args.allow_vast_api_call,
-        allow_instance_launch=args.allow_vast_instance_launch,
-        max_hourly_rate=args.max_hourly_rate,
-        target_spend_usd=args.target_spend_usd,
-        hard_cap_usd=args.hard_cap_usd,
-        max_live_minutes=args.max_live_minutes,
-        public_image=args.public_image,
-        isaac_image=args.isaac_image,
-        heartbeat_url=args.heartbeat_url,
-        previous_job_dir=args.previous_job_dir,
-        provider_bundle=args.provider_bundle,
-        provider_bundle_url=args.provider_bundle_url,
-        provider_output_put_url=args.provider_output_put_url,
-        provider_output_get_url=args.provider_output_get_url,
-        provider_runtime_output_zip=args.provider_runtime_output_zip,
-        enable_isaac_smoke=args.enable_isaac_smoke,
-        enable_blueprint_bundle=args.enable_blueprint_bundle,
-        provider_bundle_kind=args.provider_bundle_kind,
-        vast_launch_mode=args.vast_launch_mode,
-        ngc_image_login_mode=args.ngc_image_login_mode,
-        vast_template_hash_id=args.vast_template_hash_id,
-        use_vast_template_image=args.use_vast_template_image,
-        allow_cold_isaac_image_pull=args.allow_cold_isaac_image_pull,
-        min_cold_isaac_pull_live_minutes=args.min_cold_isaac_pull_live_minutes,
-        disk_gb=args.disk_gb,
-        poll_interval_seconds=args.poll_interval_seconds,
-        startup_timeout_seconds=args.startup_timeout_seconds,
-        heartbeat_no_progress_seconds=args.heartbeat_no_progress_seconds,
-        machine_avoidlist_path=args.machine_avoidlist,
-        allowed_machine_ids=args.allowed_machine_id,
-        session_budget_ledger_path=args.session_budget_ledger,
-        session_max_live_minutes=args.session_max_live_minutes,
-        vast_launch_lock_file=args.vast_launch_lock_file,
-        verify_staging_urls=args.verify_staging_urls,
-        allow_staging_output_put_probe=args.allow_staging_output_put_probe,
-        require_known_supported_isaac_driver=args.require_known_supported_isaac_driver,
-    )
+    adapter_kwargs = vars(args).copy()
+    for cli_name, adapter_name in (
+        ("allow_vast_instance_launch", "allow_instance_launch"),
+        ("machine_avoidlist", "machine_avoidlist_path"),
+        ("allowed_machine_id", "allowed_machine_ids"),
+        ("session_budget_ledger", "session_budget_ledger_path"),
+    ):
+        adapter_kwargs[adapter_name] = adapter_kwargs.pop(cli_name)
+    result = run_vast_provider_adapter(**adapter_kwargs)
     print(f"[vast-provider-adapter] result={Path(args.job_dir).resolve() / 'vast_provider_adapter_result.json'}")
     print(f"[vast-provider-adapter] status={result.get('status')}")
     print(f"[vast-provider-adapter] instance_ids={','.join(str(item) for item in result.get('vast_instance_ids', []))}")

@@ -1889,11 +1889,9 @@ def create_runpod_wam_async_run(
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
-
     try:
         require_paid_resource_admission_grant(
-            paid_resource_admission_grant,
-            resource_class="runpod_wam_async",
+            paid_resource_admission_grant, resource_class="runpod_wam_async"
         )
     except PaidResourceAdmissionBlocked as exc:
         manifest = {
@@ -1910,7 +1908,6 @@ def create_runpod_wam_async_run(
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
-
     payload = _pod_payload(
         job_name=f"blueprint-{provider_bundle_kind.replace('_', '-')}-{int(time.time())}",
         image_name=image_name,
