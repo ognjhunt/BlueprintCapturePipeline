@@ -318,6 +318,55 @@ def test_model_volume_run_forwards_storage_only_composite_arguments(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_model_volume_retention_forwards_bounded_existing_cache_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_retain(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "retained"}
+
+    monkeypatch.setattr(allocator, "retain_verified_model_cache", fake_retain)
+    exit_code = allocator.main(
+        [
+            "model-volume",
+            "--output-dir", "retained",
+            "--data-center-id", "EUR-IS-1",
+            "--storage-hourly-rate-usd", "0.004861111111",
+            "--builder-evidence", "unused-builder.json",
+            "--builder-spend", "unused-spend.json",
+            "--login-private-key", "unused-login-key",
+            "--host-private-key", "unused-host-key",
+            "--ssh-key-id", "7",
+            "--retain-existing-output", "verified-cache",
+            "--retention-ttl-seconds", str(7 * 24 * 60 * 60),
+            "--retention-max-spend-usd", "1.0",
+            "--campaign-spent-to-date-usd", "13.0",
+            "--campaign-total-spend-cap-usd", "20.0",
+            "--runpod-s3-access-key-file", "s3-access",
+            "--runpod-s3-secret-key-file", "s3-secret",
+            "--allow-paid",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed == {
+        "output_dir": Path("retained"),
+        "source_output_dir": Path("verified-cache"),
+        "retention_ttl_seconds": 7 * 24 * 60 * 60,
+        "storage_hourly_rate_usd": pytest.approx(0.004861111111),
+        "max_retention_spend_usd": 1.0,
+        "campaign_spent_to_date_usd": 13.0,
+        "campaign_total_spend_cap_usd": 20.0,
+        "runpod_s3_access_key_file": Path("s3-access"),
+        "runpod_s3_secret_key_file": Path("s3-secret"),
+        "allow_paid": True,
+    }
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

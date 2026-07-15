@@ -24,6 +24,7 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     read_lease,
     release_paid_provider_lane_lease,
     restore_paid_provider_lane_lease_to_retained_watchdog,
+    rotate_paid_provider_lane_lease_to_retention_watchdog,
     transfer_paid_provider_lane_lease_to_watchdog,
 )
 from blueprint_pipeline.paid_lane_guard import (
@@ -433,6 +434,130 @@ def test_stale_dead_owner_requires_reconciliation_evidence(tmp_path: Path) -> No
     )
     assert reclaimed["status"] == "acquired"
     assert read_lease("runpod", "lane", tmp_path)["job_dir"] == "new"
+
+
+def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    live_pids = {os.getpid(), 111, 333}
+    monkeypatch.setattr(lease_module, "_pid_is_alive", lambda pid: pid in live_pids)
+    acquired = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        job_dir=str(tmp_path),
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane="groot_oscar_model_volume"),
+    )
+    pending = open_pending_teardown(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        run_id="retention-test",
+        resource_kind="network_volume",
+        resource_name="model-cache-volume",
+        provider_location="EUR-IS-1",
+        registry_dir=tmp_path / "pending",
+    )
+    bind_pending_teardown_instance(pending["path"], "volume-1")
+    old_deadline = now + 3600
+    binding = {
+        "provider": "runpod",
+        "lane": "groot_oscar_model_volume",
+        "volume_id": "volume-1",
+        "pending_teardown_record": pending["path"],
+        "watchdog_nonce": "old-nonce",
+        "watchdog_deadline_epoch": old_deadline,
+    }
+    capability = tmp_path / "provider_lane_handoff.capability"
+    handoff = transfer_paid_provider_lane_lease_to_watchdog(
+        acquired,
+        watchdog_pid=111,
+        capability_path=capability,
+        binding=binding,
+        clock=lambda: now,
+    )
+
+    def watchdog(pid: int, name: str, nonce: str, deadline: float) -> dict:
+        root = tmp_path / name
+        root.mkdir()
+        state_path = (root / "watchdog_state.json").resolve()
+        state = {
+            "deadline_epoch": deadline,
+            "pod_name_prefix": f"blueprint-storage-only-no-pod-{name}",
+            "volume_name": "model-cache-volume",
+            "watchdog_nonce": nonce,
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        (root / "watchdog_armed.json").write_text(
+            json.dumps({**state, "status": "armed", "pid": pid}), encoding="utf-8"
+        )
+        return {
+            "watchdog_pid": pid,
+            "watchdog_state_path": str(state_path),
+            "watchdog_deadline_epoch": deadline,
+            "pod_name_prefix": state["pod_name_prefix"],
+            "volume_name": state["volume_name"],
+            "watchdog_nonce": nonce,
+        }
+
+    source = watchdog(111, "source", "old-nonce", old_deadline)
+    retention_deadline = now + 7 * 24 * 3600
+    retention = watchdog(333, "retention", "new-nonce", retention_deadline)
+    argv = {
+        111: (
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            source["watchdog_state_path"],
+        ),
+        333: (
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            retention["watchdog_state_path"],
+        ),
+    }
+    rotated = rotate_paid_provider_lane_lease_to_retention_watchdog(
+        handoff,
+        source_watchdog=source,
+        retention_watchdog=retention,
+        expected_binding=binding,
+        retention_binding={
+            **binding,
+            "watchdog_nonce": "new-nonce",
+            "watchdog_deadline_epoch": retention_deadline,
+        },
+        process_argv_probe=lambda pid: argv[pid],
+        clock=lambda: now,
+    )
+
+    assert rotated["status"] == "pending_canary_acceptance"
+    assert rotated["retention_rotation"] is True
+    assert rotated["prior_capability_consumed"] is True
+    assert rotated["source_owner_pid"] == 333
+    assert rotated["binding"]["watchdog_deadline_epoch"] == retention_deadline
+    assert capability.is_file()
+    assert capability.stat().st_mode & 0o077 == 0
+    current = read_lease("runpod", "groot_oscar_model_volume", tmp_path)
+    assert current["owner_pid"] == 333
+    assert current["owner_role"] == "bounded_persistent_cache_watchdog"
+    assert current["expires_at_epoch"] == retention_deadline
+    assert current["handoff"] == {
+        key: value for key, value in rotated.items() if key not in {
+            "prior_capability_consumed",
+            "owner_role",
+        }
+    }
+    retained_pending = json.loads(Path(pending["path"]).read_text(encoding="utf-8"))
+    assert retained_pending["retention_class"] == (
+        "bounded_persistent_verified_model_cache"
+    )
+    assert retained_pending["retention_deadline_epoch"] == retention_deadline
+    assert retained_pending["max_age_seconds"] >= 7 * 24 * 3600 - 1
 
 
 def test_live_same_host_owner_is_never_stale_even_past_expiry(tmp_path: Path) -> None:

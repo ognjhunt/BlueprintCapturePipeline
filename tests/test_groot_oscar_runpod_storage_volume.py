@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import groot_oscar_runpod_storage_volume as storage
+from blueprint_pipeline import groot_oscar_runpod_preflight as preflight
 from blueprint_pipeline.groot_oscar_runpod_storage_volume import (
     build_storage_volume_admission,
     launch_detached,
+    retain_verified_model_cache,
     run_storage_model_volume,
 )
 from blueprint_pipeline.paid_resource_admission import (
@@ -57,6 +59,250 @@ def test_storage_volume_admission_rejects_one_hour_and_near_canary_deadlines() -
     )
     near = _admission(storage_ttl_seconds=10_000)
     assert "storage_model_volume_ttl_does_not_cover_builder_and_canary" in near["blockers"]
+
+
+def _retention_source(tmp_path: Path) -> tuple[Path, dict]:
+    source = tmp_path / "source"
+    source.mkdir()
+    manifest = "sha256:" + "a" * 64
+    pending = tmp_path / "pending.json"
+    pending.write_text(
+        json.dumps(
+            {
+                "status": "open",
+                "provider": "runpod",
+                "lane": storage.PROVIDER_LANE,
+                "resource_kind": "network_volume",
+                "instance_id": "volume-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    binding = {
+        "provider": "runpod",
+        "lane": storage.PROVIDER_LANE,
+        "volume_id": "volume-1",
+        "pending_teardown_record": str(pending),
+        "watchdog_nonce": "old-nonce",
+        "watchdog_deadline_epoch": 20_000.0,
+    }
+    lane_handoff = {
+        "schema_version": "paid_provider_lane_lease_handoff.v1",
+        "status": "pending_canary_acceptance",
+        "source_owner_pid": 111,
+        "binding": binding,
+    }
+    rows = {
+        "model_volume_result.json": {
+            "status": "completed",
+            "volume_id": "volume-1",
+            "model_manifest_digest": manifest,
+        },
+        "network_volume_evidence.json": {
+            "status": "verified",
+            "id": "volume-1",
+            "name": "blueprint-groot-oscar-models-nonce1",
+            "data_center_id": "EUR-IS-1",
+            "size_bytes": 50 * 1024**3,
+            "allocation_nonce": "nonce1",
+        },
+        "model_cache_verification.json": {
+            "status": "passed",
+            "provider_volume_id": "volume-1",
+            "model_manifest_digest": manifest,
+            "cache_root": storage.MODEL_CACHE_PATH,
+            "runtime_path_mapping_verified": True,
+        },
+        "model_cache_transport_result.json": {
+            "status": "completed",
+            "provider_volume_id": "volume-1",
+            "model_manifest_digest": manifest,
+            "multipart_absence_verified": True,
+            "outer_volume_deletion_required": False,
+        },
+        "watchdog_handoff.json": {
+            "schema_version": storage.WATCHDOG_HANDOFF_SCHEMA_VERSION,
+            "status": "volume_ready_watchdog_retained",
+            "volume_id": "volume-1",
+            "volume_name": "blueprint-groot-oscar-models-nonce1",
+            "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+            "watchdog_pid": 111,
+            "watchdog_state_path": str(source / "watchdog_state.json"),
+            "watchdog_nonce": "old-nonce",
+            "watchdog_deadline_epoch": 20_000.0,
+            "provider_lane_handoff": lane_handoff,
+        },
+    }
+    for name, row in rows.items():
+        (source / name).write_text(json.dumps(row), encoding="utf-8")
+    return source, lane_handoff
+
+
+def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _lane_handoff = _retention_source(tmp_path)
+    live = {111, 333}
+
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-key"
+
+    class Process:
+        pid = 333
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            live.discard(333)
+
+        @staticmethod
+        def wait(timeout):
+            del timeout
+            return 0
+
+    retention_root = tmp_path / "retained"
+
+    def arm(**kwargs):
+        del kwargs
+        retention_root.mkdir(exist_ok=True)
+        state_path = retention_root / "watchdog_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "deadline_epoch": 1000.0 + 7 * 24 * 3600,
+                    "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+                    "volume_name": "blueprint-groot-oscar-models-nonce1",
+                    "watchdog_nonce": "new-nonce",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return Process(), {
+            "armed": True,
+            "pid": 333,
+            "state_path": str(state_path),
+            "deadline_epoch": 1000.0 + 7 * 24 * 3600,
+            "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
+            "volume_name": "blueprint-groot-oscar-models-nonce1",
+            "watchdog_nonce": "new-nonce",
+        }
+
+    monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
+    )
+    monkeypatch.setattr(
+        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
+    )
+    monkeypatch.setattr(storage, "_arm_watchdog", arm)
+    monkeypatch.setattr(storage, "_pid_is_alive", lambda pid: pid in live)
+    monkeypatch.setattr(
+        storage,
+        "rotate_paid_provider_lane_lease_to_retention_watchdog",
+        lambda _handoff, **kwargs: {
+            "schema_version": "paid_provider_lane_lease_handoff.v1",
+            "status": "pending_canary_acceptance",
+            "source_owner_pid": 333,
+            "binding": kwargs["retention_binding"],
+        },
+    )
+
+    def argv(pid):
+        state = (
+            source / "watchdog_state.json"
+            if pid == 111
+            else retention_root / "watchdog_state.json"
+        )
+        return (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            str(state.resolve()),
+        )
+
+    result = retain_verified_model_cache(
+        output_dir=retention_root,
+        source_output_dir=source,
+        retention_ttl_seconds=7 * 24 * 3600,
+        storage_hourly_rate_usd=0.004861111111,
+        max_retention_spend_usd=1.0,
+        campaign_spent_to_date_usd=13.0,
+        campaign_total_spend_cap_usd=20.0,
+        runpod_s3_access_key_file=tmp_path / "access",
+        runpod_s3_secret_key_file=tmp_path / "secret",
+        allow_paid=True,
+        clock=lambda: 1000.0,
+        sleeper=lambda _seconds: None,
+        process_argv_probe=argv,
+        process_signaler=lambda pid, _sig: live.discard(pid),
+    )
+
+    assert result["status"] == "retained"
+    assert result["paid_compute_retained"] is False
+    assert result["whitelisted_storage_resource_count"] == 1
+    assert result["later_canary_handoff_ready"] is True
+    assert result["source_watchdog_stopped"] is True
+    assert result["maximum_retention_spend_usd"] == pytest.approx(0.816666666648)
+    handoff = json.loads((retention_root / "watchdog_handoff.json").read_text())
+    assert handoff["status"] == "volume_ready_watchdog_retained"
+    assert handoff["retention_class"] == "bounded_persistent_verified_model_cache"
+    assert handoff["provider_lane_handoff"]["source_owner_pid"] == 333
+    monkeypatch.setattr(preflight, "_process_alive", lambda _pid: True)
+    later_canary = preflight.build_model_volume_watchdog_handoff_evidence(
+        handoff=handoff,
+        network_volume_id="volume-1",
+        canary_watchdog_deadline_epoch=2000.0,
+        clock=lambda: 1000.0,
+        process_argv_probe=argv,
+    )
+    assert later_canary["status"] == "verified"
+    assert later_canary["provider_lane_handoff"]["source_owner_pid"] == 333
+
+
+def test_bounded_retention_rejects_unreconciled_spend_before_new_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _lane_handoff = _retention_source(tmp_path)
+
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-key"
+
+    monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
+    )
+    monkeypatch.setattr(
+        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
+    )
+    monkeypatch.setattr(
+        storage,
+        "_arm_watchdog",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("watchdog started")),
+    )
+    result = retain_verified_model_cache(
+        output_dir=tmp_path / "retained",
+        source_output_dir=source,
+        retention_ttl_seconds=7 * 24 * 3600,
+        storage_hourly_rate_usd=0.004861111111,
+        max_retention_spend_usd=1.0,
+        campaign_spent_to_date_usd=1.0,
+        campaign_total_spend_cap_usd=20.0,
+        runpod_s3_access_key_file=tmp_path / "access",
+        runpod_s3_secret_key_file=tmp_path / "secret",
+        allow_paid=True,
+        clock=lambda: 1000.0,
+    )
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
 
 
 def test_storage_route_has_watchdog_lease_ledger_and_no_pod_create() -> None:

@@ -29,7 +29,10 @@ from .groot_oscar_runpod_canary import run_canary
 from .groot_oscar_runpod_storage_volume import (
     launch_detached as launch_detached_model_volume,
 )
-from .groot_oscar_runpod_storage_volume import run_storage_model_volume
+from .groot_oscar_runpod_storage_volume import (
+    retain_verified_model_cache,
+    run_storage_model_volume,
+)
 from .paid_resource_admission import require_paid_resource_admission
 
 
@@ -312,6 +315,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--ssh-key-id", required=True, type=int)
         model.add_argument("--region", default="sfo3")
         model.add_argument("--allow-paid", action="store_true")
+        model.add_argument("--retain-existing-output")
+        model.add_argument(
+            "--retention-ttl-seconds", type=int, default=7 * 24 * 60 * 60
+        )
+        model.add_argument("--retention-max-spend-usd", type=float, default=1.0)
+        model.add_argument("--campaign-spent-to-date-usd", type=float)
+        model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
     if args.command == "cpu-build":
         if args.execution_plane == "local":
@@ -426,6 +436,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         success = result.get("status") in {"dry_run_ready", "submitted"}
     elif args.command == "model-volume":
+        if args.retain_existing_output:
+            if args.campaign_spent_to_date_usd is None:
+                result = {
+                    "status": "blocked",
+                    "blockers": ["bounded_cache_retention_campaign_spend_missing"],
+                }
+            else:
+                result = retain_verified_model_cache(
+                    output_dir=Path(args.output_dir),
+                    source_output_dir=Path(args.retain_existing_output),
+                    retention_ttl_seconds=args.retention_ttl_seconds,
+                    storage_hourly_rate_usd=args.storage_hourly_rate_usd,
+                    max_retention_spend_usd=args.retention_max_spend_usd,
+                    campaign_spent_to_date_usd=args.campaign_spent_to_date_usd,
+                    campaign_total_spend_cap_usd=args.campaign_total_spend_cap_usd,
+                    runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
+                    runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
+                    allow_paid=args.allow_paid,
+                )
+            success = result.get("status") == "retained"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         vector = [
             "--output-dir", args.output_dir,
             "--repo-root", args.repo_root,

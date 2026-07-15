@@ -865,6 +865,244 @@ def accept_paid_provider_lane_lease_handoff(
     }
 
 
+def _model_volume_watchdog_identity_valid(
+    watchdog: Mapping[str, Any],
+    *,
+    process_argv_probe: Any = read_process_argv,
+    clock: Any = time.time,
+) -> bool:
+    """Bind a retained-volume owner to its live process and private state."""
+
+    pid = watchdog.get("watchdog_pid")
+    state_path_value = str(watchdog.get("watchdog_state_path") or "").strip()
+    if type(pid) is not int or pid <= 0 or not state_path_value or not _pid_is_alive(pid):
+        return False
+    state_path = Path(state_path_value).expanduser().resolve()
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        armed = json.loads(
+            (state_path.parent / "watchdog_armed.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, Mapping) or not isinstance(armed, Mapping):
+        return False
+    try:
+        deadline = float(watchdog.get("watchdog_deadline_epoch") or 0)
+    except (TypeError, ValueError):
+        return False
+    argv = [str(item) for item in process_argv_probe(pid)]
+    try:
+        module_index = argv.index("-m")
+    except ValueError:
+        return False
+    if argv[module_index + 1 :] != [
+        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "watchdog",
+        "--state",
+        str(state_path),
+    ]:
+        return False
+    expected = {
+        "deadline_epoch": deadline,
+        "pod_name_prefix": str(watchdog.get("pod_name_prefix") or ""),
+        "volume_name": str(watchdog.get("volume_name") or ""),
+        "watchdog_nonce": str(watchdog.get("watchdog_nonce") or ""),
+    }
+    return bool(
+        deadline > float(clock()) + MIN_HANDOFF_REMAINING_SECONDS
+        and expected["pod_name_prefix"]
+        and expected["volume_name"]
+        and expected["watchdog_nonce"]
+        and all(state.get(key) == value for key, value in expected.items())
+        and armed.get("status") == "armed"
+        and armed.get("pid") == pid
+        and all(armed.get(key) == value for key, value in expected.items())
+    )
+
+
+def rotate_paid_provider_lane_lease_to_retention_watchdog(
+    handoff: Mapping[str, Any],
+    *,
+    source_watchdog: Mapping[str, Any],
+    retention_watchdog: Mapping[str, Any],
+    expected_binding: Mapping[str, Any],
+    retention_binding: Mapping[str, Any],
+    process_argv_probe: Any = read_process_argv,
+    clock: Any = time.time,
+) -> dict[str, Any]:
+    """Consume a canary handoff and atomically mint a bounded-retention one.
+
+    The provider resource is unchanged.  Ownership moves directly from the
+    original retained-volume watchdog to a newly armed bounded-retention
+    watchdog, and a fresh one-time capability is created for a later canary.
+    """
+
+    current_binding = _canonical_handoff_binding(expected_binding)
+    recorded_binding = _canonical_handoff_binding(
+        handoff.get("binding") if isinstance(handoff.get("binding"), Mapping) else {}
+    )
+    new_binding = _canonical_handoff_binding(retention_binding)
+    stable_fields = ("provider", "lane", "volume_id", "pending_teardown_record")
+    if (
+        handoff.get("schema_version") != LEASE_HANDOFF_SCHEMA_VERSION
+        or handoff.get("status") != "pending_canary_acceptance"
+        or recorded_binding != current_binding
+        or any(new_binding[key] != current_binding[key] for key in stable_fields)
+        or not isinstance(new_binding.get("watchdog_deadline_epoch"), (int, float))
+        or float(new_binding["watchdog_deadline_epoch"])
+        <= float(clock()) + MIN_HANDOFF_REMAINING_SECONDS
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["paid_provider_lane_retention_binding_invalid"],
+        }
+    if not _model_volume_watchdog_identity_valid(
+        source_watchdog,
+        process_argv_probe=process_argv_probe,
+        clock=clock,
+    ) or int(source_watchdog["watchdog_pid"]) != handoff.get("source_owner_pid"):
+        return {
+            "status": "blocked",
+            "blockers": ["paid_provider_lane_retention_source_watchdog_invalid"],
+        }
+    if not _model_volume_watchdog_identity_valid(
+        retention_watchdog,
+        process_argv_probe=process_argv_probe,
+        clock=clock,
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["paid_provider_lane_retention_watchdog_invalid"],
+        }
+    retention_pid = int(retention_watchdog["watchdog_pid"])
+    if retention_pid == int(source_watchdog["watchdog_pid"]):
+        return {
+            "status": "blocked",
+            "blockers": ["paid_provider_lane_retention_watchdog_not_distinct"],
+        }
+
+    path = Path(str(handoff.get("lease_path") or ""))
+    capability_path = Path(str(handoff.get("capability_path") or ""))
+    with _reclaim_mutex(path):
+        current = read_lease(current_binding["provider"], current_binding["lane"], path.parent)
+        if not isinstance(current, dict) or current.get("handoff") != dict(handoff):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_retention_handoff_not_current"],
+            }
+        if current.get("owner_pid") != int(source_watchdog["watchdog_pid"]):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_retention_source_not_owner"],
+            }
+        try:
+            pending = json.loads(
+                Path(current_binding["pending_teardown_record"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            cap_stat = capability_path.lstat()
+        except (OSError, ValueError):
+            pending = {}
+            cap_stat = None
+        if not isinstance(pending, Mapping) or not bool(
+            pending.get("status") == "open"
+            and str(pending.get("provider") or "").strip().lower()
+            == current_binding["provider"]
+            and str(pending.get("lane") or "") == current_binding["lane"]
+            and pending.get("resource_kind") == "network_volume"
+            and str(pending.get("instance_id") or "") == current_binding["volume_id"]
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_retention_pending_teardown_invalid"],
+            }
+        if (
+            cap_stat is None
+            or not capability_path.is_file()
+            or capability_path.is_symlink()
+            or cap_stat.st_mode & 0o077
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_retention_capability_unsafe"],
+            }
+        prior = _read_handoff_capability(capability_path)
+        if prior is None or prior[1] != current_binding or not secrets.compare_digest(
+            _handoff_capability_digest(prior[0], current_binding),
+            str(handoff.get("capability_digest") or ""),
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_retention_capability_invalid"],
+            }
+        consumed = capability_path.with_name(
+            f".{capability_path.name}.retention-{os.getpid()}-{time.monotonic_ns()}"
+        )
+        os.replace(capability_path, consumed)
+        new_token = secrets.token_bytes(32)
+        new_digest = _handoff_capability_digest(new_token, new_binding)
+        new_handoff = {
+            "schema_version": LEASE_HANDOFF_SCHEMA_VERSION,
+            "status": "pending_canary_acceptance",
+            "lease_path": str(path),
+            "capability_path": str(capability_path),
+            "capability_digest": new_digest,
+            "source_owner_pid": retention_pid,
+            "binding": new_binding,
+            "created_at_epoch": float(clock()),
+            "retention_rotation": True,
+            "raw_capability_recorded": False,
+        }
+        retained_pending = {
+            **dict(pending),
+            "max_age_seconds": max(
+                1,
+                int(
+                    float(new_binding["watchdog_deadline_epoch"])
+                    - float(pending.get("started_at_epoch") or clock())
+                ),
+            ),
+            "retention_class": "bounded_persistent_verified_model_cache",
+            "retention_deadline_epoch": float(
+                new_binding["watchdog_deadline_epoch"]
+            ),
+        }
+        try:
+            if not _create_secret_file(
+                capability_path,
+                _handoff_capability_payload(new_token, new_binding),
+            ):
+                raise OSError("retention_capability_create_failed")
+            _write_lease(
+                Path(current_binding["pending_teardown_record"]), retained_pending
+            )
+            current.update(
+                {
+                    "owner_pid": retention_pid,
+                    "owner_role": "bounded_persistent_cache_watchdog",
+                    "retained_teardown_owner_pid": retention_pid,
+                    "heartbeat_at_epoch": float(clock()),
+                    "expires_at_epoch": float(new_binding["watchdog_deadline_epoch"]),
+                    "handoff": new_handoff,
+                }
+            )
+            _write_lease(path, current)
+        except Exception:
+            capability_path.unlink(missing_ok=True)
+            _write_lease(Path(current_binding["pending_teardown_record"]), pending)
+            os.replace(consumed, capability_path)
+            raise
+        consumed.unlink(missing_ok=True)
+    return {
+        **new_handoff,
+        "status": "pending_canary_acceptance",
+        "prior_capability_consumed": True,
+        "owner_role": "bounded_persistent_cache_watchdog",
+    }
+
+
 def release_transferred_paid_provider_lane_lease(
     *,
     lease_path_value: str | os.PathLike[str],
