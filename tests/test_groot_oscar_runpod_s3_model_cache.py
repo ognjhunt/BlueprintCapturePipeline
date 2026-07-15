@@ -155,6 +155,7 @@ class FakeS3:
         self.delete_calls = 0
         self.abort_calls = 0
         self.multipart_list_calls = 0
+        self.multipart_list_kwargs: list[dict[str, object]] = []
         self.upload_configs: list[object] = []
 
     def list_buckets(self):  # type: ignore[no-untyped-def]
@@ -195,6 +196,7 @@ class FakeS3:
 
     def list_multipart_uploads(self, **kwargs):  # type: ignore[no-untyped-def]
         self.multipart_list_calls += 1
+        self.multipart_list_kwargs.append(dict(kwargs))
         if self.fail_multipart_listing or (
             self.fail_multipart_listing_on == self.multipart_list_calls
         ):
@@ -369,6 +371,7 @@ def test_upload_requires_full_redownload_and_manifest_hash_verification(
     assert result["multipart_listing_supported"] is True
     assert result["multipart_absence_verified"] is True
     assert client.multipart_list_calls == 4
+    assert client.multipart_list_kwargs == [{"Bucket": "volume-1"}] * 4
 
 
 def test_runpod_transfer_contract_is_large_chunked_and_single_threaded() -> None:

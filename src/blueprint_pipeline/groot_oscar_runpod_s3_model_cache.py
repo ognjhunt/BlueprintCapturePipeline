@@ -228,17 +228,14 @@ def _sanitized_s3_exception(exc: BaseException) -> dict[str, Any]:
 
 
 def _abort_visible_multipart_uploads(
-    client: Any, *, volume_id: str, prefix: str
+    client: Any, *, volume_id: str
 ) -> dict[str, Any]:
     attempts = 0
     successes = 0
     listing_supported = True
     absence_verified = False
     try:
-        response = client.list_multipart_uploads(
-            Bucket=volume_id,
-            Prefix=prefix.rstrip("/") + "/",
-        )
+        response = client.list_multipart_uploads(Bucket=volume_id)
         uploads = response.get("Uploads", []) if isinstance(response, Mapping) else []
         for row in uploads if isinstance(uploads, list) else []:
             if not isinstance(row, Mapping) or not row.get("Key") or not row.get("UploadId"):
@@ -253,10 +250,7 @@ def _abort_visible_multipart_uploads(
                 successes += 1
             except Exception:  # noqa: BLE001 - whole-volume deletion remains fail-safe
                 pass
-        after = client.list_multipart_uploads(
-            Bucket=volume_id,
-            Prefix=prefix.rstrip("/") + "/",
-        )
+        after = client.list_multipart_uploads(Bucket=volume_id)
         remaining = after.get("Uploads", []) if isinstance(after, Mapping) else []
         absence_verified = bool(
             isinstance(remaining, list)
@@ -625,7 +619,6 @@ def _upload_and_verify_model_cache_impl(
         pre_upload_multipart = _abort_visible_multipart_uploads(
             s3,
             volume_id=volume,
-            prefix=prefix,
         )
         multipart_checks.append(pre_upload_multipart)
         if not (
@@ -674,7 +667,6 @@ def _upload_and_verify_model_cache_impl(
         terminal_multipart = _abort_visible_multipart_uploads(
             s3,
             volume_id=volume,
-            prefix=prefix,
         )
         multipart_checks.append(terminal_multipart)
         if not (
@@ -688,7 +680,6 @@ def _upload_and_verify_model_cache_impl(
             _abort_visible_multipart_uploads(
                 s3,
                 volume_id=volume,
-                prefix=prefix,
             )
         )
         multipart_cleanup = _combine_multipart_cleanup(*multipart_checks)
