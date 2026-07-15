@@ -12,6 +12,7 @@ from blueprint_pipeline.groot_oscar_runpod_model_volume import (
     _matching_resources,
     build_model_volume_admission,
     launch_detached,
+    run_model_volume,
     watchdog,
 )
 from blueprint_pipeline.paid_resource_admission import (
@@ -200,3 +201,35 @@ def test_model_volume_requires_armed_handoff_before_paid_admission() -> None:
         "require_paid_resource_admission("
     )
     assert "watchdog_armed_before_allocation=watchdog_armed" in run_source
+
+
+def test_model_volume_reads_hf_token_before_provider_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return "runpod-test-key"
+
+    monkeypatch.setattr(model_volume, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        model_volume,
+        "_matching_resources",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("inventory queried")),
+    )
+    result = run_model_volume(
+        output_dir=tmp_path / "out",
+        release_image_ref="docker.io/example/worker@sha256:" + "a" * 64,
+        data_center_id="US-WA-1",
+        gpu_type_id="NVIDIA L40S",
+        required_cuda_version="12.8",
+        volume_size_gib=50,
+        hard_ttl_seconds=2700,
+        max_spend_usd=0.40,
+        volume_hourly_rate_usd=0.01,
+        hf_token_file=tmp_path / "missing-hf-token",
+        allow_paid=True,
+    )
+    assert result["status"] == "blocked_before_allocation"
+    assert result["blockers"] == ["model_volume_hf_token_unavailable"]
+    assert result["provider_mutation_attempted"] is False

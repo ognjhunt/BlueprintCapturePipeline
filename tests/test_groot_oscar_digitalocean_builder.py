@@ -548,3 +548,25 @@ def test_run_builder_persists_live_cost_cap_failure_before_allocation(
     assert result["provider_mutation_performed"] is False
     assert result["required_maximum_compute_spend_usd"] == pytest.approx(0.20)
     assert json.loads((output / "builder_run_result.json").read_text()) == result
+
+    spend["max_spend_usd"] = 1.0
+    paths["spend"].write_text(json.dumps(spend), encoding="utf-8")
+    credential_result = run_builder(
+        output_dir=tmp_path / "credential-check",
+        packet_manifest_path=paths["packet"],
+        builder_evidence_path=paths["builder"],
+        spend_path=paths["spend"],
+        token_file=token_file,
+        docker_username_file=missing,
+        docker_password_file=missing,
+        login_private_key=missing,
+        host_private_key=missing,
+        ssh_key_id=1,
+        region="sfo3",
+        allow_paid=True,
+    )
+    assert credential_result["status"] == "blocked_pre_allocation"
+    assert credential_result["provider_mutation_performed"] is False
+    assert credential_result["blockers"] == [
+        "digitalocean_builder_local_credentials_unavailable"
+    ]

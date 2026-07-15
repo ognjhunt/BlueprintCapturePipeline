@@ -348,6 +348,21 @@ def run_model_volume(
     key = provider._key()  # type: ignore[attr-defined]
     if not key:
         raise ValueError("runpod_api_key_missing")
+    try:
+        hf_token = _read_secret(hf_token_file)
+    except Exception as exc:  # noqa: BLE001 - stop before inventory or allocation
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked_before_allocation",
+            "blockers": ["model_volume_hf_token_unavailable"],
+            "provider_mutation_attempted": False,
+            "maximum_compute_spend_usd": 0.0,
+            "maximum_storage_spend_usd": 0.0,
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(output / "model_volume_result.json", result)
+        return result
     suffix = secrets.token_hex(5)
     pod_prefix = f"{POD_NAME_PREFIX}{suffix}"
     pod_name = pod_prefix
@@ -549,7 +564,7 @@ def run_model_volume(
             "dataCenterIds": [data_center_id],
             "allowedCudaVersions": [required_cuda_version],
             "env": {
-                "HF_TOKEN": _read_secret(hf_token_file),
+                "HF_TOKEN": hf_token,
                 "BLUEPRINT_MODEL_VOLUME_EVIDENCE_TOKEN": evidence_token,
                 "BLUEPRINT_GROOT_OSCAR_PROVIDER_VOLUME_ID": volume_id,
             },

@@ -652,6 +652,20 @@ def run_builder(
         }
         write_json(output / "builder_run_result.json", result)
         return result
+    try:
+        for prerequisite_file in (
+            docker_username_file,
+            docker_password_file,
+            login_private_key,
+        ):
+            _read_secret(prerequisite_file)
+    except Exception as exc:  # noqa: BLE001 - persist a secret-free terminal result
+        result = {
+            **_blocked_result(["digitalocean_builder_local_credentials_unavailable"]),
+            "error_type": type(exc).__name__,
+        }
+        write_json(output / "builder_run_result.json", result)
+        return result
     name = f"blueprint-groot-oscar-thin-{str(packet['source_commit'])[:8]}"
     user_data = build_cloud_init(
         host_private_b64=host_private_b64,
