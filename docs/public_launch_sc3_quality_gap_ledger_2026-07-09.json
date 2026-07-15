@@ -4497,7 +4497,7 @@
             {
               "artifact_id": "RUN-08-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_provider_race_launcher.py",
-              "sha256": "sha256:e43e4f93805495d37dfcf32e76839e24807a66114bd75a23df98d4f959144802",
+              "sha256": "sha256:fd9b8e3a13c0985fbd936708ca071284b330829757b88e2a28ee5b46d6e9fb25",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4513,7 +4513,7 @@
             {
               "artifact_id": "RUN-08-AC-01-EV-02",
               "path": "tests/test_robot_eval_provider_race_launcher.py",
-              "sha256": "sha256:b9f146fb57d888bf646248235263af82f3e08b7edc002290eebc81d4a383ecbf",
+              "sha256": "sha256:4e7cd79efe9adc18d94cef438e157d714a20750d43fbe6722b05002dc13141b9",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9637,7 +9637,7 @@
             {
               "artifact_id": "RUN-16-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_provider_launcher.py",
-              "sha256": "sha256:317a204c9b2a484e9bf3e8018da1d5d28b567886d0e45b4143ced63017885fac",
+              "sha256": "sha256:15cc00a96bfd3e83400516c2052916b12a8332698361ac7ed967c56915b98f27",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9653,7 +9653,7 @@
             {
               "artifact_id": "RUN-16-AC-01-EV-02",
               "path": "tests/test_robot_eval_provider_launcher.py",
-              "sha256": "sha256:9b589a9e1d4494aa61326e5757a0e67793af72d82643ff9bd8dac112565ba8ed",
+              "sha256": "sha256:b691eee213e44b2e00264c5c2a3e61e5b58f607bc580ff7d1684475ea9ce1a2d",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11390,7 +11390,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:3ec19220ce8b79a164853a007960cbb4000ece3566f7141a2f52f3c6fe42a991",
+              "sha256": "sha256:0c018af0bab1ac99df4b0f20757375d4c42fca2f9a4a038ae6950efbb90a92e0",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
