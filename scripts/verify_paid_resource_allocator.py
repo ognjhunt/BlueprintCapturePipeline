@@ -249,6 +249,17 @@ def verify() -> list[str]:
         for marker in ("watchdog_pid", "watchdog_state_path", "watchdog_nonce")
     ):
         blockers.append("model_volume_watchdog_process_handoff_missing")
+    if "model_volume_runpod_api_key_unavailable" not in model_volume:
+        blockers.append("model_volume_missing_key_terminal_evidence_missing")
+    if not all(
+        marker in model_volume
+        for marker in (
+            "_watchdog_process_running",
+            "ModelVolumeWatchdogExitedBeforeHandoff",
+            "watchdog_retained",
+        )
+    ):
+        blockers.append("model_volume_ready_handoff_liveness_guard_missing")
     if not all(
         marker in runpod_preflight
         for marker in (

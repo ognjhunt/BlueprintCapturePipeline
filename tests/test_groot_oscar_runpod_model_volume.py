@@ -12,6 +12,7 @@ from blueprint_pipeline.groot_oscar_runpod_model_volume import (
     _matching_resources,
     _safe_provider_error_summary,
     _single_gpu_capacity_verified,
+    _watchdog_process_running,
     build_model_volume_admission,
     launch_detached,
     run_model_volume,
@@ -362,3 +363,59 @@ def test_model_volume_reads_hf_token_before_provider_inventory(
     assert result["status"] == "blocked_before_allocation"
     assert result["blockers"] == ["model_volume_hf_token_unavailable"]
     assert result["provider_mutation_attempted"] is False
+
+
+def test_model_volume_persists_blocked_result_when_runpod_key_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Provider:
+        @staticmethod
+        def _key() -> str:
+            return ""
+
+    monkeypatch.setattr(model_volume, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        model_volume,
+        "_matching_resources",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("inventory queried")),
+    )
+    output = tmp_path / "out"
+    result = run_model_volume(
+        output_dir=output,
+        release_image_ref="docker.io/example/worker@sha256:" + "a" * 64,
+        data_center_id="US-WA-1",
+        gpu_type_id="NVIDIA L40S",
+        required_cuda_version="12.8",
+        volume_size_gib=50,
+        hard_ttl_seconds=2700,
+        max_spend_usd=0.40,
+        volume_hourly_rate_usd=0.01,
+        hf_token_file=tmp_path / "hf-token",
+        allow_paid=True,
+    )
+
+    assert result["status"] == "blocked_before_allocation"
+    assert result["blockers"] == ["model_volume_runpod_api_key_unavailable"]
+    assert result["provider_mutation_attempted"] is False
+    assert json.loads((output / "model_volume_result.json").read_text()) == result
+
+
+def test_model_volume_dead_watchdog_forces_failure_cleanup_before_handoff() -> None:
+    class Process:
+        @staticmethod
+        def poll() -> int:
+            return 1
+
+    assert _watchdog_process_running(Process()) is False
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+    ).read_text(encoding="utf-8")
+    run_source = source[
+        source.index("def run_model_volume(") : source.index("def launch_detached(")
+    ]
+    dead_guard = run_source.index("if success and not watchdog_retained:")
+    failure_cleanup = run_source.index("retained_volume_ids =", dead_guard)
+    ready_handoff = run_source.index('"status": "volume_ready_watchdog_retained"')
+    assert dead_guard < failure_cleanup < ready_handoff
+    assert "and watchdog_pid is not None" in run_source

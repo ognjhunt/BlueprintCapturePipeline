@@ -3,10 +3,11 @@ import os
 import pytest
 
 import blueprint_pipeline.groot_oscar_runpod_preflight as preflight_module
-from blueprint_pipeline.groot_oscar_runpod_preflight import (
-    build_model_volume_watchdog_handoff_evidence,
-    collect_runpod_preflight,
+
+build_model_volume_watchdog_handoff_evidence = (
+    preflight_module.build_model_volume_watchdog_handoff_evidence
 )
+collect_runpod_preflight = preflight_module.collect_runpod_preflight
 
 MODEL_VOLUME_WATCHDOG_STATE = "/tmp/model-volume/watchdog_state.json"
 

@@ -427,6 +427,15 @@ def _extract_id(payload: Mapping[str, Any]) -> str:
     return value
 
 
+def _watchdog_process_running(process: Any) -> bool:
+    if process is None:
+        return False
+    try:
+        return process.poll() is None
+    except (OSError, ValueError):
+        return False
+
+
 def run_model_volume(
     *,
     output_dir: Path,
@@ -446,7 +455,18 @@ def run_model_volume(
     provider = get_render_provider("runpod")
     key = provider._key()  # type: ignore[attr-defined]
     if not key:
-        raise ValueError("runpod_api_key_missing")
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked_before_allocation",
+            "blockers": ["model_volume_runpod_api_key_unavailable"],
+            "provider_mutation_attempted": False,
+            "maximum_compute_spend_usd": 0.0,
+            "maximum_storage_spend_usd": 0.0,
+            "error_type": "MissingRunPodAPIKey",
+            "raw_secret_values_recorded": False,
+        }
+        write_json(output / "model_volume_result.json", result)
+        return result
     try:
         hf_token = _read_secret(hf_token_file)
     except Exception as exc:  # noqa: BLE001 - stop before inventory or allocation
@@ -507,6 +527,7 @@ def run_model_volume(
     )
     watchdog_armed = False
     watchdog_pid: int | None = None
+    watch: Any = None
     stale_watchdog_state = any(
         (output / name).exists()
         for name in ("watchdog_armed.json", "watchdog_handoff.json", "watchdog.pid")
@@ -750,13 +771,36 @@ def run_model_volume(
         final_pods, final_volumes, final_inventory_verified = _matching_resources(
             key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
         )
+        watchdog_retained = bool(
+            watchdog_armed and _watchdog_process_running(watch)
+        )
+        if success and not watchdog_retained:
+            success = False
+            error_type = "ModelVolumeWatchdogExitedBeforeHandoff"
+            write_json(
+                output / "model_volume_error.json",
+                {
+                    "error_type": error_type,
+                    "error": "model_volume_watchdog_exited_before_handoff",
+                    "provider_failure": None,
+                    "raw_secret_values_recorded": False,
+                },
+            )
+            retained_volume_ids = final_volumes or ([volume_id] if volume_id else [])
+            for item in retained_volume_ids:
+                volume_teardown = _delete_volume(key=key, volume_id=item)
+            final_pods, final_volumes, final_inventory_verified = _matching_resources(
+                key=key, pod_prefix=pod_prefix, volume_prefix=volume_name
+            )
         cleanup_terminal = bool(
             final_inventory_verified
             and not final_pods
             and not final_volumes
         )
         if success and (
-            final_inventory_verified
+            watchdog_retained
+            and watchdog_pid is not None
+            and final_inventory_verified
             and not final_pods
             and final_volumes == [volume_id]
             and pod_teardown.get("provider_absence_confirmed") is True
