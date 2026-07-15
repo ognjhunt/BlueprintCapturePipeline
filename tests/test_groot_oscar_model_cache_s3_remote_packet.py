@@ -19,10 +19,21 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
 from blueprint_pipeline.groot_oscar_model_cache_s3_remote_packet import (
     prepare_remote_model_cache_packet,
 )
+from blueprint_pipeline.groot_oscar_model_cache_s3_remote_executor import (
+    RUNTIME_CACHE_ROOT,
+    RUNTIME_COSMOS_MODEL_ROOT,
+)
 
 
 COMMIT = "a" * 40
 NONCE = "cacheprep1234"
+
+
+def test_remote_executor_binds_sonic_to_selector_compatible_local_model() -> None:
+    assert RUNTIME_COSMOS_MODEL_ROOT == (
+        RUNTIME_CACHE_ROOT / "cosmos/nvidia/Cosmos-Reason2-2B"
+    )
+    assert "nvidia/Cosmos-Reason2" in str(RUNTIME_COSMOS_MODEL_ROOT)
 
 
 def _wheelhouse(tmp_path: Path, *, startup_hook: bool = False) -> tuple[Path, Path]:
