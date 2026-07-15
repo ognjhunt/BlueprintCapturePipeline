@@ -34,6 +34,7 @@ request = {"url": f"{RUNPOD_REST_API_BASE}/pods", "method": "POST"}
 def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
     blockers = set(verifier.verify())
     assert "model_volume_watchdog_handoff_schema_missing" not in blockers
+    assert "model_volume_watchdog_process_handoff_missing" not in blockers
     assert "gpu_preflight_model_volume_watchdog_handoff_guard_missing" not in blockers
     assert "gpu_launch_refresh_drops_model_volume_watchdog_handoff" not in blockers
     assert "runbook_model_volume_watchdog_handoff_missing" not in blockers

@@ -270,6 +270,8 @@ def test_model_volume_requires_armed_handoff_before_paid_admission() -> None:
     assert "watchdog_armed_before_allocation=watchdog_armed" in run_source
     assert '"status": "volume_ready_watchdog_retained"' in run_source
     assert '"teardown_owner": "independent_model_volume_watchdog"' in run_source
+    assert '"watchdog_pid": watchdog_pid' in run_source
+    assert '"watchdog_state_path": str(state_path)' in run_source
     assert 'final_volumes == [volume_id]' in run_source
 
 

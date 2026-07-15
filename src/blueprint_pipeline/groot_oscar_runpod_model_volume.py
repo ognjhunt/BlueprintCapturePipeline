@@ -506,6 +506,7 @@ def run_model_volume(
         },
     )
     watchdog_armed = False
+    watchdog_pid: int | None = None
     stale_watchdog_state = any(
         (output / name).exists()
         for name in ("watchdog_armed.json", "watchdog_handoff.json", "watchdog.pid")
@@ -527,6 +528,7 @@ def run_model_volume(
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
+            watchdog_pid = watch.pid
             (output / "watchdog.pid").write_text(f"{watch.pid}\n", encoding="utf-8")
             armed_path = output / "watchdog_armed.json"
             watchdog_start_deadline = time.time() + 10
@@ -768,6 +770,9 @@ def run_model_volume(
                     "preparation_pod_absence_confirmed": True,
                     "volume_presence_confirmed": True,
                     "teardown_owner": "independent_model_volume_watchdog",
+                    "watchdog_pid": watchdog_pid,
+                    "watchdog_state_path": str(state_path),
+                    "watchdog_nonce": watchdog_nonce,
                     "watchdog_deadline_epoch": deadline,
                     "next_owner_must_arm_before_transfer": True,
                     "raw_secret_values_recorded": False,

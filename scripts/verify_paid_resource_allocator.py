@@ -245,11 +245,19 @@ def verify() -> list[str]:
     if "groot_oscar_model_volume_watchdog_handoff.v1" not in model_volume:
         blockers.append("model_volume_watchdog_handoff_schema_missing")
     if not all(
+        marker in model_volume
+        for marker in ("watchdog_pid", "watchdog_state_path", "watchdog_nonce")
+    ):
+        blockers.append("model_volume_watchdog_process_handoff_missing")
+    if not all(
         marker in runpod_preflight
         for marker in (
             "build_model_volume_watchdog_handoff_evidence",
             "model_volume_watchdog_handoff_volume_mismatch",
             "model_volume_watchdog_ttl_does_not_cover_canary",
+            "model_volume_watchdog_process_not_alive",
+            "model_volume_watchdog_process_identity_invalid",
+            "watchdog_process_identity_verified",
             "MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS",
         )
     ):
