@@ -139,6 +139,7 @@ class FakeS3:
         write_before_upload_failure: bool = False,
         fail_delete: bool = False,
         fail_multipart_listing: bool = False,
+        fail_multipart_listing_on: int | None = None,
         visible_multipart_uploads: int = 0,
     ) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
@@ -148,10 +149,12 @@ class FakeS3:
         self.write_before_upload_failure = write_before_upload_failure
         self.fail_delete = fail_delete
         self.fail_multipart_listing = fail_multipart_listing
+        self.fail_multipart_listing_on = fail_multipart_listing_on
         self.visible_multipart_uploads = visible_multipart_uploads
         self.upload_calls = 0
         self.delete_calls = 0
         self.abort_calls = 0
+        self.multipart_list_calls = 0
         self.upload_configs: list[object] = []
 
     def list_buckets(self):  # type: ignore[no-untyped-def]
@@ -191,7 +194,10 @@ class FakeS3:
         }
 
     def list_multipart_uploads(self, **kwargs):  # type: ignore[no-untyped-def]
-        if self.fail_multipart_listing:
+        self.multipart_list_calls += 1
+        if self.fail_multipart_listing or (
+            self.fail_multipart_listing_on == self.multipart_list_calls
+        ):
             raise RuntimeError("multipart listing unavailable")
         return {
             "Uploads": [
@@ -360,7 +366,9 @@ def test_upload_requires_full_redownload_and_manifest_hash_verification(
         "client_max_attempts": 10,
     }
     assert result["multipart_cleanup_required"] is False
-    assert "multipart_listing_supported" not in result
+    assert result["multipart_listing_supported"] is True
+    assert result["multipart_absence_verified"] is True
+    assert client.multipart_list_calls == 4
 
 
 def test_runpod_transfer_contract_is_large_chunked_and_single_threaded() -> None:
@@ -449,11 +457,35 @@ def test_visible_multipart_abort_is_counted_as_provider_mutation(tmp_path: Path)
     assert result["partial_upload_cleanup_verified"] is True
 
 
+def test_visible_stale_multipart_is_aborted_before_successful_upload(
+    tmp_path: Path,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3(visible_multipart_uploads=1)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["status"] == "completed"
+    assert result["multipart_abort_attempt_count"] == 1
+    assert result["multipart_abort_success_count"] == 1
+    assert result["multipart_absence_verified"] is True
+    assert result["provider_mutations_performed"] == result["remote_object_count"] + 1
+
+
 def test_unsupported_multipart_listing_requires_outer_volume_deletion(
     tmp_path: Path,
 ) -> None:
     access, secret = _credentials(tmp_path)
-    client = FakeS3(fail_upload_on=3, fail_multipart_listing=True)
+    client = FakeS3(fail_upload_on=3, fail_multipart_listing_on=3)
     result = upload_and_verify_model_cache(
         cache_root=_cache(tmp_path),
         verification_root=tmp_path / "redownload",
@@ -470,6 +502,32 @@ def test_unsupported_multipart_listing_requires_outer_volume_deletion(
     assert result["multipart_absence_verified"] is False
     assert result["partial_upload_cleanup_verified"] is False
     assert result["outer_volume_deletion_required"] is True
+
+
+def test_unverified_initial_multipart_state_blocks_before_upload(
+    tmp_path: Path,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3(fail_multipart_listing=True)
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "runpod_s3_dedicated_volume_multipart_state_unverified"
+    ]
+    assert result["provider_mutations_performed"] == 0
+    assert result["outer_volume_deletion_required"] is True
+    assert client.upload_calls == 0
 
 
 def test_corrupt_redownload_fails_closed(tmp_path: Path) -> None:
