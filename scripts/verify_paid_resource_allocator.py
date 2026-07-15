@@ -359,6 +359,9 @@ def verify() -> list[str]:
     if "_SAFE_VERSIONED_IMAGE_REF" not in packet_builder or "shlex.quote" not in packet_builder:
         blockers.append("remote_build_packet_image_ref_shell_safety_missing")
     try:
+        foundation_candidate_at = packet_builder.index(
+            '-t "$foundation_candidate_ref" --push'
+        )
         release_candidate_at = packet_builder.index(
             '-t "$release_candidate_ref" --push'
         )
@@ -369,6 +372,9 @@ def verify() -> list[str]:
         release_promotion_at = packet_builder.index(
             'imagetools create --tag "$release_ref" "$release_exact"'
         )
+        foundation_promotion_at = packet_builder.index(
+            'imagetools create --tag "$foundation_ref" "$foundation_exact"'
+        )
         terminal_result_at = packet_builder.index(
             'mv "$validation_result" "$result"'
         )
@@ -376,15 +382,19 @@ def verify() -> list[str]:
         blockers.append("remote_build_final_tag_promotion_guard_missing")
     else:
         if not (
-            release_candidate_at
+            foundation_candidate_at
+            < release_candidate_at
             < release_validation_at
             < release_contract_at
             < release_promotion_at
+            < foundation_promotion_at
             < terminal_result_at
         ):
             blockers.append("remote_build_final_tag_promotion_order_invalid")
     if '-t "$release_ref" --push' in packet_builder:
         blockers.append("remote_build_pushes_unvalidated_final_release_tag")
+    if '-t "$foundation_ref" --push' in packet_builder:
+        blockers.append("remote_build_pushes_unvalidated_final_foundation_tag")
     gpu_calls = _function_calls(GPU_ADAPTER)
     if "run_runpod_provider_adapter" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")
