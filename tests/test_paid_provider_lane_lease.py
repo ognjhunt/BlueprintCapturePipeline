@@ -583,6 +583,43 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert accepted["owner_pid"] == 444
     assert not capability.exists()
 
+    restored = restore_paid_provider_lane_lease_to_retained_watchdog(accepted)
+    assert restored == {"status": "restored", "restored": True, "owner_pid": 333}
+    accepted_handoff = read_lease(
+        "runpod", "groot_oscar_model_volume", tmp_path
+    )["handoff"]
+    live_pids.add(555)
+    renewal_deadline = retention_deadline + 24 * 3600
+    renewal = watchdog(555, "renewal", "renewal-nonce", renewal_deadline)
+    argv[555] = (
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "watchdog",
+        "--state",
+        renewal["watchdog_state_path"],
+    )
+    renewed = rotate_paid_provider_lane_lease_to_retention_watchdog(
+        accepted_handoff,
+        source_watchdog=retention,
+        retention_watchdog=renewal,
+        expected_binding=accepted_handoff["binding"],
+        retention_binding={
+            **accepted_handoff["binding"],
+            "watchdog_nonce": "renewal-nonce",
+            "watchdog_deadline_epoch": renewal_deadline,
+        },
+        process_argv_probe=lambda pid: argv[pid],
+        clock=lambda: time.time() + 1,
+    )
+    assert renewed["status"] == "pending_canary_acceptance", renewed
+    assert renewed["renewed_after_terminal_canary"] is True
+    assert renewed["source_owner_pid"] == 555
+    assert capability.is_file()
+    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)[
+        "handoff"
+    ] == renewed
+
 
 def test_live_same_host_owner_is_never_stale_even_past_expiry(tmp_path: Path) -> None:
     path = lease_path("runpod", "lane", tmp_path)

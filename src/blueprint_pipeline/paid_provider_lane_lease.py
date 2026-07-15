@@ -946,7 +946,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
     stable_fields = ("provider", "lane", "volume_id", "pending_teardown_record")
     if (
         handoff.get("schema_version") != LEASE_HANDOFF_SCHEMA_VERSION
-        or handoff.get("status") != "pending_canary_acceptance"
+        or handoff.get("status") not in {"pending_canary_acceptance", "accepted"}
         or recorded_binding != current_binding
         or any(new_binding[key] != current_binding[key] for key in stable_fields)
         or not isinstance(new_binding.get("watchdog_deadline_epoch"), (int, float))
@@ -1002,9 +1002,11 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
                     encoding="utf-8"
                 )
             )
-            cap_stat = capability_path.lstat()
         except (OSError, ValueError):
             pending = {}
+        try:
+            cap_stat = capability_path.lstat()
+        except OSError:
             cap_stat = None
         if not isinstance(pending, Mapping) or not bool(
             pending.get("status") == "open"
@@ -1018,29 +1020,45 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
                 "status": "blocked",
                 "blockers": ["paid_provider_lane_retention_pending_teardown_invalid"],
             }
-        if (
-            cap_stat is None
-            or not capability_path.is_file()
-            or capability_path.is_symlink()
-            or cap_stat.st_mode & 0o077
-        ):
-            return {
-                "status": "blocked",
-                "blockers": ["paid_provider_lane_retention_capability_unsafe"],
-            }
-        prior = _read_handoff_capability(capability_path)
-        if prior is None or prior[1] != current_binding or not secrets.compare_digest(
-            _handoff_capability_digest(prior[0], current_binding),
-            str(handoff.get("capability_digest") or ""),
-        ):
-            return {
-                "status": "blocked",
-                "blockers": ["paid_provider_lane_retention_capability_invalid"],
-            }
-        consumed = capability_path.with_name(
-            f".{capability_path.name}.retention-{os.getpid()}-{time.monotonic_ns()}"
-        )
-        os.replace(capability_path, consumed)
+        accepted_return = handoff.get("status") == "accepted"
+        consumed: Path | None = None
+        if accepted_return:
+            if not bool(
+                cap_stat is None
+                and current.get("owner_role") == "retained_network_volume_watchdog"
+                and type(current.get("canary_owner_returned_at_epoch")) is float
+                and float(current["canary_owner_returned_at_epoch"]) <= float(clock())
+            ):
+                return {
+                    "status": "blocked",
+                    "blockers": [
+                        "paid_provider_lane_retention_terminal_canary_return_invalid"
+                    ],
+                }
+        else:
+            if (
+                cap_stat is None
+                or not capability_path.is_file()
+                or capability_path.is_symlink()
+                or cap_stat.st_mode & 0o077
+            ):
+                return {
+                    "status": "blocked",
+                    "blockers": ["paid_provider_lane_retention_capability_unsafe"],
+                }
+            prior = _read_handoff_capability(capability_path)
+            if prior is None or prior[1] != current_binding or not secrets.compare_digest(
+                _handoff_capability_digest(prior[0], current_binding),
+                str(handoff.get("capability_digest") or ""),
+            ):
+                return {
+                    "status": "blocked",
+                    "blockers": ["paid_provider_lane_retention_capability_invalid"],
+                }
+            consumed = capability_path.with_name(
+                f".{capability_path.name}.retention-{os.getpid()}-{time.monotonic_ns()}"
+            )
+            os.replace(capability_path, consumed)
         new_token = secrets.token_bytes(32)
         new_digest = _handoff_capability_digest(new_token, new_binding)
         new_handoff = {
@@ -1054,6 +1072,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             "created_at_epoch": float(clock()),
             "retention_rotation": True,
             "prior_capability_consumed": True,
+            "renewed_after_terminal_canary": accepted_return,
             "owner_role": "bounded_persistent_cache_watchdog",
             "raw_capability_recorded": False,
         }
@@ -1094,10 +1113,12 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
         except Exception:
             capability_path.unlink(missing_ok=True)
             _write_lease(Path(current_binding["pending_teardown_record"]), pending)
-            os.replace(consumed, capability_path)
+            if consumed is not None:
+                os.replace(consumed, capability_path)
             raise
         try:
-            consumed.unlink(missing_ok=True)
+            if consumed is not None:
+                consumed.unlink(missing_ok=True)
         except OSError:
             # The old token is no longer usable because the lease now binds the
             # fresh handoff exactly.  Preserve that cleanup failure as evidence

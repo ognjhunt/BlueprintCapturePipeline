@@ -68,6 +68,7 @@ from .paid_lane_guard import (
 from .paid_provider_lane_lease import (
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
+    read_lease,
     read_process_argv,
     release_paid_provider_lane_lease,
     rotate_paid_provider_lane_lease_to_retention_watchdog,
@@ -349,7 +350,20 @@ def retain_verified_model_cache(
     manifest_digest = str(source_result.get("model_manifest_digest") or "")
     lane_handoff = source_handoff.get("provider_lane_handoff")
     lane_handoff = lane_handoff if isinstance(lane_handoff, Mapping) else {}
-    binding = lane_handoff.get("binding")
+    rotation_handoff: Mapping[str, Any] = lane_handoff
+    lease_path_value = str(lane_handoff.get("lease_path") or "")
+    if lease_path_value:
+        current_lease = read_lease(
+            "runpod", PROVIDER_LANE, Path(lease_path_value).parent
+        )
+        current_handoff = (
+            current_lease.get("handoff")
+            if isinstance(current_lease, Mapping)
+            else None
+        )
+        if isinstance(current_handoff, Mapping):
+            rotation_handoff = current_handoff
+    binding = rotation_handoff.get("binding")
     binding = binding if isinstance(binding, Mapping) else {}
     if source_result.get("status") != "completed":
         blockers.append("bounded_cache_retention_source_not_completed")
@@ -382,7 +396,8 @@ def retain_verified_model_cache(
         source_handoff.get("schema_version") == WATCHDOG_HANDOFF_SCHEMA_VERSION
         and source_handoff.get("status") == "volume_ready_watchdog_retained"
         and source_handoff.get("volume_id") == volume_id
-        and lane_handoff.get("status") == "pending_canary_acceptance"
+        and rotation_handoff.get("status")
+        in {"pending_canary_acceptance", "accepted"}
         and binding.get("volume_id") == volume_id
     ):
         blockers.append("bounded_cache_retention_handoff_invalid")
@@ -537,7 +552,7 @@ def retain_verified_model_cache(
                 # write failure leaves the original watchdog as exact owner.
                 "provider_lane_handoff": {
                     "status": "retention_state_prepared",
-                    "lease_path": lane_handoff.get("lease_path"),
+                    "lease_path": rotation_handoff.get("lease_path"),
                     "binding": retention_binding,
                 },
                 "pending_teardown_record": binding.get("pending_teardown_record"),
@@ -561,7 +576,7 @@ def retain_verified_model_cache(
         return result
     try:
         rotated = rotate_paid_provider_lane_lease_to_retention_watchdog(
-            lane_handoff,
+            rotation_handoff,
             source_watchdog=source_watchdog,
             retention_watchdog=retention_watchdog,
             expected_binding=binding,
