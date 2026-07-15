@@ -21,6 +21,7 @@ from .groot_oscar_infrastructure_admission import (
     build_runpod_gpu_runtime_evidence,
     build_runpod_network_volume_evidence,
 )
+from .paid_provider_lane_lease import read_process_argv
 
 SCHEMA_VERSION = "groot_oscar_runpod_preflight_bundle.v1"
 WATCHDOG_MODULE = "blueprint_pipeline.groot_oscar_runpod_watchdog"
@@ -40,16 +41,6 @@ def _read_json(path: str | Path) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("expected_json_object")
     return dict(value)
-
-
-def _read_linux_process_argv(pid: int) -> tuple[str, ...]:
-    """Read a live process identity without trusting watchdog-authored evidence."""
-
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except (FileNotFoundError, PermissionError, OSError):
-        return ()
-    return tuple(part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part)
 
 
 def _process_alive(pid: Any) -> bool:
@@ -72,18 +63,20 @@ def _watchdog_process_matches(
     watchdog_out_dir: str,
 ) -> bool:
     tokens = tuple(str(token) for token in argv)
-    if WATCHDOG_MODULE not in tokens:
-        return False
     try:
-        prefix_index = tokens.index("--pod-name-prefix") + 1
-        deadline_index = tokens.index("--deadline-epoch") + 1
-        out_dir_index = tokens.index("--out-dir") + 1
+        module_index = tokens.index(WATCHDOG_MODULE)
+        if module_index <= 0 or tokens[module_index - 1] != "-m":
+            return False
+        prefix_index = tokens.index("--pod-name-prefix", module_index + 1) + 1
+        deadline_index = tokens.index("--deadline-epoch", module_index + 1) + 1
+        out_dir_index = tokens.index("--out-dir", module_index + 1) + 1
         observed_prefix = tokens[prefix_index]
         observed_deadline = float(tokens[deadline_index])
     except (ValueError, IndexError):
         return False
     return bool(
-        observed_prefix == pod_name_prefix
+        out_dir_index < len(tokens)
+        and observed_prefix == pod_name_prefix
         and observed_deadline == deadline_epoch
         and Path(tokens[out_dir_index]).expanduser().resolve()
         == Path(watchdog_out_dir).expanduser().resolve()
@@ -115,7 +108,7 @@ def build_watchdog_spend_evidence(
     max_spend_usd: float,
     paid_mutation_authorized: bool,
     clock: Callable[[], float] = time.time,
-    process_argv_probe: Callable[[int], Sequence[str]] = _read_linux_process_argv,
+    process_argv_probe: Callable[[int], Sequence[str]] = read_process_argv,
 ) -> dict[str, Any]:
     deadline = watchdog.get("deadline_epoch")
     pid = watchdog.get("pid")
@@ -163,7 +156,7 @@ def build_model_volume_watchdog_handoff_evidence(
     network_volume_id: str,
     canary_watchdog_deadline_epoch: float,
     clock: Callable[[], float] = time.time,
-    process_argv_probe: Callable[[int], Sequence[str]] = _read_linux_process_argv,
+    process_argv_probe: Callable[[int], Sequence[str]] = read_process_argv,
 ) -> dict[str, Any]:
     """Prove the retained volume watchdog cannot delete cache during canary use."""
 
@@ -244,9 +237,9 @@ def collect_runpod_preflight(
     paid_mutation_authorized: bool,
     volume_getter: Callable[[str], tuple[int, Mapping[str, Any]]],
     capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
-    inventory_probe: Callable[[str], Mapping[str, Any]],
+    inventory_probe: Callable[[str | None], Mapping[str, Any]],
     clock: Callable[[], float] = time.time,
-    process_argv_probe: Callable[[int], Sequence[str]] = _read_linux_process_argv,
+    process_argv_probe: Callable[[int], Sequence[str]] = read_process_argv,
 ) -> dict[str, Any]:
     status, raw_volume = volume_getter(network_volume_id)
     volume = build_runpod_network_volume_evidence(
@@ -265,7 +258,8 @@ def collect_runpod_preflight(
             }
         )
     )
-    inventory = dict(inventory_probe(name_prefix))
+    attempt_inventory = dict(inventory_probe(name_prefix))
+    inventory = dict(inventory_probe(None))
     observed_at_epoch = clock()
     zero_inventory = bool(
         inventory.get("api_confirmed") is True
@@ -319,6 +313,7 @@ def collect_runpod_preflight(
         "model_volume_watchdog_handoff": model_volume_handoff,
         "capacity_snapshot": capacity,
         "billable_inventory": inventory,
+        "attempt_billable_inventory": attempt_inventory,
         "provider_mutations_performed": 0,
         "raw_secret_values_recorded": False,
     }

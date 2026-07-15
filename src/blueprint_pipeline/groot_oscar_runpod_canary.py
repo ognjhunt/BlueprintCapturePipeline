@@ -9,6 +9,7 @@ the startup canary; it is not an image builder or a customer cold-start path.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from copy import deepcopy
@@ -53,7 +54,7 @@ def refresh_runpod_preflight(
     preflight: Mapping[str, Any],
     volume_getter: Callable[[str], tuple[int, Mapping[str, Any]]],
     capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
-    inventory_probe: Callable[[str], Mapping[str, Any]],
+    inventory_probe: Callable[[str | None], Mapping[str, Any]],
     clock: Callable[[], float] = time.time,
     process_argv_probe: Callable[[int], Sequence[str]] | None = None,
 ) -> dict[str, Any]:
@@ -124,6 +125,25 @@ def _reserve_campaign_budget(
     config: Mapping[str, Any], *, reservation_id: str
 ) -> dict[str, Any]:
     try:
+        reservation_seconds = int(config["reservation_gpu_seconds"])
+        future_allowance_seconds = int(
+            config["future_campaign_allowance_gpu_seconds"]
+        )
+        combined_plan_seconds = reservation_seconds + future_allowance_seconds
+        if config.get("reduced_canary_timeout_acknowledged") is not True:
+            raise ValueError("gpu_canary_reduced_timeout_authorization_missing")
+        if config.get("campaign_stage") != "gpu_canary":
+            raise ValueError("gpu_canary_campaign_stage_invalid")
+        if reservation_seconds > int(
+            config["maximum_canary_reservation_gpu_seconds"]
+        ):
+            raise ValueError("gpu_canary_stage_reservation_exceeds_plan")
+        if future_allowance_seconds > int(
+            config["maximum_future_campaign_allowance_gpu_seconds"]
+        ):
+            raise ValueError("future_campaign_allowance_exceeds_plan")
+        if combined_plan_seconds > int(config["maximum_combined_plan_gpu_seconds"]):
+            raise ValueError("combined_gpu_plan_exceeds_reduced_ceiling")
         if (
             float(config.get("initial_spent_usd") or 0)
             < float(config.get("minimum_reconciled_spend_usd") or 0)
@@ -131,6 +151,11 @@ def _reserve_campaign_budget(
             < int(config.get("minimum_reconciled_gpu_seconds") or 0)
         ):
             raise ValueError("gpu_canary_cumulative_baseline_understated")
+        if (
+            int(config["initial_used_gpu_seconds"]) + combined_plan_seconds
+            > int(config["combined_gpu_wall_cap_seconds"])
+        ):
+            raise ValueError("combined_gpu_plan_exceeds_campaign_wall_cap")
         budget = ProductionGpuCampaignBudget(
             str(config.get("ledger_path") or ""),
             initial_spent_usd=float(config["initial_spent_usd"]),
@@ -140,7 +165,7 @@ def _reserve_campaign_budget(
         )
         reservation = budget.reserve(
             reservation_id=reservation_id,
-            gpu_seconds=int(config["reservation_gpu_seconds"]),
+            gpu_seconds=reservation_seconds,
             max_hourly_rate_usd=float(config["max_hourly_rate_usd"]),
         )
     except (CampaignBudgetExceeded, KeyError, TypeError, ValueError) as exc:
@@ -154,6 +179,12 @@ def _reserve_campaign_budget(
         "reservation_id": reservation_id,
         "reserved_at_epoch": time.time(),
         "reservation": reservation,
+        "plan": {
+            "campaign_stage": "gpu_canary",
+            "canary_reservation_gpu_seconds": reservation_seconds,
+            "future_campaign_allowance_gpu_seconds": future_allowance_seconds,
+            "combined_plan_gpu_seconds": combined_plan_seconds,
+        },
         "identity": {
             key: config[key]
             for key in (
@@ -184,6 +215,72 @@ def _settle_zero_budget(context: Mapping[str, Any], *, outcome: str) -> dict[str
         charged_usd=0,
         outcome=outcome,
     )
+
+
+def _recover_accepted_handoff_before_provider_mutation(
+    *,
+    acceptance: Mapping[str, Any],
+    budget_context: Mapping[str, Any],
+    watchdog_out_dir: str,
+    pod_name_prefix: str,
+    outcome: str,
+    pending_path: str | None = None,
+) -> dict[str, Any]:
+    """Restore every accepted control-plane obligation after a local failure."""
+
+    try:
+        pending_result = (
+            cancel_pending_teardown(
+                pending_path,
+                reason=outcome,
+                evidence={"provider_mutations_performed": 0},
+            )
+            if pending_path
+            else {"status": "not_opened"}
+        )
+    except Exception as exc:  # noqa: BLE001 - continue recovery steps
+        pending_result = {"status": "error", "error_type": type(exc).__name__}
+    try:
+        restore_result = restore_paid_provider_lane_lease_to_retained_watchdog(
+            acceptance
+        )
+    except Exception as exc:  # noqa: BLE001 - continue recovery steps
+        restore_result = {"status": "error", "error_type": type(exc).__name__}
+    try:
+        settlement = _settle_zero_budget(budget_context, outcome=outcome)
+    except Exception as exc:  # noqa: BLE001 - preserve the open reservation
+        settlement = {"status": "error", "error_type": type(exc).__name__}
+    terminal = bool(
+        pending_result.get("status") in {"not_opened", "cancelled_no_allocation"}
+        and restore_result.get("status") == "restored"
+        and settlement.get("status") == "settled"
+    )
+    recovery = {
+        "status": "terminal_no_allocation" if terminal else "control_plane_open",
+        "provider_mutations_performed": 0,
+        "pending_teardown": pending_result,
+        "provider_lane_owner_return": restore_result,
+        "campaign_budget_settlement": settlement,
+    }
+    if not terminal:
+        try:
+            _write_private_json(
+                Path(watchdog_out_dir) / "provider_lane_handoff_receipt.json",
+                {
+                    **dict(acceptance),
+                    "pod_pending_teardown_record": pending_path,
+                    "pod_id": None,
+                    "pod_name_prefix": pod_name_prefix,
+                    "campaign_budget": dict(budget_context),
+                    "pre_provider_mutation_confirmed_absent": True,
+                    "pre_provider_recovery": recovery,
+                },
+            )
+            recovery["recovery_receipt_written"] = True
+        except Exception as exc:  # noqa: BLE001 - keep cleanup evidence fail closed
+            recovery["recovery_receipt_written"] = False
+            recovery["recovery_receipt_error_type"] = type(exc).__name__
+    return recovery
 
 
 def bind_canary_request(
@@ -404,6 +501,44 @@ def run_canary(
         budget_context = _reserve_campaign_budget(
             campaign_budget or {}, reservation_id=pod_name
         )
+        if budget_context.get("status") == "reserved":
+            reservation = budget_context.get("reservation")
+            reservation = reservation if isinstance(reservation, Mapping) else {}
+            reserved_seconds = int(reservation.get("reserved_gpu_seconds") or 0)
+            hard_ttl_seconds = int(spend.get("hard_ttl_seconds") or 0)
+            watchdog_deadline_epoch = float(
+                spend.get("watchdog_deadline_epoch") or 0
+            )
+            watchdog_remaining_seconds = max(
+                0,
+                math.ceil(
+                    watchdog_deadline_epoch
+                    - float(budget_context.get("reserved_at_epoch") or 0)
+                ),
+            )
+            budget_context["watchdog_contract"] = {
+                "hard_ttl_seconds": hard_ttl_seconds,
+                "watchdog_deadline_epoch": watchdog_deadline_epoch,
+                "watchdog_remaining_seconds_at_reservation": (
+                    watchdog_remaining_seconds
+                ),
+                "reserved_gpu_seconds": reserved_seconds,
+            }
+            if (
+                hard_ttl_seconds <= 0
+                or hard_ttl_seconds > reserved_seconds
+                or watchdog_remaining_seconds > reserved_seconds
+            ):
+                settlement = _settle_zero_budget(
+                    budget_context,
+                    outcome="watchdog_ttl_exceeds_reservation_no_mutation",
+                )
+                budget_context = {
+                    **budget_context,
+                    "status": "blocked",
+                    "blockers": ["gpu_canary_watchdog_exceeds_budget_reservation"],
+                    "zero_settlement": settlement,
+                }
         try:
             write_json(
                 Path(adapter_output).resolve().parent
@@ -492,10 +627,14 @@ def run_canary(
         )
         write_json(Path(bound_request_out), prepared["bound_request"])
     except Exception as exc:  # noqa: BLE001 - provider call has not occurred
+        recovery: dict[str, Any] = {"status": "not_required_dry_run"}
         if execute:
-            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
-            _settle_zero_budget(
-                budget_context, outcome="local_pre_provider_failure_no_mutation"
+            recovery = _recover_accepted_handoff_before_provider_mutation(
+                acceptance=acceptance,
+                budget_context=budget_context,
+                watchdog_out_dir=watchdog_out_dir,
+                pod_name_prefix=str(spend.get("watchdog_pod_name_prefix") or ""),
+                outcome="local_pre_provider_failure_no_mutation",
             )
         blocked = {
             **prepared,
@@ -503,6 +642,7 @@ def run_canary(
             "blockers": ["runpod_canary_local_pre_provider_failure"],
             "provider_mutations_performed": 0,
             "error_type": type(exc).__name__,
+            "pre_provider_recovery": recovery,
         }
         write_json(Path(admission_out), blocked)
         return blocked
@@ -523,9 +663,12 @@ def run_canary(
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - no provider mutation has occurred
-            restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
-            _settle_zero_budget(
-                budget_context, outcome="pending_teardown_open_failed_no_mutation"
+            recovery = _recover_accepted_handoff_before_provider_mutation(
+                acceptance=acceptance,
+                budget_context=budget_context,
+                watchdog_out_dir=watchdog_out_dir,
+                pod_name_prefix=str(spend.get("watchdog_pod_name_prefix") or ""),
+                outcome="pending_teardown_open_failed_no_mutation",
             )
             blocked = {
                 **prepared,
@@ -533,6 +676,7 @@ def run_canary(
                 "blockers": ["runpod_canary_pending_teardown_open_failed"],
                 "provider_mutations_performed": 0,
                 "error_type": type(exc).__name__,
+                "pre_provider_recovery": recovery,
             }
             write_json(Path(admission_out), blocked)
             return blocked
@@ -550,14 +694,15 @@ def run_canary(
                     },
                 )
             except Exception as exc:  # noqa: BLE001 - still before provider call
-                cancel_pending_teardown(
-                    pod_pending["path"],
-                    reason="runpod_canary_receipt_write_failed_before_create",
-                    evidence={"error_type": type(exc).__name__},
-                )
-                restore_paid_provider_lane_lease_to_retained_watchdog(acceptance)
-                _settle_zero_budget(
-                    budget_context, outcome="receipt_write_failed_no_mutation"
+                recovery = _recover_accepted_handoff_before_provider_mutation(
+                    acceptance=acceptance,
+                    budget_context=budget_context,
+                    watchdog_out_dir=watchdog_out_dir,
+                    pod_name_prefix=str(
+                        spend.get("watchdog_pod_name_prefix") or ""
+                    ),
+                    outcome="receipt_write_failed_no_mutation",
+                    pending_path=str(pod_pending["path"]),
                 )
                 blocked = {
                     **prepared,
@@ -565,6 +710,7 @@ def run_canary(
                     "blockers": ["runpod_canary_handoff_receipt_write_failed"],
                     "provider_mutations_performed": 0,
                     "error_type": type(exc).__name__,
+                    "pre_provider_recovery": recovery,
                 }
                 write_json(Path(admission_out), blocked)
                 return blocked

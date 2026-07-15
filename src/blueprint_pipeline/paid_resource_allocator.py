@@ -36,7 +36,12 @@ from .paid_resource_admission import require_paid_resource_admission
 ROOT = Path(__file__).resolve().parents[2]
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
 MIN_RECONCILED_CAMPAIGN_SPEND_USD = 11.57
-MIN_RECONCILED_GPU_SECONDS = 10_815
+MIN_RECONCILED_GPU_SECONDS = 11_619
+GPU_CANARY_RESERVATION_SECONDS = 1_200
+FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_900
+COMBINED_GPU_PLAN_SECONDS = (
+    GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
+)
 
 
 def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
@@ -260,7 +265,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
     gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=16_800)
-    gpu.add_argument("--campaign-reservation-seconds", type=int, default=5_985)
+    gpu.add_argument(
+        "--campaign-reservation-seconds",
+        type=int,
+        default=GPU_CANARY_RESERVATION_SECONDS,
+    )
+    gpu.add_argument(
+        "--future-campaign-allowance-seconds",
+        type=int,
+        default=FUTURE_CAMPAIGN_ALLOWANCE_SECONDS,
+    )
+    gpu.add_argument("--authorize-reduced-canary-timeout", action="store_true")
     gpu.add_argument("--campaign-max-hourly-rate-usd", type=float)
     for name, hidden in (("model-volume", False), ("model-volume-run", True)):
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
@@ -364,6 +379,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "total_spend_cap_usd": args.campaign_total_spend_cap_usd,
                         "combined_gpu_wall_cap_seconds": args.campaign_wall_cap_seconds,
                         "reservation_gpu_seconds": args.campaign_reservation_seconds,
+                        "campaign_stage": "gpu_canary",
+                        "maximum_canary_reservation_gpu_seconds": GPU_CANARY_RESERVATION_SECONDS,
+                        "future_campaign_allowance_gpu_seconds": (
+                            args.future_campaign_allowance_seconds
+                        ),
+                        "maximum_future_campaign_allowance_gpu_seconds": (
+                            FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
+                        ),
+                        "maximum_combined_plan_gpu_seconds": COMBINED_GPU_PLAN_SECONDS,
+                        "reduced_canary_timeout_acknowledged": (
+                            args.authorize_reduced_canary_timeout
+                        ),
                         "max_hourly_rate_usd": args.campaign_max_hourly_rate_usd,
                         "minimum_reconciled_spend_usd": MIN_RECONCILED_CAMPAIGN_SPEND_USD,
                         "minimum_reconciled_gpu_seconds": MIN_RECONCILED_GPU_SECONDS,

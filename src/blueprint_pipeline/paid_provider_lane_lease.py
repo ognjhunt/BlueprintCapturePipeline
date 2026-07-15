@@ -522,13 +522,15 @@ def _create_secret_file(path: Path, token: bytes) -> bool:
         temporary.unlink(missing_ok=True)
 
 
-def _read_process_argv(pid: int) -> tuple[str, ...]:
+def read_process_argv(pid: int) -> tuple[str, ...]:
+    """Read process argv on Linux or macOS without trusting process evidence."""
+
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except (FileNotFoundError, PermissionError, OSError):
         try:
             command = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "command="],
+                ["ps", "-ww", "-p", str(pid), "-o", "command="],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -728,7 +730,7 @@ def accept_paid_provider_lane_lease_handoff(
     *,
     canary_watchdog: Mapping[str, Any],
     expected_binding: Mapping[str, Any],
-    process_argv_probe: Any = _read_process_argv,
+    process_argv_probe: Any = read_process_argv,
     clock: Any = time.time,
 ) -> dict[str, Any]:
     """Consume the one-time handoff and transfer the lane without an owner gap."""

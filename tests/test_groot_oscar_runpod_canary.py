@@ -1,6 +1,10 @@
 import json
 import os
+import time
 
+import pytest
+
+import blueprint_pipeline.groot_oscar_runpod_canary as canary_module
 from blueprint_pipeline.groot_oscar_runpod_canary import (
     _finalize_adapter_allocation,
     _reserve_campaign_budget,
@@ -15,39 +19,74 @@ def _budget_config(tmp_path, **overrides):
     config = {
         "ledger_path": str(tmp_path / "campaign-budget.json"),
         "initial_spent_usd": 11.57,
-        "initial_used_gpu_seconds": 10_815,
+        "initial_used_gpu_seconds": 11_619,
         "total_spend_cap_usd": 20.0,
         "combined_gpu_wall_cap_seconds": 16_800,
-        "reservation_gpu_seconds": 5_400,
+        "reservation_gpu_seconds": 1_200,
+        "campaign_stage": "gpu_canary",
+        "maximum_canary_reservation_gpu_seconds": 1_200,
+        "future_campaign_allowance_gpu_seconds": 3_900,
+        "maximum_future_campaign_allowance_gpu_seconds": 3_900,
+        "maximum_combined_plan_gpu_seconds": 5_100,
+        "reduced_canary_timeout_acknowledged": True,
         "max_hourly_rate_usd": 1.99,
         "minimum_reconciled_spend_usd": 11.57,
-        "minimum_reconciled_gpu_seconds": 10_815,
+        "minimum_reconciled_gpu_seconds": 11_619,
     }
     config.update(overrides)
     return config
 
 
-def test_campaign_budget_blocks_reservation_above_remaining_authority(tmp_path) -> None:
+def test_original_1500_plus_3900_plan_exceeds_current_authority(tmp_path) -> None:
     result = _reserve_campaign_budget(
-        _budget_config(tmp_path, reservation_gpu_seconds=5_986),
+        _budget_config(
+            tmp_path,
+            reservation_gpu_seconds=1_500,
+            maximum_canary_reservation_gpu_seconds=1_500,
+            maximum_combined_plan_gpu_seconds=5_400,
+        ),
         reservation_id="blueprint-canary-budget-blocked",
     )
     assert result["status"] == "blocked"
-    assert result["blockers"] == ["campaign_gpu_wall_time_cap_exceeded"]
+    assert result["blockers"] == ["combined_gpu_plan_exceeds_campaign_wall_cap"]
 
 
-def test_5985_second_reservation_fits_current_authority(tmp_path) -> None:
+def test_1200_canary_plus_3900_campaign_plan_fits_current_authority(tmp_path) -> None:
     result = _reserve_campaign_budget(
-        _budget_config(tmp_path, reservation_gpu_seconds=5_985),
+        _budget_config(tmp_path),
         reservation_id="blueprint-canary-reduced-ceiling",
     )
     assert result["status"] == "reserved"
-    assert result["reservation"]["reserved_gpu_seconds"] == 5_985
+    assert result["reservation"]["reserved_gpu_seconds"] == 1_200
+    assert result["plan"] == {
+        "campaign_stage": "gpu_canary",
+        "canary_reservation_gpu_seconds": 1_200,
+        "future_campaign_allowance_gpu_seconds": 3_900,
+        "combined_plan_gpu_seconds": 5_100,
+    }
+
+
+def test_generic_5100_second_canary_reservation_is_rejected(tmp_path) -> None:
+    result = _reserve_campaign_budget(
+        _budget_config(tmp_path, reservation_gpu_seconds=5_100),
+        reservation_id="blueprint-canary-not-combined-plan",
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["gpu_canary_stage_reservation_exceeds_plan"]
+
+
+def test_reduced_canary_plan_requires_explicit_acknowledgement(tmp_path) -> None:
+    result = _reserve_campaign_budget(
+        _budget_config(tmp_path, reduced_canary_timeout_acknowledged=False),
+        reservation_id="blueprint-canary-reduction-not-acknowledged",
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["gpu_canary_reduced_timeout_authorization_missing"]
 
 
 def test_campaign_budget_rejects_understated_baseline(tmp_path) -> None:
     result = _reserve_campaign_budget(
-        _budget_config(tmp_path, initial_used_gpu_seconds=10_814),
+        _budget_config(tmp_path, initial_used_gpu_seconds=11_618),
         reservation_id="blueprint-canary-understated",
     )
     assert result["status"] == "blocked"
@@ -294,8 +333,8 @@ def test_execute_refresh_rechecks_every_mutable_provider_fact() -> None:
             ],
         }
 
-    def inventory_probe(prefix: str):
-        observed["prefix"] = prefix
+    def inventory_probe(prefix: str | None):
+        observed.setdefault("prefixes", []).append(prefix)
         return {"api_confirmed": True, "live_resource_count": 0}
 
     result = refresh_runpod_preflight(
@@ -316,7 +355,7 @@ def test_execute_refresh_rechecks_every_mutable_provider_fact() -> None:
         "allowedCudaVersions": ["12.6"],
         "requires_rtx": True,
     }
-    assert observed["prefix"] == "blueprint-groot-oscar-canary-"
+    assert observed["prefixes"] == ["blueprint-groot-oscar-canary-", None]
 
 
 def test_execute_blocks_before_adapter_when_launch_refresh_fails(
@@ -401,6 +440,8 @@ def test_execute_reserves_then_accepts_handoff_before_adapter(
     watchdog_dir.mkdir()
     preflight = _preflight()
     preflight["spend"]["watchdog_out_dir"] = str(watchdog_dir)
+    preflight["spend"]["hard_ttl_seconds"] = 1_200
+    preflight["spend"]["watchdog_deadline_epoch"] = time.time() + 1_100
     preflight["model_volume_watchdog_handoff"]["provider_lane_handoff"] = {
         "binding": {"volume_id": "volume-1"}
     }
@@ -423,6 +464,13 @@ def test_execute_reserves_then_accepts_handoff_before_adapter(
     monkeypatch.setattr(
         "blueprint_pipeline.groot_oscar_runpod_canary.refresh_runpod_preflight",
         lambda **_kwargs: order.append("refresh") or preflight,
+    )
+    real_reserve = canary_module._reserve_campaign_budget
+    monkeypatch.setattr(
+        canary_module,
+        "_reserve_campaign_budget",
+        lambda config, *, reservation_id: order.append("reserve")
+        or real_reserve(config, reservation_id=reservation_id),
     )
     monkeypatch.setattr(
         "blueprint_pipeline.groot_oscar_runpod_canary.accept_paid_provider_lane_lease_handoff",
@@ -474,11 +522,232 @@ def test_execute_reserves_then_accepts_handoff_before_adapter(
         adapter_output=tmp_path / "adapter.json",
         pod_name="blueprint-groot-oscar-canary-ordering",
         execute=True,
-        campaign_budget=_budget_config(tmp_path, reservation_gpu_seconds=100),
+        campaign_budget=_budget_config(tmp_path),
     )
     assert result["status"] == "submitted"
-    assert order == ["refresh", "accept", "pending", "adapter", "bind"]
+    assert order == ["refresh", "reserve", "accept", "pending", "adapter", "bind"]
     receipt = json.loads(
         (watchdog_dir / "provider_lane_handoff_receipt.json").read_text()
     )
     assert receipt["campaign_budget"]["status"] == "reserved"
+    contract = receipt["campaign_budget"]["watchdog_contract"]
+    assert contract["hard_ttl_seconds"] == 1_200
+    assert contract["reserved_gpu_seconds"] == 1_200
+    assert 1 <= contract["watchdog_remaining_seconds_at_reservation"] <= 1_200
+
+
+def test_handoff_rejection_blocks_adapter_and_settles_zero(tmp_path, monkeypatch) -> None:
+    order: list[str] = []
+    watchdog_dir = tmp_path / "watchdog"
+    watchdog_dir.mkdir()
+    preflight = _preflight()
+    preflight["spend"]["watchdog_out_dir"] = str(watchdog_dir)
+    preflight["spend"]["hard_ttl_seconds"] = 1_200
+    preflight["spend"]["watchdog_deadline_epoch"] = time.time() + 1_100
+    preflight["model_volume_watchdog_handoff"]["provider_lane_handoff"] = {
+        "binding": {"volume_id": "volume-1"}
+    }
+
+    class Provider:
+        def _key(self):
+            return "test-key"
+
+        def capacity_preflight(self, _request):
+            return {}
+
+        def billable_inventory(self, *, name_prefix):
+            del name_prefix
+            return {}
+
+    monkeypatch.setattr(canary_module, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        canary_module,
+        "refresh_runpod_preflight",
+        lambda **_kwargs: order.append("refresh") or preflight,
+    )
+    real_reserve = canary_module._reserve_campaign_budget
+    monkeypatch.setattr(
+        canary_module,
+        "_reserve_campaign_budget",
+        lambda config, *, reservation_id: order.append("reserve")
+        or real_reserve(config, reservation_id=reservation_id),
+    )
+    monkeypatch.setattr(
+        canary_module,
+        "accept_paid_provider_lane_lease_handoff",
+        lambda *_args, **_kwargs: order.append("accept")
+        or {"status": "blocked", "blockers": ["handoff_test_rejected"]},
+    )
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("provider boundary reached after rejected handoff")
+
+    monkeypatch.setattr(canary_module, "open_pending_teardown", must_not_run)
+    monkeypatch.setattr(canary_module, "run_runpod_provider_adapter", must_not_run)
+    payloads = {
+        "request.json": _request(),
+        "release.json": {
+            "resolved_digest_ref": DIGEST,
+            "thin_release_contract_status": "passed",
+            "runnable_platform": "linux/amd64",
+            "required_cuda_version": "12.6",
+            "required_cuda_version_source": "image_config_env:CUDA_VERSION",
+        },
+        "models.json": {
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
+            "status": "passed",
+            "model_manifest_digest": "sha256:" + "b" * 64,
+            "verified_size_bytes": 20 * 1024**3,
+            "cache_root": "/workspace/models",
+            "provider_volume_id": "volume-1",
+            "checks": {"models_cached_offline": True},
+        },
+        "preflight.json": preflight,
+    }
+    for name, payload in payloads.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    result = run_canary(
+        provider_launch_request=tmp_path / "request.json",
+        release_evidence=tmp_path / "release.json",
+        model_cache_evidence=tmp_path / "models.json",
+        preflight_bundle=tmp_path / "preflight.json",
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        pod_name="blueprint-groot-oscar-canary-rejected",
+        execute=True,
+        campaign_budget=_budget_config(tmp_path),
+    )
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert order == ["refresh", "reserve", "accept"]
+    ledger = json.loads((tmp_path / "campaign-budget.json").read_text())
+    assert ledger["reservations"][0]["status"] == "settled"
+    assert ledger["reservations"][0]["charged_gpu_seconds"] == 0
+
+
+@pytest.mark.parametrize(
+    ("hard_ttl_seconds", "deadline_offset"),
+    [(1_201, 100), (1_200, 1_300)],
+    ids=["ttl_exceeds_reservation", "deadline_exceeds_reservation"],
+)
+def test_watchdog_contract_exceeding_reservation_blocks_before_handoff(
+    tmp_path, monkeypatch, hard_ttl_seconds, deadline_offset
+) -> None:
+    preflight = _preflight()
+    watchdog_dir = tmp_path / "watchdog"
+    watchdog_dir.mkdir()
+    preflight["spend"]["watchdog_out_dir"] = str(watchdog_dir)
+    preflight["spend"]["hard_ttl_seconds"] = hard_ttl_seconds
+    preflight["spend"]["watchdog_deadline_epoch"] = time.time() + deadline_offset
+    preflight["model_volume_watchdog_handoff"]["provider_lane_handoff"] = {
+        "binding": {"volume_id": "volume-1"}
+    }
+
+    class Provider:
+        def _key(self):
+            return "test-key"
+
+        def capacity_preflight(self, _request):
+            return {}
+
+        def billable_inventory(self, *, name_prefix):
+            del name_prefix
+            return {}
+
+    monkeypatch.setattr(canary_module, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        canary_module, "refresh_runpod_preflight", lambda **_kwargs: preflight
+    )
+
+    def must_not_accept(*_args, **_kwargs):
+        raise AssertionError("handoff accepted with an under-reserved watchdog")
+
+    monkeypatch.setattr(
+        canary_module, "accept_paid_provider_lane_lease_handoff", must_not_accept
+    )
+    payloads = {
+        "request.json": _request(),
+        "release.json": {
+            "resolved_digest_ref": DIGEST,
+            "thin_release_contract_status": "passed",
+            "runnable_platform": "linux/amd64",
+            "required_cuda_version": "12.6",
+            "required_cuda_version_source": "image_config_env:CUDA_VERSION",
+        },
+        "models.json": {
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
+            "status": "passed",
+            "model_manifest_digest": "sha256:" + "b" * 64,
+            "verified_size_bytes": 20 * 1024**3,
+            "cache_root": "/workspace/models",
+            "provider_volume_id": "volume-1",
+            "checks": {"models_cached_offline": True},
+        },
+        "preflight.json": preflight,
+    }
+    for name, payload in payloads.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    result = run_canary(
+        provider_launch_request=tmp_path / "request.json",
+        release_evidence=tmp_path / "release.json",
+        model_cache_evidence=tmp_path / "models.json",
+        preflight_bundle=tmp_path / "preflight.json",
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        pod_name="blueprint-groot-oscar-canary-budget-contract",
+        execute=True,
+        campaign_budget=_budget_config(tmp_path),
+    )
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == ["gpu_canary_watchdog_exceeds_budget_reservation"]
+    evidence = json.loads(
+        (tmp_path / "campaign_budget_reservation.json").read_text()
+    )
+    assert evidence["watchdog_contract"]["hard_ttl_seconds"] == hard_ttl_seconds
+    assert evidence["zero_settlement"]["status"] == "settled"
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_pre_provider_recovery_persists_control_plane_open_receipt(
+    tmp_path, monkeypatch, raises
+) -> None:
+    watchdog_dir = tmp_path / "watchdog"
+    watchdog_dir.mkdir()
+    budget = _reserve_campaign_budget(
+        _budget_config(tmp_path), reservation_id=f"recovery-{raises}"
+    )
+
+    def restore(_acceptance):
+        if raises:
+            raise OSError("lease unavailable")
+        return {"status": "refused_identity_mismatch"}
+
+    monkeypatch.setattr(
+        canary_module,
+        "restore_paid_provider_lane_lease_to_retained_watchdog",
+        restore,
+    )
+    if raises:
+        monkeypatch.setattr(
+            canary_module,
+            "_settle_zero_budget",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("ledger busy")),
+        )
+    result = canary_module._recover_accepted_handoff_before_provider_mutation(
+        acceptance={"status": "accepted", "owner_pid": 123},
+        budget_context=budget,
+        watchdog_out_dir=str(watchdog_dir),
+        pod_name_prefix="blueprint-groot-oscar-canary-",
+        outcome="test_pre_provider_failure",
+    )
+    assert result["status"] == "control_plane_open"
+    assert result["provider_mutations_performed"] == 0
+    assert result["recovery_receipt_written"] is True
+    receipt_path = watchdog_dir / "provider_lane_handoff_receipt.json"
+    assert receipt_path.stat().st_mode & 0o077 == 0
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["pre_provider_mutation_confirmed_absent"] is True
+    assert receipt["pre_provider_recovery"]["status"] == "control_plane_open"

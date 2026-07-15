@@ -187,7 +187,12 @@ def run_watchdog(
             if receipt_pod_id and pending_pod_id and receipt_pod_id != pending_pod_id:
                 pending_valid = False
             effective_pod_id = receipt_pod_id or pending_pod_id
-            if pending_valid and effective_pod_id:
+            pre_provider_absent = (
+                receipt.get("pre_provider_mutation_confirmed_absent") is True
+            )
+            if pre_provider_absent and not pending_path:
+                pending_close = {"status": "cancelled_no_allocation"}
+            elif pending_valid and effective_pod_id:
                 pending_close = close_pending_teardown(
                     pending_path,
                     {
@@ -216,7 +221,8 @@ def run_watchdog(
             and result.get("provider_lane_owner_return", {}).get("status") == "restored"
         )
         if not control_terminal:
-            result["status"] = "provider_terminal_control_plane_open"
+            if result.get("provider_absence_confirmed") is True:
+                result["status"] = "provider_terminal_control_plane_open"
             result["control_plane_terminal"] = False
         else:
             result["control_plane_terminal"] = True
@@ -236,9 +242,17 @@ def run_watchdog(
                 0,
                 math.ceil(clock() - float(budget_context["reserved_at_epoch"])),
             )
-            charged_seconds = min(
-                elapsed, int(reservation["reserved_gpu_seconds"])
-            )
+            reserved_seconds = int(reservation["reserved_gpu_seconds"])
+            if elapsed > reserved_seconds:
+                result["campaign_budget_settlement"] = {
+                    "status": "retained_open_budget_breach",
+                    "elapsed_gpu_seconds": elapsed,
+                    "reserved_gpu_seconds": reserved_seconds,
+                }
+                result["status"] = "provider_terminal_budget_reservation_exceeded"
+                write_json(root / EVIDENCE_NAME, result)
+                return result
+            charged_seconds = elapsed
             charged_usd = round(
                 min(
                     float(reservation["reserved_usd"]),

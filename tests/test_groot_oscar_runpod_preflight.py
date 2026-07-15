@@ -1,8 +1,10 @@
 import os
+from types import SimpleNamespace
 
 import pytest
 
 import blueprint_pipeline.groot_oscar_runpod_preflight as preflight_module
+import blueprint_pipeline.paid_provider_lane_lease as lease_module
 
 build_model_volume_watchdog_handoff_evidence = (
     preflight_module.build_model_volume_watchdog_handoff_evidence
@@ -11,6 +13,72 @@ collect_runpod_preflight = preflight_module.collect_runpod_preflight
 
 MODEL_VOLUME_WATCHDOG_STATE = "/tmp/model-volume/watchdog_state.json"
 CANARY_WATCHDOG_OUT_DIR = "/tmp/canary-watchdog"
+
+
+def test_process_argv_falls_back_to_macos_ps(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        lease_module.Path,
+        "read_bytes",
+        lambda _path: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    def fake_run(argv, **kwargs):
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(
+            stdout=(
+                "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+                "--out-dir '/tmp/canary watchdog'"
+            )
+        )
+
+    monkeypatch.setattr(lease_module.subprocess, "run", fake_run)
+    assert lease_module.read_process_argv(123) == (
+        "python",
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_watchdog",
+        "--out-dir",
+        "/tmp/canary watchdog",
+    )
+    assert observed["argv"] == ["ps", "-ww", "-p", "123", "-o", "command="]
+    assert observed["kwargs"] == {
+        "check": True,
+        "capture_output": True,
+        "text": True,
+    }
+
+
+def test_process_argv_malformed_macos_command_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        lease_module.Path,
+        "read_bytes",
+        lambda _path: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    monkeypatch.setattr(
+        lease_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="python 'unterminated"),
+    )
+    assert lease_module.read_process_argv(123) == ()
+
+
+def test_watchdog_identity_rejects_decoy_module_token() -> None:
+    assert not preflight_module._watchdog_process_matches(
+        argv=(
+            "python",
+            "decoy.py",
+            preflight_module.WATCHDOG_MODULE,
+            "--pod-name-prefix",
+            "blueprint-groot-oscar-canary-",
+            "--deadline-epoch",
+            "1900",
+            "--out-dir",
+            CANARY_WATCHDOG_OUT_DIR,
+        ),
+        pod_name_prefix="blueprint-groot-oscar-canary-",
+        deadline_epoch=1900.0,
+        watchdog_out_dir=CANARY_WATCHDOG_OUT_DIR,
+    )
 
 
 def _model_volume_handoff(*, deadline_epoch: float = 4000.0) -> dict:
@@ -52,6 +120,12 @@ def _watchdog_argv(pid: int, *, canary_deadline_epoch: float) -> tuple[str, ...]
 
 
 def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> None:
+    inventory_prefixes: list[str | None] = []
+
+    def inventory_probe(prefix: str | None) -> dict:
+        inventory_prefixes.append(prefix)
+        return {"api_confirmed": True, "live_resource_count": 0}
+
     result = collect_runpod_preflight(
         network_volume_id="volume-1",
         model_cache_path="/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1",
@@ -91,16 +165,14 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
                 }
             ],
         },
-        inventory_probe=lambda _prefix: {
-            "api_confirmed": True,
-            "live_resource_count": 0,
-        },
+        inventory_probe=inventory_probe,
         clock=lambda: 1000.0,
         process_argv_probe=lambda pid: _watchdog_argv(
             pid, canary_deadline_epoch=2800.0
         ),
     )
     assert result["status"] == "verified"
+    assert inventory_prefixes == ["blueprint-groot-oscar-canary-", None]
     assert result["provider_mutations_performed"] == 0
     assert result["volume"]["data_center_id"] == "US-TX-3"
     assert result["runtime"]["launch_constraints"] == {
@@ -127,6 +199,62 @@ def test_read_only_preflight_binds_volume_capacity_inventory_and_watchdog() -> N
         ),
     )
     assert refreshed_handoff["status"] == "verified"
+
+
+def test_preflight_blocks_unrelated_account_resource_outside_attempt_prefix() -> None:
+    def inventory_probe(prefix: str | None) -> dict:
+        return {
+            "api_confirmed": True,
+            "live_resource_count": 0 if prefix is not None else 1,
+            "resources": [] if prefix is not None else [{"id": "unrelated-pod"}],
+        }
+
+    result = collect_runpod_preflight(
+        network_volume_id="volume-1",
+        model_cache_path="/workspace/models",
+        gpu_type_id="NVIDIA A40",
+        required_cuda_version="12.6",
+        name_prefix="blueprint-groot-oscar-canary-",
+        watchdog={
+            "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+            "status": "armed",
+            "independent_process": True,
+            "pid": 1,
+            "deadline_epoch": 2800.0,
+            "pod_name_prefix": "blueprint-groot-oscar-canary-",
+            "watchdog_out_dir": CANARY_WATCHDOG_OUT_DIR,
+        },
+        model_volume_watchdog_handoff=_model_volume_handoff(),
+        max_spend_usd=1.0,
+        paid_mutation_authorized=True,
+        volume_getter=lambda _id: (
+            200,
+            {"id": "volume-1", "dataCenterId": "US-TX-3", "size": 50},
+        ),
+        capacity_probe=lambda request: {
+            "status": "available",
+            "viable_gpu_types": [
+                {
+                    "gpu_type_id": "NVIDIA A40",
+                    "capacity_confidence": "advisory",
+                    "capacity_data_center_id": request["dataCenterIds"][0],
+                    "capacity_allowed_cuda_versions": request["allowedCudaVersions"],
+                    "single_gpu_offer_requested": True,
+                    "single_gpu_offer_available": True,
+                    "on_demand_price_usd_per_hour": 0.44,
+                }
+            ],
+        },
+        inventory_probe=inventory_probe,
+        clock=lambda: 1000.0,
+        process_argv_probe=lambda pid: _watchdog_argv(
+            pid, canary_deadline_epoch=2800.0
+        ),
+    )
+    assert result["status"] == "blocked"
+    assert "runpod_preallocation_inventory_not_zero" in result["blockers"]
+    assert result["attempt_billable_inventory"]["live_resource_count"] == 0
+    assert result["billable_inventory"]["live_resource_count"] == 1
 
 
 def test_preflight_rejects_unrelated_live_process_as_watchdog() -> None:
