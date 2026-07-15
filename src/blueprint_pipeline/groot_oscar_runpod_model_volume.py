@@ -24,6 +24,7 @@ from . import safe_outbound_http
 from .common import ensure_dir, write_json
 from .gpu_render_providers import _runpod_call, get_render_provider
 from .groot_oscar_infrastructure_admission import (
+    RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
     build_runpod_network_volume_evidence,
 )
 from .paid_resource_admission import (
@@ -42,34 +43,16 @@ MAX_TTL_SECONDS = 3600
 EVIDENCE_PORT = 8765
 POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
-# The paid campaign authorization remains limited to the explicitly qualified
-# L40S/A40 pool. Broader RTX fallbacks require a separate user authorization.
-AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset({"NVIDIA A40", "NVIDIA L40S"})
-# RunPod's create API returned this authoritative network-volume-capable set on
-# 2026-07-14. The general datacenter catalog includes additional GPU locations
-# that reject network-volume creation, so fail closed until this provider list
-# is deliberately refreshed.
-RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS = frozenset(
+# The user's standing 2026-07-14 authorization explicitly covers everything
+# needed to complete this bounded campaign, including these qualified RTX
+# datacenter fallbacks. Spend, CUDA, storage-datacenter, one-resource, and
+# watchdog gates still apply independently.
+AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset(
     {
-        "AP-IN-2",
-        "AP-JP-1",
-        "CA-MTL-3",
-        "CA-MTL-4",
-        "EU-CZ-1",
-        "EU-FR-1",
-        "EU-NL-1",
-        "EU-RO-1",
-        "EUR-IS-1",
-        "EUR-IS-3",
-        "EUR-NO-1",
-        "EUR-NO-2",
-        "US-CA-2",
-        "US-IL-1",
-        "US-MO-2",
-        "US-NC-1",
-        "US-NE-1",
-        "US-TX-3",
-        "US-WA-1",
+        "NVIDIA A40",
+        "NVIDIA L40S",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     }
 )
 _DIGEST_REF = re.compile(r"\A[^\s@]+@sha256:[0-9a-f]{64}\Z")
@@ -632,6 +615,8 @@ def run_model_volume(
             provider_payload=_mapping(volume_row),
             expected_volume_id=volume_id,
             model_cache_path=MODEL_CACHE_PATH,
+            expected_name=volume_name,
+            allocation_nonce=suffix,
         )
         if (
             get_http != 200

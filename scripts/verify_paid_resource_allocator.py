@@ -31,6 +31,15 @@ RELEASE_WORKFLOW = ROOT / ".github/workflows/groot-oscar-thin-release.yml"
 MUTATION_SURFACE_MANIFEST = (
     ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
 )
+OPERATOR_DOCS = (
+    ROOT / "README.md",
+    ROOT / "docs/FIRST_GPU_E2E_RUNBOOK.md",
+    ROOT / "docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md",
+    ROOT / "docs/architecture/command-safety-matrix.md",
+)
+PRODUCTION_SCAN_EXCLUSIONS = {
+    "scripts/verify_paid_resource_allocator.py",
+}
 APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
@@ -47,6 +56,7 @@ SURFACE_CLASSIFICATIONS = {
     "hard_disabled_legacy_launcher",
     "legacy_orchestrator_no_grant_issuer",
     "read_only_provider_inventory",
+    "metered_object_storage_data_plane",
 }
 
 
@@ -84,7 +94,9 @@ def _all_calls(path: Path) -> set[str]:
 
 def _direct_paid_mutation_signals(source: str) -> set[str]:
     signals: set[str] = set()
-    runpod_api_named = "RUNPOD_REST_API_BASE" in source or "api.runpod.io" in source
+    runpod_api_named = "RUNPOD_REST_API_BASE" in source or re.search(
+        r"api[.]runpod[.]io", source
+    )
     runpod_post_named = 'method="POST"' in source or '"method": "POST"' in source
     if (
         re.search(r"[\"']POST[\"']\s*,\s*(?:f)?[\"']/pods", source)
@@ -94,7 +106,7 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("runpod_pod_create")
     if re.search(r"[\"']POST[\"']\s*,\s*[\"']/networkvolumes", source):
         signals.add("runpod_volume_create")
-    if "api.digitalocean.com" in source and (
+    if re.search(r"api[.]digitalocean[.]com", source) and (
         'method="POST", path="/droplets"' in source
         or '"POST", "/v2/droplets"' in source
         or '"POST", "/droplets"' in source
@@ -106,10 +118,12 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         signals.add("lambda_instance_create")
     if ".run_instances(" in source:
         signals.add("aws_instance_create")
-    if "compute.googleapis.com" in source and re.search(
+    if re.search(r"compute[.]googleapis[.]com", source) and re.search(
         r"_call\([\"']POST[\"'].{0,160}/instances", source
     ):
         signals.add("gcp_instance_create")
+    if ".upload_file(" in source or ".delete_object(" in source:
+        signals.add("s3_object_write_or_delete")
     return signals
 
 
@@ -121,6 +135,63 @@ def _unclassified_direct_mutators(
         for path, source in source_by_path.items()
         if _direct_paid_mutation_signals(source) and path not in known_paths
     }
+
+
+def _production_python_paths(root: Path = ROOT) -> list[Path]:
+    paths = [
+        *root.glob("src/blueprint_pipeline/**/*.py"),
+        *root.glob("scripts/**/*.py"),
+    ]
+    return sorted(
+        path
+        for path in paths
+        if path.relative_to(root).as_posix() not in PRODUCTION_SCAN_EXCLUSIONS
+    )
+
+
+def _forbidden_operator_doc_commands(source: str) -> set[str]:
+    patterns = {
+        "legacy_gpu_provider_paid_launch": (
+            r"blueprint-run-gpu-provider-launcher.{0,500}--allow-provider-launch"
+        ),
+        "legacy_runpod_adapter_paid_mode": (
+            r"blueprint-run-runpod-provider-adapter.{0,700}"
+            r"--mode\s+(?:serverless-run|on-demand-pod|existing-pod-start|"
+            r"image-startup-canary-pod)"
+        ),
+        "legacy_runpod_live_mutation": (
+            r"blueprint-collect-runpod-live-execution-proof.{0,900}"
+            r"(?:--stop-on-startup-artifact-timeout|--terminate-pod|"
+            r"--allow-runpod-api-call)"
+        ),
+        "legacy_unitree_runpod_launch": (
+            r"blueprint-launch-unitree-unifolm-runpod-server\s+launch"
+        ),
+        "legacy_runpod_wam_create": r"runpod_wam_async_runner\s+create",
+        "legacy_lambda_instance_launch": (
+            r"blueprint-run-lambda-provider-adapter.{0,700}"
+            r"--mode\s+launch-instance"
+        ),
+    }
+    flattened = source.replace("\n", " ")
+    return {
+        label
+        for label, pattern in patterns.items()
+        if re.search(pattern, flattened, flags=re.IGNORECASE)
+    }
+
+
+def _verify_operator_docs() -> list[str]:
+    blockers: list[str] = []
+    for path in OPERATOR_DOCS:
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            blockers.append("paid_resource_operator_doc_missing:" + path.name)
+            continue
+        for label in sorted(_forbidden_operator_doc_commands(source)):
+            blockers.append(f"forbidden_paid_resource_doc_command:{path.name}:{label}")
+    return blockers
 
 
 def _verify_mutation_surface_contract() -> list[str]:
@@ -174,6 +245,7 @@ def _verify_mutation_surface_contract() -> list[str]:
             "hard_disabled_legacy_launcher",
             "legacy_orchestrator_no_grant_issuer",
             "read_only_provider_inventory",
+            "metered_object_storage_data_plane",
         } and calls & {"require_paid_resource_admission", "build_paid_lane_admission"}:
             blockers.append("legacy_paid_surface_can_issue_its_own_grant:" + relative)
 
@@ -181,8 +253,7 @@ def _verify_mutation_surface_contract() -> list[str]:
     observed_lane_builders: set[str] = set()
     source_by_path: dict[str, str] = {}
     observed_direct_mutators: dict[str, set[str]] = {}
-    source_root = ROOT / "src/blueprint_pipeline"
-    for path in source_root.glob("*.py"):
+    for path in _production_python_paths():
         relative = path.relative_to(ROOT).as_posix()
         source = path.read_text(encoding="utf-8")
         source_by_path[relative] = source
@@ -205,13 +276,17 @@ def _verify_mutation_surface_contract() -> list[str]:
         if row is not None and row.get("classification") not in {
             "canonical_adapter",
             "grant_gated_legacy_adapter",
+            "metered_object_storage_data_plane",
         }:
             blockers.append("direct_paid_mutator_classification_invalid:" + relative)
     return blockers
 
 
 def verify() -> list[str]:
-    blockers: list[str] = _verify_mutation_surface_contract()
+    blockers: list[str] = [
+        *_verify_mutation_surface_contract(),
+        *_verify_operator_docs(),
+    ]
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")

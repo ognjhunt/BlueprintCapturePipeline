@@ -183,14 +183,10 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/worker_manifest.json`
 - `robot_eval_jobs/<job_id>/gpu_provisioning_request.json`
 - `robot_eval_jobs/<job_id>/gpu_provider_launch_request.json`
-- `robot_eval_jobs/<job_id>/gpu_provider_launcher_result.json` when
-  `blueprint-run-gpu-provider-launcher` is run
-- `robot_eval_jobs/<job_id>/gpu_provider_launcher.stdout.log` when
-  `blueprint-run-gpu-provider-launcher` is run
-- `robot_eval_jobs/<job_id>/gpu_provider_launcher.stderr.log` when
-  `blueprint-run-gpu-provider-launcher` is run
-- `robot_eval_jobs/<job_id>/runpod_provider_adapter_result.json` when
-  `blueprint-run-runpod-provider-adapter` is run
+- `robot_eval_jobs/<job_id>/gpu_provider_launcher_result.json` for historical
+  legacy-launcher records; the public paid launcher is now hard-disabled
+- `robot_eval_jobs/<job_id>/runpod_provider_adapter_result.json` for adapter
+  dry-run/read-only records or canonical allocator-owned execution
 - `robot_eval_jobs/<job_id>/gpu_cost_control_ledger.json`
 - `robot_eval_jobs/<job_id>/provider_closure_audit_report.json` when
   `blueprint-audit-provider-closure` is run
@@ -1393,12 +1389,14 @@ therefore remains blocked with
 `blocked_policy_requery_provider_replay_not_fresh_unitree_hand_policy` even
 though an endpoint action was returned for the WAM-generated first frame.
 
-The intended fresh endpoint path is still Unitree-native: launch a long-lived
-UnifoLM `/act` server with `blueprint-launch-unitree-unifolm-runpod-server
-launch`, then call it from the local endpoint through
+The intended fresh endpoint architecture is still Unitree-native: a canonical
+allocator-owned worker must launch a long-lived UnifoLM `/act` server, then the
+local endpoint can call it through
 `blueprint-unitree-unifolm-vla-server-bridge --server-url
 https://<pod_id>-8777.proxy.runpod.net/act`, or use an equivalent Unitree
-LeRobot/GR00T-SONIC command endpoint. OpenVLA remains only a comparison
+LeRobot/GR00T-SONIC command endpoint. The legacy public Unitree RunPod launch
+mode is hard-disabled until it is routed through `paid_resource_allocator`.
+OpenVLA remains only a comparison
 candidate, and OSCAR/Cosmos/WAM outputs remain evaluator artifacts, not the G1
 robot policy.
 
@@ -1573,15 +1571,18 @@ path because it can spend bounded startup time without reaching the Blueprint
 fetch/finalizer wrapper or uploading `isaac_provider_runtime_output.zip`; only
 use `BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD=true` for an intentional
 debug run.
-For RunPod Isaac pods, use
-`blueprint-collect-runpod-live-execution-proof --runtime-output-zip <path> --startup-artifact-timeout-seconds 360 --stop-on-startup-artifact-timeout`
-after submission. A missing first output zip records
+RunPod GPU allocation is supported only through
+`python -m blueprint_pipeline.paid_resource_allocator gpu-canary ...`; that
+allocator requires and binds one-resource/spend evidence plus an independently
+armed watchdog. Terminal provider absence still requires watchdog/closure
+evidence. The legacy live-proof collector and provider-adapter mutation modes
+are hard-disabled as public launch paths and remain available only for
+dry-run/read-only or allocator-owned internal use. A missing first output zip records
 `provider_pod_startup_or_image_pull_timeout` and can still prove teardown, but
 it is not Isaac Sim execution proof; an empty zip left by a staging PUT probe is
-rejected. For image/container startup triage, run
-`blueprint-run-runpod-provider-adapter --mode image-startup-canary-pod` against
-the same launch request and poll the canary output zip with the live-proof
-collector. If that canary also times out, the blocker is before user-command
+rejected. The canonical allocator binds an image/container startup canary to
+the same launch request and its protected release evidence. If that canary
+times out, the blocker is before user-command
 execution; artifacts record `image_startup_canary_artifact_timeout` and, when
 image metadata shows oversized layers, `prebuilt_isaac_image_layer_pull_exceeded_watchdog`.
 Set `BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS=<seconds>` only when you
@@ -1601,12 +1602,10 @@ unquoted sourcing, because presigned URLs contain `&` separators.
 The outer fetch/upload wrapper uses `BLUEPRINT_ISAAC_PROVIDER_PYTHON`
 when set, otherwise a normal `python3`/`python`, and falls back to
 `/isaac-sim/python.sh` only when needed so first phase uploads do not
-intentionally wait on Isaac Sim Python bootstrap. To reuse a stopped pod that
-already references the prepared image, run
-`blueprint-run-runpod-provider-adapter --mode existing-pod-start --existing-pod-id <pod-id> --allow-runpod-api-call`.
-If RunPod reports no free GPU on that stopped pod's host, use a fresh on-demand
-pod and keep that provider host-capacity error separate from Isaac runtime
-proof.
+intentionally wait on Isaac Sim Python bootstrap. Direct stopped-pod restart
+through the legacy adapter is disabled; a future reuse flow must be admitted
+and owned by the canonical allocator. Provider host-capacity errors remain
+separate from Isaac runtime proof.
 Each job also writes `gpu_startup_pipeline_plan.json`. This is the managed-GPU
 startup policy for website-origin jobs: the WebApp queues and forwards only,
 BlueprintCapturePipeline owns provider selection and spend gates, and customer
@@ -1641,53 +1640,38 @@ secret values and does not mean a live GPU provider call happened. These images
 and launch requests are startup/runtime scaffolds only; provider-native GPU
 evidence remains required for simulator proof.
 
-When `gpu_provisioning_request.json` / `gpu_provider_launch_request.json`
-reaches `request_manifest_ready`, run the separate provider launcher instead of
-teaching the website or job orchestrator to call GPU providers directly. The
-launcher is fail-closed until both `BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true`
-and `--allow-provider-launch` are present. For Vast requests, the launcher has a
-built-in adapter path that maps the prepared worker image, manifest URI, signed
-output URL, timeouts, polling, and teardown policy into the repo-owned Vast
-adapter. Other providers still require the command supplied through
-`BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND` or `--provider-launch-command`.
+Only bounded image/startup canaries are currently supported through the
+canonical allocator. A `gpu_provider_launch_request.json` at
+`request_manifest_ready` is not authority to run a production robot evaluation:
+general paid provider eval, Vast, and Lambda execution remain disabled until
+each has a canonical allocator route. The old arbitrary provider-command and
+provider-race launchers cannot invoke a subprocess or provider API.
 
 ```bash
-BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
-blueprint-run-gpu-provider-launcher \
-  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
-  --allow-provider-launch
+python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --release-evidence /path/to/protected-release-evidence.json \
+  --model-cache-evidence /path/to/verified-model-cache-evidence.json \
+  --preflight-bundle /path/to/provider-preflight-bundle.json \
+  --admission-out /path/to/gpu-canary-admission.json \
+  --bound-request-out /path/to/bound-runpod-request.json \
+  --adapter-output /path/to/runpod-provider-result.json \
+  --pod-name <watchdog-bound-pod-name-from-preflight> \
+  --execute
 ```
 
-For non-Vast providers, the supplied command receives non-secret context such as
-`BLUEPRINT_GPU_PROVIDER_LAUNCH_REQUEST`, `BLUEPRINT_EVAL_MANIFEST_URI`,
-`BLUEPRINT_ARTIFACT_OUTPUT_URI`, `BLUEPRINT_WORKER_IMAGE_REF`, and the timeout
-limits. The launcher writes `gpu_provider_launcher_result.json` plus
-`gpu_provider_launcher.stdout.log` and `.stderr.log`, stores no raw command or
-secret values, redacts known secret env values from captured stdout/stderr logs,
-and does not upgrade simulator or rank-fidelity proof by itself. Vast allocation
-is only treated as proven when the Vast adapter returns provider evidence, and
-teardown remains part of the adapter result/manifest.
-For RunPod, the repo-owned adapter command is
-`blueprint-run-runpod-provider-adapter`. It defaults to `--mode dry-run` and
-writes `runpod_provider_adapter_result.json` with the serverless `/run` and
-GraphQL on-demand Pod request shapes but no API call. Live modes
-`--mode serverless-run` and `--mode on-demand-pod` require
-`BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true`, `RUNPOD_API_KEY`, and
-`--allow-runpod-api-call`; they still only submit/allocate provider work and do
-not prove simulator execution, generated-world rank fidelity, safety, or public claim
-upgrades. The adapter also records a `cost_control_policy`: serverless `/run`
-payloads can set per-request `executionTimeout`, `ttl`, and `lowPriority`, but
-RunPod active workers, max workers, and idle timeout are endpoint-level settings
-that must be configured on the endpoint. On-demand Pods do not get provider-native
-idle shutdown from the request payload, so the adapter carries the worker env
-shutdown controls and requires an external watchdog/owner terminator posture.
+Omit `--execute` for admission/binding validation without a provider mutation.
+The RunPod adapter remains useful for dry-run request-shape inspection, but its
+public paid modes exit with the stable legacy-disabled blocker. Provider
+allocation alone never proves simulator execution, generated-world rank
+fidelity, safety, or public-claim upgrades.
 For Lambda Cloud, the repo-owned adapter command is
 `blueprint-run-lambda-provider-adapter`. It targets Lambda Cloud On-Demand Cloud,
 not AWS Lambda. Dry-run mode writes `lambda_provider_adapter_result.json`,
 `lambda_provider_readiness_manifest.json`, and
 `provider_worker_endpoint_manifest.json` without an API call. Live API modes
-require `BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true`, `LAMBDA_API_KEY` or
-`LAMBDA_API_KEY_FILE`, and `--allow-lambda-api-call`. The adapter follows the
+are hard-disabled until a Lambda allocation path is routed through the canonical
+allocator. Read-only inventory modes remain available. The adapter follows the
 official Lambda Cloud API shape: Bearer auth against
 `https://cloud.lambda.ai/api/v1`, `POST /instance-operations/launch` with
 `region_name`, `instance_type_name`, and exactly one `ssh_key_names` entry, and

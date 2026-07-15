@@ -22,6 +22,35 @@ from typing import Any, Mapping
 
 from .common import write_json
 
+
+# RunPod's create API returned this authoritative network-volume-capable set on
+# 2026-07-14. The general datacenter catalog includes additional GPU locations
+# that reject network-volume creation, so all volume/S3 paths share this one
+# fail-closed provider-derived set until it is deliberately refreshed.
+RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS = frozenset(
+    {
+        "AP-IN-2",
+        "AP-JP-1",
+        "CA-MTL-3",
+        "CA-MTL-4",
+        "EU-CZ-1",
+        "EU-FR-1",
+        "EU-NL-1",
+        "EU-RO-1",
+        "EUR-IS-1",
+        "EUR-IS-3",
+        "EUR-NO-1",
+        "EUR-NO-2",
+        "US-CA-2",
+        "US-IL-1",
+        "US-MO-2",
+        "US-NC-1",
+        "US-NE-1",
+        "US-TX-3",
+        "US-WA-1",
+    }
+)
+
 BUILD_SCHEMA_VERSION = "groot_oscar_build_plane_admission.v1"
 SERVE_SCHEMA_VERSION = "groot_oscar_runpod_serve_plane_admission.v1"
 LIVE_MACHINE_SCHEMA_VERSION = "blueprint.live_machine_capability.v1"
@@ -194,11 +223,17 @@ def build_digitalocean_cpu_builder_profile_evidence(
 
 
 def build_runpod_network_volume_evidence(
-    *, provider_payload: Mapping[str, Any], expected_volume_id: str, model_cache_path: str
+    *,
+    provider_payload: Mapping[str, Any],
+    expected_volume_id: str,
+    model_cache_path: str,
+    expected_name: str | None = None,
+    allocation_nonce: str | None = None,
 ) -> dict[str, Any]:
     """Normalize the authoritative RunPod ``GET /networkvolumes/{id}`` row."""
 
     observed_id = _string(provider_payload.get("id"))
+    observed_name = _string(provider_payload.get("name"))
     data_center_id = _string(provider_payload.get("dataCenterId"))
     size_gib = provider_payload.get("size")
     blockers: list[str] = []
@@ -208,6 +243,12 @@ def build_runpod_network_volume_evidence(
         blockers.append("runpod_network_volume_data_center_missing")
     if type(size_gib) is not int or size_gib <= 0:
         blockers.append("runpod_network_volume_size_invalid")
+    if expected_name is not None and observed_name != expected_name:
+        blockers.append("runpod_network_volume_provider_name_mismatch")
+    if allocation_nonce is not None and (
+        not allocation_nonce or allocation_nonce not in observed_name
+    ):
+        blockers.append("runpod_network_volume_allocation_nonce_mismatch")
     size_bytes = size_gib * 1024**3 if type(size_gib) is int and size_gib > 0 else None
     return {
         "schema_version": "groot_oscar_runpod_network_volume_evidence.v1",
@@ -216,8 +257,16 @@ def build_runpod_network_volume_evidence(
         "provider": "runpod",
         "provider_api_verified": not blockers,
         "id": observed_id or None,
+        "name": observed_name or None,
         "data_center_id": data_center_id or None,
         "size_bytes": size_bytes,
+        "allocation_nonce": allocation_nonce,
+        "allocation_name_verified": bool(
+            expected_name is not None
+            and observed_name == expected_name
+            and allocation_nonce
+            and allocation_nonce in observed_name
+        ),
         "model_cache_path": model_cache_path,
         "raw_provider_response_recorded": False,
     }

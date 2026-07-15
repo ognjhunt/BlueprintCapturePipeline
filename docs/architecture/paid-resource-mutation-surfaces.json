@@ -33,6 +33,11 @@
       "required_markers": ["require_paid_resource_admission", "run_runpod_provider_adapter"]
     },
     {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": ["require_paid_resource_admission_grant", "legacy_runpod_s3_model_cache_mutation_cli_disabled_use_paid_resource_allocator", "upload_file", "delete_object"]
+    },
+    {
       "path": "src/blueprint_pipeline/runpod_provider_adapter.py",
       "classification": "grant_gated_legacy_adapter",
       "required_markers": ["require_paid_resource_admission_grant", "legacy_runpod_provider_mutation_cli_disabled"]
@@ -121,6 +126,21 @@
       "path": "src/blueprint_pipeline/live_pipeline_setup.py",
       "classification": "read_only_provider_inventory",
       "required_markers": ["_digitalocean_read", "https://api.digitalocean.com/v2/droplets"]
+    },
+    {
+      "path": "src/blueprint_pipeline/robot_eval_provider_input_setup.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": ["upload_file"]
+    },
+    {
+      "path": "src/blueprint_pipeline/robot_eval_worker.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": ["upload_file"]
+    },
+    {
+      "path": "src/blueprint_pipeline/wam_provider_object_store.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": ["upload_file", "delete_object"]
     }
   ]
 }

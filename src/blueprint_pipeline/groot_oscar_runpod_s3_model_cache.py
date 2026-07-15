@@ -11,18 +11,31 @@ import argparse
 import json
 import os
 import re
-import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
+from .groot_oscar_infrastructure_admission import (
+    RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
+)
 from .groot_oscar_model_cache import MANIFEST_NAME, verify_model_cache
+from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 
 
 SCHEMA_VERSION = "groot_oscar_runpod_s3_model_cache.v1"
 PREFLIGHT_SCHEMA_VERSION = "groot_oscar_runpod_s3_preflight.v1"
 DEFAULT_REMOTE_PREFIX = ".blueprint-model-cache/blueprint-groot-oscar-v1"
-SUPPORTED_DATA_CENTERS = frozenset(
+REMOTE_SAFETY_HEADROOM_BYTES = 5 * 1024**3
+# RunPod's S3 API has its own documented datacenter list. It is intentionally
+# independent from network-volume creation capability: some volume regions do
+# not expose S3, while live create evidence rejected at least one S3-listed
+# region. Only the intersection is safe for storage-only preparation.
+RUNPOD_S3_DATA_CENTER_IDS = frozenset(
     {
         "EU-CZ-1",
         "EU-RO-1",
@@ -41,13 +54,17 @@ SUPPORTED_DATA_CENTERS = frozenset(
         "US-WA-1",
     }
 )
+RUNPOD_S3_VOLUME_DATA_CENTER_IDS = (
+    RUNPOD_S3_DATA_CENTER_IDS & RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS
+)
 _SAFE_VOLUME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,127}")
 _SAFE_PREFIX = re.compile(r"[A-Za-z0-9.][A-Za-z0-9._/-]{0,254}")
+_SAFE_NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 
 
 def endpoint_for_data_center(data_center_id: str) -> str:
     data_center = str(data_center_id or "").strip().upper()
-    if data_center not in SUPPORTED_DATA_CENTERS:
+    if data_center not in RUNPOD_S3_VOLUME_DATA_CENTER_IDS:
         raise ValueError("runpod_s3_data_center_not_supported")
     return f"https://s3api-{data_center.lower()}.runpod.io/"
 
@@ -122,6 +139,7 @@ def preflight_runpod_s3(
     blockers.extend(access_meta["blockers"])
     blockers.extend(secret_meta["blockers"])
     visible_volume_count: int | None = None
+    live_probe_performed = False
     if not blockers and perform_live_probe:
         try:
             s3 = client or _client(
@@ -129,6 +147,7 @@ def preflight_runpod_s3(
                 access_key=access_key,
                 secret_key=secret_key,
             )
+            live_probe_performed = True
             response = s3.list_buckets()
             buckets = response.get("Buckets") if isinstance(response, Mapping) else None
             if not isinstance(buckets, list):
@@ -158,7 +177,7 @@ def preflight_runpod_s3(
         "endpoint_url": endpoint,
         "access_key": access_meta,
         "secret_key": secret_meta,
-        "live_probe_performed": bool(perform_live_probe and not access_meta["blockers"] and not secret_meta["blockers"]),
+        "live_probe_performed": live_probe_performed,
         "live_probe_error_type": probe_error_type,
         "visible_network_volume_count": visible_volume_count,
         "expected_volume_id": expected_volume_id or None,
@@ -170,11 +189,15 @@ def preflight_runpod_s3(
     }
 
 
-def _remote_keys(client: Any, *, volume_id: str, prefix: str) -> list[str]:
+def _remote_keys(client: Any, *, volume_id: str, prefix: str = "") -> list[str]:
     keys: list[str] = []
     token: str | None = None
     while True:
-        kwargs: dict[str, Any] = {"Bucket": volume_id, "Prefix": prefix.rstrip("/") + "/"}
+        normalized_prefix = prefix.rstrip("/")
+        kwargs: dict[str, Any] = {
+            "Bucket": volume_id,
+            "Prefix": normalized_prefix + "/" if normalized_prefix else "",
+        }
         if token:
             kwargs["ContinuationToken"] = token
         page = client.list_objects_v2(**kwargs)
@@ -200,14 +223,17 @@ def upload_and_verify_model_cache(
     access_key_file: str | Path,
     secret_key_file: str | Path,
     volume_evidence: Mapping[str, Any],
+    allocation_nonce: str,
     remote_prefix: str = DEFAULT_REMOTE_PREFIX,
     client: Any | None = None,
     available_bytes: int | None = None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     """Upload every manifest-bound file, re-download it, and hash it again."""
 
     volume = str(volume_id or "").strip()
     prefix = str(remote_prefix or "").strip().strip("/")
+    nonce = str(allocation_nonce or "").strip()
     contract_blockers: list[str] = []
     if _SAFE_VOLUME_ID.fullmatch(volume) is None:
         contract_blockers.append("runpod_s3_volume_id_invalid")
@@ -225,6 +251,14 @@ def upload_and_verify_model_cache(
         contract_blockers.append("runpod_rest_volume_id_mismatch")
     if volume_evidence.get("data_center_id") != str(data_center_id).upper():
         contract_blockers.append("runpod_rest_volume_data_center_mismatch")
+    if _SAFE_NONCE.fullmatch(nonce) is None:
+        contract_blockers.append("runpod_s3_allocation_nonce_invalid")
+    if (
+        volume_evidence.get("allocation_nonce") != nonce
+        or volume_evidence.get("allocation_name_verified") is not True
+        or nonce not in str(volume_evidence.get("name") or "")
+    ):
+        contract_blockers.append("runpod_rest_volume_allocation_identity_mismatch")
     if contract_blockers:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -244,11 +278,11 @@ def upload_and_verify_model_cache(
     if preflight["status"] != "ready":
         return {**preflight, "schema_version": SCHEMA_VERSION}
     cache = Path(cache_root).expanduser().resolve()
-    verification = Path(verification_root).expanduser().resolve()
+    verification_parent = Path(verification_root).expanduser().resolve()
     if (
-        cache == verification
-        or cache.is_relative_to(verification)
-        or verification.is_relative_to(cache)
+        cache == verification_parent
+        or cache.is_relative_to(verification_parent)
+        or verification_parent.is_relative_to(cache)
     ):
         return {
             "schema_version": SCHEMA_VERSION,
@@ -268,19 +302,21 @@ def upload_and_verify_model_cache(
             "raw_secret_values_recorded": False,
         }
     size_bytes = volume_evidence.get("size_bytes")
-    if type(size_bytes) is not int or size_bytes < int(local["verified_size_bytes"]):
+    required_remote = int(local["verified_size_bytes"]) + REMOTE_SAFETY_HEADROOM_BYTES
+    if type(size_bytes) is not int or size_bytes < required_remote:
         return {
             "schema_version": SCHEMA_VERSION,
             "status": "blocked",
-            "blockers": ["runpod_rest_volume_capacity_below_model_cache"],
+            "blockers": ["runpod_rest_volume_capacity_headroom_insufficient"],
+            "required_remote_capacity_bytes": required_remote,
             "provider_mutations_performed": 0,
             "gpu_compute_allocated": False,
             "raw_secret_values_recorded": False,
         }
-    required_free = int(local["verified_size_bytes"]) + 5 * 1024**3
-    ensure_dir(verification.parent)
+    required_free = int(local["verified_size_bytes"]) + REMOTE_SAFETY_HEADROOM_BYTES
+    ensure_dir(verification_parent)
     if available_bytes is None:
-        stats = os.statvfs(verification.parent)
+        stats = os.statvfs(verification_parent)
         available = stats.f_bavail * stats.f_frsize
     else:
         available = int(available_bytes)
@@ -314,26 +350,45 @@ def upload_and_verify_model_cache(
     expected_keys = [f"{prefix}/{path.relative_to(cache).as_posix()}" for path in files]
     uploaded_keys: list[str] = []
     try:
-        existing_keys = _remote_keys(s3, volume_id=volume, prefix=prefix)
+        existing_keys = _remote_keys(s3, volume_id=volume)
         if existing_keys:
             return {
                 "schema_version": SCHEMA_VERSION,
                 "status": "blocked",
-                "blockers": ["runpod_s3_remote_prefix_not_empty"],
+                "blockers": ["runpod_s3_dedicated_volume_not_empty"],
                 "provider_volume_id": volume,
                 "existing_remote_object_count": len(existing_keys),
                 "provider_mutations_performed": 0,
                 "gpu_compute_allocated": False,
                 "raw_secret_values_recorded": False,
             }
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="model_volume",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "blocked",
+                "blockers": [
+                    "runpod_s3_shared_admission_missing_or_invalid",
+                    *exc.blockers,
+                ],
+                "provider_volume_id": volume,
+                "provider_mutations_performed": 0,
+                "gpu_compute_allocated": False,
+                "raw_secret_values_recorded": False,
+            }
+        verification = Path(
+            tempfile.mkdtemp(prefix="runpod-s3-verify-", dir=verification_parent)
+        )
         for path, key in zip(files, expected_keys, strict=True):
             s3.upload_file(str(path), volume, key)
             uploaded_keys.append(key)
         observed_keys = _remote_keys(s3, volume_id=volume, prefix=prefix)
         if observed_keys != sorted(expected_keys):
             raise RuntimeError("runpod_s3_remote_inventory_mismatch")
-        if verification.exists():
-            shutil.rmtree(verification)
         for key in expected_keys:
             relative = key.removeprefix(prefix + "/")
             destination = verification / relative
@@ -353,9 +408,7 @@ def upload_and_verify_model_cache(
             except Exception:  # noqa: BLE001 - report uncertain remote state
                 pass
         try:
-            cleanup_verified = not _remote_keys(
-                s3, volume_id=volume, prefix=prefix
-            )
+            cleanup_verified = not _remote_keys(s3, volume_id=volume)
         except Exception:  # noqa: BLE001 - absence must be provider-observed
             cleanup_verified = False
         return {
@@ -418,30 +471,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             secret_key_file=args.secret_key_file,
         )
     else:
-        missing = [
-            name
-            for name in (
-                "cache_root",
-                "verification_root",
-                "volume_id",
-                "volume_evidence",
-            )
-            if not getattr(args, name)
-        ]
-        if missing:
-            parser.error("upload-verify requires --" + ", --".join(missing))
-        result = upload_and_verify_model_cache(
-            cache_root=args.cache_root,
-            verification_root=args.verification_root,
-            volume_id=args.volume_id,
-            data_center_id=args.data_center_id,
-            access_key_file=args.access_key_file,
-            secret_key_file=args.secret_key_file,
-            volume_evidence=json.loads(
-                Path(args.volume_evidence).read_text(encoding="utf-8")
-            ),
-            remote_prefix=args.remote_prefix,
-        )
+        result = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": [
+                "legacy_runpod_s3_model_cache_mutation_cli_disabled_use_paid_resource_allocator"
+            ],
+            "provider_mutations_performed": 0,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
     if args.out:
         write_json(Path(args.out), result)
     print(json.dumps(result, indent=2, sort_keys=True))

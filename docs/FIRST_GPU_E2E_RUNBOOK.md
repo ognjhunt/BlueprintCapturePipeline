@@ -486,62 +486,36 @@ image ref is configured directly, via
 `BLUEPRINT_ALLOW_DIRECT_ISAAC_BASE_IMAGE_RUNPOD=true` and should be used only
 for manual debug runs with a wider observation window.
 
-Before repeating a slow Isaac RunPod attempt, run a same-image startup canary:
+Before repeating a slow Isaac RunPod attempt, run the same-image startup canary
+only through the canonical allocator:
 
 ```bash
-blueprint-stage-wam-provider-object-store \
-  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/object_store_canary" \
-  --bundle-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/isaac_provider_runtime_bundle.zip" \
-  --key-prefix "blueprint/isaac-runpod-startup-canary" \
-  --expiration-seconds 14400
-
-export BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL="$(cat "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/object_store_canary/provider_output_put_url.txt")"
-
-BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
-RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
-blueprint-run-runpod-provider-adapter \
+python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
-  --mode image-startup-canary-pod \
-  --allow-runpod-api-call \
-  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.canary.json"
+  --release-evidence /path/to/protected-release-evidence.json \
+  --model-cache-evidence /path/to/verified-model-cache-evidence.json \
+  --preflight-bundle /path/to/provider-preflight-bundle.json \
+  --admission-out "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_canary_admission.json" \
+  --bound-request-out "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/bound_runpod_request.json" \
+  --adapter-output "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.canary.json" \
+  --pod-name <watchdog-bound-pod-name-from-preflight> \
+  --execute
 ```
 
-The object-store helper has historical WAM naming but is simulator-agnostic
-S3-compatible staging. Prefer this route for RunPod canaries over quick tunnel
-URLs; it provides durable presigned GET/PUT URLs and avoids tunnel startup
-failures being misread as Isaac image startup failures. Do not source raw
-presigned URL files unless they shell-quote the value; use `export
-BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL="$(cat <provider_output_put_url.txt>)"`
-or an equivalent command-local env assignment.
-
-Poll and close the pod with:
-
-```bash
-BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
-BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
-RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
-blueprint-collect-runpod-live-execution-proof \
-  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
-  --adapter-result "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.canary.json" \
-  --runtime-output-zip "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_image_startup_canary_output.zip" \
-  --startup-artifact-timeout-seconds 360 \
-  --stop-on-startup-artifact-timeout \
-  --terminate-pod \
-  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_live_execution_canary_proof.json" \
-  --allow-runpod-api-call
-```
+The allocator requires and binds an independently armed watchdog; terminal
+provider absence still requires watchdog/closure evidence. The legacy
+RunPod adapter and live-proof collector mutation flags are public hard-disabled
+paths; they may be used only for dry-run/read-only inspection or internally by
+the canonical allocator.
 
 A canary timeout proves only that the selected image did not reach user-command
-artifact upload within the watchdog. It is not Isaac Sim execution proof. To
-hold a canary briefly for an immediate warm-host retry, set
-`BLUEPRINT_RUNPOD_IMAGE_STARTUP_CANARY_HOLD_SECONDS=<seconds>` and still collect
-zero-active-pod shutdown or termination proof after the retry. For cold canaries
-and failed startup attempts, prefer `--terminate-pod` so stopped container disk
-does not remain billable. If the launch request includes image-size metadata
-showing a large worker layer, fresh `on-demand-pod` attempts block before spend
-with `large_worker_image_requires_canary_or_warm_provider`. Set
-`BLUEPRINT_ALLOW_LARGE_RUNPOD_IMAGE_FRESH_START=true` only for an intentional
-debug retry with a wider observation window.
+artifact upload within the watchdog. It is not Isaac Sim execution proof. The
+independent watchdog/closure owner must terminate cold or failed canaries and
+record provider absence so stopped container disk does not remain billable.
+Large-image metadata is an allocator-internal admission policy: a fresh canary
+remains blocked with `large_worker_image_requires_canary_or_warm_provider`
+until the bounded, watchdog-bound request satisfies that policy. Legacy adapter
+flags are not an operator override.
 
 The `blueprint-isaac-g1-kitchen-parity --image-startup-canary` path is stricter
 than the generic provider command-upload canary above. It requires the same RTX
@@ -626,25 +600,11 @@ blueprint-run-lambda-provider-adapter \
   --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.ssh_keys.json"
 ```
 
-Only after the inventory is clean, submit a bounded launch:
-
-```bash
-BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
-LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key" \
-blueprint-run-lambda-provider-adapter \
-  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
-  --mode launch-instance \
-  --lambda-region-name "<lambda-region-name>" \
-  --lambda-instance-type-name "<lambda-instance-type-name>" \
-  --lambda-ssh-key-name "<lambda-ssh-key-name>" \
-  --allow-lambda-api-call \
-  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.launch.json"
-```
-
-A Lambda launch response with `status=submitted` means the Lambda API accepted
-the launch request. It does not prove worker `/readyz`, simulator execution,
-artifact upload, visual usefulness, generated-world rank fidelity, safety, or
-physical-robot readiness. After the run, terminate by instance ID and then run
+Lambda read-only inventory commands above remain supported. Public Lambda
+launch mode is hard-disabled until a Lambda resource class is routed through
+`paid_resource_allocator`; do not treat the legacy adapter flags as an
+allocation path. For any pre-existing Lambda instance, cleanup remains an
+operator safety action: terminate it by instance ID and then run
 `list-instances` again for zero-live-instance evidence:
 
 ```bash
@@ -1000,39 +960,38 @@ Expected job artifacts:
 - `pipeline/robot_eval_jobs/<job_id>/worker_launch_plan.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provisioning_request.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provider_launch_request.json`
-- `pipeline/robot_eval_jobs/<job_id>/gpu_provider_launcher_result.json` after
-  the explicitly gated provider launcher runs
+- `pipeline/robot_eval_jobs/<job_id>/gpu_provider_launcher_result.json` only for
+  historical legacy-launcher records; new paid runs use allocator evidence
 - `pipeline/robot_eval_jobs/<job_id>/gpu_cost_control_ledger.json`
 - `pipeline/robot_eval_jobs/<job_id>/gpu_provisioning_result.json`
 - `pipeline/robot_eval_jobs/<job_id>/simulator_service_result.json`
 - `pipeline/robot_eval_jobs/<job_id>/live_eval_closure_manifest.json`
 
-If `gpu_provisioning_request.json` / `gpu_provider_launch_request.json` is
-`request_manifest_ready`, launch the remote worker through the provider launcher
-rather than from the website request path. Vast requests can use the built-in
-Vast adapter path; non-Vast providers still use an owner-supplied provider
-adapter command.
+Only the bounded startup-canary subset of a `request_manifest_ready` request can
+be passed to `paid_resource_allocator gpu-canary`. General paid robot-eval,
+Vast, and Lambda execution remain disabled until they have canonical allocator
+routes. The legacy arbitrary provider-command and provider-race launchers must
+not be used as allocation paths.
 
 ```bash
-BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
-blueprint-run-gpu-provider-launcher \
-  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
-  --allow-provider-launch \
-  --timeout-seconds 300
+python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
+  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
+  --release-evidence /path/to/protected-release-evidence.json \
+  --model-cache-evidence /path/to/verified-model-cache-evidence.json \
+  --preflight-bundle /path/to/provider-preflight-bundle.json \
+  --admission-out /path/to/gpu-canary-admission.json \
+  --bound-request-out /path/to/bound-runpod-request.json \
+  --adapter-output /path/to/runpod-provider-result.json \
+  --pod-name <watchdog-bound-pod-name-from-preflight> \
+  --execute
 ```
 
-For non-Vast providers, the launcher passes the provider adapter the request
-path, manifest URI, artifact-output URI, worker image ref, provider name, job
-id, timeout, idle timeout, and watchdog TTL through environment variables. For
-Vast, the built-in path passes those fields directly to the repo-owned Vast
-adapter and records instance ids, adapter result path, allocation evidence, and
-adapter teardown status when the adapter returns them. It records
-`gpu_provider_launcher_result.json` plus stdout/stderr logs where applicable,
-but stores no raw command or provider secret values and does not prove simulator
-execution or generated-world rank fidelity without provider/runtime evidence.
-
-For RunPod, use the repo-owned adapter as the provider command. Start with the
-dry-run request-shape proof:
+The allocator records the bound request, admission, adapter result, and the
+watchdog evidence it required. Terminal provider absence still requires the
+independent watchdog/closure evidence. It stores no raw provider secret values and does not
+prove simulator execution or generated-world rank fidelity without the returned
+runtime artifacts. The repo-owned RunPod adapter remains available for a
+no-spend dry-run request-shape proof:
 
 ```bash
 blueprint-run-runpod-provider-adapter \
@@ -1041,39 +1000,10 @@ blueprint-run-runpod-provider-adapter \
   --endpoint-id "${BLUEPRINT_RUNPOD_ENDPOINT_ID:-<existing-endpoint-id>}"
 ```
 
-Live RunPod API calls are separate and explicitly gated:
-
-```bash
-BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
-BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
-RUNPOD_API_KEY="<set-in-shell-not-artifact>" \
-BLUEPRINT_GPU_PROVIDER_LAUNCH_COMMAND="blueprint-run-runpod-provider-adapter --mode on-demand-pod --allow-runpod-api-call" \
-blueprint-run-gpu-provider-launcher \
-  --job-dir "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID" \
-  --allow-provider-launch \
-  --timeout-seconds 300
-```
-
-Use `--mode serverless-run --endpoint-id "$BLUEPRINT_RUNPOD_ENDPOINT_ID"` only
-when an existing RunPod Serverless endpoint already points at the prepared
-worker image. For first simulator bring-up, prefer `--mode on-demand-pod` or an
-interactive GPU VM/pod so Vulkan/RTX/Isaac failures can be inspected directly.
-If a stopped on-demand pod already uses the prepared image, the adapter can
-refresh its image/start command/env and start it instead of creating a new pod:
-
-```bash
-BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
-RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
-blueprint-run-runpod-provider-adapter \
-  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
-  --mode existing-pod-start \
-  --existing-pod-id "$BLUEPRINT_RUNPOD_EXISTING_POD_ID" \
-  --allow-runpod-api-call
-```
-
-This path still needs the startup-artifact watchdog and can fail before start if
-the stopped pod's host has no free GPU. In that case, fall back to a fresh
-on-demand pod and keep the original host-capacity blocker as provider evidence.
+Live RunPod adapter modes and stopped-pod restart are public hard-disabled
+paths. Only the canonical allocator can issue the in-process grant that reaches
+the provider mutation boundary. Keep host-capacity blockers separate from
+runtime proof.
 The adapter writes `runpod_provider_adapter_result.json`; that artifact proves
 request submission shape or API submission only, not simulator execution. Its
 `cost_control_policy` separates RunPod `/run` request policy
@@ -1091,23 +1021,8 @@ normal `python3`/`python`, and only falls back to `/isaac-sim/python.sh` when no
 normal Python exists, so early phase uploads do not intentionally wait for Isaac
 Sim Python bootstrap.
 
-```bash
-BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH=true \
-BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true \
-RUNPOD_API_KEY_FILE="$HOME/.blueprint-secrets/runpod_api_key" \
-blueprint-collect-runpod-live-execution-proof \
-  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
-  --adapter-result "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.live.json" \
-  --runtime-output-zip "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/isaac_provider_runtime_output.zip" \
-  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_live_execution_teardown_proof.json" \
-  --startup-artifact-timeout-seconds 360 \
-  --poll-interval-seconds 15 \
-  --stop-on-startup-artifact-timeout \
-  --terminate-pod \
-  --allow-runpod-api-call
-```
-
-That proof can show provider allocation and shutdown, but it must keep
+The canonical allocator's terminal evidence can show provider allocation and
+shutdown, but it must keep
 `simulator_execution_proven=false` unless the returned runtime manifest and
 Isaac artifacts prove execution.
 
