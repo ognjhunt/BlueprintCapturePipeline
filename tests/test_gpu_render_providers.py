@@ -227,8 +227,10 @@ def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> Non
     )
 
     assert result["status"] == "available"
+    assert result["capacity_confidence"] == "advisory"
     assert [row["gpu_type_id"] for row in result["viable_gpu_types"]] == ["NVIDIA L40S"]
     assert result["viable_gpu_types"][0]["available_gpu_counts"] == []
+    assert result["viable_gpu_types"][0]["single_gpu_offer_available"] is True
     a6000 = next(
         row for row in result["considered_gpu_types"]
         if row["gpu_type_id"] == "NVIDIA RTX A6000"
@@ -325,13 +327,12 @@ def test_runpod_capacity_preflight_supports_explicit_community_pool(monkeypatch)
 
     assert result["status"] == "available"
     assert result["cloud_type"] == "COMMUNITY"
-    assert result["capacity_confidence"] == "unknown"
+    assert result["capacity_confidence"] == "advisory"
     assert result["viable_gpu_types"][0]["on_demand_price_usd_per_hour"] == 0.74
 
 
 def test_runpod_capacity_preflight_reports_honest_confidence(monkeypatch) -> None:
-    """P1-1: a textual stock label with an empty count list is advisory-at-best
-    'unknown', never 'immediately available'; only create is authoritative."""
+    """The exact one-GPU offer is advisory; only create is authoritative."""
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
 
     def fake_graphql(query, *, key, timeout=60):
@@ -384,13 +385,63 @@ def test_runpod_capacity_preflight_reports_honest_confidence(monkeypatch) -> Non
     a40 = by_id["NVIDIA A40"]
     assert a40["catalog_reported_stock"] == "Medium"
     assert a40["single_gpu_count_known"] is False
+    assert a40["single_gpu_offer_requested"] is True
+    assert a40["single_gpu_offer_available"] is True
     assert a40["reservation_proven"] is False
-    assert a40["capacity_confidence"] == "unknown"
+    assert a40["capacity_confidence"] == "advisory"
     a6000 = by_id["NVIDIA RTX A6000"]
     assert a6000["single_gpu_count_known"] is True
     assert a6000["capacity_confidence"] == "advisory"
     # Overall confidence never exceeds advisory: the probe is not a reservation.
     assert result["capacity_confidence"] == "advisory"
+
+
+def test_runpod_capacity_preflight_registers_rtx_pro_6000_blackwell(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+
+    def fake_graphql(query, *, key, timeout=60):
+        del timeout
+        assert key == "rp-key"
+        assert "gpuCount: 1" in query
+        return 200, {
+            "data": {
+                "gpuTypes": [
+                    {
+                        "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                        "displayName": "RTX PRO 6000",
+                        "memoryInGb": 96,
+                        "secureCloud": True,
+                        "lowestPrice": {
+                            "stockStatus": "Medium",
+                            "uninterruptablePrice": 1.99,
+                            "availableGpuCounts": None,
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        fake_graphql,
+    )
+    result = RunPodRenderProvider().capacity_preflight(
+        {
+            "gpuTypeIds": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"],
+            "dataCenterIds": ["US-NC-2"],
+            "allowedCudaVersions": ["12.8"],
+            "min_gpu_ram_mb": 48000,
+            "requires_rtx": True,
+        }
+    )
+
+    row = result["viable_gpu_types"][0]
+    assert result["capacity_confidence"] == "advisory"
+    assert row["memory_in_gb"] == 96
+    assert row["single_gpu_count_known"] is False
+    assert row["single_gpu_offer_available"] is True
 
 
 def test_runpod_create_capacity_failure_is_capacity_outcome_not_spend(
@@ -1784,6 +1835,7 @@ def test_default_runpod_gpu_types_exclude_consumer_4090_pool(monkeypatch) -> Non
     assert set(spec.gpu_types) == {
         "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
         "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     }
     assert not any(("H100" in g or "H200" in g) for g in spec.gpu_types)
     assert all(("GeForce" not in g) for g in spec.gpu_types)

@@ -63,6 +63,7 @@ def _read_secret(name: str) -> str | None:
 DEFAULT_RUNPOD_RENDER_GPU_TYPES: tuple = (
     "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
     "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition",
 )
 
 
@@ -460,6 +461,17 @@ class RunPodRenderProvider(GpuRenderProvider):
                 if isinstance(value, int) and not isinstance(value, bool)
             ]
             single_gpu_count_known = bool(counts)
+            # ``lowestPrice`` was queried with ``gpuCount: 1``. RunPod now
+            # returns ``availableGpuCounts: null`` for otherwise valid exact
+            # datacenter/CUDA offers, so that nullable catalog field cannot be
+            # required as duplicate proof. A non-None stock label plus an
+            # on-demand price is the provider's advisory one-GPU offer; only
+            # the subsequent create response remains authoritative.
+            single_gpu_offer_available = bool(
+                stock.lower() != "none"
+                and _positive_float(price.get("uninterruptablePrice")) is not None
+                and (not counts or 1 in counts)
+            )
             record = {
                 "gpu_type_id": gpu_type,
                 "display_name": row.get("displayName"),
@@ -479,6 +491,8 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "catalog_reported_stock": stock,
                 "available_gpu_counts": counts,
                 "single_gpu_count_known": single_gpu_count_known,
+                "single_gpu_offer_requested": True,
+                "single_gpu_offer_available": single_gpu_offer_available,
                 "reservation_proven": False,
                 "on_demand_price_usd_per_hour": price.get("uninterruptablePrice"),
                 "rtx_required": requires_rtx,
@@ -503,12 +517,12 @@ class RunPodRenderProvider(GpuRenderProvider):
             record["blockers"] = blockers
             if blockers:
                 record["capacity_confidence"] = "unavailable"
-            elif single_gpu_count_known and 1 in counts:
+            elif single_gpu_offer_available:
                 record["capacity_confidence"] = "advisory"
             else:
-                # A textual stock label ("Medium") with an empty per-count list
-                # is NOT immediate availability — attempt 021 got HTTP 500 on
-                # create in exactly this state.
+                # The read-only probe is never a reservation. Keep any shape
+                # that does not constitute the exact one-GPU offer unknown and
+                # let the paid admission seam fail closed.
                 record["capacity_confidence"] = "unknown"
             if not blockers:
                 viable.append(record)

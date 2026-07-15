@@ -10,6 +10,7 @@ from blueprint_pipeline.groot_oscar_runpod_model_volume import (
     SCHEMA_VERSION,
     _extract_id,
     _matching_resources,
+    _single_gpu_capacity_verified,
     build_model_volume_admission,
     launch_detached,
     run_model_volume,
@@ -89,10 +90,36 @@ def test_model_volume_admission_allows_explicitly_bounded_higher_rate() -> None:
     assert admission["status"] == "admitted"
 
 
-def test_model_volume_admission_rejects_low_stock_without_single_gpu_count() -> None:
+def test_model_volume_admission_rejects_unverified_single_gpu_capacity() -> None:
     admission = _admission(capacity_verified=False)
     assert admission["status"] == "blocked"
     assert "model_volume_single_gpu_capacity_not_verified" in admission["blockers"]
+
+
+def test_model_volume_accepts_exact_one_gpu_offer_when_counts_are_nullable() -> None:
+    capacity = {"status": "available", "capacity_confidence": "advisory"}
+    selected = {
+        "capacity_confidence": "advisory",
+        "single_gpu_count_known": False,
+        "available_gpu_counts": [],
+        "single_gpu_offer_requested": True,
+        "single_gpu_offer_available": True,
+        "capacity_data_center_id": "US-NC-2",
+        "capacity_allowed_cuda_versions": ["12.8"],
+    }
+    assert _single_gpu_capacity_verified(
+        capacity=capacity,
+        selected=selected,
+        data_center_id="US-NC-2",
+        required_cuda_version="12.8",
+    )
+    selected["single_gpu_offer_available"] = False
+    assert not _single_gpu_capacity_verified(
+        capacity=capacity,
+        selected=selected,
+        data_center_id="US-NC-2",
+        required_cuda_version="12.8",
+    )
 
 
 def test_model_volume_admission_requires_verified_capacity_and_storage_rate() -> None:
