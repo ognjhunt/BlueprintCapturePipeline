@@ -42,18 +42,9 @@ MAX_TTL_SECONDS = 3600
 EVIDENCE_PORT = 8765
 POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
-# The user's standing 2026-07-14 authorization explicitly covers everything
-# needed to complete this bounded campaign, including these qualified RTX
-# datacenter fallbacks. Spend, CUDA, storage-datacenter, one-resource, and
-# watchdog gates still apply independently.
-AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset(
-    {
-        "NVIDIA A40",
-        "NVIDIA L40S",
-        "NVIDIA RTX 6000 Ada Generation",
-        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
-    }
-)
+# The paid campaign authorization remains limited to the explicitly qualified
+# L40S/A40 pool. Broader RTX fallbacks require a separate user authorization.
+AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset({"NVIDIA A40", "NVIDIA L40S"})
 # RunPod's create API returned this authoritative network-volume-capable set on
 # 2026-07-14. The general datacenter catalog includes additional GPU locations
 # that reject network-volume creation, so fail closed until this provider list
