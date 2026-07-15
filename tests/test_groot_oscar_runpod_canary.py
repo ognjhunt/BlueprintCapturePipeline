@@ -103,10 +103,10 @@ def test_strict_policy_smoke_output_requires_exact_three_action_proof(
 def _budget_config(tmp_path, **overrides):
     config = {
         "ledger_path": str(tmp_path / "campaign-budget.json"),
-        "initial_spent_usd": 14.076086,
-        "initial_used_gpu_seconds": 14_754,
+        "initial_spent_usd": 14.308253,
+        "initial_used_gpu_seconds": 15_174,
         "total_spend_cap_usd": 20.0,
-        "combined_gpu_wall_cap_seconds": 18_734,
+        "combined_gpu_wall_cap_seconds": 19_154,
         "reservation_gpu_seconds": 480,
         "campaign_stage": "gpu_canary",
         "maximum_canary_reservation_gpu_seconds": 480,
@@ -115,8 +115,8 @@ def _budget_config(tmp_path, **overrides):
         "maximum_combined_plan_gpu_seconds": 3_980,
         "reduced_canary_timeout_acknowledged": True,
         "max_hourly_rate_usd": 1.99,
-        "minimum_reconciled_spend_usd": 14.076086,
-        "minimum_reconciled_gpu_seconds": 14_754,
+        "minimum_reconciled_spend_usd": 14.308253,
+        "minimum_reconciled_gpu_seconds": 15_174,
     }
     config.update(overrides)
     return config

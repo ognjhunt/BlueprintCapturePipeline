@@ -35,7 +35,7 @@ def _auth(**changes) -> RunPodAutoscalerAuthorization:
     values = {
         "allow_paid": True,
         "total_spend_cap_usd": 20,
-        "combined_gpu_wall_time_cap_seconds": 18_734,
+        "combined_gpu_wall_time_cap_seconds": 19_154,
         "spent_usd": 1,
         "used_gpu_wall_time_seconds": 7_745,
         "attempt_wall_time_limit_seconds": 300,
@@ -123,7 +123,7 @@ def test_no_paid_mutation_or_claim_without_explicit_authorization() -> None:
 def test_combined_wall_time_cap_is_enforced_before_claim() -> None:
     result = reconcile_one_scale_request(
         pool=Pool(), autoscaler_id="autoscaler-1", exact_worker_image_ref=IMAGE,
-        authorization=_auth(used_gpu_wall_time_seconds=18_500),
+        authorization=_auth(used_gpu_wall_time_seconds=19_000),
         launcher=lambda *_args: {},
     )
 
