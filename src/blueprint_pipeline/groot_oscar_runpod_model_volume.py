@@ -42,17 +42,9 @@ MAX_TTL_SECONDS = 3600
 EVIDENCE_PORT = 8765
 POD_NAME_PREFIX = "blueprint-groot-oscar-canary-model-"
 VOLUME_NAME_PREFIX = "blueprint-groot-oscar-models-"
-# Standing user authorization on 2026-07-14 covers the qualified RTX datacenter
-# fallbacks needed to complete this bounded model-volume/canary campaign. Spend,
-# CUDA, storage-datacenter, one-resource, and watchdog gates still apply.
-AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset(
-    {
-        "NVIDIA A40",
-        "NVIDIA L40S",
-        "NVIDIA RTX 6000 Ada Generation",
-        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
-    }
-)
+# The paid campaign authorization remains limited to the explicitly qualified
+# L40S/A40 pool. Broader RTX fallbacks require a separate user authorization.
+AUTHORIZED_MODEL_VOLUME_GPU_TYPES = frozenset({"NVIDIA A40", "NVIDIA L40S"})
 # RunPod's create API returned this authoritative network-volume-capable set on
 # 2026-07-14. The general datacenter catalog includes additional GPU locations
 # that reject network-volume creation, so fail closed until this provider list
@@ -127,7 +119,13 @@ def _single_gpu_capacity_verified(
     data_center_id: str,
     required_cuda_version: str,
 ) -> bool:
-    """Accept the exact one-GPU offer while keeping it advisory, not reserved."""
+    """Accept the exact one-GPU offer while keeping it advisory, not reserved.
+
+    Network-volume support is gated separately by the provider-derived
+    ``RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS`` set. RunPod's account
+    ``myself.datacenters`` response can omit a datacenter where this account
+    has just created a volume, so it is not a reliable duplicate launch gate.
+    """
 
     return bool(
         capacity.get("status") == "available"
@@ -136,8 +134,6 @@ def _single_gpu_capacity_verified(
         and selected.get("single_gpu_offer_requested") is True
         and selected.get("single_gpu_offer_available") is True
         and selected.get("capacity_data_center_id") == data_center_id
-        and selected.get("capacity_data_center_catalog_verified") is True
-        and selected.get("capacity_data_center_storage_support") is True
         and required_cuda_version
         in (selected.get("capacity_allowed_cuda_versions") or [])
     )
