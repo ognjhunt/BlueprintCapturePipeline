@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.gpu_render_providers import (
+    DigitalOceanRenderProvider,
     RenderLaunchSpec,
     RunPodRenderProvider,
     VastRenderProvider,
@@ -25,6 +26,36 @@ from blueprint_pipeline.gpu_render_providers import (
     validate_runpod_restart_storage_contract,
 )
 from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
+
+
+_ORIGINAL_PROVIDER_LAUNCHES = {
+    RunPodRenderProvider: RunPodRenderProvider.launch,
+    VastRenderProvider: VastRenderProvider.launch,
+    DigitalOceanRenderProvider: DigitalOceanRenderProvider.launch,
+    AWSRenderProvider: AWSRenderProvider.launch,
+    GCPRenderProvider: GCPRenderProvider.launch,
+}
+
+
+@pytest.fixture(autouse=True)
+def _issue_test_only_provider_grant(monkeypatch: pytest.MonkeyPatch) -> None:
+    admission = build_paid_lane_admission(resource_class="gpu_render", blockers=[])
+    grant = require_paid_resource_admission(
+        admission,
+        resource_class="gpu_render",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    for provider_class, original in _ORIGINAL_PROVIDER_LAUNCHES.items():
+        def granted_launch(self, *args, _original=original, **kwargs):
+            kwargs.setdefault("paid_resource_admission_grant", grant)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(provider_class, "launch", granted_launch)
 
 
 def _spec(**over) -> RenderLaunchSpec:
@@ -40,6 +71,23 @@ def _spec(**over) -> RenderLaunchSpec:
     )
     base.update(over)
     return RenderLaunchSpec(**base)
+
+
+@pytest.mark.parametrize("provider_class", list(_ORIGINAL_PROVIDER_LAUNCHES))
+def test_legacy_provider_launch_requires_opaque_grant_before_network(
+    provider_class,
+    tmp_path: Path,
+) -> None:
+    provider = provider_class()
+    result = _ORIGINAL_PROVIDER_LAUNCHES[provider_class](
+        provider,
+        tmp_path,
+        {},
+    )
+    assert result["status"] == "blocked"
+    assert result["allocation_created"] is False
+    assert "legacy_gpu_render_provider_launch_disabled" in result["blockers"]
+    assert "paid_resource_admission_grant_missing" in result["blockers"]
 
 
 def _passing_prelaunch_guard() -> dict[str, object]:

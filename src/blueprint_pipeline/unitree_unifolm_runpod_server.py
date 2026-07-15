@@ -5,12 +5,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import urllib.error
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 from .runpod_provider_adapter import RUNPOD_API_GATE_ENV
 from .runpod_wam_async_runner import (
     DEFAULT_GPU_TYPE_IDS,
@@ -365,6 +371,7 @@ def launch_unitree_unifolm_runpod_server(
     max_spend_usd: float | None = None,
     allow_paid_runpod_launch: bool = False,
     generated_at: str | None = None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     output = Path(
@@ -431,6 +438,26 @@ def launch_unitree_unifolm_runpod_server(
             "redacted_pod_payload": _redacted_payload_summary(payload),
             "raw_secret_values_recorded": False,
             "secret_hashes_recorded": False,
+        }
+        write_json(output / "unitree_unifolm_runpod_server_launch_manifest.json", manifest)
+        return manifest
+    try:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="unitree_unifolm_runpod",
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(output),
+            "blockers": [
+                "unitree_unifolm_shared_admission_missing_or_invalid",
+                *exc.blockers,
+            ],
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
         }
         write_json(output / "unitree_unifolm_runpod_server_launch_manifest.json", manifest)
         return manifest
@@ -750,25 +777,9 @@ def _arg_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _arg_parser().parse_args(argv)
     if args.command == "launch":
-        manifest = launch_unitree_unifolm_runpod_server(
-            job_dir=args.job_dir,
-            image_name=args.image_name,
-            gpu_type_ids=args.gpu_type_id or DEFAULT_GPU_TYPE_IDS,
-            port=args.port,
-            backend_port=args.backend_port,
-            container_disk_gb=args.container_disk_gb,
-            volume_gb=args.volume_gb,
-            cloud_type=args.cloud_type,
-            vla_checkpoint=args.vla_checkpoint,
-            vlm_checkpoint=args.vlm_checkpoint,
-            unnorm_key=args.unnorm_key,
-            attention_implementation=args.attention_implementation,
-            allow_hf_download=not args.disable_hf_download,
-            model_cache_root=args.model_cache_root,
-            max_spend_usd=args.max_spend_usd,
-            allow_paid_runpod_launch=args.allow_paid_runpod_launch,
-        )
-    elif args.command == "poll":
+        print("legacy_unitree_unifolm_runpod_launch_cli_disabled", file=sys.stderr)
+        return 2
+    if args.command == "poll":
         manifest = poll_unitree_unifolm_runpod_server(job_dir=args.job_dir)
     elif args.command == "probe":
         manifest = probe_unitree_unifolm_runpod_server(

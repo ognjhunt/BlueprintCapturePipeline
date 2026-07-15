@@ -8,6 +8,23 @@ from typing import Any, Callable
 import pytest
 
 from blueprint_pipeline import vast_wam_async_runner as runner
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
+
+
+def _paid_grant():
+    admission = build_paid_lane_admission(
+        resource_class="vast_wam_async",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="vast_wam_async",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -364,6 +381,7 @@ def test_create_forwards_allowed_machine_ids_to_offer_selection(
         secret_env_file=tmp_path / "urls-allowed.env",
         session_budget_ledger=tmp_path / "budget-allowed.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         excluded_machine_ids=[49407],
         allowed_machine_ids=[16571],
         generated_at="now",
@@ -404,6 +422,7 @@ def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(
         secret_env_file=tmp_path / "urls-lock.env",
         session_budget_ledger=tmp_path / "budget-lock.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         generated_at="now",
     )
     assert lock_blocked["blockers"] == ["vast_paid_launch_lock_busy"]
@@ -417,6 +436,7 @@ def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(
         secret_env_file=tmp_path / "urls-inventory.env",
         session_budget_ledger=tmp_path / "budget-inventory.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         generated_at="now",
     )
     assert inventory_blocked["reason"] == "vast_prelaunch_inventory_guard_blocked"
@@ -430,6 +450,7 @@ def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(
         secret_env_file=tmp_path / "urls-no-offer.env",
         session_budget_ledger=tmp_path / "budget-no-offer.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         generated_at="now",
     )
     assert no_offer["reason"] == "no_vast_offer_selected"
@@ -444,6 +465,7 @@ def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(
         secret_env_file=tmp_path / "urls-hard-cap.env",
         session_budget_ledger=tmp_path / "budget-hard-cap.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         hard_cap_usd=0.01,
         generated_at="now",
     )
@@ -458,6 +480,7 @@ def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(
         secret_env_file=tmp_path / "urls-missing-instance.env",
         session_budget_ledger=tmp_path / "budget-missing-instance.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         generated_at="now",
     )
     assert missing_instance["reason"] == "vast_create_response_missing_instance_id"
@@ -480,6 +503,7 @@ def test_create_lock_inventory_offer_hard_cap_and_instance_blocks(
         secret_env_file=tmp_path / "urls-create-http-error.env",
         session_budget_ledger=tmp_path / "budget-create-http-error.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         generated_at="now",
     )
     assert http_error["status"] == "blocked"
@@ -524,6 +548,7 @@ def test_create_success_writes_async_state(
         output_path=tmp_path / "created-output.zip",
         session_budget_ledger=tmp_path / "budget.json",
         allow_paid_vast_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         max_live_minutes=3,
         min_gpu_ram_mb=48000,
         generated_at="now",
@@ -1231,13 +1256,9 @@ def test_async_runner_main_dispatches_create_and_poll(
         ]
     )
 
-    assert create_code == 0
-    assert captured_create["allow_paid_vast_launch"] is True
-    assert captured_create["provider_output_get_url_file"] == str(
-        tmp_path / "provider-output-get-url.txt"
-    )
-    assert captured_create["disk_gb"] == 88
-    assert json.loads(capsys.readouterr().out)["status"] == "instance_created"
+    assert create_code == 2
+    assert captured_create == {}
+    assert "legacy_vast_wam_create_cli_disabled" in capsys.readouterr().err
 
     monkeypatch.setattr(
         runner,

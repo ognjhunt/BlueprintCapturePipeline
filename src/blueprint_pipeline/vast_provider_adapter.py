@@ -23,6 +23,7 @@ import shutil
 import socket
 import subprocess
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -33,6 +34,11 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .logging_utils import log_event
+from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 
 
@@ -4225,6 +4231,7 @@ def run_vast_provider_adapter(
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool | None = None,
     vast_launch_lock_file: str | Path | None = None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -5182,6 +5189,27 @@ def run_vast_provider_adapter(
                 "vast_launch_lock_manifest": launch_lock_release_manifest
                 or launch_lock_manifest,
                 "final_validation_status": validation["status"],
+            }
+        )
+        write_json(result_path, base_result)
+        return base_result
+
+    try:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="vast_provider_adapter",
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        base_result.update(
+            {
+                "status": "blocked",
+                "reason": "shared_paid_resource_admission_blocked",
+                "blockers": [
+                    "vast_provider_shared_admission_missing_or_invalid",
+                    *exc.blockers,
+                ],
+                "api_call_performed": True,
+                "vast_side_effects_may_have_occurred": False,
             }
         )
         write_json(result_path, base_result)
@@ -6592,6 +6620,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Required with {VAST_INSTANCE_LAUNCH_GATE_ENV}=true for paid Vast instance launch.",
     )
     args = parser.parse_args(argv)
+    if args.mode == "live-startup-probe":
+        print("legacy_vast_provider_mutation_cli_disabled", file=sys.stderr)
+        return 2
     result = run_vast_provider_adapter(
         job_dir=args.job_dir,
         mode=args.mode,

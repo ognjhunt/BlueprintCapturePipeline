@@ -20,7 +20,11 @@ from .groot_oscar_infrastructure_admission import (
     SERVE_SCHEMA_VERSION,
     build_runpod_serve_plane_admission,
 )
-from .paid_resource_admission import require_paid_resource_admission
+from .paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from .groot_oscar_runpod_preflight import collect_runpod_preflight
 from .runpod_provider_adapter import (
     RUNPOD_IMAGE_STARTUP_CANARY_MODE,
@@ -179,6 +183,39 @@ def prepare_canary_launch(
     }
 
 
+def _finalize_adapter_allocation(
+    *,
+    adapter: Mapping[str, Any],
+    adapter_output: str | Path,
+    pod_name: str,
+    release_image_ref: str,
+) -> dict[str, Any]:
+    """Require an authoritative pod id before the paid canary can succeed."""
+
+    result = dict(adapter)
+    response = adapter.get("runpod_response")
+    response = response if isinstance(response, Mapping) else {}
+    pod_id = str(response.get("id") or "").strip()
+    write_json(
+        Path(adapter_output).resolve().parent / "warm_serve_pod.json",
+        {
+            "schema_version": "groot_oscar_runpod_canary_allocation.v1",
+            "status": "allocated" if pod_id else "allocation_ambiguous",
+            "pod_id": pod_id or None,
+            "pod_name": pod_name,
+            "release_image_ref": release_image_ref,
+        },
+    )
+    if not pod_id:
+        result["status"] = "failed"
+        result["blockers"] = sorted(
+            set([*(result.get("blockers") or []), "runpod_canary_pod_id_missing"])
+        )
+        result["provider_allocation_ambiguous"] = True
+        write_json(Path(adapter_output), result)
+    return result
+
+
 def run_canary(
     *,
     provider_launch_request: str | Path,
@@ -251,6 +288,15 @@ def run_canary(
         resource_class="gpu_canary",
         expected_schema_version=SERVE_SCHEMA_VERSION,
     )
+    adapter_admission = build_paid_lane_admission(
+        resource_class="runpod_provider_adapter",
+        blockers=list(prepared.get("blockers") or []),
+    )
+    adapter_grant = require_paid_resource_admission(
+        adapter_admission,
+        resource_class="runpod_provider_adapter",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
     write_json(Path(bound_request_out), prepared["bound_request"])
     adapter = run_runpod_provider_adapter(
         provider_launch_request_path=bound_request_out,
@@ -259,20 +305,14 @@ def run_canary(
         allow_runpod_api_call=execute,
         pod_name=pod_name,
         gpu_type_id=prepared["admission"]["gpu_type_id"],
+        paid_resource_admission_grant=adapter_grant,
     )
     if execute and adapter.get("status") == "submitted":
-        response = adapter.get("runpod_response")
-        response = response if isinstance(response, Mapping) else {}
-        pod_id = str(response.get("id") or "").strip()
-        write_json(
-            Path(adapter_output).resolve().parent / "warm_serve_pod.json",
-            {
-                "schema_version": "groot_oscar_runpod_canary_allocation.v1",
-                "status": "allocated" if pod_id else "allocation_ambiguous",
-                "pod_id": pod_id or None,
-                "pod_name": pod_name,
-                "release_image_ref": prepared["admission"]["release_image_ref"],
-            },
+        return _finalize_adapter_allocation(
+            adapter=adapter,
+            adapter_output=adapter_output,
+            pod_name=pod_name,
+            release_image_ref=prepared["admission"]["release_image_ref"],
         )
     return dict(adapter)
 

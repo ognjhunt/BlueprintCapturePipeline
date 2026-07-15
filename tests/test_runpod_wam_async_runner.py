@@ -7,11 +7,28 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline import runpod_wam_async_runner as runner
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV
 
 import pytest
 
 pytestmark = pytest.mark.slow
+
+
+def _paid_grant():
+    admission = build_paid_lane_admission(
+        resource_class="runpod_wam_async",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="runpod_wam_async",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 def _python_heredoc_chunks(script: str) -> list[str]:
@@ -324,6 +341,7 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
         provider_bundle_url="https://spaces.example/bundle.zip?X-Amz-Signature=bundle-secret",
         provider_output_put_url="https://spaces.example/output.zip?X-Amz-Signature=output-secret",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         generated_at="now",
     )
@@ -387,6 +405,7 @@ def test_runpod_create_reuses_dynamic_existing_pod_candidate(
         provider_bundle_url="https://spaces.example/bundle.zip?X-Amz-Signature=bundle-secret",
         provider_output_put_url="https://spaces.example/output.zip?X-Amz-Signature=output-secret",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         existing_pod_id="warm-pod-123",
@@ -465,6 +484,7 @@ def test_runpod_create_reuses_recorded_warm_candidate(
         provider_bundle_url="https://spaces.example/bundle.zip",
         provider_output_put_url="https://spaces.example/output.zip",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
@@ -587,6 +607,7 @@ def test_runpod_create_falls_back_when_stopped_warm_candidate_cannot_start(
         provider_bundle_url="https://spaces.example/bundle.zip",
         provider_output_put_url="https://spaces.example/output.zip",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
@@ -668,6 +689,7 @@ def test_runpod_create_retires_missing_stopped_warm_candidate_before_fallback(
         provider_bundle_url="https://spaces.example/bundle.zip",
         provider_output_put_url="https://spaces.example/output.zip",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
@@ -744,6 +766,7 @@ def test_runpod_create_labels_running_hot_candidate_reuse_boundary(
         provider_bundle_url="https://spaces.example/bundle.zip",
         provider_output_put_url="https://spaces.example/output.zip",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
@@ -830,6 +853,7 @@ def test_runpod_create_rejects_stale_running_hot_candidate_without_runtime(
         provider_bundle_url="https://spaces.example/bundle.zip",
         provider_output_put_url="https://spaces.example/output.zip",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="2026-06-30T21:00:00+00:00",
@@ -901,6 +925,7 @@ def test_runpod_create_ignores_incompatible_warm_candidate(
         provider_bundle_url="https://spaces.example/bundle.zip",
         provider_output_put_url="https://spaces.example/output.zip",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
@@ -952,6 +977,7 @@ def test_runpod_create_clears_stale_output_from_prior_run(
         provider_bundle_url="https://spaces.example/bundle.zip?X-Amz-Signature=bundle-secret",
         provider_output_put_url="https://spaces.example/output.zip?X-Amz-Signature=output-secret",
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         skip_public_staging_verification=True,
         generated_at="now",
     )
@@ -2049,6 +2075,7 @@ def test_runpod_unitree_unifolm_create_uses_provider_kind_without_leaking_urls(
         provider_output_get_url_file=output_get_url_file,
         skip_public_staging_verification=True,
         allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
         provider_bundle_kind="unitree_unifolm",
         image_name="nijelhunt/blueprint-unitree-unifolm:test",
         generated_at="now",

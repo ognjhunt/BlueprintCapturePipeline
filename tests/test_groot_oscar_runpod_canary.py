@@ -2,6 +2,7 @@ import json
 import os
 
 from blueprint_pipeline.groot_oscar_runpod_canary import (
+    _finalize_adapter_allocation,
     prepare_canary_launch,
     refresh_runpod_preflight,
     run_canary,
@@ -9,6 +10,27 @@ from blueprint_pipeline.groot_oscar_runpod_canary import (
 
 
 DIGEST = "docker.io/example/release@sha256:" + "a" * 64
+
+
+def test_submitted_canary_without_pod_id_fails_closed(tmp_path) -> None:
+    output = tmp_path / "adapter.json"
+
+    result = _finalize_adapter_allocation(
+        adapter={"status": "submitted", "runpod_response": {}},
+        adapter_output=output,
+        pod_name="blueprint-groot-oscar-canary-test",
+        release_image_ref=DIGEST,
+    )
+
+    assert result["status"] == "failed"
+    assert result["blockers"] == ["runpod_canary_pod_id_missing"]
+    assert result["provider_allocation_ambiguous"] is True
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "failed"
+    allocation = json.loads(
+        (tmp_path / "warm_serve_pod.json").read_text(encoding="utf-8")
+    )
+    assert allocation["status"] == "allocation_ambiguous"
+    assert allocation["pod_id"] is None
 
 
 def _request() -> dict:

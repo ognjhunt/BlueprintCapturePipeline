@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -13,6 +14,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .paid_resource_admission import (
+    PaidResourceAdmissionGrant,
+    PaidResourceAdmissionBlocked,
+    require_paid_resource_admission_grant,
+)
 from .runpod_provider_adapter import (
     RUNPOD_API_GATE_ENV,
     RUNPOD_API_KEY_ENV,
@@ -317,6 +323,7 @@ def collect_runpod_live_execution_proof(
     poll_interval_seconds: float = 15.0,
     allow_runpod_api_call: bool = False,
     timeout_seconds: int = 30,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     request_path = Path(provider_launch_request_path).expanduser().resolve()
     adapter_path = Path(adapter_result_path).expanduser().resolve() if adapter_result_path else None
@@ -398,6 +405,30 @@ def collect_runpod_live_execution_proof(
         )
         write_json(resolved_output, result)
         return result
+    provider_mutation_requested = bool(
+        stop_pod or terminate_pod or stop_on_startup_artifact_timeout
+    )
+    if provider_mutation_requested:
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="runpod_live_execution",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            result.update(
+                {
+                    "status": "blocked",
+                    "reason": "shared_paid_resource_admission_blocked",
+                    "blockers": [
+                        "runpod_live_execution_shared_admission_missing_or_invalid",
+                        *exc.blockers,
+                    ],
+                    "api_call_performed": False,
+                    "runpod_side_effects_may_have_occurred": False,
+                }
+            )
+            write_json(resolved_output, result)
+            return result
     try:
         startup_artifact_blockers: list[str] = []
         if startup_artifact_poll_requested:
@@ -635,6 +666,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if args.stop_pod or args.terminate_pod or args.stop_on_startup_artifact_timeout:
+        print("legacy_runpod_live_mutation_cli_disabled", file=sys.stderr)
+        return 2
     result = collect_runpod_live_execution_proof(
         provider_launch_request_path=args.provider_launch_request,
         adapter_result_path=args.adapter_result,

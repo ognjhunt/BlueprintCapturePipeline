@@ -6,6 +6,36 @@ from pathlib import Path
 from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
 from blueprint_pipeline.gpu_render_providers import RenderLaunchSpec
 from blueprint_pipeline import provider_closure_audit
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
+
+
+_ORIGINAL_CLOUD_LAUNCHES = {
+    AWSRenderProvider: AWSRenderProvider.launch,
+    GCPRenderProvider: GCPRenderProvider.launch,
+}
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _issue_test_only_provider_grant(monkeypatch: pytest.MonkeyPatch) -> None:
+    admission = build_paid_lane_admission(resource_class="gpu_render", blockers=[])
+    grant = require_paid_resource_admission(
+        admission,
+        resource_class="gpu_render",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    for provider_class, original in _ORIGINAL_CLOUD_LAUNCHES.items():
+        def granted_launch(self, *args, _original=original, **kwargs):
+            kwargs.setdefault("paid_resource_admission_grant", grant)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(provider_class, "launch", granted_launch)
 
 
 def _spec() -> RenderLaunchSpec:

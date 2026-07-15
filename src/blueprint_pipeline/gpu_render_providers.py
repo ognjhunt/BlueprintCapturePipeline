@@ -38,6 +38,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline import safe_outbound_http
+from blueprint_pipeline.paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 
 SCHEMA_VERSION = "gpu_render_providers.v1"
 SECRETS = Path.home() / ".blueprint-secrets"
@@ -141,6 +146,7 @@ class GpuRenderProvider:
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
         raise NotImplementedError
 
@@ -599,8 +605,16 @@ class RunPodRenderProvider(GpuRenderProvider):
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
         """Warm-host restart first (no image pull); else cold on-demand create."""
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="gpu_render",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["runpod_api_key_missing"]}
@@ -965,9 +979,17 @@ class VastRenderProvider(GpuRenderProvider):
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
         """Search RT-capable offers under rate, then create an instance from the cheapest.
         Vast is always on-demand cold create; ``cold`` is accepted for a uniform signature."""
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="gpu_render",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         key = self._key()
         if not key:
             return {"status": "blocked", "blockers": ["vast_api_key_missing"]}
@@ -1657,7 +1679,15 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         *,
         cold: bool = False,
         allow_cold_fallback: bool = True,
+        paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="gpu_render",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         token = self._token()
         if not token:
             return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}

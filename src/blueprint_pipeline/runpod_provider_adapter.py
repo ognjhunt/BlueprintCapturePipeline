@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shlex
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -21,6 +22,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
+from .paid_resource_admission import (
+    PaidResourceAdmissionGrant,
+    PaidResourceAdmissionBlocked,
+    require_paid_resource_admission_grant,
+)
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 from . import safe_outbound_http
 
@@ -1457,6 +1463,7 @@ def run_runpod_provider_adapter(
     existing_pod_id: str | None = None,
     gpu_type_id: str | None = None,
     timeout_seconds: int = 30,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> Dict[str, Any]:
     request_path = Path(provider_launch_request_path).resolve()
     resolved_output = (
@@ -1622,6 +1629,26 @@ def run_runpod_provider_adapter(
         return _persist_result(resolved_output, result)
 
     try:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="runpod_provider_adapter",
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        result.update(
+            {
+                "status": "blocked",
+                "reason": "shared_paid_resource_admission_blocked",
+                "blockers": [
+                    "runpod_provider_shared_admission_missing_or_invalid",
+                    *exc.blockers,
+                ],
+                "api_call_performed": False,
+                "runpod_side_effects_may_have_occurred": False,
+            }
+        )
+        return _persist_result(resolved_output, result)
+
+    try:
         if mode == "serverless-run":
             status_code, response = _http_json(
                 url=str(runpod_request["url"]),
@@ -1747,6 +1774,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Required with {RUNPOD_API_GATE_ENV}=true for live RunPod API calls.",
     )
     args = parser.parse_args(argv)
+    if args.mode != "dry-run":
+        print("legacy_runpod_provider_mutation_cli_disabled", file=sys.stderr)
+        return 2
     try:
         request_path = _request_path_from_args(args)
     except ValueError as exc:

@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +17,11 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, parse_bool, utc_now_iso, write_json
+from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 from .paid_lane_guard import (
     PreSpendPreflightBlocked,
     bind_pending_teardown_instance,
@@ -1626,6 +1632,7 @@ def create_runpod_wam_async_run(
     min_ram_per_gpu: int = 8,
     existing_pod_id: str = "",
     generated_at: str | None = None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     if provider_bundle_kind not in RUNPOD_PROVIDER_BUNDLE_KINDS:
@@ -1878,6 +1885,27 @@ def create_runpod_wam_async_run(
             "prelaunch_spend_guard": prelaunch_spend_guard,
             "pre_spend_preflight": pre_spend_preflight,
             "api_key_status": api_key_meta,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
+        return manifest
+
+    try:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="runpod_wam_async",
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        manifest = {
+            "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(resolved_job_dir),
+            "blockers": [
+                "runpod_wam_shared_admission_missing_or_invalid",
+                *exc.blockers,
+            ],
+            "provider_mutations_performed": 0,
             "raw_secret_values_recorded": False,
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
@@ -3678,34 +3706,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     stop.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     if args.command == "create":
-        manifest = create_runpod_wam_async_run(
-            job_dir=args.job_dir,
-            bundle_path=args.bundle_path,
-            public_base_url=args.public_base_url,
-            provider_bundle_url=args.provider_bundle_url,
-            provider_output_put_url=args.provider_output_put_url,
-            provider_output_get_url=args.provider_output_get_url,
-            provider_bundle_url_file=args.provider_bundle_url_file,
-            provider_output_put_url_file=args.provider_output_put_url_file,
-            provider_output_get_url_file=args.provider_output_get_url_file,
-            token_file=args.token_file,
-            secret_env_file=args.secret_env_file,
-            output_path=args.output_path,
-            max_spend_usd=args.max_spend_usd,
-            allow_paid_runpod_launch=args.allow_paid_runpod_launch,
-            skip_public_staging_verification=args.skip_public_staging_verification,
-            verify_output_put_url=args.verify_output_put_url,
-            gpu_type_ids=args.gpu_type_id or DEFAULT_GPU_TYPE_IDS,
-            image_name=args.image_name,
-            provider_bundle_kind=args.provider_bundle_kind,
-            container_disk_gb=args.container_disk_gb,
-            volume_gb=args.volume_gb,
-            cloud_type=args.cloud_type,
-            allowed_cuda_versions=args.allowed_cuda_version,
-            min_vcpu_per_gpu=args.min_vcpu_per_gpu,
-            min_ram_per_gpu=args.min_ram_per_gpu,
-        )
-    elif args.command == "poll":
+        print("legacy_runpod_wam_create_cli_disabled", file=sys.stderr)
+        return 2
+    if args.command == "poll":
         manifest = poll_runpod_wam_async_run(
             job_dir=args.job_dir,
             max_wait_seconds=args.max_wait_seconds,

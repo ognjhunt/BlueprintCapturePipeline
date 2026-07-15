@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -19,6 +20,11 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 from .vast_bundle_staging import (
     BUNDLE_ROUTE,
     DEFAULT_OUTPUT_FILENAME,
@@ -585,6 +591,7 @@ def create_async_vast_wam_run(
     disk_gb: int = DEFAULT_DISK_GB,
     heartbeat_url: str = DEFAULT_HEARTBEAT_URL,
     generated_at: str | None = None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     created_epoch = time.time()
@@ -933,6 +940,27 @@ def create_async_vast_wam_run(
             reason="vast_wam_async_create_preflight_blocked",
             blockers=sorted(set(blockers)),
         )
+        return manifest
+
+    try:
+        require_paid_resource_admission_grant(
+            paid_resource_admission_grant,
+            resource_class="vast_wam_async",
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        manifest = {
+            "schema_version": ASYNC_CREATE_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(resolved_job_dir),
+            "blockers": [
+                "vast_wam_shared_admission_missing_or_invalid",
+                *exc.blockers,
+            ],
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "vast_wam_async_create_manifest.json", manifest)
         return manifest
 
     lock_handle, lock_manifest = _try_acquire_vast_launch_lock(
@@ -1902,47 +1930,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     destroy.add_argument("--job-dir", required=True)
     args = parser.parse_args(argv)
     if args.command == "create":
-        manifest = create_async_vast_wam_run(
-            job_dir=args.job_dir,
-            bundle_path=args.bundle_path,
-            public_base_url=args.public_base_url,
-            provider_bundle_url=args.provider_bundle_url,
-            provider_output_put_url=args.provider_output_put_url,
-            provider_output_get_url=args.provider_output_get_url,
-            provider_bundle_url_file=args.provider_bundle_url_file,
-            provider_output_put_url_file=args.provider_output_put_url_file,
-            provider_output_get_url_file=args.provider_output_get_url_file,
-            token_file=args.token_file,
-            secret_env_file=args.secret_env_file,
-            output_path=args.output_path,
-            session_budget_ledger=args.session_budget_ledger,
-            allow_paid_vast_launch=args.allow_paid_vast_launch,
-            max_hourly_rate=args.max_hourly_rate,
-            target_spend_usd=args.target_spend_usd,
-            hard_cap_usd=args.hard_cap_usd,
-            allow_target_spend_overrun=args.allow_target_spend_overrun,
-            max_live_minutes=args.max_live_minutes,
-            session_max_live_minutes=args.session_max_live_minutes,
-            min_gpu_ram_mb=args.min_gpu_ram_mb,
-            excluded_machine_ids=args.excluded_machine_id,
-            allowed_machine_ids=args.allowed_machine_id,
-            min_reliability=args.min_reliability,
-            require_direct_port=args.require_direct_port or None,
-            preferred_gpu_keywords=args.preferred_gpu_keyword,
-            preferred_geolocation_regex=args.preferred_geolocation_regex,
-            prefer_isaac_rt=args.prefer_isaac_rt,
-            startup_poll_seconds=args.startup_poll_seconds,
-            public_staging_verify_max_wait_seconds=args.public_staging_verify_max_wait_seconds,
-            public_staging_verify_retry_interval_seconds=args.public_staging_verify_retry_interval_seconds,
-            public_staging_verify_timeout_seconds=args.public_staging_verify_timeout_seconds,
-            public_staging_required_consecutive_successes=args.public_staging_required_consecutive_successes,
-            verify_output_put_url=args.verify_output_put_url,
-            public_image=args.public_image,
-            vast_launch_mode=args.vast_launch_mode,
-            disk_gb=args.disk_gb,
-            heartbeat_url=args.heartbeat_url,
-        )
-    elif args.command == "poll":
+        print("legacy_vast_wam_create_cli_disabled", file=sys.stderr)
+        return 2
+    if args.command == "poll":
         manifest = poll_async_vast_wam_run(
             job_dir=args.job_dir,
             max_wait_seconds=args.max_wait_seconds,

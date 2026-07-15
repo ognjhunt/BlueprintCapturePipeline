@@ -11,6 +11,11 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.vast_provider_adapter as vpa
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from blueprint_pipeline.vast_provider_adapter import (
     DEFAULT_ISAAC_IMAGE,
     DEFAULT_ISAAC_DISK_GB,
@@ -25,6 +30,18 @@ from blueprint_pipeline.vast_provider_adapter import (
 
 
 pytestmark = pytest.mark.slow
+
+
+def _paid_grant():
+    admission = build_paid_lane_admission(
+        resource_class="vast_provider_adapter",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="vast_provider_adapter",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -1186,6 +1203,7 @@ def test_vast_adapter_blocks_live_without_gates_or_secret(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=False,
         allow_instance_launch=False,
     )
@@ -1230,6 +1248,7 @@ def test_vast_adapter_blocks_session_runtime_exhaustion_before_api(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         max_live_minutes=1,
@@ -1272,6 +1291,7 @@ def test_vast_adapter_blocks_paid_launch_when_launch_lock_busy(
         result = run_vast_provider_adapter(
             job_dir=tmp_path / "lock-blocked",
             mode="live-startup-probe",
+            paid_resource_admission_grant=_paid_grant(),
             allow_vast_api_call=True,
             allow_instance_launch=True,
             max_live_minutes=1,
@@ -1330,6 +1350,7 @@ def test_vast_adapter_blocks_paid_launch_when_existing_instance_active(
     result = run_vast_provider_adapter(
         job_dir=job_dir,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         max_live_minutes=1,
@@ -1376,6 +1397,7 @@ def test_vast_adapter_blocks_blueprint_bundle_missing_staging_before_api(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle=bundle,
@@ -1434,6 +1456,7 @@ def test_vast_adapter_blocks_stale_bundle_url_before_api(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle=bundle,
@@ -1474,6 +1497,7 @@ def test_vast_adapter_blocks_localhost_staging_urls_before_api(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle=bundle,
@@ -1596,6 +1620,7 @@ def test_vast_adapter_mocked_live_heartbeat_gpu_and_teardown(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         poll_interval_seconds=0,
@@ -1704,6 +1729,7 @@ def test_vast_adapter_honors_min_gpu_ram_env_in_offer_selection(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         poll_interval_seconds=0,
@@ -1801,6 +1827,7 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         poll_interval_seconds=0,
@@ -1913,6 +1940,7 @@ def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         enable_isaac_smoke=True,
@@ -2308,6 +2336,7 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle=provider_bundle,
@@ -2435,6 +2464,7 @@ def test_vast_adapter_unitree_groot_bundle_completes_without_video_smoke(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "unitree-live",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         public_image="docker.io/nijelhunt/blueprint-vast-unitree-groot-sonic:20260624-pydeps-vast1",
@@ -2546,6 +2576,7 @@ def test_vast_adapter_infers_provider_start_when_log_tail_drops_early_markers(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         public_image=DEFAULT_ISAAC_IMAGE,
@@ -2630,6 +2661,7 @@ def test_vast_adapter_records_machine_avoidlist_on_heartbeat_blocker(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         poll_interval_seconds=0,
@@ -2698,6 +2730,7 @@ def test_vast_adapter_heartbeat_no_progress_has_startup_specific_timeout(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "empty-heartbeat",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         poll_interval_seconds=0,
@@ -2792,6 +2825,7 @@ def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "downstream-after-heartbeat",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle_kind="unitree_groot_n17_sonic",
@@ -2867,6 +2901,7 @@ def test_vast_adapter_records_machine_avoidlist_on_probe_interrupt(
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         poll_interval_seconds=0,
@@ -4289,6 +4324,7 @@ def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs
     result = run_vast_provider_adapter(
         job_dir=tmp_path,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         poll_interval_seconds=0,
@@ -4494,6 +4530,31 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
     assert "vast_estimated_spend_exceeded_hard_cap" in validation["blockers"]
 
 
+def test_vast_adapter_missing_grant_dominates_provider_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_live_gates(tmp_path, monkeypatch)
+
+    def inventory_only_api(**kwargs):  # type: ignore[no-untyped-def]
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {"instances": []}
+        raise AssertionError("Vast create/search reached without opaque grant")
+
+    monkeypatch.setattr(vpa, "_api_json", inventory_only_api)
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path / "missing-grant",
+        mode="live-startup-probe",
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        session_max_live_minutes=None,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["vast_side_effects_may_have_occurred"] is False
+    assert "vast_provider_shared_admission_missing_or_invalid" in result["blockers"]
+
+
 def test_vast_adapter_live_error_paths_are_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4516,6 +4577,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     no_offer = run_vast_provider_adapter(
         job_dir=tmp_path / "no-offer",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4526,6 +4588,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     no_compute_cap_offer = run_vast_provider_adapter(
         job_dir=tmp_path / "no-compute-cap-offer",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4560,6 +4623,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     no_allowed_offer = run_vast_provider_adapter(
         job_dir=tmp_path / "no-allowed-offer",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4604,6 +4668,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     expensive = run_vast_provider_adapter(
         job_dir=tmp_path / "expensive",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         max_hourly_rate=3.0,
@@ -4638,6 +4703,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     missing_id = run_vast_provider_adapter(
         job_dir=tmp_path / "missing-id",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4672,6 +4738,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     failed_instance = run_vast_provider_adapter(
         job_dir=tmp_path / "failed-instance",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4696,6 +4763,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     http_error = run_vast_provider_adapter(
         job_dir=tmp_path / "http-error",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4713,6 +4781,7 @@ def test_vast_adapter_live_error_paths_are_fail_closed(
     interrupted = run_vast_provider_adapter(
         job_dir=tmp_path / "interrupted",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4734,6 +4803,7 @@ def test_vast_adapter_blocks_isaac_image_preflight_before_offer_search(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "image-preflight-blocked",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         enable_isaac_smoke=True,
@@ -4789,6 +4859,7 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
     ignored = run_vast_provider_adapter(
         job_dir=tmp_path / "ignored-signal",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4821,6 +4892,7 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
     raised = run_vast_provider_adapter(
         job_dir=tmp_path / "raised-signal",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4843,6 +4915,7 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
     registration_failed = run_vast_provider_adapter(
         job_dir=tmp_path / "signal-registration-failed",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_max_live_minutes=None,
@@ -4906,6 +4979,7 @@ def test_vast_adapter_mocked_wam_bundle_marks_isaac_not_required(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "wam-live",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle_kind="wam",
@@ -4975,6 +5049,7 @@ def test_vast_adapter_isaac_ngc_missing_blocks_smoke_after_gpu(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "isaac-ngc-missing",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         enable_isaac_smoke=True,
@@ -5049,6 +5124,7 @@ def test_vast_adapter_provider_blockers_after_mocked_preflight_pass(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "provider-blockers",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         enable_blueprint_bundle=True,
@@ -5102,6 +5178,7 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     result = run_vast_provider_adapter(
         job_dir=job_dir,
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         session_budget_ledger_path=budget,
@@ -5182,6 +5259,7 @@ def test_vast_adapter_non_rt_gpu_and_gpu_failure_block_isaac_and_provider(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "non-rt",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle=bundle,
@@ -5257,6 +5335,7 @@ def test_vast_adapter_provider_marker_missing_branches(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "missing-markers",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         public_image=DEFAULT_ISAAC_IMAGE,
@@ -5293,6 +5372,7 @@ def test_vast_adapter_blueprint_bundle_requires_isaac_smoke_path(
     result = run_vast_provider_adapter(
         job_dir=tmp_path / "bundle-needs-isaac",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle=bundle,
@@ -5365,17 +5445,10 @@ def test_vast_adapter_main_prints_success_and_blocked_statuses(
             "--verify-staging-urls",
             "--allow-staging-output-put-probe",
         ]
-    ) == 0
-    output = capsys.readouterr().out
-    assert "status=completed" in output
-    assert "instance_ids=1,2" in output
-    assert calls[0]["enable_blueprint_bundle"] is True
-    assert calls[0]["disk_gb"] == 64
-    assert calls[0]["heartbeat_no_progress_seconds"] == 2
-    assert calls[0]["session_budget_ledger_path"] == str(tmp_path / "session-cost.json")
-    assert calls[0]["session_max_live_minutes"] == 12
-    assert calls[0]["verify_staging_urls"] is True
-    assert calls[0]["allow_staging_output_put_probe"] is True
+    ) == 2
+    captured = capsys.readouterr()
+    assert "legacy_vast_provider_mutation_cli_disabled" in captured.err
+    assert calls == []
 
     def fake_blocked(**_kwargs):  # type: ignore[no-untyped-def]
         return {"status": "blocked", "vast_instance_ids": [], "blockers": ["blocked"]}
@@ -5732,6 +5805,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     image_blocked = run_vast_provider_adapter(
         job_dir=tmp_path / "image-blocked",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         enable_isaac_smoke=True,
@@ -5789,6 +5863,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     wam = run_vast_provider_adapter(
         job_dir=tmp_path / "wam-live",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         provider_bundle=wam_bundle,
@@ -5809,6 +5884,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     ngc_missing = run_vast_provider_adapter(
         job_dir=tmp_path / "ngc-missing",
         mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
         allow_vast_api_call=True,
         allow_instance_launch=True,
         enable_isaac_smoke=True,

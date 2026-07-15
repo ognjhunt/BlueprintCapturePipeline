@@ -8,6 +8,12 @@ from urllib.error import HTTPError
 import pytest
 
 from blueprint_pipeline import runpod_provider_adapter as adapter
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    PaidResourceAdmissionGrant,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+)
 from blueprint_pipeline.runpod_provider_adapter import (
     RUNPOD_API_GATE_ENV,
     RUNPOD_API_KEY_ENV,
@@ -28,6 +34,18 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _paid_grant() -> PaidResourceAdmissionGrant:
+    admission = build_paid_lane_admission(
+        resource_class="runpod_provider_adapter",
+        blockers=[],
+    )
+    return require_paid_resource_admission(
+        admission,
+        resource_class="runpod_provider_adapter",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
 
 
 def test_runpod_http_transport_rejects_non_runpod_origins_before_network() -> None:
@@ -425,6 +443,7 @@ def test_runpod_adapter_forwards_allowed_secret_env_with_redaction(
         provider_launch_request_path=request_path,
         mode="on-demand-pod",
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
     persisted = _read_json(tmp_path / "runpod_provider_adapter_result.json")
 
@@ -436,6 +455,32 @@ def test_runpod_adapter_forwards_allowed_secret_env_with_redaction(
     )
     assert result["status"] == "submitted"
     assert secret_value not in json.dumps(persisted)
+
+
+def test_runpod_adapter_blocks_missing_shared_admission_before_api_call(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request_path = _ready_runpod_request(tmp_path / "gpu_provider_launch_request.json")
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
+
+    def api_must_not_run(*_args, **_kwargs):
+        raise AssertionError("RunPod mutation reached without shared admission")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.safe_outbound_http._open_with_policy",
+        api_must_not_run,
+    )
+    result = run_runpod_provider_adapter(
+        provider_launch_request_path=request_path,
+        mode="on-demand-pod",
+        allow_runpod_api_call=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["api_call_performed"] is False
+    assert "runpod_provider_shared_admission_missing_or_invalid" in result["blockers"]
 
 
 def test_runpod_adapter_blocks_missing_cost_control_limits(
@@ -868,6 +913,7 @@ def test_runpod_adapter_submits_serverless_run_with_redacted_error(
         mode="serverless-run",
         allow_runpod_api_call=True,
         endpoint_id="endpoint-123",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_provider_adapter_result.json").read_text(
@@ -960,6 +1006,7 @@ def test_runpod_adapter_submits_on_demand_pod_payload(
         mode="on-demand-pod",
         allow_runpod_api_call=True,
         pod_name="blueprint-test-pod",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert captured["url"] == "https://rest.runpod.io/v1/pods"
@@ -1063,6 +1110,7 @@ def test_runpod_adapter_accepts_api_key_file_without_persisting_secret(
         mode="on-demand-pod",
         allow_runpod_api_call=True,
         pod_name="blueprint-test-pod",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_provider_adapter_result.json").read_text(
@@ -1112,6 +1160,7 @@ def test_runpod_adapter_accepts_runpod_config_without_persisting_secret(
         mode="on-demand-pod",
         allow_runpod_api_call=True,
         pod_name="blueprint-test-pod",
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     persisted = (tmp_path / "runpod_provider_adapter_result.json").read_text(
@@ -1388,6 +1437,7 @@ def test_runpod_adapter_empty_http_response_is_submitted_with_empty_body(
         provider_launch_request_path=request_path,
         mode="on-demand-pod",
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert result["status"] == "submitted"
@@ -1539,6 +1589,7 @@ def test_runpod_adapter_updates_and_starts_existing_pod(
         existing_pod_id="pod-123",
         pod_name="reused-pod",
         allow_runpod_api_call=True,
+        paid_resource_admission_grant=_paid_grant(),
     )
 
     assert result["status"] == "submitted"
