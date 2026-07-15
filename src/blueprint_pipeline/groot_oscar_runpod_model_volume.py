@@ -57,6 +57,27 @@ def _read_secret(path: str | Path) -> str:
     return value
 
 
+def _single_gpu_capacity_verified(
+    *,
+    capacity: Mapping[str, Any],
+    selected: Mapping[str, Any],
+    data_center_id: str,
+    required_cuda_version: str,
+) -> bool:
+    """Accept the exact one-GPU offer while keeping it advisory, not reserved."""
+
+    return bool(
+        capacity.get("status") == "available"
+        and capacity.get("capacity_confidence") == "advisory"
+        and selected.get("capacity_confidence") == "advisory"
+        and selected.get("single_gpu_offer_requested") is True
+        and selected.get("single_gpu_offer_available") is True
+        and selected.get("capacity_data_center_id") == data_center_id
+        and required_cuda_version
+        in (selected.get("capacity_allowed_cuda_versions") or [])
+    )
+
+
 def build_model_volume_admission(
     *,
     release_image_ref: str,
@@ -400,15 +421,11 @@ def run_model_volume(
         {},
     )
     hourly_rate = float(selected.get("on_demand_price_usd_per_hour") or 0)
-    capacity_verified = bool(
-        capacity.get("status") == "available"
-        and capacity.get("capacity_confidence") == "advisory"
-        and selected.get("capacity_confidence") == "advisory"
-        and selected.get("single_gpu_count_known") is True
-        and 1 in (selected.get("available_gpu_counts") or [])
-        and selected.get("capacity_data_center_id") == data_center_id
-        and required_cuda_version
-        in (selected.get("capacity_allowed_cuda_versions") or [])
+    capacity_verified = _single_gpu_capacity_verified(
+        capacity=capacity,
+        selected=selected,
+        data_center_id=data_center_id,
+        required_cuda_version=required_cuda_version,
     )
     deadline = time.time() + hard_ttl_seconds
     watchdog_nonce = secrets.token_hex(16)
