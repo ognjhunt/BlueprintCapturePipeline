@@ -133,6 +133,7 @@ ALLOWED_HTTPS_HOSTS = frozenset(
     }
 )
 AuthorizedFetch = Callable[[str, str], bytes]
+COSMOS_LOCAL_MODEL_PREFIX = "nvidia/Cosmos-Reason2-2B/"
 
 
 def _assigned_literal(module: Path, name: str) -> object:
@@ -161,6 +162,18 @@ def _assigned_literal(module: Path, name: str) -> object:
     if name not in assignments:
         raise ValueError(f"missing_literal:{name}")
     return evaluate(assignments[name])
+
+
+def _required_model_source_files(
+    required_files: Mapping[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    """Map cache-relative paths to the immutable repository source paths."""
+
+    source_files = dict(required_files)
+    source_files["cosmos"] = cast(
+        tuple[str, ...], _assigned_literal(MODEL_CACHE, "COSMOS_MODEL_FILES")
+    )
+    return source_files
 
 
 def _allowed_https_url(url: str) -> str:
@@ -301,8 +314,14 @@ def verify_static() -> list[str]:
         dict[str, tuple[str, ...]],
         _assigned_literal(MODEL_CACHE, "REQUIRED_MODEL_FILES"),
     )
+    source_files = _required_model_source_files(required_files)
     if {row[0] for row in model_pins} != set(required_files):
         blockers.append("model_pin_required_file_coverage_mismatch")
+    expected_cosmos_cache_files = tuple(
+        f"{COSMOS_LOCAL_MODEL_PREFIX}{path}" for path in source_files["cosmos"]
+    )
+    if required_files.get("cosmos") != expected_cosmos_cache_files:
+        blockers.append("cosmos_local_model_layout_mismatch")
     for name, _repository, revision in model_pins:
         if not re.fullmatch(r"[0-9a-f]{40}", revision):
             blockers.append(f"model_revision_not_immutable:{name}")
@@ -538,6 +557,7 @@ def verify_live(
         dict[str, tuple[str, ...]],
         _assigned_literal(MODEL_CACHE, "REQUIRED_MODEL_FILES"),
     )
+    source_files = _required_model_source_files(required_files)
     required_model_cache_bytes = 0
     required_model_cache_files = 0
     for name, repository, revision in model_pins:
@@ -551,15 +571,15 @@ def verify_live(
             actual_revision = metadata.get("sha")
             _available, missing, invalid_sizes, model_bytes = (
                 summarize_required_model_metadata(
-                    metadata.get("siblings", []), required_files[name]
+                    metadata.get("siblings", []), source_files[name]
                 )
             )
             required_model_cache_bytes += model_bytes
-            required_model_cache_files += len(required_files[name])
+            required_model_cache_files += len(source_files[name])
             checks[f"model:{name}"] = {
                 "repository": repository,
                 "revision": actual_revision,
-                "required": len(required_files[name]),
+                "required": len(source_files[name]),
                 "required_bytes": model_bytes,
                 "missing": missing,
                 "invalid_sizes": invalid_sizes,

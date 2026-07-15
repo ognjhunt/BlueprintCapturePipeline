@@ -63,8 +63,17 @@ REQUIRED_MODEL_FILES: dict[str, tuple[str, ...]] = {
         "processor/processor_config.json",
         "processor/statistics.json",
     ),
-    "cosmos": tuple(
-        f"nvidia/Cosmos-Reason2-2B/{relative}" for relative in COSMOS_MODEL_FILES
+    "cosmos": (
+        "nvidia/Cosmos-Reason2-2B/config.json",
+        "nvidia/Cosmos-Reason2-2B/chat_template.json",
+        "nvidia/Cosmos-Reason2-2B/generation_config.json",
+        "nvidia/Cosmos-Reason2-2B/merges.txt",
+        "nvidia/Cosmos-Reason2-2B/model.safetensors",
+        "nvidia/Cosmos-Reason2-2B/preprocessor_config.json",
+        "nvidia/Cosmos-Reason2-2B/tokenizer.json",
+        "nvidia/Cosmos-Reason2-2B/tokenizer_config.json",
+        "nvidia/Cosmos-Reason2-2B/video_preprocessor_config.json",
+        "nvidia/Cosmos-Reason2-2B/vocab.json",
     ),
     "oscar": (
         "case_map.json",
