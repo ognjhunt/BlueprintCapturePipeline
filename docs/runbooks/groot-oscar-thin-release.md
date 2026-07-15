@@ -131,29 +131,31 @@ populating a volume in the console:
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator model-volume \
   --output-dir <evidence-dir> \
-  --release-image-ref '<repository>@sha256:<digest>' \
   --data-center-id '<capacity-verified-dc>' \
-  --gpu-type-id 'NVIDIA A40' \
-  --required-cuda-version 12.8 \
   --volume-size-gib 50 \
-  --volume-hourly-rate-usd '<provider-verified-rate>' \
-  --hard-ttl-seconds 2700 \
-  --max-spend-usd 0.40 \
+  --storage-hourly-rate-usd '<provider-verified-rate>' \
+  --storage-ttl-seconds 14400 \
+  --max-storage-spend-usd 0.05 \
+  --builder-evidence <digitalocean-builder-evidence.json> \
+  --builder-spend <digitalocean-builder-spend.json> \
+  --login-private-key <digitalocean-login-private-key> \
+  --host-private-key <pinned-builder-host-private-key> \
+  --ssh-key-id <digitalocean-ssh-key-id> \
   --allow-paid
 ```
 
-The allocator derives the volume's hourly cost from the selected GiB at the
-documented first-terabyte rate and includes it in admission. Override
-`--volume-hourly-rate-usd` only when a current provider price row proves a
-different rate.
+Use the current provider-confirmed total hourly price for the selected volume
+as `--storage-hourly-rate-usd`; the allocator rejects a TTL whose maximum cost
+exceeds `--max-storage-spend-usd`. The admitted builder evidence and spend
+files bind this operation to the one authorized DigitalOcean CPU builder.
 
 It arms an independent name-scoped watchdog before creating anything, creates
-one volume and one temporary preparation Pod, downloads and fully hashes the
-pinned allowlist, retrieves token-authenticated verification evidence, deletes
-the preparation Pod, and emits the verified volume ID for the GPU canary while
-the original deadline watchdog remains responsible for the volume. On failure
-it deletes the volume too. The Hugging Face token remains file-backed
-locally and raw secret values are never persisted.
+one storage-only RunPod volume and no GPU Pod, prepares and fully hashes the
+pinned allowlist on the admitted DigitalOcean CPU builder, uploads and
+redownload-verifies it through RunPod S3, and emits the verified volume ID for
+the GPU canary while the original deadline watchdog remains responsible for
+the volume. On failure it deletes the volume too. Hugging Face and RunPod S3
+credentials remain file-backed and raw secret values are never persisted.
 
 The second command in the script re-reads and hashes every model byte under
 `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. Preserve the emitted
@@ -289,8 +291,21 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --admission-out <canary-dir>/runpod_admission.json \
   --bound-request-out <canary-dir>/bound_provider_request.json \
   --adapter-output <canary-dir>/runpod_adapter_result.json \
-  --pod-name blueprint-groot-oscar-canary-<attempt>
+  --pod-name blueprint-groot-oscar-canary-<attempt> \
+  --campaign-budget-ledger <durable-campaign-budget.json> \
+  --campaign-initial-spent-usd 11.57 \
+  --campaign-initial-used-gpu-seconds 10815 \
+  --campaign-total-spend-cap-usd 20.00 \
+  --campaign-wall-cap-seconds 16800 \
+  --campaign-reservation-seconds 5985 \
+  --campaign-max-hourly-rate-usd '<capacity-verified-rate-at-or-below-1.99>'
 ```
+
+The `11.57` USD and `10815` GPU-second values are the reconciled campaign
+baselines, not a fresh allowance. The command reserves the remaining 5,985
+GPU-seconds against the 16,800-second campaign ceiling. After inspecting the
+dry-run evidence, rerun this exact command with `--execute`; omitting any of
+the four ledger identity/rate arguments fails before provider mutation.
 
 The launcher refuses to rewrite a tag into an admitted digest or silently pick
 another GPU. On live submission, before the provider adapter is reachable, it
