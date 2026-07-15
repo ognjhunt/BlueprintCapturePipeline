@@ -29,3 +29,11 @@ RUNPOD_REST_API_BASE = "https://rest.runpod.io/v1"
 request = {"url": f"{RUNPOD_REST_API_BASE}/pods", "method": "POST"}
 '''
     assert verifier._unclassified_direct_mutators({path: source}, {path}) == set()
+
+
+def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
+    blockers = set(verifier.verify())
+    assert "model_volume_watchdog_handoff_schema_missing" not in blockers
+    assert "gpu_preflight_model_volume_watchdog_handoff_guard_missing" not in blockers
+    assert "gpu_launch_refresh_drops_model_volume_watchdog_handoff" not in blockers
+    assert "runbook_model_volume_watchdog_handoff_missing" not in blockers

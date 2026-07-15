@@ -256,6 +256,7 @@ python -m blueprint_pipeline.groot_oscar_runpod_preflight \
   --required-cuda-version 12.8 \
   --name-prefix blueprint-groot-oscar-canary-<attempt> \
   --watchdog-evidence <canary-dir>/groot_oscar_runpod_canary_watchdog.json \
+  --model-volume-watchdog-handoff <model-volume-dir>/watchdog_handoff.json \
   --max-spend-usd 1.00 \
   --paid-mutation-authorized \
   --out <canary-dir>/runpod_preflight.json

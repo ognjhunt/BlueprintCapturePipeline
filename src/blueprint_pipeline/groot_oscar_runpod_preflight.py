@@ -24,6 +24,8 @@ from .groot_oscar_infrastructure_admission import (
 
 SCHEMA_VERSION = "groot_oscar_runpod_preflight_bundle.v1"
 WATCHDOG_MODULE = "blueprint_pipeline.groot_oscar_runpod_watchdog"
+MODEL_VOLUME_HANDOFF_SCHEMA_VERSION = "groot_oscar_model_volume_watchdog_handoff.v1"
+MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS = 60
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -119,6 +121,60 @@ def build_watchdog_spend_evidence(
     }
 
 
+def build_model_volume_watchdog_handoff_evidence(
+    *,
+    handoff: Mapping[str, Any],
+    network_volume_id: str,
+    canary_watchdog_deadline_epoch: float,
+    clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Prove the retained volume watchdog cannot delete cache during canary use."""
+
+    deadline = handoff.get("watchdog_deadline_epoch")
+    deadline_value = float(deadline) if isinstance(deadline, (int, float)) else 0.0
+    remaining_ttl_seconds = max(0, int(deadline_value - clock()))
+    blockers: list[str] = []
+    if handoff.get("schema_version") != MODEL_VOLUME_HANDOFF_SCHEMA_VERSION:
+        blockers.append("model_volume_watchdog_handoff_schema_invalid")
+    if handoff.get("status") not in {"volume_ready_watchdog_retained", "verified"}:
+        blockers.append("model_volume_watchdog_handoff_not_ready")
+    if str(handoff.get("volume_id") or "") != network_volume_id:
+        blockers.append("model_volume_watchdog_handoff_volume_mismatch")
+    if handoff.get("preparation_pod_absence_confirmed") is not True:
+        blockers.append("model_volume_preparation_pod_absence_not_confirmed")
+    if handoff.get("volume_presence_confirmed") is not True:
+        blockers.append("model_volume_presence_not_confirmed_at_handoff")
+    if handoff.get("teardown_owner") != "independent_model_volume_watchdog":
+        blockers.append("model_volume_watchdog_teardown_owner_invalid")
+    if handoff.get("next_owner_must_arm_before_transfer") is not True:
+        blockers.append("model_volume_watchdog_transfer_contract_missing")
+    if deadline_value < (
+        canary_watchdog_deadline_epoch + MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS
+    ):
+        blockers.append("model_volume_watchdog_ttl_does_not_cover_canary")
+    return {
+        "schema_version": MODEL_VOLUME_HANDOFF_SCHEMA_VERSION,
+        "status": "verified" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "volume_id": network_volume_id,
+        "watchdog_deadline_epoch": deadline_value or None,
+        "remaining_ttl_seconds": remaining_ttl_seconds,
+        "required_canary_deadline_epoch": canary_watchdog_deadline_epoch,
+        "required_margin_seconds": MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS,
+        "teardown_owner": handoff.get("teardown_owner"),
+        "preparation_pod_absence_confirmed": handoff.get(
+            "preparation_pod_absence_confirmed"
+        )
+        is True,
+        "volume_presence_confirmed": handoff.get("volume_presence_confirmed") is True,
+        "next_owner_must_arm_before_transfer": handoff.get(
+            "next_owner_must_arm_before_transfer"
+        )
+        is True,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def collect_runpod_preflight(
     *,
     network_volume_id: str,
@@ -127,6 +183,7 @@ def collect_runpod_preflight(
     required_cuda_version: str,
     name_prefix: str,
     watchdog: Mapping[str, Any],
+    model_volume_watchdog_handoff: Mapping[str, Any],
     max_spend_usd: float,
     paid_mutation_authorized: bool,
     volume_getter: Callable[[str], tuple[int, Mapping[str, Any]]],
@@ -172,6 +229,12 @@ def collect_runpod_preflight(
         clock=lambda: observed_at_epoch,
         process_argv_probe=process_argv_probe,
     )
+    model_volume_handoff = build_model_volume_watchdog_handoff_evidence(
+        handoff=model_volume_watchdog_handoff,
+        network_volume_id=network_volume_id,
+        canary_watchdog_deadline_epoch=float(spend.get("watchdog_deadline_epoch") or 0),
+        clock=lambda: observed_at_epoch,
+    )
     blockers: list[str] = []
     if volume.get("status") != "verified":
         blockers.extend(str(item) for item in volume.get("blockers") or [])
@@ -183,6 +246,8 @@ def collect_runpod_preflight(
         blockers.append("runpod_preallocation_inventory_not_zero")
     if spend.get("watchdog_armed_before_allocation") is not True:
         blockers.append("runpod_teardown_watchdog_not_armed_before_allocation")
+    if model_volume_handoff.get("status") != "verified":
+        blockers.extend(str(item) for item in model_volume_handoff.get("blockers") or [])
     watchdog_prefix = str(spend.get("watchdog_pod_name_prefix") or "").strip()
     if watchdog_prefix and watchdog_prefix != name_prefix:
         blockers.append("runpod_teardown_watchdog_name_prefix_mismatch")
@@ -194,6 +259,7 @@ def collect_runpod_preflight(
         "volume": volume,
         "runtime": runtime,
         "spend": spend,
+        "model_volume_watchdog_handoff": model_volume_handoff,
         "capacity_snapshot": capacity,
         "billable_inventory": inventory,
         "provider_mutations_performed": 0,
@@ -209,6 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--required-cuda-version", required=True)
     parser.add_argument("--name-prefix", default="blueprint-groot-oscar-canary-")
     parser.add_argument("--watchdog-evidence", required=True)
+    parser.add_argument("--model-volume-watchdog-handoff", required=True)
     parser.add_argument("--max-spend-usd", type=float, required=True)
     parser.add_argument("--paid-mutation-authorized", action="store_true")
     parser.add_argument("--out", required=True)
@@ -231,6 +298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         required_cuda_version=args.required_cuda_version,
         name_prefix=args.name_prefix,
         watchdog=_read_json(args.watchdog_evidence),
+        model_volume_watchdog_handoff=_read_json(args.model_volume_watchdog_handoff),
         max_spend_usd=args.max_spend_usd,
         paid_mutation_authorized=args.paid_mutation_authorized,
         volume_getter=volume_getter,

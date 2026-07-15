@@ -79,6 +79,16 @@ def _preflight() -> dict:
             "watchdog_deadline_epoch": 1900.0,
             "watchdog_pod_name_prefix": "blueprint-groot-oscar-canary-",
         },
+        "model_volume_watchdog_handoff": {
+            "schema_version": "groot_oscar_model_volume_watchdog_handoff.v1",
+            "status": "volume_ready_watchdog_retained",
+            "volume_id": "volume-1",
+            "preparation_pod_absence_confirmed": True,
+            "volume_presence_confirmed": True,
+            "teardown_owner": "independent_model_volume_watchdog",
+            "watchdog_deadline_epoch": 2800.0,
+            "next_owner_must_arm_before_transfer": True,
+        },
     }
 
 
