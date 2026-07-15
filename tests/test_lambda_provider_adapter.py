@@ -426,6 +426,7 @@ def test_terminate_instances_writes_teardown_manifest(
         output_path=tmp_path / "out.json",
         mode="terminate-instances",
         allow_lambda_api_call=True,
+        paid_resource_admission_grant=_lambda_grant(),
         instance_ids=["lambda-instance-1"],
         teardown_poll_attempts=1,
         teardown_poll_interval_seconds=0,
@@ -446,6 +447,33 @@ def test_terminate_instances_writes_teardown_manifest(
     assert teardown["continuing_spend_requires_followup_list_instances"] is False
     assert teardown["open_billing_risk"] is False
     assert teardown["teardown_verification"]["api_confirmed"] is True
+
+
+def test_terminate_instances_missing_grant_blocks_before_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_file = tmp_path / "lambda_api_key"
+    key_file.write_text("secret_file_value\n", encoding="utf-8")
+    monkeypatch.setenv(LAMBDA_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(LAMBDA_API_GATE_ENV, "true")
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("provider transport called"),
+    )
+
+    result = run_lambda_provider_adapter(
+        provider_launch_request_path=_ready_lambda_request(tmp_path / "request.json"),
+        output_path=tmp_path / "out.json",
+        mode="terminate-instances",
+        allow_lambda_api_call=True,
+        instance_ids=["lambda-instance-1"],
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert "paid_resource_admission_grant_missing" in result["blockers"]
 
 
 def test_terminate_instances_stays_unverified_when_instance_is_still_active(
@@ -490,6 +518,7 @@ def test_terminate_instances_stays_unverified_when_instance_is_still_active(
         output_path=tmp_path / "out.json",
         mode="terminate-instances",
         allow_lambda_api_call=True,
+        paid_resource_admission_grant=_lambda_grant(),
         instance_ids=["lambda-instance-1"],
         teardown_poll_attempts=1,
         teardown_poll_interval_seconds=0,
@@ -538,3 +567,19 @@ def test_cli_main_dry_run_returns_zero(
     assert exit_code == 0
     captured = capsys.readouterr().out
     assert "status=dry_run_ready" in captured
+
+
+def test_cli_main_disables_legacy_termination_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("provider transport called"),
+    )
+
+    exit_code = lambda_adapter_main(["--mode", "terminate-instances"])
+
+    assert exit_code == 2
+    assert "legacy_lambda_provider_mutation_cli_disabled" in capsys.readouterr().err

@@ -18,6 +18,7 @@ MODEL_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_model_v
 STORAGE_VOLUME_ADAPTER = (
     ROOT / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
 )
+LAMBDA_ADAPTER = ROOT / "src/blueprint_pipeline/lambda_provider_adapter.py"
 RUNPOD_PREFLIGHT = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_preflight.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
@@ -349,6 +350,7 @@ def verify() -> list[str]:
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
     model_volume = MODEL_VOLUME_ADAPTER.read_text(encoding="utf-8")
     storage_volume = STORAGE_VOLUME_ADAPTER.read_text(encoding="utf-8")
+    lambda_adapter = LAMBDA_ADAPTER.read_text(encoding="utf-8")
     runpod_preflight = RUNPOD_PREFLIGHT.read_text(encoding="utf-8")
     thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
     thin_entrypoint = THIN_ENTRYPOINT.read_text(encoding="utf-8")
@@ -417,6 +419,15 @@ def verify() -> list[str]:
         blockers.append("model_volume_global_inventory_guard_missing")
     if "build_runpod_network_volume_evidence(" not in storage_volume:
         blockers.append("model_volume_provider_reported_size_guard_missing")
+    if not all(
+        marker in lambda_adapter
+        for marker in (
+            "MUTATING_API_MODES = LIVE_LAUNCH_MODES | {TERMINATE_MODE}",
+            "if mode in MUTATING_API_MODES:",
+            "if args.mode in MUTATING_API_MODES:",
+        )
+    ):
+        blockers.append("lambda_termination_shared_admission_guard_missing")
     if "python -m blueprint_pipeline.paid_resource_allocator" not in runbook:
         blockers.append("canonical_allocator_command_missing_from_runbook")
     if "--model-volume-watchdog-handoff" not in runbook:
@@ -497,6 +508,9 @@ def verify() -> list[str]:
     if "_SAFE_VERSIONED_IMAGE_REF" not in packet_builder or "shlex.quote" not in packet_builder:
         blockers.append("remote_build_packet_image_ref_shell_safety_missing")
     try:
+        foundation_candidate_at = packet_builder.index(
+            '-t "$foundation_candidate_ref" --push'
+        )
         release_candidate_at = packet_builder.index(
             '-t "$release_candidate_ref" --push'
         )
@@ -507,6 +521,9 @@ def verify() -> list[str]:
         release_promotion_at = packet_builder.index(
             'imagetools create --tag "$release_ref" "$release_exact"'
         )
+        foundation_promotion_at = packet_builder.index(
+            'imagetools create --tag "$foundation_ref" "$foundation_exact"'
+        )
         terminal_result_at = packet_builder.index(
             'mv "$validation_result" "$result"'
         )
@@ -514,15 +531,19 @@ def verify() -> list[str]:
         blockers.append("remote_build_final_tag_promotion_guard_missing")
     else:
         if not (
-            release_candidate_at
+            foundation_candidate_at
+            < release_candidate_at
             < release_validation_at
             < release_contract_at
             < release_promotion_at
+            < foundation_promotion_at
             < terminal_result_at
         ):
             blockers.append("remote_build_final_tag_promotion_order_invalid")
     if '-t "$release_ref" --push' in packet_builder:
         blockers.append("remote_build_pushes_unvalidated_final_release_tag")
+    if '-t "$foundation_ref" --push' in packet_builder:
+        blockers.append("remote_build_pushes_unvalidated_final_foundation_tag")
     gpu_calls = _function_calls(GPU_ADAPTER)
     if "run_runpod_provider_adapter" not in gpu_calls.get("run_canary", set()):
         blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")

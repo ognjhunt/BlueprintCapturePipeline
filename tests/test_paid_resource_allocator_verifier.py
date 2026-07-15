@@ -114,3 +114,5 @@ def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
     assert "remote_build_final_tag_promotion_guard_missing" not in blockers
     assert "remote_build_final_tag_promotion_order_invalid" not in blockers
     assert "remote_build_pushes_unvalidated_final_release_tag" not in blockers
+    assert "remote_build_pushes_unvalidated_final_foundation_tag" not in blockers
+    assert "lambda_termination_shared_admission_guard_missing" not in blockers
