@@ -498,7 +498,7 @@ def live_machine_probe_command(
 
     encoded_mount = json.dumps(mount_path)
     encoded_kind = json.dumps(packet_kind)
-    encoded_s3_host = json.dumps(s3_endpoint_host)
+    encoded_s3_host = repr(s3_endpoint_host)
     return f"""python3 - <<'PY'
 import json, os, platform, shutil, socket, subprocess, sys, tempfile, urllib.error, urllib.request
 mount_path = {encoded_mount}

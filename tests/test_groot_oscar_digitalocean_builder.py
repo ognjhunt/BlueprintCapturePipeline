@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -311,6 +312,22 @@ def test_live_machine_probe_is_validated_as_direct_machine_evidence() -> None:
     )
     assert evidence["status"] == "verified"
     assert evidence["free_bytes"] == 130 * 1024**3
+
+
+def test_thin_release_live_machine_probe_executes_and_emits_json() -> None:
+    completed = subprocess.run(
+        ["bash", "-c", live_machine_probe_command(mount_path="/")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    evidence = parse_live_machine_probe(completed.stdout)
+    assert evidence["observation_source"] == "live_machine_probe"
+    assert evidence["mount_path"] == "/"
+    assert evidence["s3_endpoint_host"] is None
 
 
 def test_live_machine_probe_rejects_catalog_or_requested_configuration() -> None:
