@@ -899,6 +899,10 @@ def build_cloud_init(
             "  - docker info\n"
             "  - docker buildx version"
         )
+        ready_command = (
+            "  - bash -c 'docker info >/dev/null && docker buildx version "
+            ">/dev/null && touch /root/blueprint-builder-ready'"
+        )
     else:
         package_lines = "  - ca-certificates\n  - python3\n  - python3-venv"
         runtime_commands = (
@@ -906,12 +910,21 @@ def build_cloud_init(
             "  - test -x /root/blueprint-venv-probe/bin/pip\n"
             "  - rm -rf /root/blueprint-venv-probe"
         )
+        ready_checks = "python3 -m venv /root/blueprint-venv-ready-probe"
         if runtime_bundle_requested:
             package_lines += "\n  - docker.io"
             runtime_commands += (
                 "\n  - systemctl enable --now docker\n"
                 "  - docker info"
             )
+            ready_checks = f"docker info >/dev/null && {ready_checks}"
+        ready_command = (
+            "  - bash -c '"
+            f"{ready_checks} && "
+            "test -x /root/blueprint-venv-ready-probe/bin/pip && "
+            "rm -rf /root/blueprint-venv-ready-probe && "
+            "touch /root/blueprint-builder-ready'"
+        )
     return f"""#cloud-config
 ssh_deletekeys: false
 bootcmd:
@@ -934,7 +947,7 @@ runcmd:
   - mkdir -p /root/blueprint-build /root/.blueprint-secrets
   - chmod 700 /root/.blueprint-secrets
 {runtime_commands}
-  - touch /root/blueprint-builder-ready
+{ready_command}
   - shutdown -h +{shutdown_minutes}
 """
 

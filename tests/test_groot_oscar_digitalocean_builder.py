@@ -244,6 +244,12 @@ def test_model_cache_runtime_bundle_cloud_init_installs_docker() -> None:
     assert "systemctl enable --now docker" in text
     assert "docker info" in text
     assert "python3 -m venv /root/blueprint-venv-probe" in text
+    ready_command = next(
+        line for line in text.splitlines() if "touch /root/blueprint-builder-ready" in line
+    )
+    assert "docker info" in ready_command
+    assert "python3 -m venv" in ready_command
+    assert text.splitlines().count("  - touch /root/blueprint-builder-ready") == 0
 
 
 def test_plain_model_cache_cloud_init_does_not_install_docker() -> None:
@@ -256,6 +262,11 @@ def test_plain_model_cache_cloud_init_does_not_install_docker() -> None:
     assert "docker.io" not in text
     assert "systemctl enable --now docker" not in text
     assert "python3 -m venv /root/blueprint-venv-probe" in text
+    ready_command = next(
+        line for line in text.splitlines() if "touch /root/blueprint-builder-ready" in line
+    )
+    assert "docker info" not in ready_command
+    assert "python3 -m venv" in ready_command
 
 
 def test_cloud_init_refuses_ttl_above_two_hours() -> None:
