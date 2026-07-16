@@ -409,7 +409,16 @@ def inspect(candidate):
         if "=> not found" not in line:
             continue
         left = line.split("=> not found", 1)[0].strip()
-        operand = left.split()[-1] if left else ""
+        operand_candidates = []
+        for token in left.split():
+            if ".so" not in token or len(token) > 512:
+                continue
+            if all(character in allowed for character in token) or (
+                "/" in token
+                and all(character in path_allowed for character in token)
+            ):
+                operand_candidates.append(token)
+        operand = operand_candidates[0] if len(operand_candidates) == 1 else ""
         if 0 < len(operand) <= 256 and ".so" in operand and all(
             character in allowed for character in operand
         ):
