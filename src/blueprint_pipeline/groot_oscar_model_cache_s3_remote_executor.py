@@ -296,18 +296,20 @@ def _missing_soname_tokens(text: str) -> set[str]:
     return tokens
 
 
-def _validation_diagnostic_tokens(exc: BaseException) -> list[str]:
+def _validation_dependency_tokens(exc: BaseException) -> set[str]:
     text = "\n".join(
         value
         for value in (getattr(exc, "stdout", ""), getattr(exc, "stderr", ""))
         if isinstance(value, str)
     )
-    return sorted(
-        {
-            *_missing_soname_tokens(text),
-            *(_MISSING_PYTHON_MODULE.findall(text)),
-        }
-    )[:256]
+    return {
+        *_missing_soname_tokens(text),
+        *(_MISSING_PYTHON_MODULE.findall(text)),
+    }
+
+
+def _validation_diagnostic_tokens(exc: BaseException) -> list[str]:
+    return sorted(_validation_dependency_tokens(exc))[:256]
 
 
 def _validate_runtime_inside_carrier(
@@ -487,6 +489,19 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
                 }
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            dependency_tokens = _validation_dependency_tokens(exc)
+            if dependency_tokens and all(
+                is_nvidia_driver_soname(token) for token in dependency_tokens
+            ):
+                gpu_driver_deferred_sonames.update(dependency_tokens)
+                checks.append(
+                    {
+                        "name": check_name,
+                        "status": "deferred_to_gpu_driver_bootstrap",
+                        "diagnostic_tokens": sorted(dependency_tokens)[:256],
+                    }
+                )
+                continue
             failed_checks.append(check_name)
             checks.append(
                 {
