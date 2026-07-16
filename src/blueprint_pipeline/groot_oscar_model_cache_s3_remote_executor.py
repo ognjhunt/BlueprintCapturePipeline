@@ -34,6 +34,7 @@ from .groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ROOT,
     MIN_CARRIER_VOLUME_GIB,
     RUNTIME_ARCHIVE_ROOTS,
+    RUNTIME_CARRIER_ENV,
     build_runtime_bundle_manifest,
 )
 from .groot_oscar_model_cache import (
@@ -70,16 +71,6 @@ CONSUMED_CAPABILITY_PATH = Path("/root/.blueprint-secrets/model_cache_parent_cap
 EXECUTION_LOCK_PATH = Path("/root/blueprint-build/model_cache_execution.lock")
 RUNTIME_BUNDLE_ROOT = Path(DEFAULT_RUNTIME_ROOT)
 RUNTIME_BUNDLE_BUILD_ROOT = Path("/workspace/.blueprint-runtime-build")
-RUNTIME_CARRIER_ENV = {
-    # The runtime payload is copied out of the release image and mounted into a
-    # small carrier. Docker image ENV metadata does not travel with those files,
-    # so reproduce the foundation runtime contract explicitly for validation.
-    "PYTHONPATH": "/opt/wbc:/opt/OSCAR",
-    "LD_LIBRARY_PATH": (
-        "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
-        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
-    ),
-}
 RUNTIME_EMBEDDED_MODEL_PATHS = (
     "opt/blueprint/ckpts",
     "opt/blueprint/hf_home",

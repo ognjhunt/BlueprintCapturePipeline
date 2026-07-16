@@ -8,6 +8,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ROOT,
     LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+    RUNTIME_CARRIER_ENV,
     RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
     build_runtime_bundle_manifest,
     canonical_json_sha256,
@@ -125,6 +126,7 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
 
     assert manifest["status"] == "complete"
     assert manifest["archive"]["format"] == "tar.gz"
+    assert manifest["runtime_env"] == RUNTIME_CARRIER_ENV
     assert "isaac-sim" in manifest["archive"]["member_roots"]
     assert "opt/gr00t-venv" in manifest["archive"]["member_roots"]
     assert "opt/runpod-serverless-venv" in manifest["archive"]["member_roots"]
@@ -198,6 +200,13 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_STARTED" in script
     assert "runtime_manifest_sha256_mismatch" in script
     assert "runtime_archive_sha256_mismatch" in script
+    assert "runtime_manifest_env_mismatch" in script
+    assert 'export PYTHONPATH=/opt/wbc:/opt/OSCAR' in script
+    assert (
+        "export LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
+        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+        in script
+    )
     assert "runtime_archive_member_outside_allowlist" in script
     assert "runtime_archive_link_outside_allowlist" in script
     assert 'archive.extractall(path="/", filter=lambda member, _path: member)' in script
