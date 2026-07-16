@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -157,6 +158,29 @@ def test_packet_round_trip_is_exact_and_preimport_verifiable(
 ) -> None:
     packet = _packet(tmp_path, monkeypatch)
     assert packet["status"] == "ready"
+    remote_root = tmp_path / "isolated-remote"
+    with tarfile.open(packet["tarball_path"], "r:gz") as archive:
+        for member in archive.getmembers():
+            stream = archive.extractfile(member)
+            assert stream is not None
+            destination = remote_root / member.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(stream.read())
+    context_src = remote_root / "groot_oscar_model_cache_s3_remote/context/src"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from blueprint_pipeline.groot_oscar_model_cache_s3_remote_executor "
+            "import execute_remote_packet; assert callable(execute_remote_packet)",
+        ],
+        cwd=remote_root,
+        env={**os.environ, "PYTHONPATH": str(context_src), "PYTHONNOUSERSITE": "1"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_runtime_packet_requires_digest_refs_and_120_gib_volume(
