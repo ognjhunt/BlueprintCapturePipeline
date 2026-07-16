@@ -275,6 +275,8 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert script.index("for soname in driver_sonames:") < script.index(
         'for argv in manifest.get("healthcheck_argv", []):'
     )
+    assert 'healthcheck_timeout = 300 if argv[0] == "/isaac-sim/python.sh" else 120' in script
+    assert "timeout=healthcheck_timeout" in script
     assert "gpu_driver_deferred_sonames_resolved" in script
     assert 'manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v2"' in script
     assert 'manifest.get("gpu_driver_deferred_sonames")' in script

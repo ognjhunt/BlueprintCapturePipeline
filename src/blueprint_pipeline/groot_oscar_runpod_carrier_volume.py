@@ -500,7 +500,14 @@ try:
         except OSError as exc:
             raise RuntimeError("runtime_gpu_driver_soname_unresolved") from exc
     for argv in manifest.get("healthcheck_argv", []):
-        completed = subprocess.run(argv, check=False, timeout=120, capture_output=True, text=True)
+        healthcheck_timeout = 300 if argv[0] == "/isaac-sim/python.sh" else 120
+        completed = subprocess.run(
+            argv,
+            check=False,
+            timeout=healthcheck_timeout,
+            capture_output=True,
+            text=True,
+        )
         if completed.returncode != 0:
             raise RuntimeError("runtime_healthcheck_failed")
     wbc_binary = Path("/opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref")
