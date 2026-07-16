@@ -27,6 +27,8 @@ def _cache() -> dict:
         "remote_prefix": P.RUNPOD_CACHE_PREFIX,
         "runtime_path_mapping_verified": True,
         "model_manifest_digest": MANIFEST,
+        "verified_file_count": 30,
+        "verified_size_bytes": 16_791_338_353,
     }
 
 
@@ -88,6 +90,27 @@ def test_prebake_admission_keeps_models_external_and_digest_pinned() -> None:
     )
     assert "prebake_release_image_not_digest_pinned" in result["blockers"]
     assert "prebake_release_models_not_externalized" in result["blockers"]
+
+
+def test_prebake_admission_rejects_cache_without_verified_counts() -> None:
+    cache = _cache()
+    cache.pop("verified_file_count")
+    cache["verified_size_bytes"] = 0
+    result = P.build_prebake_admission(
+        release=_release(),
+        model_cache=cache,
+        preflight={"status": "ready"},
+        volume_size_gib=50,
+        reservation_seconds=1_000,
+        future_gpu_seconds=3_980,
+        initial_spent_usd=14.557003,
+        initial_gpu_seconds=15_624,
+        total_spend_cap_usd=20.0,
+        gpu_wall_cap_seconds=21_000,
+        max_hourly_rate_usd=3.39,
+    )
+    assert "prebake_model_cache_verified_file_count_invalid" in result["blockers"]
+    assert "prebake_model_cache_verified_size_invalid" in result["blockers"]
 
 
 def test_remote_script_verifies_local_image_and_external_cache() -> None:

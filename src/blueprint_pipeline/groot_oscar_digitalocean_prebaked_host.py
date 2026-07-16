@@ -124,6 +124,16 @@ def build_prebake_admission(
         blockers.append("prebake_source_model_prefix_mismatch")
     if model_cache.get("runtime_path_mapping_verified") is not True:
         blockers.append("prebake_model_cache_runtime_mapping_unverified")
+    if (
+        type(model_cache.get("verified_file_count")) is not int
+        or int(model_cache.get("verified_file_count") or 0) <= 0
+    ):
+        blockers.append("prebake_model_cache_verified_file_count_invalid")
+    if (
+        type(model_cache.get("verified_size_bytes")) is not int
+        or int(model_cache.get("verified_size_bytes") or 0) <= 0
+    ):
+        blockers.append("prebake_model_cache_verified_size_invalid")
     if preflight.get("status") != "ready":
         blockers.append("prebake_digitalocean_preflight_not_ready")
     if volume_size_gib != DEFAULT_VOLUME_GIB:
@@ -770,7 +780,7 @@ def run_prebake(
     allocation_started_at: float | None = None
     allocation_ended_at: float | None = None
     remote_verified = False
-    teardown = {"provider_absence_confirmed": False}
+    teardown: dict[str, Any]
     temp_download_manifest: Path | None = None
     error_type: str | None = None
     try:
@@ -1096,7 +1106,7 @@ def run_prebake(
         try:
             watch.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            pass
+            error_type = error_type or "digitalocean_prebake_watchdog_cancel_timeout"
     compute_observed = bool(droplet_id)
     teardown_confirmed = teardown.get("provider_absence_confirmed") is True
     if compute_observed and not teardown_confirmed:

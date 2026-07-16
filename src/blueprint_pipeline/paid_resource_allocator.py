@@ -503,6 +503,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
+        if args.provider != "runpod":
+            result = {
+                "status": "blocked",
+                "blockers": [
+                    "digitalocean_gpu_canary_requires_persistent_host_bake"
+                ],
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(args.adapter_output), result)
+            print(json.dumps({"success": False}, sort_keys=True))
+            return 2
         strict_policy_smoke = args.probe_kind == "strict-policy-smoke"
         maximum_canary_reservation_seconds = (
             STRICT_POLICY_SMOKE_RESERVATION_SECONDS

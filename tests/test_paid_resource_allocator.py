@@ -488,6 +488,35 @@ def test_gpu_canary_dispatches_persistent_host_bake_through_allocator(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_canary_rejects_digitalocean_provider_for_runpod_probe(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    out = tmp_path / "provider-mismatch"
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider", "digitalocean",
+            "--probe-kind", "strict-policy-smoke",
+            "--provider-launch-request", str(out / "request.json"),
+            "--release-evidence", str(out / "release.json"),
+            "--model-cache-evidence", str(out / "models.json"),
+            "--preflight-bundle", str(out / "preflight.json"),
+            "--admission-out", str(out / "admission.json"),
+            "--bound-request-out", str(out / "bound.json"),
+            "--adapter-output", str(out / "result.json"),
+            "--pod-name", "must-not-launch-runpod",
+        ]
+    )
+    assert exit_code == 2
+    result = json.loads((out / "result.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == [
+        "digitalocean_gpu_canary_requires_persistent_host_bake"
+    ]
+    assert json.loads(capsys.readouterr().out) == {"success": False}
+
+
 def test_strict_probe_runbook_arms_watchdog_within_budget_reservation() -> None:
     runbook = (Path(__file__).parents[1] / "docs/runbooks/groot-oscar-thin-release.md").read_text(
         encoding="utf-8"
