@@ -769,9 +769,22 @@ def accept_paid_provider_lane_lease_handoff(
         }
     canary_watchdog_pid = int(canary_watchdog["watchdog_pid"])
     canary_deadline = float(canary_watchdog["watchdog_deadline_epoch"])
+    handoff_coverage_deadline = canary_deadline
+    if canary_watchdog.get("volume_replacement_watchdog") is True:
+        replacement_coverage = canary_watchdog.get("handoff_coverage_deadline_epoch")
+        if (
+            type(replacement_coverage) not in {int, float}
+            or float(replacement_coverage) <= float(clock()) + MIN_HANDOFF_REMAINING_SECONDS
+            or float(replacement_coverage) > canary_deadline
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_handoff_coverage_invalid"],
+            }
+        handoff_coverage_deadline = float(replacement_coverage)
     if (
         float(canonical.get("watchdog_deadline_epoch") or 0)
-        < canary_deadline + MIN_HANDOFF_REMAINING_SECONDS
+        < handoff_coverage_deadline + MIN_HANDOFF_REMAINING_SECONDS
     ):
         return {
             "status": "blocked",

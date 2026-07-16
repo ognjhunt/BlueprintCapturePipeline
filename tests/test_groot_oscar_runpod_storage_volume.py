@@ -662,6 +662,8 @@ def test_storage_route_has_watchdog_lease_ledger_and_no_pod_create() -> None:
     assert run.index("accept_paid_provider_lane_lease_handoff(") < run.index(
         '"POST",\n            "/networkvolumes"'
     )
+    assert '"handoff_coverage_deadline_epoch"' in run
+    assert "replacement_handoff_coverage_deadline" in run
     assert run.index("bind_pending_teardown_instance(") > run.index(
         '"POST",\n            "/networkvolumes"'
     )

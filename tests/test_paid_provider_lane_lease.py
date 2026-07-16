@@ -40,7 +40,7 @@ def test_verified_volume_replacement_rebinds_same_lane_without_owner_gap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     now = 1_000.0
-    old_deadline = now + 10_000
+    old_deadline = now + 5_000
     new_deadline = now + 8_000
     live = {111, 222}
     monkeypatch.setattr(lease_module, "_pid_is_alive", lambda pid: pid in live)
@@ -106,6 +106,7 @@ def test_verified_volume_replacement_rebinds_same_lane_without_owner_gap(
             "watchdog_process_identity_verified": True,
             "independent_teardown_watchdog": True,
             "volume_replacement_watchdog": True,
+            "handoff_coverage_deadline_epoch": now + 4_000,
             "watchdog_state_path": str(state_path),
             "volume_name": "new-volume",
             "watchdog_nonce": "new-nonce",

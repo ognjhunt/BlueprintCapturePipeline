@@ -1159,7 +1159,14 @@ def run_storage_model_volume(
         return result
     allocation_nonce = secrets.token_hex(8)
     volume_name = VOLUME_NAME_PREFIX + allocation_nonce
-    deadline = time.time() + storage_ttl_seconds
+    allocation_started_at = time.time()
+    deadline = allocation_started_at + storage_ttl_seconds
+    replacement_handoff_coverage_deadline = (
+        allocation_started_at
+        + builder_ttl
+        + BUILDER_TO_VOLUME_MARGIN_SECONDS
+        + CANARY_AND_HANDOFF_MARGIN_SECONDS
+    )
     replacement_mode = bool(replacement_source_output_dir is not None)
     reconciliation = (
         {
@@ -1378,6 +1385,7 @@ def run_storage_model_volume(
                 "watchdog_process_identity_verified": True,
                 "independent_teardown_watchdog": True,
                 "volume_replacement_watchdog": True,
+                "handoff_coverage_deadline_epoch": (replacement_handoff_coverage_deadline),
                 "watchdog_state_path": watchdog["state_path"],
                 "volume_name": watchdog["volume_name"],
                 "watchdog_nonce": watchdog["watchdog_nonce"],
