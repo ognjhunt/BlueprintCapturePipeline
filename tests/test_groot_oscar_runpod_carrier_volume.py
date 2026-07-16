@@ -272,6 +272,9 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_wbc_dynamic_linkage_failed" in script
     assert "runtime_gpu_driver_soname_unresolved" in script
     assert "ctypes.CDLL(soname)" in script
+    assert script.index("for soname in driver_sonames:") < script.index(
+        'for argv in manifest.get("healthcheck_argv", []):'
+    )
     assert "gpu_driver_deferred_sonames_resolved" in script
     assert 'manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v2"' in script
     assert 'manifest.get("gpu_driver_deferred_sonames")' in script
