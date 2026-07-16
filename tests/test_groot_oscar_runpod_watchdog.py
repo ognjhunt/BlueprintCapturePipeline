@@ -123,7 +123,7 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
             "identity": {
                 "initial_spent_usd": 11.57,
                 "initial_used_gpu_seconds": 11_619,
-                "total_spend_cap_usd": 20.0,
+                "total_spend_cap_usd": 20.5,
                 "combined_gpu_wall_cap_seconds": 16_800,
             },
         },

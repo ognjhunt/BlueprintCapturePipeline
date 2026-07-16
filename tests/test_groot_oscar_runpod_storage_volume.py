@@ -401,7 +401,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
         storage_hourly_rate_usd=120 * 0.07 / (30 * 24),
         max_retention_spend_usd=1.0,
         campaign_spent_to_date_usd=13.0,
-        campaign_total_spend_cap_usd=20.0,
+        campaign_total_spend_cap_usd=20.5,
         runpod_s3_access_key_file=tmp_path / "access",
         runpod_s3_secret_key_file=tmp_path / "secret",
         allow_paid=True,

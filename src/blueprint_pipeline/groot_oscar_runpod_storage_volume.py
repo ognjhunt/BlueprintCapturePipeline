@@ -87,6 +87,7 @@ from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     require_paid_resource_admission,
 )
+from .production_gpu_campaign_budget import AUTHORIZED_SPEND_CAP_USD
 from .render_lock import _pid_is_alive
 
 
@@ -449,7 +450,7 @@ def retain_verified_model_cache(
         blockers.append("bounded_cache_retention_storage_spend_invalid")
     if not bool(
         campaign_spent_to_date_usd >= MIN_RECONCILED_CAMPAIGN_SPEND_USD
-        and campaign_total_spend_cap_usd == 20.0
+        and 0 < campaign_total_spend_cap_usd <= AUTHORIZED_SPEND_CAP_USD
         and campaign_spent_to_date_usd + maximum_storage_spend <= campaign_total_spend_cap_usd
     ):
         blockers.append("bounded_cache_retention_campaign_spend_invalid")

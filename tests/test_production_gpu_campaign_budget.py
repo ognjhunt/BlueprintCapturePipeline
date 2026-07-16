@@ -187,3 +187,37 @@ def test_ordinary_21000_second_plan_and_persistent_authority_are_bounded(
     )
     assert reservation["reserved_gpu_seconds"] == 18_600
     assert persistent.snapshot()["remaining_gpu_seconds"] == 1_776
+
+
+def test_explicit_20_50_authorization_is_bounded_and_larger_cap_is_rejected(
+    tmp_path,
+) -> None:
+    ledger = ProductionGpuCampaignBudget(
+        tmp_path / "authorized-20-50-budget.json",
+        initial_spent_usd=15.875304422841,
+        initial_used_gpu_seconds=15_624,
+        total_spend_cap_usd=20.5,
+        combined_gpu_wall_cap_seconds=36_000,
+    )
+    reservation = ledger.reserve(
+        reservation_id="authorized-persistent-non-h100",
+        gpu_seconds=18_600,
+        max_hourly_rate_usd=0.89,
+    )
+    assert reservation["reserved_usd"] == pytest.approx(4.598333)
+    assert ledger.snapshot()["total_spend_cap_usd"] == 20.5
+
+    default_ledger = ProductionGpuCampaignBudget(
+        tmp_path / "default-authorized-20-50-budget.json",
+        initial_spent_usd=15.875304422841,
+        initial_used_gpu_seconds=15_624,
+    )
+    assert default_ledger.snapshot()["total_spend_cap_usd"] == 20.5
+
+    with pytest.raises(ValueError, match="spend_cap_exceeds_authorization"):
+        ProductionGpuCampaignBudget(
+            tmp_path / "over-authorized-20-50-budget.json",
+            initial_spent_usd=0,
+            initial_used_gpu_seconds=0,
+            total_spend_cap_usd=20.500001,
+        )

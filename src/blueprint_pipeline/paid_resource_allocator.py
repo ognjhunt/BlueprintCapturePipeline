@@ -314,7 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--campaign-budget-ledger")
     gpu.add_argument("--campaign-initial-spent-usd", type=float)
     gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
-    gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
+    gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.5)
     gpu.add_argument("--campaign-wall-cap-seconds", type=int)
     gpu.add_argument(
         "--campaign-reservation-seconds",
@@ -429,7 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--retention-ttl-seconds", type=int, default=7 * 24 * 60 * 60)
         model.add_argument("--retention-max-spend-usd", type=float, default=1.0)
         model.add_argument("--campaign-spent-to-date-usd", type=float)
-        model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
+        model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.5)
     args = parser.parse_args(argv)
     _configure_detached_model_volume_signal_policy(args.command)
     if args.command in {"model-volume", "model-volume-run"} and not (
