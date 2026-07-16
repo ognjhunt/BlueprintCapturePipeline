@@ -15,6 +15,7 @@ PAID_RESOURCE_CLASSES = frozenset(
         "gpu_render",
         "lambda_provider_adapter",
         "runpod_provider_adapter",
+        "runpod_serverless_active_worker",
         "runpod_live_execution",
         "runpod_wam_async",
         "unitree_unifolm_runpod",

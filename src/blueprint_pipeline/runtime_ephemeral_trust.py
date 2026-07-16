@@ -95,7 +95,9 @@ def create_attempt_trust(
                 base64.b64encode(public).decode("ascii"),
             )
         )
-    environment_file.write_text(
+    # This file contains only filesystem paths and public-key digests; private-key
+    # material remains in the separate mode-0600 PEM files above.
+    environment_file.write_text(  # lgtm[py/clear-text-storage-sensitive-data]
         "".join(
             f"export {private_env}='{private_path}'\nexport {trust_env}='{digest}'\n"
             for _, private_env, private_path, trust_env, digest, _ in rows

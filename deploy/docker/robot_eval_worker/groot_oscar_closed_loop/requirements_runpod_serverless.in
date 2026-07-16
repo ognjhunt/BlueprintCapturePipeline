@@ -1,0 +1,9 @@
+# The RunPod wheel is installed separately with --no-deps from the exact-hash
+# SDK lock. Only queue-worker dependencies are included here; CLI, SSH, and
+# local FastAPI serving dependencies would unnecessarily bloat the thin release.
+aiohttp==3.14.1
+aiohttp-retry==2.9.1
+py-cpuinfo==9.0.0
+requests==2.34.2
+tomli==2.4.1
+tomlkit==0.15.0

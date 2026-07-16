@@ -276,12 +276,17 @@ def verify_model_cache(
 
 
 def activate_model_cache(
-    root: Path, *, expected_manifest_digest: str | None = None
+    root: Path,
+    *,
+    expected_manifest_digest: str | None = None,
+    runtime_cache_root: Path | None = None,
 ) -> dict[str, Any]:
     """Verify the cache, then expose model-only WBC assets at runtime paths."""
 
     verification = verify_model_cache(
-        root, expected_manifest_digest=expected_manifest_digest
+        root,
+        expected_manifest_digest=expected_manifest_digest,
+        runtime_cache_root=runtime_cache_root,
     )
     if verification["status"] != "passed":
         return verification
@@ -448,6 +453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--provider-volume-id",
         default=os.environ.get("BLUEPRINT_GROOT_OSCAR_PROVIDER_VOLUME_ID", ""),
     )
+    parser.add_argument("--runtime-cache-root")
     parser.add_argument("--token-file", default=os.environ.get("HF_TOKEN_FILE", ""))
     parser.add_argument("--out")
     args = parser.parse_args(argv)
@@ -459,7 +465,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         write_json(Path(args.manifest) if args.manifest else root / MANIFEST_NAME, result)
     elif args.command == "activate":
         result = activate_model_cache(
-            root, expected_manifest_digest=args.expected_manifest_digest
+            root,
+            expected_manifest_digest=args.expected_manifest_digest,
+            runtime_cache_root=(
+                Path(args.runtime_cache_root) if args.runtime_cache_root else None
+            ),
         )
     else:
         result = verify_model_cache(
@@ -467,6 +477,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(args.manifest) if args.manifest else None,
             expected_manifest_digest=args.expected_manifest_digest,
             provider_volume_id=args.provider_volume_id,
+            runtime_cache_root=(
+                Path(args.runtime_cache_root) if args.runtime_cache_root else None
+            ),
         )
     if args.out:
         write_json(Path(args.out), result)

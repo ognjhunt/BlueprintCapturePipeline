@@ -3,12 +3,14 @@
   "issuer_allowlist": {
     "build_paid_lane_admission": [
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
-      "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py"
+      "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
+      "src/blueprint_pipeline/groot_oscar_runpod_serverless.py"
     ],
     "require_paid_resource_admission": [
       "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
       "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
+      "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
       "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
       "src/blueprint_pipeline/paid_resource_allocator.py"
     ]
@@ -43,6 +45,16 @@
       "path": "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
       "classification": "canonical_adapter",
       "required_markers": ["require_paid_resource_admission", "build_paid_lane_admission", "run_persistent_session_runpod"]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["require_paid_resource_admission", "build_paid_lane_admission", "run_active_worker"]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_serverless_campaign_io.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": ["stage_campaign_inputs", "retrieve_campaign_outputs", "cleanup_campaign_storage", "upload_file"]
     },
     {
       "path": "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py",

@@ -559,7 +559,9 @@ def _canary_watchdog_identity_valid(
         type(pid) is not int
         or pid <= 0
         or not _pid_is_alive(pid)
-        or not prefix.startswith("blueprint-groot-oscar-canary-")
+        or not prefix.startswith(
+            ("blueprint-groot-oscar-canary-", "blueprint-groot-oscar-serverless-")
+        )
         or not isinstance(deadline, (int, float))
         or float(deadline) <= float(clock()) + MIN_HANDOFF_REMAINING_SECONDS
         or watchdog.get("watchdog_process_identity_verified") is not True
@@ -567,12 +569,22 @@ def _canary_watchdog_identity_valid(
     ):
         return False
     tokens = tuple(str(token) for token in process_argv_probe(pid))
+    modules = (
+        ("blueprint_pipeline.groot_oscar_runpod_watchdog", "--pod-name-prefix"),
+        (
+            "blueprint_pipeline.groot_oscar_runpod_serverless_watchdog",
+            "--resource-name-prefix",
+        ),
+    )
     try:
-        module_index = tokens.index("blueprint_pipeline.groot_oscar_runpod_watchdog")
-        prefix_index = tokens.index("--pod-name-prefix", module_index + 1) + 1
+        module, prefix_flag = next(
+            item for item in modules if item[0] in tokens
+        )
+        module_index = tokens.index(module)
+        prefix_index = tokens.index(prefix_flag, module_index + 1) + 1
         deadline_index = tokens.index("--deadline-epoch", module_index + 1) + 1
         observed_deadline = float(tokens[deadline_index])
-    except (ValueError, IndexError):
+    except (StopIteration, ValueError, IndexError):
         return False
     return bool(
         module_index > 0

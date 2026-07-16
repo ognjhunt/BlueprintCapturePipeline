@@ -50,11 +50,13 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
     "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
     "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
+    "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
     "src/blueprint_pipeline/paid_resource_allocator.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
     "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
+    "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
     (
@@ -523,9 +525,10 @@ def verify() -> list[str]:
         release_promotion_at = packet_builder.index(
             'imagetools create --tag "$release_ref" "$release_exact"'
         )
-        foundation_promotion_at = packet_builder.index(
+        packet_builder.index(
             'imagetools create --tag "$foundation_ref" "$foundation_exact"'
         )
+        foundation_promotion_at = packet_builder.index("{foundation_promotion}")
         terminal_result_at = packet_builder.index(
             'mv "$validation_result" "$result"'
         )

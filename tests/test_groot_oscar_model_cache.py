@@ -292,6 +292,9 @@ def test_thin_image_contract_separates_foundation_models_and_release() -> None:
     assert "snapshot_download" not in release
     assert "test ! -e /opt/blueprint/ckpts" in release
     assert "groot_oscar_model_cache activate" in entrypoint
+    assert '--runtime-cache-root "$runtime_cache_root"' in entrypoint
+    assert 'runtime_cache_link="/workspace/.blueprint-model-cache"' in entrypoint
+    assert 'BLUEPRINT_RUNPOD_SERVERLESS_NETWORK_VOLUME_RUNTIME' in entrypoint
     assert "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST" in entrypoint
     assert "--expected-manifest-digest" in entrypoint
     assert 'export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT="$model_cache/oscar"' in entrypoint

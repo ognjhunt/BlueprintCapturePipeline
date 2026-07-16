@@ -12,6 +12,10 @@ import pytest
 
 import blueprint_pipeline.isaac_g1_kitchen_parity_job as J
 import blueprint_pipeline.paid_provider_lane_lease as lease_module
+from blueprint_pipeline.paid_lane_guard import (
+    bind_pending_teardown_instance,
+    open_pending_teardown,
+)
 from blueprint_pipeline.paid_provider_lane_lease import (
     BLOCKER_ALREADY_OWNED,
     BLOCKER_STALE_REQUIRES_RECONCILIATION,
@@ -28,10 +32,44 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     rotate_paid_provider_lane_lease_to_retention_watchdog,
     transfer_paid_provider_lane_lease_to_watchdog,
 )
-from blueprint_pipeline.paid_lane_guard import (
-    bind_pending_teardown_instance,
-    open_pending_teardown,
-)
+
+
+def test_serverless_watchdog_is_valid_canary_handoff_owner(monkeypatch) -> None:
+    from blueprint_pipeline.paid_provider_lane_lease import (
+        _canary_watchdog_identity_valid,
+    )
+
+    now = 1000.0
+    deadline = now + 480
+    pid = 8765
+    prefix = "blueprint-groot-oscar-serverless-test-"
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_provider_lane_lease._pid_is_alive",
+        lambda value: value == pid,
+    )
+    valid = _canary_watchdog_identity_valid(
+        {
+            "watchdog_pid": pid,
+            "watchdog_pod_name_prefix": prefix,
+            "watchdog_deadline_epoch": deadline,
+            "watchdog_process_identity_verified": True,
+            "independent_teardown_watchdog": True,
+        },
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_serverless_watchdog",
+            "--state",
+            "/tmp/state.json",
+            "--resource-name-prefix",
+            prefix,
+            "--deadline-epoch",
+            str(deadline),
+        ),
+        clock=lambda: now,
+    )
+
+    assert valid is True
 
 _SCENARIOS = [
     {

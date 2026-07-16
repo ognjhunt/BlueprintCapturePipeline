@@ -123,7 +123,8 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     assert "release_supply_chain_disk_admission.json" in script
     assert "syft_1.44.0_linux_amd64.tar.gz" in script
     assert "0e91737aee2b5baf1d255b959630194a302335d848ff97bb07921eb6205b5f5a" in script
-
+    assert "serverless_worker_contract" in script
+    assert "runpod_sdk_exactly_pinned" in script
     packet = Path(result["packet_dir"])
     context_manifest = json.loads(
         (packet / "context_manifest.json").read_text(encoding="utf-8")
@@ -136,6 +137,16 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
         "requirements_oscar_foundation.lock"
         in paths
     )
+    assert (
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_runpod_serverless.lock"
+        in paths
+    )
+    assert (
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_runpod_serverless_sdk.lock"
+        in paths
+    )
     assert "src/blueprint_pipeline/thin_release_image_contract.py" in paths
     with tarfile.open(result["tarball_path"], "r:gz") as archive:
         names = set(archive.getnames())
@@ -143,6 +154,43 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
         "groot_oscar_thin_remote_build/remote_build_groot_oscar_thin_images.sh"
         in names
     )
+
+
+def test_release_removes_build_only_serverless_environment_files() -> None:
+    release_dockerfile = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "site-packages/pip*" in release_dockerfile
+    assert "-name __pycache__" in release_dockerfile
+
+
+def test_packet_can_reuse_exact_foundation_and_build_only_thin_release(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    foundation = "registry.example/blueprint/foundation@sha256:" + "f" * 64
+    result = prepare_remote_build_packet(
+        output_dir=tmp_path / "out",
+        repo_root=root,
+        foundation_ref=foundation,
+        release_ref="registry.example/blueprint/release:20260715-serverless",
+        source_commit=_head(root),
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
+        source_worktree_dirty=False,
+        reuse_foundation_exact=True,
+    )
+
+    assert result["status"] == "ready"
+    assert result["reuse_foundation_exact"] is True
+    script = Path(result["run_script_path"]).read_text(encoding="utf-8")
+    assert script.count("docker buildx build") == 1
+    assert 'foundation_exact="$foundation_ref"' in script
+    assert "Foundation.Dockerfile" not in script
+    assert "reused foundation digest changed" in script
+    assert 'imagetools create --tag "$foundation_ref"' not in script
+    subprocess.run(["bash", "-n", result["run_script_path"]], check=True)
 
 
 def test_packet_build_outputs_require_promotable_tags() -> None:

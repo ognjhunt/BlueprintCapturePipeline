@@ -114,6 +114,38 @@ Packer build completion proves only that the host disk was assembled and the
 OCI digest is cached. It does not prove the target GPU, renderer, policy, scene,
 warm-pool capacity, latency, or teardown.
 
+### Bounded RunPod active-worker qualification fallback
+
+When credentials or quota for an EBS-backed AWS AMI or equivalent provider
+host image are unavailable, qualification may use one RunPod queue endpoint
+with one active FlashBoot worker. This is a provider-supported persistent
+worker route, not an ordinary cold Pod retry and not the customer scale-to-zero
+path. It does not change the production requirement for a promoted warm pool.
+
+The fallback must satisfy all of these constraints:
+
+- use the exact digest-pinned thin release and the already verified external
+  model-cache network volume;
+- attach the volume in its datacenter and consume it only at
+  `/runpod-volume`;
+- set `workersMin=1`, `workersMax=1`, and `flashboot=true`;
+- request `NVIDIA A40` first and `NVIDIA L40S` second; never silently widen to
+  H100 or another class;
+- create no ordinary RunPod Pod and preserve the verified model volume;
+- launch only through `python -m blueprint_pipeline.paid_resource_allocator
+  gpu-warm-worker`, with the shared admission, lease, campaign-budget, pending
+  teardown, and independent watchdog contracts already armed;
+- retain the same active endpoint only after startup and the strict three-action
+  learned-policy probe pass; otherwise tear down immediately;
+- after every terminal attempt, delete the endpoint before its private template,
+  prove both absent through the provider API, close the pending teardown record,
+  settle measured endpoint wall time and spend, and restore the retained-volume
+  watchdog lease.
+
+The endpoint is only a qualification execution plane. A completed queue job or
+valid artifact is not by itself proof of learned-policy execution, Isaac
+execution, media validity, semantic task success, or launch readiness.
+
 ## 2. Canary the exact release tuple
 
 Launch one bounded canary from the new host image. The boot script in

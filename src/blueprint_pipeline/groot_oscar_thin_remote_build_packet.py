@@ -29,6 +29,9 @@ REQUIRED_IMAGE_FILES = (
     "Release.Dockerfile",
     "requirements_robot_runtime.txt",
     "requirements_oscar_foundation.lock",
+    "requirements_runpod_serverless.in",
+    "requirements_runpod_serverless.lock",
+    "requirements_runpod_serverless_sdk.lock",
     "requirements_uv_bootstrap.txt",
     "thin_release_entrypoint.sh",
     "groot_oscar_closed_loop_image_healthcheck.py",
@@ -67,6 +70,16 @@ def _versioned_ref_blockers(ref: str, label: str) -> list[str]:
     return []
 
 
+def _exact_digest_ref_blockers(ref: str, label: str) -> list[str]:
+    if not ref:
+        return [f"missing_{label}_image_ref"]
+    if not _SAFE_VERSIONED_IMAGE_REF.fullmatch(ref):
+        return [f"{label}_image_ref_invalid"]
+    if not re.search(r"@sha256:[0-9a-f]{64}\Z", ref):
+        return [f"{label}_image_ref_must_use_exact_digest"]
+    return []
+
+
 def _context_sources(repo_root: Path) -> Iterable[tuple[Path, Path]]:
     for relative in REQUIRED_ROOT_FILES:
         yield repo_root / relative, Path(relative)
@@ -89,9 +102,36 @@ def _remote_script(
     source_patch_sha256: str,
     min_free_gib: int,
     max_release_bytes: int,
+    reuse_foundation_exact: bool = False,
 ) -> str:
     foundation_default = shlex.quote(foundation_ref)
     release_default = shlex.quote(release_ref)
+    foundation_build = (
+        '''foundation_exact="$foundation_ref"
+foundation_digest="${foundation_ref##*@}"
+[[ "$foundation_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "foundation digest missing" >&2; exit 2; }
+'''
+        if reuse_foundation_exact
+        else '''foundation_metadata="$script_dir/foundation_buildx_metadata.json"
+docker buildx build --platform linux/amd64 --progress plain --metadata-file "$foundation_metadata" \\
+  --attest type=sbom --attest type=provenance,mode=max \\
+  -f "$context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile" \\
+  -t "$foundation_candidate_ref" --push "$context_dir"
+foundation_digest="$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(p.get("containerimage.digest") or p.get("containerimage.descriptor",{}).get("digest") or "")' "$foundation_metadata")"
+[[ "$foundation_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "foundation digest missing" >&2; exit 2; }
+foundation_exact="$foundation_repository@$foundation_digest"
+'''
+    )
+    foundation_promotion = (
+        '''# The digest-pinned foundation is intentionally reused byte-for-byte.
+[[ "$foundation_exact" == "$foundation_ref" ]] || { echo "reused foundation digest changed" >&2; exit 2; }
+'''
+        if reuse_foundation_exact
+        else '''docker buildx imagetools create --tag "$foundation_ref" "$foundation_exact"
+promoted_foundation_digest="$(docker buildx imagetools inspect --format '{{json .}}' "$foundation_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{64}",d) else 2)' 2>/dev/null)" || { echo "promoted foundation digest missing" >&2; exit 2; }
+[[ "$promoted_foundation_digest" == "$foundation_digest" ]] || { echo "promoted foundation digest mismatch" >&2; exit 2; }
+'''
+    )
     return f'''#!/usr/bin/env bash
 set -euo pipefail
 script_dir="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
@@ -144,16 +184,9 @@ tar -xzf "$syft_archive" -C "$tools_dir" syft
 chmod 700 "$syft_bin"
 "$syft_bin" version >/dev/null
 
-foundation_metadata="$script_dir/foundation_buildx_metadata.json"
 release_metadata="$script_dir/release_buildx_metadata.json"
 validation_result="$script_dir/groot_oscar_thin_remote_build_validation.json"
-docker buildx build --platform linux/amd64 --progress plain --metadata-file "$foundation_metadata" \
-  --attest type=sbom --attest type=provenance,mode=max \
-  -f "$context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile" \
-  -t "$foundation_candidate_ref" --push "$context_dir"
-foundation_digest="$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(p.get("containerimage.digest") or p.get("containerimage.descriptor",{{}}).get("digest") or "")' "$foundation_metadata")"
-[[ "$foundation_digest" =~ ^sha256:[0-9a-f]{{64}}$ ]] || {{ echo "foundation digest missing" >&2; exit 2; }}
-foundation_exact="$foundation_repository@$foundation_digest"
+{foundation_build}
 
 docker buildx build --platform linux/amd64 --progress plain --metadata-file "$release_metadata" \
   --attest type=sbom --attest type=provenance,mode=max \
@@ -206,7 +239,15 @@ cuda=release.get("required_cuda_version")
 blockers=[]
 if contract["status"] != "passed": blockers.append("thin_release_contract_not_passed")
 if not cuda: blockers.append("release_registry_cuda_version_missing")
-payload={{"schema_version":"groot_oscar_thin_remote_build_result.v1","generated_at":datetime.now(timezone.utc).isoformat(),"status":"completed" if not blockers else "blocked","blockers":blockers,"foundation_image_ref":sys.argv[3],"release_image_ref":sys.argv[4],"resolved_digest_ref":sys.argv[4],"runnable_platform":"linux/amd64","required_cuda_version":cuda,"required_cuda_version_source":release.get("required_cuda_version_source"),"source_commit":"{source_commit}","source_patch_sha256":"{source_patch_sha256}","thin_release_contract_status":contract["status"],"thin_release_contract":contract,"models_embedded":False,"raw_secret_values_recorded":False,"claim_boundary":{{"remote_build_is_not_model_cache_verification":True,"remote_build_is_not_provider_startup":True,"remote_build_is_not_task_success":True}}}}
+sbom=json.load(open(root/"release_sbom.spdx.json"))
+runpod_versions=sorted({{str(row.get("versionInfo") or "") for row in sbom.get("packages",[]) if str(row.get("name") or "").lower()=="runpod"}})
+worker_source=(root/"context/src/blueprint_pipeline/groot_oscar_runpod_serverless_worker.py").is_file()
+dockerfile=(root/"context/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile").read_text(encoding="utf-8")
+worker_command="blueprint_pipeline.groot_oscar_runpod_serverless_worker" in dockerfile
+sdk_pinned='RUNPOD_SERVERLESS_SDK_VERSION=1.10.1' in dockerfile and runpod_versions==["1.10.1"]
+serverless_contract={{"schema_version":"groot_oscar_runpod_serverless_release_contract.v1","status":"passed" if worker_source and worker_command and sdk_pinned else "blocked","worker_source_packaged":worker_source,"worker_command_packaged":worker_command,"runpod_sdk_versions":runpod_versions,"runpod_sdk_exactly_pinned":sdk_pinned,"models_externalized":contract.get("models_externalized") is True}}
+if serverless_contract["status"] != "passed": blockers.append("runpod_serverless_worker_contract_not_passed")
+payload={{"schema_version":"groot_oscar_thin_remote_build_result.v1","generated_at":datetime.now(timezone.utc).isoformat(),"status":"completed" if not blockers else "blocked","blockers":blockers,"foundation_image_ref":sys.argv[3],"release_image_ref":sys.argv[4],"resolved_digest_ref":sys.argv[4],"runnable_platform":"linux/amd64","required_cuda_version":cuda,"required_cuda_version_source":release.get("required_cuda_version_source"),"source_commit":"{source_commit}","source_patch_sha256":"{source_patch_sha256}","thin_release_contract_status":contract["status"],"thin_release_contract":contract,"serverless_worker_contract":serverless_contract,"models_embedded":False,"raw_secret_values_recorded":False,"claim_boundary":{{"remote_build_is_not_model_cache_verification":True,"remote_build_is_not_provider_startup":True,"remote_build_is_not_task_success":True}}}}
 out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\\n",encoding="utf-8")
 raise SystemExit(0 if payload["status"]=="completed" else 2)
 PY
@@ -216,9 +257,7 @@ PY
 docker buildx imagetools create --tag "$release_ref" "$release_exact"
 promoted_release_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$release_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted release digest missing" >&2; exit 2; }}
 [[ "$promoted_release_digest" == "$release_digest" ]] || {{ echo "promoted release digest mismatch" >&2; exit 2; }}
-docker buildx imagetools create --tag "$foundation_ref" "$foundation_exact"
-promoted_foundation_digest="$(docker buildx imagetools inspect --format '{{{{json .}}}}' "$foundation_ref" | python3 -c 'import json,re,sys;p=json.load(sys.stdin);m=(p.get("manifest") or p.get("Manifest")) if isinstance(p,dict) else None;d=str(m.get("digest") or "") if isinstance(m,dict) else "";print(d);raise SystemExit(0 if re.fullmatch(r"sha256:[0-9a-f]{{64}}",d) else 2)' 2>/dev/null)" || {{ echo "promoted foundation digest missing" >&2; exit 2; }}
-[[ "$promoted_foundation_digest" == "$foundation_digest" ]] || {{ echo "promoted foundation digest mismatch" >&2; exit 2; }}
+{foundation_promotion}
 mv "$validation_result" "$result"
 '''
 
@@ -234,6 +273,7 @@ def prepare_remote_build_packet(
     source_worktree_dirty: bool,
     min_free_gib: int = 120,
     max_release_bytes: int = 2 * 1024**3,
+    reuse_foundation_exact: bool = False,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     root = Path(repo_root).expanduser().resolve()
@@ -242,7 +282,11 @@ def prepare_remote_build_packet(
     context = packet / "context"
     ensure_dir(context)
     blockers = [
-        *_versioned_ref_blockers(foundation_ref, "foundation"),
+        *(
+            _exact_digest_ref_blockers(foundation_ref, "foundation")
+            if reuse_foundation_exact
+            else _versioned_ref_blockers(foundation_ref, "foundation")
+        ),
         *_versioned_ref_blockers(release_ref, "release"),
     ]
     actual_commit = ""
@@ -293,7 +337,7 @@ def prepare_remote_build_packet(
     context_manifest = {"schema_version": "groot_oscar_thin_remote_context.v1", "files": rows}
     write_json(packet / "context_manifest.json", context_manifest)
     script = packet / "remote_build_groot_oscar_thin_images.sh"
-    script.write_text(_remote_script(foundation_ref=foundation_ref, release_ref=release_ref, source_commit=source_commit, source_patch_sha256=source_patch_sha256, min_free_gib=min_free_gib, max_release_bytes=max_release_bytes), encoding="utf-8")
+    script.write_text(_remote_script(foundation_ref=foundation_ref, release_ref=release_ref, source_commit=source_commit, source_patch_sha256=source_patch_sha256, min_free_gib=min_free_gib, max_release_bytes=max_release_bytes, reuse_foundation_exact=reuse_foundation_exact), encoding="utf-8")
     script.chmod(0o755)
     (packet / "README.md").write_text(
         "# GR00T + OSCAR thin remote build\n\nRun `./remote_build_groot_oscar_thin_images.sh` on an authorized linux/amd64 Docker builder with registry access. The packet does not allocate infrastructure or prepare model volumes.\n",
@@ -321,6 +365,7 @@ def prepare_remote_build_packet(
         "context_total_bytes": sum(row["bytes"] for row in rows),
         "min_free_gib": min_free_gib,
         "max_release_delta_bytes": max_release_bytes,
+        "reuse_foundation_exact": reuse_foundation_exact,
         "provider_launch_performed_by_packet": False,
         "supported_execution_planes": {
             "native_linux_amd64_docker_builder": True,
@@ -346,8 +391,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-worktree-dirty", action="store_true")
     parser.add_argument("--min-free-gib", type=int, default=120)
     parser.add_argument("--max-release-bytes", type=int, default=2 * 1024**3)
+    parser.add_argument("--reuse-foundation-exact", action="store_true")
     args = parser.parse_args(argv)
-    result = prepare_remote_build_packet(output_dir=args.output_dir, repo_root=args.repo_root, foundation_ref=args.foundation_ref, release_ref=args.release_ref, source_commit=args.source_commit, source_patch_sha256=args.source_patch_sha256, source_worktree_dirty=args.source_worktree_dirty, min_free_gib=args.min_free_gib, max_release_bytes=args.max_release_bytes)
+    result = prepare_remote_build_packet(output_dir=args.output_dir, repo_root=args.repo_root, foundation_ref=args.foundation_ref, release_ref=args.release_ref, source_commit=args.source_commit, source_patch_sha256=args.source_patch_sha256, source_worktree_dirty=args.source_worktree_dirty, min_free_gib=args.min_free_gib, max_release_bytes=args.max_release_bytes, reuse_foundation_exact=args.reuse_foundation_exact)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "ready" else 2
 
