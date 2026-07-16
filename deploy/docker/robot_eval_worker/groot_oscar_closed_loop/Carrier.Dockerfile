@@ -2,6 +2,8 @@
 # Small RunPod carrier for a runtime archive extracted from the exact sealed
 # GR00T/OSCAR/Isaac release. Runtime source and checkpoints stay on the verified
 # network volume; this image supplies only the compatible OS/CUDA link surface.
+# The former generic base was pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:
+# and is intentionally retained here only as migration context, never as a FROM.
 
 ARG ISAAC_CARRIER_BASE=nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d
 ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
