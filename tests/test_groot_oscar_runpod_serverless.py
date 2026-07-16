@@ -255,7 +255,7 @@ def test_admission_accepts_us_carrier_and_exact_residual_campaign_budget() -> No
 
     assert result["status"] == "admitted"
     assert result["carrier_volume_verified"] is True
-    assert result["maximum_startup_seconds"] == 1_235
+    assert result["maximum_startup_seconds"] == 1_295
     assert result["gpu_type_ids"] == ["NVIDIA RTX 6000 Ada Generation"]
 
 
@@ -336,7 +336,7 @@ def test_blocked_carrier_returns_admission_without_building_request_shape(
 
 
 def test_startup_timeout_preserves_strict_and_campaign_reserves() -> None:
-    assert compute_startup_wall_timeout_seconds(deadline_epoch=5_000.0, now_epoch=992.0) == 28
+    assert compute_startup_wall_timeout_seconds(deadline_epoch=5_000.0, now_epoch=992.0) == 88
     assert compute_startup_wall_timeout_seconds(deadline_epoch=10_000.0, now_epoch=1_000.0) == 1_200
 
 

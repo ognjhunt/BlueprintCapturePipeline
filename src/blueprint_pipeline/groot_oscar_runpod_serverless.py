@@ -90,7 +90,11 @@ STARTUP_JOB_TIMEOUT_SECONDS = 1_200
 STRICT_JOB_TIMEOUT_SECONDS = 300
 STRICT_ATTEMPT_WALL_SECONDS = 480
 STRICT_TEARDOWN_BUFFER_SECONDS = 120
-STRICT_EXECUTION_RESERVE_SECONDS = STRICT_ATTEMPT_WALL_SECONDS - STRICT_TEARDOWN_BUFFER_SECONDS
+# The campaign-level teardown reserve is shared by every pre-campaign failure.
+# Reserve the strict job's execution ceiling here; subtracting an additional
+# strict teardown allowance would double-count teardown and cut the bounded
+# warm-start window from 88 seconds to 28 seconds at the current campaign cap.
+STRICT_EXECUTION_RESERVE_SECONDS = STRICT_JOB_TIMEOUT_SECONDS
 CAMPAIGN_JOB_TIMEOUT_SECONDS = 3_500
 CAMPAIGN_TEARDOWN_BUFFER_SECONDS = 120
 MODEL_CACHE_PATH = "/runpod-volume/.blueprint-model-cache/blueprint-groot-oscar-v1"
