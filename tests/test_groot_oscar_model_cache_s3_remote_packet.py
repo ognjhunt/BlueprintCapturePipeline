@@ -167,12 +167,17 @@ def test_packet_round_trip_is_exact_and_preimport_verifiable(
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(stream.read())
     context_src = remote_root / "groot_oscar_model_cache_s3_remote/context/src"
+    remote_import = " ".join(
+        (
+            "from blueprint_pipeline.groot_oscar_model_cache_s3_remote_executor",
+            "import execute_remote_packet; assert callable(execute_remote_packet)",
+        )
+    )
     completed = subprocess.run(
         [
             sys.executable,
             "-c",
-            "from blueprint_pipeline.groot_oscar_model_cache_s3_remote_executor "
-            "import execute_remote_packet; assert callable(execute_remote_packet)",
+            remote_import,
         ],
         cwd=remote_root,
         env={**os.environ, "PYTHONPATH": str(context_src), "PYTHONNOUSERSITE": "1"},
