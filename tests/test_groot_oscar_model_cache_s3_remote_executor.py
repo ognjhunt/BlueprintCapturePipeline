@@ -182,6 +182,8 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert '["ldd", candidate]' in elf_scan
     assert 'raw_soname = left.split()[-1] if left else ""' in elf_scan
     assert "soname = os.path.basename(raw_soname)" in elf_scan
+    assert '"PATH_MISSING" if raw_soname != soname else "MISSING"' in elf_scan
+    assert "BLUEPRINT_VALIDATION_DIAGNOSTIC elf_path_qualified_missing" in elf_scan
     assert "min(8, os.cpu_count() or 1)" in elf_scan
     assert "BLUEPRINT_ELF_LDD_TIMEOUT" in elf_scan
     assert "BLUEPRINT_ELF_AUDIT_ERROR" in elf_scan

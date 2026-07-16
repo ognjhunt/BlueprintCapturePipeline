@@ -391,26 +391,30 @@ def inspect(candidate):
         return ("TIMEOUT", ())
     except OSError:
         return ("AUDIT_ERROR", ())
-    missing_sonames = []
+    missing_entries = []
     for line in (completed.stdout + "\n" + completed.stderr).splitlines():
         if "=> not found" not in line:
             continue
         left = line.split("=> not found", 1)[0].strip()
         raw_soname = left.split()[-1] if left else ""
-        # DT_NEEDED entries may legally contain a path. ldd preserves that
-        # path, while dependency policy is keyed by the bounded basename.
+        # DT_NEEDED entries may legally contain a path. Preserve that fact:
+        # a host driver SONAME cannot satisfy a slash-qualified pathname.
         soname = os.path.basename(raw_soname)
         if 0 < len(soname) <= 256 and ".so" in soname and all(
             character in allowed for character in soname
         ):
-            missing_sonames.append(soname)
+            missing_entries.append(
+                ("PATH_MISSING" if raw_soname != soname else "MISSING", soname)
+            )
         else:
-            missing_sonames.append("")
-    return ("OK", tuple(missing_sonames))
+            missing_entries.append(("INVALID_MISSING", ""))
+    return ("OK", tuple(missing_entries))
 
 timeout_count = 0
+path_missing_count = 0
 invalid_missing_count = 0
 missing_sonames = set()
+path_missing_sonames = set()
 workers = max(1, min(8, os.cpu_count() or 1))
 with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
     for status, values in executor.map(inspect, elf_paths):
@@ -420,9 +424,12 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         if status == "AUDIT_ERROR":
             audit_error_count += 1
             continue
-        for soname in values:
-            if soname:
+        for kind, soname in values:
+            if kind == "MISSING":
                 missing_sonames.add(soname)
+            elif kind == "PATH_MISSING":
+                path_missing_count += 1
+                path_missing_sonames.add(soname)
             else:
                 invalid_missing_count += 1
 
@@ -430,20 +437,28 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(f"COUNT\t{len(elf_paths)}\n")
     handle.write(f"TIMEOUT\t{timeout_count}\n")
     handle.write(f"AUDIT_ERROR\t{audit_error_count}\n")
+    handle.write(f"PATH_MISSING_COUNT\t{path_missing_count}\n")
     handle.write(f"INVALID_MISSING\t{invalid_missing_count}\n")
+    for soname in sorted(path_missing_sonames):
+        handle.write(f"PATH_MISSING\t{soname}\n")
     for soname in sorted(missing_sonames):
         handle.write(f"MISSING\t{soname}\n")
 PY
 elf_count=0
 timeout_count=0
 audit_error_count=0
+path_missing_count=0
 invalid_missing_count=0
 while IFS=$'\t' read -r kind value; do
   case "$kind" in
     COUNT) elf_count="$value" ;;
     TIMEOUT) timeout_count="$value" ;;
     AUDIT_ERROR) audit_error_count="$value" ;;
+    PATH_MISSING_COUNT) path_missing_count="$value" ;;
     INVALID_MISSING) invalid_missing_count="$value" ;;
+    PATH_MISSING)
+      printf '%s => not found\n' "$value" >>"$missing"
+      ;;
     MISSING)
       soname="$value"
       missing_line="$soname => not found"
@@ -475,6 +490,9 @@ if [[ "$invalid_missing_count" -gt 0 ]]; then
   printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_soname_invalid\n'
   printf 'BLUEPRINT_ELF_MISSING_SONAME_INVALID count=%s\n' "$invalid_missing_count"
   exit 93
+fi
+if [[ "$path_missing_count" -gt 0 ]]; then
+  printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_path_qualified_missing\n'
 fi
 if [[ -s "$missing" ]]; then
   cat "$missing"
