@@ -199,6 +199,7 @@ def build_cpu_build_execution_admission(
     *,
     allocation_admission: Mapping[str, Any],
     live_machine: Mapping[str, Any],
+    runtime_bundle_requested: bool = False,
 ) -> dict[str, Any]:
     """Admit build execution only after allocation and a live host probe."""
 
@@ -220,6 +221,13 @@ def build_cpu_build_execution_admission(
         allocation_packet_kind = "thin_release"
     if live_machine.get("packet_kind") != allocation_packet_kind:
         blockers.append("cpu_builder_live_capability_packet_kind_mismatch")
+    if runtime_bundle_requested:
+        if allocation_packet_kind != "model_cache_s3":
+            blockers.append("cpu_builder_runtime_bundle_packet_kind_invalid")
+        if live_machine.get("docker_cli_present") is not True:
+            blockers.append("cpu_builder_runtime_bundle_docker_cli_missing")
+        if live_machine.get("docker_daemon_responding") is not True:
+            blockers.append("cpu_builder_runtime_bundle_docker_daemon_unavailable")
     blockers.extend(f"live_capability:{item}" for item in live_machine.get("blockers", []))
     return {
         "schema_version": CPU_BUILD_EXECUTION_SCHEMA_VERSION,
@@ -227,6 +235,7 @@ def build_cpu_build_execution_admission(
         "blockers": sorted(set(blockers)),
         "allocation_admission_schema_version": allocation_admission.get("schema_version"),
         "live_machine_capability": dict(live_machine),
+        "runtime_bundle_requested": runtime_bundle_requested,
         "claim_boundary": {
             "allocation_admission_is_not_build_execution_admission": True,
             "live_probe_is_required_after_allocation": True,
@@ -551,6 +560,7 @@ def build_runpod_serve_plane_admission(
     volume: Mapping[str, Any],
     runtime: Mapping[str, Any],
     spend: Mapping[str, Any],
+    maximum_ttl_seconds: int = MAX_CANARY_TTL_SECONDS,
 ) -> dict[str, Any]:
     """Admit a RunPod warm worker only from published/cache-ready evidence."""
 
@@ -647,8 +657,18 @@ def build_runpod_serve_plane_admission(
     if not _positive_number(spend.get("max_spend_usd")):
         blockers.append("runpod_max_spend_usd_missing")
     ttl = spend.get("hard_ttl_seconds")
-    if type(ttl) is not int or ttl <= 0 or ttl > MAX_CANARY_TTL_SECONDS:
-        blockers.append("runpod_hard_ttl_must_be_at_most_30_minutes")
+    if (
+        type(maximum_ttl_seconds) is not int
+        or maximum_ttl_seconds <= 0
+        or type(ttl) is not int
+        or ttl <= 0
+        or ttl > maximum_ttl_seconds
+    ):
+        blockers.append(
+            "runpod_hard_ttl_must_be_at_most_30_minutes"
+            if maximum_ttl_seconds == MAX_CANARY_TTL_SECONDS
+            else "runpod_hard_ttl_exceeds_admitted_lane_maximum"
+        )
     if spend.get("one_resource_limit") is not True:
         blockers.append("runpod_one_resource_limit_missing")
     if spend.get("independent_teardown_watchdog") is not True:
@@ -680,7 +700,7 @@ def build_runpod_serve_plane_admission(
         "gpu_type_id": _string(runtime.get("gpu_type_id")) or None,
         "required_cuda_version": required_cuda or None,
         "limits": {
-            "maximum_canary_ttl_seconds": MAX_CANARY_TTL_SECONDS,
+            "maximum_canary_ttl_seconds": maximum_ttl_seconds,
             "hard_ttl_seconds": ttl,
             "max_spend_usd": max_spend,
             "watchdog_pod_name_prefix": spend.get("watchdog_pod_name_prefix"),

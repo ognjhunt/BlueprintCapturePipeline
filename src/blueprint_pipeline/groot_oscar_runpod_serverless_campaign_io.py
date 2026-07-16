@@ -25,6 +25,7 @@ from .groot_oscar_runpod_serverless_campaign_worker import (
 SCHEMA_VERSION = "groot_oscar_runpod_serverless_campaign_io.v1"
 EVIDENCE_SCHEMA_VERSION = "groot_oscar_runpod_serverless_campaign_io_input.v1"
 _REQUIRED_LOCAL_FILE_COUNT = 6
+_UPLOAD_ATTEMPTS = 3
 
 
 def _sha256(path: Path) -> str:
@@ -211,6 +212,51 @@ def _credentials(
     }
 
 
+def _delete_keys(client: Any, *, volume_id: str, keys: list[str]) -> None:
+    """Delete keys using the operation RunPod's S3 API actually supports."""
+
+    for key in keys:
+        client.delete_object(Bucket=volume_id, Key=key)
+
+
+def _upload_file_with_recovery(
+    client: Any,
+    *,
+    local_path: str,
+    volume_id: str,
+    relative_path: str,
+    size_bytes: int,
+    transfer: Any,
+) -> bool:
+    """Retry transient uploads and accept an ambiguous completion only by size."""
+
+    for attempt in range(1, _UPLOAD_ATTEMPTS + 1):
+        try:
+            client.upload_file(
+                local_path,
+                volume_id,
+                relative_path,
+                Config=transfer,
+            )
+        except Exception:
+            try:
+                head = client.head_object(Bucket=volume_id, Key=relative_path)
+            except Exception:
+                if attempt == _UPLOAD_ATTEMPTS:
+                    raise
+                continue
+            if int(head.get("ContentLength") or -1) == size_bytes:
+                return True
+            if attempt == _UPLOAD_ATTEMPTS:
+                raise
+            continue
+        head = client.head_object(Bucket=volume_id, Key=relative_path)
+        if int(head.get("ContentLength") or -1) != size_bytes:
+            raise RuntimeError("campaign_io_uploaded_size_mismatch")
+        return False
+    raise RuntimeError("campaign_io_upload_attempts_exhausted")
+
+
 def stage_campaign_inputs(
     contract: Mapping[str, Any],
     *,
@@ -227,18 +273,25 @@ def stage_campaign_inputs(
         access_key=access,
         secret_key=secret,
     )
-    if _remote_keys(client, volume_id=volume_id, prefix=f"{prefix}/"):
-        raise ValueError("campaign_io_remote_prefix_not_empty")
+    existing = _remote_keys(client, volume_id=volume_id, prefix=f"{prefix}/")
+    expected_inputs = {
+        str(row["relative_path"]): int(row["size_bytes"]) for row in contract["files"]
+    }
+    if existing:
+        if any(key not in expected_inputs for key in existing):
+            raise ValueError("campaign_io_remote_prefix_contains_unowned_artifacts")
+        for key in existing:
+            head = client.head_object(Bucket=volume_id, Key=key)
+            if int(head.get("ContentLength") or -1) != expected_inputs[key]:
+                raise ValueError("campaign_io_stale_input_size_mismatch")
+        _delete_keys(client, volume_id=volume_id, keys=existing)
+        if _remote_keys(client, volume_id=volume_id, prefix=f"{prefix}/"):
+            raise RuntimeError("campaign_io_stale_input_cleanup_failed")
     transfer = _runpod_transfer_config()
     uploaded: list[dict[str, Any]] = []
+    ambiguous_upload_completions = 0
     try:
         for row in contract["files"]:
-            client.upload_file(
-                str(row["local_path"]),
-                volume_id,
-                str(row["relative_path"]),
-                Config=transfer,
-            )
             uploaded.append(
                 {
                     "relative_path": row["relative_path"],
@@ -246,19 +299,21 @@ def stage_campaign_inputs(
                     "sha256": row["sha256"],
                 }
             )
-            head = client.head_object(Bucket=volume_id, Key=str(row["relative_path"]))
-            if int(head.get("ContentLength") or -1) != int(row["size_bytes"]):
-                raise RuntimeError("campaign_io_uploaded_size_mismatch")
+            recovered = _upload_file_with_recovery(
+                client,
+                local_path=str(row["local_path"]),
+                volume_id=volume_id,
+                relative_path=str(row["relative_path"]),
+                size_bytes=int(row["size_bytes"]),
+                transfer=transfer,
+            )
+            ambiguous_upload_completions += int(recovered)
     except Exception:
         if uploaded:
-            client.delete_objects(
-                Bucket=volume_id,
-                Delete={
-                    "Objects": [
-                        {"Key": str(row["relative_path"])} for row in uploaded
-                    ],
-                    "Quiet": True,
-                },
+            _delete_keys(
+                client,
+                volume_id=volume_id,
+                keys=[str(row["relative_path"]) for row in uploaded],
             )
         if _remote_keys(client, volume_id=volume_id, prefix=f"{prefix}/"):
             raise RuntimeError("campaign_io_partial_upload_cleanup_failed")
@@ -267,6 +322,8 @@ def stage_campaign_inputs(
         "schema_version": SCHEMA_VERSION,
         "status": "completed",
         "uploaded_file_count": len(uploaded),
+        "deleted_stale_input_file_count": len(existing),
+        "ambiguous_upload_completion_count": ambiguous_upload_completions,
         "uploaded": uploaded,
         "credential_status": credential_status,
         "raw_secret_values_recorded": False,
@@ -422,13 +479,7 @@ def cleanup_campaign_storage(
         secret_key=secret,
     )
     keys = _remote_keys(client, volume_id=volume_id, prefix=f"{prefix}/")
-    for offset in range(0, len(keys), 1000):
-        batch = keys[offset : offset + 1000]
-        if batch:
-            client.delete_objects(
-                Bucket=volume_id,
-                Delete={"Objects": [{"Key": key} for key in batch], "Quiet": True},
-            )
+    _delete_keys(client, volume_id=volume_id, keys=keys)
     remaining = _remote_keys(client, volume_id=volume_id, prefix=f"{prefix}/")
     return {
         "schema_version": SCHEMA_VERSION,

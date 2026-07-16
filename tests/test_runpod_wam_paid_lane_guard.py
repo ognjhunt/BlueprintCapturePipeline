@@ -141,6 +141,19 @@ def test_wam_create_http_error_cancels_unbound_pending_record(
         )
 
     monkeypatch.setattr(runner, "_runpod_request", failing_runpod_request)
+    receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "status": "accepted",
+                "campaign_kind": "persistent_policy_wam_loop",
+                "pod_name_prefix": "blueprint-persistent-",
+                "pre_provider_mutation_confirmed_absent": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.chmod(0o600)
     manifest = runner.create_runpod_wam_async_run(
         job_dir=tmp_path / "job",
         bundle_path=_wam_bundle(tmp_path),
@@ -151,12 +164,21 @@ def test_wam_create_http_error_cancels_unbound_pending_record(
         image_name="docker.io/example/wam:20260629",
         generated_at="now",
         paid_resource_admission_grant=_paid_grant(),
+        pod_name="blueprint-persistent-http-failure",
+        provider_lane_handoff_receipt_path=receipt_path,
     )
     assert manifest["status"] == "blocked"
     assert paid_lane_guard.load_pending_teardowns() == []
     cancelled = paid_lane_guard.load_pending_teardowns(include_closed=True)
     assert len(cancelled) == 1
     assert cancelled[0]["status"] == "cancelled_no_allocation"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert manifest["provider_lane_handoff_receipt_update"]["status"] == (
+        "no_allocation_confirmed"
+    )
+    assert receipt["pre_provider_mutation_confirmed_absent"] is True
+    assert receipt["provider_mutation_state"] == "no_allocation_confirmed"
+    assert receipt["pod_pending_teardown_record"] is None
 
 
 def test_delete_pod_verifies_terminal_state_via_api(tmp_path: Path, monkeypatch) -> None:

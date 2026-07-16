@@ -183,6 +183,66 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
     assert retried["campaign_budget_settlement"]["status"] == "settled"
 
 
+def test_watchdog_accepts_persistent_carrier_runner_pending_lane(
+    tmp_path, monkeypatch
+) -> None:
+    prefix = "blueprint-groot-oscar-canary-persistent-"
+    pending_path = tmp_path / "persistent-pending.json"
+    pending_path.write_text(
+        json.dumps(
+            {
+                "status": "open",
+                "provider": "runpod",
+                "lane": "runpod_wam_async",
+                "resource_kind": "compute_instance",
+                "resource_name": prefix + "pod",
+                "instance_id": "pod-persistent-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt = {
+        "status": "accepted",
+        "campaign_kind": "persistent_policy_wam_loop",
+        "pod_name_prefix": prefix,
+        "pod_pending_teardown_record": str(pending_path),
+        "pod_id": "pod-persistent-1",
+    }
+    receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    receipt_path.chmod(0o600)
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_lane_guard.close_pending_teardown",
+        lambda *_args, **_kwargs: {"status": "closed"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_provider_lane_lease.restore_paid_provider_lane_lease_to_retained_watchdog",
+        lambda _receipt: {"status": "restored", "restored": True},
+    )
+
+    class EmptyProvider:
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            assert name_prefix == prefix
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=10_000_000_000.0,
+        provider_factory=lambda _name: EmptyProvider(),
+        clock=lambda: 10_000_000_000.0,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["control_plane_terminal"] is True
+    assert result["pod_pending_teardown_close"]["status"] == "closed"
+
+
 def test_unverified_teardown_retains_open_campaign_reservation(tmp_path) -> None:
     watchdog_dir = tmp_path / "watchdog"
     watchdog_dir.mkdir()

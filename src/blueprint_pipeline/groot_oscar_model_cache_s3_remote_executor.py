@@ -13,16 +13,29 @@ import hmac
 import importlib.metadata
 import json
 import os
+import posixpath
 import re
+import shutil
 import stat
+import subprocess
 import sys
+import tarfile
 import time
 import urllib.request
 import base64
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from .common import ensure_dir, write_json
+from .groot_oscar_runpod_carrier_volume import (
+    DEFAULT_RUNTIME_ARCHIVE_PATH,
+    DEFAULT_RUNTIME_MANIFEST_PATH,
+    DEFAULT_RUNTIME_ROOT,
+    MIN_CARRIER_VOLUME_GIB,
+    RUNTIME_ARCHIVE_ROOTS,
+    build_runtime_bundle_manifest,
+)
 from .groot_oscar_model_cache import (
     COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
     VERIFICATION_SCHEMA_VERSION,
@@ -57,6 +70,13 @@ CONSUMED_CAPABILITY_PATH = Path(
     "/root/.blueprint-secrets/model_cache_parent_capability.consumed"
 )
 EXECUTION_LOCK_PATH = Path("/root/blueprint-build/model_cache_execution.lock")
+RUNTIME_BUNDLE_ROOT = Path(DEFAULT_RUNTIME_ROOT)
+RUNTIME_BUNDLE_BUILD_ROOT = Path("/workspace/.blueprint-runtime-build")
+RUNTIME_EMBEDDED_MODEL_PATHS = (
+    "opt/blueprint/ckpts",
+    "opt/blueprint/hf_home",
+    "opt/blueprint/models",
+)
 HF_TOKEN_PATH = Path("/root/.blueprint-secrets/hf_token")
 S3_ACCESS_KEY_PATH = Path("/root/.blueprint-secrets/runpod_s3_access_key")
 S3_SECRET_KEY_PATH = Path("/root/.blueprint-secrets/runpod_s3_secret_key")
@@ -86,6 +106,7 @@ _PACKET_KEYS = frozenset(
         "allocation_nonce",
         "volume_evidence",
         "volume_watchdog_handoff",
+        "runtime_bundle_request",
         "context_manifest_sha256",
         "dependency_manifest_sha256",
         "dependency_lock_sha256",
@@ -165,6 +186,291 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _digest_pinned_image(value: object) -> bool:
+    ref = str(value or "").strip()
+    _name, marker, digest = ref.rpartition("@sha256:")
+    return bool(marker and _HEX64.fullmatch(digest))
+
+
+def _run_command(
+    runner: Any,
+    argv: list[str],
+    *,
+    timeout: int = 7200,
+) -> subprocess.CompletedProcess[str]:
+    return runner(
+        argv,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _pull_and_verify_image(runner: Any, image_ref: str) -> None:
+    _run_command(runner, ["docker", "pull", image_ref])
+    inspected = _run_command(
+        runner,
+        ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image_ref],
+        timeout=120,
+    )
+    try:
+        repo_digests = json.loads(inspected.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("typed_runtime_bundle_image_inspect_invalid") from exc
+    expected = image_ref.rpartition("@")[2]
+    if not isinstance(repo_digests, list) or not any(
+        str(item).rpartition("@")[2] == expected for item in repo_digests
+    ):
+        raise RuntimeError("typed_runtime_bundle_image_digest_unverified")
+
+
+def _runtime_payload_tree_safe(payload_root: Path) -> bool:
+    for path in payload_root.rglob("*"):
+        mode = path.lstat().st_mode
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            return False
+        if not stat.S_ISLNK(mode):
+            continue
+        member = path.relative_to(payload_root).as_posix()
+        target = os.readlink(path)
+        resolved = (
+            posixpath.normpath(target).lstrip("/")
+            if target.startswith("/")
+            else posixpath.normpath(posixpath.join(posixpath.dirname(member), target))
+        )
+        if resolved == ".." or resolved.startswith("../"):
+            return False
+        if not any(
+            resolved == root or resolved.startswith(root + "/")
+            for root in RUNTIME_ARCHIVE_ROOTS
+        ):
+            return False
+    return True
+
+
+def _remove_embedded_model_payloads(payload_root: Path) -> list[str]:
+    removed: list[str] = []
+    for relative in RUNTIME_EMBEDDED_MODEL_PATHS:
+        path = payload_root / relative
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+            removed.append(relative)
+        elif path.is_dir():
+            shutil.rmtree(path)
+            removed.append(relative)
+    return removed
+
+
+def _validate_runtime_inside_carrier(
+    runner: Any, *, carrier_ref: str, payload_root: Path
+) -> None:
+    validation = " && ".join(
+        (
+            "/opt/gr00t-venv/bin/python -c 'from gr00t.policy.gr00t_policy import Gr00tPolicy'",
+            "/opt/oscar-venv/bin/python -c 'import inference.inference_oscar'",
+            "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline'",
+            "test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
+            "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
+        )
+    )
+    _run_command(
+        runner,
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "/bin/bash",
+            "--mount",
+            f"type=bind,src={payload_root / 'opt'},dst=/opt,readonly",
+            carrier_ref,
+            "-o",
+            "pipefail",
+            "-c",
+            validation,
+        ],
+        timeout=1800,
+    )
+
+
+def prepare_runtime_bundle(
+    request: Mapping[str, Any],
+    *,
+    runtime_root: Path = RUNTIME_BUNDLE_ROOT,
+    build_root: Path = RUNTIME_BUNDLE_BUILD_ROOT,
+    runner: Any = subprocess.run,
+    generated_at: str | None = None,
+    progress: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Copy only the release runtime allowlist into a POSIX-preserving archive."""
+
+    progress_evidence = progress if progress is not None else {}
+
+    def record_progress(phase: str, *, allowlisted_root: str = "") -> None:
+        progress_evidence.clear()
+        progress_evidence.update(
+            {
+                "schema_version": "groot_oscar_runtime_bundle_progress.v1",
+                "phase": phase,
+                "allowlisted_root": allowlisted_root or None,
+                "raw_secret_values_recorded": False,
+            }
+        )
+
+    if request.get("enabled") is not True:
+        return {
+            "schema_version": "groot_oscar_runtime_bundle_preparation.v1",
+            "status": "not_requested",
+            "additional_artifacts": [],
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
+    if set(request) != {"enabled", "source_release_image_ref", "carrier_image_ref"}:
+        raise RuntimeError("typed_runtime_bundle_request_fields_invalid")
+    source_ref = str(request.get("source_release_image_ref") or "").strip()
+    carrier_ref = str(request.get("carrier_image_ref") or "").strip()
+    if not _digest_pinned_image(source_ref) or not _digest_pinned_image(carrier_ref):
+        raise RuntimeError("typed_runtime_bundle_image_ref_not_digest_pinned")
+    if runtime_root.exists() or build_root.exists():
+        raise RuntimeError("typed_runtime_bundle_output_not_fresh")
+    if shutil.which("docker") is None:
+        raise RuntimeError("typed_runtime_bundle_docker_missing")
+    ensure_dir(runtime_root)
+    payload_root = build_root / "payload"
+    ensure_dir(payload_root / "opt")
+    container_id = ""
+    preparation_succeeded = False
+    try:
+        record_progress("pulling_source_release")
+        try:
+            _pull_and_verify_image(runner, source_ref)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_source_image_command_failed") from exc
+        record_progress("pulling_carrier")
+        try:
+            _pull_and_verify_image(runner, carrier_ref)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_carrier_image_command_failed") from exc
+        record_progress("creating_source_container")
+        try:
+            created = _run_command(
+                runner, ["docker", "create", source_ref, "true"], timeout=120
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_source_container_create_failed") from exc
+        container_id = created.stdout.strip()
+        if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
+            raise RuntimeError("typed_runtime_bundle_container_id_invalid")
+        for root in RUNTIME_ARCHIVE_ROOTS:
+            source_path = "/" + root
+            destination = payload_root / str(Path(root).parent)
+            ensure_dir(destination)
+            record_progress("copying_allowlisted_root", allowlisted_root=root)
+            try:
+                _run_command(
+                    runner,
+                    [
+                        "docker",
+                        "cp",
+                        f"{container_id}:{source_path}",
+                        str(destination) + "/",
+                    ],
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(
+                    f"typed_runtime_bundle_allowlisted_root_copy_failed:{root}"
+                ) from exc
+        record_progress("validating_payload_tree")
+        if not all(
+            (payload_root / root).exists() and not (payload_root / root).is_symlink()
+            for root in RUNTIME_ARCHIVE_ROOTS
+        ):
+            raise RuntimeError("typed_runtime_bundle_allowlisted_root_missing")
+        removed_embedded_model_paths = _remove_embedded_model_payloads(payload_root)
+        if not _runtime_payload_tree_safe(payload_root):
+            raise RuntimeError("typed_runtime_bundle_payload_tree_unsafe")
+        record_progress("validating_runtime_inside_carrier")
+        try:
+            _validate_runtime_inside_carrier(
+                runner, carrier_ref=carrier_ref, payload_root=payload_root
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_carrier_validation_failed") from exc
+        record_progress("archiving_runtime_bundle")
+        archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
+        with tarfile.open(archive_path, "w:gz", compresslevel=6) as archive:
+            for root in RUNTIME_ARCHIVE_ROOTS:
+                archive.add(payload_root / root, arcname=root, recursive=True)
+        manifest = build_runtime_bundle_manifest(
+            source_release_image_ref=source_ref,
+            carrier_image_ref=carrier_ref,
+            archive_sha256=_sha256(archive_path),
+            archive_size_bytes=archive_path.stat().st_size,
+            healthcheck_argv=(
+                (
+                    "/opt/gr00t-venv/bin/python",
+                    "-c",
+                    "from gr00t.policy.gr00t_policy import Gr00tPolicy",
+                ),
+                (
+                    "/opt/oscar-venv/bin/python",
+                    "-c",
+                    "import inference.inference_oscar",
+                ),
+                ("/opt/oscar-venv/bin/python", "-c", "import blueprint_pipeline"),
+            ),
+            generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
+        )
+        if manifest["status"] != "complete":
+            raise RuntimeError("typed_runtime_bundle_manifest_blocked")
+        manifest_path = runtime_root / Path(DEFAULT_RUNTIME_MANIFEST_PATH).name
+        write_json(manifest_path, manifest)
+        shutil.rmtree(build_root)
+        preparation_succeeded = True
+        record_progress("completed")
+        return {
+            "schema_version": "groot_oscar_runtime_bundle_preparation.v1",
+            "status": "completed",
+            "source_release_image_ref": source_ref,
+            "carrier_image_ref": carrier_ref,
+            "runtime_root": str(runtime_root),
+            "archive_path": str(archive_path),
+            "archive_sha256": _sha256(archive_path),
+            "archive_size_bytes": archive_path.stat().st_size,
+            "manifest_path": str(manifest_path),
+            "manifest_sha256": _sha256(manifest_path),
+            "additional_artifacts": [
+                {
+                    "local_path": str(archive_path),
+                    "remote_key": DEFAULT_RUNTIME_ARCHIVE_PATH.removeprefix("/workspace/"),
+                    "sha256": _sha256(archive_path),
+                },
+                {
+                    "local_path": str(manifest_path),
+                    "remote_key": DEFAULT_RUNTIME_MANIFEST_PATH.removeprefix("/workspace/"),
+                    "sha256": _sha256(manifest_path),
+                },
+            ],
+            "source_and_carrier_registry_digests_verified": True,
+            "embedded_model_paths_excluded": list(RUNTIME_EMBEDDED_MODEL_PATHS),
+            "embedded_model_paths_present_and_removed": removed_embedded_model_paths,
+            "models_supplied_only_by_verified_external_cache": True,
+            "runtime_imports_and_wbc_linkage_verified_in_exact_carrier": True,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
+    finally:
+        if container_id:
+            try:
+                _run_command(runner, ["docker", "rm", "-f", container_id], timeout=120)
+            except Exception:  # noqa: BLE001 - caller fails if primary preparation failed
+                if preparation_succeeded:
+                    raise RuntimeError("typed_runtime_bundle_source_container_cleanup_failed")
 
 
 def _secret(path: Path) -> str:
@@ -311,6 +617,23 @@ def _contract_blockers(
         EXECUTION_RESULT_NAME,
     ]:
         blockers.append("typed_model_cache_result_contract_invalid")
+    runtime_request = packet.get("runtime_bundle_request")
+    runtime_request = runtime_request if isinstance(runtime_request, Mapping) else {}
+    if runtime_request.get("enabled") is True:
+        if (
+            set(runtime_request)
+            != {"enabled", "source_release_image_ref", "carrier_image_ref"}
+            or not _digest_pinned_image(runtime_request.get("source_release_image_ref"))
+            or not _digest_pinned_image(runtime_request.get("carrier_image_ref"))
+        ):
+            blockers.append("typed_model_cache_runtime_bundle_request_invalid")
+        if (
+            type(volume.get("size_bytes")) is not int
+            or int(volume.get("size_bytes") or 0) < MIN_CARRIER_VOLUME_GIB * 1024**3
+        ):
+            blockers.append("typed_model_cache_runtime_volume_below_120_gib")
+    elif runtime_request != {"enabled": False}:
+        blockers.append("typed_model_cache_runtime_bundle_request_invalid")
     if volume.get("schema_version") != "groot_oscar_runpod_network_volume_evidence.v1":
         blockers.append("typed_model_cache_volume_schema_invalid")
     if volume.get("status") != "verified" or volume.get("provider_api_verified") is not True:
@@ -361,6 +684,7 @@ def _canary_verification(
     local: Mapping[str, Any],
     transport: Mapping[str, Any],
     transport_result_sha256: str,
+    runtime_bundle: Mapping[str, Any],
 ) -> dict[str, Any]:
     volume = packet["volume_evidence"]
     manifest_digest = local.get("model_manifest_digest")
@@ -371,6 +695,13 @@ def _canary_verification(
         blockers.append("typed_model_cache_transport_manifest_digest_mismatch")
     if transport.get("remote_model_manifest_digest") != manifest_digest:
         blockers.append("typed_model_cache_remote_manifest_digest_mismatch")
+    if (
+        _HEX64.fullmatch(str(transport.get("model_manifest_file_sha256") or ""))
+        is None
+        or transport.get("remote_model_manifest_file_sha256")
+        != transport.get("model_manifest_file_sha256")
+    ):
+        blockers.append("typed_model_cache_manifest_file_sha256_mismatch")
     if transport.get("provider_volume_id") != volume.get("id"):
         blockers.append("typed_model_cache_transport_volume_mismatch")
     if transport.get("remote_provider_volume_id") != volume.get("id"):
@@ -393,12 +724,35 @@ def _canary_verification(
         blockers.append("typed_model_cache_remote_verification_digest_invalid")
     if _HEX64.fullmatch(transport_result_sha256) is None:
         blockers.append("typed_model_cache_transport_result_digest_invalid")
+    runtime_status = runtime_bundle.get("status")
+    runtime_verification = transport.get("additional_artifact_verification")
+    runtime_verification = (
+        runtime_verification if isinstance(runtime_verification, list) else []
+    )
+    if runtime_status == "completed":
+        expected = {
+            str(runtime_bundle.get("archive_sha256") or ""),
+            str(runtime_bundle.get("manifest_sha256") or ""),
+        }
+        observed = {
+            str(row.get("sha256") or "")
+            for row in runtime_verification
+            if isinstance(row, Mapping)
+            and row.get("full_redownload_sha256_verified") is True
+        }
+        if (
+            transport.get("additional_artifact_verification_method")
+            != "full_s3_redownload_and_sha256"
+            or observed != expected
+        ):
+            blockers.append("typed_runtime_bundle_transport_verification_invalid")
     return {
         "schema_version": VERIFICATION_SCHEMA_VERSION,
         "status": "passed" if not blockers else "blocked",
         "blockers": blockers,
         "model_manifest_digest": manifest_digest,
         "expected_model_manifest_digest": manifest_digest,
+        "model_manifest_file_sha256": transport.get("model_manifest_file_sha256"),
         "cache_root": str(RUNTIME_CACHE_ROOT),
         "provider_volume_id": volume.get("id"),
         "verified_file_count": transport.get("remote_verified_file_count") if not blockers else 0,
@@ -408,6 +762,7 @@ def _canary_verification(
         "runtime_path_mapping_verified": not blockers,
         "transport_result_sha256": transport_result_sha256,
         "remote_verification_sha256": transport.get("remote_verification_sha256"),
+        "runtime_bundle": dict(runtime_bundle),
         "raw_secret_values_recorded": False,
     }
 
@@ -424,6 +779,7 @@ def execute_remote_packet() -> dict[str, Any]:
         "raw_secret_values_recorded": False,
     }
     transport: dict[str, Any] = {}
+    runtime_bundle_progress: dict[str, Any] = {}
     terminal_exists = False
     try:
         ensure_dir(OUTPUT_DIR)
@@ -481,6 +837,9 @@ def execute_remote_packet() -> dict[str, Any]:
         hf_token = _secret(HF_TOKEN_PATH)
         _secret(S3_ACCESS_KEY_PATH)
         _secret(S3_SECRET_KEY_PATH)
+        runtime_bundle = prepare_runtime_bundle(
+            packet["runtime_bundle_request"], progress=runtime_bundle_progress
+        )
         manifest = prepare_model_cache(RUNTIME_CACHE_ROOT, token=hf_token)
         sonic = _load_object(RUNTIME_CACHE_ROOT / "sonic/config.json")
         if sonic.get("model_name") != str(RUNTIME_COSMOS_MODEL_ROOT):
@@ -509,6 +868,7 @@ def execute_remote_packet() -> dict[str, Any]:
                 remote_parent_capability=capability,
                 remote_packet=packet,
             ),
+            additional_artifacts=runtime_bundle.get("additional_artifacts", []),
         )
         write_json(OUTPUT_DIR / TRANSPORT_RESULT_NAME, transport)
         transport_result_sha256 = _sha256(OUTPUT_DIR / TRANSPORT_RESULT_NAME)
@@ -517,6 +877,7 @@ def execute_remote_packet() -> dict[str, Any]:
             local=local,
             transport=transport,
             transport_result_sha256=transport_result_sha256,
+            runtime_bundle=runtime_bundle,
         )
         write_json(OUTPUT_DIR / CANARY_VERIFICATION_NAME, canary)
         if canary["status"] != "passed":
@@ -532,6 +893,7 @@ def execute_remote_packet() -> dict[str, Any]:
             "droplet_id": binding["droplet_id"],
             "provider_volume_id": volume["id"],
             "model_manifest_digest": local["model_manifest_digest"],
+            "runtime_bundle": runtime_bundle,
             "provider_mutations_performed": transport["provider_mutations_performed"],
             "outer_volume_deletion_required": False,
             "gpu_compute_allocated": False,
@@ -544,11 +906,16 @@ def execute_remote_packet() -> dict[str, Any]:
             else None
         )
         if result.get("status") != "blocked":
+            error_code = str(exc)
+            if re.fullmatch(r"typed_[a-z0-9_:-]+", error_code) is None:
+                error_code = "typed_model_cache_remote_execution_unclassified"
             result.update(
                 {
                     "status": "failed",
                     "blockers": ["typed_model_cache_remote_execution_failed"],
                     "error_type": type(exc).__name__,
+                    "error_code": error_code,
+                    "runtime_bundle_progress": dict(runtime_bundle_progress),
                 }
             )
         result.update(

@@ -47,6 +47,10 @@ from .groot_oscar_model_cache_wheelhouse import (
     _wheel_compatible,
     plan_model_cache_wheelhouse,
 )
+from .groot_oscar_remote_build_results import (
+    REMOTE_BUILD_REQUIRED_RESULTS as REMOTE_BUILD_REQUIRED_RESULTS,  # noqa: F401
+    validate_remote_build_results,
+)
 from .paid_resource_admission import require_paid_resource_admission
 
 SCHEMA_VERSION = "groot_oscar_digitalocean_builder_run.v1"
@@ -646,21 +650,6 @@ def observe_local_machine(
 
 
 DETACHED_LAUNCH_SCHEMA_VERSION = "groot_oscar_digitalocean_builder_launch.v1"
-REMOTE_BUILD_REQUIRED_RESULTS = (
-    "groot_oscar_thin_remote_build_result.json",
-    "foundation_buildx_metadata.json",
-    "release_buildx_metadata.json",
-    "foundation_registry_diagnostic.json",
-    "release_registry_diagnostic.json",
-    "release_sbom.spdx.json",
-    "release_provenance.json",
-    "release_layer_report.json",
-    "release_buildkit_sbom_attestation.json",
-    "release_buildkit_provenance_attestation.json",
-    "release_buildkit_attestation_index.json",
-    "release_supply_chain_manifest.json",
-    "release_supply_chain_disk_admission.json",
-)
 
 
 def _load_object(path: Path) -> dict[str, Any]:
@@ -668,37 +657,6 @@ def _load_object(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"expected JSON object: {path}")
     return payload
-
-
-def validate_remote_build_results(results_dir: Path) -> dict[str, Any]:
-    """Require the complete copied result set before claiming build success."""
-
-    blockers: list[str] = []
-    payloads: dict[str, dict[str, Any]] = {}
-    for name in REMOTE_BUILD_REQUIRED_RESULTS:
-        path = results_dir / name
-        if not path.is_file():
-            blockers.append(f"remote_build_result_missing:{name}")
-            continue
-        try:
-            payloads[name] = _load_object(path)
-        except (OSError, ValueError, json.JSONDecodeError):
-            blockers.append(f"remote_build_result_invalid:{name}")
-    result = payloads.get("groot_oscar_thin_remote_build_result.json")
-    if result is not None and result.get("status") != "completed":
-        blockers.append("remote_build_result_not_completed")
-    supply_chain = payloads.get("release_supply_chain_manifest.json")
-    if supply_chain is not None and supply_chain.get("status") != "passed":
-        blockers.append("remote_build_supply_chain_not_passed")
-    disk_admission = payloads.get("release_supply_chain_disk_admission.json")
-    if disk_admission is not None and disk_admission.get("status") != "passed":
-        blockers.append("remote_build_supply_chain_disk_admission_not_passed")
-    return {
-        "schema_version": "groot_oscar_remote_build_results_verification.v1",
-        "status": "verified" if not blockers else "blocked",
-        "blockers": sorted(set(blockers)),
-        "required_results": list(REMOTE_BUILD_REQUIRED_RESULTS),
-    }
 
 
 def validate_remote_model_cache_results(
@@ -877,6 +835,7 @@ def build_cloud_init(
     host_public_b64: str,
     shutdown_minutes: int,
     packet_kind: str = "thin_release",
+    runtime_bundle_requested: bool = False,
 ) -> str:
     """Return cloud-init with an exact client-generated SSH host identity."""
 
@@ -886,21 +845,44 @@ def build_cloud_init(
         raise ValueError("shutdown_minutes_must_be_between_1_and_120")
     if packet_kind not in {"thin_release", "model_cache_s3"}:
         raise ValueError("builder_packet_kind_unsupported")
-    package_lines = (
-        "  - ca-certificates\n  - curl\n  - git\n  - jq\n  - python3\n"
-        "  - docker.io\n  - docker-buildx"
-        if packet_kind == "thin_release"
-        else "  - ca-certificates\n  - python3\n  - python3-venv"
-    )
-    runtime_commands = (
-        "  - systemctl enable --now docker\n"
-        "  - docker info\n"
-        "  - docker buildx version"
-        if packet_kind == "thin_release"
-        else "  - python3 -m venv /root/blueprint-venv-probe\n"
-        "  - test -x /root/blueprint-venv-probe/bin/pip\n"
-        "  - rm -rf /root/blueprint-venv-probe"
-    )
+    if runtime_bundle_requested and packet_kind != "model_cache_s3":
+        raise ValueError("runtime_bundle_requires_model_cache_packet")
+    if packet_kind == "thin_release":
+        package_lines = (
+            "  - ca-certificates\n  - curl\n  - git\n  - jq\n  - python3\n"
+            "  - docker.io\n  - docker-buildx"
+        )
+        runtime_commands = (
+            "  - systemctl enable --now docker\n"
+            "  - docker info\n"
+            "  - docker buildx version"
+        )
+        ready_command = (
+            "  - bash -c 'docker info >/dev/null && docker buildx version "
+            ">/dev/null && touch /root/blueprint-builder-ready'"
+        )
+    else:
+        package_lines = "  - ca-certificates\n  - python3\n  - python3-venv"
+        runtime_commands = (
+            "  - python3 -m venv /root/blueprint-venv-probe\n"
+            "  - test -x /root/blueprint-venv-probe/bin/pip\n"
+            "  - rm -rf /root/blueprint-venv-probe"
+        )
+        ready_checks = "python3 -m venv /root/blueprint-venv-ready-probe"
+        if runtime_bundle_requested:
+            package_lines += "\n  - docker.io"
+            runtime_commands += (
+                "\n  - systemctl enable --now docker\n"
+                "  - docker info"
+            )
+            ready_checks = f"docker info >/dev/null && {ready_checks}"
+        ready_command = (
+            "  - bash -c '"
+            f"{ready_checks} && "
+            "test -x /root/blueprint-venv-ready-probe/bin/pip && "
+            "rm -rf /root/blueprint-venv-ready-probe && "
+            "touch /root/blueprint-builder-ready'"
+        )
     return f"""#cloud-config
 ssh_deletekeys: false
 bootcmd:
@@ -923,7 +905,7 @@ runcmd:
   - mkdir -p /root/blueprint-build /root/.blueprint-secrets
   - chmod 700 /root/.blueprint-secrets
 {runtime_commands}
-  - touch /root/blueprint-builder-ready
+{ready_command}
   - shutdown -h +{shutdown_minutes}
 """
 
@@ -1323,6 +1305,7 @@ def run_builder(
         host_public_b64=host_public_b64,
         shutdown_minutes=max(1, min(120, (ttl + 59) // 60)),
         packet_kind=packet_kind,
+        runtime_bundle_requested=bool(packet.get("runtime_bundle_requested")),
     )
     create_payload = build_droplet_payload(
         name=name, region=region, ssh_key_id=ssh_key_id, user_data=user_data
@@ -1561,6 +1544,7 @@ def run_builder(
         execution_admission = build_cpu_build_execution_admission(
             allocation_admission=admission,
             live_machine=live_capability,
+            runtime_bundle_requested=bool(packet.get("runtime_bundle_requested")),
         )
         write_json(output / "cpu_build_execution_admission.json", execution_admission)
         if execution_admission["status"] != "admitted":

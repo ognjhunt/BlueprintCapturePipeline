@@ -176,7 +176,13 @@ def run_watchdog(
                 isinstance(pending_record, Mapping)
                 and pending_record.get("status") == "open"
                 and pending_record.get("provider") == "runpod"
-                and pending_record.get("lane") == "groot_oscar_gpu_canary"
+                and pending_record.get("lane")
+                == (
+                    "runpod_wam_async"
+                    if receipt.get("campaign_kind")
+                    == "persistent_policy_wam_loop"
+                    else "groot_oscar_gpu_canary"
+                )
                 and pending_record.get("resource_kind") == "compute_instance"
                 and str(pending_record.get("resource_name") or "").startswith(
                     pod_name_prefix

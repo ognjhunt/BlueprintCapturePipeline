@@ -691,7 +691,9 @@ def run_active_worker(
             secret_key_file=runpod_s3_secret_key_file,
         )
         campaign_storage_owned = True
-        storage_mutations += int(staged.get("uploaded_file_count") or 0)
+        storage_mutations += int(staged.get("uploaded_file_count") or 0) + int(
+            staged.get("deleted_stale_input_file_count") or 0
+        )
         write_json(output / "campaign_input_staging.json", staged)
         template_http, template_response = _runpod_call(
             "POST", "/templates", template_payload, key=api_key, timeout=60

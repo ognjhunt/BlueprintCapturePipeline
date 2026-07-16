@@ -76,6 +76,42 @@ def test_cpu_build_execution_rejects_explicit_packet_kind_mismatch() -> None:
     assert "cpu_builder_live_capability_packet_kind_mismatch" in result["blockers"]
 
 
+def test_runtime_bundle_execution_requires_live_docker_on_model_cache_builder() -> None:
+    live = build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": 200 * 1024**3,
+            "docker_cli_present": False,
+            "docker_daemon_responding": False,
+            "python3_available": True,
+            "python_version": "3.12",
+            "python_venv_available": True,
+            "dns_resolution_verified": True,
+            "outbound_https_verified": True,
+            "s3_endpoint_host": "s3api-eur-is-1.runpod.io",
+            "builder_ready_marker": True,
+        },
+        packet_kind="model_cache_s3",
+        expected_s3_endpoint_host="s3api-eur-is-1.runpod.io",
+    )
+    result = build_cpu_build_execution_admission(
+        allocation_admission={
+            "schema_version": "groot_oscar_build_plane_admission.v1",
+            "status": "admitted",
+            "checks": {"packet_kind": "model_cache_s3"},
+        },
+        live_machine=live,
+        runtime_bundle_requested=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert "cpu_builder_runtime_bundle_docker_cli_missing" in result["blockers"]
+    assert "cpu_builder_runtime_bundle_docker_daemon_unavailable" in result["blockers"]
+
+
 COMMIT = "a" * 40
 DIGEST_REF = "docker.io/example/release@sha256:" + "b" * 64
 MANIFEST_DIGEST = "sha256:" + "c" * 64

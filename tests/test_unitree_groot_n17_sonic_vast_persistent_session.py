@@ -1847,6 +1847,37 @@ def test_runpod_persistent_session_blocks_dirty_paid_launch_before_staging(
     assert result["blockers"] == output["blockers"]
 
 
+def test_runpod_carrier_volume_session_requires_allocator_grant_before_staging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpg")
+    observation_path = _policy_observation(tmp_path / "observation.json", frame)
+
+    def fail_if_called(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("allocator grant should block before staging")
+
+    monkeypatch.setattr(session, "build_persistent_session_provider_bundle", fail_if_called)
+    monkeypatch.setattr(session, "stage_wam_provider_bundle_object_store", fail_if_called)
+    monkeypatch.setattr(session, "create_runpod_wam_async_run", fail_if_called)
+
+    output, exit_code = session.run_persistent_session_runpod(
+        policy_observation_path=observation_path,
+        job_dir=tmp_path / "jobs",
+        loop_step_count=5,
+        carrier_volume_admission={"status": "verified"},
+    )
+
+    assert exit_code == 2
+    assert output["status"] == "blocked"
+    assert (
+        "runpod_carrier_persistent_session_allocator_grant_missing_or_invalid"
+        in output["blockers"]
+    )
+    assert output["details"]["provider_mutations_performed"] == 0
+
+
 def test_runpod_persistent_session_blocks_unsealed_wam_carrier_before_staging(
     tmp_path: Path,
     monkeypatch,

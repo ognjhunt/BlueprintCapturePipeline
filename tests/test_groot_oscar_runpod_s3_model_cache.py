@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import hashlib
 import inspect
 import json
 import sys
@@ -399,6 +400,87 @@ def test_upload_requires_full_redownload_and_manifest_hash_verification(
     assert result["multipart_absence_verified"] is True
     assert client.multipart_list_calls == 4
     assert client.multipart_list_kwargs == [{"Bucket": "volume-1"}] * 4
+
+
+def test_upload_verifies_runtime_artifacts_separately_from_model_manifest(
+    tmp_path: Path,
+) -> None:
+    access, secret = _credentials(tmp_path)
+    archive = tmp_path / "groot_oscar_runtime.tar.gz"
+    archive.write_bytes(b"runtime archive bytes")
+    runtime_manifest = tmp_path / "runtime_bundle_manifest.json"
+    runtime_manifest.write_text('{"schema_version":"runtime.v1"}\n', encoding="utf-8")
+    artifacts = [
+        {
+            "local_path": str(archive),
+            "remote_key": ".blueprint-runtime/blueprint-groot-oscar-v1/"
+            "groot_oscar_runtime.tar.gz",
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        },
+        {
+            "local_path": str(runtime_manifest),
+            "remote_key": ".blueprint-runtime/blueprint-groot-oscar-v1/"
+            "runtime_bundle_manifest.json",
+            "sha256": hashlib.sha256(runtime_manifest.read_bytes()).hexdigest(),
+        },
+    ]
+
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=FakeS3(),
+        paid_resource_admission_grant=_grant(),
+        additional_artifacts=artifacts,
+    )
+
+    assert result["status"] == "completed"
+    assert result["additional_artifact_count"] == 2
+    assert result["additional_artifact_verification_method"] == (
+        "full_s3_redownload_and_sha256"
+    )
+    assert all(
+        row["full_redownload_sha256_verified"] is True
+        for row in result["additional_artifact_verification"]
+    )
+    assert result["model_manifest_digest"] == result["remote_model_manifest_digest"]
+
+
+def test_additional_artifact_contract_blocks_before_s3_mutation(tmp_path: Path) -> None:
+    access, secret = _credentials(tmp_path)
+    artifact = tmp_path / "runtime.tar.gz"
+    artifact.write_bytes(b"runtime")
+    client = FakeS3()
+
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+        additional_artifacts=(
+            {
+                "local_path": str(artifact),
+                "remote_key": "../escape",
+                "sha256": "0" * 64,
+            },
+        ),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["runpod_s3_additional_artifact_contract_invalid"]
+    assert result["provider_mutations_performed"] == 0
+    assert client.upload_calls == 0
 
 
 def test_runpod_transfer_contract_is_large_chunked_and_single_threaded() -> None:

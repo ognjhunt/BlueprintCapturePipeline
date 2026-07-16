@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,13 @@ from .groot_oscar_infrastructure_admission import (
     build_cpu_build_execution_admission,
 )
 from .groot_oscar_runpod_canary import run_canary
+from .groot_oscar_runpod_persistent_carrier import (
+    PERSISTENT_CARRIER_PROBE_KIND,
+    PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
+)
+from .groot_oscar_runpod_persistent_carrier_campaign import (
+    run_persistent_carrier_campaign,
+)
 from .groot_oscar_runpod_serverless import (
     DEFAULT_MAX_HOURLY_RATE_USD,
     DEFAULT_RESERVATION_SECONDS,
@@ -55,9 +63,27 @@ MIN_RECONCILED_GPU_SECONDS = 15_624
 GPU_CANARY_RESERVATION_SECONDS = 1_200
 STRICT_POLICY_SMOKE_RESERVATION_SECONDS = 480
 FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
-COMBINED_GPU_PLAN_SECONDS = (
-    GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
-)
+COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
+PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
+DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
+
+
+def _configure_detached_model_volume_signal_policy(command: str) -> bool:
+    """Keep an explicitly detached paid supervisor alive through local SIGINT.
+
+    SIGTERM remains available for an intentional stop. Provider resources also
+    remain bounded by their independent deadline watchdogs.
+    """
+
+    if not (
+        command == "model-volume-run" and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
+    ):
+        return False
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (AttributeError, OSError, ValueError):
+        return False
+    return True
 
 
 def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
@@ -134,9 +160,7 @@ def _run_cpu(args: argparse.Namespace) -> dict:
         return {
             "schema_version": "blueprint.cpu_build_allocator_result.v1",
             "status": "blocked_before_allocation",
-            "blockers": prerequisite.get(
-                "blockers", ["groot_oscar_live_prerequisites_not_ready"]
-            ),
+            "blockers": prerequisite.get("blockers", ["groot_oscar_live_prerequisites_not_ready"]),
             "provider_mutation_attempted": False,
         }
     return run_builder(
@@ -178,9 +202,7 @@ def _run_cpu_prerequisite_gate(output_dir: Path) -> dict:
             "schema": "groot_oscar_live_prerequisites.v1",
             "status": "blocked",
             "live": True,
-            "blockers": [
-                "groot_oscar_live_prerequisite_verifier_failed_without_evidence"
-            ],
+            "blockers": ["groot_oscar_live_prerequisite_verifier_failed_without_evidence"],
             "checks": {},
             "verifier_exit_code": completed.returncode,
         }
@@ -250,9 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     cpu = commands.add_parser("cpu-build")
     _add_cpu_arguments(cpu, require_provider=False)
-    cpu.add_argument(
-        "--execution-plane", choices=("digitalocean", "local"), default="digitalocean"
-    )
+    cpu.add_argument("--execution-plane", choices=("digitalocean", "local"), default="digitalocean")
     cpu.add_argument("--mount-path")
     cpu.add_argument("--build-workdir")
     cpu.add_argument("--build-script")
@@ -275,20 +295,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--bound-request-out", required=True)
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
-    gpu.add_argument(
-        "--provider", choices=("runpod", "digitalocean"), default="runpod"
-    )
+    gpu.add_argument("--provider", choices=("runpod", "digitalocean"), default="runpod")
     gpu.add_argument(
         "--probe-kind",
-        choices=("startup", "strict-policy-smoke", "persistent-host-bake"),
+        choices=(
+            "startup",
+            "strict-policy-smoke",
+            "persistent-host-bake",
+            PERSISTENT_CARRIER_PROBE_KIND,
+        ),
         default="strict-policy-smoke",
     )
+    gpu.add_argument("--carrier-volume-admission")
+    gpu.add_argument("--policy-observation")
+    gpu.add_argument("--persistent-job-dir")
+    gpu.add_argument("--task-prompt")
     gpu.add_argument("--execute", action="store_true")
     gpu.add_argument("--campaign-budget-ledger")
     gpu.add_argument("--campaign-initial-spent-usd", type=float)
     gpu.add_argument("--campaign-initial-used-gpu-seconds", type=int)
     gpu.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
-    gpu.add_argument("--campaign-wall-cap-seconds", type=int, default=21_000)
+    gpu.add_argument("--campaign-wall-cap-seconds", type=int)
     gpu.add_argument(
         "--campaign-reservation-seconds",
         type=int,
@@ -300,17 +327,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=FUTURE_CAMPAIGN_ALLOWANCE_SECONDS,
     )
     gpu.add_argument("--authorize-reduced-canary-timeout", action="store_true")
+    gpu.add_argument("--authorize-persistent-carrier-campaign", action="store_true")
     gpu.add_argument("--campaign-max-hourly-rate-usd", type=float)
     gpu.add_argument(
         "--digitalocean-token-file",
         default="~/.blueprint-secrets/digitalocean_api_token",
     )
-    gpu.add_argument(
-        "--docker-username-file", default="~/.blueprint-secrets/docker_username"
-    )
-    gpu.add_argument(
-        "--docker-password-file", default="~/.blueprint-secrets/docker_pat"
-    )
+    gpu.add_argument("--docker-username-file", default="~/.blueprint-secrets/docker_username")
+    gpu.add_argument("--docker-password-file", default="~/.blueprint-secrets/docker_pat")
     gpu.add_argument(
         "--runpod-s3-access-key-file",
         default="~/.blueprint-secrets/runpod_s3_access_key",
@@ -322,12 +346,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--login-private-key")
     gpu.add_argument("--host-private-key")
     gpu.add_argument("--ssh-key-id", type=int)
-    gpu.add_argument(
-        "--digitalocean-region", default=DIGITALOCEAN_PREBAKE_DEFAULT_REGION
-    )
-    gpu.add_argument(
-        "--digitalocean-size", default=DIGITALOCEAN_PREBAKE_DEFAULT_SIZE
-    )
+    gpu.add_argument("--digitalocean-region", default=DIGITALOCEAN_PREBAKE_DEFAULT_REGION)
+    gpu.add_argument("--digitalocean-size", default=DIGITALOCEAN_PREBAKE_DEFAULT_SIZE)
     gpu.add_argument(
         "--digitalocean-source-image",
         default=DIGITALOCEAN_PREBAKE_DEFAULT_SOURCE_IMAGE,
@@ -379,6 +399,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--repo-root", default=str(ROOT))
         model.add_argument("--data-center-id")
         model.add_argument("--volume-size-gib", type=int, default=50)
+        model.add_argument("--runtime-source-release-image-ref", default="")
+        model.add_argument("--runtime-source-release-evidence")
+        model.add_argument("--carrier-image-ref", default="")
         model.add_argument("--storage-hourly-rate-usd", type=float, required=True)
         model.add_argument("--storage-ttl-seconds", type=int, default=14_400)
         model.add_argument("--max-storage-spend-usd", type=float, default=0.05)
@@ -403,13 +426,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--region", default="sfo3")
         model.add_argument("--allow-paid", action="store_true")
         model.add_argument("--retain-existing-output")
-        model.add_argument(
-            "--retention-ttl-seconds", type=int, default=7 * 24 * 60 * 60
-        )
+        model.add_argument("--retention-ttl-seconds", type=int, default=7 * 24 * 60 * 60)
         model.add_argument("--retention-max-spend-usd", type=float, default=1.0)
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
+    _configure_detached_model_volume_signal_policy(args.command)
     if args.command in {"model-volume", "model-volume-run"} and not (
         args.command == "model-volume" and args.retain_existing_output
     ):
@@ -426,6 +448,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if getattr(args, name, None) in {None, ""}
         ]
         if missing_model_volume_inputs:
+            print(json.dumps({"success": False}, sort_keys=True))
+            return 2
+        runtime_bundle_requested = bool(
+            args.runtime_source_release_image_ref or args.carrier_image_ref
+        )
+        if runtime_bundle_requested and not args.runtime_source_release_evidence:
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
     if args.command == "cpu-build":
@@ -519,17 +547,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     initial_spent_usd=args.campaign_initial_spent_usd,
                     initial_gpu_seconds=args.campaign_initial_used_gpu_seconds,
                     total_spend_cap_usd=args.campaign_total_spend_cap_usd,
-                    gpu_wall_cap_seconds=args.campaign_wall_cap_seconds,
+                    gpu_wall_cap_seconds=(
+                        args.campaign_wall_cap_seconds
+                        if args.campaign_wall_cap_seconds is not None
+                        else 21_000
+                    ),
                     max_hourly_rate_usd=args.campaign_max_hourly_rate_usd,
                     execute=args.execute,
                 )
                 generated = {
-                    Path(args.preflight_bundle): output_dir
-                    / "digitalocean_prebake_preflight.json",
-                    Path(args.admission_out): output_dir
-                    / "digitalocean_prebake_admission.json",
-                    Path(args.bound_request_out): output_dir
-                    / "bound_provider_request.json",
+                    Path(args.preflight_bundle): output_dir / "digitalocean_prebake_preflight.json",
+                    Path(args.admission_out): output_dir / "digitalocean_prebake_admission.json",
+                    Path(args.bound_request_out): output_dir / "bound_provider_request.json",
                     Path(args.adapter_output): output_dir
                     / "digitalocean_prebaked_host_result.json",
                 }
@@ -547,14 +576,91 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.provider != "runpod":
             result = {
                 "status": "blocked",
-                "blockers": [
-                    "digitalocean_gpu_canary_requires_persistent_host_bake"
-                ],
+                "blockers": ["digitalocean_gpu_canary_requires_persistent_host_bake"],
                 "provider_mutations_performed": 0,
             }
             write_json(Path(args.adapter_output), result)
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
+        if args.probe_kind == PERSISTENT_CARRIER_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "carrier_volume_admission",
+                    "policy_observation",
+                    "persistent_job_dir",
+                )
+                if not getattr(args, name, None)
+            ]
+            budget_arguments = (
+                args.campaign_budget_ledger,
+                args.campaign_initial_spent_usd,
+                args.campaign_initial_used_gpu_seconds,
+                args.campaign_max_hourly_rate_usd,
+            )
+            if args.execute and any(value is None for value in budget_arguments):
+                missing.append("persistent_campaign_budget_arguments")
+            if args.execute and not args.authorize_persistent_carrier_campaign:
+                missing.append("persistent_campaign_authorization")
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "persistent_carrier_required_arguments_missing:" + ",".join(sorted(missing))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.admission_out), result)
+            else:
+                result = run_persistent_carrier_campaign(
+                    provider_launch_request=args.provider_launch_request,
+                    release_evidence=args.release_evidence,
+                    model_cache_evidence=args.model_cache_evidence,
+                    preflight_bundle=args.preflight_bundle,
+                    carrier_volume_admission=args.carrier_volume_admission,
+                    policy_observation_path=args.policy_observation,
+                    persistent_job_dir=args.persistent_job_dir,
+                    admission_out=args.admission_out,
+                    bound_request_out=args.bound_request_out,
+                    adapter_output=args.adapter_output,
+                    pod_name=args.pod_name,
+                    execute=args.execute,
+                    task_prompt=args.task_prompt,
+                    campaign_budget=(
+                        {
+                            "ledger_path": args.campaign_budget_ledger,
+                            "initial_spent_usd": args.campaign_initial_spent_usd,
+                            "initial_used_gpu_seconds": (args.campaign_initial_used_gpu_seconds),
+                            "total_spend_cap_usd": args.campaign_total_spend_cap_usd,
+                            "combined_gpu_wall_cap_seconds": (
+                                args.campaign_wall_cap_seconds
+                                if args.campaign_wall_cap_seconds is not None
+                                else PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS
+                            ),
+                            "reservation_gpu_seconds": (PERSISTENT_WATCHDOG_MAX_TTL_SECONDS),
+                            "campaign_stage": "persistent_carrier_campaign",
+                            "maximum_canary_reservation_gpu_seconds": (
+                                PERSISTENT_WATCHDOG_MAX_TTL_SECONDS
+                            ),
+                            "future_campaign_allowance_gpu_seconds": 0,
+                            "maximum_future_campaign_allowance_gpu_seconds": 0,
+                            "maximum_combined_plan_gpu_seconds": (
+                                PERSISTENT_WATCHDOG_MAX_TTL_SECONDS
+                            ),
+                            "reduced_canary_timeout_acknowledged": (
+                                args.authorize_persistent_carrier_campaign
+                            ),
+                            "max_hourly_rate_usd": args.campaign_max_hourly_rate_usd,
+                            "minimum_reconciled_spend_usd": (MIN_RECONCILED_CAMPAIGN_SPEND_USD),
+                            "minimum_reconciled_gpu_seconds": (MIN_RECONCILED_GPU_SECONDS),
+                        }
+                        if args.execute
+                        else None
+                    ),
+                )
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         strict_policy_smoke = args.probe_kind == "strict-policy-smoke"
         maximum_canary_reservation_seconds = (
             STRICT_POLICY_SMOKE_RESERVATION_SECONDS
@@ -597,7 +703,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "initial_spent_usd": args.campaign_initial_spent_usd,
                         "initial_used_gpu_seconds": args.campaign_initial_used_gpu_seconds,
                         "total_spend_cap_usd": args.campaign_total_spend_cap_usd,
-                        "combined_gpu_wall_cap_seconds": args.campaign_wall_cap_seconds,
+                        "combined_gpu_wall_cap_seconds": (
+                            args.campaign_wall_cap_seconds
+                            if args.campaign_wall_cap_seconds is not None
+                            else 21_000
+                        ),
                         "reservation_gpu_seconds": reservation_seconds,
                         "campaign_stage": "gpu_canary",
                         "maximum_canary_reservation_gpu_seconds": (
@@ -674,26 +784,59 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         vector = [
-            "--output-dir", args.output_dir,
-            "--repo-root", args.repo_root,
-            "--data-center-id", args.data_center_id,
-            "--volume-size-gib", str(args.volume_size_gib),
-            "--storage-hourly-rate-usd", str(args.storage_hourly_rate_usd),
-            "--storage-ttl-seconds", str(args.storage_ttl_seconds),
-            "--max-storage-spend-usd", str(args.max_storage_spend_usd),
-            "--builder-evidence", args.builder_evidence,
-            "--builder-spend", args.builder_spend,
-            "--digitalocean-token-file", args.digitalocean_token_file,
-            "--hf-token-file", args.hf_token_file,
-            "--runpod-s3-access-key-file", args.runpod_s3_access_key_file,
-            "--runpod-s3-secret-key-file", args.runpod_s3_secret_key_file,
-            "--login-private-key", args.login_private_key,
-            "--host-private-key", args.host_private_key,
-            "--ssh-key-id", str(args.ssh_key_id),
-            "--region", args.region,
+            "--output-dir",
+            args.output_dir,
+            "--repo-root",
+            args.repo_root,
+            "--data-center-id",
+            args.data_center_id,
+            "--volume-size-gib",
+            str(args.volume_size_gib),
+            "--storage-hourly-rate-usd",
+            str(args.storage_hourly_rate_usd),
+            "--storage-ttl-seconds",
+            str(args.storage_ttl_seconds),
+            "--max-storage-spend-usd",
+            str(args.max_storage_spend_usd),
+            "--builder-evidence",
+            args.builder_evidence,
+            "--builder-spend",
+            args.builder_spend,
+            "--digitalocean-token-file",
+            args.digitalocean_token_file,
+            "--hf-token-file",
+            args.hf_token_file,
+            "--runpod-s3-access-key-file",
+            args.runpod_s3_access_key_file,
+            "--runpod-s3-secret-key-file",
+            args.runpod_s3_secret_key_file,
+            "--login-private-key",
+            args.login_private_key,
+            "--host-private-key",
+            args.host_private_key,
+            "--ssh-key-id",
+            str(args.ssh_key_id),
+            "--region",
+            args.region,
         ]
         if args.allow_paid:
             vector.append("--allow-paid")
+        if args.runtime_source_release_image_ref:
+            vector.extend(
+                [
+                    "--runtime-source-release-image-ref",
+                    args.runtime_source_release_image_ref,
+                ]
+            )
+        if args.runtime_source_release_evidence:
+            vector.extend(
+                [
+                    "--runtime-source-release-evidence",
+                    args.runtime_source_release_evidence,
+                ]
+            )
+        if args.carrier_image_ref:
+            vector.extend(["--carrier-image-ref", args.carrier_image_ref])
         result = launch_detached_model_volume(
             output_dir=Path(args.output_dir), run_arguments=vector
         )
@@ -718,6 +861,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             ssh_key_id=args.ssh_key_id,
             region=args.region,
             allow_paid=args.allow_paid,
+            runtime_source_release_image_ref=args.runtime_source_release_image_ref,
+            carrier_image_ref=args.carrier_image_ref,
+            runtime_source_release_evidence_path=(
+                Path(args.runtime_source_release_evidence)
+                if args.runtime_source_release_evidence
+                else None
+            ),
         )
         success = result.get("status") == "completed"
     # Provider results can contain credential-bearing request fields. Persisted
