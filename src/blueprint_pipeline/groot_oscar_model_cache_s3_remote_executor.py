@@ -437,7 +437,30 @@ def inspect(candidate):
             digest = hashlib.sha256(
                 left[:4096].encode("utf-8", errors="replace")
             ).hexdigest()[:16]
-            missing_operands.append(("INVALID", digest))
+            tokens = left.split()
+            safe_library_token_count = sum(
+                1
+                for token in tokens
+                if 0 < len(os.path.basename(token)) <= 96
+                and ".so" in os.path.basename(token)
+                and all(character in allowed for character in os.path.basename(token))
+            )
+            shape = "".join(
+                (
+                    f"a{int(os.path.isabs(operand))}",
+                    f"n{int(operand == normalized)}",
+                    f"s{int('.so' in basename)}",
+                    f"c{int(bool(basename) and all(character in allowed for character in basename))}",
+                    f"q{int(any(character in basename for character in chr(34) + chr(39)))}",
+                    f"p{int(any(character in basename for character in '()[]{}'))}",
+                    f"x{int(any(character in basename for character in ':,=@'))}",
+                    f"k{min(safe_library_token_count, 99)}",
+                    f"t{min(len(tokens), 99)}",
+                    f"o{min(len(operand), 999)}",
+                    f"b{min(len(basename), 999)}",
+                )
+            )
+            missing_operands.append(("INVALID", f"{digest}_{shape}"))
     return ("OK", tuple(missing_operands))
 
 timeout_count = 0
