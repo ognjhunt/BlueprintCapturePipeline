@@ -94,6 +94,23 @@ GATE_STATUS_SKIPPED = "skipped"
 KNOWN_STAMPED_SHARPNESS_CONSTANTS = (100.0,)
 KNOWN_STAMPED_BLUR_CONSTANTS = (0.0,)
 
+# Capture profiles for the site-aware camera-stability gate (R081). The default
+# ``static_eval`` profile enforces OSCAR's static-camera constraint on robot-POV
+# clips. Mobile-base / large-site profiles instead bound motion *smoothness*
+# (jitter) so a warehouse/factory traversal POV — a moving camera by design — is
+# accepted rather than rejected outright.
+STATIC_EVAL_CAPTURE_PROFILE = "static_eval"
+MOBILE_BASE_CAPTURE_PROFILES = frozenset(
+    {
+        "mobile_base",
+        "mobile_base_arm",
+        "industrial_mobile",
+        "warehouse_traversal",
+        "factory_traversal",
+        "large_site_mobile",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -125,6 +142,18 @@ class ClipCurationConfig:
     # "robot_pov"): total pose travel must stay under this bound.
     max_static_camera_travel_m: float = 0.05
     enforce_static_camera_for_robot_pov: bool = True
+    # Site-aware capture profile (R081). The default ``static_eval`` profile
+    # enforces the static-camera constraint above for robot-POV clips. A
+    # mobile-base / large-site profile (see ``MOBILE_BASE_CAPTURE_PROFILES``, or
+    # ``allow_mobile_base_robot_pov=True``) accepts moving-camera robot-POV
+    # capture — warehouse/factory traversal — by bounding motion smoothness
+    # (jitter) instead of rejecting travel outright.
+    capture_profile: str = STATIC_EVAL_CAPTURE_PROFILE
+    allow_mobile_base_robot_pov: bool = False
+    # Jitter (second-difference RMS, metres) bound for mobile-base robot-POV
+    # clips. ``None`` reuses ``max_pose_jitter_m`` so a shaky mobile capture is
+    # still rejected — the static constraint is relaxed, not removed.
+    mobile_base_max_pose_jitter_m: Optional[float] = None
     # Fail-closed policy: clips without pose trajectories are rejected
     # (gate not_measurable) unless explicitly allowed.
     allow_unmeasured_stability: bool = False
@@ -478,6 +507,18 @@ def _evaluate_min_frames(
     return _gate_result(GATE_STATUS_PASSED, value=count, threshold=config.min_clip_frames)
 
 
+def _mobile_base_capture_enabled(config: ClipCurationConfig) -> bool:
+    """Whether the active capture profile accepts moving-camera robot-POV clips.
+
+    True for an explicit ``allow_mobile_base_robot_pov`` override or any
+    site-aware mobile-base / large-site ``capture_profile``. Unknown profiles
+    fall back to the static-eval default (fail closed on the strict side).
+    """
+    if config.allow_mobile_base_robot_pov:
+        return True
+    return str(config.capture_profile).strip().lower() in MOBILE_BASE_CAPTURE_PROFILES
+
+
 def _evaluate_camera_stability(
     frames: Sequence[Mapping[str, Any]],
     clip_kind: str,
@@ -490,7 +531,13 @@ def _evaluate_camera_stability(
             threshold=config.max_pose_jitter_m,
             reason="no usable pose trajectory; camera stability cannot be measured",
         )
-    if clip_kind == "robot_pov" and config.enforce_static_camera_for_robot_pov:
+    mobile_capture = _mobile_base_capture_enabled(config)
+    static_camera_enforced = (
+        clip_kind == "robot_pov"
+        and config.enforce_static_camera_for_robot_pov
+        and not mobile_capture
+    )
+    if static_camera_enforced:
         travel = _pose_travel_m(positions)
         if travel > config.max_static_camera_travel_m:
             return _gate_result(
@@ -505,21 +552,37 @@ def _evaluate_camera_stability(
             threshold=config.max_static_camera_travel_m,
             detail={"constraint": "static_camera"},
         )
+    # Motion-smoothness path: walkthrough clips, and mobile-base robot-POV clips
+    # under a site-aware profile (a moving camera is expected — bound jitter, do
+    # not reject travel).
+    mobile_pov = clip_kind == "robot_pov" and mobile_capture
+    jitter_bound = config.max_pose_jitter_m
+    if mobile_pov and config.mobile_base_max_pose_jitter_m is not None:
+        jitter_bound = config.mobile_base_max_pose_jitter_m
     jitter = _pose_jitter_rms_m(positions)
     if jitter is None:
         return _gate_result(
             GATE_STATUS_NOT_MEASURABLE,
-            threshold=config.max_pose_jitter_m,
+            threshold=jitter_bound,
             reason="fewer than 3 posed frames; jitter cannot be measured",
         )
-    if jitter > config.max_pose_jitter_m:
+    if jitter > jitter_bound:
         return _gate_result(
             GATE_STATUS_FAILED,
             value=jitter,
-            threshold=config.max_pose_jitter_m,
-            reason="pose jitter exceeds motion-smoothness bound",
+            threshold=jitter_bound,
+            reason=(
+                "mobile-base pose jitter exceeds motion-smoothness bound"
+                if mobile_pov
+                else "pose jitter exceeds motion-smoothness bound"
+            ),
         )
-    return _gate_result(GATE_STATUS_PASSED, value=jitter, threshold=config.max_pose_jitter_m)
+    return _gate_result(
+        GATE_STATUS_PASSED,
+        value=jitter,
+        threshold=jitter_bound,
+        detail={"constraint": "mobile_base_motion_smoothness"} if mobile_pov else None,
+    )
 
 
 def _evaluate_content_novelty(

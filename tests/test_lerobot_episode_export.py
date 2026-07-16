@@ -5,12 +5,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.lerobot_episode_export import (
+    ACTION_SPACE_SPECS,
     SC3_ACTION_DIM,
     build_lerobot_episode_export,
     build_modality_config,
+    resolve_action_space,
 )
-from blueprint_pipeline.scene_placement.robot_profile import UNITREE_G1_PROFILE
+from blueprint_pipeline.lerobot_export_validation import validate_lerobot_export
+from blueprint_pipeline.scene_placement.robot_profile import (
+    UNITREE_G1_PROFILE,
+    RobotProfile,
+)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -437,6 +445,174 @@ def test_parquet_status_is_honest_about_pyarrow_availability(
         / "episode_000000.parquet"
     )
     assert parquet_path.exists() == (expected == "written")
+
+
+# ---------------------------------------------------------------------------
+# R080: parameterized action-space contract (bimanual / whole-body / mobile-base)
+# ---------------------------------------------------------------------------
+
+
+def _raw_action_job_dir(tmp_path: Path, *, dim: int, n_frames: int = 3) -> Path:
+    """Seed a job dir whose control rows carry raw ``dim``-length action vectors
+    plus top-level timestamps (so the export round-trip validates)."""
+    control_rows = [
+        {
+            "stream_type": "control_action",
+            "attempt_id": "a1",
+            "action_index": i,
+            "action": [round(0.01 * (i + 1) * (k + 1), 5) for k in range(dim)],
+            "sim_time_s": 0.1 * i,
+            "task_id": "traverse-aisle",
+            "scenario_id": "site-walk",
+        }
+        for i in range(n_frames)
+    ]
+    return _seed_job_dir(
+        tmp_path, attempts=[_attempt("a1")], control_rows=control_rows
+    )
+
+
+def _rigless_profile(robot_id: str, embodiment_type: str) -> RobotProfile:
+    # No camera rigs -> modality declares no video, keeping the round-trip
+    # validation focused on the action-space dim rather than video presence.
+    return RobotProfile(robot_id=robot_id, embodiment_type=embodiment_type)
+
+
+def test_default_action_space_is_single_arm_7d_backward_compatible() -> None:
+    spec = resolve_action_space(None)
+    assert spec.name == "single_arm_7d"
+    assert spec.dim == SC3_ACTION_DIM == 7
+    config = build_modality_config(UNITREE_G1_PROFILE)
+    # Default modality output is unchanged: same key, same dim.
+    assert "sc3_7d_delta_end_effector_pose" in config["action"]
+    assert config["action_dim"] == 7
+    assert config["action_space"] == "single_arm_7d"
+
+
+@pytest.mark.parametrize(
+    "space, expected_dim, expected_key",
+    [
+        ("bimanual_14d", 14, "bimanual_14d_delta_end_effector_pose"),
+        ("whole_body", 20, "whole_body_delta_pose"),
+        ("mobile_base_arm", 10, "mobile_base_arm_action"),
+    ],
+)
+def test_modality_config_declares_selected_action_space(
+    space: str, expected_dim: int, expected_key: str
+) -> None:
+    config = build_modality_config(UNITREE_G1_PROFILE, action_space=space)
+    assert config["action_space"] == space
+    assert config["action_dim"] == expected_dim
+    block = config["action"][expected_key]
+    assert block["start"] == 0
+    assert block["end"] == expected_dim
+    # The declared field slices tile the whole vector without gaps/overlap.
+    slices = sorted(block["fields"].values(), key=lambda s: s["start"])
+    assert slices[0]["start"] == 0
+    assert slices[-1]["end"] == expected_dim
+    for prev, nxt in zip(slices, slices[1:]):
+        assert prev["end"] == nxt["start"]
+
+
+@pytest.mark.parametrize(
+    "space, expected_dim",
+    [("bimanual_14d", 14), ("whole_body", 20), ("mobile_base_arm", 10)],
+)
+def test_export_and_validate_selected_action_space_dim(
+    tmp_path: Path, space: str, expected_dim: int
+) -> None:
+    job_dir = _raw_action_job_dir(tmp_path, dim=expected_dim, n_frames=3)
+    profile = _rigless_profile(f"test_{space}", "multi_arm_mobile")
+
+    manifest = build_lerobot_episode_export(
+        job_dir=job_dir,
+        output_dir=tmp_path / "out",
+        robot_profile=profile,
+        action_space=space,
+    )
+
+    assert manifest["status"] == "completed_review_required"
+    assert manifest["action_space"] == space
+    assert manifest["action_dim"] == expected_dim
+    assert manifest["episode_count"] == 1
+    assert manifest["total_frame_count"] == 3
+
+    export_root = tmp_path / "out" / "lerobot_episode_export"
+    rows = [
+        json.loads(line)
+        for line in (export_root / "data" / "episode_000000.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert all(len(row["action"]) == expected_dim for row in rows)
+    info = json.loads((export_root / "meta" / "info.json").read_text())
+    assert info["features"]["action"]["shape"] == [expected_dim]
+    modality = json.loads((export_root / "meta" / "modality.json").read_text())
+    assert modality["action_dim"] == expected_dim
+
+    # The round-trip validator accepts the declared action space and its dim.
+    report = validate_lerobot_export(export_root)
+    assert report["status"] == "passed", report["blockers"]
+    assert report["checks"]["feature_dims_stable"] == "passed"
+    assert report["checks"]["action_space_declared_consistent"] == "passed"
+
+
+def test_7d_action_stays_default_when_no_action_space_declared(tmp_path: Path) -> None:
+    # A control row carrying a 14D vector is INVALID under the default 7D
+    # contract and the episode fails closed rather than being silently accepted.
+    job_dir = _seed_job_dir(
+        tmp_path,
+        attempts=[_attempt("a1")],
+        control_rows=[
+            _control_row("a1", 0),
+            _control_row("a1", 1, action=[0.0] * 14),
+        ],
+    )
+    manifest = build_lerobot_episode_export(
+        job_dir=job_dir, output_dir=tmp_path / "out", robot_id="unitree_g1"
+    )
+    assert manifest["action_space"] == "single_arm_7d"
+    assert manifest["action_dim"] == 7
+    assert manifest["status"] == "blocked"
+    excluded = manifest["excluded_episodes"][0]
+    assert any(
+        blocker.startswith("sc3_7d_action_invalid_at_index:1")
+        for blocker in excluded["blockers"]
+    )
+
+
+def test_validator_flags_action_space_dim_mismatch(tmp_path: Path) -> None:
+    # Export a bimanual (14D) dataset, then corrupt info.json to claim 7D: the
+    # declared action-space consistency check must fail closed.
+    job_dir = _raw_action_job_dir(tmp_path, dim=14, n_frames=3)
+    profile = _rigless_profile("test_bimanual_mismatch", "multi_arm_mobile")
+    build_lerobot_episode_export(
+        job_dir=job_dir,
+        output_dir=tmp_path / "out",
+        robot_profile=profile,
+        action_space="bimanual_14d",
+    )
+    export_root = tmp_path / "out" / "lerobot_episode_export"
+    info_path = export_root / "meta" / "info.json"
+    info = json.loads(info_path.read_text())
+    info["features"]["action"]["shape"] = [7]
+    info_path.write_text(json.dumps(info), encoding="utf-8")
+
+    report = validate_lerobot_export(export_root)
+    assert report["status"] == "blocked"
+    assert "action_space_dim_mismatch_info" in report["blockers"]
+    assert report["checks"]["action_space_declared_consistent"] == "failed"
+
+
+def test_unknown_action_space_name_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown action_space"):
+        resolve_action_space("septuple_arm_99d")
+    assert set(ACTION_SPACE_SPECS) == {
+        "single_arm_7d",
+        "bimanual_14d",
+        "whole_body",
+        "mobile_base_arm",
+    }
 
 
 def test_success_label_is_strict_boolean_or_none(tmp_path: Path) -> None:

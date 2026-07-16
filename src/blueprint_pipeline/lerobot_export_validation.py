@@ -55,6 +55,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "frame_index_sequential",
     "global_index_contiguous",
     "feature_dims_stable",
+    "action_space_declared_consistent",
     "tasks_schema_valid",
     "task_index_referential_integrity",
     "episode_metadata_consistent",
@@ -211,6 +212,25 @@ def _find_video_file(
             if matches:
                 return matches[0]
     return None
+
+
+def _modality_action_dim(modality: Mapping[str, Any]) -> int | None:
+    """Declared action dim from a GR00T ``modality.json``.
+
+    Reads the top-level ``action_dim`` when present, otherwise the widest
+    ``end`` across the declared action blocks. Returns ``None`` when the
+    modality does not declare an action space (older exports) so the check
+    is skipped rather than failing closed on absence.
+    """
+    dim = _int_or_none(modality.get("action_dim"))
+    if dim is not None:
+        return dim
+    ends: List[int] = []
+    for block in _mapping(modality.get("action")).values():
+        end = _int_or_none(_mapping(block).get("end"))
+        if end is not None:
+            ends.append(end)
+    return max(ends) if ends else None
 
 
 def _gr00t_modality_video_keys(modality: Mapping[str, Any]) -> set[str]:
@@ -528,6 +548,38 @@ def validate_lerobot_export(
             blockers.append(mismatch_blocker)
             dims_ok = False
     checks["feature_dims_stable"] = "passed" if dims_ok else "failed"
+
+    # --- declared action-space consistency (GR00T modality) -------------------
+    # R080: the export declares its action space (single_arm_7d | bimanual_14d |
+    # whole_body | mobile_base_arm) in modality.json. When present, the declared
+    # dim must agree with info.json's action feature shape and the actual row
+    # width so a mislabeled action contract fails closed instead of shipping.
+    modality_action_dim = (
+        _modality_action_dim(modality) if layout == "gr00t_lerobot" else None
+    )
+    if modality_action_dim is not None:
+        action_row_dims = {
+            len(row["action"])
+            for row in frame_rows
+            if isinstance(row.get("action"), (list, tuple))
+        }
+        info_action_shape = _mapping(features.get("action")).get("shape")
+        declared_info_dim = None
+        if (
+            isinstance(info_action_shape, (list, tuple))
+            and len(info_action_shape) == 1
+        ):
+            declared_info_dim = _int_or_none(info_action_shape[0])
+        action_space_ok = True
+        if action_row_dims and modality_action_dim not in action_row_dims:
+            blockers.append("action_space_dim_mismatch_rows")
+            action_space_ok = False
+        if declared_info_dim is not None and declared_info_dim != modality_action_dim:
+            blockers.append("action_space_dim_mismatch_info")
+            action_space_ok = False
+        checks["action_space_declared_consistent"] = (
+            "passed" if action_space_ok else "failed"
+        )
 
     # --- episode metadata consistency ------------------------------------------
     episodes_ok = True

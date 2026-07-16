@@ -35,8 +35,9 @@ import argparse
 import json
 import math
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence, Union
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .scene_placement.robot_profile import RobotProfile, get_robot_profile
@@ -48,13 +49,140 @@ CONTROL_STREAM_FILENAME = "simulator_command_batch_control_stream.jsonl"
 ATTEMPT_TRACE_FILENAME = "simulator_command_batch_attempt_trace.jsonl"
 
 # SC3 7D delta end-effector pose layout — the action contract the pipeline
-# already validates in post_training_data_package._sc3_action_vector.
+# already validates in post_training_data_package._sc3_action_vector. This is
+# the DEFAULT action space (``single_arm_7d``); the export/validator accept a
+# declared :class:`ActionSpaceSpec` for bimanual / whole-body / mobile-base
+# embodiments (R080) while single-arm 7D stays the backward-compatible default.
 SC3_ACTION_LAYOUT: tuple[tuple[str, int, int], ...] = (
     ("delta_position_m", 0, 3),
     ("delta_rotation_axis_angle", 3, 6),
     ("gripper", 6, 7),
 )
 SC3_ACTION_DIM = 7
+
+
+@dataclass(frozen=True)
+class ActionSpaceSpec:
+    """Declared action-space contract for a LeRobot/GR00T episode export.
+
+    The action vector is a flat concatenation described by ``layout`` — a tuple
+    of ``(field_name, start, end)`` half-open index slices. ``dim`` is derived
+    from the layout so it can never drift from the declared fields. ``name`` is
+    the stable identifier ops select (``single_arm_7d``, ``bimanual_14d``,
+    ``whole_body``, ``mobile_base_arm``); ``modality_key`` is the key the block
+    is emitted under in ``modality.json`` and preserves the historical SC3 name
+    for the default so existing consumers are unaffected.
+    """
+
+    name: str
+    layout: tuple[tuple[str, int, int], ...]
+    absolute: bool = False
+    modality_key: str = "action"
+    invalid_blocker_prefix: str = "action_invalid_at_index"
+    # Extra mapping keys (besides a raw list) that may carry the full vector.
+    vector_keys: tuple[str, ...] = ()
+
+    @property
+    def dim(self) -> int:
+        return max((end for _, _, end in self.layout), default=0)
+
+
+# --- built-in action spaces -------------------------------------------------
+
+SINGLE_ARM_7D_SPEC = ActionSpaceSpec(
+    name="single_arm_7d",
+    layout=SC3_ACTION_LAYOUT,
+    absolute=False,
+    modality_key="sc3_7d_delta_end_effector_pose",
+    invalid_blocker_prefix="sc3_7d_action_invalid_at_index",
+)
+
+BIMANUAL_14D_SPEC = ActionSpaceSpec(
+    name="bimanual_14d",
+    layout=(
+        ("left_delta_position_m", 0, 3),
+        ("left_delta_rotation_axis_angle", 3, 6),
+        ("left_gripper", 6, 7),
+        ("right_delta_position_m", 7, 10),
+        ("right_delta_rotation_axis_angle", 10, 13),
+        ("right_gripper", 13, 14),
+    ),
+    absolute=False,
+    modality_key="bimanual_14d_delta_end_effector_pose",
+    invalid_blocker_prefix="bimanual_14d_action_invalid_at_index",
+    vector_keys=("bimanual_14d", "dual_arm_action_14d", "action_vector_14d"),
+)
+
+WHOLE_BODY_SPEC = ActionSpaceSpec(
+    name="whole_body",
+    layout=(
+        ("base_delta_position_m", 0, 3),
+        ("base_delta_rotation_axis_angle", 3, 6),
+        ("left_delta_position_m", 6, 9),
+        ("left_delta_rotation_axis_angle", 9, 12),
+        ("left_gripper", 12, 13),
+        ("right_delta_position_m", 13, 16),
+        ("right_delta_rotation_axis_angle", 16, 19),
+        ("right_gripper", 19, 20),
+    ),
+    absolute=False,
+    modality_key="whole_body_delta_pose",
+    invalid_blocker_prefix="whole_body_action_invalid_at_index",
+    vector_keys=("whole_body_action", "whole_body_action_20d", "action_vector_20d"),
+)
+
+MOBILE_BASE_ARM_SPEC = ActionSpaceSpec(
+    name="mobile_base_arm",
+    layout=(
+        ("base_linear_velocity_mps", 0, 2),
+        ("base_yaw_rate_radps", 2, 3),
+        ("delta_position_m", 3, 6),
+        ("delta_rotation_axis_angle", 6, 9),
+        ("gripper", 9, 10),
+    ),
+    absolute=False,
+    modality_key="mobile_base_arm_action",
+    invalid_blocker_prefix="mobile_base_arm_action_invalid_at_index",
+    vector_keys=("mobile_base_arm_action", "mobile_base_arm_action_10d", "action_vector_10d"),
+)
+
+DEFAULT_ACTION_SPACE_NAME = SINGLE_ARM_7D_SPEC.name
+
+ACTION_SPACE_SPECS: Dict[str, ActionSpaceSpec] = {
+    spec.name: spec
+    for spec in (
+        SINGLE_ARM_7D_SPEC,
+        BIMANUAL_14D_SPEC,
+        WHOLE_BODY_SPEC,
+        MOBILE_BASE_ARM_SPEC,
+    )
+}
+
+ActionSpaceLike = Union[str, ActionSpaceSpec, None]
+
+
+def resolve_action_space(action_space: ActionSpaceLike) -> ActionSpaceSpec:
+    """Resolve a spec name / instance to an :class:`ActionSpaceSpec`.
+
+    ``None`` resolves to the default single-arm 7D contract so callers that do
+    not opt in keep the historical behavior exactly.
+    """
+    if action_space is None:
+        return SINGLE_ARM_7D_SPEC
+    if isinstance(action_space, ActionSpaceSpec):
+        return action_space
+    if isinstance(action_space, str):
+        try:
+            return ACTION_SPACE_SPECS[action_space]
+        except KeyError:
+            raise ValueError(
+                f"unknown action_space {action_space!r}; known: "
+                f"{', '.join(sorted(ACTION_SPACE_SPECS))}"
+            ) from None
+    raise TypeError(
+        "action_space must be an ActionSpaceSpec, a registered name, or None; "
+        f"got {type(action_space).__name__}"
+    )
 
 # Default per-step state layout when a stream carries robot state. Base pose
 # as position + wxyz quaternion. States are only exported when the stream rows
@@ -128,13 +256,18 @@ def build_modality_config(
     profile: RobotProfile,
     *,
     state_layout: Sequence[tuple[str, int, int]] | None = None,
+    action_space: ActionSpaceLike = None,
 ) -> Dict[str, Any]:
     """GR00T-style modality config: named slices into state/action vectors.
 
-    The action block is always emitted (the SC3 7D contract is validated
-    elsewhere in the pipeline). The state block is a declared layout; whether
-    episodes actually carry state is reported per-episode by the export.
+    The action block is emitted from the declared :class:`ActionSpaceSpec`
+    (default ``single_arm_7d`` — the SC3 7D contract validated elsewhere in the
+    pipeline). Bimanual / whole-body / mobile-base spaces are opt-in via
+    ``action_space`` and change only the action layout/dim, not the default
+    output. The state block is a declared layout; whether episodes actually
+    carry state is reported per-episode by the export.
     """
+    spec = resolve_action_space(action_space)
     resolved_state_layout = tuple(
         state_layout
         if state_layout is not None
@@ -154,17 +287,18 @@ def build_modality_config(
         "schema_version": MODALITY_CONFIG_SCHEMA_VERSION,
         "robot_id": profile.robot_id,
         "embodiment_type": profile.embodiment_type,
+        "action_space": spec.name,
         "state": _slices(resolved_state_layout),
         "state_dim": max((end for _, _, end in resolved_state_layout), default=0),
         "action": {
-            "sc3_7d_delta_end_effector_pose": {
+            spec.modality_key: {
                 "start": 0,
-                "end": SC3_ACTION_DIM,
-                "absolute": False,
-                "fields": _slices(SC3_ACTION_LAYOUT),
+                "end": spec.dim,
+                "absolute": spec.absolute,
+                "fields": _slices(spec.layout),
             }
         },
-        "action_dim": SC3_ACTION_DIM,
+        "action_dim": spec.dim,
         "video": video,
         "annotation": {"human.task_description": {"original_key": "task"}},
         "source_action_interface": dict(profile.action_interface),
@@ -229,6 +363,49 @@ def _sc3_vector_from_action(action: Any) -> List[float] | None:
     if position is not None and rotation is not None and gripper is not None:
         return [*position, *rotation, gripper]
     return None
+
+
+def _action_vector_from_action(
+    action: Any, spec: ActionSpaceSpec
+) -> List[float] | None:
+    """Parse a control action into a flat vector for the declared action space.
+
+    The default single-arm 7D space keeps the rich SC3 parsing (key aliases and
+    position/rotation/gripper composition). Other spaces accept a raw list of
+    ``spec.dim`` floats, a full vector under a declared/generic key, a nested
+    ``normalized_action``, or a per-field composite assembled from the layout
+    field names. Anything that cannot be proven to be ``spec.dim`` finite floats
+    returns ``None`` so the episode fails closed (never zero-filled).
+    """
+    if spec.name == DEFAULT_ACTION_SPACE_NAME:
+        return _sc3_vector_from_action(action)
+    vector = _float_vector(action, spec.dim)
+    if vector is not None:
+        return vector
+    payload = _mapping(action)
+    if not payload:
+        return None
+    for key in (*spec.vector_keys, "action_vector", spec.modality_key, spec.name):
+        vector = _float_vector(payload.get(key), spec.dim)
+        if vector is not None:
+            return vector
+    normalized = _mapping(payload.get("normalized_action"))
+    if normalized:
+        return _action_vector_from_action(normalized, spec)
+    assembled: List[float] = []
+    for name, start, end in spec.layout:
+        width = end - start
+        if width == 1:
+            scalar = _finite_float(payload.get(name))
+            if scalar is None:
+                return None
+            assembled.append(scalar)
+        else:
+            part = _float_vector(payload.get(name), width)
+            if part is None:
+                return None
+            assembled.extend(part)
+    return assembled if len(assembled) == spec.dim else None
 
 
 def _state_from_payload(payload: Mapping[str, Any], state_dim: int) -> List[float] | None:
@@ -425,21 +602,26 @@ def build_lerobot_episode_export(
     robot_profile: RobotProfile | None = None,
     materialized_video_by_attempt: Mapping[str, Any] | None = None,
     generated_at: str | None = None,
+    action_space: ActionSpaceLike = None,
 ) -> Dict[str, Any]:
     """Map simulator batch streams into per-episode LeRobot-style rows.
 
     One episode per attempt in the attempt trace. Episodes fail closed: a
     missing control stream blocks the export; an attempt whose control rows
-    are missing or whose actions do not parse as SC3 7D vectors is excluded
-    with a blocker, never padded.
+    are missing or whose actions do not parse as the declared action-space
+    vector is excluded with a blocker, never padded. ``action_space`` selects
+    the action contract (default ``single_arm_7d``; ``bimanual_14d``,
+    ``whole_body``, ``mobile_base_arm`` are opt-in for humanoid/industrial and
+    mobile-base embodiments) and drives the exported action dim and modality.
     """
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     export_root = Path(output_dir).expanduser().resolve() / "lerobot_episode_export"
     stamp = generated_at or utc_now_iso()
+    spec = resolve_action_space(action_space)
     profile = robot_profile
     if profile is None and robot_id:
         profile = get_robot_profile(robot_id)
-    modality = build_modality_config(profile) if profile else None
+    modality = build_modality_config(profile, action_space=spec) if profile else None
     state_dim = int(modality["state_dim"]) if modality else 0
     video_key = _episode_video_key(modality)
     video_sources = {
@@ -464,6 +646,8 @@ def build_lerobot_episode_export(
         "job_dir": str(resolved_job_dir),
         "export_dir": str(export_root),
         "robot_id": profile.robot_id if profile else None,
+        "action_space": spec.name,
+        "action_dim": spec.dim,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     if blockers:
@@ -532,12 +716,12 @@ def build_lerobot_episode_export(
             payload = _mapping(control_row.get("action"))
             stream_payload = dict(control_row)
             stream_payload.update(payload)
-            vector = _sc3_vector_from_action(
-                control_row.get("action") if not payload else payload
+            vector = _action_vector_from_action(
+                control_row.get("action") if not payload else payload, spec
             )
             if vector is None:
                 episode_blockers.append(
-                    f"sc3_7d_action_invalid_at_index:{control_row.get('action_index')}"
+                    f"{spec.invalid_blocker_prefix}:{control_row.get('action_index')}"
                 )
                 continue
             source = _observation_source_metadata(
@@ -721,7 +905,7 @@ def build_lerobot_episode_export(
             "total_episodes": len(episodes_meta),
             "total_frames": global_index,
             "features": {
-                "action": {"dtype": "float32", "shape": [SC3_ACTION_DIM]},
+                "action": {"dtype": "float32", "shape": [spec.dim]},
                 **(
                     {"observation.state": {"dtype": "float32", "shape": [state_dim]}}
                     if state_dim
@@ -784,11 +968,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--robot-id", default="unitree_g1")
+    parser.add_argument(
+        "--action-space",
+        default=DEFAULT_ACTION_SPACE_NAME,
+        choices=sorted(ACTION_SPACE_SPECS),
+        help="Declared action-space contract (default: single_arm_7d).",
+    )
     args = parser.parse_args(argv)
     manifest = build_lerobot_episode_export(
         job_dir=args.job_dir,
         output_dir=args.output_dir,
         robot_id=args.robot_id,
+        action_space=args.action_space,
     )
     print(json.dumps({"status": manifest.get("status"), "episode_count": manifest.get("episode_count")}))
     return 0 if manifest.get("status") != "blocked" else 2

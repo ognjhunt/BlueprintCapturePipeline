@@ -331,6 +331,75 @@ def test_robot_pov_static_camera_constraint(tmp_path: Path) -> None:
     assert static_result["status"] == "accepted"
 
 
+def test_mobile_base_robot_pov_accepted_under_site_profile(tmp_path: Path) -> None:
+    # R081: a moving-camera robot-POV clip (warehouse/factory traversal) is
+    # rejected by the default static-eval profile but accepted under an
+    # industrial mobile-base capture profile.
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    rel = _write_image(bundle, "frames/sharp.npy", _sharp_image())
+    moving = {
+        "clip_id": "clip_pov_mobile",
+        "clip_kind": "robot_pov",
+        "frames": _frames(80, step_x=0.02, image_path=rel),
+    }
+
+    # Default (static_eval) still rejects the moving robot-POV clip.
+    default_result = evaluate_clip(
+        moving, config=ClipCurationConfig(), bundle_dir=bundle
+    )
+    assert (
+        default_result["gate_results"][GATE_CAMERA_STABILITY]["status"]
+        == GATE_STATUS_FAILED
+    )
+    assert default_result["status"] == "rejected"
+
+    # Industrial mobile-base profile accepts the same moving clip.
+    mobile_config = ClipCurationConfig(capture_profile="industrial_mobile")
+    mobile_result = evaluate_clip(moving, config=mobile_config, bundle_dir=bundle)
+    stability = mobile_result["gate_results"][GATE_CAMERA_STABILITY]
+    assert stability["status"] == GATE_STATUS_PASSED
+    assert stability["detail"]["constraint"] == "mobile_base_motion_smoothness"
+    assert mobile_result["status"] == "accepted"
+
+    # The explicit override flag has the same effect as a site profile.
+    override_result = evaluate_clip(
+        moving,
+        config=ClipCurationConfig(allow_mobile_base_robot_pov=True),
+        bundle_dir=bundle,
+    )
+    assert override_result["status"] == "accepted"
+
+
+def test_mobile_base_profile_still_rejects_shaky_robot_pov(tmp_path: Path) -> None:
+    # Relaxing the static-camera constraint must not disable the gate: a shaky
+    # mobile-base POV still fails the motion-smoothness (jitter) bound.
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    rel = _write_image(bundle, "frames/sharp.npy", _sharp_image())
+    shaky = {
+        "clip_id": "clip_pov_shaky",
+        "clip_kind": "robot_pov",
+        "frames": _frames(80, step_x=0.02, jitter_x=0.03, image_path=rel),
+    }
+    result = evaluate_clip(
+        shaky, config=ClipCurationConfig(capture_profile="warehouse_traversal"), bundle_dir=bundle
+    )
+    gate = result["gate_results"][GATE_CAMERA_STABILITY]
+    assert gate["status"] == GATE_STATUS_FAILED
+    assert gate["value"] > gate["threshold"]
+    assert result["status"] == "rejected"
+
+
+def test_capture_profile_is_config_loadable_and_default_is_static() -> None:
+    assert ClipCurationConfig().capture_profile == "static_eval"
+    config = ClipCurationConfig.from_dict(
+        {"capture_profile": "mobile_base", "mobile_base_max_pose_jitter_m": 0.05}
+    )
+    assert config.capture_profile == "mobile_base"
+    assert config.mobile_base_max_pose_jitter_m == 0.05
+
+
 # ---------------------------------------------------------------------------
 # Gate: content novelty
 # ---------------------------------------------------------------------------
