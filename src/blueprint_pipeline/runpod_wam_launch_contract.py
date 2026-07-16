@@ -371,10 +371,7 @@ def update_provider_lane_handoff_receipt(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        temporary.unlink(missing_ok=True)
     return {
         "status": "pod_id_bound" if pod_id else "pending_create_bound",
         "path": str(path),
