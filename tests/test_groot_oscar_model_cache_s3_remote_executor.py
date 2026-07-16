@@ -159,7 +159,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     carrier_runs = [call for call in docker.calls if call[1] == "run"]
-    assert len(carrier_runs) == 6
+    assert len(carrier_runs) == 7
     assert all("--network" in call for call in carrier_runs)
     assert all("none" in call for call in carrier_runs)
     assert all("--env" in call for call in carrier_runs)
@@ -178,12 +178,32 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     validation_scripts = [call[-1] for call in carrier_runs]
     elf_scan = next(script for script in validation_scripts if "elf_count" in script)
     assert all(f"/{root}" in elf_scan for root in RUNTIME_ARCHIVE_ROOTS)
-    assert "ldd \"$candidate\"" in elf_scan
+    assert "ThreadPoolExecutor(max_workers=workers)" in elf_scan
+    assert '["ldd", candidate]' in elf_scan
+    assert "min(8, os.cpu_count() or 1)" in elf_scan
+    assert "BLUEPRINT_ELF_LDD_TIMEOUT" in elf_scan
+    assert "BLUEPRINT_ELF_AUDIT_ERROR" in elf_scan
+    assert "onerror=record_walk_error" in elf_scan
+    assert "if not os.path.isdir(root)" in elf_scan
+    embedded_python = elf_scan.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    compile(embedded_python, "<carrier-elf-audit>", "exec")
     assert "not found" in elf_scan
     assert "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME" in elf_scan
     assert "libcuda.so.*" in elf_scan
     assert any("import diffusers" in script for script in validation_scripts)
     assert any("import carb; import isaacsim" in script for script in validation_scripts)
+    cpu_isaac_scan = next(
+        script for script in validation_scripts if "import carb; import isaacsim" in script
+    )
+    assert "from isaacsim import SimulationApp" in cpu_isaac_scan
+    assert "app = SimulationApp" not in cpu_isaac_scan
+    assert "from isaacsim.core.prims" not in cpu_isaac_scan
+    isaac_inventory = next(
+        script for script in validation_scripts if "ISAAC_CORE_EXTENSION_INVENTORY" in script
+    )
+    assert "-path '*/isaacsim/core/prims/__init__.py'" in isaac_inventory
+    assert 'test -n "$prims_init"' in isaac_inventory
+    assert "grep -R -Fq 'SingleArticulation'" in isaac_inventory
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
@@ -200,6 +220,10 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
             "--verify-serverless-runtime",
         ]
     ]
+    isaac_healthcheck = manifest["healthcheck_argv"][-1]
+    assert "app = SimulationApp({'headless': True})" in isaac_healthcheck[-1]
+    assert "from isaacsim.core.prims import SingleArticulation" in isaac_healthcheck[-1]
+    assert "app.close()" in isaac_healthcheck[-1]
 
 
 def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:
@@ -323,8 +347,42 @@ def test_runtime_carrier_validation_collects_all_failures_before_blocking(
 
     message = str(raised.value)
     assert "all_archived_elf_linkage" in message
-    assert "isaac_import_matrix" in message
-    assert sum(call[1] == "run" for call in docker.calls) == 6
+    assert "isaac_bootstrap_import" in message
+    assert sum(call[1] == "run" for call in docker.calls) == 7
+
+
+def test_runtime_carrier_validation_preserves_structured_timeout_evidence(
+    tmp_path: Path,
+) -> None:
+    class TimeoutDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and "elf_count" in command[-1]:
+                self.calls.append(command)
+                raise subprocess.TimeoutExpired(command, timeout=900)
+            return super().__call__(argv, **kwargs)
+
+    with pytest.raises(executor.RuntimeCarrierValidationError) as raised:
+        executor._validate_runtime_inside_carrier(
+            TimeoutDocker(),
+            carrier_ref=CARRIER_REF,
+            payload_root=tmp_path,
+        )
+
+    failed = next(
+        row
+        for row in raised.value.evidence["checks"]
+        if row["name"] == "all_archived_elf_linkage"
+    )
+    assert failed == {
+        "name": "all_archived_elf_linkage",
+        "status": "failed",
+        "diagnostic_tokens": [],
+        "failure_kind": "timeout",
+        "timeout_seconds": 900,
+    }
+    assert "stdout" not in json.dumps(raised.value.evidence)
+    assert "stderr" not in json.dumps(raised.value.evidence)
 
 
 def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:
@@ -334,16 +392,32 @@ def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependenc
         output=(
             "libcuda_runtime.so.1 => not found\n"
             "ModuleNotFoundError: No module named 'omni.missing'\n"
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC elf_linkage_timeout\n"
             "credential-like text must not be copied\n"
         ),
         stderr="liboptional.so.2: cannot open shared object file\n",
     )
 
     assert executor._validation_diagnostic_tokens(failure) == [
+        "elf_linkage_timeout",
         "libcuda_runtime.so.1",
         "liboptional.so.2",
         "omni.missing",
     ]
+
+
+def test_runtime_carrier_validation_diagnostic_marker_is_strictly_bounded() -> None:
+    failure = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["docker", "run"],
+        output=(
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC elf_audit_error\n"
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC ../../secret\n"
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC value with spaces\n"
+        ),
+    )
+
+    assert executor._validation_diagnostic_tokens(failure) == ["elf_audit_error"]
 
 
 def test_runtime_carrier_import_failure_defers_only_pure_driver_sonames(

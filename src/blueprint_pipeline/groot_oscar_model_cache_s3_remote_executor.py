@@ -95,6 +95,10 @@ _SAFE_DROPLET_ID = re.compile(r"[0-9]{1,32}")
 _MISSING_PYTHON_MODULE = re.compile(
     r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]"
 )
+_VALIDATION_DIAGNOSTIC_MARKER = re.compile(
+    r"^BLUEPRINT_VALIDATION_DIAGNOSTIC ([A-Za-z0-9_.-]{1,128})$",
+    re.MULTILINE,
+)
 _PACKET_KEYS = frozenset(
     {
         "schema_version",
@@ -308,6 +312,7 @@ def _validation_dependency_tokens(exc: BaseException) -> set[str]:
     return {
         *_missing_soname_tokens(text),
         *(_MISSING_PYTHON_MODULE.findall(text)),
+        *(_VALIDATION_DIAGNOSTIC_MARKER.findall(text)),
     }
 
 
@@ -324,41 +329,150 @@ def _validate_runtime_inside_carrier(
             r"""
 missing="$(mktemp)"
 deferred="$(mktemp)"
+scan="$(mktemp)"
+/opt/oscar-venv/bin/python - "$scan" <<'PY'
+import concurrent.futures
+import os
+import subprocess
+import sys
+
+roots = (
+    "/isaac-sim",
+    "/opt/OSCAR",
+    "/opt/blueprint",
+    "/opt/gr00t",
+    "/opt/gr00t-venv",
+    "/opt/onnxruntime",
+    "/opt/oscar-venv",
+    "/opt/runpod-serverless-venv",
+    "/opt/uv-python",
+    "/opt/wbc",
+)
+allowed = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-"
+)
+elf_paths = []
+audit_error_count = 0
+
+def record_walk_error(_exc):
+    global audit_error_count
+    audit_error_count += 1
+
+for root in roots:
+    if not os.path.isdir(root):
+        audit_error_count += 1
+        continue
+    for directory, _child_directories, filenames in os.walk(
+        root,
+        followlinks=False,
+        onerror=record_walk_error,
+    ):
+        for filename in filenames:
+            candidate = os.path.join(directory, filename)
+            if os.path.islink(candidate):
+                continue
+            try:
+                with open(candidate, "rb") as handle:
+                    if handle.read(4) == b"\x7fELF":
+                        elf_paths.append(candidate)
+            except OSError:
+                audit_error_count += 1
+
+def inspect(candidate):
+    try:
+        completed = subprocess.run(
+            ["ldd", candidate],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return ("TIMEOUT", ())
+    except OSError:
+        return ("AUDIT_ERROR", ())
+    missing_sonames = []
+    for line in (completed.stdout + "\n" + completed.stderr).splitlines():
+        if "=> not found" not in line:
+            continue
+        left = line.split("=> not found", 1)[0].strip()
+        soname = left.split()[-1] if left else ""
+        if 0 < len(soname) <= 256 and ".so" in soname and all(
+            character in allowed for character in soname
+        ):
+            missing_sonames.append(soname)
+        else:
+            missing_sonames.append("")
+    return ("OK", tuple(missing_sonames))
+
+timeout_count = 0
+invalid_missing_count = 0
+missing_sonames = set()
+workers = max(1, min(8, os.cpu_count() or 1))
+with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+    for status, values in executor.map(inspect, elf_paths):
+        if status == "TIMEOUT":
+            timeout_count += 1
+            continue
+        if status == "AUDIT_ERROR":
+            audit_error_count += 1
+            continue
+        for soname in values:
+            if soname:
+                missing_sonames.add(soname)
+            else:
+                invalid_missing_count += 1
+
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(f"COUNT\t{len(elf_paths)}\n")
+    handle.write(f"TIMEOUT\t{timeout_count}\n")
+    handle.write(f"AUDIT_ERROR\t{audit_error_count}\n")
+    handle.write(f"INVALID_MISSING\t{invalid_missing_count}\n")
+    for soname in sorted(missing_sonames):
+        handle.write(f"MISSING\t{soname}\n")
+PY
 elf_count=0
-while IFS= read -r -d '' candidate; do
-  magic="$(head -c 4 "$candidate" 2>/dev/null || true)"
-  [[ "$magic" == $'\x7fELF' ]] || continue
-  elf_count=$((elf_count + 1))
-  linkage="$(ldd "$candidate" 2>&1 || true)"
-  while IFS= read -r missing_line; do
-    soname="${missing_line%%=>*}"
-    soname="${soname#"${soname%%[![:space:]]*}"}"
-    soname="${soname%"${soname##*[![:space:]]}"}"
+timeout_count=0
+audit_error_count=0
+invalid_missing_count=0
+while IFS=$'\t' read -r kind value; do
+  case "$kind" in
+    COUNT) elf_count="$value" ;;
+    TIMEOUT) timeout_count="$value" ;;
+    AUDIT_ERROR) audit_error_count="$value" ;;
+    INVALID_MISSING) invalid_missing_count="$value" ;;
+    MISSING)
+      soname="$value"
+      missing_line="$soname => not found"
     case "$soname" in
       libnvidia-*.so*|libcuda.so|libcuda.so.*|libnvcuvid.so|libnvcuvid.so.*|libnvoptix.so|libnvoptix.so.*|libGLX_nvidia.so|libGLX_nvidia.so.*|libEGL_nvidia.so|libEGL_nvidia.so.*|libGLESv1_CM_nvidia.so|libGLESv1_CM_nvidia.so.*|libGLESv2_nvidia.so|libGLESv2_nvidia.so.*)
         printf '%s\n' "$soname" >>"$deferred"
         ;;
       *)
         {
-          printf 'ELF %s\n' "$candidate"
           printf '%s\n' "$missing_line"
         } >>"$missing"
         ;;
     esac
-  done < <(grep -F 'not found' <<<"$linkage" || true)
-done < <(find \
-  /isaac-sim \
-  /opt/OSCAR \
-  /opt/blueprint \
-  /opt/gr00t \
-  /opt/gr00t-venv \
-  /opt/onnxruntime \
-  /opt/oscar-venv \
-  /opt/runpod-serverless-venv \
-  /opt/uv-python \
-  /opt/wbc \
-  -xdev -type f -print0)
+      ;;
+  esac
+done <"$scan"
 test "$elf_count" -gt 0
+if [[ "$audit_error_count" -gt 0 ]]; then
+  printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_audit_error\n'
+  printf 'BLUEPRINT_ELF_AUDIT_ERROR count=%s\n' "$audit_error_count"
+  exit 94
+fi
+if [[ "$timeout_count" -gt 0 ]]; then
+  printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_linkage_timeout\n'
+  printf 'BLUEPRINT_ELF_LDD_TIMEOUT count=%s\n' "$timeout_count"
+  exit 92
+fi
+if [[ "$invalid_missing_count" -gt 0 ]]; then
+  printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_soname_invalid\n'
+  printf 'BLUEPRINT_ELF_MISSING_SONAME_INVALID count=%s\n' "$invalid_missing_count"
+  exit 93
+fi
 if [[ -s "$missing" ]]; then
   cat "$missing"
   exit 91
@@ -396,12 +510,22 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
             300,
         ),
         (
-            "isaac_import_matrix",
+            "isaac_bootstrap_import",
             "/isaac-sim/python.sh -c 'import blueprint_pipeline; import carb; import isaacsim; "
-            "from isaacsim import SimulationApp; from isaacsim.core.prims import SingleArticulation; "
-            "import omni.kit.app; import omni.timeline; import omni.usd; "
+            "from isaacsim import SimulationApp; "
             "import blueprint_pipeline.isaac_runtime_task_backend'",
-            300,
+            120,
+        ),
+        (
+            "isaac_core_extension_inventory",
+            r"""
+prims_init="$(find /isaac-sim -type f -path '*/isaacsim/core/prims/__init__.py' -print -quit)"
+test -n "$prims_init"
+prims_root="$(dirname "$prims_init")"
+grep -R -Fq 'SingleArticulation' "$prims_root"
+printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
+""",
+            120,
         ),
         (
             "wbc_binary_executable",
@@ -506,13 +630,21 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
                 )
                 continue
             failed_checks.append(check_name)
-            checks.append(
-                {
-                    "name": check_name,
-                    "status": "failed",
-                    "diagnostic_tokens": _validation_diagnostic_tokens(exc),
-                }
-            )
+            failure = {
+                "name": check_name,
+                "status": "failed",
+                "diagnostic_tokens": _validation_diagnostic_tokens(exc),
+                "failure_kind": (
+                    "timeout"
+                    if isinstance(exc, subprocess.TimeoutExpired)
+                    else "process_error"
+                ),
+            }
+            if isinstance(exc, subprocess.TimeoutExpired):
+                failure["timeout_seconds"] = timeout_seconds
+            else:
+                failure["return_code"] = int(exc.returncode)
+            checks.append(failure)
     evidence = {
         "schema_version": "groot_oscar_runtime_carrier_compatibility_audit.v1",
         "status": (
@@ -534,9 +666,10 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         ),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
-            "This validates archived ELF linkage and import surfaces inside the exact "
-            "carrier on CPU. It does not prove GPU, CUDA-driver, Isaac rendering, policy "
-            "execution, artifact completion, or semantic task success."
+            "This validates archived ELF linkage, CPU-safe imports, and required Isaac "
+            "extension inventory inside the exact carrier on CPU. It does not prove GPU, "
+            "CUDA-driver, initialized Isaac extensions, Isaac rendering, policy execution, "
+            "artifact completion, or semantic task success."
         ),
         "raw_secret_values_recorded": False,
     }
@@ -686,9 +819,10 @@ def prepare_runtime_bundle(
                     "-c",
                     "import blueprint_pipeline; import carb; import isaacsim; "
                     "from isaacsim import SimulationApp; "
+                    "app = SimulationApp({'headless': True}); "
                     "from isaacsim.core.prims import SingleArticulation; "
                     "import omni.kit.app; import omni.timeline; import omni.usd; "
-                    "import blueprint_pipeline.isaac_runtime_task_backend",
+                    "import blueprint_pipeline.isaac_runtime_task_backend; app.close()",
                 ),
             ),
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
