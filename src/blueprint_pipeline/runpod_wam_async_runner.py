@@ -1530,10 +1530,7 @@ def create_runpod_wam_async_run(
         resolved_output,
         resolved_output.with_name(f"{resolved_output.stem}_nonterminal{resolved_output.suffix}"),
     ):
-        try:
-            _stale_output.unlink()
-        except FileNotFoundError:
-            pass
+        _stale_output.unlink(missing_ok=True)
     full_loop_guard = _unitree_groot_sonic_full_loop_create_guard(
         bundle_path=resolved_bundle,
         provider_bundle_kind=provider_bundle_kind,

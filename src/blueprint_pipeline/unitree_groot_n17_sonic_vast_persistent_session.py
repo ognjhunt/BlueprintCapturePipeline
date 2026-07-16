@@ -21,16 +21,13 @@ from typing import Any, Mapping, Sequence
 from . import launch_provenance
 from .common import ensure_dir, utc_now_iso, write_json
 from .groot_oscar_runpod_carrier_volume import verify_carrier_volume_admission
-from .paid_resource_admission import (
-    PaidResourceAdmissionBlocked,
-    PaidResourceAdmissionGrant,
-    require_paid_resource_admission_grant,
-)
+from .paid_resource_admission import PaidResourceAdmissionBlocked, PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 from .unitree_groot_n17_sonic_policy_runtime import POLICY_ID
 from .unitree_groot_n17_sonic_runpod_image_contract import (
     RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV,  # noqa: F401
     RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV,  # noqa: F401
     RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV,
+    resolve_runpod_provider_shape,
     runpod_unitree_groot_sonic_image_contract_policy as _runpod_unitree_groot_sonic_image_contract_policy,
     runpod_unitree_groot_sonic_should_default_to_sealed_bootstrap as _runpod_unitree_groot_sonic_should_default_to_sealed_bootstrap,
 )
@@ -51,11 +48,7 @@ from .vast_provider_adapter import (
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store
-from .runpod_wam_async_runner import (
-    RUNPOD_WAM_TEARDOWN_ACTION_ENV,
-    create_runpod_wam_async_run,
-    poll_runpod_wam_async_run,
-)
+from .runpod_wam_async_runner import DEFAULT_GPU_TYPE_IDS, RUNPOD_WAM_TEARDOWN_ACTION_ENV, create_runpod_wam_async_run, poll_runpod_wam_async_run
 from .image_model_render_remediation import (
     ENABLE_ENV as IMAGE_MODEL_RENDER_REMEDIATION_ENABLE_ENV,
     image_model_render_remediation_enabled,
@@ -9641,6 +9634,8 @@ def run_persistent_session_runpod(
     carrier_volume_admission: Mapping[str, Any] | None = None,
     pod_name: str = "",
     provider_lane_handoff_receipt_path: str | Path | None = None,
+    gpu_type_ids: Sequence[str] = (), container_disk_gb: int | None = None,
+    volume_gb: int | None = None, allowed_cuda_versions: Sequence[str] = (),
 ) -> tuple[dict[str, Any], int]:
     generated_at = utc_now_iso()
     job = _completed_runpod_resume_job(job_dir) or _job_dir(job_dir)
@@ -9900,6 +9895,10 @@ def run_persistent_session_runpod(
         staging_dir = job / "object_store_staging"
         runpod_dir = job / "runpod_persistent_session_run"
         output_zip = runpod_dir / "runpod_provider_runtime_output.zip"
+        provider_shape = resolve_runpod_provider_shape(
+            gpu_type_ids=gpu_type_ids, default_gpu_type_ids=DEFAULT_GPU_TYPE_IDS,
+            container_disk_gb=container_disk_gb, volume_gb=volume_gb,
+            allowed_cuda_versions=allowed_cuda_versions)
         create_manifest = create_runpod_wam_async_run(
             job_dir=runpod_dir,
             bundle_path=bundle_path,
@@ -9912,8 +9911,7 @@ def run_persistent_session_runpod(
             skip_public_staging_verification=True,
             image_name=runpod_image_name,
             provider_bundle_kind=runpod_provider_bundle_kind,
-            container_disk_gb=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_DISK_GB", 240),
-            volume_gb=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_VOLUME_GB", 120),
+            **provider_shape,
             min_vcpu_per_gpu=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_MIN_VCPU", 8),
             min_ram_per_gpu=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_MIN_RAM_GB", 40),
             generated_at=generated_at,

@@ -306,6 +306,10 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
     assert observed["use_live_wam"] is True
     assert observed["allow_structural_wam_fallback"] is False
     assert observed["pod_name"] == "blueprint-persistent-exact"
+    assert observed["gpu_type_ids"] == ("NVIDIA A40",)
+    assert observed["container_disk_gb"] == 240
+    assert observed["volume_gb"] == 120
+    assert observed["allowed_cuda_versions"] == ("12.8",)
     assert observed["provider_lane_handoff_receipt_path"] == (
         tmp_path / "watchdog" / "provider_lane_handoff_receipt.json"
     )

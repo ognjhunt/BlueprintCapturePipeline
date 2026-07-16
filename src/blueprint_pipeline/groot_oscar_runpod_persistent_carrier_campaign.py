@@ -104,10 +104,7 @@ def _remove_terminal_receipt(
 ) -> bool:
     if owner_return.get("status") != "restored" or settlement.get("status") != "settled":
         return False
-    try:
-        receipt_path.unlink()
-    except FileNotFoundError:
-        pass
+    receipt_path.unlink(missing_ok=True)
     return True
 
 
@@ -468,6 +465,8 @@ def run_persistent_carrier_campaign(
         write_json(Path(adapter_output), result)
         return result
     try:
+        campaign_contract = prepared["admission"]["campaign_contract"]
+        request_shape = prepared["bound_request"]["provider_request_shape"]
         session_result, exit_code = session_runner(
             policy_observation_path=policy_observation_path,
             job_dir=persistent_job_dir,
@@ -481,6 +480,10 @@ def run_persistent_carrier_campaign(
             carrier_volume_admission=carrier,
             pod_name=pod_name,
             provider_lane_handoff_receipt_path=receipt_path,
+            gpu_type_ids=(prepared["admission"]["gpu_type_id"],),
+            container_disk_gb=campaign_contract["container_disk_gib"],
+            volume_gb=campaign_contract["network_volume_gib"],
+            allowed_cuda_versions=tuple(request_shape["allowed_cuda_versions"]),
         )
     except Exception as exc:  # noqa: BLE001 - watchdog retains provider control
         mutation_started = _receipt_mutation_started(receipt_path)

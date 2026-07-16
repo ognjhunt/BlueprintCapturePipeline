@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Sequence
 
 RUNPOD_UNITREE_GROOT_SONIC_ALLOW_RUNTIME_BOOTSTRAP_ENV = (
     "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ALLOW_RUNTIME_BOOTSTRAP"
@@ -122,3 +122,29 @@ def runpod_unitree_groot_sonic_should_default_to_sealed_bootstrap(
         require_sealed_image
         and _truthy(os.getenv(RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV))
     )
+
+
+def resolve_runpod_provider_shape(
+    *,
+    gpu_type_ids: Sequence[str],
+    default_gpu_type_ids: Sequence[str],
+    container_disk_gb: int | None,
+    volume_gb: int | None,
+    allowed_cuda_versions: Sequence[str],
+) -> dict[str, Any]:
+    """Resolve legacy env defaults while letting admitted campaigns bind exactly."""
+
+    return {
+        "gpu_type_ids": tuple(gpu_type_ids) or tuple(default_gpu_type_ids),
+        "container_disk_gb": int(
+            container_disk_gb
+            if container_disk_gb is not None
+            else os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_DISK_GB", "240")
+        ),
+        "volume_gb": int(
+            volume_gb
+            if volume_gb is not None
+            else os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_VOLUME_GB", "120")
+        ),
+        "allowed_cuda_versions": tuple(allowed_cuda_versions),
+    }
