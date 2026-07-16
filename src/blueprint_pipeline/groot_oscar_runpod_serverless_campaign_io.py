@@ -292,6 +292,13 @@ def stage_campaign_inputs(
     ambiguous_upload_completions = 0
     try:
         for row in contract["files"]:
+            uploaded.append(
+                {
+                    "relative_path": row["relative_path"],
+                    "size_bytes": row["size_bytes"],
+                    "sha256": row["sha256"],
+                }
+            )
             recovered = _upload_file_with_recovery(
                 client,
                 local_path=str(row["local_path"]),
@@ -301,13 +308,6 @@ def stage_campaign_inputs(
                 transfer=transfer,
             )
             ambiguous_upload_completions += int(recovered)
-            uploaded.append(
-                {
-                    "relative_path": row["relative_path"],
-                    "size_bytes": row["size_bytes"],
-                    "sha256": row["sha256"],
-                }
-            )
     except Exception:
         if uploaded:
             _delete_keys(

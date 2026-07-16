@@ -160,10 +160,18 @@ class _FakeClient:
 
 
 class _StageClient(_FakeClient):
-    def __init__(self, objects: dict[str, bytes], *, fail_once_key: str = "") -> None:
+    def __init__(
+        self,
+        objects: dict[str, bytes],
+        *,
+        fail_once_key: str = "",
+        fail_post_upload_head_key: str = "",
+    ) -> None:
         super().__init__(objects)
         self.fail_once_key = fail_once_key
+        self.fail_post_upload_head_key = fail_post_upload_head_key
         self.failed = False
+        self.head_failed = False
         self.uploaded = []
 
     def upload_file(
@@ -175,6 +183,16 @@ class _StageClient(_FakeClient):
             raise RuntimeError("transient_upload_failure")
         self.objects[key] = Path(local_path).read_bytes()
         self.uploaded.append(key)
+
+    def head_object(self, *, Bucket: str, Key: str):
+        if (
+            Key == self.fail_post_upload_head_key
+            and Key in self.uploaded
+            and not self.head_failed
+        ):
+            self.head_failed = True
+            raise RuntimeError("transient_post_upload_head_failure")
+        return super().head_object(Bucket=Bucket, Key=Key)
 
 
 def _validated_contract(tmp_path: Path) -> dict:
@@ -268,6 +286,28 @@ def test_stage_retries_transient_upload_and_completes(
     assert result["status"] == "completed"
     assert client.failed is True
     assert failed_key in client.uploaded
+
+
+def test_stage_cleans_just_uploaded_key_when_post_upload_head_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    contract = _validated_contract(tmp_path)
+    failed_key = contract["files"][1]["relative_path"]
+    client = _StageClient({}, fail_post_upload_head_key=failed_key)
+    _patch_stage_dependencies(monkeypatch, client)
+
+    with pytest.raises(RuntimeError, match="transient_post_upload_head_failure"):
+        campaign_io.stage_campaign_inputs(
+            contract,
+            access_key_file="unused",
+            secret_key_file="unused",
+        )
+
+    assert client.objects == {}
+    assert client.deleted == [
+        contract["files"][0]["relative_path"],
+        failed_key,
+    ]
 
 
 def test_cleanup_uses_supported_individual_delete_operation(
