@@ -310,6 +310,70 @@ def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependenc
     ]
 
 
+def test_runtime_carrier_import_failure_defers_only_pure_driver_sonames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    class DriverDeferredDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and "import diffusers" in command[-1]:
+                self.calls.append(command)
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                    stderr="libcuda.so.1: cannot open shared object file\n",
+                )
+            return super().__call__(argv, **kwargs)
+
+    result = executor.prepare_runtime_bundle(
+        _request(),
+        runtime_root=tmp_path / "runtime",
+        build_root=tmp_path / "build",
+        runner=DriverDeferredDocker(),
+    )
+
+    assert result["status"] == "completed"
+    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
+        "libcuda.so.1"
+    ]
+    assert any(
+        row["name"] == "oscar_import_matrix"
+        and row["status"] == "deferred_to_gpu_driver_bootstrap"
+        for row in result["carrier_validation"]["checks"]
+    )
+
+
+def test_runtime_carrier_import_failure_rejects_mixed_driver_and_module_gaps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    class MixedFailureDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and "import diffusers" in command[-1]:
+                self.calls.append(command)
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                    stderr=(
+                        "libcuda.so.1: cannot open shared object file\n"
+                        "ModuleNotFoundError: No module named 'yaml'\n"
+                    ),
+                )
+            return super().__call__(argv, **kwargs)
+
+    with pytest.raises(RuntimeError, match="oscar_import_matrix"):
+        executor.prepare_runtime_bundle(
+            _request(),
+            runtime_root=tmp_path / "runtime",
+            build_root=tmp_path / "build",
+            runner=MixedFailureDocker(),
+        )
+
+
 def test_runtime_carrier_validation_soname_extraction_is_bounded_and_linear() -> None:
     hostile = "-." * 100_000
     text = (
