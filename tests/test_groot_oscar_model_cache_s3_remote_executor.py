@@ -101,6 +101,15 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    real_tarfile_open = tarfile.open
+    archive_open_options: list[tuple[str, int | None]] = []
+
+    def tracked_tarfile_open(*args, **kwargs):  # type: ignore[no-untyped-def]
+        mode = str(args[1] if len(args) > 1 else kwargs.get("mode", "r"))
+        archive_open_options.append((mode, kwargs.get("compresslevel")))
+        return real_tarfile_open(*args, **kwargs)
+
+    monkeypatch.setattr(executor.tarfile, "open", tracked_tarfile_open)
     docker = FakeDocker(deferred_driver_sonames=("libnvidia-ml.so.1", "libcuda.so.1"))
     runtime_root = tmp_path / "runtime"
     build_root = tmp_path / "build"
@@ -124,6 +133,8 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["runtime_imports_and_wbc_linkage_verified_in_exact_carrier"] is False
     assert result["runtime_cpu_compatible_with_gpu_driver_deferred_linkage"] is True
     assert result["gpu_driver_deferred_resolution_unproven"] is True
+    assert ("w:gz", executor.RUNTIME_ARCHIVE_GZIP_COMPRESSLEVEL) in archive_open_options
+    assert executor.RUNTIME_ARCHIVE_GZIP_COMPRESSLEVEL == 1
     assert len(result["additional_artifacts"]) == 2
     assert {row["remote_key"] for row in result["additional_artifacts"]} == {
         DEFAULT_RUNTIME_ARCHIVE_PATH.removeprefix("/workspace/"),

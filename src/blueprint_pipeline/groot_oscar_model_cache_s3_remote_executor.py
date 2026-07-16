@@ -72,6 +72,9 @@ CONSUMED_CAPABILITY_PATH = Path("/root/.blueprint-secrets/model_cache_parent_cap
 EXECUTION_LOCK_PATH = Path("/root/blueprint-build/model_cache_execution.lock")
 RUNTIME_BUNDLE_ROOT = Path(DEFAULT_RUNTIME_ROOT)
 RUNTIME_BUNDLE_BUILD_ROOT = Path("/workspace/.blueprint-runtime-build")
+# The 43 GiB runtime is transferred once and verified by SHA-256. Favor bounded
+# builder time over marginal gzip density so preparation fits the hard TTL.
+RUNTIME_ARCHIVE_GZIP_COMPRESSLEVEL = 1
 RUNTIME_EMBEDDED_MODEL_PATHS = (
     "opt/blueprint/ckpts",
     "opt/blueprint/hf_home",
@@ -645,7 +648,11 @@ def prepare_runtime_bundle(
         )
         record_progress("archiving_runtime_bundle")
         archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
-        with tarfile.open(archive_path, "w:gz", compresslevel=6) as archive:
+        with tarfile.open(
+            archive_path,
+            "w:gz",
+            compresslevel=RUNTIME_ARCHIVE_GZIP_COMPRESSLEVEL,
+        ) as archive:
             for root in RUNTIME_ARCHIVE_ROOTS:
                 archive.add(payload_root / root, arcname=root, recursive=True)
         manifest = build_runtime_bundle_manifest(
