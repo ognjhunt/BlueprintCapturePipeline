@@ -457,7 +457,9 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
 
 def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda _name: "/usr/bin/docker")
     docker = FakeDocker()
     executor.prepare_runtime_bundle(
         _request(),
