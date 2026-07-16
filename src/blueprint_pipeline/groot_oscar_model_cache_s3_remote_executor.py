@@ -510,11 +510,22 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
             300,
         ),
         (
-            "isaac_import_matrix",
+            "isaac_bootstrap_import",
             "/isaac-sim/python.sh -c 'import blueprint_pipeline; import carb; import isaacsim; "
             "from isaacsim import SimulationApp; "
             "import blueprint_pipeline.isaac_runtime_task_backend'",
-            300,
+            120,
+        ),
+        (
+            "isaac_core_extension_inventory",
+            r"""
+prims_init="$(find /isaac-sim -type f -path '*/isaacsim/core/prims/__init__.py' -print -quit)"
+test -n "$prims_init"
+prims_root="$(dirname "$prims_init")"
+grep -R -Fq 'SingleArticulation' "$prims_root"
+printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
+""",
+            120,
         ),
         (
             "wbc_binary_executable",
@@ -655,9 +666,10 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         ),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
-            "This validates archived ELF linkage and import surfaces inside the exact "
-            "carrier on CPU. It does not prove GPU, CUDA-driver, Isaac rendering, policy "
-            "execution, artifact completion, or semantic task success."
+            "This validates archived ELF linkage, CPU-safe imports, and required Isaac "
+            "extension inventory inside the exact carrier on CPU. It does not prove GPU, "
+            "CUDA-driver, initialized Isaac extensions, Isaac rendering, policy execution, "
+            "artifact completion, or semantic task success."
         ),
         "raw_secret_values_recorded": False,
     }
