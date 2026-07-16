@@ -92,9 +92,7 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _SAFE_NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 _SAFE_DROPLET_ID = re.compile(r"[0-9]{1,32}")
-_MISSING_PYTHON_MODULE = re.compile(
-    r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]"
-)
+_MISSING_PYTHON_MODULE = re.compile(r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]")
 _PACKET_KEYS = frozenset(
     {
         "schema_version",
@@ -268,8 +266,7 @@ class RuntimeCarrierValidationError(RuntimeError):
 
     def __init__(self, *, failed_checks: list[str], evidence: Mapping[str, Any]) -> None:
         super().__init__(
-            "typed_runtime_bundle_carrier_validation_failed:"
-            + ":".join(failed_checks)
+            "typed_runtime_bundle_carrier_validation_failed:" + ":".join(failed_checks)
         )
         self.evidence = dict(evidence)
 
@@ -277,9 +274,7 @@ class RuntimeCarrierValidationError(RuntimeError):
 def _missing_soname_tokens(text: str) -> set[str]:
     """Extract only bounded shared-library names without backtracking regexes."""
 
-    allowed = frozenset(
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-"
-    )
+    allowed = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-")
     tokens: set[str] = set()
     for line in text.splitlines():
         candidate = ""
@@ -322,53 +317,117 @@ def _validate_runtime_inside_carrier(
         (
             "all_archived_elf_linkage",
             r"""
-missing="$(mktemp)"
-deferred="$(mktemp)"
-elf_count=0
-while IFS= read -r -d '' candidate; do
-  magic="$(head -c 4 "$candidate" 2>/dev/null || true)"
-  [[ "$magic" == $'\x7fELF' ]] || continue
-  elf_count=$((elf_count + 1))
-  linkage="$(ldd "$candidate" 2>&1 || true)"
-  while IFS= read -r missing_line; do
-    soname="${missing_line%%=>*}"
-    soname="${soname#"${soname%%[![:space:]]*}"}"
-    soname="${soname%"${soname##*[![:space:]]}"}"
-    case "$soname" in
-      libnvidia-*.so*|libcuda.so|libcuda.so.*|libnvcuvid.so|libnvcuvid.so.*|libnvoptix.so|libnvoptix.so.*|libGLX_nvidia.so|libGLX_nvidia.so.*|libEGL_nvidia.so|libEGL_nvidia.so.*|libGLESv1_CM_nvidia.so|libGLESv1_CM_nvidia.so.*|libGLESv2_nvidia.so|libGLESv2_nvidia.so.*)
-        printf '%s\n' "$soname" >>"$deferred"
-        ;;
-      *)
-        {
-          printf 'ELF %s\n' "$candidate"
-          printf '%s\n' "$missing_line"
-        } >>"$missing"
-        ;;
-    esac
-  done < <(grep -F 'not found' <<<"$linkage" || true)
-done < <(find \
-  /isaac-sim \
-  /opt/OSCAR \
-  /opt/blueprint \
-  /opt/gr00t \
-  /opt/gr00t-venv \
-  /opt/onnxruntime \
-  /opt/oscar-venv \
-  /opt/runpod-serverless-venv \
-  /opt/uv-python \
-  /opt/wbc \
-  -xdev -type f -print0)
-test "$elf_count" -gt 0
-if [[ -s "$missing" ]]; then
-  cat "$missing"
-  exit 91
-fi
-if [[ -s "$deferred" ]]; then
-  while IFS= read -r soname; do
-    printf 'BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME %s\n' "$soname"
-  done < <(sort -u "$deferred")
-fi
-printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
+/opt/oscar-venv/bin/python - <<'PY'
+from concurrent.futures import ThreadPoolExecutor
+import os
+import subprocess
+import sys
+
+roots = (
+    "/isaac-sim",
+    "/opt/OSCAR",
+    "/opt/blueprint",
+    "/opt/gr00t",
+    "/opt/gr00t-venv",
+    "/opt/onnxruntime",
+    "/opt/oscar-venv",
+    "/opt/runpod-serverless-venv",
+    "/opt/uv-python",
+    "/opt/wbc",
+)
+driver_stems = (
+    "libcuda.so",
+    "libnvcuvid.so",
+    "libnvoptix.so",
+    "libGLX_nvidia.so",
+    "libEGL_nvidia.so",
+    "libGLESv1_CM_nvidia.so",
+    "libGLESv2_nvidia.so",
+)
+
+def is_driver_soname(value):
+    return (
+        (value.startswith("libnvidia-") and ".so" in value)
+        or any(value == stem or value.startswith(stem + ".") for stem in driver_stems)
+    )
+
+elf_paths = []
+audit_errors = []
+
+def record_walk_error(exc):
+    audit_errors.append((getattr(exc, "filename", "unknown"), type(exc).__name__))
+
+for root in roots:
+    if not os.path.isdir(root):
+        audit_errors.append((root, "MissingRuntimeRoot"))
+        continue
+    for directory, _subdirectories, filenames in os.walk(
+        root,
+        followlinks=False,
+        onerror=record_walk_error,
+    ):
+        for filename in filenames:
+            path = os.path.join(directory, filename)
+            if os.path.islink(path):
+                continue
+            try:
+                with open(path, "rb") as handle:
+                    if handle.read(4) == b"\x7fELF":
+                        elf_paths.append(path)
+            except OSError as exc:
+                audit_errors.append((path, type(exc).__name__))
+elf_paths.sort()
+elf_count = len(elf_paths)
+
+def inspect_linkage(path):
+    try:
+        completed = subprocess.run(
+            ["ldd", path],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return path, [], type(exc).__name__
+    lines = [
+        line.strip()
+        for line in (completed.stdout + "\n" + completed.stderr).splitlines()
+        if "=> not found" in line
+    ]
+    return path, lines, ""
+
+missing = []
+deferred = set()
+with ThreadPoolExecutor(max_workers=min(8, max(1, elf_count))) as pool:
+    for path, lines, error_type in pool.map(inspect_linkage, elf_paths):
+        if error_type:
+            audit_errors.append((path, error_type))
+            continue
+        for line in lines:
+            left = line.split("=> not found", 1)[0].strip()
+            soname = left.split()[-1] if left else ""
+            if is_driver_soname(soname):
+                deferred.add(soname)
+            else:
+                missing.append((path, line))
+
+if not elf_count:
+    print("BLUEPRINT_ELF_AUDIT_ERROR elf_inventory_empty")
+    raise SystemExit(93)
+if audit_errors:
+    for path, error_type in audit_errors[:256]:
+        print(f"BLUEPRINT_ELF_AUDIT_ERROR {path} {error_type}")
+    raise SystemExit(92)
+if missing:
+    for path, line in missing:
+        print(f"ELF {path}")
+        print(line)
+    raise SystemExit(91)
+for soname in sorted(deferred):
+    print(f"BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME {soname}")
+print(f"BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count={elf_count}")
+PY
 """,
             900,
         ),
@@ -398,9 +457,10 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         (
             "isaac_import_matrix",
             "/isaac-sim/python.sh -c 'import blueprint_pipeline; import carb; import isaacsim; "
-            "from isaacsim import SimulationApp; from isaacsim.core.prims import SingleArticulation; "
+            'from isaacsim import SimulationApp; app = SimulationApp({"headless": True}); '
+            "from isaacsim.core.prims import SingleArticulation; "
             "import omni.kit.app; import omni.timeline; import omni.usd; "
-            "import blueprint_pipeline.isaac_runtime_task_backend'",
+            "import blueprint_pipeline.isaac_runtime_task_backend; app.close()'",
             300,
         ),
         (
@@ -410,9 +470,7 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         ),
     )
     carrier_env_argv = [
-        item
-        for key, value in RUNTIME_CARRIER_ENV.items()
-        for item in ("--env", f"{key}={value}")
+        item for key, value in RUNTIME_CARRIER_ENV.items() for item in ("--env", f"{key}={value}")
     ]
     failed_checks: list[str] = []
     checks: list[dict[str, Any]] = []
@@ -518,20 +576,14 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         "status": (
             "failed"
             if failed_checks
-            else (
-                "passed_with_gpu_driver_deferred"
-                if gpu_driver_deferred_sonames
-                else "passed"
-            )
+            else ("passed_with_gpu_driver_deferred" if gpu_driver_deferred_sonames else "passed")
         ),
         "failed_checks": failed_checks,
         "checks": checks,
         "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
         "archived_elf_file_count": archived_elf_file_count,
         "gpu_driver_deferred_sonames": sorted(gpu_driver_deferred_sonames),
-        "gpu_driver_resolution_required_at_bootstrap": bool(
-            gpu_driver_deferred_sonames
-        ),
+        "gpu_driver_resolution_required_at_bootstrap": bool(gpu_driver_deferred_sonames),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
             "This validates archived ELF linkage and import surfaces inside the exact "
@@ -686,15 +738,14 @@ def prepare_runtime_bundle(
                     "-c",
                     "import blueprint_pipeline; import carb; import isaacsim; "
                     "from isaacsim import SimulationApp; "
+                    "app = SimulationApp({'headless': True}); "
                     "from isaacsim.core.prims import SingleArticulation; "
                     "import omni.kit.app; import omni.timeline; import omni.usd; "
-                    "import blueprint_pipeline.isaac_runtime_task_backend",
+                    "import blueprint_pipeline.isaac_runtime_task_backend; app.close()",
                 ),
             ),
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
-            gpu_driver_deferred_sonames=carrier_validation[
-                "gpu_driver_deferred_sonames"
-            ],
+            gpu_driver_deferred_sonames=carrier_validation["gpu_driver_deferred_sonames"],
         )
         if manifest["status"] != "complete":
             raise RuntimeError("typed_runtime_bundle_manifest_blocked")

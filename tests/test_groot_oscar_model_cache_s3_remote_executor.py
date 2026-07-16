@@ -178,12 +178,25 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     validation_scripts = [call[-1] for call in carrier_runs]
     elf_scan = next(script for script in validation_scripts if "elf_count" in script)
     assert all(f"/{root}" in elf_scan for root in RUNTIME_ARCHIVE_ROOTS)
-    assert "ldd \"$candidate\"" in elf_scan
+    assert "ThreadPoolExecutor" in elf_scan
+    assert "max_workers=min(8, max(1, elf_count))" in elf_scan
+    assert '["ldd", path]' in elf_scan
+    assert 'handle.read(4) == b"\\x7fELF"' in elf_scan
+    assert "onerror=record_walk_error" in elf_scan
+    assert '"MissingRuntimeRoot"' in elf_scan
     assert "not found" in elf_scan
     assert "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME" in elf_scan
-    assert "libcuda.so.*" in elf_scan
+    assert '"libcuda.so"' in elf_scan
+    embedded_python = elf_scan.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    compile(embedded_python, "<carrier-elf-audit>", "exec")
     assert any("import diffusers" in script for script in validation_scripts)
     assert any("import carb; import isaacsim" in script for script in validation_scripts)
+    isaac_scan = next(
+        script for script in validation_scripts if "import carb; import isaacsim" in script
+    )
+    assert 'app = SimulationApp({"headless": True})' in isaac_scan
+    assert isaac_scan.index("SimulationApp") < isaac_scan.index("isaacsim.core.prims")
+    assert "app.close()" in isaac_scan
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
@@ -200,6 +213,14 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
             "--verify-serverless-runtime",
         ]
     ]
+    isaac_healthcheck = next(
+        argv for argv in manifest["healthcheck_argv"] if argv[0] == "/isaac-sim/python.sh"
+    )
+    assert "app = SimulationApp({'headless': True})" in isaac_healthcheck[-1]
+    assert isaac_healthcheck[-1].index("SimulationApp") < isaac_healthcheck[-1].index(
+        "isaacsim.core.prims"
+    )
+    assert "app.close()" in isaac_healthcheck[-1]
 
 
 def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:
@@ -372,12 +393,9 @@ def test_runtime_carrier_import_failure_defers_only_pure_driver_sonames(
 
     assert result["status"] == "completed"
     assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
-    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
-        "libcuda.so.1"
-    ]
+    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == ["libcuda.so.1"]
     assert any(
-        row["name"] == "oscar_import_matrix"
-        and row["status"] == "deferred_to_gpu_driver_bootstrap"
+        row["name"] == "oscar_import_matrix" and row["status"] == "deferred_to_gpu_driver_bootstrap"
         for row in result["carrier_validation"]["checks"]
     )
 
