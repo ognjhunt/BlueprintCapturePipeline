@@ -68,6 +68,28 @@ def _string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def is_nvidia_driver_soname(value: Any) -> bool:
+    """Return whether a SONAME is supplied by the NVIDIA host driver injection."""
+
+    soname = _string(value)
+    if not soname or len(soname) > 256 or any(
+        character.isspace() or character in "/\\\x00" for character in soname
+    ):
+        return False
+    exact_stems = (
+        "libcuda.so",
+        "libnvcuvid.so",
+        "libnvoptix.so",
+        "libGLX_nvidia.so",
+        "libEGL_nvidia.so",
+        "libGLESv1_CM_nvidia.so",
+        "libGLESv2_nvidia.so",
+    )
+    return (
+        soname.startswith("libnvidia-") and ".so" in soname
+    ) or any(soname == stem or soname.startswith(stem + ".") for stem in exact_stems)
+
+
 def _sha256_digest(value: Any) -> str:
     digest = _string(value).lower()
     return digest if _SHA256.fullmatch(digest) else ""
@@ -161,6 +183,7 @@ def build_runtime_bundle_manifest(
     archive_size_bytes: int,
     healthcheck_argv: Sequence[Sequence[str]],
     generated_at: str,
+    gpu_driver_deferred_sonames: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Describe a deterministic runtime archive without claiming it was uploaded."""
 
@@ -193,6 +216,14 @@ def build_runtime_bundle_manifest(
         checks.append(argv)
     if not checks:
         blockers.append("runtime_healthchecks_missing")
+    deferred_sonames: list[str] = []
+    for value in gpu_driver_deferred_sonames:
+        soname = _string(value)
+        if not is_nvidia_driver_soname(soname):
+            blockers.append("runtime_gpu_driver_deferred_soname_invalid")
+            continue
+        deferred_sonames.append(soname)
+    deferred_sonames = sorted(set(deferred_sonames))
     manifest = {
         "schema_version": RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
         "generated_at": _string(generated_at),
@@ -207,6 +238,7 @@ def build_runtime_bundle_manifest(
             "member_roots": list(RUNTIME_ARCHIVE_ROOTS),
         },
         "healthcheck_argv": checks,
+        "gpu_driver_deferred_sonames": deferred_sonames,
         "runtime_env": dict(RUNTIME_CARRIER_ENV),
         "blockers": sorted(set(blockers)),
         "claim_boundary": (
@@ -365,6 +397,7 @@ export BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blue
 export BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh
 export BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd
 if ! python - <<'PY'
+import ctypes
 import hashlib
 import json
 import os
@@ -402,6 +435,31 @@ try:
     }
     if manifest.get("runtime_env") != expected_runtime_env:
         raise RuntimeError("runtime_manifest_env_mismatch")
+    driver_sonames = manifest.get("gpu_driver_deferred_sonames")
+    driver_stems = (
+        "libcuda.so",
+        "libnvcuvid.so",
+        "libnvoptix.so",
+        "libGLX_nvidia.so",
+        "libEGL_nvidia.so",
+        "libGLESv1_CM_nvidia.so",
+        "libGLESv2_nvidia.so",
+    )
+    def driver_soname_allowed(value):
+        return (
+            isinstance(value, str)
+            and value
+            and len(value) <= 256
+            and not any(character.isspace() or character in "/\\\x00" for character in value)
+            and (
+                (value.startswith("libnvidia-") and ".so" in value)
+                or any(value == stem or value.startswith(stem + ".") for stem in driver_stems)
+            )
+        )
+    if not isinstance(driver_sonames, list) or any(
+        not driver_soname_allowed(value) for value in driver_sonames
+    ):
+        raise RuntimeError("runtime_gpu_driver_deferred_sonames_invalid")
     if digest(archive_path) != os.environ["BLUEPRINT_RUNTIME_ARCHIVE_SHA256"]:
         raise RuntimeError("runtime_archive_sha256_mismatch")
     with tarfile.open(archive_path, "r:gz") as archive:
@@ -440,6 +498,11 @@ try:
         completed = subprocess.run(argv, check=False, timeout=120, capture_output=True, text=True)
         if completed.returncode != 0:
             raise RuntimeError("runtime_healthcheck_failed")
+    for soname in driver_sonames:
+        try:
+            ctypes.CDLL(soname)
+        except OSError as exc:
+            raise RuntimeError("runtime_gpu_driver_soname_unresolved") from exc
     wbc_binary = Path("/opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref")
     linkage = subprocess.run(
         ["ldd", str(wbc_binary)], check=False, timeout=120, capture_output=True, text=True
@@ -496,6 +559,8 @@ try:
         "declared_model_file_count": len(declared_model_paths),
         "external_model_cache_bound_to_runtime": True,
         "runtime_healthchecks_passed": True,
+        "gpu_driver_deferred_sonames_resolved": True,
+        "gpu_driver_deferred_soname_count": len(driver_sonames),
     })
 except Exception as exc:
     result["blockers"] = [str(exc)]

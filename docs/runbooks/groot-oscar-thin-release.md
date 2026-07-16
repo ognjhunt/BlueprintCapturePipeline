@@ -188,6 +188,11 @@ Before upload, the CPU builder scans every ELF file across all declared runtime
 roots for unresolved linkage inside the exact carrier. It also runs GR00T,
 OSCAR, Isaac, and serverless import matrices and records every failed check in
 one compatibility audit instead of stopping at the first missing dependency.
+NVIDIA host-driver SONAMEs such as `libcuda.so.1` are the only deferred linkage
+class: the CPU audit records their exact names in the runtime manifest, and the
+GPU bootstrap must resolve every recorded name through driver injection before
+policy or simulator code can run. CUDA runtime, TensorRT, graphics-loader, and
+other carrier-owned libraries are not covered by that exception.
 These checks do not prove a CUDA driver, Isaac rendering, policy execution, or
 semantic task success.
 
