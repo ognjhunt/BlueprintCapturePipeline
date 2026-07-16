@@ -1240,54 +1240,21 @@ def run_storage_model_volume(
         write_json(result_path, result)
         write_json(
             output / "provider_lane_release.json",
-            release_paid_provider_lane_lease(
-                lease,
-                reason="watchdog_start_failed_before_provider_mutation",
-                provider_mutation_started=False,
+            (
+                {
+                    "status": "retained_without_handoff_acceptance",
+                    "restored": False,
+                }
+                if replacement_mode
+                else release_paid_provider_lane_lease(
+                    lease,
+                    reason="watchdog_start_failed_before_provider_mutation",
+                    provider_mutation_started=False,
+                )
             ),
         )
         return result
     replacement_acceptance: dict[str, Any] = {}
-    if replacement_mode:
-        replacement_acceptance = accept_paid_provider_lane_lease_handoff(
-            replacement_handoff["provider_lane_handoff"],
-            canary_watchdog={
-                "watchdog_pid": watchdog["pid"],
-                "watchdog_pod_name_prefix": watchdog["pod_name_prefix"],
-                "watchdog_deadline_epoch": deadline,
-                "watchdog_process_identity_verified": True,
-                "independent_teardown_watchdog": True,
-                "volume_replacement_watchdog": True,
-                "watchdog_state_path": watchdog["state_path"],
-                "volume_name": watchdog["volume_name"],
-                "watchdog_nonce": watchdog["watchdog_nonce"],
-            },
-            expected_binding=replacement_binding,
-        )
-        write_json(
-            output / "provider_lane_replacement_handoff_acceptance.json",
-            replacement_acceptance,
-        )
-        if replacement_acceptance.get("status") != "accepted":
-            write_json(
-                output / "watchdog_handoff.json",
-                {"status": "cancelled_before_provider_allocation"},
-            )
-            watch.terminate()
-            watch.wait(timeout=10)
-            result = {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "blocked_before_allocation",
-                "blockers": [
-                    *list(replacement_acceptance.get("blockers") or []),
-                    "storage_replacement_handoff_not_accepted",
-                ],
-                "provider_mutation_attempted": False,
-                "gpu_compute_allocated": False,
-                "raw_secret_values_recorded": False,
-            }
-            write_json(result_path, result)
-            return result
     admission = build_storage_volume_admission(
         data_center_id=data_center_id,
         volume_size_gib=volume_size_gib,
@@ -1335,7 +1302,10 @@ def run_storage_model_volume(
         write_json(
             output / "provider_lane_release.json",
             (
-                restore_paid_provider_lane_lease_to_retained_watchdog(replacement_acceptance)
+                {
+                    "status": "retained_without_handoff_acceptance",
+                    "restored": False,
+                }
                 if replacement_mode
                 else release_paid_provider_lane_lease(
                     lease,
@@ -1374,7 +1344,10 @@ def run_storage_model_volume(
         write_json(
             output / "provider_lane_release.json",
             (
-                restore_paid_provider_lane_lease_to_retained_watchdog(replacement_acceptance)
+                {
+                    "status": "retained_without_handoff_acceptance",
+                    "restored": False,
+                }
                 if replacement_mode
                 else release_paid_provider_lane_lease(
                     lease,
@@ -1395,6 +1368,55 @@ def run_storage_model_volume(
         write_json(result_path, result)
         return result
     write_json(output / "pending_teardown_opened.json", pending)
+    if replacement_mode:
+        replacement_acceptance = accept_paid_provider_lane_lease_handoff(
+            replacement_handoff["provider_lane_handoff"],
+            canary_watchdog={
+                "watchdog_pid": watchdog["pid"],
+                "watchdog_pod_name_prefix": watchdog["pod_name_prefix"],
+                "watchdog_deadline_epoch": deadline,
+                "watchdog_process_identity_verified": True,
+                "independent_teardown_watchdog": True,
+                "volume_replacement_watchdog": True,
+                "watchdog_state_path": watchdog["state_path"],
+                "volume_name": watchdog["volume_name"],
+                "watchdog_nonce": watchdog["watchdog_nonce"],
+            },
+            expected_binding=replacement_binding,
+        )
+        write_json(
+            output / "provider_lane_replacement_handoff_acceptance.json",
+            replacement_acceptance,
+        )
+        if replacement_acceptance.get("status") != "accepted":
+            cancelled = cancel_pending_teardown(
+                pending["path"],
+                reason="replacement_handoff_not_accepted_before_provider_mutation",
+                evidence={
+                    "provider_mutation_attempted": False,
+                    "handoff_status": replacement_acceptance.get("status"),
+                },
+            )
+            write_json(output / "pending_teardown_cancelled.json", cancelled)
+            write_json(
+                output / "watchdog_handoff.json",
+                {"status": "cancelled_before_provider_allocation"},
+            )
+            watch.terminate()
+            watch.wait(timeout=10)
+            result = {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "status": "blocked_before_allocation",
+                "blockers": [
+                    *list(replacement_acceptance.get("blockers") or []),
+                    "storage_replacement_handoff_not_accepted",
+                ],
+                "provider_mutation_attempted": False,
+                "gpu_compute_allocated": False,
+                "raw_secret_values_recorded": False,
+            }
+            write_json(result_path, result)
+            return result
     try:
         locked_pods, locked_volumes, locked_inventory_verified = _matching_resources(
             key=key, pod_prefix=None, volume_prefix=None

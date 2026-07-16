@@ -653,6 +653,15 @@ def test_storage_route_has_watchdog_lease_ledger_and_no_pod_create() -> None:
         '"POST",\n            "/networkvolumes"'
     )
     assert run.index("open_pending_teardown(") < run.index('"POST",\n            "/networkvolumes"')
+    assert run.index("require_paid_resource_admission(") < run.index(
+        "accept_paid_provider_lane_lease_handoff("
+    )
+    assert run.index("open_pending_teardown(") < run.index(
+        "accept_paid_provider_lane_lease_handoff("
+    )
+    assert run.index("accept_paid_provider_lane_lease_handoff(") < run.index(
+        '"POST",\n            "/networkvolumes"'
+    )
     assert run.index("bind_pending_teardown_instance(") > run.index(
         '"POST",\n            "/networkvolumes"'
     )
