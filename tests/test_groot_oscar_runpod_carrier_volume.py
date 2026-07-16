@@ -214,6 +214,10 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "model_cache_declared_file_sha256_mismatch" in script
     assert "all_declared_model_file_sha256_verified" in script
     assert "runtime_wbc_dynamic_linkage_failed" in script
+    assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in script
+    assert "/usr/local/nvidia/lib:/usr/local/nvidia/lib64" in script
+    assert "export BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR" in script
+    assert "export BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh" in script
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT" in script
     assert "runpod_carrier_runtime_bootstrap_blocked.zip" in script
     assert 'or os.environ.get("BLUEPRINT_ARTIFACT_OUTPUT_URI")' in script

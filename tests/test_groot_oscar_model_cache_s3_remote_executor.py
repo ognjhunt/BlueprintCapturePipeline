@@ -22,11 +22,16 @@ CARRIER_REF = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 6
 
 class FakeDocker:
     def __init__(
-        self, *, verify_digest: bool = True, fail_copy_root: str = ""
+        self,
+        *,
+        verify_digest: bool = True,
+        fail_copy_root: str = "",
+        fail_validation_text: str = "",
     ) -> None:
         self.calls: list[list[str]] = []
         self.verify_digest = verify_digest
         self.fail_copy_root = fail_copy_root
+        self.fail_validation_text = fail_validation_text
 
     def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -63,6 +68,12 @@ class FakeDocker:
         if command[1:3] == ["rm", "-f"]:
             return SimpleNamespace(stdout="")
         if command[1] == "run":
+            if self.fail_validation_text and self.fail_validation_text in command[-1]:
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                    stderr="credential-like diagnostic must not be persisted",
+                )
             return SimpleNamespace(stdout="runtime verified\n")
         raise AssertionError(command)
 
@@ -113,17 +124,14 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     carrier_runs = [call for call in docker.calls if call[1] == "run"]
-    assert len(carrier_runs) == 1
-    assert "--network" in carrier_runs[0]
-    assert "none" in carrier_runs[0]
-    assert SOURCE_REF not in carrier_runs[0]
-    assert CARRIER_REF in carrier_runs[0]
-    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in carrier_runs[0]
-    assert (
-        "LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
-        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
-        in carrier_runs[0]
-    )
+    assert len(carrier_runs) == 7
+    assert all("--network" in call for call in carrier_runs)
+    assert all("none" in call for call in carrier_runs)
+    assert all("--env" in call for call in carrier_runs)
+    assert all(SOURCE_REF not in call for call in carrier_runs)
+    assert all(CARRIER_REF in call for call in carrier_runs)
+    for key, value in executor.RUNTIME_CARRIER_ENV.items():
+        assert all(f"{key}={value}" in call for call in carrier_runs)
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
@@ -134,8 +142,12 @@ def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:
         / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
     ).read_text(encoding="utf-8")
 
-    for key, value in executor.RUNTIME_CARRIER_ENV.items():
-        assert f"{key}={value}" in foundation
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in foundation
+    assert (
+        "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
+        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+        in executor.RUNTIME_CARRIER_ENV["LD_LIBRARY_PATH"]
+    )
 
 
 def test_prepare_runtime_bundle_rejects_registry_digest_mismatch_before_copy(
@@ -195,4 +207,25 @@ def test_prepare_runtime_bundle_reports_secret_free_failed_copy_root(
         "raw_secret_values_recorded": False,
     }
     assert "credential-like" not in json.dumps(progress)
+    assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
+
+
+def test_prepare_runtime_bundle_names_failed_carrier_check_without_raw_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    docker = FakeDocker(fail_validation_text="import inference.inference_oscar")
+
+    with pytest.raises(
+        RuntimeError,
+        match="typed_runtime_bundle_carrier_validation_failed:oscar_import",
+    ) as raised:
+        executor.prepare_runtime_bundle(
+            _request(),
+            runtime_root=tmp_path / "runtime",
+            build_root=tmp_path / "build",
+            runner=docker,
+        )
+
+    assert "credential-like" not in str(raised.value)
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]

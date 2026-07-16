@@ -31,6 +31,12 @@ DEFAULT_MODEL_CACHE_MANIFEST_PATH = (
     f"{DEFAULT_MODEL_CACHE_ROOT}/groot_oscar_model_cache_manifest.json"
 )
 MIN_CARRIER_VOLUME_GIB = 120
+RUNTIME_CARRIER_PYTHONPATH = "/opt/wbc:/opt/OSCAR"
+RUNTIME_CARRIER_LD_LIBRARY_PATH = (
+    "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:/opt/onnxruntime/lib:"
+    "/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:/usr/local/nvidia/lib:"
+    "/usr/local/nvidia/lib64"
+)
 RUNTIME_ARCHIVE_ROOTS = (
     "isaac-sim",
     "opt/OSCAR",
@@ -44,11 +50,8 @@ RUNTIME_ARCHIVE_ROOTS = (
     "opt/wbc",
 )
 RUNTIME_CARRIER_ENV = {
-    "PYTHONPATH": "/opt/wbc:/opt/OSCAR",
-    "LD_LIBRARY_PATH": (
-        "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
-        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
-    ),
+    "PYTHONPATH": RUNTIME_CARRIER_PYTHONPATH,
+    "LD_LIBRARY_PATH": RUNTIME_CARRIER_LD_LIBRARY_PATH,
 }
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -338,10 +341,25 @@ def runtime_bootstrap_shell_prefix() -> str:
     runtime_exports = "\n".join(
         f"export {key}={shlex.quote(value)}" for key, value in RUNTIME_CARRIER_ENV.items()
     )
-    return runtime_exports + r"""
+    script = runtime_exports + r"""
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_STARTED
 mkdir -p "$WORK_DIR/runtime_output"
 export BLUEPRINT_RUNPOD_CARRIER_BOOTSTRAP_RESULT="$WORK_DIR/runtime_output/runpod_carrier_runtime_bootstrap.json"
+export PYTHONUNBUFFERED=1
+export PIP_NO_CACHE_DIR=1
+export MUJOCO_GL=osmesa
+export BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR
+export BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON=/opt/gr00t-venv/bin/python
+export BLUEPRINT_GROOT_OSCAR_GROOT_ROOT=/opt/gr00t
+export BLUEPRINT_GEAR_SONIC_ROOT=/opt/wbc
+export BLUEPRINT_GEAR_SONIC_ROBOT_MODEL=/opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml
+export BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND="/opt/oscar-venv/bin/python -m blueprint_pipeline.gear_sonic_official_zmq_executor"
+export BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh
+export BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd
 if ! python - <<'PY'
 import hashlib
 import json
@@ -516,3 +534,4 @@ export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar
 export BLUEPRINT_OSCAR_WAM_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar"
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_READY
 """
+    return script

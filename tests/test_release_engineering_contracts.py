@@ -288,12 +288,17 @@ def test_every_container_base_and_remote_source_is_immutable() -> None:
 
 def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     foundation = (
-        ROOT
-        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
     ).read_text(encoding="utf-8")
     assert "FROM ${ISAAC_SIM_BASE_IMAGE} AS tensorrt-base" in foundation
-    assert "ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba" in foundation
-    assert "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb" in foundation
+    assert (
+        "ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba"
+        in foundation
+    )
+    assert (
+        "developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb"
+        in foundation
+    )
     assert "FROM tensorrt-base AS wbc-builder" in foundation
     wbc_builder = foundation.split("FROM tensorrt-base AS wbc-builder", 1)[1].split(
         "FROM tensorrt-base", 1
@@ -325,8 +330,7 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "Tag: py3-none-manylinux2010_x86_64" in foundation
     assert "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python" in foundation
     assert (
-        "COPY --from=robot-env-builder --chown=blueprint:blueprint "
-        "/opt/uv-python /opt/uv-python"
+        "COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python"
     ) in foundation
     assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in foundation
     assert "tee /tmp/g1_deploy_onnx_ref.ldd" in foundation
@@ -338,10 +342,33 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation
 
 
+def test_groot_oscar_small_carrier_matches_foundation_runtime_link_surface() -> None:
+    carrier = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Carrier.Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" in carrier
+    assert "ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6" in carrier
+    assert "ARG CUDA_CUDART_VERSION=12.6.77-1" in carrier
+    assert "apt-cache madison libnvinfer10" in carrier
+    assert "apt-cache madison cuda-cudart-12-6" in carrier
+    assert "libnvinfer10=${TENSORRT_VERSION}" in carrier
+    assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in carrier
+    assert "libnvonnxparsers10=${TENSORRT_VERSION}" in carrier
+    assert "libosmesa6" in carrier
+    assert "libnghttp2-14" in carrier
+    assert "libyaml-cpp0.8" in carrier
+    assert "libzmq5" in carrier
+    assert "NVIDIA_DRIVER_CAPABILITIES=all" in carrier
+    assert "VK_DRIVER_FILES=/etc/vulkan/icd.d/nvidia_icd.json" in carrier
+    assert "/usr/share/glvnd/egl_vendor.d/10_nvidia.json" in carrier
+    assert "/etc/vulkan/icd.d/nvidia_icd.json" in carrier
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in carrier
+    assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in carrier
+
+
 def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
     lock = (
-        ROOT
-        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
         "requirements_oscar_foundation.lock"
     ).read_text(encoding="utf-8")
     requirement_lines = [
@@ -355,12 +382,10 @@ def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
     assert "msgpack-numpy==0.4.8" in lock
     assert (
         "# blueprint-input-sha256 oscar-requirements-minimal "
-        "6002a7c982b96435f995d765306785f4835e404ea41308d4864f59bc8e34d117"
-        in lock
+        "6002a7c982b96435f995d765306785f4835e404ea41308d4864f59bc8e34d117" in lock
     )
     runtime_requirements = (
-        ROOT
-        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
         "requirements_robot_runtime.txt"
     ).read_bytes()
     assert (

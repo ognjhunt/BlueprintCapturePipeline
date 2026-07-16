@@ -1,3 +1,13 @@
+import hashlib
+import io
+import json
+import tarfile
+from pathlib import Path
+
+from blueprint_pipeline.groot_oscar_carrier_remote_build_packet import (
+    PACKET_DIRNAME,
+    render_remote_build_script,
+)
 from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     MIN_BUILD_FREE_BYTES,
     build_build_plane_admission,
@@ -153,6 +163,53 @@ def _spend() -> dict:
     }
 
 
+def _carrier_packet(
+    tmp_path: Path, *, tamper_script: bool = False, executable_script: bool = True
+) -> dict:
+    image_ref = "docker.io/example/carrier:versioned"
+    base_ref = "docker.io/example/base@sha256:" + "a" * 64
+    dockerfile = b"ARG PYTORCH_CARRIER_BASE\nFROM ${PYTORCH_CARRIER_BASE}\n"
+    dockerfile_sha256 = hashlib.sha256(dockerfile).hexdigest()
+    script = render_remote_build_script(
+        image_ref=image_ref,
+        base_image_ref=base_ref,
+        source_commit=COMMIT,
+        dockerfile_sha256=dockerfile_sha256,
+    ).encode()
+    if tamper_script:
+        script += b"\necho unbound-command\n"
+    payloads = {
+        f"{PACKET_DIRNAME}/README.md": b"carrier packet\n",
+        f"{PACKET_DIRNAME}/context/Dockerfile": dockerfile,
+        f"{PACKET_DIRNAME}/remote_build_groot_oscar_carrier.sh": script,
+    }
+    member_digests = {
+        name: hashlib.sha256(payload).hexdigest() for name, payload in payloads.items()
+    }
+    tarball = tmp_path / "carrier.tar.gz"
+    with tarfile.open(tarball, "w:gz") as archive:
+        for name in sorted(payloads):
+            info = tarfile.TarInfo(name)
+            info.size = len(payloads[name])
+            info.mode = 0o755 if name.endswith(".sh") and executable_script else 0o644
+            archive.addfile(info, io.BytesIO(payloads[name]))
+    return {
+        **_packet(),
+        "schema_version": "groot_oscar_carrier_remote_build_packet.v1",
+        "packet_kind": "carrier_image",
+        "carrier_image_ref": image_ref,
+        "carrier_base_image_ref": base_ref,
+        "carrier_dockerfile_sha256": dockerfile_sha256,
+        "tarball_path": str(tarball),
+        "tarball_sha256": hashlib.sha256(tarball.read_bytes()).hexdigest(),
+        "archive_members": sorted(payloads),
+        "archive_member_sha256": member_digests,
+        "archive_member_manifest_sha256": hashlib.sha256(
+            json.dumps(member_digests, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+
+
 def test_cpu_build_execution_requires_verified_live_machine_evidence() -> None:
     allocation = build_build_plane_admission(packet=_packet(), builder=_builder(), spend=_spend())
     live = build_live_machine_capability_evidence(
@@ -213,6 +270,64 @@ def test_build_plane_admits_known_native_docker_builder() -> None:
     assert result["status"] == "admitted"
     assert result["blockers"] == []
     assert result["checks"]["free_disk_at_least_120_gib"] is True
+
+
+def test_build_plane_admits_typed_carrier_image_packet(tmp_path: Path) -> None:
+    packet = _carrier_packet(tmp_path)
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "admitted"
+    assert result["checks"]["packet_kind"] == "carrier_image"
+
+    live = build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": MIN_BUILD_FREE_BYTES,
+            "docker_cli_present": True,
+            "docker_daemon_responding": True,
+            "docker_buildx_available": True,
+            "builder_ready_marker": True,
+        },
+        packet_kind="carrier_image",
+    )
+    assert live["status"] == "verified"
+
+
+def test_build_plane_rejects_unbound_carrier_script_before_allocation(
+    tmp_path: Path,
+) -> None:
+    packet = _carrier_packet(tmp_path, tamper_script=True)
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "blocked"
+    assert "builder_carrier_archive_script_binding_mismatch" in result["blockers"]
+
+
+def test_build_plane_rejects_nonexecutable_carrier_script_before_allocation(
+    tmp_path: Path,
+) -> None:
+    packet = _carrier_packet(tmp_path, executable_script=False)
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "blocked"
+    assert "builder_carrier_archive_script_not_executable" in result["blockers"]
+
+
+def test_build_plane_rejects_malformed_carrier_packet_before_allocation() -> None:
+    packet = {
+        **_packet(),
+        "schema_version": "groot_oscar_carrier_remote_build_packet.v0",
+        "packet_kind": "carrier_image",
+        "carrier_image_ref": "docker.io/example/carrier",
+        "carrier_base_image_ref": "docker.io/example/base:latest",
+        "carrier_dockerfile_sha256": "bad",
+    }
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "blocked"
+    assert "builder_carrier_packet_schema_invalid" in result["blockers"]
+    assert "builder_carrier_image_ref_not_versioned" in result["blockers"]
+    assert "builder_carrier_base_image_not_digest_pinned" in result["blockers"]
+    assert "builder_carrier_dockerfile_sha256_invalid" in result["blockers"]
 
 
 def test_build_plane_refuses_runpod_even_when_claimed_capabilities_are_true() -> None:
@@ -449,9 +564,7 @@ def test_runpod_serve_plane_rejects_volume_smaller_than_verified_cache() -> None
         spend=_serve_spend(),
     )
     assert result["status"] == "blocked"
-    assert "runpod_network_volume_smaller_than_verified_model_cache" in result[
-        "blockers"
-    ]
+    assert "runpod_network_volume_smaller_than_verified_model_cache" in result["blockers"]
 
 
 def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:
