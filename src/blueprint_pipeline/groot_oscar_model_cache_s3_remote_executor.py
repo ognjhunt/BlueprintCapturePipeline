@@ -34,8 +34,7 @@ from .groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ROOT,
     MIN_CARRIER_VOLUME_GIB,
     RUNTIME_ARCHIVE_ROOTS,
-    RUNTIME_CARRIER_LD_LIBRARY_PATH,
-    RUNTIME_CARRIER_PYTHONPATH,
+    RUNTIME_CARRIER_ENV,
     build_runtime_bundle_manifest,
 )
 from .groot_oscar_model_cache import (
@@ -279,6 +278,11 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
             "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
         ),
     )
+    carrier_env_argv = [
+        item
+        for key, value in RUNTIME_CARRIER_ENV.items()
+        for item in ("--env", f"{key}={value}")
+    ]
     for check_name, validation in validations:
         try:
             _run_command(
@@ -289,12 +293,9 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
                     "--rm",
                     "--network",
                     "none",
+                    *carrier_env_argv,
                     "--entrypoint",
                     "/bin/bash",
-                    "--env",
-                    f"PYTHONPATH={RUNTIME_CARRIER_PYTHONPATH}",
-                    "--env",
-                    f"LD_LIBRARY_PATH={RUNTIME_CARRIER_LD_LIBRARY_PATH}",
                     "--mount",
                     f"type=bind,src={payload_root / 'opt'},dst=/opt,readonly",
                     "--mount",

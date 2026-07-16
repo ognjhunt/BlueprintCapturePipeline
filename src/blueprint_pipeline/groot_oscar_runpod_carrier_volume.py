@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from typing import Any, Mapping, Sequence
 
 
@@ -48,6 +49,10 @@ RUNTIME_ARCHIVE_ROOTS = (
     "opt/uv-python",
     "opt/wbc",
 )
+RUNTIME_CARRIER_ENV = {
+    "PYTHONPATH": RUNTIME_CARRIER_PYTHONPATH,
+    "LD_LIBRARY_PATH": RUNTIME_CARRIER_LD_LIBRARY_PATH,
+}
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _VOLUME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,127}")
@@ -198,6 +203,7 @@ def build_runtime_bundle_manifest(
             "member_roots": list(RUNTIME_ARCHIVE_ROOTS),
         },
         "healthcheck_argv": checks,
+        "runtime_env": dict(RUNTIME_CARRIER_ENV),
         "blockers": sorted(set(blockers)),
         "claim_boundary": (
             "This manifest describes runtime bytes copied from an exact image. It does not "
@@ -332,12 +338,13 @@ def verify_carrier_volume_admission(
 def runtime_bootstrap_shell_prefix() -> str:
     """Return a secret-free bootstrap that validates and activates the runtime archive."""
 
-    script = r"""
+    runtime_exports = "\n".join(
+        f"export {key}={shlex.quote(value)}" for key, value in RUNTIME_CARRIER_ENV.items()
+    )
+    script = runtime_exports + r"""
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_STARTED
 mkdir -p "$WORK_DIR/runtime_output"
 export BLUEPRINT_RUNPOD_CARRIER_BOOTSTRAP_RESULT="$WORK_DIR/runtime_output/runpod_carrier_runtime_bootstrap.json"
-export PYTHONPATH="__BLUEPRINT_CARRIER_PYTHONPATH__${PYTHONPATH:+:$PYTHONPATH}"
-export LD_LIBRARY_PATH="__BLUEPRINT_CARRIER_LD_LIBRARY_PATH__${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PYTHONUNBUFFERED=1
 export PIP_NO_CACHE_DIR=1
 export MUJOCO_GL=osmesa
@@ -386,6 +393,11 @@ try:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v1":
         raise RuntimeError("runtime_manifest_schema_invalid")
+    expected_runtime_env = {
+        key: os.environ.get(key) for key in ("PYTHONPATH", "LD_LIBRARY_PATH")
+    }
+    if manifest.get("runtime_env") != expected_runtime_env:
+        raise RuntimeError("runtime_manifest_env_mismatch")
     if digest(archive_path) != os.environ["BLUEPRINT_RUNTIME_ARCHIVE_SHA256"]:
         raise RuntimeError("runtime_archive_sha256_mismatch")
     with tarfile.open(archive_path, "r:gz") as archive:
@@ -522,6 +534,4 @@ export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar
 export BLUEPRINT_OSCAR_WAM_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar"
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_READY
 """
-    return script.replace("__BLUEPRINT_CARRIER_PYTHONPATH__", RUNTIME_CARRIER_PYTHONPATH).replace(
-        "__BLUEPRINT_CARRIER_LD_LIBRARY_PATH__", RUNTIME_CARRIER_LD_LIBRARY_PATH
-    )
+    return script

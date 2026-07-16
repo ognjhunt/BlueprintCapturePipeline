@@ -130,8 +130,24 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert all("--env" in call for call in carrier_runs)
     assert all(SOURCE_REF not in call for call in carrier_runs)
     assert all(CARRIER_REF in call for call in carrier_runs)
+    for key, value in executor.RUNTIME_CARRIER_ENV.items():
+        assert all(f"{key}={value}" in call for call in carrier_runs)
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
+
+
+def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:
+    foundation = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in foundation
+    assert (
+        "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
+        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+        in executor.RUNTIME_CARRIER_ENV["LD_LIBRARY_PATH"]
+    )
 
 
 def test_prepare_runtime_bundle_rejects_registry_digest_mismatch_before_copy(
