@@ -35,6 +35,7 @@ def test_prebake_admission_preserves_probe_and_full_campaign() -> None:
         release=_release(),
         model_cache=_cache(),
         preflight={"status": "ready"},
+        volume_size_gib=50,
         reservation_seconds=1_396,
         future_gpu_seconds=3_980,
         initial_spent_usd=14.557003,
@@ -45,6 +46,8 @@ def test_prebake_admission_preserves_probe_and_full_campaign() -> None:
     )
     assert result["status"] == "admitted"
     assert result["maximum_gpu_spend_usd"] == 1.357222
+    assert result["maximum_retained_storage_spend_usd"] == 0.198082
+    assert result["retention_ttl_seconds"] == 10_800
 
 
 def test_prebake_admission_rejects_old_wall_cap_and_lost_future_allowance() -> None:
@@ -52,6 +55,7 @@ def test_prebake_admission_rejects_old_wall_cap_and_lost_future_allowance() -> N
         release=_release(),
         model_cache=_cache(),
         preflight={"status": "ready"},
+        volume_size_gib=50,
         reservation_seconds=1_396,
         future_gpu_seconds=3_500,
         initial_spent_usd=14.557003,
@@ -73,6 +77,7 @@ def test_prebake_admission_keeps_models_external_and_digest_pinned() -> None:
         release=release,
         model_cache=_cache(),
         preflight={"status": "ready"},
+        volume_size_gib=50,
         reservation_seconds=1_000,
         future_gpu_seconds=3_980,
         initial_spent_usd=14.557003,
@@ -169,7 +174,7 @@ def test_delete_exact_named_requires_final_confirmed_absence(monkeypatch) -> Non
     assert result["provider_absence_confirmed"] is True
 
 
-def test_watchdog_reconciles_lost_create_response_by_exact_name(
+def test_watchdog_deletes_retained_storage_at_bounded_deadline_by_exact_name(
     tmp_path, monkeypatch
 ) -> None:
     state = tmp_path / "watchdog_state.json"
@@ -181,7 +186,8 @@ def test_watchdog_reconciles_lost_create_response_by_exact_name(
                 "droplet_name": "lost-droplet",
                 "volume_name": "lost-volume",
                 "snapshot_name": "lost-snapshot",
-                "replacement_cache_verified": False,
+                "replacement_cache_verified": True,
+                "retention_mode": "bounded_prebaked_host_and_model_cache",
             }
         )
     )

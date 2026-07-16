@@ -59,6 +59,11 @@ DEFAULT_VOLUME_GIB = 50
 MAX_PREBAKE_GPU_SECONDS = 1_396
 REQUIRED_FUTURE_GPU_SECONDS = 3_980
 MAX_HOURLY_RATE_USD = 3.50
+RETENTION_TTL_SECONDS = 3 * 60 * 60
+MAX_SNAPSHOT_GIB = 720
+DIGITALOCEAN_VOLUME_USD_PER_GIB_MONTH = 0.10
+DIGITALOCEAN_SNAPSHOT_USD_PER_GIB_MONTH = 0.06
+HOURS_PER_BILLING_MONTH = 730
 RESOURCE_PREFIX = "blueprint-groot-oscar-prebake-"
 VOLUME_PREFIX = "blueprint-groot-oscar-models-do-"
 IMAGE_PREFIX = "blueprint-groot-oscar-host-do-"
@@ -91,6 +96,7 @@ def build_prebake_admission(
     release: Mapping[str, Any],
     model_cache: Mapping[str, Any],
     preflight: Mapping[str, Any],
+    volume_size_gib: int,
     reservation_seconds: int,
     future_gpu_seconds: int,
     initial_spent_usd: float,
@@ -120,6 +126,8 @@ def build_prebake_admission(
         blockers.append("prebake_model_cache_runtime_mapping_unverified")
     if preflight.get("status") != "ready":
         blockers.append("prebake_digitalocean_preflight_not_ready")
+    if volume_size_gib != DEFAULT_VOLUME_GIB:
+        blockers.append("prebake_model_volume_size_must_equal_50_gib")
     if type(reservation_seconds) is not int or not 60 < reservation_seconds <= MAX_PREBAKE_GPU_SECONDS:
         blockers.append("prebake_reservation_outside_authorized_window")
     if future_gpu_seconds < REQUIRED_FUTURE_GPU_SECONDS:
@@ -135,6 +143,23 @@ def build_prebake_admission(
     maximum_gpu_spend = max_hourly_rate_usd * reservation_seconds / 3600.0
     if initial_spent_usd + maximum_gpu_spend > total_spend_cap_usd:
         blockers.append("prebake_reservation_exceeds_total_spend_cap")
+    maximum_storage_spend = (
+        (
+            volume_size_gib * DIGITALOCEAN_VOLUME_USD_PER_GIB_MONTH
+            + MAX_SNAPSHOT_GIB * DIGITALOCEAN_SNAPSHOT_USD_PER_GIB_MONTH
+        )
+        / HOURS_PER_BILLING_MONTH
+        * (RETENTION_TTL_SECONDS / 3600.0)
+    )
+    future_gpu_spend = max_hourly_rate_usd * future_gpu_seconds / 3600.0
+    if (
+        initial_spent_usd
+        + maximum_gpu_spend
+        + future_gpu_spend
+        + maximum_storage_spend
+        > total_spend_cap_usd
+    ):
+        blockers.append("prebake_combined_compute_and_storage_plan_exceeds_spend_cap")
     return {
         "schema_version": ADMISSION_SCHEMA_VERSION,
         "status": "admitted" if not blockers else "blocked",
@@ -144,6 +169,8 @@ def build_prebake_admission(
         "reservation_gpu_seconds": reservation_seconds,
         "future_campaign_allowance_gpu_seconds": future_gpu_seconds,
         "maximum_gpu_spend_usd": round(maximum_gpu_spend, 6),
+        "maximum_retained_storage_spend_usd": round(maximum_storage_spend, 6),
+        "retention_ttl_seconds": RETENTION_TTL_SECONDS,
         "raw_secret_values_recorded": False,
         "claim_boundary": {
             "admission_is_not_provider_allocation": True,
@@ -353,8 +380,6 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
         ("snapshot_id", "snapshot_name", "images"),
         ("volume_id", "volume_name", "volumes"),
     ):
-        if kind == "volumes" and state.get("replacement_cache_verified") is True:
-            continue
         resource_id = str(state.get(field) or "")
         if resource_id:
             rows = [
@@ -581,6 +606,7 @@ def run_prebake(
         release=release,
         model_cache=cache,
         preflight=preflight,
+        volume_size_gib=volume_size_gib,
         reservation_seconds=reservation_seconds,
         future_gpu_seconds=future_gpu_seconds,
         initial_spent_usd=initial_spent_usd,
@@ -736,6 +762,7 @@ def run_prebake(
     droplet_id = ""
     volume_id = ""
     snapshot_id = ""
+    snapshot_size_gib = 0.0
     provider_mutations = 0
     volume_create_attempted = False
     droplet_create_attempted = False
@@ -955,6 +982,9 @@ def run_prebake(
         snapshot_id = str(snapshot.get("id") or "")
         if not snapshot_id or snapshot.get("status") != "available" or region not in (snapshot.get("regions") or []):
             raise RuntimeError("digitalocean_prebake_snapshot_verification_failed")
+        snapshot_size_gib = float(snapshot.get("size_gigabytes") or 0)
+        if not 0 < snapshot_size_gib <= MAX_SNAPSHOT_GIB:
+            raise RuntimeError("digitalocean_prebake_snapshot_size_outside_bound")
         state["snapshot_id"] = snapshot_id
         write_json(state_path, state)
     except Exception as exc:
@@ -995,11 +1025,50 @@ def run_prebake(
             and (volume or {}).get("size_gigabytes") == volume_size_gib
             and not ((volume or {}).get("droplet_ids") or [])
         )
+    retention_deadline_epoch: float | None = None
+    maximum_storage_spend = (
+        (
+            volume_size_gib * DIGITALOCEAN_VOLUME_USD_PER_GIB_MONTH
+            + snapshot_size_gib * DIGITALOCEAN_SNAPSHOT_USD_PER_GIB_MONTH
+        )
+        / HOURS_PER_BILLING_MONTH
+        * (RETENTION_TTL_SECONDS / 3600.0)
+    )
     if success:
+        retention_deadline_epoch = time.time() + RETENTION_TTL_SECONDS
         state["replacement_cache_verified"] = True
+        state["retention_mode"] = "bounded_prebaked_host_and_model_cache"
+        state["deadline_epoch"] = retention_deadline_epoch
+        state["maximum_retained_storage_spend_usd"] = round(
+            maximum_storage_spend, 6
+        )
         write_json(state_path, state)
-        storage_terminal = True
-    else:
+        storage_terminal = watch.poll() is None
+        write_json(
+            output / "bounded_digitalocean_retention.json",
+            {
+                "schema_version": "groot_oscar_digitalocean_bounded_retention.v1",
+                "status": "retained" if storage_terminal else "blocked",
+                "snapshot_id": snapshot_id,
+                "snapshot_size_gib": snapshot_size_gib,
+                "model_volume_id": volume_id,
+                "model_volume_size_gib": volume_size_gib,
+                "retention_deadline_epoch": retention_deadline_epoch,
+                "retention_ttl_seconds": RETENTION_TTL_SECONDS,
+                "maximum_retained_storage_spend_usd": round(
+                    maximum_storage_spend, 6
+                ),
+                "automatic_delete_at_deadline": True,
+                "watchdog_pid": watch.pid,
+                "watchdog_alive": storage_terminal,
+                "source_runpod_cache_preserved": True,
+                "raw_secret_values_recorded": False,
+            },
+        )
+        if not storage_terminal:
+            success = False
+            error_type = "digitalocean_prebake_retention_watchdog_not_alive"
+    if not success:
         storage_cleanup: dict[str, Any] = {}
         if snapshot_id:
             storage_cleanup["snapshot"] = _delete_and_verify(token, "images", snapshot_id)
@@ -1018,7 +1087,11 @@ def run_prebake(
             row.get("provider_absence_confirmed") is True
             for row in storage_cleanup.values()
         )
-    if teardown.get("provider_absence_confirmed") is True and storage_terminal:
+    if (
+        not success
+        and teardown.get("provider_absence_confirmed") is True
+        and storage_terminal
+    ):
         (output / "watchdog_cancelled").touch()
         try:
             watch.wait(timeout=10)
@@ -1105,6 +1178,11 @@ def run_prebake(
         "model_manifest_digest": admission.get("model_manifest_digest"),
         "replacement_cache_verified": success,
         "source_runpod_cache_deleted": False,
+        "retention_watchdog_pid": watch.pid if success else None,
+        "retention_deadline_epoch": retention_deadline_epoch if success else None,
+        "maximum_retained_storage_spend_usd": (
+            round(maximum_storage_spend, 6) if success else 0
+        ),
         "elapsed_gpu_seconds": elapsed_seconds if droplet_id else 0,
         "measured_gpu_spend_usd": charged_usd if droplet_id else 0,
         "provider_mutations_performed": provider_mutations,
