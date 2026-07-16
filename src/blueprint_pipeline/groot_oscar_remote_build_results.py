@@ -42,6 +42,12 @@ def validate_remote_build_results(results_dir: Path) -> dict[str, Any]:
         )
     except (OSError, ValueError, json.JSONDecodeError):
         result_preview = {}
+    try:
+        foundation_diagnostic = _load_object(
+            results_dir / "foundation_registry_diagnostic.json"
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        foundation_diagnostic = {}
     serverless = result_preview.get("serverless_worker_contract")
     serverless = serverless if isinstance(serverless, Mapping) else {}
     thin_release = result_preview.get("thin_release_contract")
@@ -49,9 +55,20 @@ def validate_remote_build_results(results_dir: Path) -> dict[str, Any]:
     foundation_ref = str(result_preview.get("foundation_image_ref") or "")
     digest = foundation_ref.rsplit("@sha256:", 1)[-1]
     reused_digest_foundation = bool(
-        serverless.get("status") == "passed"
+        result_preview.get("status") == "completed"
+        and serverless.get("status") == "passed"
+        and serverless.get("worker_source_packaged") is True
+        and serverless.get("worker_command_packaged") is True
+        and serverless.get("runpod_sdk_exactly_pinned") is True
+        and serverless.get("models_externalized") is True
         and thin_release.get("status") == "passed"
+        and thin_release.get("release_delta_budget_passed") is True
+        and thin_release.get("models_externalized") is True
         and thin_release.get("foundation_image_ref") == foundation_ref
+        and foundation_diagnostic.get("status") == "completed"
+        and not foundation_diagnostic.get("blockers")
+        and foundation_diagnostic.get("image_ref") == foundation_ref
+        and foundation_diagnostic.get("resolved_digest_ref") == foundation_ref
         and "@sha256:" in foundation_ref
         and len(digest) == 64
         and all(char in "0123456789abcdef" for char in digest)

@@ -481,10 +481,18 @@ def test_remote_build_results_accept_digest_pinned_serverless_foundation_reuse(
     release_result = {
         "status": "completed",
         "foundation_image_ref": foundation_ref,
-        "serverless_worker_contract": {"status": "passed"},
+        "serverless_worker_contract": {
+            "status": "passed",
+            "worker_source_packaged": True,
+            "worker_command_packaged": True,
+            "runpod_sdk_exactly_pinned": True,
+            "models_externalized": True,
+        },
         "thin_release_contract": {
             "status": "passed",
             "foundation_image_ref": foundation_ref,
+            "release_delta_budget_passed": True,
+            "models_externalized": True,
         },
     }
     for name in REMOTE_BUILD_REQUIRED_RESULTS:
@@ -492,6 +500,13 @@ def test_remote_build_results_accept_digest_pinned_serverless_foundation_reuse(
             continue
         if name == "groot_oscar_thin_remote_build_result.json":
             payload = release_result
+        elif name == "foundation_registry_diagnostic.json":
+            payload = {
+                "status": "completed",
+                "blockers": [],
+                "image_ref": foundation_ref,
+                "resolved_digest_ref": foundation_ref,
+            }
         elif name in {
             "release_supply_chain_manifest.json",
             "release_supply_chain_disk_admission.json",
