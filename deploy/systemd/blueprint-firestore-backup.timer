@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Blueprint Firestore backup export daily (RPO <= 24h, R053)
+
+[Timer]
+# Daily at 07:00 UTC — matches firestore_export.schedule_cron in
+# configs/firestore_backup_schedule.json (keep the two in sync).
+OnCalendar=*-*-* 07:00:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+Unit=blueprint-firestore-backup.service
+
+[Install]
+WantedBy=timers.target

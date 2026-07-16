@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -53,6 +54,9 @@ RELIABILITY_MANIFEST_NAME = "provider_reliability_manifest.json"
 POST_MARKER_NO_PROGRESS_TIMEOUT_ENV = "BLUEPRINT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS"
 RENDER_POD_HARD_TTL_ENV = "BLUEPRINT_RENDER_POD_HARD_TTL_SECONDS"
 RENDER_POD_IDLE_TTL_ENV = "BLUEPRINT_RENDER_POD_IDLE_TTL_SECONDS"
+# Backward-compatible name for the provider-neutral watchdog contract. The
+# render hard TTL is the concrete implementation of the same fail-closed bound.
+EXTERNAL_WATCHDOG_TTL_ENV = "BLUEPRINT_GPU_PROVIDER_EXTERNAL_WATCHDOG_TTL_SECONDS"
 # A booted worker that stops changing bootstrap phase for this long is a stall,
 # not patience — it gets terminated instead of billing until max_seconds.
 DEFAULT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS = 900
@@ -61,6 +65,7 @@ DEFAULT_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS = 900
 # the launching/control-plane process dies.
 DEFAULT_RENDER_POD_HARD_TTL_SECONDS = 7200
 DEFAULT_RENDER_POD_IDLE_TTL_SECONDS = 1800
+DEFAULT_EXTERNAL_WATCHDOG_TTL_SECONDS = DEFAULT_RENDER_POD_HARD_TTL_SECONDS
 SECRETS = Path.home() / ".blueprint-secrets"
 DEFAULT_WARM_CANDIDATES = (
     "pwbu7wxsvxpr0x", "9zxerj0nm3ow76", "qzgtsh4t27hi7f", "v4bd9u2qhwivb8",
@@ -117,6 +122,19 @@ def mark(ph, **k):
 def hb():
     while True:
         time.sleep(25); putout()
+def _watchdog():
+    # R056(b): pod-side hard-TTL self-kill. If the launching host dies, nothing else
+    # tears this pod down; after the TTL (wall-clock since boot) the container exits
+    # so provider compute billing stops. Env-gated: absent/<=0 disables it.
+    try: ttl=float(os.environ.get("BLUEPRINT_GPU_PROVIDER_EXTERNAL_WATCHDOG_TTL_SECONDS","0") or 0)
+    except Exception: ttl=0.0
+    if ttl<=0: return
+    deadline=time.time()+ttl
+    while time.time()<deadline:
+        time.sleep(min(30.0, max(1.0, deadline-time.time())))
+    mark("watchdog_self_terminate", reason="external_watchdog_ttl_expired", ttl_seconds=ttl)
+    os._exit(42)
+threading.Thread(target=_watchdog, daemon=True).start()
 mark("bootstrap_fetching")
 data=urllib.request.urlopen(GETB, timeout=600).read()
 zipfile.ZipFile(io.BytesIO(data)).extractall(BUNDLE)
@@ -350,8 +368,14 @@ def _env_for(
     warmup: int,
     render_pod_hard_ttl_seconds: int = DEFAULT_RENDER_POD_HARD_TTL_SECONDS,
     render_pod_idle_ttl_seconds: int = DEFAULT_RENDER_POD_IDLE_TTL_SECONDS,
+    watchdog_ttl_seconds: int | None = None,
 ) -> dict:
-    return {
+    hard_ttl_seconds = (
+        render_pod_hard_ttl_seconds
+        if watchdog_ttl_seconds is None
+        else watchdog_ttl_seconds
+    )
+    env = {
         "ACCEPT_EULA": "Y", "PRIVACY_CONSENT": "Y", "CUDA_VISIBLE_DEVICES": "0",
         "BLUEPRINT_EVAL_MANIFEST_URI": bundle_url,
         "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL": put_url,
@@ -359,9 +383,12 @@ def _env_for(
         "RENDER_WIDTH": str(width), "RENDER_HEIGHT": str(height),
         "RENDER_SUBFRAMES": str(subframes), "RENDER_RT_SUBFRAMES": str(rt_subframes),
         "RENDER_WARMUP_FRAMES": str(warmup),
-        RENDER_POD_HARD_TTL_ENV: str(max(0, int(render_pod_hard_ttl_seconds))),
+        RENDER_POD_HARD_TTL_ENV: str(max(0, int(hard_ttl_seconds))),
         RENDER_POD_IDLE_TTL_ENV: str(max(0, int(render_pod_idle_ttl_seconds))),
     }
+    if int(hard_ttl_seconds) > 0:
+        env[EXTERNAL_WATCHDOG_TTL_ENV] = str(int(hard_ttl_seconds))
+    return env
 
 
 def build_render_launch_spec(
@@ -371,6 +398,7 @@ def build_render_launch_spec(
     max_hourly_rate_usd: float = 2.0, min_gpu_ram_mb: int = 24000,
     render_pod_hard_ttl_seconds: int = DEFAULT_RENDER_POD_HARD_TTL_SECONDS,
     render_pod_idle_ttl_seconds: int = DEFAULT_RENDER_POD_IDLE_TTL_SECONDS,
+    watchdog_ttl_seconds: int | None = None,
 ) -> RenderLaunchSpec:
     """Provider-neutral render launch spec (image + env + bootstrap + GPU sizing). The
     env carries the signed bundle GET + output PUT URLs, so any provider just forwards it."""
@@ -387,6 +415,7 @@ def build_render_launch_spec(
         warmup=warmup,
         render_pod_hard_ttl_seconds=render_pod_hard_ttl_seconds,
         render_pod_idle_ttl_seconds=render_pod_idle_ttl_seconds,
+        watchdog_ttl_seconds=watchdog_ttl_seconds,
     )
     return RenderLaunchSpec(
         name="blueprint-isaac-splat-render", image=image, env=env,
@@ -483,6 +512,9 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         provider = get_render_provider("runpod")
     out_dir.mkdir(parents=True, exist_ok=True)
     get_url = (job_dir / "provider_output_get_url.txt").read_text().strip()
+    parsed_get_url = urllib.parse.urlsplit(get_url)
+    if parsed_get_url.scheme not in {"http", "https"} or not parsed_get_url.netloc:
+        raise ValueError("provider_output_get_url_invalid")
     t0 = time.time()
     last = {}
     last_source = None
@@ -507,7 +539,9 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
     while time.time() - t0 < max_seconds:
         time.sleep(poll)
         try:
-            data = urllib.request.urlopen(get_url, timeout=60).read()
+            data = urllib.request.urlopen(  # nosec B310 -- HTTP(S) URL validated above.
+                get_url, timeout=60
+            ).read()
             zipfile.ZipFile(io.BytesIO(data)).extractall(out_dir)
         except Exception:  # noqa: BLE001
             continue
@@ -564,7 +598,9 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         # lands before we delete the pod — the heartbeat that flips to runner_done races teardown.
         time.sleep(min(poll, 15))
         try:
-            data = urllib.request.urlopen(get_url, timeout=60).read()
+            data = urllib.request.urlopen(  # nosec B310 -- HTTP(S) URL validated above.
+                get_url, timeout=60
+            ).read()
             zipfile.ZipFile(io.BytesIO(data)).extractall(out_dir)
         except Exception:  # noqa: BLE001
             pass

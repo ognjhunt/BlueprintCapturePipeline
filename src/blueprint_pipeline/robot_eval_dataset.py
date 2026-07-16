@@ -360,6 +360,10 @@ FACTORY_SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
     },
 ]
 
+# Compatibility names retained for the location-profile contract introduced by
+# the beta audit. The newer dataset builder uses the scenario-prefixed names.
+FACTORY_HAZARD_VARIATION_DEFINITIONS = FACTORY_SCENARIO_VARIATION_DEFINITIONS
+
 KNOWN_SCENARIO_VARIATION_DEFINITIONS: List[Dict[str, Any]] = [
     *SCENARIO_VARIATION_DEFINITIONS,
     *FACTORY_SCENARIO_VARIATION_DEFINITIONS,
@@ -380,6 +384,7 @@ CANONICAL_SITE_TYPE_VALUES: Tuple[str, ...] = (
     "loading_dock",
     "stockroom",
     "kitchen",
+    "residential",
     "retail",
     "lab",
     "hospital",
@@ -407,6 +412,10 @@ SITE_TYPE_ALIASES: Dict[str, str] = {
     "assembly plant": "manufacturing",
     "production plant": "manufacturing",
     "kitchen": "kitchen",
+    "residential": "residential",
+    "home": "residential",
+    "house": "residential",
+    "apartment": "residential",
     "grocery": "retail",
     "retail": "retail",
     "lab": "lab",
@@ -447,6 +456,15 @@ SCENARIO_VARIATION_PROFILE_DEFINITIONS: Dict[str, Tuple[str, ...]] = {
         "occlusion",
         "glare",
         "wrong_object_nearby",
+        "narrow_approach_angle",
+    ),
+    "residential": (
+        "lighting_variation",
+        "object_rotation",
+        "blocked_path",
+        "human_crossing",
+        "occlusion",
+        "glare",
         "narrow_approach_angle",
     ),
     "retail": (
@@ -1403,6 +1421,18 @@ def scenario_variation_definitions_for_site_type(site_type: Any) -> List[Dict[st
         for name in scenario_variation_names_for_site_type(site_type)
         if name in _SCENARIO_VARIATION_DEFINITION_BY_ID
     ]
+
+
+def required_variation_names_for_site_category(category: str | None) -> List[str]:
+    """Return the required variation ids for a canonical site category."""
+
+    return list(scenario_variation_names_for_site_type(category))
+
+
+def variation_definition_for(variation_id: str) -> Dict[str, Any] | None:
+    """Look up a base or factory variation definition by id."""
+
+    return _SCENARIO_VARIATION_DEFINITION_BY_ID.get(_string(variation_id))
 
 
 def _site_extent_summary(
@@ -3349,6 +3379,71 @@ def _collision_backend_labels(
     }
 
 
+_SITE_EXTENT_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("approx_floor_area_m2", "float", "square_meters"),
+    ("ceiling_height_m", "float", "meters"),
+    ("floor_count", "int", "count"),
+    ("dominant_aisle_width_m", "float", "meters"),
+)
+
+
+def _site_extent_value(raw: Any, kind: str) -> Any:
+    """Coerce a declared site-extent value, returning None when absent/blank/invalid."""
+
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        return int(float(raw)) if kind == "int" else float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _site_extent(
+    *,
+    raw_manifest: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Site scale/dimensional capture truth (R017).
+
+    Warehouses/factories are defined by scale (floor area, ceiling height, aisle
+    width, floor count). These values are declared or measured capture inputs,
+    not derived or verified claims. Sourced from the capture manifest first, then
+    operator-supplied site metadata; absent values are marked
+    ``needs_capture_or_operator_input`` rather than fabricated.
+    """
+
+    values: Dict[str, Any] = {}
+    units: Dict[str, str] = {}
+    sources: Dict[str, str] = {}
+    any_present = False
+    for key, kind, unit in _SITE_EXTENT_FIELDS:
+        units[key] = unit
+        value = _site_extent_value(raw_manifest.get(key), kind)
+        source = "capture_manifest"
+        if value is None:
+            value = _site_extent_value(metadata.get(key), kind)
+            source = "site_operator_metadata"
+        if value is None:
+            source = "needs_capture_or_operator_input"
+        else:
+            any_present = True
+        values[key] = value
+        sources[key] = source
+    return {
+        **values,
+        "units": units,
+        "sources": sources,
+        "status": "declared_present" if any_present else "needs_capture_or_operator_input",
+        "label_source": "capture_manifest_or_site_operator_metadata",
+        "claim_boundary": (
+            "site_extent_values_are_declared_or_measured_capture_inputs_"
+            "not_derived_or_verified_claims"
+        ),
+    }
+
+
 def _site_card(
     *,
     context: Any,
@@ -3504,7 +3599,14 @@ def _site_card(
         "site_type_allowed_values": list(CANONICAL_SITE_TYPE_VALUES),
         "site_type_aliases": dict(sorted(SITE_TYPE_ALIASES.items())),
         "scenario_variation_profile": scenario_variation_profile_for_site_type(canonical),
-        "site_extent": site_extent,
+        "site_extent": (
+            site_extent
+            if any(
+                isinstance(source.get("site_extent"), Mapping)
+                for source in (raw_manifest, metadata, site_world_spec)
+            )
+            else _site_extent(raw_manifest=raw_manifest, metadata=metadata)
+        ),
         "site_operating_conditions": site_operating_conditions,
         "geometry": geometry_summary,
         "visual_conditions": _condition_cards(

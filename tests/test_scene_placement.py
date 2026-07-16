@@ -256,6 +256,30 @@ def test_target_kind_classifies_openable_vs_static():
     assert tr.classify_target_kind(_obj("rack", "pallet rack upright")) == "static"
 
 
+def test_industrial_openables_resolve_as_openable():
+    """Audit R061: site openables must read as openable, not degrade to generic.
+
+    The affordance table was kitchen/home-biased, so industrial articulated
+    targets either fell through to the generic ``door`` bucket or (for terms with
+    no ``door`` token) resolved ``static``. They now get distinct canonical
+    groups and read as openable.
+    """
+    # Terms with no "door" token — these were previously "static".
+    for label in ("gate", "security cage", "storage locker", "shipping container",
+                  "tote_lid", "conveyor guard"):
+        assert tr.is_openable_target(_obj("x", label)) is True, label
+    # Dock / roll-up doors resolve openable AND get their own canonical group
+    # instead of collapsing to the generic "door" group.
+    assert tr.classify_target_kind(_obj("d", "dock_door")) == "openable"
+    assert tr.classify_target_kind(_obj("r", "rolling_door")) == "openable"
+    assert tr._canonical_group_for_token("dock") == "dock_door"
+    assert tr._canonical_group_for_token("rollup") == "rolling_door"
+    assert tr._canonical_group_for_token("gate") == "gate"
+    # Kitchen behavior is unchanged.
+    assert tr.classify_target_kind(_obj("f", "kitchen_faucet")) == "static"
+    assert tr.classify_target_kind(_obj("c", "cabinet")) == "openable"
+
+
 def test_label_fallback_prefers_shortest_label():
     # two faucet-like objects: the most direct name wins the tie
     objs = [

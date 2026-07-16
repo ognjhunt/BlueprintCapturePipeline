@@ -44,6 +44,13 @@ INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"
 INTAKE_ALLOW_LEGACY_BEARER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER"
 INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV = "BLUEPRINT_LIVE_PIPELINE_ALLOW_LEGACY_WEBAPP_HMAC_WITHOUT_CLIENT_ID"
 INTAKE_MAX_CLOCK_SKEW_SECONDS_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_MAX_CLOCK_SKEW_SECONDS"
+INTAKE_REQUIRE_SIGNED_REQUEST_ENV = (
+    "BLUEPRINT_LIVE_PIPELINE_INTAKE_REQUIRE_SIGNED_REQUEST"
+)
+INTAKE_SIGNING_SECRET_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_SIGNING_SECRET"
+INTAKE_NONCE_WINDOW_SECONDS_ENV = (
+    "BLUEPRINT_LIVE_PIPELINE_INTAKE_NONCE_WINDOW_SECONDS"
+)
 INTAKE_WORK_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR"
 INTAKE_TRIGGER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND"
 INTAKE_ALLOW_TRIGGER_ENV = "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
@@ -66,6 +73,7 @@ INTAKE_MAX_STORAGE_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_STORAGE_BYTES"
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
 CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
 DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS = 5 * 60
+DEFAULT_INTAKE_NONCE_WINDOW_SECONDS = 5 * 60
 DEFAULT_INTAKE_MAX_BODY_BYTES = 2 * 1024 * 1024
 DEFAULT_INTAKE_MAX_JSON_DEPTH = 32
 DEFAULT_INTAKE_MAX_JSON_ITEMS = 100_000
@@ -76,6 +84,11 @@ DEFAULT_INTAKE_MAX_STORAGE_BYTES = 20 * 1024 * 1024 * 1024
 # Retained as an inert compatibility surface for older tests/importers. Replay
 # authority is the shared filesystem store below, never this process-local map.
 _INTAKE_NONCE_CACHE: Dict[str, float] = {}
+
+# In-memory replay guard: maps a seen nonce to the request timestamp it arrived
+# with. Entries older than the bounded window are pruned on each check, so a
+# replayed nonce inside the window is rejected while a fresh one passes.
+_SEEN_INTAKE_NONCES: Dict[str, float] = {}
 
 
 def _string(value: Any) -> str:
@@ -232,6 +245,92 @@ def _intake_max_clock_skew_seconds() -> float:
 
 def _strip_sha256_prefix(value: str) -> str:
     return re.sub(r"^sha256=", "", _string(value), flags=re.IGNORECASE)
+
+
+def _intake_nonce_window_seconds() -> float:
+    configured = _string(os.getenv(INTAKE_NONCE_WINDOW_SECONDS_ENV))
+    if not configured:
+        return float(DEFAULT_INTAKE_NONCE_WINDOW_SECONDS)
+    try:
+        parsed = float(configured)
+    except ValueError:
+        return float(DEFAULT_INTAKE_NONCE_WINDOW_SECONDS)
+    return parsed if parsed > 0 else float(DEFAULT_INTAKE_NONCE_WINDOW_SECONDS)
+
+
+def _parse_intake_timestamp(value: Any) -> float | None:
+    text = _string(value)
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return _parse_timestamp(text)
+
+
+def _reset_intake_replay_cache() -> None:
+    """Clear the legacy in-process replay cache used by compatibility clients."""
+
+    _SEEN_INTAKE_NONCES.clear()
+
+
+def _enforce_legacy_intake_replay_protection(
+    *,
+    timestamp_header: str | None,
+    nonce_header: str | None,
+    signature_header: str | None,
+) -> None:
+    """Preserve the prior bearer nonce contract without weakening HMAC intake."""
+
+    required = _truthy(os.getenv(INTAKE_REQUIRE_SIGNED_REQUEST_ENV))
+    provided_timestamp = _string(timestamp_header)
+    provided_nonce = _string(nonce_header)
+    if not required and not provided_timestamp and not provided_nonce:
+        return
+    if not provided_timestamp or not provided_nonce:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request requires timestamp and nonce",
+        )
+    parsed_timestamp = _parse_intake_timestamp(provided_timestamp)
+    if parsed_timestamp is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request timestamp is invalid",
+        )
+    window = _intake_nonce_window_seconds()
+    now = time.time()
+    if abs(now - parsed_timestamp) > window:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request timestamp outside allowed window",
+        )
+    signing_secret = _string(os.getenv(INTAKE_SIGNING_SECRET_ENV))
+    if signing_secret:
+        expected_signature = hmac.new(
+            signing_secret.encode("utf-8"),
+            f"{provided_timestamp}.{provided_nonce}".encode("utf-8"),
+            sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(
+            _string(signature_header).encode("utf-8"),
+            expected_signature.encode("utf-8"),
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="intake request signature invalid",
+            )
+    stale_nonces = [
+        nonce for nonce, seen_at in _SEEN_INTAKE_NONCES.items() if now - seen_at > window
+    ]
+    for nonce in stale_nonces:
+        _SEEN_INTAKE_NONCES.pop(nonce, None)
+    if provided_nonce in _SEEN_INTAKE_NONCES:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="intake request nonce already used",
+        )
+    _SEEN_INTAKE_NONCES[provided_nonce] = now
 
 
 def _valid_intake_nonce(value: str) -> bool:
@@ -1300,6 +1399,9 @@ async def _require_token(
     x_blueprint_pipeline_signature: str | None = Header(default=None),
     x_blueprint_pipeline_nonce: str | None = Header(default=None),
     x_blueprint_pipeline_client_id: str | None = Header(default=None),
+    x_blueprint_intake_timestamp: str | None = Header(default=None),
+    x_blueprint_intake_nonce: str | None = Header(default=None),
+    x_blueprint_intake_signature: str | None = Header(default=None),
 ) -> str:
     shared_secret = _string(os.getenv(INTAKE_TOKEN_ENV))
     client_secrets = _client_secrets()
@@ -1402,12 +1504,17 @@ async def _require_token(
         if scheme.lower() == "bearer":
             provided = _string(token)
     if not provided or not shared_secret or not hmac.compare_digest(
-        provided, shared_secret
+        provided.encode("utf-8"), shared_secret.encode("utf-8")
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid intake token",
         )
+    _enforce_legacy_intake_replay_protection(
+        timestamp_header=x_blueprint_intake_timestamp,
+        nonce_header=x_blueprint_intake_nonce,
+        signature_header=x_blueprint_intake_signature,
+    )
     request.state.intake_client_id = "legacy-bearer"
     return "legacy-bearer"
 

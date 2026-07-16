@@ -1,5 +1,23 @@
 name: Full Test Lane
 
+# R044: the slow/integration lane now gates PRs to main.
+#
+# Bare `pytest` (ci.yml) is the fast lane and deselects `slow`/`gpu` via the
+# pyproject addopts (`-m "not slow and not gpu"`). That left the heavy
+# subprocess/Isaac/render/module-entrypoint + robot-eval/provider/runtime tests
+# (all tagged `@pytest.mark.slow`) ungated on merges. This workflow closes that:
+#
+#   * pull_request -> main : `pr-slow-lane` runs `pytest -m "slow or gpu"`
+#                            (the exact complement of the fast lane) with a
+#                            bounded timeout, so slow/provider/runtime paths are
+#                            gated before merge.
+#   * schedule / dispatch  : `full-pytest` runs the entire suite unbounded.
+#
+# Making `pr-slow-lane` a *required* status check is a one-time branch-protection
+# setting in the GitHub UI (Settings -> Branches -> main). See
+# docs/ci-required-checks.md in this repo and the WebApp runbook
+# docs/runbooks/CI_GATED_DEPLOY_AND_RELEASE.md.
+
 on:
   pull_request:
   push:
@@ -10,11 +28,89 @@ on:
 
 concurrency:
   group: full-test-lane-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  pr-slow-lane:
+    name: Slow lane gate (PR to main)
+    # Bounded PR gate: runs only the slow/gpu complement that the fast lane
+    # deselects, so it stays meaningful without re-running the fast lane or the
+    # unbounded scheduled sweep.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
+      # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
+      CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+      CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Checkout BlueprintContracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init BlueprintContracts
+          cd BlueprintContracts
+          git remote add origin "https://x-access-token:${CONTRACTS_TOKEN}@github.com/${CONTRACTS_REPOSITORY}.git"
+          fetch_ref="${CONTRACTS_REF:-main}"
+          if git fetch --depth=1 origin "${fetch_ref}"; then
+            echo "Using BlueprintContracts ref ${fetch_ref}."
+          else
+            echo "::error::BlueprintContracts ref '${fetch_ref}' was not available. Push a matching Contracts branch/ref or set CONTRACTS_REF; refusing to validate against an implicit fallback."
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+
+      - name: Install system media dependencies
+        run: |
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete || true
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          uv sync --extra dev --extra cloud
+          uv pip install -e BlueprintContracts
+
+      - name: Verify shared robot-eval request contract
+        run: |
+          uv run python scripts/verify_robot_eval_job_request_contract.py \
+            --contracts-repo BlueprintContracts
+
+      - name: Run slow lane (complement of the fast lane)
+        run: |
+          set -euo pipefail
+          mkdir -p output/ci
+          # `slow or gpu` is the exact complement of the fast-lane deselection
+          # (`not slow and not gpu`). Nothing here overlaps the ci.yml fast lane.
+          uv run python -m pytest -q -p no:cacheprovider \
+            -m "slow or gpu" \
+            --junitxml=output/ci/pr-slow-lane-junit.xml
+
+      - name: Upload slow lane report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-slow-lane-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            output/ci/pr-slow-lane-junit.xml
+
   full-pytest:
     name: Full pytest lane on CPU runner
+    # Unbounded whole-suite sweep for scheduled/dispatch runs only; the PR gate
+    # uses the bounded pr-slow-lane job above.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -25,7 +121,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Checkout BlueprintContracts
         shell: bash
@@ -127,7 +223,7 @@ jobs:
 
       - name: Upload full lane report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: full-test-lane-${{ github.run_id }}
           retention-days: 90

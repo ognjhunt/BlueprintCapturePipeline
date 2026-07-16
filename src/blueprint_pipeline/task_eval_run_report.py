@@ -39,6 +39,74 @@ from .wam_score_claim_gate import summarize_wam_evaluation_for_report
 TASK_EVAL_RUN_REPORT_SCHEMA_VERSION = "task_eval_run_buyer_report.v1"
 SCORECARD_SCHEMA_VERSION = "task_eval_run_scorecard.v1"
 
+# Controlled vocabulary for where an attempt's success label came from. This is
+# how a buyer tells a VLM judgment over GENERATED rollout video apart from
+# simulator physics or a recorded real-world trace. The WAM generated-video VLM
+# labelers (wam_generated_video_success_label_gemini / _openai) stamp each label
+# with ``success_label_provenance = generated_video_vlm``; that value is threaded
+# into the attempt rows this scorecard reads.
+GENERATED_VIDEO_VLM_PROVENANCE = "generated_video_vlm"
+SIMULATOR_PHYSICS_PROVENANCE = "simulator_physics"
+RECORDED_TRACE_PROVENANCE = "recorded_trace"
+UNKNOWN_PROVENANCE = "unknown"
+SUCCESS_LABEL_PROVENANCE_VOCABULARY: tuple[str, ...] = (
+    GENERATED_VIDEO_VLM_PROVENANCE,
+    SIMULATOR_PHYSICS_PROVENANCE,
+    RECORDED_TRACE_PROVENANCE,
+    UNKNOWN_PROVENANCE,
+)
+# Only these provenances establish a success_rate as physics or captured truth.
+_PHYSICS_OR_CAPTURED_TRUTH_PROVENANCES = frozenset(
+    {SIMULATOR_PHYSICS_PROVENANCE, RECORDED_TRACE_PROVENANCE}
+)
+# Provenances that must NEVER be presented as an unqualified physics/real-world
+# success claim (generated video is a VLM judgment; unknown is unestablished).
+_NON_TRUTH_PROVENANCES = frozenset(
+    {GENERATED_VIDEO_VLM_PROVENANCE, UNKNOWN_PROVENANCE}
+)
+# The disclosure string a generated-video-VLM success_rate must always carry.
+SUCCESS_RATE_GENERATED_VIDEO_VLM_CLAIM_BOUNDARY = (
+    "success_rate_from_generated_video_vlm_is_not_physics_or_captured_truth"
+)
+SUCCESS_RATE_UNKNOWN_PROVENANCE_CLAIM_BOUNDARY = (
+    "success_rate_provenance_unknown_is_not_established_physics_or_captured_truth"
+)
+
+
+def _normalize_success_label_provenance(value: Any) -> str:
+    """Map an attempt's declared provenance onto the controlled vocabulary.
+
+    Anything absent or outside the vocabulary is treated conservatively as
+    ``unknown`` — provenance is never fabricated.
+    """
+    text = _string(value)
+    return text if text in SUCCESS_LABEL_PROVENANCE_VOCABULARY else UNKNOWN_PROVENANCE
+
+
+def _collapse_row_provenance(distinct: Sequence[str]) -> str:
+    """Collapse a condition's distinct provenances to one vocabulary value.
+
+    A single source is reported as-is. Mixed sources within one condition are
+    never presented as a single trusted provenance: a generated-video-VLM
+    contributor wins the disclosure, otherwise the row is marked ``unknown``.
+    """
+    ordered = list(dict.fromkeys(distinct))
+    if len(ordered) == 1:
+        return ordered[0]
+    if GENERATED_VIDEO_VLM_PROVENANCE in ordered:
+        return GENERATED_VIDEO_VLM_PROVENANCE
+    return UNKNOWN_PROVENANCE
+
+
+def _row_provenance_claim_boundary(distinct: Sequence[str]) -> str | None:
+    """The disclosure string a row's success_rate must carry, if any."""
+    present = set(distinct)
+    if GENERATED_VIDEO_VLM_PROVENANCE in present:
+        return SUCCESS_RATE_GENERATED_VIDEO_VLM_CLAIM_BOUNDARY
+    if UNKNOWN_PROVENANCE in present:
+        return SUCCESS_RATE_UNKNOWN_PROVENANCE_CLAIM_BOUNDARY
+    return None
+
 # TRI-style published protocol treats ~20 trials per condition as the floor for
 # a decision-grade comparison; below that the scorecard row is flagged.
 RECOMMENDED_MIN_TRIALS_PER_CONDITION = 20
@@ -293,7 +361,7 @@ def build_task_eval_scorecard(
     Success labels are read strictly (bool or 0/1 only); anything else makes the
     attempt invalid and blocks the scorecard rather than silently coercing.
     """
-    conditions: "OrderedDict[tuple[str, str], Dict[str, int]]" = OrderedDict()
+    conditions: "OrderedDict[tuple[str, str], Dict[str, Any]]" = OrderedDict()
     blockers: List[str] = []
     invalid_attempts: List[str] = []
     for index, attempt in enumerate(attempts):
@@ -307,9 +375,14 @@ def build_task_eval_scorecard(
             _string(row.get("task_id")) or "unspecified_task",
             _string(row.get("scenario_id")) or "unspecified_scenario",
         )
-        bucket = conditions.setdefault(key, {"trials": 0, "successes": 0})
+        bucket = conditions.setdefault(
+            key, {"trials": 0, "successes": 0, "provenances": set()}
+        )
         bucket["trials"] += 1
         bucket["successes"] += int(success)
+        bucket["provenances"].add(
+            _normalize_success_label_provenance(row.get("success_label_provenance"))
+        )
     if invalid_attempts:
         blockers.append(
             "attempts_with_non_boolean_success_label:" + ",".join(invalid_attempts)
@@ -328,8 +401,17 @@ def build_task_eval_scorecard(
         >= CLAIM_LADDER.index("review_task_success")
     )
     rows: List[Dict[str, Any]] = []
+    observed_provenances: set[str] = set()
     for (task_id, scenario_id), bucket in conditions.items():
         interval = _wilson_interval(bucket["successes"], bucket["trials"])
+        distinct = sorted(bucket["provenances"])
+        observed_provenances.update(distinct)
+        # A success_rate is physics or captured truth ONLY when every contributing
+        # label came from a simulator-physics or recorded real trace. A
+        # generated-video-VLM or unknown contributor keeps the rate qualified.
+        rate_is_truth = bool(distinct) and set(distinct).issubset(
+            _PHYSICS_OR_CAPTURED_TRUTH_PROVENANCES
+        )
         rows.append(
             {
                 "task_id": task_id,
@@ -338,6 +420,10 @@ def build_task_eval_scorecard(
                 "successes": bucket["successes"],
                 "success_rate": interval if rates_published else None,
                 "below_recommended_trials": bucket["trials"] < recommended_min_trials,
+                "success_label_provenance": _collapse_row_provenance(distinct),
+                "success_label_provenances": distinct,
+                "success_rate_is_physics_or_captured_truth": rate_is_truth,
+                "success_rate_claim_boundary": _row_provenance_claim_boundary(distinct),
             }
         )
     if not rows or blockers:
@@ -361,6 +447,27 @@ def build_task_eval_scorecard(
         "recommended_min_trials_per_condition": recommended_min_trials,
         "conditions": rows,
         "invalid_attempt_ids": invalid_attempts,
+        "success_label_provenance_vocabulary": list(
+            SUCCESS_LABEL_PROVENANCE_VOCABULARY
+        ),
+        "observed_success_label_provenances": sorted(observed_provenances),
+        "success_label_provenance_boundary": {
+            "any_success_rate_from_generated_video_vlm": (
+                GENERATED_VIDEO_VLM_PROVENANCE in observed_provenances
+            ),
+            "any_success_rate_provenance_unknown": (
+                UNKNOWN_PROVENANCE in observed_provenances
+            ),
+            "all_success_rates_are_physics_or_captured_truth": bool(
+                observed_provenances
+            )
+            and observed_provenances.issubset(_PHYSICS_OR_CAPTURED_TRUTH_PROVENANCES),
+            "generated_video_vlm_success_rate_is_not_physics_or_captured_truth": True,
+            "unknown_provenance_success_rate_is_not_established_truth": True,
+            "generated_video_vlm_boundary": (
+                SUCCESS_RATE_GENERATED_VIDEO_VLM_CLAIM_BOUNDARY
+            ),
+        },
         "blockers": blockers,
     }
 
@@ -498,6 +605,9 @@ def build_task_eval_run_report(
     blockers.extend(
         f"scorecard:{blocker}" for blocker in scorecard.get("blockers") or []
     )
+    scorecard_provenance_boundary = _mapping(
+        scorecard.get("success_label_provenance_boundary")
+    )
 
     wam_section, wam_blockers = summarize_wam_evaluation_for_report(wam_evaluation)
     blockers.extend(wam_blockers)
@@ -533,6 +643,18 @@ def build_task_eval_run_report(
             "bare_success_booleans_forbidden": True,
             "provider_runtime_success_is_not_task_success": True,
             "generated_or_rendered_media_is_not_physical_proof": True,
+            "success_rate_provenance_disclosed": True,
+            "generated_video_vlm_success_rate_is_not_physics_or_captured_truth": True,
+            "all_success_rates_are_physics_or_captured_truth": bool(
+                scorecard_provenance_boundary.get(
+                    "all_success_rates_are_physics_or_captured_truth"
+                )
+            ),
+            "any_success_rate_from_generated_video_vlm": bool(
+                scorecard_provenance_boundary.get(
+                    "any_success_rate_from_generated_video_vlm"
+                )
+            ),
             "buyer_claim_ceiling": buyer_claim_ceiling,
             "safety": dict(SAFETY_CLAIM_BOUNDARY),
         },

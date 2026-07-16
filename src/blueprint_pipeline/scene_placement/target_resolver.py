@@ -65,7 +65,7 @@ _SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
     ("cabinet", "cupboard", "cabinetry"),
     ("drawer",),
     ("door",),
-    ("dock_door", "dock", "bay", "loading", "rollup", "overhead"),
+    ("dock_door", "dock", "bay", "loading"),
     ("rolling_door", "rolling", "rollup", "shutter"),
     ("gate", "barrier"),
     ("cage_gate", "cage", "enclosure"),
@@ -81,6 +81,22 @@ _SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
     ("counter", "countertop", "worktop"),
     ("table", "desk"),
     ("handle", "knob", "lever", "pull"),
+    # ---- Industrial / warehouse openables + fixtures (audit R061) ----
+    # These parallel the kitchen/home groups so site openables resolve to a
+    # DISTINCT canonical group and read as openable in the generic
+    # scene_eval_autogen lane, instead of degrading to the generic "door" (or
+    # being dropped entirely). Each group's FIRST word is its canonical name; the
+    # remaining words are single-token forms that can actually appear after label
+    # tokenization (labels split on non-alphanumerics, so "dock_door" tokenizes
+    # to {"dock", "door"} — the addressable single tokens are what must be listed).
+    ("dock_door", "dock", "dockdoor", "baydoor"),
+    ("rolling_door", "rollup", "rollupdoor", "rolling", "overhead", "shutter"),
+    ("gate", "turnstile"),
+    ("cage", "enclosure"),
+    ("locker", "lockbox"),
+    ("container", "conex", "intermodal"),
+    ("tote_lid", "lid", "totelid"),
+    ("conveyor_guard", "guard", "conveyorguard", "machineguard"),
 )
 
 # A faucet sits on a sink, so a faucet task can fall back to the sink as a proxy
@@ -106,6 +122,7 @@ _OPENABLE_TARGET_GROUPS = frozenset(
         "tote_lid",
         "locker",
         "container",
+        "conveyor_guard",
     }
 )
 

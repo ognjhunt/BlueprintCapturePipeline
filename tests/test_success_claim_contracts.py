@@ -778,10 +778,12 @@ def test_site_package_ready_with_launchable_runtime() -> None:
 # artifacts are an additional opt-in lane (BLUEPRINT_TEST_LOCAL_ARTIFACTS=1)
 # --------------------------------------------------------------------------------------
 
+# Every committed ``tests/fixtures/<site>_task_min`` fixture is swept, so each
+# primary site lane (kitchen manipulation AND the industrial warehouse lane) is
+# exercised by the same artifact-shaped truth gates. Adding a new ``*_task_min``
+# fixture automatically enrolls that site in these checks.
 _FIXTURE_REQUESTS = sorted(
-    (REPO_ROOT / "tests" / "fixtures" / "kitchen_task_min").glob(
-        "kitchen_task_scaling_request.json"
-    )
+    (REPO_ROOT / "tests" / "fixtures").glob("*_task_min/*_task_scaling_request.json")
 )
 
 _LOCAL_ARTIFACT_REQUESTS = (
@@ -797,12 +799,26 @@ _LOCAL_ARTIFACT_REQUESTS = (
 _ARTIFACT_REQUESTS = _FIXTURE_REQUESTS + _LOCAL_ARTIFACT_REQUESTS
 
 
+def _preflight_manifest_for(request_path: Path) -> Path:
+    """The preflight manifest that sits next to a ``*_task_scaling_request.json``.
+
+    Kept name-agnostic so kitchen, warehouse, and any future ``*_task_min`` site
+    fixture (and the opt-in local ``output/`` artifacts) all resolve correctly.
+    """
+    return request_path.with_name(
+        request_path.name.replace("_request.json", "_preflight_manifest.json")
+    )
+
+
 def test_hermetic_kitchen_fixture_present() -> None:
     # The committed fixture is what keeps the artifact-shaped truth gates below
     # executing in every checkout; if it disappears they would silently degrade
     # to an empty parametrization.
     assert _FIXTURE_REQUESTS, "tests/fixtures/kitchen_task_min fixture is missing"
-    fixture_manifest = _FIXTURE_REQUESTS[0].parent / "kitchen_task_scaling_preflight_manifest.json"
+    kitchen_request = next(
+        request for request in _FIXTURE_REQUESTS if request.parent.name == "kitchen_task_min"
+    )
+    fixture_manifest = _preflight_manifest_for(kitchen_request)
     assert fixture_manifest.is_file()
     assert json.loads(fixture_manifest.read_text())["local_preflight_status"] == "passed"
 

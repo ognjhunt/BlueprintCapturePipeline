@@ -9,7 +9,7 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 from urllib import parse as urllib_parse
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -24,6 +24,54 @@ from .common import (
 )
 from .cloud_run_iam_auth import CloudRunIamAuthError, cloud_run_id_token_headers
 from .launch_proof_policy import production_forces_true
+from .site_taxonomy import resolve_site_type
+
+
+# Redaction target classes for the SAM3 detection prompt (audit finding R010).
+# ``person`` is always targeted for every site type. Industrial sites
+# (warehouses / factories / cold storage / stockrooms; see
+# ``blueprint_pipeline.site_taxonomy``) also expose worker badges/ID cards,
+# monitors/screens showing proprietary data, whiteboards/signage, and vehicle
+# license plates, so the detection prompt is expanded to target those classes in
+# addition to people. Non-industrial captures preserve the person-focused prompt.
+PERSON_REDACTION_CLASS = "person"
+INDUSTRIAL_SENSITIVE_REDACTION_CLASSES: tuple[str, ...] = (
+    "text",
+    "screen",
+    "monitor",
+    "badge",
+    "id card",
+    "vehicle license plate",
+    "signage",
+    "whiteboard",
+)
+
+
+def _redaction_classes_for_site(site_type: Optional[str]) -> tuple[list[str], bool]:
+    """Resolve the ordered SAM3 target classes for ``site_type``.
+
+    Returns ``(classes, is_industrial)``. ``person`` is always first; industrial
+    site types additionally target the industrial-sensitive classes (badges,
+    screens/monitors, license plates, signage/whiteboards). Non-industrial (and
+    unrecognized) site types keep the historical person-only class set.
+    """
+
+    resolution = resolve_site_type(site_type)
+    classes = [PERSON_REDACTION_CLASS]
+    if resolution.is_industrial:
+        for cls in INDUSTRIAL_SENSITIVE_REDACTION_CLASSES:
+            if cls not in classes:
+                classes.append(cls)
+    return classes, resolution.is_industrial
+
+
+def _detection_prompt(classes: Sequence[str]) -> str:
+    """Compose the open-vocabulary SAM3 detection prompt from target classes."""
+
+    ordered = [str(cls).strip() for cls in classes if str(cls).strip()]
+    if not ordered:
+        ordered = [PERSON_REDACTION_CLASS]
+    return ". ".join(ordered)
 
 
 def _string_list(value: object) -> list[str]:
@@ -142,7 +190,9 @@ def _run_http_json(
         method="POST",
     )
     try:
-        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+        with urllib_request.urlopen(  # nosec B310 -- HTTP(S) URL validated above.
+            request, timeout=timeout_seconds
+        ) as response:
             raw = response.read().decode("utf-8")
     except urllib_error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
@@ -330,10 +380,14 @@ def _run_sam3(
     masks_dir: Path,
     masks_prefix_uri: str,
     stage_name: str,
+    detection_classes: Sequence[str] = (PERSON_REDACTION_CLASS,),
 ) -> Dict[str, Any]:
     timeout_seconds = _timeout_env("PRIVACY_SAM3_TIMEOUT_SECONDS", default=3600)
     ensure_dir(masks_dir)
-    redaction_prompt = _privacy_redaction_prompt()
+    prompt_classes = [
+        str(cls).strip() for cls in detection_classes if str(cls).strip()
+    ] or [PERSON_REDACTION_CLASS]
+    redaction_prompt = _detection_prompt(prompt_classes)
     runner_url = _sam3_runner_url()
     if runner_url:
         payload = _run_http_json(
@@ -346,7 +400,8 @@ def _run_sam3(
                 "masks_prefix_uri": masks_prefix_uri,
                 "masks_dir_path": str(masks_dir),
                 "prompt": redaction_prompt,
-                "target_redaction_classes": _privacy_redaction_target_classes(),
+                "prompt_classes": prompt_classes,
+                "target_redaction_classes": prompt_classes,
                 "stage_name": stage_name,
                 "sam3_weights_path": str(os.getenv("SAM3_WEIGHTS_PATH") or ""),
             },
@@ -366,11 +421,14 @@ def _run_sam3(
                 "MASKS_DIR": masks_dir,
                 "MASKS_PREFIX_URI": masks_prefix_uri,
                 "PROMPT": redaction_prompt,
+                "PROMPT_CLASSES": ",".join(prompt_classes),
                 "STAGE_NAME": stage_name,
                 "SAM3_WEIGHTS_PATH": str(os.getenv("SAM3_WEIGHTS_PATH") or ""),
             },
             timeout_seconds=timeout_seconds,
         )
+    payload.setdefault("detection_classes", list(prompt_classes))
+    payload.setdefault("detection_prompt", redaction_prompt)
     people_detected = bool(payload.get("people_detected"))
     people_count = int(payload.get("people_count") or 0) if payload.get("people_count") is not None else 0
     if not people_detected and people_count > 0:
@@ -378,7 +436,7 @@ def _run_sam3(
     payload["people_detected"] = people_detected
     payload["people_count"] = people_count
     payload["redaction_prompt"] = redaction_prompt
-    payload["redaction_target_classes"] = _privacy_redaction_target_classes()
+    payload["redaction_target_classes"] = prompt_classes
     payload["mask_paths"] = _string_list(payload.get("mask_paths"))
     return payload
 
@@ -694,7 +752,15 @@ def run_privacy_postprocess(
     capture_root: Path,
     pipeline_dir: Path,
     raw_video_path: Optional[Path],
+    site_type: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # R010: the detection class-set is site-type-aware. Industrial sites expand
+    # the SAM3 target classes beyond ``person`` (badges, screens/monitors, license
+    # plates, signage/whiteboards); non-industrial captures keep person-only.
+    redaction_classes, is_industrial_site = _redaction_classes_for_site(site_type)
+    industrial_sensitive_required = (
+        list(INDUSTRIAL_SENSITIVE_REDACTION_CLASSES) if is_industrial_site else []
+    )
     privacy_root = capture_root / "privacy"
     masks_root = privacy_root / "masks"
     final_video_path = privacy_root / "final_walkthrough.mov"
@@ -745,6 +811,11 @@ def run_privacy_postprocess(
         "enabled": enabled,
         "raw_retained": True,
         "fail_closed": fail_closed,
+        "site_type": site_type,
+        "is_industrial_site": is_industrial_site,
+        "redaction_classes": list(redaction_classes),
+        "industrial_sensitive_classes": industrial_sensitive_required,
+        "industrial_sensitive_classes_handled": False,
         "status": "not_run",
         "mode": "none",
         "fallback_used": False,
@@ -869,6 +940,7 @@ def run_privacy_postprocess(
         masks_dir=masks_root / "sam3_initial",
         masks_prefix_uri=f"{privacy_prefix}/masks/sam3_initial",
         stage_name="initial_detection",
+        detection_classes=redaction_classes,
     )
     payload["steps"].append({"name": "sam3_initial_detection", "result": dict(initial_detection)})
     if str(initial_detection.get("status") or "").strip().lower() != "succeeded":
@@ -888,6 +960,9 @@ def run_privacy_postprocess(
         return payload
 
     payload["people_detected"] = int(initial_detection.get("people_count") or 0)
+    # The initial detection ran against the site-type-aware class set, so for
+    # industrial sites the industrial-sensitive classes were actually targeted.
+    payload["industrial_sensitive_classes_handled"] = is_industrial_site
     if arkit_depth_prefix_uri:
         depth_conditioning = _depth_conditioning_from_arkit(
             raw_video_uri=raw_video_uri,
@@ -1001,6 +1076,7 @@ def run_privacy_postprocess(
         masks_dir=masks_root / "sam3_vip_verify",
         masks_prefix_uri=f"{privacy_prefix}/masks/sam3_vip_verify",
         stage_name="vip_verification",
+        detection_classes=redaction_classes,
     )
     payload["steps"].append({"name": "sam3_vip_verification", "result": dict(vip_verification)})
     if str(vip_verification.get("status") or "").strip().lower() != "succeeded":
@@ -1084,6 +1160,7 @@ def run_privacy_postprocess(
         masks_dir=masks_root / "sam3_deepprivacy_verify",
         masks_prefix_uri=f"{privacy_prefix}/masks/sam3_deepprivacy_verify",
         stage_name="deepprivacy2_verification",
+        detection_classes=redaction_classes,
     )
     payload["steps"].append({"name": "sam3_deepprivacy2_verification", "result": dict(fallback_verification)})
     if str(fallback_verification.get("status") or "").strip().lower() != "succeeded":

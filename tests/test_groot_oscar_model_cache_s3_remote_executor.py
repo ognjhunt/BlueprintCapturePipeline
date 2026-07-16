@@ -202,6 +202,10 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert '["ldd", candidate]' in elf_scan
     assert "min(8, os.cpu_count() or 1)" in elf_scan
     assert "and operand == normalized" in elf_scan
+    assert "operand_candidates = []" in elf_scan
+    assert "if len(operand_candidates) == 1" in elf_scan
+    assert "and operand_candidates[0][0] == 0" in elf_scan
+    assert "harmless_annotations" in elf_scan
     assert 'missing_operands.append(("SYSTEM_PATH", normalized))' in elf_scan
     assert 'missing_operands.append(("PATH", basename))' in elf_scan
     assert "INVALID_HASH" in elf_scan
@@ -499,6 +503,9 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
         "printf '%s\\n' '/usr/lib/x/../libcuda.so.1 => not found'\n"
         "printf '%s\\n' '/usr//lib/libnvidia-ml.so.1 => not found'\n"
         "printf '%s\\n' '/opt/private/libescape.so.2 => not found'\n"
+        "printf '%s\\n' 'libtrailing.so.1 (ABI_1.0) => not found'\n"
+        "printf '%s\\n' 'libfirst.so.1 libsecond.so.2 => not found'\n"
+        "printf '%s\\n' 'libcuda.so.1 evil => not found'\n"
         "printf '%s\\n' '/opt/private/not-a-library => not found'\n",
         encoding="utf-8",
     )
@@ -514,9 +521,12 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
 
     rows = scan.read_text(encoding="utf-8").splitlines()
     assert "COUNT\t1" in rows
-    assert "INVALID_MISSING\t4" in rows
+    assert "INVALID_MISSING\t6" in rows
     assert "INVALID_OVERFLOW\t0" in rows
     assert "MISSING\tlibplain.so.1" in rows
+    assert "MISSING\tlibtrailing.so.1" in rows
+    assert "MISSING\tlibfirst.so.1" not in rows
+    assert "MISSING\tlibsecond.so.2" not in rows
     assert "MISSING\tlibcuda.so.1" not in rows
     assert (
         "MISSING_SYSTEM_PATH\t/usr/lib/x86_64-linux-gnu/libcuda.so.1" in rows
@@ -527,11 +537,15 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
-    assert len(invalid_hashes) == 1
-    invalid_diagnostic = invalid_hashes[0].split("\t", 1)[1]
-    digest, shape = invalid_diagnostic.split("_", 1)
-    assert len(digest) == 16
-    assert shape == "a1n1s0c1q0p0x0k0t1o26b13"
+    assert len(invalid_hashes) == 3
+    invalid_diagnostics = [row.split("\t", 1)[1] for row in invalid_hashes]
+    digest_shapes = [diagnostic.split("_", 1) for diagnostic in invalid_diagnostics]
+    assert all(len(digest) == 16 for digest, _shape in digest_shapes)
+    assert {shape for _digest, shape in digest_shapes} == {
+        "a0n0s0c0q0p0x0k2t2o0b0",
+        "a0n0s0c0q0p0x0k1t2o0b0",
+        "a0n0s0c0q0p0x0k0t1o0b0",
+    }
     assert "/opt/private" not in scan.read_text(encoding="utf-8")
     assert "/usr/lib/x/../" not in scan.read_text(encoding="utf-8")
     assert "/usr//lib" not in scan.read_text(encoding="utf-8")

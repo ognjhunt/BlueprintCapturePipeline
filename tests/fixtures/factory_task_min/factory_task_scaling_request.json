@@ -1,0 +1,58 @@
+{
+  "kitchen_usd": "tests/fixtures/factory_task_min/assets/FactoryFloor.usd",
+  "scenarios": [
+    {
+      "affordance_object_ids": [
+        "fixture",
+        "part",
+        "clamp",
+        "bin",
+        "grip"
+      ],
+      "description": "Stand at the line-side workstation and place the part into the machine fixture.",
+      "floor_z_hint": 0.05,
+      "perception_target_prompts": [
+        "Stand at the line-side workstation and place the part into the machine fixture.",
+        "part",
+        "fixture",
+        "workstation",
+        "machine fixture clamp"
+      ],
+      "preferred_stance_distance_m": 0.5,
+      "scenario_id": "fixture_factory_task_01_part_to_fixture",
+      "stance_distance_candidates_m": [
+        0.35,
+        0.5,
+        0.7
+      ],
+      "target_object_ids": [
+        "part",
+        "fixture",
+        "workstation",
+        "machine",
+        "bin",
+        "clamp"
+      ],
+      "task": "Stand at the line-side workstation and place the part into the machine fixture.",
+      "task_description": "Stand at the line-side workstation and place the part into the machine fixture.",
+      "task_instruction": "Stand at the line-side workstation and place the part into the machine fixture.",
+      "task_target_deferred": true
+    },
+    {
+      "description": "Stand at the conveyor and transfer a part bin from the pick cart onto the conveyor belt.",
+      "floor_z_hint": 0.05,
+      "preferred_stance_distance_m": 0.9,
+      "scenario_id": "fixture_factory_task_02_cart_to_conveyor_transfer",
+      "stance_distance_candidates_m": [
+        0.8,
+        0.9,
+        1.05
+      ],
+      "task": "Stand at the conveyor and transfer a part bin from the pick cart onto the conveyor belt.",
+      "task_description": "Stand at the conveyor and transfer a part bin from the pick cart onto the conveyor belt.",
+      "task_instruction": "Stand at the conveyor and transfer a part bin from the pick cart onto the conveyor belt.",
+      "task_target_deferred": true
+    }
+  ],
+  "schema_version": "kitchen_task_scaling_preflight_request.v1"
+}

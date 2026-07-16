@@ -41,7 +41,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout exact release SHA
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.repository_sha }}
           fetch-depth: 0
@@ -53,7 +53,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download exact CI evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.ci_run_id }}
@@ -61,7 +61,7 @@ jobs:
           path: output/release-signature/ci
 
       - name: Download exact full-test evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.full_test_run_id }}
@@ -106,7 +106,7 @@ jobs:
 
       - name: Sign subject with GitHub OIDC provenance
         id: attest
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: output/release-command-attestation-subject.json
 
@@ -120,7 +120,7 @@ jobs:
             output/release-signature-artifact/release-command-attestation-bundle.json
 
       - name: Upload independently signed evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-signature-${{ inputs.repository_sha }}
           path: output/release-signature-artifact

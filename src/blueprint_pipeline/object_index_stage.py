@@ -518,6 +518,11 @@ def _build_prompt_bank(descriptor: CaptureDescriptor, intake: Mapping[str, Any],
     task_aware = derive_task_aware_detection_prompts(
         task_text=explicit_task_text or fallback_task_text or joined,
         target_label=target_label,
+        # Pass the resolved environment plus the free-text capture context so an
+        # industrial site (audit R073) seeds core industrial affordances even when
+        # the task text is terse; site_taxonomy.resolve_site_type reads whichever
+        # industrial synonym is present (warehouse/forklift/factory/...).
+        site_type=" ".join(part for part in (environment, joined) if part),
     )
     for prompt in task_aware:
         if prompt not in task_specific:
@@ -632,9 +637,9 @@ def _backend_preflight_status(*, backend_name: str, command_template: str) -> Di
         }
     try:
         rendered = (
-            command_template.replace("{INPUT_JSON}", "/tmp/input.json")
-            .replace("{OUTPUT_JSON}", "/tmp/output.json")
-            .replace("{OUTPUT_DIR}", "/tmp")
+            command_template.replace("{INPUT_JSON}", ".blueprint-preflight/input.json")
+            .replace("{OUTPUT_JSON}", ".blueprint-preflight/output.json")
+            .replace("{OUTPUT_DIR}", ".blueprint-preflight")
         )
         command = shlex.split(rendered)
     except ValueError as exc:

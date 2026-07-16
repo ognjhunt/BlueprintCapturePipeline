@@ -90,6 +90,87 @@ def _write_kitchen_usda(path: Path) -> Path:
     return path
 
 
+def _write_warehouse_usda(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "#usda 1.0",
+                "(",
+                '    upAxis = "Z"',
+                "    metersPerUnit = 1",
+                ")",
+                'def Xform "Warehouse" {',
+                '    def Mesh "forklift_01" {}',
+                '    def Mesh "operator_workstation" {}',
+                '    def Mesh "guardrail" {}',
+                '    def Mesh "pallet" {}',
+                '    def Mesh "rack" {}',
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_hazard_ontology_consumed_in_scenario_grounding(tmp_path: Path) -> None:
+    """Audit R060: industrial hazard ontology informs scenario grounding.
+
+    The hazard classification lived only in the optional qualification trust
+    layer; it now flows into the always-on scenario grounding lane so hazards
+    inform eval scenarios regardless of whether qualification runs.
+    """
+    scene = _write_warehouse_usda(tmp_path / "warehouse_traffic_zone.usda")
+    manifest = sea.generate_scene_eval_tasks(scene, tmp_path / "out")
+    assert manifest["status"] == "completed"
+
+    # Manifest surfaces grounded hazards derived from the shared ontology.
+    assert manifest["any_grounded_hazard"] is True
+    grounded = set(manifest["grounded_site_hazards"])
+    assert {"forklift_lane", "human_interaction_zone", "barrier"} <= grounded
+
+    # Scene analysis records the hazard grounding block sourced from the ontology.
+    analysis = json.loads((tmp_path / "out" / "scene_analysis.json").read_text())
+    hazard_grounding = analysis["hazard_grounding"]
+    assert hazard_grounding["any_grounded_hazard"] is True
+    assert (
+        hazard_grounding["ontology_source"]
+        == "industrial_ontology.classify_industrial_entity"
+    )
+
+    # Hazard-family scenarios carry the grounded hazards; benign variations do not.
+    scenario_cards = json.loads((tmp_path / "out" / "auto_scenario_cards.json").read_text())
+    hazard_scenarios = [
+        card
+        for card in scenario_cards["cards"]
+        if card["variation_id"] in {"human_crossing", "forklift_nearby", "blocked_path"}
+    ]
+    assert hazard_scenarios
+    for card in hazard_scenarios:
+        assert set(card["grounded_site_hazards"]) == grounded
+        assert (
+            card["hazard_grounding_source"]
+            == "industrial_ontology.classify_industrial_entity"
+        )
+    for card in scenario_cards["cards"]:
+        if card["variation_id"] == "lighting_variation":
+            assert "grounded_site_hazards" not in card
+
+
+def test_kitchen_scene_has_no_grounded_hazards(tmp_path: Path) -> None:
+    """R060 stays additive: a kitchen scene grounds no industrial hazards."""
+    scene = _write_kitchen_usda(tmp_path / "kitchen_scene.usda")
+    manifest = sea.generate_scene_eval_tasks(scene, tmp_path / "out")
+    assert manifest["status"] == "completed"
+    assert manifest["any_grounded_hazard"] is False
+    assert manifest["grounded_site_hazards"] == []
+    scenario_cards = json.loads((tmp_path / "out" / "auto_scenario_cards.json").read_text())
+    for card in scenario_cards["cards"]:
+        assert "grounded_site_hazards" not in card
+
+
 def test_ascii_ply_generates_min_tasks_and_many_scenarios(tmp_path: Path) -> None:
     scene = _write_ascii_ply(tmp_path / "site.ply", _room_points())
     manifest = sea.generate_scene_eval_tasks(

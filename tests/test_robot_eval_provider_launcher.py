@@ -1016,3 +1016,96 @@ def test_provider_launcher_preflight_fails_closed_on_missing_limits(
         "startup_timeout_seconds_not_positive" in blocker
         for blocker in result["blockers"]
     )
+
+
+class _FakeRaceProvider:
+    """Honors only the race_launch surface: launch/terminate/inspect/marker."""
+
+    def __init__(self, name: str, *, boots: bool = True) -> None:
+        self.name = name
+        self.boots = boots
+        self.launch_calls = 0
+        self.terminate_calls: list[str] = []
+
+    def launch(self, job_dir, request, *, cold=False, **_kwargs):  # noqa: ANN001
+        self.launch_calls += 1
+        assert isinstance(job_dir, Path)
+        return {"status": "launched", "instance_id": f"{self.name}-iid", "mode": "fake"}
+
+    def terminate(self, instance_id):  # noqa: ANN001
+        self.terminate_calls.append(instance_id)
+        return {"status": "terminated", "http": 204, "instance_id": instance_id}
+
+    def inspect(self, instance_id):  # noqa: ANN001
+        if instance_id in self.terminate_calls:
+            return {"status": "unavailable", "http": 404}
+        return {"status": "observed", "http": 200, "desiredStatus": "RUNNING"}
+
+    def has_marker(self, _launch_result):  # noqa: ANN001
+        return self.boots
+
+
+def _race_marker_check(provider, launch_result):  # noqa: ANN001
+    return provider.has_marker(launch_result)
+
+
+def test_provider_launcher_run_provider_race_failover_selects_across_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    _add_ready_race_guard(request_path)
+    dud = _FakeRaceProvider("runpod", boots=False)
+    healthy = _FakeRaceProvider("vast", boots=True)
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        run_provider_race=True,
+        race_providers=[dud, healthy],
+        race_marker_check=_race_marker_check,
+        race_marker_timeout=1.0,
+        race_poll_interval=10.0,  # single attempt -> no wall-clock sleeping
+        race_sleep=lambda *_a, **_k: None,
+    )
+
+    assert result["status"] == "completed"
+    assert result["execution_performed"] is True
+    assert result["provider_race_runtime_launcher_implemented"] is True
+    # the serial single-provider block is gone for the runtime-wired race path
+    assert "provider_race_required_serial_launch_blocked" not in result["blockers"]
+    assert "provider_race_runtime_launcher_not_implemented" not in result["blockers"]
+    runtime = result["provider_race_runtime"]
+    assert runtime["status"] == "provider_race_executed"
+    assert runtime["winner_provider"] == "vast"
+    assert runtime["failover_selected"] is True
+    assert healthy.launch_calls == 1
+    assert dud.terminate_calls == ["runpod-iid"]
+
+
+def test_provider_launcher_run_provider_race_dry_run_without_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_path = _ready_provider_launch_request(
+        tmp_path / "gpu_provider_launch_request.json",
+    )
+    _add_ready_race_guard(request_path)
+    monkeypatch.setenv(ALLOW_PROVIDER_LAUNCH_ENV, "true")
+
+    result = run_gpu_provider_launcher(
+        provider_launch_request_path=request_path,
+        allow_provider_launch=True,
+        run_provider_race=True,
+    )
+
+    assert result["status"] == "provider_race_runtime_wired"
+    assert result["execution_performed"] is False
+    assert result["blockers"] == []
+    runtime = result["provider_race_runtime"]
+    assert runtime["status"] == "ready_for_live_provider_race_runtime"
+    assert runtime["provider_race_runtime_wired"] is True
+    assert runtime["needs_live_provider_credentials"] is True

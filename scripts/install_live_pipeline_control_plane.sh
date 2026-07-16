@@ -26,6 +26,10 @@ The service runs one safe control-plane pass on each timer tick:
 read env, audit readiness, optionally consume the robot-eval job inbox, write
 manifests, run the proof-boundary audit, and exit. It does not add secrets or
 enable live simulator/provider actions by itself.
+The GPU spend-guard timer runs scripts/gpu_spend_guard.py --reap on a short
+interval, reaping orphaned GPU pods (never-booted duds and, past the hard age
+ceiling, booted orphans whose launching host died) and persisting a JSON spend
+snapshot as durable teardown evidence.
 
 Environment overrides:
   SYSTEMD_DIR=/etc/systemd/system

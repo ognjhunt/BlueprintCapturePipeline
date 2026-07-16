@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
@@ -34,6 +34,11 @@ from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
+)
+from .provider_reliability_manifest import (
+    PROVIDER_BILLING_TERMINAL_STATUSES,
+    TEARDOWN_STATUS_SOURCE_PROVIDER_API,
+    build_teardown_proof,
 )
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 
@@ -921,6 +926,9 @@ def _http_json(
     timeout_seconds: int,
     method: str,
 ) -> tuple[int, Dict[str, Any]]:
+    parsed_url = urllib.parse.urlsplit(url)
+    if parsed_url.scheme != "https" or not parsed_url.netloc:
+        raise ValueError("lambda_api_url_invalid")
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(
         url,
@@ -933,7 +941,9 @@ def _http_json(
             "User-Agent": LAMBDA_API_USER_AGENT,
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with urllib.request.urlopen(  # nosec B310 -- HTTPS URL validated above.
+        request, timeout=timeout_seconds
+    ) as response:
         status_code = int(getattr(response, "status", 200))
         response_text = response.read().decode("utf-8", errors="replace")
     if not response_text.strip():
@@ -1101,6 +1111,86 @@ def _teardown_manifest_path(output_path: Path) -> Path:
     return output_path.with_name(LAMBDA_TEARDOWN_MANIFEST_NAME)
 
 
+def _lambda_instance_status_map(response: Mapping[str, Any]) -> dict[str, str]:
+    """Map instance-id -> lowercased status from a Lambda ``GET /instances`` body.
+
+    Lambda returns ``{"data": [{"id": ..., "status": ...}, ...]}``. An instance the
+    caller terminated may drop out of the list entirely; the poller treats absence as
+    the billing-terminal ``not_found`` (an API 404 on the allocation).
+    """
+    data = response.get("data")
+    statuses: dict[str, str] = {}
+    if isinstance(data, Sequence) and not isinstance(data, (str, bytes, bytearray)):
+        for item in data:
+            item_map = _mapping(item)
+            iid = _string(item_map.get("id"))
+            if iid:
+                statuses[iid] = _string(item_map.get("status")).lower()
+    return statuses
+
+
+def _confirm_lambda_teardown(
+    *,
+    instance_ids: Sequence[str],
+    api_key: str,
+    timeout_seconds: int,
+    poll_interval_seconds: float,
+    max_polls: int,
+    sleep: Callable[[float], None],
+) -> Dict[str, Any]:
+    """Poll ``list-instances`` after terminate until every id is billing-terminal.
+
+    An instance is billing-terminal when it is either absent from ``GET /instances``
+    (``not_found``) or reported with a status in
+    :data:`PROVIDER_BILLING_TERMINAL_STATUSES`. This is fail-closed: a poll that raises
+    or times out is recorded and never counts as terminal, so an unconfirmed teardown
+    stays pending rather than fabricating proof.
+    """
+    ids = _dedupe([_string(i) for i in instance_ids if _string(i)])
+    terminal: dict[str, str] = {}
+    polls_performed = 0
+    last_error: dict[str, Any] | None = None
+    last_response: Any = None
+    attempts = max(1, int(max_polls))
+    for attempt in range(attempts):
+        polls_performed = attempt + 1
+        try:
+            _status_code, response = _http_json(
+                url=f"{_lambda_api_base()}/instances",
+                payload=None,
+                api_key=api_key,
+                timeout_seconds=timeout_seconds,
+                method="GET",
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable poll is not proof
+            last_error = {"error_type": type(exc).__name__}
+            if attempt < attempts - 1:
+                sleep(poll_interval_seconds)
+            continue
+        last_response = response
+        statuses = _lambda_instance_status_map(response)
+        for iid in ids:
+            if iid in terminal:
+                continue
+            observed = statuses.get(iid)
+            if observed is None:
+                terminal[iid] = "not_found"
+            elif observed in PROVIDER_BILLING_TERMINAL_STATUSES:
+                terminal[iid] = observed
+        if ids and all(iid in terminal for iid in ids):
+            break
+        if attempt < attempts - 1:
+            sleep(poll_interval_seconds)
+    confirmed = bool(ids) and all(iid in terminal for iid in ids)
+    return {
+        "confirmed": confirmed,
+        "polls_performed": polls_performed,
+        "instance_terminal_status": terminal,
+        "last_list_instances_response": last_response,
+        "last_error": last_error,
+    }
+
+
 def _provider_readiness_manifest(
     *,
     request_path: Path,
@@ -1258,6 +1348,10 @@ def run_lambda_provider_adapter(
     timeout_seconds: int = 30,
     teardown_poll_attempts: int = 3,
     teardown_poll_interval_seconds: float = 2.0,
+    confirm_termination: bool = False,
+    confirmation_poll_interval_seconds: float = 15.0,
+    confirmation_max_polls: int = 20,
+    sleep: Callable[[float], None] = time.sleep,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> Dict[str, Any]:
     request_path = Path(provider_launch_request_path).resolve()
@@ -1591,6 +1685,103 @@ def run_lambda_provider_adapter(
                 "provider_api_terminal_status_required_for_teardown_proof": True,
             },
         }
+        result_update: Dict[str, Any] = {
+            "status": "completed" if teardown_proven else "termination_unverified",
+            "reason": (
+                "lambda_termination_verified"
+                if teardown_proven
+                else "lambda_termination_request_completed_without_terminal_proof"
+            ),
+            "blockers": [] if teardown_proven else _string_list(verification.get("blockers")),
+            "lambda_side_effects_may_have_occurred": True,
+            "provider_teardown_requested": True,
+            "provider_teardown_confirmed": teardown_proven,
+            "teardown_proven": teardown_proven,
+        }
+        if confirm_termination:
+            # R059: close the fire-and-forget gap. Poll list-instances until every
+            # terminated allocation is billing-terminal, then emit a provider_api-sourced
+            # teardown proof. If it never confirms, stay pending — no false proof.
+            confirmation = _confirm_lambda_teardown(
+                instance_ids=terminate_ids,
+                api_key=api_key,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=confirmation_poll_interval_seconds,
+                max_polls=confirmation_max_polls,
+                sleep=sleep,
+            )
+            terminal_map = _mapping(confirmation.get("instance_terminal_status"))
+            proofs: list[dict[str, Any]] = []
+            for iid in terminate_ids:
+                terminal_status = terminal_map.get(iid)
+                proofs.append(
+                    build_teardown_proof(
+                        provider=LAMBDA_PROVIDER_NAME,
+                        allocation_id=iid,
+                        terminate_requested=True,
+                        provider_terminal_status=terminal_status,
+                        verified_at=utc_now_iso() if terminal_status else None,
+                        status_source=(
+                            TEARDOWN_STATUS_SOURCE_PROVIDER_API
+                            if terminal_status
+                            else None
+                        ),
+                    )
+                )
+            teardown_proven = bool(
+                confirmation.get("confirmed")
+                and proofs
+                and all(proof.get("billing_stopped") for proof in proofs)
+            )
+            teardown_proof = (
+                proofs[0]
+                if len(proofs) == 1
+                else {
+                    "schema_version": (proofs[0]["schema_version"] if proofs else None),
+                    "provider": LAMBDA_PROVIDER_NAME,
+                    "billing_stopped": teardown_proven,
+                    "open_billing_risk": not teardown_proven,
+                    "instance_count": len(proofs),
+                    "provider_terminal_status_source": (
+                        TEARDOWN_STATUS_SOURCE_PROVIDER_API if teardown_proven else None
+                    ),
+                    "per_instance_proofs": proofs,
+                }
+            )
+            teardown.update(
+                {
+                    "status": "teardown_confirmed" if teardown_proven else "termination_requested",
+                    "teardown_proven": teardown_proven,
+                    "billing_terminal_confirmed": teardown_proven,
+                    "continuing_spend_requires_followup_list_instances": not teardown_proven,
+                    "list_instances_polls_performed": confirmation.get("polls_performed"),
+                    "instance_terminal_status": terminal_map,
+                    "last_list_instances_response": _redact_runtime_value(
+                        confirmation.get("last_list_instances_response") or {},
+                        api_key=api_key,
+                    ),
+                    "last_list_instances_error": confirmation.get("last_error"),
+                    "teardown_proof": teardown_proof,
+                    "teardown_proofs": proofs,
+                }
+            )
+            teardown["claim_boundary"][
+                "teardown_proven_requires_provider_api_billing_terminal_status"
+            ] = True
+            result_update.update(
+                {
+                    "status": "termination_confirmed" if teardown_proven else "termination_requested",
+                    "reason": (
+                        "lambda_teardown_confirmed_billing_terminal"
+                        if teardown_proven
+                        else "lambda_termination_requested_not_yet_billing_terminal"
+                    ),
+                    "provider_teardown_confirmed": teardown_proven,
+                    "teardown_proven": teardown_proven,
+                    "provider_teardown_proof": teardown_proof,
+                    "list_instances_polls_performed": confirmation.get("polls_performed"),
+                }
+            )
         write_json(_teardown_manifest_path(resolved_output), teardown)
         result.update(
             {
@@ -1611,6 +1802,8 @@ def run_lambda_provider_adapter(
                 "provider_teardown_manifest": teardown,
             }
         )
+        result_update["provider_teardown_manifest"] = teardown
+        result.update(result_update)
         return _persist_result(resolved_output, result)
 
     instance_ids_launched = _string_list(_mapping(response.get("data")).get("instance_ids"))
@@ -1688,6 +1881,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help=f"Required with {LAMBDA_API_GATE_ENV}=true for Lambda Cloud API calls.",
     )
+    parser.add_argument(
+        "--confirm-termination",
+        action="store_true",
+        help=(
+            "After terminate-instances, poll list-instances until every instance is "
+            "billing-terminal and emit a provider_api-sourced teardown proof. Without "
+            "this, termination stays fire-and-forget (termination_requested)."
+        ),
+    )
+    parser.add_argument(
+        "--confirmation-poll-interval-seconds",
+        type=float,
+        default=15.0,
+    )
+    parser.add_argument("--confirmation-max-polls", type=int, default=20)
     args = parser.parse_args(argv)
     if args.mode in MUTATING_API_MODES:
         print("legacy_lambda_provider_mutation_cli_disabled", file=sys.stderr)
@@ -1715,6 +1923,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_seconds=args.timeout_seconds,
         teardown_poll_attempts=args.teardown_poll_attempts,
         teardown_poll_interval_seconds=args.teardown_poll_interval_seconds,
+        confirm_termination=args.confirm_termination,
+        confirmation_poll_interval_seconds=args.confirmation_poll_interval_seconds,
+        confirmation_max_polls=args.confirmation_max_polls,
     )
     print(f"[lambda-provider-adapter] result={result['output_path']}")
     print(f"[lambda-provider-adapter] status={result['status']}")
@@ -1722,7 +1933,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     blockers = result.get("blockers")
     if blockers:
         print("[lambda-provider-adapter] blockers=" + ",".join(blockers))
-    return 0 if result["status"] in {"dry_run_ready", "completed", "submitted", "termination_requested"} else 1
+    return 0 if result["status"] in {
+        "dry_run_ready",
+        "completed",
+        "submitted",
+        "termination_requested",
+        "termination_confirmed",
+    } else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

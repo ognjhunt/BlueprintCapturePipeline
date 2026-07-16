@@ -62,6 +62,34 @@ def test_robot_eval_job_request_contract_adapter_validates_schema_constant() -> 
     )
 
 
+def test_robot_eval_job_request_contract_strict_requirement_passes_when_module_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag set + shared module installed -> adapter imports strict without raising."""
+
+    import importlib
+
+    monkeypatch.setenv("BLUEPRINT_REQUIRE_SHARED_ROBOT_EVAL_CONTRACT", "true")
+    try:
+        try:
+            reloaded = importlib.reload(contract)
+        except RuntimeError:
+            if _find_contracts_repo() is None:
+                pytest.skip("blueprint_contracts is not installed in this environment")
+            raise
+        if reloaded.ROBOT_EVAL_JOB_REQUEST_CONTRACT_SOURCE != "blueprint_contracts":
+            pytest.skip("blueprint_contracts is not installed in this environment")
+        # Must NOT raise: strict mode is satisfied because the shared module loaded.
+        reloaded.require_shared_robot_eval_job_request_contract()
+        assert (
+            reloaded.ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION == "robot_eval_job_request.v1"
+        )
+    finally:
+        # Restore the module to its default (flag-unset) state for later tests.
+        monkeypatch.delenv("BLUEPRINT_REQUIRE_SHARED_ROBOT_EVAL_CONTRACT", raising=False)
+        importlib.reload(contract)
+
+
 def test_robot_eval_job_request_contract_strict_requirement_rejects_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

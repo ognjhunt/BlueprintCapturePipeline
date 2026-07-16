@@ -14,6 +14,32 @@ from typing import Any, Dict, List, Mapping, Optional
 from .common import join_gs_uri, parse_gs_uri, read_json, read_json_any, resolve_gs_uri_to_path
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    """Parse an optional numeric capture-truth value, tolerating absence/blanks."""
+
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    """Parse an optional integer capture-truth value, tolerating absence/blanks."""
+
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class IOSManifest:
     """Parsed ``raw/manifest.json`` from BlueprintCapture."""

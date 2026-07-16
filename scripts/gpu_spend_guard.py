@@ -803,6 +803,15 @@ def _warn(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
 
 
+def _env_int(name: str, default: int) -> int:
+    """Non-negative int from the environment, tolerant of blanks/garbage."""
+    raw = os.environ.get(name, "")
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
 # ----------------------------- ownership / live owner -----------------------------
 
 
@@ -972,6 +981,7 @@ def is_reapable(
     max_boot_seconds: int,
     protected_ids: set[str],
     max_booted_orphan_seconds: int = DEFAULT_MAX_BOOTED_ORPHAN_SECONDS,
+    orphan_booted_max_age_seconds: int | None = None,
 ) -> bool:
     """True only for unprotected live allocations past their orphan TTL."""
     if inst.id in protected_ids:
@@ -981,6 +991,10 @@ def is_reapable(
     if inst.age_seconds is None:
         return False
     if inst.booted:
+        if orphan_booted_max_age_seconds is not None:
+            max_booted_orphan_seconds = orphan_booted_max_age_seconds
+        if max_booted_orphan_seconds <= 0:
+            return False
         return inst.age_seconds > max_booted_orphan_seconds
     if inst.provider == "runpod" and inst.state != "booting":
         return False
@@ -1272,6 +1286,8 @@ def build_json_report(
         "total_burn_per_hour_usd": round(total_burn_per_hour(instances), 4),
         "max_boot_seconds": int(max_boot_seconds),
         "max_booted_orphan_seconds": int(max_booted_orphan_seconds),
+        "orphan_booted_max_age_seconds": int(max_booted_orphan_seconds),
+        "booted_orphan_reaping_enabled": int(max_booted_orphan_seconds) > 0,
         "fleet_budget": dict(fleet_budget)
         if isinstance(fleet_budget, Mapping)
         else build_fleet_budget_guard(instances),
@@ -1345,6 +1361,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--max-booted-orphan-seconds",
+        "--orphan-booted-max-age-seconds",
         type=int,
         default=DEFAULT_MAX_BOOTED_ORPHAN_SECONDS,
         help=(
