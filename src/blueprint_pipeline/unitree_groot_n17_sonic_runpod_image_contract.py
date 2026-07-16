@@ -24,6 +24,13 @@ def _truthy(value: str | None) -> bool:
     return _string(value).lower() in {"1", "true", "yes", "on"}
 
 
+def _legacy_int_env(name: str, default: int) -> int:
+    try:
+        return int(_string(os.getenv(name)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def runpod_unitree_groot_sonic_image_contract_policy(
     *,
     provider_bundle_kind: str,
@@ -139,12 +146,16 @@ def resolve_runpod_provider_shape(
         "container_disk_gb": int(
             container_disk_gb
             if container_disk_gb is not None
-            else os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_DISK_GB", "240")
+            else _legacy_int_env(
+                "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_DISK_GB", 240
+            )
         ),
         "volume_gb": int(
             volume_gb
             if volume_gb is not None
-            else os.getenv("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_VOLUME_GB", "120")
+            else _legacy_int_env(
+                "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_VOLUME_GB", 120
+            )
         ),
         "allowed_cuda_versions": tuple(allowed_cuda_versions),
     }
