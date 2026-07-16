@@ -20,6 +20,13 @@ RELEASE_REF = "docker.io/blueprint/release@sha256:" + "1" * 64
 CARRIER_REF = PERSISTENT_CARRIER_IMAGE_REF
 
 
+def test_persistent_carrier_is_exact_compatible_image_digest() -> None:
+    assert CARRIER_REF == (
+        "docker.io/nijelhunt/blueprint-groot-oscar-carrier@sha256:"
+        "7e1bd59fda79a038f7154b8e2fbebe172c28d2a2995da4fd15a4f5a5d9e0c9a3"
+    )
+
+
 def _carrier() -> dict:
     return {
         "schema_version": CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,

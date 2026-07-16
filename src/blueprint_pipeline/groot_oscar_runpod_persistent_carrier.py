@@ -19,8 +19,8 @@ PERSISTENT_NETWORK_VOLUME_GIB = 120
 PERSISTENT_LOOP_MAX_WAIT_SECONDS = 18_000
 PERSISTENT_WATCHDOG_MAX_TTL_SECONDS = 18_600
 PERSISTENT_CARRIER_IMAGE_REF = (
-    "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:"
-    "b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca"
+    "docker.io/nijelhunt/blueprint-groot-oscar-carrier@sha256:"
+    "7e1bd59fda79a038f7154b8e2fbebe172c28d2a2995da4fd15a4f5a5d9e0c9a3"
 )
 
 
