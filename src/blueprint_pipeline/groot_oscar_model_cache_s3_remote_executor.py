@@ -66,9 +66,7 @@ REQUIREMENTS_CLOSURE_PATH = REMOTE_PACKET_ROOT / "requirements_closure.json"
 OUTPUT_DIR = REMOTE_PACKET_ROOT / "results"
 PARENT_BINDING_PATH = Path("/root/blueprint-build/model_cache_parent_binding.json")
 PARENT_CAPABILITY_PATH = Path("/root/.blueprint-secrets/model_cache_parent_capability")
-CONSUMED_CAPABILITY_PATH = Path(
-    "/root/.blueprint-secrets/model_cache_parent_capability.consumed"
-)
+CONSUMED_CAPABILITY_PATH = Path("/root/.blueprint-secrets/model_cache_parent_capability.consumed")
 EXECUTION_LOCK_PATH = Path("/root/blueprint-build/model_cache_execution.lock")
 RUNTIME_BUNDLE_ROOT = Path(DEFAULT_RUNTIME_ROOT)
 RUNTIME_BUNDLE_BUILD_ROOT = Path("/workspace/.blueprint-runtime-build")
@@ -80,12 +78,8 @@ RUNTIME_EMBEDDED_MODEL_PATHS = (
 HF_TOKEN_PATH = Path("/root/.blueprint-secrets/hf_token")
 S3_ACCESS_KEY_PATH = Path("/root/.blueprint-secrets/runpod_s3_access_key")
 S3_SECRET_KEY_PATH = Path("/root/.blueprint-secrets/runpod_s3_secret_key")
-VENV_SITE_PACKAGES = Path(
-    "/root/blueprint-build/model-cache-venv/lib/python3.12/site-packages"
-)
-DEPENDENCY_RESULT_PATH = Path(
-    "/root/blueprint-build/model_cache_dependency_verification.json"
-)
+VENV_SITE_PACKAGES = Path("/root/blueprint-build/model-cache-venv/lib/python3.12/site-packages")
+DEPENDENCY_RESULT_PATH = Path("/root/blueprint-build/model_cache_dependency_verification.json")
 TRANSPORT_RESULT_NAME = "runpod_s3_model_cache_transport_result.json"
 CANARY_VERIFICATION_NAME = "external_model_cache_verification.json"
 EXECUTION_RESULT_NAME = "model_cache_s3_remote_execution_result.json"
@@ -166,9 +160,7 @@ def _verified_installed_dependencies(
         expected[name] = version
     installed = {
         _normalize_distribution_name(distribution.metadata.get("Name")): distribution.version
-        for distribution in importlib.metadata.distributions(
-            path=[str(VENV_SITE_PACKAGES)]
-        )
+        for distribution in importlib.metadata.distributions(path=[str(VENV_SITE_PACKAGES)])
         if distribution.metadata.get("Name")
     }
     bootstrap = {"pip", "setuptools", "wheel"}
@@ -244,8 +236,7 @@ def _runtime_payload_tree_safe(payload_root: Path) -> bool:
         if resolved == ".." or resolved.startswith("../"):
             return False
         if not any(
-            resolved == root or resolved.startswith(root + "/")
-            for root in RUNTIME_ARCHIVE_ROOTS
+            resolved == root or resolved.startswith(root + "/") for root in RUNTIME_ARCHIVE_ROOTS
         ):
             return False
     return True
@@ -264,14 +255,14 @@ def _remove_embedded_model_payloads(payload_root: Path) -> list[str]:
     return removed
 
 
-def _validate_runtime_inside_carrier(
-    runner: Any, *, carrier_ref: str, payload_root: Path
-) -> None:
+def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_root: Path) -> None:
     validation = " && ".join(
         (
             "/opt/gr00t-venv/bin/python -c 'from gr00t.policy.gr00t_policy import Gr00tPolicy'",
             "/opt/oscar-venv/bin/python -c 'import inference.inference_oscar'",
             "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline'",
+            "/opt/runpod-serverless-venv/bin/python -c 'import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker'",
+            "test -x /isaac-sim/python.sh",
             "test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
             "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
         )
@@ -288,6 +279,8 @@ def _validate_runtime_inside_carrier(
             "/bin/bash",
             "--mount",
             f"type=bind,src={payload_root / 'opt'},dst=/opt,readonly",
+            "--mount",
+            f"type=bind,src={payload_root / 'isaac-sim'},dst=/isaac-sim,readonly",
             carrier_ref,
             "-o",
             "pipefail",
@@ -358,9 +351,7 @@ def prepare_runtime_bundle(
             raise RuntimeError("typed_runtime_bundle_carrier_image_command_failed") from exc
         record_progress("creating_source_container")
         try:
-            created = _run_command(
-                runner, ["docker", "create", source_ref, "true"], timeout=120
-            )
+            created = _run_command(runner, ["docker", "create", source_ref, "true"], timeout=120)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             raise RuntimeError("typed_runtime_bundle_source_container_create_failed") from exc
         container_id = created.stdout.strip()
@@ -423,6 +414,16 @@ def prepare_runtime_bundle(
                     "import inference.inference_oscar",
                 ),
                 ("/opt/oscar-venv/bin/python", "-c", "import blueprint_pipeline"),
+                (
+                    "/opt/runpod-serverless-venv/bin/python",
+                    "-c",
+                    "import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker",
+                ),
+                (
+                    "/opt/oscar-venv/bin/python",
+                    "-c",
+                    "from pathlib import Path; assert Path('/isaac-sim/python.sh').is_file()",
+                ),
             ),
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
         )
@@ -492,16 +493,12 @@ def _context_blockers(packet: Mapping[str, Any]) -> list[str]:
         blockers.append("typed_model_cache_dependency_manifest_digest_mismatch")
     if _sha256(DEPENDENCY_LOCK_PATH) != packet.get("dependency_lock_sha256"):
         blockers.append("typed_model_cache_dependency_lock_digest_mismatch")
-    if _sha256(REQUIREMENTS_CLOSURE_PATH) != packet.get(
-        "requirements_closure_sha256"
-    ):
+    if _sha256(REQUIREMENTS_CLOSURE_PATH) != packet.get("requirements_closure_sha256"):
         blockers.append("typed_model_cache_dependency_closure_digest_mismatch")
     manifest = _load_object(CONTEXT_MANIFEST_PATH)
     rows = manifest.get("files") if isinstance(manifest.get("files"), list) else []
     expected = {
-        str(row.get("path")): str(row.get("sha256"))
-        for row in rows
-        if isinstance(row, Mapping)
+        str(row.get("path")): str(row.get("sha256")) for row in rows if isinstance(row, Mapping)
     }
     actual: dict[str, str] = {}
     for path in CONTEXT_ROOT.rglob("*"):
@@ -523,9 +520,7 @@ def _live_host_identity() -> dict[str, str]:
         with urllib.request.urlopen(url, timeout=5) as response:  # nosec B310
             return response.read(4096).decode("utf-8").strip()
 
-    public = Path("/etc/ssh/ssh_host_ed25519_key.pub").read_text(
-        encoding="utf-8"
-    ).split()
+    public = Path("/etc/ssh/ssh_host_ed25519_key.pub").read_text(encoding="utf-8").split()
     if len(public) < 2 or public[0] != "ssh-ed25519":
         raise ValueError("typed_model_cache_live_host_key_invalid")
     key_blob = base64.b64decode(public[1], validate=True)
@@ -572,17 +567,13 @@ def _contract_blockers(
         blockers.append("typed_model_cache_tarball_digest_invalid")
     if hashlib.sha256(capability).hexdigest() != binding.get("capability_sha256"):
         blockers.append("typed_model_cache_parent_capability_invalid")
-    signed_binding = {
-        key: value for key, value in binding.items() if key != "binding_hmac_sha256"
-    }
+    signed_binding = {key: value for key, value in binding.items() if key != "binding_hmac_sha256"}
     expected_hmac = hmac.new(
         capability,
         json.dumps(signed_binding, sort_keys=True, separators=(",", ":")).encode(),
         hashlib.sha256,
     ).hexdigest()
-    if not hmac.compare_digest(
-        expected_hmac, str(binding.get("binding_hmac_sha256") or "")
-    ):
+    if not hmac.compare_digest(expected_hmac, str(binding.get("binding_hmac_sha256") or "")):
         blockers.append("typed_model_cache_parent_binding_hmac_invalid")
     if _SAFE_DROPLET_ID.fullmatch(str(binding.get("droplet_id") or "")) is None:
         blockers.append("typed_model_cache_parent_droplet_id_invalid")
@@ -607,9 +598,7 @@ def _contract_blockers(
     if packet.get("verification_root") != str(VERIFICATION_ROOT):
         blockers.append("typed_model_cache_verification_root_invalid")
     prefix = str(packet.get("remote_prefix") or "")
-    if prefix != DEFAULT_REMOTE_PREFIX or f"/workspace/{prefix}" != str(
-        RUNTIME_CACHE_ROOT
-    ):
+    if prefix != DEFAULT_REMOTE_PREFIX or f"/workspace/{prefix}" != str(RUNTIME_CACHE_ROOT):
         blockers.append("typed_model_cache_runtime_prefix_mapping_invalid")
     if packet.get("result_files") != [
         TRANSPORT_RESULT_NAME,
@@ -621,8 +610,7 @@ def _contract_blockers(
     runtime_request = runtime_request if isinstance(runtime_request, Mapping) else {}
     if runtime_request.get("enabled") is True:
         if (
-            set(runtime_request)
-            != {"enabled", "source_release_image_ref", "carrier_image_ref"}
+            set(runtime_request) != {"enabled", "source_release_image_ref", "carrier_image_ref"}
             or not _digest_pinned_image(runtime_request.get("source_release_image_ref"))
             or not _digest_pinned_image(runtime_request.get("carrier_image_ref"))
         ):
@@ -695,11 +683,10 @@ def _canary_verification(
         blockers.append("typed_model_cache_transport_manifest_digest_mismatch")
     if transport.get("remote_model_manifest_digest") != manifest_digest:
         blockers.append("typed_model_cache_remote_manifest_digest_mismatch")
-    if (
-        _HEX64.fullmatch(str(transport.get("model_manifest_file_sha256") or ""))
-        is None
-        or transport.get("remote_model_manifest_file_sha256")
-        != transport.get("model_manifest_file_sha256")
+    if _HEX64.fullmatch(
+        str(transport.get("model_manifest_file_sha256") or "")
+    ) is None or transport.get("remote_model_manifest_file_sha256") != transport.get(
+        "model_manifest_file_sha256"
     ):
         blockers.append("typed_model_cache_manifest_file_sha256_mismatch")
     if transport.get("provider_volume_id") != volume.get("id"):
@@ -712,13 +699,15 @@ def _canary_verification(
         "full_s3_redownload_and_sha256_manifest_verification"
     ):
         blockers.append("typed_model_cache_transport_verification_method_invalid")
-    if not isinstance(transport.get("verified_size_bytes"), int) or int(
-        transport.get("verified_size_bytes") or 0
-    ) <= 0:
+    if (
+        not isinstance(transport.get("verified_size_bytes"), int)
+        or int(transport.get("verified_size_bytes") or 0) <= 0
+    ):
         blockers.append("typed_model_cache_transport_verified_bytes_invalid")
-    if not isinstance(transport.get("remote_verified_file_count"), int) or int(
-        transport.get("remote_verified_file_count") or 0
-    ) <= 0:
+    if (
+        not isinstance(transport.get("remote_verified_file_count"), int)
+        or int(transport.get("remote_verified_file_count") or 0) <= 0
+    ):
         blockers.append("typed_model_cache_remote_verified_file_count_invalid")
     if _HEX64.fullmatch(str(transport.get("remote_verification_sha256") or "")) is None:
         blockers.append("typed_model_cache_remote_verification_digest_invalid")
@@ -726,9 +715,7 @@ def _canary_verification(
         blockers.append("typed_model_cache_transport_result_digest_invalid")
     runtime_status = runtime_bundle.get("status")
     runtime_verification = transport.get("additional_artifact_verification")
-    runtime_verification = (
-        runtime_verification if isinstance(runtime_verification, list) else []
-    )
+    runtime_verification = runtime_verification if isinstance(runtime_verification, list) else []
     if runtime_status == "completed":
         expected = {
             str(runtime_bundle.get("archive_sha256") or ""),
@@ -737,8 +724,7 @@ def _canary_verification(
         observed = {
             str(row.get("sha256") or "")
             for row in runtime_verification
-            if isinstance(row, Mapping)
-            and row.get("full_redownload_sha256_verified") is True
+            if isinstance(row, Mapping) and row.get("full_redownload_sha256_verified") is True
         }
         if (
             transport.get("additional_artifact_verification_method")
@@ -817,6 +803,7 @@ def execute_remote_packet() -> dict[str, Any]:
         import boto3
         import botocore
         import huggingface_hub
+
         write_json(
             DEPENDENCY_RESULT_PATH,
             {
@@ -845,9 +832,8 @@ def execute_remote_packet() -> dict[str, Any]:
         if sonic.get("model_name") != str(RUNTIME_COSMOS_MODEL_ROOT):
             raise RuntimeError("typed_model_cache_sonic_runtime_path_mismatch")
         local = verify_model_cache(RUNTIME_CACHE_ROOT)
-        if (
-            local.get("status") != "passed"
-            or local.get("model_manifest_digest") != manifest.get("manifest_digest")
+        if local.get("status") != "passed" or local.get("model_manifest_digest") != manifest.get(
+            "manifest_digest"
         ):
             raise RuntimeError("typed_model_cache_local_verification_failed")
         volume = packet["volume_evidence"]
@@ -924,9 +910,7 @@ def execute_remote_packet() -> dict[str, Any]:
                     transport.get("provider_mutations_performed") or 0
                 ),
                 "transport_result_sha256": transport_digest,
-                "partial_upload_cleanup_verified": transport.get(
-                    "partial_upload_cleanup_verified"
-                ),
+                "partial_upload_cleanup_verified": transport.get("partial_upload_cleanup_verified"),
                 "upload_attempt_count": int(transport.get("upload_attempt_count") or 0),
                 "upload_success_count": int(transport.get("upload_success_count") or 0),
                 "cleanup_delete_attempt_count": int(

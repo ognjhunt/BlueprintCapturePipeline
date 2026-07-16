@@ -82,8 +82,7 @@ def teardown_matching_resources(
     for attempt in range(max(1, convergence_attempts)):
         final_endpoints_http, final_endpoints = _inventory("endpoints", key=api_key)
         endpoint_absent = final_endpoints_http == 200 and not any(
-            str(row.get("name") or "").startswith(resource_name_prefix)
-            for row in final_endpoints
+            str(row.get("name") or "").startswith(resource_name_prefix) for row in final_endpoints
         )
         if endpoint_absent or final_endpoints_http != 200:
             break
@@ -100,8 +99,7 @@ def teardown_matching_resources(
     for attempt in range(max(1, convergence_attempts)):
         final_templates_http, final_templates = _inventory("templates", key=api_key)
         template_absent = final_templates_http == 200 and not any(
-            str(row.get("name") or "").startswith(resource_name_prefix)
-            for row in final_templates
+            str(row.get("name") or "").startswith(resource_name_prefix) for row in final_templates
         )
         if template_absent or final_templates_http != 200:
             break
@@ -138,18 +136,29 @@ def _settle_budget(state: Mapping[str, Any], proof: Mapping[str, Any]) -> dict[s
     budget = dict(budget) if isinstance(budget, Mapping) else {}
     if not budget or proof.get("status") != "PASS":
         return {"status": "not_settled", "reason": "teardown_not_proven_or_budget_missing"}
+    job_execution = state.get("serverless_job_execution")
+    job_execution = dict(job_execution) if isinstance(job_execution, Mapping) else {}
+    queue_only_proven = bool(
+        job_execution.get("worker_execution_observed") is False
+        and job_execution.get("provider_job_status") == "IN_QUEUE"
+        and job_execution.get("execution_time_ms") in {None, 0}
+    )
     allocated_at = float(state.get("endpoint_allocated_at_epoch") or 0)
     measurement = "endpoint_wall_clock"
     if not allocated_at:
         pre_teardown = proof.get("pre_teardown")
-        pre_teardown = (
-            dict(pre_teardown) if isinstance(pre_teardown, Mapping) else {}
-        )
+        pre_teardown = dict(pre_teardown) if isinstance(pre_teardown, Mapping) else {}
         if int(pre_teardown.get("matching_endpoint_count") or 0) > 0:
             allocated_at = float(state.get("endpoint_create_requested_at_epoch") or 0)
             measurement = "endpoint_request_wall_clock_provider_presence_confirmed"
     ended_at = time.time()
     seconds = max(0, math.ceil(ended_at - allocated_at)) if allocated_at else 0
+    if queue_only_proven:
+        # RunPod bills GPU compute from worker start, not endpoint creation.  A
+        # job that remained IN_QUEUE with no executionTime was never picked up
+        # by a worker, so endpoint wall time is not GPU wall time.
+        seconds = 0
+        measurement = "provider_job_queue_only_no_worker_execution"
     reserved_seconds = int(budget.get("reserved_gpu_seconds") or 0)
     seconds = min(seconds, reserved_seconds)
     rate = float(budget.get("max_hourly_rate_usd") or 0)
@@ -159,9 +168,7 @@ def _settle_budget(state: Mapping[str, Any], proof: Mapping[str, Any]) -> dict[s
         initial_spent_usd=float(budget.get("initial_spent_usd") or 0),
         initial_used_gpu_seconds=int(budget.get("initial_used_gpu_seconds") or 0),
         total_spend_cap_usd=float(budget.get("total_spend_cap_usd") or 20.0),
-        combined_gpu_wall_cap_seconds=int(
-            budget.get("combined_gpu_wall_cap_seconds") or 21_000
-        ),
+        combined_gpu_wall_cap_seconds=int(budget.get("combined_gpu_wall_cap_seconds") or 21_000),
     )
     settled = ledger.settle(
         reservation_id=str(budget.get("reservation_id") or ""),
@@ -175,7 +182,8 @@ def _settle_budget(state: Mapping[str, Any], proof: Mapping[str, Any]) -> dict[s
         "selected_gpu_name": budget.get("selected_gpu_name"),
         "hourly_rate_usd": rate,
         "billing_rate_basis": budget.get("billing_rate_basis")
-        or "runpod_public_active_worker_l40s_ceiling",
+        or "runpod_public_serverless_selected_gpu_ceiling",
+        "serverless_job_execution": job_execution or None,
         **settled,
     }
 
@@ -214,11 +222,12 @@ def execute_teardown(state_path: Path, *, reason: str) -> dict[str, Any]:
         }
         proof["status"] = "BLOCKED"
     receipt = state.get("provider_lane_handoff_acceptance")
-    if isinstance(receipt, Mapping) and proof.get("provider_absence", {}).get(
-        "billing_compute_stopped"
-    ) is True:
-        proof["provider_lane_restore"] = (
-            restore_paid_provider_lane_lease_to_retained_watchdog(receipt)
+    if (
+        isinstance(receipt, Mapping)
+        and proof.get("provider_absence", {}).get("billing_compute_stopped") is True
+    ):
+        proof["provider_lane_restore"] = restore_paid_provider_lane_lease_to_retained_watchdog(
+            receipt
         )
     else:
         proof["provider_lane_restore"] = {"status": "not_attempted"}

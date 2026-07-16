@@ -42,10 +42,13 @@ def _wheelhouse(tmp_path: Path, *, startup_hook: bool = False) -> tuple[Path, Pa
     wheelhouse.mkdir(exist_ok=True)
     wheel = wheelhouse / "boto3-1.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("boto3/__init__.py", "__version__ = '1.0'\n")
-        archive.writestr("boto3-1.0.dist-info/METADATA", "Name: boto3\nVersion: 1.0\n")
+        archive.writestr(zipfile.ZipInfo("boto3/__init__.py"), "__version__ = '1.0'\n")
+        archive.writestr(
+            zipfile.ZipInfo("boto3-1.0.dist-info/METADATA"),
+            "Name: boto3\nVersion: 1.0\n",
+        )
         if startup_hook:
-            archive.writestr("evil.pth", "import os\n")
+            archive.writestr(zipfile.ZipInfo("evil.pth"), "import os\n")
     manifest = tmp_path / "dependency_manifest.json"
     requirements = [{"name": "boto3", "version": "1.0"}]
     closure_digest = hashlib.sha256(

@@ -71,6 +71,7 @@ def _carrier_volume_admission(*, carrier_image_ref: str) -> dict:
             "status": "verified",
             "root": DEFAULT_MODEL_CACHE_ROOT,
             "manifest_sha256": "5" * 64,
+            "manifest_digest": "sha256:" + "7" * 64,
         },
         "s3_transfer_verification": {
             "upload_completed": True,

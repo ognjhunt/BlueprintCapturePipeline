@@ -6,6 +6,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ARCHIVE_PATH,
     DEFAULT_RUNTIME_MANIFEST_PATH,
     DEFAULT_RUNTIME_ROOT,
+    LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
     RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
     build_runtime_bundle_manifest,
@@ -51,6 +52,7 @@ def _admission() -> dict:
             "status": "verified",
             "root": DEFAULT_MODEL_CACHE_ROOT,
             "manifest_sha256": "5" * 64,
+            "manifest_digest": "sha256:" + "7" * 64,
         },
         "s3_transfer_verification": {
             "upload_completed": True,
@@ -123,7 +125,9 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
 
     assert manifest["status"] == "complete"
     assert manifest["archive"]["format"] == "tar.gz"
+    assert "isaac-sim" in manifest["archive"]["member_roots"]
     assert "opt/gr00t-venv" in manifest["archive"]["member_roots"]
+    assert "opt/runpod-serverless-venv" in manifest["archive"]["member_roots"]
     assert len(canonical_json_sha256(manifest)) == 64
     assert "semantic task success" in manifest["claim_boundary"]
 
@@ -149,6 +153,7 @@ def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
     assert verified["data_center_id"] == "EUR-IS-1"
     assert verified["runtime_archive_sha256"] == "3" * 64
     assert verified["model_manifest_sha256"] == "5" * 64
+    assert verified["model_manifest_digest"] == "sha256:" + "7" * 64
     assert "provider attachment" in verified["claim_boundary"]
 
     bad = _admission()
@@ -161,6 +166,30 @@ def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
     assert "carrier_network_volume_below_120_gib" in blocked["blockers"]
     assert "carrier_volume_s3_volume_binding_mismatch" in blocked["blockers"]
     assert "carrier_model_cache_not_verified" in blocked["blockers"]
+
+
+def test_carrier_volume_admission_migrates_v2_and_requires_v3_content_digest() -> None:
+    legacy = _admission()
+    legacy["schema_version"] = LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION
+    legacy["model_cache"].pop("manifest_digest")
+
+    verified = verify_carrier_volume_admission(legacy, expected_carrier_image_ref=CARRIER_REF)
+    assert verified["status"] == "verified"
+    assert verified["schema_version"] == LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION
+    assert verified["model_manifest_digest"] is None
+    assert verified["requires_external_model_manifest_digest_binding"] is True
+
+    missing = _admission()
+    missing["model_cache"].pop("manifest_digest")
+    blocked = verify_carrier_volume_admission(missing, expected_carrier_image_ref=CARRIER_REF)
+    assert blocked["status"] == "blocked"
+    assert "carrier_model_cache_content_digest_missing_from_v3" in blocked["blockers"]
+
+    malformed = _admission()
+    malformed["model_cache"]["manifest_digest"] = "sha256:bad"
+    blocked = verify_carrier_volume_admission(malformed, expected_carrier_image_ref=CARRIER_REF)
+    assert blocked["status"] == "blocked"
+    assert "carrier_model_cache_content_digest_invalid" in blocked["blockers"]
 
 
 def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
@@ -178,6 +207,7 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_wbc_dynamic_linkage_failed" in script
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT" in script
     assert "runpod_carrier_runtime_bootstrap_blocked.zip" in script
+    assert 'or os.environ.get("BLUEPRINT_ARTIFACT_OUTPUT_URI")' in script
     assert 'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT="/opt/gr00t"' in script
     assert 'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT="/opt/wbc"' in script
     assert script.index("BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT") < script.index(

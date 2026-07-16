@@ -19,6 +19,7 @@ Semantics, deliberately narrow:
   runner reconciles — that is the fail-closed intent, not a bug.
 - Releasing the lease never proves billing stopped; teardown proofs do.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -44,9 +45,7 @@ RECONCILIATION_SCHEMA_VERSION = "paid_provider_lane_reconciliation.v1"
 LEASE_DIR_ENV = "BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR"
 DEFAULT_LEASE_TTL_SECONDS = 4 * 3600
 BLOCKER_ALREADY_OWNED = "paid_provider_lane_already_owned"
-BLOCKER_STALE_REQUIRES_RECONCILIATION = (
-    "paid_provider_lane_stale_lease_requires_reconciliation"
-)
+BLOCKER_STALE_REQUIRES_RECONCILIATION = "paid_provider_lane_stale_lease_requires_reconciliation"
 BLOCKER_RECONCILIATION_UNAVAILABLE = "paid_provider_lane_reconciliation_unavailable"
 BLOCKER_TEARDOWN_UNVERIFIED = "paid_provider_lane_teardown_unverified"
 #: Every key the caller must assert (truthfully) before a stale lease may be
@@ -149,10 +148,7 @@ def _reconciliation_complete(
         and str(reconciliation.get("provider") or "").strip().lower()
         == str(provider).strip().lower()
         and str(reconciliation.get("lane") or "") == str(lane)
-        and all(
-            reconciliation.get(key) is True
-            for key in STALE_RECLAIM_REQUIRED_EVIDENCE
-        )
+        and all(reconciliation.get(key) is True for key in STALE_RECLAIM_REQUIRED_EVIDENCE)
         and reconciliation.get("provider_live_resource_count") == 0
         and reconciliation.get("open_pending_teardown_count") == 0
     )
@@ -245,9 +241,7 @@ def paid_launch_pending_teardown_max_age(
     )
     return max(
         300,
-        per_attempt * max(1, int(max_attempts or 1))
-        + max(0, int(max_seconds or 0))
-        + 1800,
+        per_attempt * max(1, int(max_attempts or 1)) + max(0, int(max_seconds or 0)) + 1800,
     )
 
 
@@ -289,9 +283,7 @@ def acquire_paid_provider_lane_lease(
     if not path.exists() and not _reconciliation_complete(
         reconciliation, provider=provider, lane=lane
     ):
-        reconciliation_blockers = list(
-            dict(reconciliation or {}).get("blockers") or []
-        )
+        reconciliation_blockers = list(dict(reconciliation or {}).get("blockers") or [])
         blocker = (
             BLOCKER_ALREADY_OWNED
             if BLOCKER_ALREADY_OWNED in reconciliation_blockers
@@ -336,9 +328,7 @@ def acquire_paid_provider_lane_lease(
                 "holder": holder,
                 "claim_boundary": _CLAIM_BOUNDARY,
             }
-        if not _reconciliation_complete(
-            reconciliation, provider=provider, lane=lane
-        ):
+        if not _reconciliation_complete(reconciliation, provider=provider, lane=lane):
             return {
                 "status": "blocked",
                 "path": str(path),
@@ -403,10 +393,9 @@ def release_paid_provider_lane_lease(
         current = None
     if not isinstance(current, dict):
         return {"status": "already_released", "reason": reason, "released": False}
-    if (
-        current.get("owner_pid") != lease.get("owner_pid")
-        or current.get("started_at_epoch") != lease.get("started_at_epoch")
-    ):
+    if current.get("owner_pid") != lease.get("owner_pid") or current.get(
+        "started_at_epoch"
+    ) != lease.get("started_at_epoch"):
         return {
             "status": "refused_not_owner",
             "reason": reason,
@@ -448,9 +437,7 @@ def _canonical_handoff_binding(binding: Mapping[str, Any]) -> dict[str, Any]:
         "provider": str(binding.get("provider") or "").strip().lower(),
         "lane": str(binding.get("lane") or "").strip(),
         "volume_id": str(binding.get("volume_id") or "").strip(),
-        "pending_teardown_record": str(
-            binding.get("pending_teardown_record") or ""
-        ).strip(),
+        "pending_teardown_record": str(binding.get("pending_teardown_record") or "").strip(),
         "watchdog_nonce": str(binding.get("watchdog_nonce") or "").strip(),
         "watchdog_deadline_epoch": binding.get("watchdog_deadline_epoch"),
     }
@@ -541,9 +528,7 @@ def read_process_argv(pid: int) -> tuple[str, ...]:
             return tuple(shlex.split(command))
         except ValueError:
             return ()
-    return tuple(
-        part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part
-    )
+    return tuple(part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part)
 
 
 def _canary_watchdog_identity_valid(
@@ -552,6 +537,24 @@ def _canary_watchdog_identity_valid(
     process_argv_probe: Any,
     clock: Any,
 ) -> bool:
+    if watchdog.get("volume_replacement_watchdog") is True:
+        return bool(
+            str(watchdog.get("watchdog_pod_name_prefix") or "").startswith(
+                "blueprint-storage-only-no-pod-"
+            )
+            and _model_volume_watchdog_identity_valid(
+                {
+                    "watchdog_pid": watchdog.get("watchdog_pid"),
+                    "watchdog_state_path": watchdog.get("watchdog_state_path"),
+                    "watchdog_deadline_epoch": watchdog.get("watchdog_deadline_epoch"),
+                    "pod_name_prefix": watchdog.get("watchdog_pod_name_prefix"),
+                    "volume_name": watchdog.get("volume_name"),
+                    "watchdog_nonce": watchdog.get("watchdog_nonce"),
+                },
+                process_argv_probe=process_argv_probe,
+                clock=clock,
+            )
+        )
     pid = watchdog.get("watchdog_pid")
     prefix = str(watchdog.get("watchdog_pod_name_prefix") or "").strip()
     deadline = watchdog.get("watchdog_deadline_epoch")
@@ -577,9 +580,7 @@ def _canary_watchdog_identity_valid(
         ),
     )
     try:
-        module, prefix_flag = next(
-            item for item in modules if item[0] in tokens
-        )
+        module, prefix_flag = next(item for item in modules if item[0] in tokens)
         module_index = tokens.index(module)
         prefix_index = tokens.index(prefix_flag, module_index + 1) + 1
         deadline_index = tokens.index("--deadline-epoch", module_index + 1) + 1
@@ -662,8 +663,7 @@ def transfer_paid_provider_lane_lease_to_watchdog(
             pending = {}
         if not isinstance(pending, Mapping) or not bool(
             pending.get("status") == "open"
-            and str(pending.get("provider") or "").strip().lower()
-            == canonical["provider"]
+            and str(pending.get("provider") or "").strip().lower() == canonical["provider"]
             and str(pending.get("lane") or "") == canonical["lane"]
             and pending.get("resource_kind") == "network_volume"
             and str(pending.get("instance_id") or "") == canonical["volume_id"]
@@ -702,9 +702,7 @@ def transfer_paid_provider_lane_lease_to_watchdog(
                     "blockers": ["paid_provider_lane_handoff_capability_unowned"],
                 }
             secret_path.unlink()
-        if not _create_secret_file(
-            secret_path, _handoff_capability_payload(token, canonical)
-        ):
+        if not _create_secret_file(secret_path, _handoff_capability_payload(token, canonical)):
             return {
                 "status": "blocked",
                 "blockers": ["paid_provider_lane_handoff_capability_exists"],
@@ -771,9 +769,22 @@ def accept_paid_provider_lane_lease_handoff(
         }
     canary_watchdog_pid = int(canary_watchdog["watchdog_pid"])
     canary_deadline = float(canary_watchdog["watchdog_deadline_epoch"])
+    handoff_coverage_deadline = canary_deadline
+    if canary_watchdog.get("volume_replacement_watchdog") is True:
+        replacement_coverage = canary_watchdog.get("handoff_coverage_deadline_epoch")
+        if (
+            type(replacement_coverage) not in {int, float}
+            or float(replacement_coverage) <= float(clock()) + MIN_HANDOFF_REMAINING_SECONDS
+            or float(replacement_coverage) > canary_deadline
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_handoff_coverage_invalid"],
+            }
+        handoff_coverage_deadline = float(replacement_coverage)
     if (
         float(canonical.get("watchdog_deadline_epoch") or 0)
-        < canary_deadline + MIN_HANDOFF_REMAINING_SECONDS
+        < handoff_coverage_deadline + MIN_HANDOFF_REMAINING_SECONDS
     ):
         return {
             "status": "blocked",
@@ -804,8 +815,7 @@ def accept_paid_provider_lane_lease_handoff(
             pending = {}
         if not isinstance(pending, Mapping) or not bool(
             pending.get("status") == "open"
-            and str(pending.get("provider") or "").strip().lower()
-            == canonical["provider"]
+            and str(pending.get("provider") or "").strip().lower() == canonical["provider"]
             and str(pending.get("lane") or "") == canonical["lane"]
             and pending.get("resource_kind") == "network_volume"
             and str(pending.get("instance_id") or "") == canonical["volume_id"]
@@ -821,7 +831,11 @@ def accept_paid_provider_lane_lease_handoff(
                 "status": "blocked",
                 "blockers": ["paid_provider_lane_handoff_capability_missing"],
             }
-        if not capability_path.is_file() or capability_path.is_symlink() or stat_result.st_mode & 0o077:
+        if (
+            not capability_path.is_file()
+            or capability_path.is_symlink()
+            or stat_result.st_mode & 0o077
+        ):
             return {
                 "status": "blocked",
                 "blockers": ["paid_provider_lane_handoff_capability_unsafe"],
@@ -839,9 +853,7 @@ def accept_paid_provider_lane_lease_handoff(
                 }
             token = capability[0]
             observed = _handoff_capability_digest(token, canonical)
-            if not secrets.compare_digest(
-                observed, str(handoff.get("capability_digest") or "")
-            ):
+            if not secrets.compare_digest(observed, str(handoff.get("capability_digest") or "")):
                 return {
                     "status": "blocked",
                     "blockers": ["paid_provider_lane_handoff_capability_invalid"],
@@ -892,9 +904,7 @@ def _model_volume_watchdog_identity_valid(
     state_path = Path(state_path_value).expanduser().resolve()
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        armed = json.loads(
-            (state_path.parent / "watchdog_armed.json").read_text(encoding="utf-8")
-        )
+        armed = json.loads((state_path.parent / "watchdog_armed.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
     if not isinstance(state, Mapping) or not isinstance(armed, Mapping):
@@ -931,6 +941,147 @@ def _model_volume_watchdog_identity_valid(
         and armed.get("pid") == pid
         and all(armed.get(key) == value for key, value in expected.items())
     )
+
+
+def rebind_paid_provider_lane_lease_to_replacement_volume(
+    receipt: Mapping[str, Any],
+    *,
+    replacement_watchdog: Mapping[str, Any],
+    replacement_binding: Mapping[str, Any],
+    capability_path: str | os.PathLike[str],
+    provider_inventory: Mapping[str, Any],
+    process_argv_probe: Any = read_process_argv,
+    clock: Any = time.time,
+) -> dict[str, Any]:
+    """Atomically move an accepted model-volume lane to a verified replacement.
+
+    A bounded overlap of exactly the old and new volumes is required. The old
+    pending teardown stays open until the caller deletes it after this commit.
+    """
+
+    old_binding = _canonical_handoff_binding(
+        receipt.get("binding") if isinstance(receipt.get("binding"), Mapping) else {}
+    )
+    new_binding = _canonical_handoff_binding(replacement_binding)
+    volume_ids = provider_inventory.get("live_network_volume_ids")
+    pod_ids = provider_inventory.get("live_pod_ids")
+    blockers: list[str] = []
+    if receipt.get("status") != "accepted":
+        blockers.append("paid_provider_lane_replacement_receipt_not_accepted")
+    if any(new_binding[field] != old_binding[field] for field in ("provider", "lane")):
+        blockers.append("paid_provider_lane_replacement_lane_mismatch")
+    if (
+        not old_binding["volume_id"]
+        or not new_binding["volume_id"]
+        or old_binding["volume_id"] == new_binding["volume_id"]
+        or old_binding["pending_teardown_record"] == new_binding["pending_teardown_record"]
+    ):
+        blockers.append("paid_provider_lane_replacement_binding_invalid")
+    if not _model_volume_watchdog_identity_valid(
+        replacement_watchdog,
+        process_argv_probe=process_argv_probe,
+        clock=clock,
+    ):
+        blockers.append("paid_provider_lane_replacement_watchdog_invalid")
+    if int(replacement_watchdog.get("watchdog_pid") or 0) != int(receipt.get("owner_pid") or 0):
+        blockers.append("paid_provider_lane_replacement_watchdog_not_owner")
+    if not bool(
+        provider_inventory.get("api_confirmed") is True
+        and isinstance(volume_ids, list)
+        and set(str(item) for item in volume_ids)
+        == {old_binding["volume_id"], new_binding["volume_id"]}
+        and isinstance(pod_ids, list)
+        and not pod_ids
+    ):
+        blockers.append("paid_provider_lane_replacement_inventory_invalid")
+    for label, binding in (("old", old_binding), ("new", new_binding)):
+        try:
+            pending = json.loads(
+                Path(binding["pending_teardown_record"]).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            pending = {}
+        if not isinstance(pending, Mapping) or not bool(
+            pending.get("status") == "open"
+            and str(pending.get("provider") or "").strip().lower() == binding["provider"]
+            and str(pending.get("lane") or "") == binding["lane"]
+            and pending.get("resource_kind") == "network_volume"
+            and str(pending.get("instance_id") or "") == binding["volume_id"]
+        ):
+            blockers.append(f"paid_provider_lane_replacement_{label}_pending_invalid")
+    secret_path = Path(capability_path).expanduser().resolve()
+    state_parent = (
+        Path(str(replacement_watchdog.get("watchdog_state_path") or ""))
+        .expanduser()
+        .resolve()
+        .parent
+    )
+    if secret_path.parent != state_parent or secret_path.name != "provider_lane_handoff.capability":
+        blockers.append("paid_provider_lane_replacement_capability_path_invalid")
+    if blockers:
+        return {"status": "blocked", "blockers": sorted(set(blockers))}
+
+    path = Path(str(receipt.get("lease_path") or ""))
+    token = secrets.token_bytes(32)
+    digest = _handoff_capability_digest(token, new_binding)
+    with _reclaim_mutex(path):
+        current = read_lease(old_binding["provider"], old_binding["lane"], path.parent)
+        current_handoff = current.get("handoff") if isinstance(current, Mapping) else None
+        current_handoff = current_handoff if isinstance(current_handoff, Mapping) else {}
+        if not isinstance(current, dict) or not bool(
+            current.get("owner_pid") == receipt.get("owner_pid")
+            and current_handoff.get("status") == "accepted"
+            and current_handoff.get("capability_digest") == receipt.get("capability_digest")
+            and _canonical_handoff_binding(
+                current_handoff.get("binding")
+                if isinstance(current_handoff.get("binding"), Mapping)
+                else {}
+            )
+            == old_binding
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_replacement_handoff_not_current"],
+            }
+        if secret_path.exists() or secret_path.is_symlink():
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_replacement_capability_exists"],
+            }
+        if not _create_secret_file(secret_path, _handoff_capability_payload(token, new_binding)):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_replacement_capability_exists"],
+            }
+        handoff = {
+            "schema_version": LEASE_HANDOFF_SCHEMA_VERSION,
+            "status": "pending_canary_acceptance",
+            "lease_path": str(path),
+            "capability_path": str(secret_path),
+            "capability_digest": digest,
+            "source_owner_pid": int(replacement_watchdog["watchdog_pid"]),
+            "binding": new_binding,
+            "created_at_epoch": float(clock()),
+            "replacement_cutover": True,
+            "replaced_volume_id": old_binding["volume_id"],
+            "raw_capability_recorded": False,
+        }
+        current.update(
+            {
+                "owner_pid": int(replacement_watchdog["watchdog_pid"]),
+                "retained_teardown_owner_pid": int(replacement_watchdog["watchdog_pid"]),
+                "owner_role": "retained_network_volume_watchdog",
+                "heartbeat_at_epoch": float(clock()),
+                "expires_at_epoch": float(new_binding["watchdog_deadline_epoch"]),
+                "handoff": handoff,
+            }
+        )
+        try:
+            _write_lease(path, current)
+        except Exception:
+            secret_path.unlink(missing_ok=True)
+            raise
+    return handoff
 
 
 def rotate_paid_provider_lane_lease_to_retention_watchdog(
@@ -976,8 +1127,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             clock=clock,
         )
         or int(source_watchdog["watchdog_pid"]) != handoff.get("source_owner_pid")
-        or source_watchdog.get("watchdog_nonce")
-        != current_binding.get("watchdog_nonce")
+        or source_watchdog.get("watchdog_nonce") != current_binding.get("watchdog_nonce")
         or source_watchdog.get("watchdog_deadline_epoch")
         != current_binding.get("watchdog_deadline_epoch")
     ):
@@ -1022,9 +1172,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             }
         try:
             pending = json.loads(
-                Path(current_binding["pending_teardown_record"]).read_text(
-                    encoding="utf-8"
-                )
+                Path(current_binding["pending_teardown_record"]).read_text(encoding="utf-8")
             )
         except (OSError, ValueError):
             pending = {}
@@ -1034,8 +1182,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             cap_stat = None
         if not isinstance(pending, Mapping) or not bool(
             pending.get("status") == "open"
-            and str(pending.get("provider") or "").strip().lower()
-            == current_binding["provider"]
+            and str(pending.get("provider") or "").strip().lower() == current_binding["provider"]
             and str(pending.get("lane") or "") == current_binding["lane"]
             and pending.get("resource_kind") == "network_volume"
             and str(pending.get("instance_id") or "") == current_binding["volume_id"]
@@ -1055,9 +1202,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             ):
                 return {
                     "status": "blocked",
-                    "blockers": [
-                        "paid_provider_lane_retention_terminal_canary_return_invalid"
-                    ],
+                    "blockers": ["paid_provider_lane_retention_terminal_canary_return_invalid"],
                 }
         else:
             if (
@@ -1071,9 +1216,13 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
                     "blockers": ["paid_provider_lane_retention_capability_unsafe"],
                 }
             prior = _read_handoff_capability(capability_path)
-            if prior is None or prior[1] != current_binding or not secrets.compare_digest(
-                _handoff_capability_digest(prior[0], current_binding),
-                str(handoff.get("capability_digest") or ""),
+            if (
+                prior is None
+                or prior[1] != current_binding
+                or not secrets.compare_digest(
+                    _handoff_capability_digest(prior[0], current_binding),
+                    str(handoff.get("capability_digest") or ""),
+                )
             ):
                 return {
                     "status": "blocked",
@@ -1110,9 +1259,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
                 ),
             ),
             "retention_class": "bounded_persistent_verified_model_cache",
-            "retention_deadline_epoch": float(
-                new_binding["watchdog_deadline_epoch"]
-            ),
+            "retention_deadline_epoch": float(new_binding["watchdog_deadline_epoch"]),
         }
         try:
             if not _create_secret_file(
@@ -1120,9 +1267,7 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
                 _handoff_capability_payload(new_token, new_binding),
             ):
                 raise OSError("retention_capability_create_failed")
-            _write_lease(
-                Path(current_binding["pending_teardown_record"]), retained_pending
-            )
+            _write_lease(Path(current_binding["pending_teardown_record"]), retained_pending)
             current.update(
                 {
                     "owner_pid": retention_pid,
@@ -1195,9 +1340,7 @@ def claim_transferred_paid_provider_lane_teardown(
             }
         current = dict(current_value) if isinstance(current_value, Mapping) else {}
         current_handoff = current.get("handoff")
-        current_handoff = (
-            current_handoff if isinstance(current_handoff, Mapping) else {}
-        )
+        current_handoff = current_handoff if isinstance(current_handoff, Mapping) else {}
         current_binding = _canonical_handoff_binding(
             current_handoff.get("binding")
             if isinstance(current_handoff.get("binding"), Mapping)
@@ -1208,9 +1351,7 @@ def claim_transferred_paid_provider_lane_teardown(
                 "status": "ownership_transferred",
                 "provider_mutations_performed": 0,
                 "current_owner_pid": current.get("owner_pid"),
-                "current_watchdog_deadline_epoch": current_binding.get(
-                    "watchdog_deadline_epoch"
-                ),
+                "current_watchdog_deadline_epoch": current_binding.get("watchdog_deadline_epoch"),
                 "raw_capability_recorded": False,
             }
         try:
@@ -1222,8 +1363,7 @@ def claim_transferred_paid_provider_lane_teardown(
         pending = dict(pending_value) if isinstance(pending_value, Mapping) else {}
         if not bool(
             pending.get("status") == "open"
-            and str(pending.get("provider") or "").strip().lower()
-            == expected["provider"]
+            and str(pending.get("provider") or "").strip().lower() == expected["provider"]
             and str(pending.get("lane") or "") == expected["lane"]
             and pending.get("resource_kind") == "network_volume"
             and str(pending.get("instance_id") or "") == expected["volume_id"]
@@ -1233,9 +1373,7 @@ def claim_transferred_paid_provider_lane_teardown(
                 "blockers": ["paid_provider_lane_teardown_claim_pending_invalid"],
             }
         existing_claim = current.get("teardown_claim")
-        existing_claim = (
-            existing_claim if isinstance(existing_claim, Mapping) else {}
-        )
+        existing_claim = existing_claim if isinstance(existing_claim, Mapping) else {}
         if existing_claim:
             if (
                 existing_claim.get("owner_pid") == teardown_owner_pid
@@ -1246,9 +1384,7 @@ def claim_transferred_paid_provider_lane_teardown(
                 "status": "ownership_transferred",
                 "provider_mutations_performed": 0,
                 "current_owner_pid": existing_claim.get("owner_pid"),
-                "current_watchdog_deadline_epoch": expected.get(
-                    "watchdog_deadline_epoch"
-                ),
+                "current_watchdog_deadline_epoch": expected.get("watchdog_deadline_epoch"),
                 "raw_capability_recorded": False,
             }
         recorded_owner = current.get("owner_pid")
@@ -1270,9 +1406,7 @@ def claim_transferred_paid_provider_lane_teardown(
                 "status": "ownership_transferred",
                 "provider_mutations_performed": 0,
                 "current_owner_pid": recorded_owner,
-                "current_watchdog_deadline_epoch": expected.get(
-                    "watchdog_deadline_epoch"
-                ),
+                "current_watchdog_deadline_epoch": expected.get("watchdog_deadline_epoch"),
                 "raw_capability_recorded": False,
             }
         claim = {
@@ -1353,24 +1487,19 @@ def restore_paid_provider_lane_lease_to_retained_watchdog(
         retained_pid = int(current.get("retained_teardown_owner_pid") or 0)
         canary_pid = int(receipt.get("owner_pid") or 0)
         accepted_handoff = current.get("handoff")
-        accepted_handoff = (
-            accepted_handoff if isinstance(accepted_handoff, Mapping) else {}
-        )
+        accepted_handoff = accepted_handoff if isinstance(accepted_handoff, Mapping) else {}
         if (
             current.get("owner_pid") != canary_pid
             or accepted_handoff.get("status") != "accepted"
             or accepted_handoff.get("canary_watchdog_pid") != canary_pid
-            or accepted_handoff.get("capability_digest")
-            != receipt.get("capability_digest")
+            or accepted_handoff.get("capability_digest") != receipt.get("capability_digest")
             or _canonical_handoff_binding(
                 accepted_handoff.get("binding")
                 if isinstance(accepted_handoff.get("binding"), Mapping)
                 else {}
             )
             != _canonical_handoff_binding(
-                receipt.get("binding")
-                if isinstance(receipt.get("binding"), Mapping)
-                else {}
+                receipt.get("binding") if isinstance(receipt.get("binding"), Mapping) else {}
             )
             or not _pid_is_alive(retained_pid)
         ):
@@ -1413,9 +1542,7 @@ class PaidProviderLaneLeaseSet:
     def _reconciliation(self, provider_name: str) -> dict[str, Any]:
         provider = self.providers[provider_name]
         try:
-            inventory = provider.billable_inventory(
-                name_prefix=self.resource_name_prefix
-            )
+            inventory = provider.billable_inventory(name_prefix=self.resource_name_prefix)
         except Exception as exc:  # noqa: BLE001 - unavailable proof blocks
             inventory = {
                 "status": "blocked",
@@ -1470,8 +1597,7 @@ class PaidProviderLaneLeaseSet:
 
     def release(self, reason: str, *, provider_mutation_started: bool) -> dict[str, Any]:
         terminal = {
-            provider_name: self._reconciliation(provider_name)
-            for provider_name in self.providers
+            provider_name: self._reconciliation(provider_name) for provider_name in self.providers
         }
         all_terminal = all(item.get("status") == "passed" for item in terminal.values())
         release = {
@@ -1485,9 +1611,7 @@ class PaidProviderLaneLeaseSet:
                     reason=reason,
                     provider_mutation_started=provider_mutation_started,
                     terminal_reconciliation=(
-                        terminal.get(
-                            str((acquired.get("lease") or {}).get("provider") or "")
-                        )
+                        terminal.get(str((acquired.get("lease") or {}).get("provider") or ""))
                         if all_terminal
                         else None
                     ),
