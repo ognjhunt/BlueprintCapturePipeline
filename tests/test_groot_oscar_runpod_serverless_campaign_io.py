@@ -153,11 +153,140 @@ class _FakeClient:
         del Bucket
         return {"ContentLength": len(self.objects[Key])}
 
-    def delete_objects(self, *, Bucket: str, Delete: dict) -> None:
+    def delete_object(self, *, Bucket: str, Key: str) -> None:
         del Bucket
-        for row in Delete["Objects"]:
-            self.deleted.append(row["Key"])
-            self.objects.pop(row["Key"], None)
+        self.deleted.append(Key)
+        self.objects.pop(Key, None)
+
+
+class _StageClient(_FakeClient):
+    def __init__(self, objects: dict[str, bytes], *, fail_once_key: str = "") -> None:
+        super().__init__(objects)
+        self.fail_once_key = fail_once_key
+        self.failed = False
+        self.uploaded = []
+
+    def upload_file(
+        self, local_path: str, _bucket: str, key: str, *, Config: object
+    ) -> None:
+        del Config
+        if key == self.fail_once_key and not self.failed:
+            self.failed = True
+            raise RuntimeError("transient_upload_failure")
+        self.objects[key] = Path(local_path).read_bytes()
+        self.uploaded.append(key)
+
+
+def _validated_contract(tmp_path: Path) -> dict:
+    return campaign_io.validate_campaign_io_evidence(
+        _io_evidence(tmp_path),
+        source_commit=SOURCE,
+        image_ref=IMAGE,
+        model_manifest_digest=MODEL,
+        volume_id="volume-1",
+        data_center_id="EUR-IS-1",
+    )
+
+
+def _patch_stage_dependencies(
+    monkeypatch: pytest.MonkeyPatch, client: _StageClient
+) -> None:
+    monkeypatch.setattr(
+        campaign_io,
+        "_credentials",
+        lambda *_args, **_kwargs: ("access", "secret", {"status": "passed"}),
+    )
+    monkeypatch.setattr(campaign_io, "_client", lambda **_kwargs: client)
+    monkeypatch.setattr(campaign_io, "_runpod_transfer_config", object)
+    monkeypatch.setattr(
+        campaign_io,
+        "_remote_keys",
+        lambda _client, *, volume_id, prefix: sorted(
+            key for key in client.objects if key.startswith(prefix)
+        ),
+    )
+
+
+def test_stage_replaces_only_verified_stale_inputs_with_individual_deletes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    contract = _validated_contract(tmp_path)
+    stale_rows = contract["files"][:2]
+    stale = {
+        row["relative_path"]: Path(row["local_path"]).read_bytes() for row in stale_rows
+    }
+    client = _StageClient(stale)
+    _patch_stage_dependencies(monkeypatch, client)
+
+    result = campaign_io.stage_campaign_inputs(
+        contract,
+        access_key_file="unused",
+        secret_key_file="unused",
+    )
+
+    assert result["status"] == "completed"
+    assert result["deleted_stale_input_file_count"] == 2
+    assert client.deleted == [row["relative_path"] for row in stale_rows]
+    assert len(client.uploaded) == 6
+
+
+def test_stage_preserves_unowned_remote_artifacts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    contract = _validated_contract(tmp_path)
+    output_key = f"{PREFIX}/output/attempt_result.json"
+    client = _StageClient({output_key: b"important"})
+    _patch_stage_dependencies(monkeypatch, client)
+
+    with pytest.raises(
+        ValueError, match="campaign_io_remote_prefix_contains_unowned_artifacts"
+    ):
+        campaign_io.stage_campaign_inputs(
+            contract,
+            access_key_file="unused",
+            secret_key_file="unused",
+        )
+
+    assert client.objects[output_key] == b"important"
+    assert client.deleted == []
+
+
+def test_stage_retries_transient_upload_and_completes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    contract = _validated_contract(tmp_path)
+    failed_key = contract["files"][-1]["relative_path"]
+    client = _StageClient({}, fail_once_key=failed_key)
+    _patch_stage_dependencies(monkeypatch, client)
+
+    result = campaign_io.stage_campaign_inputs(
+        contract,
+        access_key_file="unused",
+        secret_key_file="unused",
+    )
+
+    assert result["status"] == "completed"
+    assert client.failed is True
+    assert failed_key in client.uploaded
+
+
+def test_cleanup_uses_supported_individual_delete_operation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    contract = _validated_contract(tmp_path)
+    keys = [row["relative_path"] for row in contract["files"][:2]]
+    client = _StageClient({key: b"x" for key in keys})
+    _patch_stage_dependencies(monkeypatch, client)
+
+    result = campaign_io.cleanup_campaign_storage(
+        contract,
+        access_key_file="unused",
+        secret_key_file="unused",
+    )
+
+    assert result["status"] == "completed"
+    assert result["deleted_file_count"] == 2
+    assert client.deleted == keys
 
 
 def test_retrieve_verifies_hashes_core_schemas_and_complete_file_set(
