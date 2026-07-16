@@ -396,7 +396,10 @@ def inspect(candidate):
         if "=> not found" not in line:
             continue
         left = line.split("=> not found", 1)[0].strip()
-        soname = left.split()[-1] if left else ""
+        raw_soname = left.split()[-1] if left else ""
+        # DT_NEEDED entries may legally contain a path. ldd preserves that
+        # path, while dependency policy is keyed by the bounded basename.
+        soname = os.path.basename(raw_soname)
         if 0 < len(soname) <= 256 and ".so" in soname and all(
             character in allowed for character in soname
         ):
