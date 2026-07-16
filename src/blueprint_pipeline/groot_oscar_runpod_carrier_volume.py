@@ -494,15 +494,15 @@ try:
                 ):
                     raise RuntimeError("runtime_archive_link_outside_allowlist")
         archive.extractall(path="/", filter=lambda member, _path: member)
-    for argv in manifest.get("healthcheck_argv", []):
-        completed = subprocess.run(argv, check=False, timeout=120, capture_output=True, text=True)
-        if completed.returncode != 0:
-            raise RuntimeError("runtime_healthcheck_failed")
     for soname in driver_sonames:
         try:
             ctypes.CDLL(soname)
         except OSError as exc:
             raise RuntimeError("runtime_gpu_driver_soname_unresolved") from exc
+    for argv in manifest.get("healthcheck_argv", []):
+        completed = subprocess.run(argv, check=False, timeout=120, capture_output=True, text=True)
+        if completed.returncode != 0:
+            raise RuntimeError("runtime_healthcheck_failed")
     wbc_binary = Path("/opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref")
     linkage = subprocess.run(
         ["ldd", str(wbc_binary)], check=False, timeout=120, capture_output=True, text=True
