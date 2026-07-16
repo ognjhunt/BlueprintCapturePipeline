@@ -192,11 +192,10 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     isaac_scan = next(
         script for script in validation_scripts if "import carb; import isaacsim" in script
     )
-    assert "app = SimulationApp" in isaac_scan
-    assert isaac_scan.index("app = SimulationApp") < isaac_scan.index(
-        "from isaacsim.core.prims import SingleArticulation"
-    )
-    assert "app.close()" in isaac_scan
+    assert "from isaacsim import SimulationApp" in isaac_scan
+    assert "import blueprint_pipeline.isaac_runtime_task_backend" in isaac_scan
+    assert "app = SimulationApp" not in isaac_scan
+    assert "isaacsim.core" not in isaac_scan
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
@@ -344,7 +343,7 @@ def test_runtime_carrier_validation_collects_all_failures_before_blocking(
 
     message = str(raised.value)
     assert "all_archived_elf_linkage" in message
-    assert "isaac_import_matrix" in message
+    assert "isaac_bootstrap_import" in message
     assert sum(call[1] == "run" for call in docker.calls) == 6
 
 

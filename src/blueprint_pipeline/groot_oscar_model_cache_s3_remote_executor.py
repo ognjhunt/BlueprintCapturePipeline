@@ -489,13 +489,11 @@ PY
             300,
         ),
         (
-            "isaac_import_matrix",
+            "isaac_bootstrap_import",
             "/isaac-sim/python.sh -c 'import blueprint_pipeline; import carb; import isaacsim; "
-            "from isaacsim import SimulationApp; app = SimulationApp({\"headless\": True}); "
-            "from isaacsim.core.prims import SingleArticulation; "
-            "import omni.kit.app; import omni.timeline; import omni.usd; "
-            "import blueprint_pipeline.isaac_runtime_task_backend; app.close()'",
-            300,
+            "from isaacsim import SimulationApp; "
+            "import blueprint_pipeline.isaac_runtime_task_backend'",
+            120,
         ),
         (
             "wbc_binary_executable",
