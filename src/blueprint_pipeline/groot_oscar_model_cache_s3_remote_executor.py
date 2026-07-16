@@ -360,7 +360,7 @@ system_path_prefixes = (
     "/lib64/",
     "/usr/lib/",
     "/usr/lib64/",
-    "/usr/local/cuda/",
+    "/usr/local/cuda/compat/",
     "/usr/local/nvidia/",
 )
 max_invalid_diagnostics = 256

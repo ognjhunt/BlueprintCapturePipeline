@@ -64,7 +64,7 @@ NVIDIA_DRIVER_SYSTEM_PATH_PREFIXES = (
     "/lib64/",
     "/usr/lib/",
     "/usr/lib64/",
-    "/usr/local/cuda/",
+    "/usr/local/cuda/compat/",
     "/usr/local/nvidia/",
 )
 
@@ -509,7 +509,7 @@ try:
         "/lib64/",
         "/usr/lib/",
         "/usr/lib64/",
-        "/usr/local/cuda/",
+        "/usr/local/cuda/compat/",
         "/usr/local/nvidia/",
     )
     def driver_system_path_allowed(value):

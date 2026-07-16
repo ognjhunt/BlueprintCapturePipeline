@@ -208,6 +208,8 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "elf_missing_path_%s" in elf_scan
     assert "elf_missing_operand_%s" in elf_scan
     assert "max_invalid_diagnostics = 256" in elf_scan
+    assert '"/usr/local/cuda/compat/"' in elf_scan
+    assert '"/usr/local/cuda/",' not in elf_scan
     assert "BLUEPRINT_ELF_LDD_TIMEOUT" in elf_scan
     assert "BLUEPRINT_ELF_AUDIT_ERROR" in elf_scan
     assert "onerror=record_walk_error" in elf_scan

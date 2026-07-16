@@ -231,6 +231,8 @@ def test_nvidia_driver_soname_allowlist_rejects_carrier_and_unsafe_libraries(
     (
         ("/usr/lib/x86_64-linux-gnu/libcuda.so.1", True),
         ("/usr/local/nvidia/lib64/libnvidia-ml.so.1", True),
+        ("/usr/local/cuda/compat/libcuda.so.1", True),
+        ("/usr/local/cuda/lib64/stubs/libcuda.so", False),
         ("/opt/private/libcuda.so.1", False),
         ("/usr/lib/../private/libcuda.so.1", False),
         ("/usr/lib/libcudart.so.12", False),
