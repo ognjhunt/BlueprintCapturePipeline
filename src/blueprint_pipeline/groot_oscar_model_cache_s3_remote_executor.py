@@ -35,6 +35,7 @@ from .groot_oscar_runpod_carrier_volume import (
     MIN_CARRIER_VOLUME_GIB,
     RUNTIME_ARCHIVE_ROOTS,
     RUNTIME_CARRIER_ENV,
+    RUNTIME_ELF_SYMLINK_FARM,
     build_runtime_bundle_manifest,
     is_nvidia_driver_soname,
     is_nvidia_driver_system_path,
@@ -268,6 +269,74 @@ def _remove_embedded_model_payloads(payload_root: Path) -> list[str]:
     return removed
 
 
+def _stage_runtime_elf_symlink_farm(payload_root: Path) -> dict[str, Any]:
+    """Expose only unambiguous archived ELF SONAMEs to the real loader path."""
+
+    farm_relative = Path(RUNTIME_ELF_SYMLINK_FARM.lstrip("/"))
+    farm_root = payload_root / farm_relative
+    if farm_root.exists() or farm_root.is_symlink():
+        raise RuntimeError("typed_runtime_bundle_elf_symlink_farm_not_fresh")
+    allowed = frozenset(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-"
+    )
+    candidates: dict[str, dict[str, set[str]]] = {}
+    for root in RUNTIME_ARCHIVE_ROOTS:
+        root_path = payload_root / root
+        for path in root_path.rglob("*"):
+            try:
+                mode = path.lstat().st_mode
+            except OSError as exc:
+                raise RuntimeError("typed_runtime_bundle_elf_inventory_stat_failed") from exc
+            if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+                continue
+            basename = path.name
+            if (
+                not 0 < len(basename) <= 256
+                or ".so" not in basename
+                or not all(character in allowed for character in basename)
+                or is_nvidia_driver_soname(basename)
+            ):
+                continue
+            try:
+                with path.open("rb") as handle:
+                    if handle.read(4) != b"\x7fELF":
+                        continue
+                digest = _sha256(path)
+            except OSError:
+                if stat.S_ISLNK(mode):
+                    continue
+                raise RuntimeError("typed_runtime_bundle_elf_inventory_read_failed")
+            runtime_target = "/" + path.relative_to(payload_root).as_posix()
+            candidates.setdefault(basename, {}).setdefault(digest, set()).add(
+                runtime_target
+            )
+    ensure_dir(farm_root)
+    linked_count = 0
+    ambiguous_count = 0
+    duplicate_same_content_count = 0
+    for basename, by_digest in sorted(candidates.items()):
+        if len(by_digest) != 1:
+            ambiguous_count += 1
+            continue
+        targets = next(iter(by_digest.values()))
+        if len(targets) > 1:
+            duplicate_same_content_count += 1
+        (farm_root / basename).symlink_to(sorted(targets)[0])
+        linked_count += 1
+    return {
+        "schema_version": "groot_oscar_runtime_elf_symlink_farm.v1",
+        "status": "staged",
+        "runtime_path": RUNTIME_ELF_SYMLINK_FARM,
+        "linked_unique_content_soname_count": linked_count,
+        "ambiguous_multi_content_soname_count": ambiguous_count,
+        "duplicate_same_content_soname_count": duplicate_same_content_count,
+        "ambiguous_sonames_excluded": True,
+        "non_elf_lookalikes_excluded": True,
+        "gpu_driver_sonames_excluded": True,
+        "raw_paths_recorded": False,
+    }
+
+
 class RuntimeCarrierValidationError(RuntimeError):
     """Typed failure carrying only allowlisted, secret-free audit evidence."""
 
@@ -399,6 +468,7 @@ def inspect(candidate):
             capture_output=True,
             text=True,
             timeout=30,
+            cwd=os.path.dirname(candidate),
         )
     except subprocess.TimeoutExpired:
         return ("TIMEOUT", ())
@@ -985,10 +1055,15 @@ def prepare_runtime_bundle(
         removed_embedded_model_paths = _remove_embedded_model_payloads(payload_root)
         if not _runtime_payload_tree_safe(payload_root):
             raise RuntimeError("typed_runtime_bundle_payload_tree_unsafe")
+        record_progress("staging_runtime_elf_symlink_farm")
+        elf_symlink_farm = _stage_runtime_elf_symlink_farm(payload_root)
+        if not _runtime_payload_tree_safe(payload_root):
+            raise RuntimeError("typed_runtime_bundle_elf_symlink_farm_unsafe")
         record_progress("validating_runtime_inside_carrier")
         carrier_validation = _validate_runtime_inside_carrier(
             runner, carrier_ref=carrier_ref, payload_root=payload_root
         )
+        carrier_validation["runtime_elf_symlink_farm"] = elf_symlink_farm
         record_progress("archiving_runtime_bundle")
         archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
         with tarfile.open(

@@ -33,10 +33,11 @@ DEFAULT_MODEL_CACHE_MANIFEST_PATH = (
 )
 MIN_CARRIER_VOLUME_GIB = 120
 RUNTIME_CARRIER_PYTHONPATH = "/opt/wbc:/opt/OSCAR"
+RUNTIME_ELF_SYMLINK_FARM = "/opt/blueprint/runtime-libs"
 RUNTIME_CARRIER_LD_LIBRARY_PATH = (
     "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:/opt/onnxruntime/lib:"
     "/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:/usr/local/nvidia/lib:"
-    "/usr/local/nvidia/lib64"
+    f"/usr/local/nvidia/lib64:{RUNTIME_ELF_SYMLINK_FARM}"
 )
 RUNTIME_ARCHIVE_ROOTS = (
     "isaac-sim",

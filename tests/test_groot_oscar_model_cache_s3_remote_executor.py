@@ -140,6 +140,18 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["source_and_carrier_registry_digests_verified"] is True
     assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
     assert result["carrier_validation"]["archived_elf_file_count"] == 42
+    assert result["carrier_validation"]["runtime_elf_symlink_farm"] == {
+        "schema_version": "groot_oscar_runtime_elf_symlink_farm.v1",
+        "status": "staged",
+        "runtime_path": "/opt/blueprint/runtime-libs",
+        "linked_unique_content_soname_count": 0,
+        "ambiguous_multi_content_soname_count": 0,
+        "duplicate_same_content_soname_count": 0,
+        "ambiguous_sonames_excluded": True,
+        "non_elf_lookalikes_excluded": True,
+        "gpu_driver_sonames_excluded": True,
+        "raw_paths_recorded": False,
+    }
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
@@ -165,6 +177,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
         assert not any(name.startswith("opt/blueprint/ckpts/") for name in inventory)
         assert not any(name.startswith("opt/blueprint/hf_home/") for name in inventory)
         assert "opt/blueprint/models" not in inventory
+        assert "opt/blueprint/runtime-libs" in inventory
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
     assert manifest["source_release_image_ref"] == SOURCE_REF
@@ -213,6 +226,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "INVALID_HASH" in elf_scan
     assert "safe_library_token_count" in elf_scan
     assert 'f"{digest}_{shape}"' in elf_scan
+    assert "cwd=os.path.dirname(candidate)" in elf_scan
     assert "elf_missing_system_path_%s" in elf_scan
     assert "elf_missing_path_%s" in elf_scan
     assert "elf_missing_operand_%s" in elf_scan
@@ -264,6 +278,46 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "app.close()" in isaac_healthcheck[-1]
 
 
+def test_runtime_elf_symlink_farm_only_exposes_unique_content_elf_sonames(
+    tmp_path: Path,
+) -> None:
+    payload = tmp_path / "payload"
+    first = payload / "opt/OSCAR/lib"
+    second = payload / "opt/gr00t/lib"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "libunique.so.1").write_bytes(b"\x7fELFunique")
+    (first / "libsame.so.1").write_bytes(b"\x7fELFsame")
+    (second / "libsame.so.1").write_bytes(b"\x7fELFsame")
+    (first / "libambiguous.so.1").write_bytes(b"\x7fELFfirst")
+    (second / "libambiguous.so.1").write_bytes(b"\x7fELFsecond")
+    (first / "libfake.so.1").write_text("not an ELF\n", encoding="utf-8")
+    (first / "libbroken.so.1").symlink_to("/opt/OSCAR/missing.so")
+    (first / "libcuda.so.1").write_bytes(b"\x7fELFdriver-stub")
+
+    evidence = executor._stage_runtime_elf_symlink_farm(payload)
+
+    assert evidence == {
+        "schema_version": "groot_oscar_runtime_elf_symlink_farm.v1",
+        "status": "staged",
+        "runtime_path": "/opt/blueprint/runtime-libs",
+        "linked_unique_content_soname_count": 2,
+        "ambiguous_multi_content_soname_count": 1,
+        "duplicate_same_content_soname_count": 1,
+        "ambiguous_sonames_excluded": True,
+        "non_elf_lookalikes_excluded": True,
+        "gpu_driver_sonames_excluded": True,
+        "raw_paths_recorded": False,
+    }
+    farm = payload / "opt/blueprint/runtime-libs"
+    assert os.readlink(farm / "libunique.so.1") == "/opt/OSCAR/lib/libunique.so.1"
+    assert os.readlink(farm / "libsame.so.1") == "/opt/OSCAR/lib/libsame.so.1"
+    assert not (farm / "libambiguous.so.1").exists()
+    assert not (farm / "libfake.so.1").exists()
+    assert not (farm / "libbroken.so.1").exists()
+    assert not (farm / "libcuda.so.1").exists()
+
+
 def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:
     foundation = (
         Path(__file__).resolve().parents[1]
@@ -275,6 +329,9 @@ def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:
         "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
         "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
         in executor.RUNTIME_CARRIER_ENV["LD_LIBRARY_PATH"]
+    )
+    assert executor.RUNTIME_CARRIER_ENV["LD_LIBRARY_PATH"].endswith(
+        ":/opt/blueprint/runtime-libs"
     )
 
 
