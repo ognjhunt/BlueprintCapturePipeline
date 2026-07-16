@@ -20,6 +20,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ARCHIVE_PATH,
     DEFAULT_RUNTIME_MANIFEST_PATH,
     DEFAULT_RUNTIME_ROOT,
+    LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
     RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
 )
@@ -173,8 +174,9 @@ def test_template_bootstraps_verified_runtime_from_persistent_carrier_volume() -
     assert payload["env"]["BLUEPRINT_RUNTIME_CARRIER_IMAGE_DIGEST"] == CARRIER_IMAGE
 
 
-def test_carrier_without_content_digest_is_blocked() -> None:
+def test_legacy_v2_carrier_uses_volume_bound_model_verification_digest() -> None:
     carrier = _carrier("US-WA-1")
+    carrier["schema_version"] = LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION
     carrier["model_cache"].pop("manifest_digest")
     volume = _volume()
     volume["data_center_id"] = "US-WA-1"
@@ -193,16 +195,17 @@ def test_carrier_without_content_digest_is_blocked() -> None:
         gpu_type_ids=("NVIDIA RTX 6000 Ada Generation",),
         carrier_volume_admission=carrier,
     )
-    assert admission["status"] == "blocked"
-    assert "carrier_model_cache_content_digest_invalid" in admission["blockers"]
-    with pytest.raises(ValueError, match="serverless_carrier_volume_admission_invalid"):
-        build_template_payload(
-            name="blueprint-groot-oscar-serverless-missing-digest",
-            image_ref=IMAGE,
-            source_commit="c" * 40,
-            model_manifest_digest=MODEL_DIGEST,
-            carrier_volume_admission=carrier,
-        )
+    payload = build_template_payload(
+        name="blueprint-groot-oscar-serverless-legacy",
+        image_ref=IMAGE,
+        source_commit="c" * 40,
+        model_manifest_digest=MODEL_DIGEST,
+        carrier_volume_admission=carrier,
+    )
+
+    assert admission["status"] == "admitted"
+    assert admission["model_manifest_digest"] == MODEL_DIGEST
+    assert payload["env"]["BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST"] == MODEL_DIGEST
 
 
 def test_template_rejects_non_hex_model_manifest_digest() -> None:

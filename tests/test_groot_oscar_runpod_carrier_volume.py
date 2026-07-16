@@ -6,6 +6,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ARCHIVE_PATH,
     DEFAULT_RUNTIME_MANIFEST_PATH,
     DEFAULT_RUNTIME_ROOT,
+    LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
     RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
     build_runtime_bundle_manifest,
@@ -167,13 +168,22 @@ def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
     assert "carrier_model_cache_not_verified" in blocked["blockers"]
 
 
-def test_carrier_volume_admission_rejects_missing_or_malformed_content_digest() -> None:
+def test_carrier_volume_admission_migrates_v2_and_requires_v3_content_digest() -> None:
+    legacy = _admission()
+    legacy["schema_version"] = LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION
+    legacy["model_cache"].pop("manifest_digest")
+
+    verified = verify_carrier_volume_admission(legacy, expected_carrier_image_ref=CARRIER_REF)
+    assert verified["status"] == "verified"
+    assert verified["schema_version"] == LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION
+    assert verified["model_manifest_digest"] is None
+    assert verified["requires_external_model_manifest_digest_binding"] is True
+
     missing = _admission()
     missing["model_cache"].pop("manifest_digest")
-
     blocked = verify_carrier_volume_admission(missing, expected_carrier_image_ref=CARRIER_REF)
     assert blocked["status"] == "blocked"
-    assert "carrier_model_cache_content_digest_invalid" in blocked["blockers"]
+    assert "carrier_model_cache_content_digest_missing_from_v3" in blocked["blockers"]
 
     malformed = _admission()
     malformed["model_cache"]["manifest_digest"] = "sha256:bad"

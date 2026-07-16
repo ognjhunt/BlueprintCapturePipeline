@@ -16,7 +16,8 @@ from typing import Any, Mapping, Sequence
 
 
 RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION = "groot_oscar_runtime_bundle_manifest.v1"
-CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v2"
+CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v3"
+LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v2"
 THIN_RUNTIME_SOURCE_EVIDENCE_SCHEMA_VERSION = "groot_oscar_thin_remote_build_result.v1"
 RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION = (
     "groot_oscar_runtime_source_release_verification.v1"
@@ -216,7 +217,11 @@ def verify_carrier_volume_admission(
     model = _mapping(admission.get("model_cache"))
     transfer = _mapping(admission.get("s3_transfer_verification"))
     blockers: list[str] = []
-    if admission.get("schema_version") != CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION:
+    admission_schema = _string(admission.get("schema_version"))
+    if admission_schema not in {
+        CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
+        LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
+    }:
         blockers.append("carrier_volume_admission_schema_invalid")
     if admission.get("status") != "verified":
         blockers.append("carrier_volume_admission_not_verified")
@@ -271,11 +276,13 @@ def verify_carrier_volume_admission(
     if not model_manifest_digest:
         blockers.append("carrier_model_cache_manifest_sha256_invalid")
     model_content_digest = _string(model.get("manifest_digest"))
-    if not (
+    if model_content_digest and not (
         model_content_digest.startswith("sha256:")
         and _sha256_digest(model_content_digest.removeprefix("sha256:"))
     ):
         blockers.append("carrier_model_cache_content_digest_invalid")
+    if admission_schema == CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION and not model_content_digest:
+        blockers.append("carrier_model_cache_content_digest_missing_from_v3")
     if transfer.get("upload_completed") is not True:
         blockers.append("carrier_volume_s3_upload_not_complete")
     if transfer.get("full_redownload_sha256_verified") is not True:
@@ -285,7 +292,7 @@ def verify_carrier_volume_admission(
     if _string(transfer.get("data_center_id")).upper() != data_center_id:
         blockers.append("carrier_volume_s3_data_center_binding_mismatch")
     return {
-        "schema_version": CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
+        "schema_version": admission_schema or CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
         "status": "blocked" if blockers else "verified",
         "blockers": sorted(set(blockers)),
         "network_volume_id": volume_id,
@@ -305,7 +312,8 @@ def verify_carrier_volume_admission(
         "model_cache_root": DEFAULT_MODEL_CACHE_ROOT,
         "model_cache_manifest_path": DEFAULT_MODEL_CACHE_MANIFEST_PATH,
         "model_manifest_sha256": model_manifest_digest,
-        "model_manifest_digest": model_content_digest,
+        "model_manifest_digest": model_content_digest or None,
+        "requires_external_model_manifest_digest_binding": not bool(model_content_digest),
         "claim_boundary": (
             "This admission proves a digest-bound request may attach preverified volume bytes. "
             "The carrier must still reverify and activate them after container start. It does "

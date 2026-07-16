@@ -185,7 +185,8 @@ def build_template_payload(
         raise ValueError("serverless_carrier_source_release_mismatch")
     if carrier.get("source_release_commit") != source_commit:
         raise ValueError("serverless_carrier_source_commit_mismatch")
-    if carrier.get("model_manifest_digest") != model_manifest_digest:
+    carrier_manifest_digest = str(carrier.get("model_manifest_digest") or "")
+    if carrier_manifest_digest and carrier_manifest_digest != model_manifest_digest:
         raise ValueError("serverless_carrier_model_manifest_mismatch")
     model_root = _serverless_volume_path(str(carrier["model_cache_root"]))
     runtime_archive_path = _serverless_volume_path(str(carrier["runtime_archive_path"]))
@@ -361,7 +362,8 @@ def validate_serverless_inputs(
             blockers.append("serverless_carrier_source_release_mismatch")
         if carrier.get("source_release_commit") != release_source_commit:
             blockers.append("serverless_carrier_source_commit_mismatch")
-        if carrier.get("model_manifest_digest") != manifest_digest:
+        carrier_manifest_digest = str(carrier.get("model_manifest_digest") or "")
+        if carrier_manifest_digest and carrier_manifest_digest != manifest_digest:
             blockers.append("serverless_carrier_model_manifest_mismatch")
     return {
         "schema_version": SCHEMA_VERSION,
