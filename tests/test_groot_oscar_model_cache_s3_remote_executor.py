@@ -115,12 +115,15 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
 
     assert result["status"] == "completed"
     assert result["source_and_carrier_registry_digests_verified"] is True
-    assert result["carrier_validation"]["status"] == "passed"
+    assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
     assert result["carrier_validation"]["archived_elf_file_count"] == 42
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
     ]
+    assert result["runtime_imports_and_wbc_linkage_verified_in_exact_carrier"] is False
+    assert result["runtime_cpu_compatible_with_gpu_driver_deferred_linkage"] is True
+    assert result["gpu_driver_deferred_resolution_unproven"] is True
     assert len(result["additional_artifacts"]) == 2
     assert {row["remote_key"] for row in result["additional_artifacts"]} == {
         DEFAULT_RUNTIME_ARCHIVE_PATH.removeprefix("/workspace/"),
@@ -335,6 +338,7 @@ def test_runtime_carrier_import_failure_defers_only_pure_driver_sonames(
     )
 
     assert result["status"] == "completed"
+    assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1"
     ]

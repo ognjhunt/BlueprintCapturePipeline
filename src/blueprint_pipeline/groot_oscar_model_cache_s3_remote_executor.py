@@ -510,7 +510,15 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
             )
     evidence = {
         "schema_version": "groot_oscar_runtime_carrier_compatibility_audit.v1",
-        "status": "failed" if failed_checks else "passed",
+        "status": (
+            "failed"
+            if failed_checks
+            else (
+                "passed_with_gpu_driver_deferred"
+                if gpu_driver_deferred_sonames
+                else "passed"
+            )
+        ),
         "failed_checks": failed_checks,
         "checks": checks,
         "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
@@ -712,7 +720,13 @@ def prepare_runtime_bundle(
             "embedded_model_paths_excluded": list(RUNTIME_EMBEDDED_MODEL_PATHS),
             "embedded_model_paths_present_and_removed": removed_embedded_model_paths,
             "models_supplied_only_by_verified_external_cache": True,
-            "runtime_imports_and_wbc_linkage_verified_in_exact_carrier": True,
+            "runtime_imports_and_wbc_linkage_verified_in_exact_carrier": not bool(
+                carrier_validation["gpu_driver_deferred_sonames"]
+            ),
+            "runtime_cpu_compatible_with_gpu_driver_deferred_linkage": True,
+            "gpu_driver_deferred_resolution_unproven": bool(
+                carrier_validation["gpu_driver_deferred_sonames"]
+            ),
             "carrier_validation": carrier_validation,
             "gpu_compute_allocated": False,
             "raw_secret_values_recorded": False,
