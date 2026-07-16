@@ -749,7 +749,7 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
     budget = observed["campaign_budget"]
     assert isinstance(budget, dict)
     assert budget["campaign_stage"] == "persistent_carrier_campaign"
-    assert budget["reservation_gpu_seconds"] == 18_600
+    assert budget["reservation_gpu_seconds"] == 16_800
     assert budget["combined_gpu_wall_cap_seconds"] == 36_000
     assert budget["future_campaign_allowance_gpu_seconds"] == 0
     assert json.loads(capsys.readouterr().out) == {"success": True}

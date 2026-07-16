@@ -18,6 +18,9 @@ from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, parse_bool, utc_now_iso, write_json
 from .groot_oscar_runpod_carrier_volume import verify_carrier_volume_admission
+from .groot_oscar_runpod_persistent_carrier import (
+    PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
+)
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -1867,7 +1870,11 @@ def create_runpod_wam_async_run(
         resource_kind="compute_instance",
         resource_name=resolved_pod_name,
         job_dir=str(resolved_job_dir),
-        max_age_seconds=18_600 if carrier_volume_admission is not None else 7_200,
+        max_age_seconds=(
+            PERSISTENT_WATCHDOG_MAX_TTL_SECONDS
+            if carrier_volume_admission is not None
+            else 7_200
+        ),
     )
     handoff_receipt_update: dict[str, Any] = {"status": "not_configured"}
     if provider_lane_handoff_receipt_path is not None:

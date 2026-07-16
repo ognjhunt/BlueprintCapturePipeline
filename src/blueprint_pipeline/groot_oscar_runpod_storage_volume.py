@@ -60,6 +60,9 @@ from .groot_oscar_runpod_model_volume import (
     _matching_resources,
     _watchdog_process_running,
 )
+from .groot_oscar_runpod_persistent_carrier import (
+    PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
+)
 from .groot_oscar_runpod_s3_model_cache import (
     DEFAULT_REMOTE_PREFIX,
     _client as _runpod_s3_client,
@@ -98,7 +101,7 @@ MAX_VOLUME_GIB = 200
 MIN_STORAGE_TTL_SECONDS = 2 * 60 * 60
 MAX_STORAGE_TTL_SECONDS = 12 * 60 * 60
 MIN_RUNTIME_BUNDLE_STORAGE_TTL_SECONDS = 8 * 60 * 60
-PERSISTENT_CARRIER_WATCHDOG_SECONDS = 18_600
+PERSISTENT_CARRIER_WATCHDOG_SECONDS = PERSISTENT_WATCHDOG_MAX_TTL_SECONDS
 MIN_CACHE_RETENTION_SECONDS = 4 * 60 * 60
 MAX_CACHE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 MAX_CACHE_RETENTION_SPEND_USD = 1.0

@@ -108,7 +108,7 @@ def _preflight(gpu: str = "NVIDIA A40") -> dict:
         "spend": {
             "paid_mutation_authorized": True,
             "max_spend_usd": 4.0,
-            "hard_ttl_seconds": 18_600,
+            "hard_ttl_seconds": 16_800,
             "one_resource_limit": True,
             "independent_teardown_watchdog": True,
             "watchdog_armed_before_allocation": True,
@@ -124,7 +124,7 @@ def test_persistent_carrier_binds_exact_campaign_and_small_image() -> None:
         preflight=_preflight(),
         carrier_volume_admission=_carrier(),
         loop_step_count=5,
-        max_wait_seconds=18_000,
+        max_wait_seconds=16_200,
     )
 
     assert result["status"] == "admitted"
@@ -163,5 +163,5 @@ def test_persistent_carrier_rejects_h100_wrong_loop_and_short_watchdog() -> None
     assert "persistent_carrier_h100_disallowed" in result["blockers"]
     assert "persistent_carrier_exact_image_digest_mismatch" in result["blockers"]
     assert "persistent_carrier_requires_exactly_five_policy_calls" in result["blockers"]
-    assert "persistent_carrier_requires_18000_second_run_bound" in result["blockers"]
-    assert "persistent_carrier_watchdog_below_18600_seconds" in result["blockers"]
+    assert "persistent_carrier_requires_configured_run_bound" in result["blockers"]
+    assert "persistent_carrier_watchdog_below_configured_minimum" in result["blockers"]

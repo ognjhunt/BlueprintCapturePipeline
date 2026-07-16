@@ -16,8 +16,8 @@ PERSISTENT_POLICY_CALL_COUNT = 5
 PERSISTENT_LEARNED_WAM_GENERATION_COUNT = 4
 PERSISTENT_CONTAINER_DISK_GIB = 240
 PERSISTENT_NETWORK_VOLUME_GIB = 120
-PERSISTENT_LOOP_MAX_WAIT_SECONDS = 18_000
-PERSISTENT_WATCHDOG_MAX_TTL_SECONDS = 18_600
+PERSISTENT_LOOP_MAX_WAIT_SECONDS = 16_200
+PERSISTENT_WATCHDOG_MAX_TTL_SECONDS = 16_800
 PERSISTENT_CARRIER_IMAGE_REF = (
     "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:"
     "b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca"
@@ -62,13 +62,13 @@ def prepare_persistent_carrier_launch(
     if loop_step_count != PERSISTENT_POLICY_CALL_COUNT:
         blockers.append("persistent_carrier_requires_exactly_five_policy_calls")
     if max_wait_seconds != PERSISTENT_LOOP_MAX_WAIT_SECONDS:
-        blockers.append("persistent_carrier_requires_18000_second_run_bound")
+        blockers.append("persistent_carrier_requires_configured_run_bound")
     if (
         type(spend.get("hard_ttl_seconds")) is not int
         or int(spend.get("hard_ttl_seconds") or 0)
         < PERSISTENT_WATCHDOG_MAX_TTL_SECONDS
     ):
-        blockers.append("persistent_carrier_watchdog_below_18600_seconds")
+        blockers.append("persistent_carrier_watchdog_below_configured_minimum")
     if carrier.get("source_release_image_ref") != serve.get("release_image_ref"):
         blockers.append("persistent_carrier_source_release_mismatch")
     if carrier.get("network_volume_id") != serve.get("network_volume_id"):

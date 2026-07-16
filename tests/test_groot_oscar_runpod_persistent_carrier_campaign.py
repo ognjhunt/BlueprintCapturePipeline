@@ -117,7 +117,7 @@ def _preflight() -> dict:
         "spend": {
             "paid_mutation_authorized": True,
             "max_spend_usd": 4.0,
-            "hard_ttl_seconds": 18_600,
+            "hard_ttl_seconds": 16_800,
             "one_resource_limit": True,
             "independent_teardown_watchdog": True,
             "watchdog_armed_before_allocation": True,
@@ -138,7 +138,7 @@ def _inputs(tmp_path: Path) -> dict[str, Path]:
         {
             "watchdog_pod_name_prefix": "blueprint-persistent-",
             "watchdog_out_dir": str(watchdog.resolve()),
-            "watchdog_deadline_epoch": time.time() + 18_599,
+            "watchdog_deadline_epoch": time.time() + 16_799,
         }
     )
     preflight["model_volume_watchdog_handoff"] = {
@@ -170,12 +170,12 @@ def _budget(tmp_path: Path) -> dict:
         "initial_used_gpu_seconds": 15_624,
         "total_spend_cap_usd": 20.0,
         "combined_gpu_wall_cap_seconds": 36_000,
-        "reservation_gpu_seconds": 18_600,
+        "reservation_gpu_seconds": 16_800,
         "campaign_stage": "persistent_carrier_campaign",
-        "maximum_canary_reservation_gpu_seconds": 18_600,
+        "maximum_canary_reservation_gpu_seconds": 16_800,
         "future_campaign_allowance_gpu_seconds": 0,
         "maximum_future_campaign_allowance_gpu_seconds": 0,
-        "maximum_combined_plan_gpu_seconds": 18_600,
+        "maximum_combined_plan_gpu_seconds": 16_800,
         "reduced_canary_timeout_acknowledged": True,
         "max_hourly_rate_usd": 0.74,
         "minimum_reconciled_spend_usd": 14.557003,
@@ -198,7 +198,7 @@ def test_persistent_campaign_dry_run_is_provider_pure(tmp_path: Path) -> None:
         "learned_wam_generation_count": 4,
         "same_pod_required": True,
         "provider_output_replay_disallowed": True,
-        "max_wait_seconds": 18_000,
+        "max_wait_seconds": 16_200,
     }
 
 
@@ -325,9 +325,9 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
     assert result["status"] == "completed"
     assert result["gpu_teardown_verified"] is True
     assert observed_timeout_env == {
-        "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS": "18000",
-        "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS": "18300",
-        "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS": "18300",
+        "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS": "16200",
+        "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS": "16500",
+        "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS": "16500",
         "BLUEPRINT_RUNPOD_WAM_TEARDOWN_ACTION": "delete",
     }
     assert (
@@ -367,7 +367,7 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
         "media_file_count": 21,
     }
     assert observed["loop_step_count"] == 5
-    assert observed["max_wait_seconds"] == 18_000
+    assert observed["max_wait_seconds"] == 16_200
     assert observed["use_live_wam"] is True
     assert observed["allow_structural_wam_fallback"] is False
     assert observed["pod_name"] == "blueprint-persistent-exact"
