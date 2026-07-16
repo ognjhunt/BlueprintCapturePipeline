@@ -88,10 +88,6 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _SAFE_NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 _SAFE_DROPLET_ID = re.compile(r"[0-9]{1,32}")
-_MISSING_SONAME = re.compile(
-    r"\b([A-Za-z0-9_+.-]+\.so(?:\.[A-Za-z0-9_.-]+)*)"
-    r"(?:\s+=>\s+not found|:\s+cannot open shared object file)"
-)
 _MISSING_PYTHON_MODULE = re.compile(
     r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]"
 )
@@ -274,6 +270,31 @@ class RuntimeCarrierValidationError(RuntimeError):
         self.evidence = dict(evidence)
 
 
+def _missing_soname_tokens(text: str) -> set[str]:
+    """Extract only bounded shared-library names without backtracking regexes."""
+
+    allowed = frozenset(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-"
+    )
+    tokens: set[str] = set()
+    for line in text.splitlines():
+        candidate = ""
+        if "=> not found" in line:
+            left = line.split("=> not found", 1)[0].strip()
+            candidate = left.split()[-1] if left else ""
+        elif ": cannot open shared object file" in line:
+            left = line.split(": cannot open shared object file", 1)[0]
+            segment = left.rsplit(":", 1)[-1].strip()
+            candidate = segment.split()[-1] if segment else ""
+        if (
+            0 < len(candidate) <= 256
+            and ".so" in candidate
+            and all(character in allowed for character in candidate)
+        ):
+            tokens.add(candidate)
+    return tokens
+
+
 def _validation_diagnostic_tokens(exc: BaseException) -> list[str]:
     text = "\n".join(
         value
@@ -282,7 +303,7 @@ def _validation_diagnostic_tokens(exc: BaseException) -> list[str]:
     )
     return sorted(
         {
-            *(_MISSING_SONAME.findall(text)),
+            *_missing_soname_tokens(text),
             *(_MISSING_PYTHON_MODULE.findall(text)),
         }
     )[:256]
