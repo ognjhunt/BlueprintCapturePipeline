@@ -17,11 +17,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, parse_bool, utc_now_iso, write_json
-from .groot_oscar_runpod_carrier_volume import (
-    RUNTIME_ARCHIVE_ROOTS,
-    runtime_bootstrap_shell_prefix,
-    verify_carrier_volume_admission,
-)
+from .groot_oscar_runpod_carrier_volume import verify_carrier_volume_admission
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -48,6 +44,14 @@ from .runpod_provider_adapter import (
     RUNPOD_API_KEY_FILE_ENV,
     RUNPOD_API_KEY_ENV,
     RUNPOD_REST_API_BASE,
+)
+from .runpod_wam_launch_contract import (
+    build_pod_payload as _build_pod_payload,
+    extract_pod_id as _extract_pod_id,
+    read_compatible_warm_candidate as _read_compatible_warm_candidate_contract,
+    redacted_payload_summary as _redacted_payload_summary,
+    selected_existing_pod_id as _selected_existing_pod_id,
+    update_provider_lane_handoff_receipt as _update_provider_lane_handoff_receipt,
 )
 from .secret_artifact_policy import (
     SECRET_PATH_DISCLOSURE_POLICY,
@@ -653,29 +657,6 @@ def _runpod_request(
     return status, dict(parsed) if isinstance(parsed, Mapping) else {"response": parsed}
 
 
-def _redacted_payload_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
-    body = _mapping(payload)
-    return {
-        "cloudType": body.get("cloudType"),
-        "computeType": body.get("computeType"),
-        "gpuCount": body.get("gpuCount"),
-        "gpuTypeIds": body.get("gpuTypeIds"),
-        "gpuTypePriority": body.get("gpuTypePriority"),
-        "volumeInGb": body.get("volumeInGb"),
-        "networkVolumeId": body.get("networkVolumeId"),
-        "dataCenterIds": body.get("dataCenterIds"),
-        "containerDiskInGb": body.get("containerDiskInGb"),
-        "minVCPUPerGPU": body.get("minVCPUPerGPU"),
-        "minRAMPerGPU": body.get("minRAMPerGPU"),
-        "name": body.get("name"),
-        "imageName": body.get("imageName"),
-        "dockerEntrypoint": body.get("dockerEntrypoint"),
-        "dockerStartCmd_present": bool(body.get("dockerStartCmd")),
-        "env_keys": sorted((_mapping(body.get("env")) or {}).keys()),
-        "raw_secret_values_recorded": False,
-    }
-
-
 def _provider_shell_script(provider_bundle_kind: str = "wam") -> str:
     if provider_bundle_kind == "unitree_groot_n17_sonic":
         return r"""
@@ -1121,108 +1102,24 @@ def _pod_payload(
     min_ram_per_gpu: int = 8,
     carrier_volume_admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    env = {
-        "BLUEPRINT_EVAL_MANIFEST_URI": provider_bundle_url,
-        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL": provider_output_put_url,
-        "NVIDIA_DRIVER_CAPABILITIES": "all",
-        "BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND": provider_bundle_kind,
-        "WORK_DIR": "/workspace/blueprint_wam_provider",
-    }
-    if provider_bundle_kind == "unitree_unifolm":
-        env["WORK_DIR"] = "/workspace/blueprint_unitree_unifolm_provider"
-    elif provider_bundle_kind == "unitree_groot_n17_sonic":
-        env["WORK_DIR"] = "/workspace/blueprint_unitree_groot_sonic_persistent_provider"
-    if _teardown_action() == "keep_on_success":
-        env["BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS"] = "1"
-    env.update({key: value for key, value in provider_runtime_config_env.items() if _string(value)})
-    env.update({key: value for key, value in model_secret_env.items() if _string(value)})
-    carrier_volume = None
-    if carrier_volume_admission is not None:
-        carrier_volume = verify_carrier_volume_admission(
-            carrier_volume_admission,
-            expected_carrier_image_ref=image_name,
-        )
-        if carrier_volume["status"] != "verified":
-            raise ValueError(
-                "carrier_volume_admission_invalid:"
-                + ",".join(carrier_volume["blockers"])
-            )
-        if any("H100" in gpu_type_id.upper() for gpu_type_id in gpu_type_ids):
-            raise ValueError("carrier_volume_h100_disallowed")
-        env.update(
-            {
-                "BLUEPRINT_RUNTIME_ARCHIVE_PATH": carrier_volume["runtime_archive_path"],
-                "BLUEPRINT_RUNTIME_MANIFEST_PATH": carrier_volume["runtime_manifest_path"],
-                "BLUEPRINT_RUNTIME_ARCHIVE_SHA256": carrier_volume[
-                    "runtime_archive_sha256"
-                ],
-                "BLUEPRINT_RUNTIME_MANIFEST_SHA256": carrier_volume[
-                    "runtime_manifest_sha256"
-                ],
-                "BLUEPRINT_RUNTIME_ARCHIVE_ROOTS": ":".join(RUNTIME_ARCHIVE_ROOTS),
-                "BLUEPRINT_MODEL_CACHE_ROOT": carrier_volume["model_cache_root"],
-                "BLUEPRINT_MODEL_CACHE_MANIFEST_PATH": (
-                    carrier_volume["model_cache_manifest_path"]
-                ),
-                "BLUEPRINT_MODEL_CACHE_MANIFEST_SHA256": carrier_volume[
-                    "model_manifest_sha256"
-                ],
-                "BLUEPRINT_RUNPOD_CARRIER_VOLUME_ID": carrier_volume[
-                    "network_volume_id"
-                ],
-            }
-        )
-    provider_script = _provider_shell_script(provider_bundle_kind)
-    if carrier_volume is not None:
-        provider_script = runtime_bootstrap_shell_prefix() + "\n" + provider_script
-    return {
-        "cloudType": cloud_type,
-        "computeType": "GPU",
-        "gpuCount": 1,
-        "gpuTypeIds": list(gpu_type_ids),
-        "gpuTypePriority": "availability",
-        "volumeInGb": volume_gb,
-        "containerDiskInGb": container_disk_gb,
-        "minVCPUPerGPU": min_vcpu_per_gpu,
-        "minRAMPerGPU": min_ram_per_gpu,
-        "name": job_name,
-        "imageName": image_name,
-        "dockerEntrypoint": ["bash", "-lc"],
-        "dockerStartCmd": [provider_script],
-        "ports": [],
-        "volumeMountPath": "/workspace",
-        "env": env,
-        **(
-            {
-                "networkVolumeId": carrier_volume["network_volume_id"],
-                "dataCenterIds": [carrier_volume["data_center_id"]],
-            }
-            if carrier_volume is not None
-            else {}
-        ),
-        **({"allowedCudaVersions": list(allowed_cuda_versions)} if allowed_cuda_versions else {}),
-    }
-
-
-def _extract_pod_id(response: Mapping[str, Any]) -> str:
-    for key in ("id", "podId", "pod_id"):
-        value = _string(response.get(key))
-        if value:
-            return value
-    for key in ("pod", "data"):
-        nested = _mapping(response.get(key))
-        for nested_key in ("id", "podId", "pod_id"):
-            value = _string(nested.get(nested_key))
-            if value:
-                return value
-    return ""
-
-
-def _selected_existing_pod_id(explicit: str = "") -> str:
-    return (
-        _string(explicit)
-        or _string(os.getenv(RUNPOD_WAM_EXISTING_POD_ID_ENV))
-        or _string(os.getenv(RUNPOD_EXISTING_POD_ID_ENV))
+    return _build_pod_payload(
+        job_name=job_name,
+        image_name=image_name,
+        gpu_type_ids=gpu_type_ids,
+        provider_bundle_url=provider_bundle_url,
+        provider_output_put_url=provider_output_put_url,
+        provider_bundle_kind=provider_bundle_kind,
+        model_secret_env=model_secret_env,
+        provider_runtime_config_env=provider_runtime_config_env,
+        container_disk_gb=container_disk_gb,
+        volume_gb=volume_gb,
+        cloud_type=cloud_type,
+        allowed_cuda_versions=allowed_cuda_versions,
+        min_vcpu_per_gpu=min_vcpu_per_gpu,
+        min_ram_per_gpu=min_ram_per_gpu,
+        provider_script=_provider_shell_script(provider_bundle_kind),
+        keep_on_success=_teardown_action() == "keep_on_success",
+        carrier_volume_admission=carrier_volume_admission,
     )
 
 
@@ -1240,101 +1137,14 @@ def _read_compatible_warm_candidate(
     cloud_type: str,
 ) -> dict[str, Any]:
     candidate_path = _warm_candidate_path()
-    if _env_truthy(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV):
-        return {
-            "status": "disabled",
-            "path": str(candidate_path),
-            "disable_env": RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV,
-            "raw_secret_values_recorded": False,
-        }
-    if not candidate_path.is_file():
-        return {
-            "status": "missing",
-            "path": str(candidate_path),
-            "raw_secret_values_recorded": False,
-        }
-    try:
-        payload = _read_json(candidate_path)
-    except (OSError, ValueError) as exc:
-        return {
-            "status": "unreadable",
-            "path": str(candidate_path),
-            "error_type": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    if _string(payload.get("status")) == "retired":
-        return {
-            "status": "retired",
-            "path": str(candidate_path),
-            "retired_pod_id": _string(payload.get("retired_pod_id")),
-            "reason": _string(payload.get("reason")) or "warm_candidate_retired",
-            "raw_secret_values_recorded": False,
-        }
-    pod_id = _string(payload.get("pod_id"))
-    mismatches: dict[str, dict[str, str]] = {}
-    expected = {
-        "provider_bundle_kind": provider_bundle_kind,
-        "image_name": image_name,
-        "cloud_type": cloud_type,
-    }
-    for key, expected_value in expected.items():
-        actual_value = _string(payload.get(key))
-        if actual_value != expected_value:
-            mismatches[key] = {
-                "candidate": actual_value,
-                "requested": expected_value,
-            }
-    if not pod_id:
-        return {
-            "status": "incompatible",
-            "reason": "warm_candidate_missing_pod_id",
-            "path": str(candidate_path),
-            "raw_secret_values_recorded": False,
-        }
-    if mismatches:
-        return {
-            "status": "incompatible",
-            "reason": "warm_candidate_request_mismatch",
-            "path": str(candidate_path),
-            "mismatches": mismatches,
-            "raw_secret_values_recorded": False,
-        }
-    running_preserved = parse_bool(
-        payload.get("running_pod_preserved_for_hot_reuse"),
-        default=False,
+    return _read_compatible_warm_candidate_contract(
+        candidate_path=candidate_path,
+        disabled=_env_truthy(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV),
+        disable_env=RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV,
+        provider_bundle_kind=provider_bundle_kind,
+        image_name=image_name,
+        cloud_type=cloud_type,
     )
-    stopped_preserved = parse_bool(
-        payload.get("stopped_pod_preserved_for_warm_reuse"),
-        default=False,
-    )
-    reuse_kind = "existing_pod_candidate"
-    if running_preserved:
-        reuse_kind = "running_hot_candidate"
-    elif stopped_preserved:
-        reuse_kind = "stopped_warm_candidate"
-    return {
-        "status": "selected",
-        "path": str(candidate_path),
-        "pod_id": pod_id,
-        "provider_bundle_kind": provider_bundle_kind,
-        "image_name": image_name,
-        "cloud_type": cloud_type,
-        "reuse_kind": reuse_kind,
-        "running_pod_preserved_for_hot_reuse": running_preserved,
-        "stopped_pod_preserved_for_warm_reuse": stopped_preserved,
-        "recorded_at": payload.get("generated_at"),
-        "source_stop_manifest_path": payload.get("source_stop_manifest_path"),
-        "source_keepalive_poll_manifest_path": payload.get(
-            "source_keepalive_poll_manifest_path"
-        ),
-        "source_job_dir": payload.get("source_job_dir"),
-        "claim_boundary": {
-            "warm_candidate_reuses_provider_pod_id": True,
-            "running_hot_candidate_still_uses_update_start_path": running_preserved,
-            "resident_in_pod_job_queue_not_proven": running_preserved,
-        },
-        "raw_secret_values_recorded": False,
-    }
 
 
 def _retire_warm_candidate(
@@ -1656,101 +1466,6 @@ def _staging_urls(public_base_url: str, token_file: Path) -> tuple[str, str, dic
         _url_with_token(public_base_url, OUTPUT_ROUTE, token),
         token_status,
     )
-
-
-def _update_provider_lane_handoff_receipt(
-    receipt_path: str | Path,
-    *,
-    pod_name: str,
-    pending_teardown_record: str,
-    pod_id: str = "",
-) -> dict[str, Any]:
-    """Bind watchdog control to this runner before and after Pod creation."""
-
-    path = Path(receipt_path).expanduser()
-    if not path.is_absolute():
-        raise ValueError("provider_lane_handoff_receipt_path_not_absolute")
-    try:
-        metadata = path.lstat()
-    except OSError as exc:
-        raise ValueError("provider_lane_handoff_receipt_missing") from exc
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("provider_lane_handoff_receipt_not_regular_file")
-    if metadata.st_mode & 0o077:
-        raise ValueError("provider_lane_handoff_receipt_permissions_unsafe")
-    if metadata.st_uid not in {0, os.geteuid()}:
-        raise ValueError("provider_lane_handoff_receipt_owner_untrusted")
-    if metadata.st_size > 1024 * 1024:
-        raise ValueError("provider_lane_handoff_receipt_oversized")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("provider_lane_handoff_receipt_unreadable") from exc
-    receipt = dict(value) if isinstance(value, Mapping) else {}
-    prefix = _string(receipt.get("pod_name_prefix"))
-    if (
-        receipt.get("status") != "accepted"
-        or receipt.get("campaign_kind") != "persistent_policy_wam_loop"
-        or not prefix
-        or not pod_name.startswith(prefix)
-    ):
-        raise ValueError("provider_lane_handoff_receipt_binding_invalid")
-    pending_path = Path(pending_teardown_record).expanduser()
-    if not pending_path.is_absolute():
-        raise ValueError("provider_lane_handoff_pending_teardown_path_not_absolute")
-    try:
-        pending_value = json.loads(pending_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("provider_lane_handoff_pending_teardown_unreadable") from exc
-    pending = dict(pending_value) if isinstance(pending_value, Mapping) else {}
-    if (
-        pending.get("status") != "open"
-        or pending.get("provider") != "runpod"
-        or pending.get("lane") != RUNPOD_WAM_LANE
-        or pending.get("resource_kind") != "compute_instance"
-        or pending.get("resource_name") != pod_name
-    ):
-        raise ValueError("provider_lane_handoff_pending_teardown_binding_invalid")
-    bound_pending_pod_id = _string(pending.get("instance_id"))
-    if pod_id and bound_pending_pod_id != pod_id:
-        raise ValueError("provider_lane_handoff_pending_teardown_pod_id_mismatch")
-    receipt.update(
-        {
-            "pod_id": pod_id or None,
-            "pod_name": pod_name,
-            "pod_pending_teardown_record": str(pending_path),
-            "pre_provider_mutation_confirmed_absent": False,
-            "provider_mutation_state": "pod_id_bound" if pod_id else "pending_create",
-            "raw_secret_values_recorded": False,
-        }
-    )
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    descriptor = -1
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(temporary, flags, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            json.dump(receipt, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-    return {
-        "status": "pod_id_bound" if pod_id else "pending_create_bound",
-        "path": str(path),
-        "pod_id_present": bool(pod_id),
-        "raw_secret_values_recorded": False,
-    }
 
 
 def create_runpod_wam_async_run(
@@ -2095,7 +1810,11 @@ def create_runpod_wam_async_run(
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
-    explicit_existing_pod_id = _selected_existing_pod_id(existing_pod_id)
+    explicit_existing_pod_id = _selected_existing_pod_id(
+        existing_pod_id,
+        wam_existing_pod_id_env=RUNPOD_WAM_EXISTING_POD_ID_ENV,
+        provider_existing_pod_id_env=RUNPOD_EXISTING_POD_ID_ENV,
+    )
     if carrier_volume_admission is not None and explicit_existing_pod_id:
         manifest = {
             "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
