@@ -10,6 +10,7 @@ import pytest
 from blueprint_pipeline import groot_oscar_runpod_storage_volume as storage
 from blueprint_pipeline import groot_oscar_runpod_preflight as preflight
 from blueprint_pipeline.groot_oscar_runpod_storage_volume import (
+    _stop_replaced_watchdog,
     build_storage_volume_admission,
     launch_detached,
     retain_verified_model_cache,
@@ -21,6 +22,52 @@ from blueprint_pipeline.paid_resource_admission import (
 
 
 VERIFY_RETAINED_REMOTE = storage._verify_retained_model_cache_remote
+
+
+def test_replaced_watchdog_exit_race_is_recorded_as_stopped() -> None:
+    state_path = str(Path("/tmp/replaced-watchdog-state.json").resolve())
+    result = _stop_replaced_watchdog(
+        source_pid=123,
+        source_state_path=state_path,
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            state_path,
+        ),
+        process_signaler=lambda *_args: (_ for _ in ()).throw(ProcessLookupError()),
+        pid_probe=lambda _pid: True,
+    )
+
+    assert result == {
+        "status": "stopped",
+        "reason": "source_watchdog_exited_during_signal",
+        "last_signal": "SIGTERM",
+    }
+
+
+def test_replaced_watchdog_signal_failure_is_evidence_not_exception() -> None:
+    state_path = str(Path("/tmp/replaced-watchdog-state.json").resolve())
+    result = _stop_replaced_watchdog(
+        source_pid=123,
+        source_state_path=state_path,
+        process_argv_probe=lambda _pid: (
+            "python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "watchdog",
+            "--state",
+            state_path,
+        ),
+        process_signaler=lambda *_args: (_ for _ in ()).throw(PermissionError()),
+        pid_probe=lambda _pid: True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "source_watchdog_signal_failed"
+    assert result["error_type"] == "PermissionError"
 
 
 def _patch_retention_remote_verification(monkeypatch: pytest.MonkeyPatch) -> None:

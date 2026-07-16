@@ -709,6 +709,20 @@ def run_active_worker(
         admission["status"] = "blocked"
     write_json(output / "serverless_admission.json", admission)
     write_json(output / "campaign_io_admission.json", campaign_io)
+    if admission.get("status") != "admitted":
+        write_json(
+            output / "serverless_request_shapes.json",
+            {
+                "status": "blocked_before_request_shape",
+                "template": None,
+                "endpoint": None,
+            },
+        )
+        return {
+            **admission,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+        }
     template_payload = build_template_payload(
         name=f"{resource_name_prefix}template",
         image_ref=str(admission.get("release_image_ref") or ""),
@@ -727,10 +741,10 @@ def run_active_worker(
         output / "serverless_request_shapes.json",
         {"template": template_payload, "endpoint": endpoint_payload},
     )
-    if admission.get("status") != "admitted" or not execute:
+    if not execute:
         return {
             **admission,
-            "status": ("dry_run_ready" if admission.get("status") == "admitted" else "blocked"),
+            "status": "dry_run_ready",
             "provider_mutations_performed": 0,
         }
     grant = require_paid_resource_admission(

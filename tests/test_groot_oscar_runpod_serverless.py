@@ -197,6 +197,82 @@ def test_admission_accepts_us_carrier_and_exact_residual_campaign_budget() -> No
     assert result["gpu_type_ids"] == ["NVIDIA RTX 6000 Ada Generation"]
 
 
+def test_blocked_carrier_returns_admission_without_building_request_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    release = tmp_path / "release.json"
+    model = tmp_path / "model.json"
+    handoff = tmp_path / "handoff.json"
+    carrier = tmp_path / "carrier.json"
+    api_key = tmp_path / "runpod_api_key"
+    release.write_text(json.dumps(_release()), encoding="utf-8")
+    model.write_text(json.dumps(_model()), encoding="utf-8")
+    handoff.write_text(
+        json.dumps(
+            {
+                "provider_lane_handoff": {
+                    "binding": {
+                        "provider": "runpod",
+                        "lane": "groot_oscar_model_volume",
+                        "volume_id": "volume-1",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    carrier.write_text(json.dumps({"status": "malformed"}), encoding="utf-8")
+    api_key.write_text("private", encoding="utf-8")
+    api_key.chmod(0o600)
+
+    def fake_provider(method, path, _payload, *, key, timeout):
+        del method, key, timeout
+        if path == "/networkvolumes/volume-1":
+            return 200, {"id": "volume-1", "dataCenterId": "EUR-IS-1"}
+        return 200, []
+
+    monkeypatch.setattr(serverless, "_runpod_call", fake_provider)
+    monkeypatch.setattr(
+        serverless,
+        "validate_campaign_io_evidence",
+        lambda *_args, **_kwargs: {"status": "passed", "blockers": []},
+    )
+    monkeypatch.setattr(
+        serverless,
+        "build_template_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("blocked admission must not build a template")
+        ),
+    )
+
+    result = serverless.run_active_worker(
+        output_dir=tmp_path / "out",
+        release_evidence=release,
+        model_cache_evidence=model,
+        watchdog_handoff_evidence=handoff,
+        api_key_file=api_key,
+        campaign_io_evidence=tmp_path / "campaign_io.json",
+        runpod_s3_access_key_file="unused",
+        runpod_s3_secret_key_file="unused",
+        resource_name_prefix="blueprint-groot-oscar-serverless-blocked-",
+        expected_source_commit="c" * 40,
+        execute=False,
+        campaign_budget_ledger=tmp_path / "budget.json",
+        initial_spent_usd=15.875304422841,
+        initial_gpu_seconds=15_785,
+        carrier_volume_admission=carrier,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    shapes = json.loads((tmp_path / "out" / "serverless_request_shapes.json").read_text())
+    assert shapes == {
+        "status": "blocked_before_request_shape",
+        "template": None,
+        "endpoint": None,
+    }
+
+
 def test_startup_timeout_preserves_strict_and_campaign_reserves() -> None:
     assert compute_startup_wall_timeout_seconds(deadline_epoch=5_000.0, now_epoch=992.0) == 88
     assert compute_startup_wall_timeout_seconds(deadline_epoch=10_000.0, now_epoch=1_000.0) == 1_200

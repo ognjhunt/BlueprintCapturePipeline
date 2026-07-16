@@ -112,6 +112,76 @@ MIN_LOCAL_STAGING_BYTES = 1024**3
 NO_POD_PREFIX = "blueprint-storage-only-no-pod-"
 PROVIDER_LANE = "groot_oscar_model_volume"
 RETENTION_SCHEMA_VERSION = "groot_oscar_bounded_model_cache_retention.v1"
+
+
+def _stop_replaced_watchdog(
+    *,
+    source_pid: int,
+    source_state_path: str,
+    process_argv_probe: Any = read_process_argv,
+    process_signaler: Any = os.kill,
+    pid_probe: Any = _pid_is_alive,
+    sleeper: Any = time.sleep,
+) -> dict[str, Any]:
+    """Stop the replaced cache watchdog and preserve every signal race as evidence."""
+
+    if source_pid <= 0:
+        return {"status": "blocked", "reason": "source_watchdog_pid_invalid"}
+    if not pid_probe(source_pid):
+        return {"status": "stopped", "reason": "source_watchdog_already_stopped"}
+    state_path = str(Path(source_state_path).expanduser().resolve())
+    argv = [str(item) for item in process_argv_probe(source_pid)]
+    canonical = [
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "watchdog",
+        "--state",
+        state_path,
+    ]
+    identity_verified = any(
+        argv[index : index + len(canonical)] == canonical for index in range(len(argv))
+    )
+    if not identity_verified:
+        return {
+            "status": "blocked",
+            "reason": "source_watchdog_identity_unverified",
+        }
+    last_signal = None
+    for signal_name, signal_value in (
+        ("SIGTERM", signal.SIGTERM),
+        ("SIGKILL", signal.SIGKILL),
+    ):
+        try:
+            process_signaler(source_pid, signal_value)
+            last_signal = signal_name
+        except ProcessLookupError:
+            return {
+                "status": "stopped",
+                "reason": "source_watchdog_exited_during_signal",
+                "last_signal": signal_name,
+            }
+        except OSError as exc:
+            return {
+                "status": "blocked",
+                "reason": "source_watchdog_signal_failed",
+                "last_signal": signal_name,
+                "error_type": type(exc).__name__,
+            }
+        for _ in range(100):
+            if not pid_probe(source_pid):
+                return {
+                    "status": "stopped",
+                    "reason": "source_watchdog_signal_confirmed",
+                    "last_signal": signal_name,
+                }
+            sleeper(0.05)
+    return {
+        "status": "blocked",
+        "reason": "source_watchdog_remained_alive",
+        "last_signal": last_signal,
+    }
+
+
 RETENTION_ADMISSION_SCHEMA_VERSION = "groot_oscar_bounded_model_cache_retention_admission.v1"
 RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION = (
     "groot_oscar_bounded_model_cache_remote_verification.v1"
@@ -1283,6 +1353,7 @@ def run_storage_model_volume(
     replacement_rebind_committed = False
     replacement_source_teardown: dict[str, Any] = {}
     replacement_source_watchdog_stopped = False
+    replacement_source_watchdog_stop: dict[str, Any] = {"status": "not_attempted"}
     error_type: str | None = None
     try:
         pending = open_pending_teardown(
@@ -1663,27 +1734,13 @@ def run_storage_model_volume(
                                 or 0
                             )
                             source_state = str(replacement_handoff.get("watchdog_state_path") or "")
-                            source_argv = [str(item) for item in read_process_argv(source_pid)]
-                            replacement_source_watchdog_stopped = bool(
-                                source_pid > 0 and not _pid_is_alive(source_pid)
+                            replacement_source_watchdog_stop = _stop_replaced_watchdog(
+                                source_pid=source_pid,
+                                source_state_path=source_state,
                             )
-                            canonical = [
-                                "-m",
-                                "blueprint_pipeline.groot_oscar_runpod_model_volume",
-                                "watchdog",
-                                "--state",
-                                str(Path(source_state).expanduser().resolve()),
-                            ]
-                            if source_pid > 0 and any(
-                                source_argv[index : index + len(canonical)] == canonical
-                                for index in range(len(source_argv))
-                            ):
-                                os.kill(source_pid, signal.SIGTERM)
-                                for _ in range(100):
-                                    if not _pid_is_alive(source_pid):
-                                        replacement_source_watchdog_stopped = True
-                                        break
-                                    time.sleep(0.05)
+                            replacement_source_watchdog_stopped = (
+                                replacement_source_watchdog_stop.get("status") == "stopped"
+                            )
                             if not replacement_source_watchdog_stopped:
                                 success = False
                                 error_type = "ReplacementSourceWatchdogStopBlocked"
@@ -1819,6 +1876,7 @@ def run_storage_model_volume(
         "replacement_source_volume_id": replacement_volume_id or None,
         "replacement_source_volume_teardown": replacement_source_teardown,
         "replacement_source_watchdog_stopped": replacement_source_watchdog_stopped,
+        "replacement_source_watchdog_stop": replacement_source_watchdog_stop,
         "maximum_storage_spend_usd": storage_hourly_rate_usd * storage_ttl_seconds / 3600,
         "maximum_builder_compute_spend_usd": builder_result.get("maximum_compute_spend_usd", 0.0),
         "error_type": error_type,
