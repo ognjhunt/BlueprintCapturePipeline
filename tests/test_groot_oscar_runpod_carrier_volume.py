@@ -178,4 +178,9 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_wbc_dynamic_linkage_failed" in script
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT" in script
     assert "runpod_carrier_runtime_bootstrap_blocked.zip" in script
+    assert 'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT="/opt/gr00t"' in script
+    assert 'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT="/opt/wbc"' in script
+    assert script.index("BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT") < script.index(
+        "BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_READY"
+    )
     assert "BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_READY" in script
