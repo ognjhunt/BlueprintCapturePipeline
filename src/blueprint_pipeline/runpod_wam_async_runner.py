@@ -47,6 +47,7 @@ from .runpod_provider_adapter import (
 )
 from .runpod_wam_launch_contract import (
     build_pod_payload as _build_pod_payload,
+    confirm_provider_lane_handoff_no_allocation as _confirm_provider_lane_handoff_no_allocation,
     extract_pod_id as _extract_pod_id,
     read_compatible_warm_candidate as _read_compatible_warm_candidate_contract,
     redacted_payload_summary as _redacted_payload_summary,
@@ -1896,6 +1897,33 @@ def create_runpod_wam_async_run(
                 resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest
             )
             return manifest
+
+    def _cancel_unallocated_create(
+        *, reason: str, evidence: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        cancelled = cancel_pending_teardown(
+            pending_teardown["path"], reason=reason, evidence=evidence
+        )
+        if provider_lane_handoff_receipt_path is None:
+            return {"status": "not_configured"}
+        if cancelled.get("status") != "cancelled_no_allocation":
+            return {
+                "status": "no_allocation_confirmation_blocked",
+                "reason": "pending_teardown_cancellation_not_confirmed",
+                "raw_secret_values_recorded": False,
+            }
+        try:
+            return _confirm_provider_lane_handoff_no_allocation(
+                provider_lane_handoff_receipt_path,
+                pod_name=resolved_pod_name,
+                pending_teardown_record=pending_teardown["path"],
+            )
+        except ValueError as exc:
+            return {
+                "status": "no_allocation_confirmation_blocked",
+                "blocker": str(exc),
+                "raw_secret_values_recorded": False,
+            }
     try:
         if selected_existing_pod_id:
             update_payload = _existing_pod_update_payload(payload)
@@ -2057,11 +2085,11 @@ def create_runpod_wam_async_run(
                     },
                     "raw_secret_values_recorded": False,
                 }
-                cancel_pending_teardown(
-                    pending_teardown["path"],
+                handoff_receipt_update = _cancel_unallocated_create(
                     reason="runpod_create_pod_http_error_no_allocation",
                     evidence={"http_status_code": fallback_exc.code},
                 )
+                manifest["provider_lane_handoff_receipt_update"] = handoff_receipt_update
                 write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
                 return manifest
         else:
@@ -2090,11 +2118,11 @@ def create_runpod_wam_async_run(
                 },
                 "raw_secret_values_recorded": False,
             }
-            cancel_pending_teardown(
-                pending_teardown["path"],
+            handoff_receipt_update = _cancel_unallocated_create(
                 reason="runpod_create_pod_http_error_no_allocation",
                 evidence={"http_status_code": exc.code},
             )
+            manifest["provider_lane_handoff_receipt_update"] = handoff_receipt_update
             write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
             return manifest
     if not pod_id:
@@ -2111,11 +2139,11 @@ def create_runpod_wam_async_run(
             "provider_runtime_config_env_status": provider_runtime_config_env_status,
             "raw_secret_values_recorded": False,
         }
-        cancel_pending_teardown(
-            pending_teardown["path"],
+        handoff_receipt_update = _cancel_unallocated_create(
             reason="runpod_create_response_missing_pod_id",
             evidence={"http_status_code": status_code},
         )
+        manifest["provider_lane_handoff_receipt_update"] = handoff_receipt_update
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
     bind_pending_teardown_instance(pending_teardown["path"], pod_id)

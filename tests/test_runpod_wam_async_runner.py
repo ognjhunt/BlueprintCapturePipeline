@@ -230,6 +230,55 @@ def test_persistent_carrier_receipt_binds_pending_record_before_and_after_create
     assert bound_after["provider_mutation_state"] == "pod_id_bound"
 
 
+def test_persistent_carrier_receipt_returns_to_absent_after_cancelled_create(
+    tmp_path: Path,
+) -> None:
+    pod_name = "blueprint-groot-oscar-canary-persistent-test"
+    receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "status": "accepted",
+                "campaign_kind": "persistent_policy_wam_loop",
+                "pod_name_prefix": "blueprint-groot-oscar-canary-",
+                "pre_provider_mutation_confirmed_absent": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.chmod(0o600)
+    pending_path = tmp_path / "pending.json"
+    pending = {
+        "status": "open",
+        "provider": "runpod",
+        "lane": runner.RUNPOD_WAM_LANE,
+        "resource_kind": "compute_instance",
+        "resource_name": pod_name,
+        "instance_id": None,
+    }
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+    runner._update_provider_lane_handoff_receipt(
+        receipt_path,
+        pod_name=pod_name,
+        pending_teardown_record=str(pending_path),
+    )
+    pending["status"] = "cancelled_no_allocation"
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+
+    result = runner._confirm_provider_lane_handoff_no_allocation(
+        receipt_path,
+        pod_name=pod_name,
+        pending_teardown_record=str(pending_path),
+    )
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert result["status"] == "no_allocation_confirmed"
+    assert receipt["pre_provider_mutation_confirmed_absent"] is True
+    assert receipt["provider_mutation_state"] == "no_allocation_confirmed"
+    assert receipt["pod_pending_teardown_record"] is None
+    assert receipt["pod_id"] is None
+
+
 def test_runpod_small_carrier_payload_rejects_h100_and_unverified_volume() -> None:
     carrier_ref = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
     admission = _carrier_volume_admission(carrier_image_ref=carrier_ref)

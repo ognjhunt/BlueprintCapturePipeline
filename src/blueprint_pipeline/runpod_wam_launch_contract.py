@@ -381,3 +381,84 @@ def update_provider_lane_handoff_receipt(
         "pod_id_present": bool(pod_id),
         "raw_secret_values_recorded": False,
     }
+
+
+def confirm_provider_lane_handoff_no_allocation(
+    receipt_path: str | Path,
+    *,
+    pod_name: str,
+    pending_teardown_record: str | Path,
+) -> dict[str, Any]:
+    """Return a pre-create handoff to provider-absent state after cancellation."""
+
+    path = Path(receipt_path).expanduser()
+    pending_path = Path(pending_teardown_record).expanduser()
+    if not path.is_absolute() or not pending_path.is_absolute():
+        raise ValueError("provider_lane_handoff_no_allocation_path_not_absolute")
+    try:
+        metadata = path.lstat()
+        receipt_value = json.loads(path.read_text(encoding="utf-8"))
+        pending_value = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "provider_lane_handoff_no_allocation_evidence_unreadable"
+        ) from exc
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or metadata.st_mode & 0o077
+        or metadata.st_uid not in {0, os.geteuid()}
+        or metadata.st_size > 1024 * 1024
+    ):
+        raise ValueError("provider_lane_handoff_no_allocation_receipt_unsafe")
+    receipt = dict(receipt_value) if isinstance(receipt_value, Mapping) else {}
+    pending = dict(pending_value) if isinstance(pending_value, Mapping) else {}
+    if (
+        receipt.get("status") != "accepted"
+        or receipt.get("campaign_kind") != "persistent_policy_wam_loop"
+        or receipt.get("pod_name") != pod_name
+        or receipt.get("pod_pending_teardown_record") != str(pending_path)
+        or _string(receipt.get("pod_id"))
+        or receipt.get("provider_mutation_state") != "pending_create"
+        or pending.get("status") != "cancelled_no_allocation"
+        or pending.get("provider") != "runpod"
+        or pending.get("lane") != RUNPOD_WAM_LANE
+        or pending.get("resource_kind") != "compute_instance"
+        or pending.get("resource_name") != pod_name
+        or _string(pending.get("instance_id"))
+    ):
+        raise ValueError("provider_lane_handoff_no_allocation_binding_invalid")
+    receipt.update(
+        {
+            "pod_id": None,
+            "pod_pending_teardown_record": None,
+            "pre_provider_mutation_confirmed_absent": True,
+            "provider_mutation_state": "no_allocation_confirmed",
+            "no_allocation_pending_teardown_record": str(pending_path),
+            "raw_secret_values_recorded": False,
+        }
+    )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    descriptor = -1
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump(receipt, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+    return {
+        "status": "no_allocation_confirmed",
+        "path": str(path),
+        "cancelled_pending_teardown_record": str(pending_path),
+        "raw_secret_values_recorded": False,
+    }

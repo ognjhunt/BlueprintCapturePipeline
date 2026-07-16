@@ -48,7 +48,6 @@ from .groot_oscar_model_cache_wheelhouse import (
     plan_model_cache_wheelhouse,
 )
 from .groot_oscar_remote_build_results import (
-    REMOTE_BUILD_REQUIRED_RESULTS as REMOTE_BUILD_REQUIRED_RESULTS,
     validate_remote_build_results,
 )
 from .paid_resource_admission import require_paid_resource_admission
