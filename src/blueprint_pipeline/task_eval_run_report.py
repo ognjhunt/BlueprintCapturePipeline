@@ -33,6 +33,7 @@ from .success_claim_contracts import (
     coerce_strict_success,
 )
 from .common import utc_now_iso
+from .site_taxonomy import INDUSTRIAL_CATEGORIES, resolve_site_type
 from .wam_score_claim_gate import summarize_wam_evaluation_for_report
 
 TASK_EVAL_RUN_REPORT_SCHEMA_VERSION = "task_eval_run_buyer_report.v1"
@@ -105,6 +106,178 @@ def _row_provenance_claim_boundary(distinct: Sequence[str]) -> str | None:
     if UNKNOWN_PROVENANCE in present:
         return SUCCESS_RATE_UNKNOWN_PROVENANCE_CLAIM_BOUNDARY
     return None
+
+
+# ---------------------------------------------------------------------------
+# R066: industrial-assembly success-metric semantics.
+#
+# The generic scorecard carries navigation/transfer/kitchen-ish metrics but no
+# industrial-assembly success semantics. These four metrics are surfaced,
+# additively and per-condition, whenever a condition belongs to an industrial
+# assembly/insertion/precision-placement task family OR the run's site resolves
+# (via site_taxonomy) to an industrial category. They are DECLARED spec
+# tolerances or MEASURED attempt outcomes threaded in from inputs — never
+# fabricated. A metric with no supplied value is surfaced explicitly as unset
+# with provenance "unset", mirroring the site_extent capture-truth contract.
+# ---------------------------------------------------------------------------
+
+# Substring tokens (short, human-authored task text) marking a condition as an
+# industrial assembly/insertion/precision-placement family. Matched against a
+# condition's declared task_family / task_category, consistent with the
+# site_taxonomy synonym approach.
+INDUSTRIAL_ASSEMBLY_TASK_FAMILY_TOKENS: tuple[str, ...] = (
+    "assembly",
+    "insertion",
+    "insert",
+    "peg_in_hole",
+    "peg-in-hole",
+    "peg in hole",
+    "press_fit",
+    "press-fit",
+    "press fit",
+    "fastening",
+    "fasten",
+    "screw",
+    "bolt",
+    "kitting",
+    "part_placement",
+    "part-placement",
+    "part placement",
+    "precision_placement",
+    "precision placement",
+    "machine_tending",
+    "machine tending",
+)
+
+INDUSTRIAL_METRIC_UNSET_PROVENANCE = "unset"
+INDUSTRIAL_METRIC_PROVENANCE_UNSPECIFIED = "declared_provenance_unspecified"
+INDUSTRIAL_METRIC_STATUS_UNSET = "needs_measurement_or_operator_input"
+INDUSTRIAL_METRIC_STATUS_PRESENT = "declared_or_measured_present"
+
+# field_id -> (unit, kind). kind distinguishes a declared spec tolerance (a task
+# input) from a measured attempt outcome; neither is fabricated.
+_INDUSTRIAL_SUCCESS_METRIC_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("placement_accuracy_m", "meters", "measured_outcome"),
+    ("insertion_tolerance_m", "meters", "declared_tolerance"),
+    ("force_torque_within_envelope", "boolean", "measured_outcome"),
+    ("dimensional_tolerance", "meters", "declared_tolerance"),
+)
+_INDUSTRIAL_METRIC_FIELD_IDS: tuple[str, ...] = tuple(
+    field for field, _unit, _kind in _INDUSTRIAL_SUCCESS_METRIC_FIELDS
+)
+
+INDUSTRIAL_SUCCESS_METRIC_CLAIM_BOUNDARY = (
+    "industrial_success_metrics_are_declared_or_measured_capture_inputs_"
+    "not_fabricated_or_verified_success_proof"
+)
+
+
+def _industrial_task_family_match(*texts: Any) -> str | None:
+    """Return the industrial-assembly token a task family text matches, if any."""
+    for text in texts:
+        lowered = _string(text).lower()
+        if not lowered:
+            continue
+        for token in INDUSTRIAL_ASSEMBLY_TASK_FAMILY_TOKENS:
+            if token in lowered:
+                return token
+    return None
+
+
+def _resolve_site_industrial(task_metadata: Mapping[str, Any]) -> tuple[bool, str]:
+    """Resolve whether the run's site is an industrial category (site_taxonomy).
+
+    Prefers an explicit canonical ``site_category``; otherwise resolves free-text
+    ``site_type`` through the shared taxonomy. Never guesses beyond the taxonomy.
+    """
+    md = _mapping(task_metadata)
+    explicit_category = _string(md.get("site_category"))
+    if explicit_category:
+        return explicit_category in INDUSTRIAL_CATEGORIES, explicit_category
+    site_type = _string(md.get("site_type")) or _string(md.get("target_site_type"))
+    if site_type:
+        resolution = resolve_site_type(site_type)
+        return resolution.is_industrial, resolution.category
+    return False, ""
+
+
+def _coerce_metric_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "1", "yes", "y", "within_envelope", "pass", "passed"}:
+            return True
+        if token in {"false", "0", "no", "n", "out_of_envelope", "fail", "failed"}:
+            return False
+    return None
+
+
+def _coerce_metric_value(unit: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if unit == "boolean":
+        return _coerce_metric_bool(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _industrial_metric_observation(unit: str, raw: Any) -> tuple[Any, str] | None:
+    """Coerce one declared/measured metric input into a (value, provenance) pair.
+
+    ``raw`` may be a bare scalar or a mapping ``{"value": ..., "provenance": ...}``.
+    ``unit`` selects the coercion (``"boolean"`` vs a numeric metric). Returns None
+    when no usable value is present (never fabricated).
+    """
+    if isinstance(raw, Mapping):
+        value = _coerce_metric_value(unit, raw.get("value"))
+        provenance = _string(raw.get("provenance"))
+    else:
+        value = _coerce_metric_value(unit, raw)
+        provenance = ""
+    if value is None:
+        return None
+    return value, provenance or INDUSTRIAL_METRIC_PROVENANCE_UNSPECIFIED
+
+
+def _industrial_metric_entry(
+    field: str, unit: str, kind: str, observations: Sequence[tuple[Any, str]]
+) -> Dict[str, Any]:
+    """Build one industrial success-metric entry; unset when no value supplied."""
+    if not observations:
+        return {
+            "field": field,
+            "unit": unit,
+            "kind": kind,
+            "value": None,
+            "observed_values": [],
+            "provenance": INDUSTRIAL_METRIC_UNSET_PROVENANCE,
+            "provenances": [INDUSTRIAL_METRIC_UNSET_PROVENANCE],
+            "status": INDUSTRIAL_METRIC_STATUS_UNSET,
+            "claim_boundary": INDUSTRIAL_SUCCESS_METRIC_CLAIM_BOUNDARY,
+        }
+    distinct_values: List[Any] = list(
+        dict.fromkeys(value for value, _prov in observations)
+    )
+    provenances = sorted({prov for _value, prov in observations})
+    return {
+        "field": field,
+        "unit": unit,
+        "kind": kind,
+        "value": distinct_values[0] if len(distinct_values) == 1 else None,
+        "observed_values": distinct_values,
+        "provenance": provenances[0] if len(provenances) == 1 else "mixed",
+        "provenances": provenances,
+        "status": INDUSTRIAL_METRIC_STATUS_PRESENT,
+        "claim_boundary": INDUSTRIAL_SUCCESS_METRIC_CLAIM_BOUNDARY,
+    }
+
 
 # TRI-style published protocol treats ~20 trials per condition as the floor for
 # a decision-grade comparison; below that the scorecard row is flagged.
@@ -354,11 +527,17 @@ def build_task_eval_scorecard(
     attempts: Sequence[Mapping[str, Any]],
     evidence_level: str,
     recommended_min_trials: int = RECOMMENDED_MIN_TRIALS_PER_CONDITION,
+    task_metadata: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Group attempts by (task_id, scenario_id) and report interval-bounded rates.
 
     Success labels are read strictly (bool or 0/1 only); anything else makes the
     attempt invalid and blocks the scorecard rather than silently coercing.
+
+    ``task_metadata`` is an optional, read-only source of run-level context: the
+    declared task family / site type (used to decide whether industrial-assembly
+    success-metric semantics apply, R066) and any run-level declared industrial
+    metric tolerances. It never affects success rates.
     """
     conditions: "OrderedDict[tuple[str, str], Dict[str, Any]]" = OrderedDict()
     blockers: List[str] = []
@@ -375,13 +554,33 @@ def build_task_eval_scorecard(
             _string(row.get("scenario_id")) or "unspecified_scenario",
         )
         bucket = conditions.setdefault(
-            key, {"trials": 0, "successes": 0, "provenances": set()}
+            key,
+            {
+                "trials": 0,
+                "successes": 0,
+                "provenances": set(),
+                "task_families": set(),
+                "industrial_metric_observations": {
+                    field: [] for field in _INDUSTRIAL_METRIC_FIELD_IDS
+                },
+            },
         )
         bucket["trials"] += 1
         bucket["successes"] += int(success)
         bucket["provenances"].add(
             _normalize_success_label_provenance(row.get("success_label_provenance"))
         )
+        family_text = _string(row.get("task_family")) or _string(row.get("task_category"))
+        if family_text:
+            bucket["task_families"].add(family_text)
+        attempt_metrics = _mapping(row.get("industrial_metrics"))
+        for field, unit, _kind in _INDUSTRIAL_SUCCESS_METRIC_FIELDS:
+            if field in attempt_metrics:
+                observation = _industrial_metric_observation(
+                    unit, attempt_metrics.get(field)
+                )
+                if observation is not None:
+                    bucket["industrial_metric_observations"][field].append(observation)
     if invalid_attempts:
         blockers.append(
             "attempts_with_non_boolean_success_label:" + ",".join(invalid_attempts)
@@ -399,8 +598,25 @@ def build_task_eval_scorecard(
         and CLAIM_LADDER.index(evidence_level)
         >= CLAIM_LADDER.index("review_task_success")
     )
+    # Run-level context for industrial-assembly success-metric semantics (R066).
+    # Read-only: this never influences the success rates above.
+    metadata = _mapping(task_metadata)
+    metadata_family = _string(metadata.get("task_family")) or _string(
+        metadata.get("task_category")
+    )
+    metadata_metrics = _mapping(metadata.get("industrial_metrics"))
+    metadata_metric_observations: Dict[str, tuple[Any, str] | None] = {}
+    for field, unit, _kind in _INDUSTRIAL_SUCCESS_METRIC_FIELDS:
+        metadata_metric_observations[field] = (
+            _industrial_metric_observation(unit, metadata_metrics.get(field))
+            if field in metadata_metrics
+            else None
+        )
+    site_is_industrial, site_category = _resolve_site_industrial(metadata)
+
     rows: List[Dict[str, Any]] = []
     observed_provenances: set[str] = set()
+    industrial_condition_count = 0
     for (task_id, scenario_id), bucket in conditions.items():
         interval = _wilson_interval(bucket["successes"], bucket["trials"])
         distinct = sorted(bucket["provenances"])
@@ -411,20 +627,55 @@ def build_task_eval_scorecard(
         rate_is_truth = bool(distinct) and set(distinct).issubset(
             _PHYSICS_OR_CAPTURED_TRUTH_PROVENANCES
         )
-        rows.append(
-            {
-                "task_id": task_id,
-                "scenario_id": scenario_id,
-                "trials": bucket["trials"],
-                "successes": bucket["successes"],
-                "success_rate": interval if rates_published else None,
-                "below_recommended_trials": bucket["trials"] < recommended_min_trials,
-                "success_label_provenance": _collapse_row_provenance(distinct),
-                "success_label_provenances": distinct,
-                "success_rate_is_physics_or_captured_truth": rate_is_truth,
-                "success_rate_claim_boundary": _row_provenance_claim_boundary(distinct),
+        row_out = {
+            "task_id": task_id,
+            "scenario_id": scenario_id,
+            "trials": bucket["trials"],
+            "successes": bucket["successes"],
+            "success_rate": interval if rates_published else None,
+            "below_recommended_trials": bucket["trials"] < recommended_min_trials,
+            "success_label_provenance": _collapse_row_provenance(distinct),
+            "success_label_provenances": distinct,
+            "success_rate_is_physics_or_captured_truth": rate_is_truth,
+            "success_rate_claim_boundary": _row_provenance_claim_boundary(distinct),
+        }
+        # R066: additively surface industrial-assembly success-metric semantics
+        # only for industrial-assembly task families or industrial sites. Any
+        # other condition (kitchen/home/generic) is left byte-for-byte unchanged.
+        declared_families = sorted(bucket["task_families"])
+        family_token = _industrial_task_family_match(*declared_families, metadata_family)
+        if family_token or site_is_industrial:
+            metrics_block: Dict[str, Any] = {}
+            any_metric_present = False
+            for field, unit, kind in _INDUSTRIAL_SUCCESS_METRIC_FIELDS:
+                observations = list(bucket["industrial_metric_observations"][field])
+                metadata_observation = metadata_metric_observations[field]
+                if metadata_observation is not None:
+                    observations.append(metadata_observation)
+                entry = _industrial_metric_entry(field, unit, kind, observations)
+                if entry["status"] == INDUSTRIAL_METRIC_STATUS_PRESENT:
+                    any_metric_present = True
+                metrics_block[field] = entry
+            if family_token and site_is_industrial:
+                surfaced_reason = "task_family_and_industrial_site_category"
+            elif family_token:
+                surfaced_reason = "task_family"
+            else:
+                surfaced_reason = "industrial_site_category"
+            row_out["industrial_success_metrics"] = {
+                "surfaced": True,
+                "surfaced_reason": surfaced_reason,
+                "task_family_matched": family_token,
+                "declared_task_families": declared_families,
+                "site_category": site_category or None,
+                "is_industrial_site": site_is_industrial,
+                "metrics": metrics_block,
+                "any_metric_declared_or_measured": any_metric_present,
+                "all_metrics_unset": not any_metric_present,
+                "claim_boundary": INDUSTRIAL_SUCCESS_METRIC_CLAIM_BOUNDARY,
             }
-        )
+            industrial_condition_count += 1
+        rows.append(row_out)
     if not rows or blockers:
         status = "blocked"
     elif rates_published:
@@ -445,6 +696,25 @@ def build_task_eval_scorecard(
         "binomial_ci_method": BINOMIAL_CI_METHOD,
         "recommended_min_trials_per_condition": recommended_min_trials,
         "conditions": rows,
+        # R066: always-present declaration of the industrial-assembly metric
+        # vocabulary so the semantics are documented even when no condition is
+        # industrial. Per-condition values live in each row's
+        # ``industrial_success_metrics`` block (declared/measured or explicitly
+        # unset — never fabricated).
+        "industrial_success_metric_semantics": {
+            "fields": [
+                {"field": field, "unit": unit, "kind": kind}
+                for field, unit, kind in _INDUSTRIAL_SUCCESS_METRIC_FIELDS
+            ],
+            "surfaced_condition_count": industrial_condition_count,
+            "any_condition_industrial_assembly": industrial_condition_count > 0,
+            "site_category": site_category or None,
+            "is_industrial_site": site_is_industrial,
+            "keyed_off": (
+                "industrial_task_family_or_site_taxonomy_industrial_category"
+            ),
+            "claim_boundary": INDUSTRIAL_SUCCESS_METRIC_CLAIM_BOUNDARY,
+        },
         "invalid_attempt_ids": invalid_attempts,
         "success_label_provenance_vocabulary": list(
             SUCCESS_LABEL_PROVENANCE_VOCABULARY
@@ -596,7 +866,9 @@ def build_task_eval_run_report(
     blockers.extend(provider_blockers)
 
     scorecard = build_task_eval_scorecard(
-        attempts=attempts, evidence_level=evidence_level
+        attempts=attempts,
+        evidence_level=evidence_level,
+        task_metadata=task_metadata,
     )
     blockers.extend(
         f"scorecard:{blocker}" for blocker in scorecard.get("blockers") or []

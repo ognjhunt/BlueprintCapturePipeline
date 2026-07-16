@@ -577,6 +577,179 @@ def test_report_blocks_on_live_consent_revocation_despite_clean_gate(tmp_path) -
     )
 
 
+# ---------------------------------------------------------------------------
+# R066: industrial-assembly success-metric semantics.
+# ---------------------------------------------------------------------------
+
+
+def _industrial_attempts(family: str = "insertion") -> list[dict]:
+    return [
+        {
+            "attempt_id": "ins_1",
+            "task_id": "peg-insert",
+            "scenario_id": "clear",
+            "success": True,
+            "task_family": family,
+            "industrial_metrics": {
+                "placement_accuracy_m": {
+                    "value": 0.0012,
+                    "provenance": "simulator_physics",
+                },
+                "force_torque_within_envelope": True,
+            },
+        },
+        {
+            "attempt_id": "ins_2",
+            "task_id": "peg-insert",
+            "scenario_id": "clear",
+            "success": False,
+            "task_family": family,
+        },
+    ]
+
+
+def test_scorecard_surfaces_industrial_metrics_for_assembly_family() -> None:
+    scorecard = build_task_eval_scorecard(
+        attempts=_industrial_attempts(),
+        evidence_level="review_task_success",
+        task_metadata={"industrial_metrics": {"insertion_tolerance_m": 0.002}},
+    )
+    row = scorecard["conditions"][0]
+    block = row["industrial_success_metrics"]
+    assert block["surfaced"] is True
+    assert block["surfaced_reason"] == "task_family"
+    assert block["task_family_matched"] == "insertion"
+    metrics = block["metrics"]
+
+    # Measured outcome threaded in from the attempt, with its declared provenance.
+    placement = metrics["placement_accuracy_m"]
+    assert placement["value"] == 0.0012
+    assert placement["unit"] == "meters"
+    assert placement["kind"] == "measured_outcome"
+    assert placement["provenance"] == "simulator_physics"
+    assert placement["status"] == "declared_or_measured_present"
+
+    # Boolean measured outcome stays a real bool, not coerced to 1.0.
+    force_torque = metrics["force_torque_within_envelope"]
+    assert force_torque["value"] is True
+    assert force_torque["unit"] == "boolean"
+
+    # Declared spec tolerance sourced from run-level task_metadata.
+    insertion = metrics["insertion_tolerance_m"]
+    assert insertion["value"] == 0.002
+    assert insertion["kind"] == "declared_tolerance"
+
+    # A metric with no supplied value is surfaced EXPLICITLY as unset, never faked.
+    dimensional = metrics["dimensional_tolerance"]
+    assert dimensional["value"] is None
+    assert dimensional["provenance"] == "unset"
+    assert dimensional["status"] == "needs_measurement_or_operator_input"
+    assert "not_fabricated_or_verified_success_proof" in dimensional["claim_boundary"]
+
+    assert block["any_metric_declared_or_measured"] is True
+    assert block["all_metrics_unset"] is False
+
+    semantics = scorecard["industrial_success_metric_semantics"]
+    assert semantics["surfaced_condition_count"] == 1
+    assert semantics["any_condition_industrial_assembly"] is True
+    assert [f["field"] for f in semantics["fields"]] == [
+        "placement_accuracy_m",
+        "insertion_tolerance_m",
+        "force_torque_within_envelope",
+        "dimensional_tolerance",
+    ]
+
+
+def test_scorecard_industrial_metrics_all_unset_when_nothing_declared() -> None:
+    scorecard = build_task_eval_scorecard(
+        attempts=[
+            {
+                "attempt_id": "a1",
+                "task_id": "assemble",
+                "scenario_id": "s",
+                "success": True,
+                "task_category": "assembly",
+            }
+        ],
+        evidence_level="review_task_success",
+    )
+    block = scorecard["conditions"][0]["industrial_success_metrics"]
+    assert block["all_metrics_unset"] is True
+    assert block["any_metric_declared_or_measured"] is False
+    for entry in block["metrics"].values():
+        assert entry["value"] is None
+        assert entry["provenance"] == "unset"
+        assert entry["status"] == "needs_measurement_or_operator_input"
+
+
+def test_scorecard_industrial_metrics_keyed_off_site_taxonomy() -> None:
+    # No assembly task family, but the site resolves to an industrial category via
+    # site_taxonomy, so the metric semantics are still surfaced (as unset).
+    scorecard = build_task_eval_scorecard(
+        attempts=_attempts(2, 1),
+        evidence_level="review_task_success",
+        task_metadata={"site_type": "warehouse aisle"},
+    )
+    block = scorecard["conditions"][0]["industrial_success_metrics"]
+    assert block["surfaced_reason"] == "industrial_site_category"
+    assert block["is_industrial_site"] is True
+    assert block["site_category"] == "warehouse"
+    assert scorecard["industrial_success_metric_semantics"]["is_industrial_site"] is True
+
+
+def test_scorecard_non_industrial_condition_is_unaffected() -> None:
+    # Kitchen / generic move-tote conditions carry no industrial metric block.
+    scorecard = build_task_eval_scorecard(
+        attempts=_attempts(3, 1),
+        evidence_level="review_task_success",
+        task_metadata={"site_type": "kitchen"},
+    )
+    row = scorecard["conditions"][0]
+    assert "industrial_success_metrics" not in row
+    semantics = scorecard["industrial_success_metric_semantics"]
+    assert semantics["surfaced_condition_count"] == 0
+    assert semantics["any_condition_industrial_assembly"] is False
+
+
+def test_scorecard_without_task_metadata_never_surfaces_industrial_block() -> None:
+    # Backward-compatible default: no task_metadata, no task_family -> no block.
+    scorecard = build_task_eval_scorecard(
+        attempts=_attempts(5, 0), evidence_level="review_task_success"
+    )
+    assert "industrial_success_metrics" not in scorecard["conditions"][0]
+    assert (
+        scorecard["industrial_success_metric_semantics"]["surfaced_condition_count"]
+        == 0
+    )
+
+
+def test_report_surfaces_industrial_metrics_from_task_metadata() -> None:
+    ledger = build_success_claim_ledger(
+        task_metadata={"task_id": "peg-insert"},
+        media_validity={"status": "PASS", "blockers": []},
+        review_task_success={"status": "PASS", "blockers": []},
+    )
+    report = build_task_eval_run_report(
+        job_id="job-1",
+        attempt_trace={"attempts": _industrial_attempts()},
+        task_metadata={
+            "task_id": "peg-insert",
+            "site_type": "factory line-side station",
+            "industrial_metrics": {"dimensional_tolerance": 0.0005},
+        },
+        success_claim_ledger=ledger,
+        rights_privacy_gate={"status": "cleared"},
+    )
+    block = report["scorecard"]["conditions"][0]["industrial_success_metrics"]
+    assert block["surfaced_reason"] == "task_family_and_industrial_site_category"
+    assert block["metrics"]["dimensional_tolerance"]["value"] == 0.0005
+    assert block["metrics"]["placement_accuracy_m"]["value"] == 0.0012
+    # The industrial metrics are declared/measured inputs — they never become a
+    # top-level success claim.
+    assert "success" not in report
+    assert report["status"] == "ready_review_required"
+
+
 def test_report_not_blocked_by_live_read_when_consent_documented(tmp_path) -> None:
     capture_root = tmp_path / "scenes" / "s" / "captures" / "c"
     (capture_root / "raw").mkdir(parents=True)

@@ -3009,6 +3009,161 @@ def _site_extent(
     }
 
 
+def _optional_bool_flag(value: Any) -> Optional[bool]:
+    """Tri-state flag coercion: True/False only when clearly declared.
+
+    Absent/blank/ambiguous inputs return None so a missing flag is surfaced as
+    ``needs_capture_or_operator_input`` rather than fabricated as False.
+    """
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "1", "yes", "y", "present", "mezzanine"}:
+            return True
+        if token in {"false", "0", "no", "n", "absent", "none"}:
+            return False
+    return None
+
+
+def _normalize_site_level(raw: Any, index: int, source: str) -> Dict[str, Any]:
+    """Normalize one declared level descriptor. Never fabricates values."""
+
+    level = _mapping(raw)
+    if not level and isinstance(raw, str) and raw.strip():
+        level = {"name": raw.strip()}
+    name = _first_text(
+        level.get("name"),
+        level.get("level_name"),
+        level.get("id"),
+        fallback=f"level_{index + 1}",
+    )
+    return {
+        "name": name,
+        "elevation_m": _site_extent_value(level.get("elevation_m"), "float"),
+        "is_mezzanine": _optional_bool_flag(
+            level.get("is_mezzanine")
+            if level.get("is_mezzanine") is not None
+            else level.get("mezzanine")
+        ),
+        "multi_level_racking": _optional_bool_flag(
+            level.get("multi_level_racking")
+            if level.get("multi_level_racking") is not None
+            else level.get("multi_level_racking_present")
+        ),
+        "source": source,
+    }
+
+
+def _declared_levels(
+    *, raw_manifest: Mapping[str, Any], metadata: Mapping[str, Any]
+) -> tuple[List[Dict[str, Any]], str]:
+    """Read declared level descriptors from manifest first, then operator metadata."""
+
+    for source, container in (
+        ("capture_manifest", raw_manifest),
+        ("site_operator_metadata", metadata),
+    ):
+        raw_levels = container.get("site_levels")
+        if raw_levels is None:
+            raw_levels = container.get("levels")
+        if isinstance(raw_levels, Sequence) and not isinstance(
+            raw_levels, (str, bytes, bytearray)
+        ):
+            levels = [
+                _normalize_site_level(item, index, source)
+                for index, item in enumerate(raw_levels)
+            ]
+            if levels:
+                return levels, source
+    return [], "needs_capture_or_operator_input"
+
+
+def _vertical_structure(
+    *,
+    raw_manifest: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Multi-floor / vertical-structure capture representation (R069).
+
+    A flat ``floor_count`` can't express mezzanines or multi-level racking that
+    define warehouse/factory verticality. This additive block carries per-level
+    descriptors (name/elevation/mezzanine/racking) plus mezzanine and
+    multi-level-racking indicators, sourced from the capture manifest first, then
+    operator-supplied metadata. Every value is a declared or measured capture
+    input, not a derived or verified claim; absent values are marked
+    ``needs_capture_or_operator_input`` and never fabricated.
+    """
+
+    levels, levels_source = _declared_levels(
+        raw_manifest=raw_manifest, metadata=metadata
+    )
+
+    def _pick_flag(*keys: str) -> tuple[Optional[bool], str]:
+        for source, container in (
+            ("capture_manifest", raw_manifest),
+            ("site_operator_metadata", metadata),
+        ):
+            for key in keys:
+                flag = _optional_bool_flag(container.get(key))
+                if flag is not None:
+                    return flag, source
+        return None, "needs_capture_or_operator_input"
+
+    floor_count = _site_extent_value(raw_manifest.get("floor_count"), "int")
+    floor_count_source = "capture_manifest"
+    if floor_count is None:
+        floor_count = _site_extent_value(metadata.get("floor_count"), "int")
+        floor_count_source = "site_operator_metadata"
+    if floor_count is None:
+        floor_count_source = "needs_capture_or_operator_input"
+
+    mezzanine_flag, mezzanine_source = _pick_flag("mezzanine", "has_mezzanine")
+    racking_flag, racking_source = _pick_flag(
+        "multi_level_racking", "multi_level_racking_present"
+    )
+
+    # Level-derived indicators strengthen but never fabricate an explicit flag.
+    level_has_mezzanine = any(level.get("is_mezzanine") for level in levels)
+    level_has_racking = any(level.get("multi_level_racking") for level in levels)
+    mezzanine_present = bool(mezzanine_flag) or level_has_mezzanine
+    multi_level_racking_present = bool(racking_flag) or level_has_racking
+
+    any_present = bool(
+        levels
+        or floor_count is not None
+        or mezzanine_flag is not None
+        or racking_flag is not None
+    )
+    return {
+        "levels": levels,
+        "level_count": len(levels),
+        "floor_count": floor_count,
+        "mezzanine_present": mezzanine_present,
+        "multi_level_racking_present": multi_level_racking_present,
+        "is_multi_level": bool(
+            len(levels) > 1
+            or (floor_count is not None and floor_count > 1)
+            or mezzanine_present
+        ),
+        "sources": {
+            "levels": levels_source,
+            "floor_count": floor_count_source,
+            "mezzanine_present": mezzanine_source,
+            "multi_level_racking_present": racking_source,
+        },
+        "status": "declared_present" if any_present else "needs_capture_or_operator_input",
+        "label_source": "capture_manifest_or_site_operator_metadata",
+        "claim_boundary": (
+            "site_levels_values_are_declared_or_measured_capture_inputs_"
+            "not_derived_or_verified_claims"
+        ),
+    }
+
+
 def _site_card(
     *,
     context: Any,
@@ -3166,6 +3321,11 @@ def _site_card(
         # Site scale/dimensional capture truth (R017). Additive block; existing
         # geometry/scale fields are unchanged. Declared/measured inputs only.
         "site_extent": _site_extent(raw_manifest=raw_manifest, metadata=metadata),
+        # Multi-floor / vertical-structure representation (R069). Additive block;
+        # existing fields (incl. flat floor_count) are unchanged. Per-level
+        # descriptors plus mezzanine / multi-level-racking indicators, declared or
+        # measured inputs only, marked needs_capture_or_operator_input when absent.
+        "site_levels": _vertical_structure(raw_manifest=raw_manifest, metadata=metadata),
         "visual_conditions": _condition_cards(
             metadata,
             ["lighting", "glare", "clutter", "signage", "reflective_surfaces"],
