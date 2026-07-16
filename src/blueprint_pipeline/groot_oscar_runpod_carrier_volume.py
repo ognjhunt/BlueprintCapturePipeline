@@ -183,7 +183,11 @@ def build_runtime_bundle_manifest(
             blockers.append("runtime_healthcheck_argv_invalid")
             continue
         executable = argv[0]
-        if not executable.startswith("/opt/") or "/../" in executable:
+        executable_in_archive = any(
+            executable == f"/{root}" or executable.startswith(f"/{root}/")
+            for root in RUNTIME_ARCHIVE_ROOTS
+        )
+        if not executable_in_archive or "/../" in executable:
             blockers.append("runtime_healthcheck_executable_outside_opt")
             continue
         checks.append(argv)
