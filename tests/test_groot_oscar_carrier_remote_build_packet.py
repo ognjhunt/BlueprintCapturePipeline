@@ -43,14 +43,15 @@ def test_carrier_packet_is_clean_source_bound_and_allocator_typed(tmp_path: Path
     assert "resolved_digest_ref" in script
 
 
-def test_carrier_packet_rejects_unpinned_base(tmp_path: Path) -> None:
+def test_carrier_packet_rejects_unpinned_base_and_untagged_output(tmp_path: Path) -> None:
     repo = Path(__file__).resolve().parents[1]
     result = prepare_remote_build_packet(
         output_dir=tmp_path,
         repo_root=repo,
-        image_ref="docker.io/example/carrier:versioned",
+        image_ref="docker.io/example/carrier",
         base_image_ref="pytorch/pytorch:latest",
         source_commit="a" * 40,
         source_worktree_dirty=True,
     )
     assert "carrier_base_image_not_digest_pinned" in result["blockers"]
+    assert "carrier_image_ref_not_versioned" in result["blockers"]

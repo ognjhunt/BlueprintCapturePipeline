@@ -24,8 +24,8 @@ DEFAULT_BASE_IMAGE = (
 )
 DEFAULT_IMAGE_REF = "docker.io/nijelhunt/blueprint-groot-oscar-carrier:20260716-compatible-v1"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
-_SHA256 = re.compile(r"[0-9a-f]{64}")
 _DIGEST_REF = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
+_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 
 def _sha256(path: Path) -> str:
@@ -122,7 +122,16 @@ def prepare_remote_build_packet(
     blockers: list[str] = []
     if not _DIGEST_REF.fullmatch(base_image_ref):
         blockers.append("carrier_base_image_not_digest_pinned")
-    if not image_ref or image_ref.endswith((":latest", ":dev", ":test", ":local")):
+    image_leaf = image_ref.rsplit("/", 1)[-1]
+    image_name, tag_separator, image_tag = image_leaf.rpartition(":")
+    if (
+        not image_name
+        or not tag_separator
+        or not _TAG.fullmatch(image_tag)
+        or image_tag in {"latest", "dev", "test", "local"}
+        or "@" in image_ref
+        or any(char.isspace() for char in image_ref)
+    ):
         blockers.append("carrier_image_ref_not_versioned")
     if not _COMMIT.fullmatch(source_commit):
         blockers.append("carrier_source_commit_invalid")
