@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
     DEFAULT_MODEL_CACHE_ROOT,
@@ -12,6 +14,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
     build_runtime_bundle_manifest,
     canonical_json_sha256,
+    is_nvidia_driver_soname,
     runtime_bootstrap_shell_prefix,
     verify_carrier_volume_admission,
     verify_runtime_source_release_evidence,
@@ -120,16 +123,24 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
         healthcheck_argv=(
             ("/opt/gr00t-venv/bin/python", "--version"),
             ("/opt/oscar-venv/bin/python", "--version"),
+            ("/isaac-sim/python.sh", "-c", "import isaacsim"),
         ),
         generated_at="2026-07-15T12:00:00Z",
+        gpu_driver_deferred_sonames=("libnvidia-ml.so.1", "libcuda.so.1"),
     )
 
     assert manifest["status"] == "complete"
+    assert manifest["schema_version"] == "groot_oscar_runtime_bundle_manifest.v2"
     assert manifest["archive"]["format"] == "tar.gz"
     assert manifest["runtime_env"] == RUNTIME_CARRIER_ENV
     assert "isaac-sim" in manifest["archive"]["member_roots"]
     assert "opt/gr00t-venv" in manifest["archive"]["member_roots"]
     assert "opt/runpod-serverless-venv" in manifest["archive"]["member_roots"]
+    assert manifest["healthcheck_argv"][-1][0] == "/isaac-sim/python.sh"
+    assert manifest["gpu_driver_deferred_sonames"] == [
+        "libcuda.so.1",
+        "libnvidia-ml.so.1",
+    ]
     assert len(canonical_json_sha256(manifest)) == 64
     assert "semantic task success" in manifest["claim_boundary"]
 
@@ -145,6 +156,51 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
     assert "runtime_source_release_image_not_digest_pinned" in blocked["blockers"]
     assert "runtime_carrier_image_not_digest_pinned" in blocked["blockers"]
     assert "runtime_healthcheck_executable_outside_opt" in blocked["blockers"]
+
+    blocked_driver = build_runtime_bundle_manifest(
+        source_release_image_ref=SOURCE_REF,
+        carrier_image_ref=CARRIER_REF,
+        archive_sha256="a" * 64,
+        archive_size_bytes=1234,
+        healthcheck_argv=(("/opt/gr00t-venv/bin/python", "--version"),),
+        generated_at="2026-07-15T12:00:00Z",
+        gpu_driver_deferred_sonames=("libcuda_runtime.so.1",),
+    )
+    assert blocked_driver["status"] == "blocked"
+    assert "runtime_gpu_driver_deferred_soname_invalid" in blocked_driver["blockers"]
+
+
+@pytest.mark.parametrize(
+    "soname",
+    (
+        "libcuda.so.1",
+        "libnvidia-ml.so.1",
+        "libnvidia-ptxjitcompiler.so.1",
+        "libnvcuvid.so.1",
+        "libnvoptix.so.1",
+        "libGLX_nvidia.so.0",
+    ),
+)
+def test_nvidia_driver_soname_allowlist_accepts_only_host_injected_families(
+    soname: str,
+) -> None:
+    assert is_nvidia_driver_soname(soname) is True
+
+
+@pytest.mark.parametrize(
+    "soname",
+    (
+        "libcuda_runtime.so.1",
+        "libcudart.so.12",
+        "libOpenCL.so.1",
+        "/usr/lib/libcuda.so.1",
+        "libcuda.so.1\nunsafe",
+    ),
+)
+def test_nvidia_driver_soname_allowlist_rejects_carrier_and_unsafe_libraries(
+    soname: str,
+) -> None:
+    assert is_nvidia_driver_soname(soname) is False
 
 
 def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
@@ -214,6 +270,15 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "model_cache_declared_file_sha256_mismatch" in script
     assert "all_declared_model_file_sha256_verified" in script
     assert "runtime_wbc_dynamic_linkage_failed" in script
+    assert "runtime_gpu_driver_soname_unresolved" in script
+    assert "ctypes.CDLL(soname)" in script
+    assert script.index("for soname in driver_sonames:") < script.index(
+        'for argv in manifest.get("healthcheck_argv", []):'
+    )
+    assert "gpu_driver_deferred_sonames_resolved" in script
+    assert 'manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v2"' in script
+    assert 'manifest.get("gpu_driver_deferred_sonames")' in script
+    assert 'manifest.get("gpu_driver_deferred_sonames", [])' not in script
     assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in script
     assert "/usr/local/nvidia/lib:/usr/local/nvidia/lib64" in script
     assert "export BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR" in script

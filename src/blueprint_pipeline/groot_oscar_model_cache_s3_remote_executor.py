@@ -36,6 +36,7 @@ from .groot_oscar_runpod_carrier_volume import (
     RUNTIME_ARCHIVE_ROOTS,
     RUNTIME_CARRIER_ENV,
     build_runtime_bundle_manifest,
+    is_nvidia_driver_soname,
 )
 from .groot_oscar_model_cache import (
     COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
@@ -88,6 +89,9 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _SAFE_NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 _SAFE_DROPLET_ID = re.compile(r"[0-9]{1,32}")
+_MISSING_PYTHON_MODULE = re.compile(
+    r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]"
+)
 _PACKET_KEYS = frozenset(
     {
         "schema_version",
@@ -256,28 +260,150 @@ def _remove_embedded_model_payloads(payload_root: Path) -> list[str]:
     return removed
 
 
-def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_root: Path) -> None:
+class RuntimeCarrierValidationError(RuntimeError):
+    """Typed failure carrying only allowlisted, secret-free audit evidence."""
+
+    def __init__(self, *, failed_checks: list[str], evidence: Mapping[str, Any]) -> None:
+        super().__init__(
+            "typed_runtime_bundle_carrier_validation_failed:"
+            + ":".join(failed_checks)
+        )
+        self.evidence = dict(evidence)
+
+
+def _missing_soname_tokens(text: str) -> set[str]:
+    """Extract only bounded shared-library names without backtracking regexes."""
+
+    allowed = frozenset(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-"
+    )
+    tokens: set[str] = set()
+    for line in text.splitlines():
+        candidate = ""
+        if "=> not found" in line:
+            left = line.split("=> not found", 1)[0].strip()
+            candidate = left.split()[-1] if left else ""
+        elif ": cannot open shared object file" in line:
+            left = line.split(": cannot open shared object file", 1)[0]
+            segment = left.rsplit(":", 1)[-1].strip()
+            candidate = segment.split()[-1] if segment else ""
+        if (
+            0 < len(candidate) <= 256
+            and ".so" in candidate
+            and all(character in allowed for character in candidate)
+        ):
+            tokens.add(candidate)
+    return tokens
+
+
+def _validation_dependency_tokens(exc: BaseException) -> set[str]:
+    text = "\n".join(
+        value
+        for value in (getattr(exc, "stdout", ""), getattr(exc, "stderr", ""))
+        if isinstance(value, str)
+    )
+    return {
+        *_missing_soname_tokens(text),
+        *(_MISSING_PYTHON_MODULE.findall(text)),
+    }
+
+
+def _validation_diagnostic_tokens(exc: BaseException) -> list[str]:
+    return sorted(_validation_dependency_tokens(exc))[:256]
+
+
+def _validate_runtime_inside_carrier(
+    runner: Any, *, carrier_ref: str, payload_root: Path
+) -> dict[str, Any]:
     validations = (
         (
-            "gr00t_import",
-            "/opt/gr00t-venv/bin/python -c 'from gr00t.policy.gr00t_policy import Gr00tPolicy'",
+            "all_archived_elf_linkage",
+            r"""
+missing="$(mktemp)"
+deferred="$(mktemp)"
+elf_count=0
+while IFS= read -r -d '' candidate; do
+  magic="$(head -c 4 "$candidate" 2>/dev/null || true)"
+  [[ "$magic" == $'\x7fELF' ]] || continue
+  elf_count=$((elf_count + 1))
+  linkage="$(ldd "$candidate" 2>&1 || true)"
+  while IFS= read -r missing_line; do
+    soname="${missing_line%%=>*}"
+    soname="${soname#"${soname%%[![:space:]]*}"}"
+    soname="${soname%"${soname##*[![:space:]]}"}"
+    case "$soname" in
+      libnvidia-*.so*|libcuda.so|libcuda.so.*|libnvcuvid.so|libnvcuvid.so.*|libnvoptix.so|libnvoptix.so.*|libGLX_nvidia.so|libGLX_nvidia.so.*|libEGL_nvidia.so|libEGL_nvidia.so.*|libGLESv1_CM_nvidia.so|libGLESv1_CM_nvidia.so.*|libGLESv2_nvidia.so|libGLESv2_nvidia.so.*)
+        printf '%s\n' "$soname" >>"$deferred"
+        ;;
+      *)
+        {
+          printf 'ELF %s\n' "$candidate"
+          printf '%s\n' "$missing_line"
+        } >>"$missing"
+        ;;
+    esac
+  done < <(grep -F 'not found' <<<"$linkage" || true)
+done < <(find \
+  /isaac-sim \
+  /opt/OSCAR \
+  /opt/blueprint \
+  /opt/gr00t \
+  /opt/gr00t-venv \
+  /opt/onnxruntime \
+  /opt/oscar-venv \
+  /opt/runpod-serverless-venv \
+  /opt/uv-python \
+  /opt/wbc \
+  -xdev -type f -print0)
+test "$elf_count" -gt 0
+if [[ -s "$missing" ]]; then
+  cat "$missing"
+  exit 91
+fi
+if [[ -s "$deferred" ]]; then
+  while IFS= read -r soname; do
+    printf 'BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME %s\n' "$soname"
+  done < <(sort -u "$deferred")
+fi
+printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
+""",
+            900,
         ),
-        ("oscar_import", "/opt/oscar-venv/bin/python -c 'import inference.inference_oscar'"),
-        ("blueprint_import", "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline'"),
+        (
+            "gr00t_import",
+            "/opt/gr00t-venv/bin/python -c 'import numpy; import safetensors; "
+            "import torch; import transformers; "
+            "from gr00t.policy.gr00t_policy import Gr00tPolicy'",
+            300,
+        ),
+        (
+            "oscar_import_matrix",
+            "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline; import diffusers; "
+            "import imageio; import msgpack; import mujoco; import numpy; import PIL; "
+            "import safetensors; import torch; import transformers; import yaml; import zmq; "
+            "import inference.inference_oscar; "
+            "from transformer_engine.pytorch.attention import apply_rotary_pos_emb'",
+            300,
+        ),
         (
             "serverless_import",
             "/opt/runpod-serverless-venv/bin/python -m "
             "blueprint_pipeline.groot_oscar_runpod_serverless_worker "
             "--verify-serverless-runtime",
+            300,
         ),
-        ("isaac_python_executable", "test -x /isaac-sim/python.sh"),
+        (
+            "isaac_import_matrix",
+            "/isaac-sim/python.sh -c 'import blueprint_pipeline; import carb; import isaacsim; "
+            "from isaacsim import SimulationApp; from isaacsim.core.prims import SingleArticulation; "
+            "import omni.kit.app; import omni.timeline; import omni.usd; "
+            "import blueprint_pipeline.isaac_runtime_task_backend'",
+            300,
+        ),
         (
             "wbc_binary_executable",
             "test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
-        ),
-        (
-            "wbc_dynamic_linkage",
-            "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
+            300,
         ),
     )
     carrier_env_argv = [
@@ -285,9 +411,13 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
         for key, value in RUNTIME_CARRIER_ENV.items()
         for item in ("--env", f"{key}={value}")
     ]
-    for check_name, validation in validations:
+    failed_checks: list[str] = []
+    checks: list[dict[str, Any]] = []
+    archived_elf_file_count = 0
+    gpu_driver_deferred_sonames: set[str] = set()
+    for check_name, validation, timeout_seconds in validations:
         try:
-            _run_command(
+            completed = _run_command(
                 runner,
                 [
                     "docker",
@@ -308,12 +438,111 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
                     "-c",
                     validation,
                 ],
-                timeout=300,
+                timeout=timeout_seconds,
+            )
+            if check_name == "all_archived_elf_linkage":
+                match = re.search(r"count=([1-9][0-9]*)", completed.stdout or "")
+                if match is None:
+                    failed_checks.append(check_name)
+                    checks.append(
+                        {
+                            "name": check_name,
+                            "status": "failed",
+                            "diagnostic_tokens": ["elf_count_evidence_missing"],
+                        }
+                    )
+                    continue
+                archived_elf_file_count = int(match.group(1))
+                invalid_deferred_soname = False
+                for line in (completed.stdout or "").splitlines():
+                    marker = "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME "
+                    if not line.startswith(marker):
+                        continue
+                    soname = line.removeprefix(marker).strip()
+                    if not is_nvidia_driver_soname(soname):
+                        invalid_deferred_soname = True
+                        break
+                    gpu_driver_deferred_sonames.add(soname)
+                if invalid_deferred_soname:
+                    failed_checks.append(check_name)
+                    checks.append(
+                        {
+                            "name": check_name,
+                            "status": "failed",
+                            "diagnostic_tokens": ["driver_deferred_soname_invalid"],
+                        }
+                    )
+                    continue
+                checks.append(
+                    {
+                        "name": check_name,
+                        "status": "passed",
+                        "diagnostic_tokens": [],
+                    }
+                )
+                continue
+            checks.append(
+                {
+                    "name": check_name,
+                    "status": "passed",
+                    "diagnostic_tokens": [],
+                }
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(
-                f"typed_runtime_bundle_carrier_validation_failed:{check_name}"
-            ) from exc
+            dependency_tokens = _validation_dependency_tokens(exc)
+            if dependency_tokens and all(
+                is_nvidia_driver_soname(token) for token in dependency_tokens
+            ):
+                gpu_driver_deferred_sonames.update(dependency_tokens)
+                checks.append(
+                    {
+                        "name": check_name,
+                        "status": "deferred_to_gpu_driver_bootstrap",
+                        "diagnostic_tokens": sorted(dependency_tokens)[:256],
+                    }
+                )
+                continue
+            failed_checks.append(check_name)
+            checks.append(
+                {
+                    "name": check_name,
+                    "status": "failed",
+                    "diagnostic_tokens": _validation_diagnostic_tokens(exc),
+                }
+            )
+    evidence = {
+        "schema_version": "groot_oscar_runtime_carrier_compatibility_audit.v1",
+        "status": (
+            "failed"
+            if failed_checks
+            else (
+                "passed_with_gpu_driver_deferred"
+                if gpu_driver_deferred_sonames
+                else "passed"
+            )
+        ),
+        "failed_checks": failed_checks,
+        "checks": checks,
+        "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
+        "archived_elf_file_count": archived_elf_file_count,
+        "gpu_driver_deferred_sonames": sorted(gpu_driver_deferred_sonames),
+        "gpu_driver_resolution_required_at_bootstrap": bool(
+            gpu_driver_deferred_sonames
+        ),
+        "all_failures_collected_before_blocking": True,
+        "claim_boundary": (
+            "This validates archived ELF linkage and import surfaces inside the exact "
+            "carrier on CPU. It does not prove GPU, CUDA-driver, Isaac rendering, policy "
+            "execution, artifact completion, or semantic task success."
+        ),
+        "raw_secret_values_recorded": False,
+    }
+    if failed_checks:
+        raise RuntimeCarrierValidationError(
+            failed_checks=failed_checks,
+            evidence=evidence,
+        )
+    return evidence
 
 
 def prepare_runtime_bundle(
@@ -411,7 +640,9 @@ def prepare_runtime_bundle(
         if not _runtime_payload_tree_safe(payload_root):
             raise RuntimeError("typed_runtime_bundle_payload_tree_unsafe")
         record_progress("validating_runtime_inside_carrier")
-        _validate_runtime_inside_carrier(runner, carrier_ref=carrier_ref, payload_root=payload_root)
+        carrier_validation = _validate_runtime_inside_carrier(
+            runner, carrier_ref=carrier_ref, payload_root=payload_root
+        )
         record_progress("archiving_runtime_bundle")
         archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
         with tarfile.open(archive_path, "w:gz", compresslevel=6) as archive:
@@ -426,14 +657,17 @@ def prepare_runtime_bundle(
                 (
                     "/opt/gr00t-venv/bin/python",
                     "-c",
+                    "import numpy; import safetensors; import torch; import transformers; "
                     "from gr00t.policy.gr00t_policy import Gr00tPolicy",
                 ),
                 (
                     "/opt/oscar-venv/bin/python",
                     "-c",
-                    "import inference.inference_oscar",
+                    "import blueprint_pipeline; import diffusers; import imageio; import msgpack; "
+                    "import mujoco; import numpy; import PIL; import safetensors; import torch; "
+                    "import transformers; import yaml; import zmq; import inference.inference_oscar; "
+                    "from transformer_engine.pytorch.attention import apply_rotary_pos_emb",
                 ),
-                ("/opt/oscar-venv/bin/python", "-c", "import blueprint_pipeline"),
                 (
                     "/opt/runpod-serverless-venv/bin/python",
                     "-m",
@@ -441,12 +675,19 @@ def prepare_runtime_bundle(
                     "--verify-serverless-runtime",
                 ),
                 (
-                    "/opt/oscar-venv/bin/python",
+                    "/isaac-sim/python.sh",
                     "-c",
-                    "from pathlib import Path; assert Path('/isaac-sim/python.sh').is_file()",
+                    "import blueprint_pipeline; import carb; import isaacsim; "
+                    "from isaacsim import SimulationApp; "
+                    "from isaacsim.core.prims import SingleArticulation; "
+                    "import omni.kit.app; import omni.timeline; import omni.usd; "
+                    "import blueprint_pipeline.isaac_runtime_task_backend",
                 ),
             ),
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
+            gpu_driver_deferred_sonames=carrier_validation[
+                "gpu_driver_deferred_sonames"
+            ],
         )
         if manifest["status"] != "complete":
             raise RuntimeError("typed_runtime_bundle_manifest_blocked")
@@ -482,7 +723,14 @@ def prepare_runtime_bundle(
             "embedded_model_paths_excluded": list(RUNTIME_EMBEDDED_MODEL_PATHS),
             "embedded_model_paths_present_and_removed": removed_embedded_model_paths,
             "models_supplied_only_by_verified_external_cache": True,
-            "runtime_imports_and_wbc_linkage_verified_in_exact_carrier": True,
+            "runtime_imports_and_wbc_linkage_verified_in_exact_carrier": not bool(
+                carrier_validation["gpu_driver_deferred_sonames"]
+            ),
+            "runtime_cpu_compatible_with_gpu_driver_deferred_linkage": True,
+            "gpu_driver_deferred_resolution_unproven": bool(
+                carrier_validation["gpu_driver_deferred_sonames"]
+            ),
+            "carrier_validation": carrier_validation,
             "gpu_compute_allocated": False,
             "raw_secret_values_recorded": False,
         }
@@ -901,6 +1149,7 @@ def execute_remote_packet() -> dict[str, Any]:
             "provider_volume_id": volume["id"],
             "model_manifest_digest": local["model_manifest_digest"],
             "runtime_bundle": runtime_bundle,
+            "runtime_carrier_validation": runtime_bundle.get("carrier_validation"),
             "provider_mutations_performed": transport["provider_mutations_performed"],
             "outer_volume_deletion_required": False,
             "gpu_compute_allocated": False,
@@ -925,6 +1174,8 @@ def execute_remote_packet() -> dict[str, Any]:
                     "runtime_bundle_progress": dict(runtime_bundle_progress),
                 }
             )
+            if isinstance(exc, RuntimeCarrierValidationError):
+                result["runtime_carrier_validation"] = exc.evidence
         result.update(
             {
                 "provider_mutations_performed": int(

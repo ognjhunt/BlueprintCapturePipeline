@@ -27,11 +27,13 @@ class FakeDocker:
         verify_digest: bool = True,
         fail_copy_root: str = "",
         fail_validation_text: str = "",
+        deferred_driver_sonames: tuple[str, ...] = (),
     ) -> None:
         self.calls: list[list[str]] = []
         self.verify_digest = verify_digest
         self.fail_copy_root = fail_copy_root
         self.fail_validation_text = fail_validation_text
+        self.deferred_driver_sonames = deferred_driver_sonames
 
     def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -74,7 +76,16 @@ class FakeDocker:
                     cmd=command,
                     stderr="credential-like diagnostic must not be persisted",
                 )
-            return SimpleNamespace(stdout="runtime verified\n")
+            stdout = (
+                "".join(
+                    f"BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME {soname}\n"
+                    for soname in self.deferred_driver_sonames
+                )
+                + "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=42\n"
+                if "elf_count" in command[-1]
+                else "runtime verified\n"
+            )
+            return SimpleNamespace(stdout=stdout)
         raise AssertionError(command)
 
 
@@ -90,7 +101,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
-    docker = FakeDocker()
+    docker = FakeDocker(deferred_driver_sonames=("libnvidia-ml.so.1", "libcuda.so.1"))
     runtime_root = tmp_path / "runtime"
     build_root = tmp_path / "build"
 
@@ -104,6 +115,15 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
 
     assert result["status"] == "completed"
     assert result["source_and_carrier_registry_digests_verified"] is True
+    assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
+    assert result["carrier_validation"]["archived_elf_file_count"] == 42
+    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
+        "libcuda.so.1",
+        "libnvidia-ml.so.1",
+    ]
+    assert result["runtime_imports_and_wbc_linkage_verified_in_exact_carrier"] is False
+    assert result["runtime_cpu_compatible_with_gpu_driver_deferred_linkage"] is True
+    assert result["gpu_driver_deferred_resolution_unproven"] is True
     assert len(result["additional_artifacts"]) == 2
     assert {row["remote_key"] for row in result["additional_artifacts"]} == {
         DEFAULT_RUNTIME_ARCHIVE_PATH.removeprefix("/workspace/"),
@@ -121,10 +141,14 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert manifest["status"] == "complete"
     assert manifest["source_release_image_ref"] == SOURCE_REF
     assert manifest["carrier_image_ref"] == CARRIER_REF
+    assert manifest["gpu_driver_deferred_sonames"] == [
+        "libcuda.so.1",
+        "libnvidia-ml.so.1",
+    ]
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     carrier_runs = [call for call in docker.calls if call[1] == "run"]
-    assert len(carrier_runs) == 7
+    assert len(carrier_runs) == 6
     assert all("--network" in call for call in carrier_runs)
     assert all("none" in call for call in carrier_runs)
     assert all("--env" in call for call in carrier_runs)
@@ -140,6 +164,15 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert len(serverless_runs) == 1
     assert "--verify-serverless-runtime" in serverless_runs[0][-1]
     assert "import runpod" not in serverless_runs[0][-1]
+    validation_scripts = [call[-1] for call in carrier_runs]
+    elf_scan = next(script for script in validation_scripts if "elf_count" in script)
+    assert all(f"/{root}" in elf_scan for root in RUNTIME_ARCHIVE_ROOTS)
+    assert "ldd \"$candidate\"" in elf_scan
+    assert "not found" in elf_scan
+    assert "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME" in elf_scan
+    assert "libcuda.so.*" in elf_scan
+    assert any("import diffusers" in script for script in validation_scripts)
+    assert any("import carb; import isaacsim" in script for script in validation_scripts)
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
@@ -240,7 +273,7 @@ def test_prepare_runtime_bundle_names_failed_carrier_check_without_raw_output(
 
     with pytest.raises(
         RuntimeError,
-        match="typed_runtime_bundle_carrier_validation_failed:oscar_import",
+        match="typed_runtime_bundle_carrier_validation_failed:oscar_import_matrix",
     ) as raised:
         executor.prepare_runtime_bundle(
             _request(),
@@ -251,3 +284,129 @@ def test_prepare_runtime_bundle_names_failed_carrier_check_without_raw_output(
 
     assert "credential-like" not in str(raised.value)
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
+
+
+def test_runtime_carrier_validation_collects_all_failures_before_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    class MultiFailureDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and (
+                "elf_count" in command[-1] or "import carb; import isaacsim" in command[-1]
+            ):
+                self.calls.append(command)
+                raise subprocess.CalledProcessError(returncode=1, cmd=command)
+            return super().__call__(argv, **kwargs)
+
+    docker = MultiFailureDocker()
+    with pytest.raises(RuntimeError) as raised:
+        executor.prepare_runtime_bundle(
+            _request(),
+            runtime_root=tmp_path / "runtime",
+            build_root=tmp_path / "build",
+            runner=docker,
+        )
+
+    message = str(raised.value)
+    assert "all_archived_elf_linkage" in message
+    assert "isaac_import_matrix" in message
+    assert sum(call[1] == "run" for call in docker.calls) == 6
+
+
+def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:
+    failure = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["docker", "run"],
+        output=(
+            "libcuda_runtime.so.1 => not found\n"
+            "ModuleNotFoundError: No module named 'omni.missing'\n"
+            "credential-like text must not be copied\n"
+        ),
+        stderr="liboptional.so.2: cannot open shared object file\n",
+    )
+
+    assert executor._validation_diagnostic_tokens(failure) == [
+        "libcuda_runtime.so.1",
+        "liboptional.so.2",
+        "omni.missing",
+    ]
+
+
+def test_runtime_carrier_import_failure_defers_only_pure_driver_sonames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    class DriverDeferredDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and "import diffusers" in command[-1]:
+                self.calls.append(command)
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                    stderr="libcuda.so.1: cannot open shared object file\n",
+                )
+            return super().__call__(argv, **kwargs)
+
+    result = executor.prepare_runtime_bundle(
+        _request(),
+        runtime_root=tmp_path / "runtime",
+        build_root=tmp_path / "build",
+        runner=DriverDeferredDocker(),
+    )
+
+    assert result["status"] == "completed"
+    assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
+    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
+        "libcuda.so.1"
+    ]
+    assert any(
+        row["name"] == "oscar_import_matrix"
+        and row["status"] == "deferred_to_gpu_driver_bootstrap"
+        for row in result["carrier_validation"]["checks"]
+    )
+
+
+def test_runtime_carrier_import_failure_rejects_mixed_driver_and_module_gaps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    class MixedFailureDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and "import diffusers" in command[-1]:
+                self.calls.append(command)
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                    stderr=(
+                        "libcuda.so.1: cannot open shared object file\n"
+                        "ModuleNotFoundError: No module named 'yaml'\n"
+                    ),
+                )
+            return super().__call__(argv, **kwargs)
+
+    with pytest.raises(RuntimeError, match="oscar_import_matrix"):
+        executor.prepare_runtime_bundle(
+            _request(),
+            runtime_root=tmp_path / "runtime",
+            build_root=tmp_path / "build",
+            runner=MixedFailureDocker(),
+        )
+
+
+def test_runtime_carrier_validation_soname_extraction_is_bounded_and_linear() -> None:
+    hostile = "-." * 100_000
+    text = (
+        f"{hostile}.so => not found\n"
+        "loader: error while loading shared libraries: libyaml-cpp.so.0.8: "
+        "cannot open shared object file\n"
+        "/unsafe/path/libescape.so.1 => not found\n"
+    )
+
+    assert executor._missing_soname_tokens(text) == {"libyaml-cpp.so.0.8"}
