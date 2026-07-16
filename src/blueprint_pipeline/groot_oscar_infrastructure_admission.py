@@ -184,6 +184,17 @@ def validate_carrier_image_archive(packet: Mapping[str, Any]) -> list[str]:
                     blockers.append("builder_carrier_archive_unsafe_path")
                 if any(not member.isfile() for member in members):
                     blockers.append("builder_carrier_archive_nonregular_member")
+                script_member = next(
+                    (
+                        member
+                        for member in members
+                        if member.name
+                        == f"{CARRIER_PACKET_DIRNAME}/remote_build_groot_oscar_carrier.sh"
+                    ),
+                    None,
+                )
+                if script_member is None or script_member.mode & 0o111 == 0:
+                    blockers.append("builder_carrier_archive_script_not_executable")
                 if sorted(names) != expected_names or names != declared_names:
                     blockers.append("builder_carrier_archive_inventory_mismatch")
                 if not blockers:

@@ -163,7 +163,9 @@ def _spend() -> dict:
     }
 
 
-def _carrier_packet(tmp_path: Path, *, tamper_script: bool = False) -> dict:
+def _carrier_packet(
+    tmp_path: Path, *, tamper_script: bool = False, executable_script: bool = True
+) -> dict:
     image_ref = "docker.io/example/carrier:versioned"
     base_ref = "docker.io/example/base@sha256:" + "a" * 64
     dockerfile = b"ARG PYTORCH_CARRIER_BASE\nFROM ${PYTORCH_CARRIER_BASE}\n"
@@ -189,7 +191,7 @@ def _carrier_packet(tmp_path: Path, *, tamper_script: bool = False) -> dict:
         for name in sorted(payloads):
             info = tarfile.TarInfo(name)
             info.size = len(payloads[name])
-            info.mode = 0o755 if name.endswith(".sh") else 0o644
+            info.mode = 0o755 if name.endswith(".sh") and executable_script else 0o644
             archive.addfile(info, io.BytesIO(payloads[name]))
     return {
         **_packet(),
@@ -300,6 +302,15 @@ def test_build_plane_rejects_unbound_carrier_script_before_allocation(
     result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
     assert result["status"] == "blocked"
     assert "builder_carrier_archive_script_binding_mismatch" in result["blockers"]
+
+
+def test_build_plane_rejects_nonexecutable_carrier_script_before_allocation(
+    tmp_path: Path,
+) -> None:
+    packet = _carrier_packet(tmp_path, executable_script=False)
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "blocked"
+    assert "builder_carrier_archive_script_not_executable" in result["blockers"]
 
 
 def test_build_plane_rejects_malformed_carrier_packet_before_allocation() -> None:
