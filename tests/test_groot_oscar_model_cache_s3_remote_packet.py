@@ -157,6 +157,11 @@ def test_packet_round_trip_is_exact_and_preimport_verifiable(
 ) -> None:
     packet = _packet(tmp_path, monkeypatch)
     assert packet["status"] == "ready"
+    with tarfile.open(packet["tarball_path"], "r:gz") as archive:
+        assert (
+            "groot_oscar_model_cache_s3_remote/context/src/blueprint_pipeline/"
+            "groot_oscar_carrier_remote_build_packet.py"
+        ) in archive.getnames()
 
 
 def test_runtime_packet_requires_digest_refs_and_120_gib_volume(
