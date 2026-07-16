@@ -435,7 +435,10 @@ try:
     }
     if manifest.get("runtime_env") != expected_runtime_env:
         raise RuntimeError("runtime_manifest_env_mismatch")
-    driver_sonames = manifest.get("gpu_driver_deferred_sonames")
+    # Pre-audit v1 manifests could not contain deferred driver SONAMEs: the
+    # CPU linkage check failed on every unresolved dependency.  Treat the
+    # absent additive field as the only valid historical value, an empty list.
+    driver_sonames = manifest.get("gpu_driver_deferred_sonames", [])
     driver_stems = (
         "libcuda.so",
         "libnvcuvid.so",
