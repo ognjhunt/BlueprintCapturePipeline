@@ -231,6 +231,33 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
     assert "docker_username" not in text
 
 
+def test_model_cache_runtime_bundle_cloud_init_installs_docker() -> None:
+    text = build_cloud_init(
+        host_private_b64="private",
+        host_public_b64="public",
+        shutdown_minutes=120,
+        packet_kind="model_cache_s3",
+        runtime_bundle_requested=True,
+    )
+    assert text.splitlines().count("  - docker.io") == 1
+    assert "docker-buildx" not in text
+    assert "systemctl enable --now docker" in text
+    assert "docker info" in text
+    assert "python3 -m venv /root/blueprint-venv-probe" in text
+
+
+def test_plain_model_cache_cloud_init_does_not_install_docker() -> None:
+    text = build_cloud_init(
+        host_private_b64="private",
+        host_public_b64="public",
+        shutdown_minutes=120,
+        packet_kind="model_cache_s3",
+    )
+    assert "docker.io" not in text
+    assert "systemctl enable --now docker" not in text
+    assert "python3 -m venv /root/blueprint-venv-probe" in text
+
+
 def test_cloud_init_refuses_ttl_above_two_hours() -> None:
     with pytest.raises(ValueError, match="shutdown_minutes"):
         build_cloud_init(host_private_b64="a", host_public_b64="b", shutdown_minutes=121)

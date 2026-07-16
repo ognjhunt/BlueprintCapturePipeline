@@ -877,6 +877,7 @@ def build_cloud_init(
     host_public_b64: str,
     shutdown_minutes: int,
     packet_kind: str = "thin_release",
+    runtime_bundle_requested: bool = False,
 ) -> str:
     """Return cloud-init with an exact client-generated SSH host identity."""
 
@@ -886,21 +887,31 @@ def build_cloud_init(
         raise ValueError("shutdown_minutes_must_be_between_1_and_120")
     if packet_kind not in {"thin_release", "model_cache_s3"}:
         raise ValueError("builder_packet_kind_unsupported")
-    package_lines = (
-        "  - ca-certificates\n  - curl\n  - git\n  - jq\n  - python3\n"
-        "  - docker.io\n  - docker-buildx"
-        if packet_kind == "thin_release"
-        else "  - ca-certificates\n  - python3\n  - python3-venv"
-    )
-    runtime_commands = (
-        "  - systemctl enable --now docker\n"
-        "  - docker info\n"
-        "  - docker buildx version"
-        if packet_kind == "thin_release"
-        else "  - python3 -m venv /root/blueprint-venv-probe\n"
-        "  - test -x /root/blueprint-venv-probe/bin/pip\n"
-        "  - rm -rf /root/blueprint-venv-probe"
-    )
+    if runtime_bundle_requested and packet_kind != "model_cache_s3":
+        raise ValueError("runtime_bundle_requires_model_cache_packet")
+    if packet_kind == "thin_release":
+        package_lines = (
+            "  - ca-certificates\n  - curl\n  - git\n  - jq\n  - python3\n"
+            "  - docker.io\n  - docker-buildx"
+        )
+        runtime_commands = (
+            "  - systemctl enable --now docker\n"
+            "  - docker info\n"
+            "  - docker buildx version"
+        )
+    else:
+        package_lines = "  - ca-certificates\n  - python3\n  - python3-venv"
+        runtime_commands = (
+            "  - python3 -m venv /root/blueprint-venv-probe\n"
+            "  - test -x /root/blueprint-venv-probe/bin/pip\n"
+            "  - rm -rf /root/blueprint-venv-probe"
+        )
+        if runtime_bundle_requested:
+            package_lines += "\n  - docker.io"
+            runtime_commands += (
+                "\n  - systemctl enable --now docker\n"
+                "  - docker info"
+            )
     return f"""#cloud-config
 ssh_deletekeys: false
 bootcmd:
@@ -1323,6 +1334,7 @@ def run_builder(
         host_public_b64=host_public_b64,
         shutdown_minutes=max(1, min(120, (ttl + 59) // 60)),
         packet_kind=packet_kind,
+        runtime_bundle_requested=bool(packet.get("runtime_bundle_requested")),
     )
     create_payload = build_droplet_payload(
         name=name, region=region, ssh_key_id=ssh_key_id, user_data=user_data
