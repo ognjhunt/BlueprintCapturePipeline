@@ -510,7 +510,6 @@ def inspect(candidate):
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=os.path.dirname(candidate),
         )
     except subprocess.TimeoutExpired:
         return ("TIMEOUT", ())

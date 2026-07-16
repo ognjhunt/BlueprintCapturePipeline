@@ -226,7 +226,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "INVALID_HASH" in elf_scan
     assert "safe_library_token_count" in elf_scan
     assert 'f"{digest}_{shape}"' in elf_scan
-    assert "cwd=os.path.dirname(candidate)" in elf_scan
+    assert "cwd=os.path.dirname(candidate)" not in elf_scan
     assert "elf_missing_system_path_%s" in elf_scan
     assert "elf_missing_path_%s" in elf_scan
     assert "elf_missing_operand_%s" in elf_scan
