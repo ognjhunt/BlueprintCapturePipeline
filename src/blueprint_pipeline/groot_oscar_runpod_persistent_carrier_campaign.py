@@ -516,8 +516,11 @@ def run_persistent_carrier_campaign(
             _retain_watchdog_receipt(receipt_path, result)
         write_json(Path(adapter_output), result)
         return result
+    session_job_dir = Path(
+        str(session_result.get("job_dir") or persistent_job_dir)
+    ).expanduser().resolve()
     poll_path = (
-        Path(persistent_job_dir)
+        session_job_dir
         / "runpod_persistent_session_run/runpod_wam_async_poll_manifest.json"
     )
     poll = _read(poll_path) if poll_path.is_file() else {}
@@ -566,7 +569,7 @@ def run_persistent_carrier_campaign(
         ),
         "pod_name": pod_name,
         "session_result_path": str(
-            Path(persistent_job_dir)
+            session_job_dir
             / "unitree_groot_n17_sonic_vast_persistent_session_result.json"
         ),
         "poll_manifest_path": str(poll_path),

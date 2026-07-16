@@ -255,7 +255,8 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
 
     def fake_session(**kwargs):
         observed.update(kwargs)
-        imported = Path(kwargs["job_dir"]) / "imported_persistent_session_output"
+        session_job = Path(kwargs["job_dir"]) / "20260716T054812_0000"
+        imported = session_job / "imported_persistent_session_output"
         for index in range(5):
             _write(
                 imported / "policy_calls" / f"policy_call_{index:04d}.json",
@@ -275,7 +276,7 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
         for index in range(21):
             (media / f"media_{index:04d}.png").write_bytes(b"png")
         poll = (
-            Path(kwargs["job_dir"])
+            session_job
             / "runpod_persistent_session_run/runpod_wam_async_poll_manifest.json"
         )
         _write(
@@ -287,6 +288,7 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
         )
         return {
             "status": "completed",
+            "job_dir": str(session_job),
             "persistent_provider_session_used": True,
             "provider_instance_reused_for_policy_and_wam_loop": True,
             "repeated_policy_calls_count": 5,
@@ -308,6 +310,16 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
 
     assert result["status"] == "completed"
     assert result["gpu_teardown_verified"] is True
+    assert result["poll_manifest_path"] == str(
+        inputs["persistent_job_dir"]
+        / "20260716T054812_0000"
+        / "runpod_persistent_session_run/runpod_wam_async_poll_manifest.json"
+    )
+    assert result["session_result_path"] == str(
+        inputs["persistent_job_dir"]
+        / "20260716T054812_0000"
+        / "unitree_groot_n17_sonic_vast_persistent_session_result.json"
+    )
     assert result["semantic_task_success_proven"] is False
     assert result["persistent_carrier_output_audit"]["observed_counts"] == {
         "repeated_policy_calls_count": 5,

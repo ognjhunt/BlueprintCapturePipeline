@@ -383,7 +383,7 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --admission-out <persistent-canary-dir>/runpod_admission.json \
   --bound-request-out <persistent-canary-dir>/bound_provider_request.json \
   --adapter-output <persistent-canary-dir>/persistent_carrier_result.json \
-  --pod-name blueprint-groot-oscar-persistent-<attempt> \
+  --pod-name blueprint-groot-oscar-canary-persistent-<attempt> \
   --campaign-budget-ledger <durable-campaign-budget.json> \
   --campaign-initial-spent-usd '<current-reconciled-spend>' \
   --campaign-initial-used-gpu-seconds '<current-reconciled-gpu-seconds>' \
