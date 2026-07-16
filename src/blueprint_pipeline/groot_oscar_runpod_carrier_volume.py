@@ -16,7 +16,11 @@ from typing import Any, Mapping, Sequence
 
 
 RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION = "groot_oscar_runtime_bundle_manifest.v1"
-CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v1"
+CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v2"
+THIN_RUNTIME_SOURCE_EVIDENCE_SCHEMA_VERSION = "groot_oscar_thin_remote_build_result.v1"
+RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION = (
+    "groot_oscar_runtime_source_release_verification.v1"
+)
 DEFAULT_RUNTIME_ROOT = "/workspace/.blueprint-runtime/blueprint-groot-oscar-v1"
 DEFAULT_RUNTIME_ARCHIVE_PATH = f"{DEFAULT_RUNTIME_ROOT}/groot_oscar_runtime.tar.gz"
 DEFAULT_RUNTIME_MANIFEST_PATH = f"{DEFAULT_RUNTIME_ROOT}/runtime_bundle_manifest.json"
@@ -39,6 +43,7 @@ RUNTIME_ARCHIVE_ROOTS = (
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _VOLUME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,127}")
 _DATA_CENTER_ID = re.compile(r"[A-Z]{2,8}(?:-[A-Z0-9]+)+")
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -64,6 +69,74 @@ def canonical_json_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(dict(value), sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def verify_runtime_source_release_evidence(
+    value: Mapping[str, Any],
+    *,
+    expected_release_image_ref: str,
+    expected_cuda_version: str = "12.8",
+) -> dict[str, Any]:
+    """Prove the runtime source is the exact thin, model-externalized release."""
+
+    evidence = _mapping(value)
+    contract = _mapping(evidence.get("thin_release_contract"))
+    blockers: list[str] = []
+    expected_ref = _digest_pinned_image(expected_release_image_ref)
+    release_ref = _digest_pinned_image(
+        evidence.get("resolved_digest_ref") or evidence.get("release_image_ref")
+    )
+    if evidence.get("schema_version") != THIN_RUNTIME_SOURCE_EVIDENCE_SCHEMA_VERSION:
+        blockers.append("runtime_source_release_evidence_schema_invalid")
+    if evidence.get("status") != "completed" or evidence.get("blockers") not in ([], ()):
+        blockers.append("runtime_source_release_evidence_not_completed")
+    if not expected_ref:
+        blockers.append("runtime_source_expected_ref_not_digest_pinned")
+    if not release_ref:
+        blockers.append("runtime_source_release_ref_not_digest_pinned")
+    if release_ref != expected_ref:
+        blockers.append("runtime_source_release_ref_mismatch")
+    if evidence.get("release_image_ref") != release_ref:
+        blockers.append("runtime_source_release_declared_ref_mismatch")
+    if evidence.get("runnable_platform") != "linux/amd64":
+        blockers.append("runtime_source_release_platform_invalid")
+    if _string(evidence.get("required_cuda_version")) != expected_cuda_version:
+        blockers.append("runtime_source_release_cuda_version_mismatch")
+    source_commit = _string(evidence.get("source_commit"))
+    if not _COMMIT.fullmatch(source_commit):
+        blockers.append("runtime_source_release_commit_invalid")
+    if evidence.get("models_embedded") is not False:
+        blockers.append("runtime_source_release_models_embedded")
+    if evidence.get("thin_release_contract_status") != "passed":
+        blockers.append("runtime_source_thin_contract_not_passed")
+    if contract.get("schema_version") != "groot_oscar_thin_release_image_contract.v1":
+        blockers.append("runtime_source_thin_contract_schema_invalid")
+    if contract.get("status") != "passed" or contract.get("blockers") not in ([], ()):
+        blockers.append("runtime_source_thin_contract_blocked")
+    if contract.get("release_image_ref") != release_ref:
+        blockers.append("runtime_source_thin_contract_ref_mismatch")
+    if contract.get("models_externalized") is not True:
+        blockers.append("runtime_source_thin_contract_models_not_externalized")
+    if contract.get("release_delta_budget_passed") is not True:
+        blockers.append("runtime_source_thin_contract_delta_budget_not_passed")
+    if evidence.get("raw_secret_values_recorded") is not False:
+        blockers.append("runtime_source_release_raw_secret_boundary_invalid")
+    return {
+        "schema_version": RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
+        "status": "blocked" if blockers else "verified",
+        "blockers": sorted(set(blockers)),
+        "release_image_ref": release_ref,
+        "source_commit": source_commit,
+        "required_cuda_version": _string(evidence.get("required_cuda_version")),
+        "thin_release_contract_sha256": (canonical_json_sha256(contract) if contract else ""),
+        "models_externalized": contract.get("models_externalized") is True,
+        "claim_boundary": (
+            "This verifies the exact model-externalized thin release used as the runtime "
+            "copy source. It does not prove volume transfer, provider startup, inference, "
+            "or semantic task success."
+        ),
+        "raw_secret_values_recorded": False,
+    }
 
 
 def build_runtime_bundle_manifest(
@@ -137,6 +210,7 @@ def verify_carrier_volume_admission(
     admission = _mapping(value)
     volume = _mapping(admission.get("network_volume"))
     runtime = _mapping(admission.get("runtime_bundle"))
+    runtime_source = _mapping(admission.get("runtime_source_release"))
     model = _mapping(admission.get("model_cache"))
     transfer = _mapping(admission.get("s3_transfer_verification"))
     blockers: list[str] = []
@@ -161,6 +235,18 @@ def verify_carrier_volume_admission(
         blockers.append("carrier_image_admission_mismatch")
     if not source_ref:
         blockers.append("runtime_source_release_image_not_digest_pinned")
+    if runtime_source.get("schema_version") != RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION:
+        blockers.append("runtime_source_release_verification_schema_invalid")
+    if runtime_source.get("status") != "verified":
+        blockers.append("runtime_source_release_evidence_not_verified")
+    if runtime_source.get("release_image_ref") != source_ref:
+        blockers.append("runtime_source_release_evidence_ref_mismatch")
+    if not _COMMIT.fullmatch(_string(runtime_source.get("source_commit"))):
+        blockers.append("runtime_source_release_evidence_commit_invalid")
+    if not _sha256_digest(runtime_source.get("thin_release_contract_sha256")):
+        blockers.append("runtime_source_release_contract_sha256_invalid")
+    if runtime_source.get("models_externalized") is not True:
+        blockers.append("runtime_source_release_models_not_externalized")
     if runtime.get("manifest_schema_version") != RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION:
         blockers.append("runtime_bundle_manifest_schema_invalid")
     if runtime.get("root") != DEFAULT_RUNTIME_ROOT:
@@ -199,6 +285,10 @@ def verify_carrier_volume_admission(
         "size_gib": size_gib,
         "carrier_image_ref": carrier_ref,
         "source_release_image_ref": source_ref,
+        "source_release_commit": _string(runtime_source.get("source_commit")),
+        "source_release_contract_sha256": _sha256_digest(
+            runtime_source.get("thin_release_contract_sha256")
+        ),
         "runtime_root": DEFAULT_RUNTIME_ROOT,
         "runtime_archive_path": DEFAULT_RUNTIME_ARCHIVE_PATH,
         "runtime_manifest_path": DEFAULT_RUNTIME_MANIFEST_PATH,
@@ -219,7 +309,7 @@ def verify_carrier_volume_admission(
 def runtime_bootstrap_shell_prefix() -> str:
     """Return a secret-free bootstrap that validates and activates the runtime archive."""
 
-    return r'''
+    return r"""
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_STARTED
 mkdir -p "$WORK_DIR/runtime_output"
 export BLUEPRINT_RUNPOD_CARRIER_BOOTSTRAP_RESULT="$WORK_DIR/runtime_output/runpod_carrier_runtime_bootstrap.json"
@@ -385,4 +475,4 @@ export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/sonic
 export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar"
 export BLUEPRINT_OSCAR_WAM_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar"
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_READY
-'''
+"""

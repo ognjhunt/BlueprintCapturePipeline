@@ -26,29 +26,21 @@ def test_detached_model_volume_supervisor_ignores_only_sigint(
         lambda signum, handler: calls.append((signum, handler)),
     )
 
-    assert allocator._configure_detached_model_volume_signal_policy(
-        "model-volume-run"
-    ) is True
+    assert allocator._configure_detached_model_volume_signal_policy("model-volume-run") is True
     assert calls == [(signal.SIGINT, signal.SIG_IGN)]
 
 
 def test_foreground_model_volume_keeps_default_signal_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(
-        allocator.DETACHED_MODEL_VOLUME_SUPERVISOR_ENV, raising=False
-    )
+    monkeypatch.delenv(allocator.DETACHED_MODEL_VOLUME_SUPERVISOR_ENV, raising=False)
     monkeypatch.setattr(
         allocator.signal,
         "signal",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("signal policy changed")
-        ),
+        lambda *_args: (_ for _ in ()).throw(AssertionError("signal policy changed")),
     )
 
-    assert allocator._configure_detached_model_volume_signal_policy(
-        "model-volume-run"
-    ) is False
+    assert allocator._configure_detached_model_volume_signal_policy("model-volume-run") is False
 
 
 def _write_inputs(tmp_path: Path, *, paid: bool = True) -> Namespace:
@@ -253,9 +245,7 @@ def test_cpu_build_cli_rechecks_prerequisites_before_detached_supervisor(
         supervisor_called = True
         return {}
 
-    monkeypatch.setattr(
-        allocator, "launch_detached_builder", fail_if_supervisor_called
-    )
+    monkeypatch.setattr(allocator, "launch_detached_builder", fail_if_supervisor_called)
     exit_code = allocator.main(
         [
             "cpu-build",
@@ -281,9 +271,7 @@ def test_cpu_build_cli_rechecks_prerequisites_before_detached_supervisor(
     assert supervisor_called is False
 
 
-def test_cpu_build_run_forwards_fixed_model_cache_secret_files(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_cpu_build_run_forwards_fixed_model_cache_secret_files(tmp_path: Path, monkeypatch) -> None:
     observed = {}
     monkeypatch.setattr(
         allocator, "_run_cpu_prerequisite_gate", lambda _output: {"status": "ready"}
@@ -316,9 +304,7 @@ def test_cpu_build_run_forwards_fixed_model_cache_secret_files(
     assert observed["runpod_s3_secret_key_file"] == Path("s3-secret")
 
 
-def test_model_volume_run_forwards_storage_only_composite_arguments(
-    monkeypatch, capsys
-) -> None:
+def test_model_volume_run_forwards_storage_only_composite_arguments(monkeypatch, capsys) -> None:
     observed = {}
 
     def fake_run_model_volume(**kwargs):
@@ -345,6 +331,12 @@ def test_model_volume_run_forwards_storage_only_composite_arguments(
             "host-key",
             "--ssh-key-id",
             "7",
+            "--runtime-source-release-image-ref",
+            "docker.io/blueprint/thin@sha256:" + "1" * 64,
+            "--runtime-source-release-evidence",
+            "thin-release.json",
+            "--carrier-image-ref",
+            "pytorch/pytorch:runtime@sha256:" + "2" * 64,
             "--allow-paid",
         ]
     )
@@ -352,7 +344,47 @@ def test_model_volume_run_forwards_storage_only_composite_arguments(
     assert observed["storage_hourly_rate_usd"] == pytest.approx(0.004861111111)
     assert observed["builder_evidence_path"] == Path("builder.json")
     assert observed["builder_spend_path"] == Path("spend.json")
+    assert observed["runtime_source_release_evidence_path"] == Path("thin-release.json")
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_model_volume_rejects_runtime_bundle_without_thin_release_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "launch_detached_model_volume",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("detached paid supervisor reached")),
+    )
+    exit_code = allocator.main(
+        [
+            "model-volume",
+            "--output-dir",
+            "out",
+            "--data-center-id",
+            "US-WA-1",
+            "--storage-hourly-rate-usd",
+            "0.011666666667",
+            "--builder-evidence",
+            "builder.json",
+            "--builder-spend",
+            "spend.json",
+            "--login-private-key",
+            "login-key",
+            "--host-private-key",
+            "host-key",
+            "--ssh-key-id",
+            "7",
+            "--runtime-source-release-image-ref",
+            "docker.io/blueprint/sealed@sha256:" + "9" * 64,
+            "--carrier-image-ref",
+            "pytorch/pytorch:runtime@sha256:" + "2" * 64,
+            "--allow-paid",
+        ]
+    )
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().out) == {"success": False}
 
 
 def test_model_volume_retention_forwards_bounded_existing_cache_contract(
@@ -369,15 +401,24 @@ def test_model_volume_retention_forwards_bounded_existing_cache_contract(
     exit_code = allocator.main(
         [
             "model-volume",
-            "--output-dir", "retained",
-            "--storage-hourly-rate-usd", "0.004861111111",
-            "--retain-existing-output", "verified-cache",
-            "--retention-ttl-seconds", str(7 * 24 * 60 * 60),
-            "--retention-max-spend-usd", "1.0",
-            "--campaign-spent-to-date-usd", "13.0",
-            "--campaign-total-spend-cap-usd", "20.0",
-            "--runpod-s3-access-key-file", "s3-access",
-            "--runpod-s3-secret-key-file", "s3-secret",
+            "--output-dir",
+            "retained",
+            "--storage-hourly-rate-usd",
+            "0.004861111111",
+            "--retain-existing-output",
+            "verified-cache",
+            "--retention-ttl-seconds",
+            str(7 * 24 * 60 * 60),
+            "--retention-max-spend-usd",
+            "1.0",
+            "--campaign-spent-to-date-usd",
+            "13.0",
+            "--campaign-total-spend-cap-usd",
+            "20.0",
+            "--runpod-s3-access-key-file",
+            "s3-access",
+            "--runpod-s3-secret-key-file",
+            "s3-secret",
             "--allow-paid",
         ]
     )
@@ -451,18 +492,30 @@ def test_gpu_canary_defaults_bind_authorized_strict_staged_plan(
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--provider-launch-request", "request.json",
-            "--release-evidence", "release.json",
-            "--model-cache-evidence", "models.json",
-            "--preflight-bundle", "preflight.json",
-            "--admission-out", "admission.json",
-            "--bound-request-out", "bound.json",
-            "--adapter-output", "adapter.json",
-            "--pod-name", "strict-smoke-pod",
-            "--campaign-budget-ledger", "budget.json",
-            "--campaign-initial-spent-usd", "14.557003",
-            "--campaign-initial-used-gpu-seconds", "15624",
-            "--campaign-max-hourly-rate-usd", "1.99",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "strict-smoke-pod",
+            "--campaign-budget-ledger",
+            "budget.json",
+            "--campaign-initial-spent-usd",
+            "14.557003",
+            "--campaign-initial-used-gpu-seconds",
+            "15624",
+            "--campaign-max-hourly-rate-usd",
+            "1.99",
             "--authorize-reduced-canary-timeout",
             "--execute",
         ]
@@ -496,25 +549,44 @@ def test_gpu_canary_dispatches_persistent_host_bake_through_allocator(
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--provider", "digitalocean",
-            "--probe-kind", "persistent-host-bake",
-            "--provider-launch-request", str(out / "request.json"),
-            "--release-evidence", str(out / "release.json"),
-            "--model-cache-evidence", str(out / "models.json"),
-            "--preflight-bundle", str(out / "preflight.json"),
-            "--admission-out", str(out / "admission.json"),
-            "--bound-request-out", str(out / "bound.json"),
-            "--adapter-output", str(out / "result.json"),
-            "--pod-name", "prebake-test",
-            "--campaign-budget-ledger", str(out / "budget.json"),
-            "--campaign-initial-spent-usd", "14.557003",
-            "--campaign-initial-used-gpu-seconds", "15624",
-            "--campaign-reservation-seconds", "1396",
-            "--future-campaign-allowance-seconds", "3980",
-            "--campaign-max-hourly-rate-usd", "3.50",
-            "--login-private-key", "login-key",
-            "--host-private-key", "host-key",
-            "--ssh-key-id", "55252816",
+            "--provider",
+            "digitalocean",
+            "--probe-kind",
+            "persistent-host-bake",
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "prebake-test",
+            "--campaign-budget-ledger",
+            str(out / "budget.json"),
+            "--campaign-initial-spent-usd",
+            "14.557003",
+            "--campaign-initial-used-gpu-seconds",
+            "15624",
+            "--campaign-reservation-seconds",
+            "1396",
+            "--future-campaign-allowance-seconds",
+            "3980",
+            "--campaign-max-hourly-rate-usd",
+            "3.50",
+            "--login-private-key",
+            "login-key",
+            "--host-private-key",
+            "host-key",
+            "--ssh-key-id",
+            "55252816",
         ]
     )
     assert exit_code == 0
@@ -541,22 +613,38 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--probe-kind", "persistent-policy-wam-loop",
-            "--provider-launch-request", str(out / "request.json"),
-            "--release-evidence", str(out / "release.json"),
-            "--model-cache-evidence", str(out / "models.json"),
-            "--preflight-bundle", str(out / "preflight.json"),
-            "--carrier-volume-admission", str(out / "carrier.json"),
-            "--policy-observation", str(out / "observation.json"),
-            "--persistent-job-dir", str(out / "job"),
-            "--admission-out", str(out / "admission.json"),
-            "--bound-request-out", str(out / "bound.json"),
-            "--adapter-output", str(out / "result.json"),
-            "--pod-name", "blueprint-persistent-exact",
-            "--campaign-budget-ledger", str(out / "budget.json"),
-            "--campaign-initial-spent-usd", "14.557003",
-            "--campaign-initial-used-gpu-seconds", "15624",
-            "--campaign-max-hourly-rate-usd", "0.74",
+            "--probe-kind",
+            "persistent-policy-wam-loop",
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--carrier-volume-admission",
+            str(out / "carrier.json"),
+            "--policy-observation",
+            str(out / "observation.json"),
+            "--persistent-job-dir",
+            str(out / "job"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "blueprint-persistent-exact",
+            "--campaign-budget-ledger",
+            str(out / "budget.json"),
+            "--campaign-initial-spent-usd",
+            "14.557003",
+            "--campaign-initial-used-gpu-seconds",
+            "15624",
+            "--campaign-max-hourly-rate-usd",
+            "0.74",
             "--authorize-persistent-carrier-campaign",
             "--execute",
         ]
@@ -581,24 +669,32 @@ def test_gpu_canary_rejects_digitalocean_provider_for_runpod_probe(
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--provider", "digitalocean",
-            "--probe-kind", "strict-policy-smoke",
-            "--provider-launch-request", str(out / "request.json"),
-            "--release-evidence", str(out / "release.json"),
-            "--model-cache-evidence", str(out / "models.json"),
-            "--preflight-bundle", str(out / "preflight.json"),
-            "--admission-out", str(out / "admission.json"),
-            "--bound-request-out", str(out / "bound.json"),
-            "--adapter-output", str(out / "result.json"),
-            "--pod-name", "must-not-launch-runpod",
+            "--provider",
+            "digitalocean",
+            "--probe-kind",
+            "strict-policy-smoke",
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "must-not-launch-runpod",
         ]
     )
     assert exit_code == 2
     result = json.loads((out / "result.json").read_text())
     assert result["provider_mutations_performed"] == 0
-    assert result["blockers"] == [
-        "digitalocean_gpu_canary_requires_persistent_host_bake"
-    ]
+    assert result["blockers"] == ["digitalocean_gpu_canary_requires_persistent_host_bake"]
     assert json.loads(capsys.readouterr().out) == {"success": False}
 
 

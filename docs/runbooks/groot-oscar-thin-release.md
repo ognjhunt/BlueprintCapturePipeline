@@ -156,6 +156,7 @@ python -m blueprint_pipeline.paid_resource_allocator model-volume \
   --data-center-id '<capacity-verified-s3-dc>' \
   --volume-size-gib 120 \
   --runtime-source-release-image-ref '<release>@sha256:<digest>' \
+  --runtime-source-release-evidence <groot_oscar_thin_remote_build_result.json> \
   --carrier-image-ref 'pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca' \
   --storage-hourly-rate-usd '<provider-verified-rate>' \
   --storage-ttl-seconds 28800 \
@@ -170,7 +171,11 @@ python -m blueprint_pipeline.paid_resource_allocator model-volume \
 
 Runtime-bearing volumes require at least eight hours of bounded retention and
 must also cover the builder TTL, transfer margin, and the 18,600-second GPU
-watchdog. The allocator pulls both images on the admitted CPU builder, records
+watchdog. Before any detached supervisor or provider mutation, the allocator
+requires the completed thin-release build result to bind the exact source
+digest, Linux/amd64 platform, CUDA 12.8 contract, externalized-model claim, and
+thin release delta. A sealed or mismatched image ref is rejected at the CLI or
+pre-allocation evidence gate. The allocator pulls both images on the admitted CPU builder, records
 their resolved repo digests, copies only the declared runtime roots from the
 source release, rejects unsafe archive members, uploads the runtime archive and
 manifest beside the model cache through RunPod S3, fully redownload-verifies all

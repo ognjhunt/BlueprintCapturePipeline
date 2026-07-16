@@ -82,10 +82,7 @@ def test_storage_volume_admission_accepts_120_gib_carrier_volume_size() -> None:
 def test_storage_volume_admission_rejects_one_hour_and_near_canary_deadlines() -> None:
     one_hour = _admission(storage_ttl_seconds=3600)
     assert "storage_model_volume_ttl_outside_guardrail" in one_hour["blockers"]
-    assert (
-        "storage_model_volume_ttl_does_not_cover_builder_and_canary"
-        in one_hour["blockers"]
-    )
+    assert "storage_model_volume_ttl_does_not_cover_builder_and_canary" in one_hour["blockers"]
     near = _admission(storage_ttl_seconds=10_000)
     assert "storage_model_volume_ttl_does_not_cover_builder_and_canary" in near["blockers"]
 
@@ -357,15 +354,12 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
         }
 
     monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
-    monkeypatch.setattr(
-        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
-    )
-    monkeypatch.setattr(
-        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
-    )
+    monkeypatch.setattr(storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True))
+    monkeypatch.setattr(storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"})
     _patch_retention_remote_verification(monkeypatch)
     monkeypatch.setattr(storage, "_arm_watchdog", arm)
     monkeypatch.setattr(storage, "_pid_is_alive", lambda pid: pid in live)
+
     def rotate(_handoff, **kwargs):
         prepared_state = json.loads(
             (retention_root / "watchdog_state.json").read_text(encoding="utf-8")
@@ -373,9 +367,10 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
         assert prepared_state["provider_lane_handoff"]["lease_path"] == str(
             tmp_path / "provider.lease.json"
         )
-        assert prepared_state["pending_teardown_record"] == kwargs[
-            "retention_binding"
-        ]["pending_teardown_record"]
+        assert (
+            prepared_state["pending_teardown_record"]
+            == kwargs["retention_binding"]["pending_teardown_record"]
+        )
         return {
             "schema_version": "paid_provider_lane_lease_handoff.v1",
             "status": "pending_canary_acceptance",
@@ -383,15 +378,11 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
             "binding": kwargs["retention_binding"],
         }
 
-    monkeypatch.setattr(
-        storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate
-    )
+    monkeypatch.setattr(storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate)
 
     def argv(pid):
         state = (
-            source / "watchdog_state.json"
-            if pid == 111
-            else retention_root / "watchdog_state.json"
+            source / "watchdog_state.json" if pid == 111 else retention_root / "watchdog_state.json"
         )
         return (
             "python",
@@ -470,12 +461,8 @@ def test_bounded_retention_rejects_unreconciled_spend_before_new_watchdog(
             return "runpod-key"
 
     monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
-    monkeypatch.setattr(
-        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
-    )
-    monkeypatch.setattr(
-        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
-    )
+    monkeypatch.setattr(storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True))
+    monkeypatch.setattr(storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"})
     _patch_retention_remote_verification(monkeypatch)
     monkeypatch.setattr(
         storage,
@@ -579,18 +566,12 @@ def test_retention_pre_rotation_failure_keeps_original_owner(
         return {}
 
     monkeypatch.setattr(storage, "get_render_provider", lambda _name: Provider())
-    monkeypatch.setattr(
-        storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True)
-    )
-    monkeypatch.setattr(
-        storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"}
-    )
+    monkeypatch.setattr(storage, "_matching_resources", lambda **_kwargs: ([], ["volume-1"], True))
+    monkeypatch.setattr(storage, "preflight_runpod_s3", lambda **_kwargs: {"status": "ready"})
     _patch_retention_remote_verification(monkeypatch)
     monkeypatch.setattr(storage, "_arm_watchdog", arm)
     monkeypatch.setattr(storage, "write_json", fail_prepared_state)
-    monkeypatch.setattr(
-        storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate
-    )
+    monkeypatch.setattr(storage, "rotate_paid_provider_lane_lease_to_retention_watchdog", rotate)
     result = retain_verified_model_cache(
         output_dir=retention_root,
         source_output_dir=source,
@@ -617,14 +598,14 @@ def test_storage_route_has_watchdog_lease_ledger_and_no_pod_create() -> None:
         Path(__file__).resolve().parents[1]
         / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
     ).read_text(encoding="utf-8")
-    run = source[source.index("def run_storage_model_volume(") : source.index("def launch_detached(")]
+    run = source[
+        source.index("def run_storage_model_volume(") : source.index("def launch_detached(")
+    ]
     assert '"/pods"' not in run
     assert run.index("acquire_paid_provider_lane_lease(") < run.index(
         '"POST",\n            "/networkvolumes"'
     )
-    assert run.index("open_pending_teardown(") < run.index(
-        '"POST",\n            "/networkvolumes"'
-    )
+    assert run.index("open_pending_teardown(") < run.index('"POST",\n            "/networkvolumes"')
     assert run.index("bind_pending_teardown_instance(") > run.index(
         '"POST",\n            "/networkvolumes"'
     )
@@ -739,6 +720,42 @@ def _inputs(tmp_path: Path) -> dict:
     }
 
 
+def _runtime_source_evidence(
+    tmp_path: Path,
+    *,
+    release_ref: str,
+    models_externalized: bool = True,
+) -> Path:
+    path = tmp_path / "runtime-source-release.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "groot_oscar_thin_remote_build_result.v1",
+                "status": "completed",
+                "blockers": [],
+                "release_image_ref": release_ref,
+                "resolved_digest_ref": release_ref,
+                "runnable_platform": "linux/amd64",
+                "required_cuda_version": "12.8",
+                "source_commit": "a" * 40,
+                "thin_release_contract_status": "passed",
+                "thin_release_contract": {
+                    "schema_version": "groot_oscar_thin_release_image_contract.v1",
+                    "status": "passed",
+                    "blockers": [],
+                    "release_image_ref": release_ref,
+                    "models_externalized": models_externalized,
+                    "release_delta_budget_passed": True,
+                },
+                "models_embedded": not models_externalized,
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_builder_live_preflight_failure_blocks_before_runpod_volume_post(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -772,13 +789,55 @@ def test_runtime_bundle_requires_120_gib_before_runpod_volume_post(
         ),
     )
     inputs = _inputs(tmp_path)
+    release_ref = "docker.io/blueprint/release@sha256:" + "1" * 64
     inputs.update(
-        runtime_source_release_image_ref="docker.io/blueprint/release@sha256:" + "1" * 64,
+        runtime_source_release_image_ref=release_ref,
         carrier_image_ref="pytorch/pytorch:runtime@sha256:" + "2" * 64,
+        runtime_source_release_evidence_path=_runtime_source_evidence(
+            tmp_path, release_ref=release_ref
+        ),
     )
     result = run_storage_model_volume(**inputs)
     assert result["status"] == "blocked_before_allocation"
     assert result["provider_mutation_attempted"] is False
+
+
+def test_sealed_runtime_source_is_rejected_before_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_preallocation(monkeypatch)
+    monkeypatch.setattr(
+        storage,
+        "_runpod_call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider mutation reached")
+        ),
+    )
+    intended_ref = "docker.io/blueprint/thin@sha256:" + "1" * 64
+    sealed_ref = "docker.io/blueprint/sealed@sha256:" + "9" * 64
+    inputs = _inputs(tmp_path)
+    inputs.update(
+        volume_size_gib=120,
+        storage_ttl_seconds=28_800,
+        max_storage_spend_usd=0.05,
+        runtime_source_release_image_ref=intended_ref,
+        carrier_image_ref="pytorch/pytorch:runtime@sha256:" + "2" * 64,
+        runtime_source_release_evidence_path=_runtime_source_evidence(
+            tmp_path,
+            release_ref=sealed_ref,
+            models_externalized=False,
+        ),
+    )
+    result = run_storage_model_volume(**inputs)
+    assert result["status"] == "blocked_before_allocation"
+    assert result["provider_mutation_attempted"] is False
+    verification = json.loads(
+        (inputs["output_dir"] / "runtime_source_release_evidence_verification.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert verification["status"] == "blocked"
+    assert "runtime_source_release_ref_mismatch" in verification["blockers"]
 
 
 def test_duplicate_lane_blocks_before_watchdog_or_provider_mutation(
@@ -824,8 +883,6 @@ def test_storage_detached_launch_is_single_supervisor(
     assert launched["status"] == "supervisor_started"
     assert launched["local_sigint_ignored"] is True
     assert popen_kwargs["start_new_session"] is True
-    assert popen_kwargs["env"][
-        "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
-    ] == "1"
+    assert popen_kwargs["env"]["BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"] == "1"
     with pytest.raises(ValueError, match="already_has_supervisor"):
         launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])

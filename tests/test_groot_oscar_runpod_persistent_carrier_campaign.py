@@ -17,6 +17,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_MANIFEST_PATH,
     DEFAULT_RUNTIME_ROOT,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+    RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
 )
 
 
@@ -43,6 +44,14 @@ def _carrier() -> dict:
             "archive_sha256": "3" * 64,
             "manifest_sha256": "4" * 64,
         },
+        "runtime_source_release": {
+            "schema_version": RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
+            "status": "verified",
+            "release_image_ref": RELEASE_REF,
+            "source_commit": "a" * 40,
+            "thin_release_contract_sha256": "6" * 64,
+            "models_externalized": True,
+        },
         "model_cache": {
             "status": "verified",
             "root": DEFAULT_MODEL_CACHE_ROOT,
@@ -63,9 +72,7 @@ def _release() -> dict:
         "thin_release_contract": {"status": "passed"},
         "runnable_platform": "linux/amd64",
         "required_cuda_version": "12.8",
-        "required_cuda_version_source": (
-            "image_config_env:BLUEPRINT_REQUIRED_CUDA_VERSION"
-        ),
+        "required_cuda_version_source": ("image_config_env:BLUEPRINT_REQUIRED_CUDA_VERSION"),
     }
 
 
@@ -335,8 +342,9 @@ def test_nonterminal_pod_leaves_watchdog_receipt_and_budget_open(
     monkeypatch.setattr(
         campaign,
         "restore_paid_provider_lane_lease_to_retained_watchdog",
-        lambda acceptance: restore_calls.append(dict(acceptance))
-        or {"status": "restored", "restored": True},
+        lambda acceptance: (
+            restore_calls.append(dict(acceptance)) or {"status": "restored", "restored": True}
+        ),
     )
 
     def fake_session(**kwargs):
@@ -375,12 +383,8 @@ def test_nonterminal_pod_leaves_watchdog_receipt_and_budget_open(
     receipt_path = tmp_path / "watchdog" / "provider_lane_handoff_receipt.json"
     retained = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert result["status"] == "blocked"
-    assert result["campaign_budget_settlement"]["status"] == (
-        "watchdog_retains_open_reservation"
-    )
-    assert result["provider_lane_owner_return"]["status"] == (
-        "watchdog_retains_control"
-    )
+    assert result["campaign_budget_settlement"]["status"] == ("watchdog_retains_open_reservation")
+    assert result["provider_lane_owner_return"]["status"] == ("watchdog_retains_control")
     assert restore_calls == []
     assert retained["campaign_budget"]["status"] == "reserved"
     assert retained["pod_pending_teardown_record"] == str(tmp_path / "pending.json")

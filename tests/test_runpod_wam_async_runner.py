@@ -14,6 +14,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_MANIFEST_PATH,
     DEFAULT_RUNTIME_ROOT,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+    RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
 )
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
@@ -58,6 +59,14 @@ def _carrier_volume_admission(*, carrier_image_ref: str) -> dict:
             "archive_sha256": "3" * 64,
             "manifest_sha256": "4" * 64,
         },
+        "runtime_source_release": {
+            "schema_version": RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
+            "status": "verified",
+            "release_image_ref": "docker.io/blueprint/release@sha256:" + "1" * 64,
+            "source_commit": "a" * 40,
+            "thin_release_contract_sha256": "6" * 64,
+            "models_externalized": True,
+        },
         "model_cache": {
             "status": "verified",
             "root": DEFAULT_MODEL_CACHE_ROOT,
@@ -70,6 +79,8 @@ def _carrier_volume_admission(*, carrier_image_ref: str) -> dict:
             "data_center_id": "EUR-IS-1",
         },
     }
+
+
 def _python_heredoc_chunks(script: str) -> list[str]:
     chunks: list[str] = []
     current: list[str] | None = None
@@ -116,7 +127,9 @@ def test_runpod_unitree_groot_sonic_persistent_payload_uses_provider_kind() -> N
     )
 
     assert payload["env"]["BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND"] == "unitree_groot_n17_sonic"
-    assert payload["env"]["WORK_DIR"] == "/workspace/blueprint_unitree_groot_sonic_persistent_provider"
+    assert (
+        payload["env"]["WORK_DIR"] == "/workspace/blueprint_unitree_groot_sonic_persistent_provider"
+    )
     assert payload["env"]["BLUEPRINT_OSCAR_WAM_FPS"] == "4"
     assert payload["env"]["BLUEPRINT_PERSISTENT_SESSION_WAM_STEP_TIMEOUT_SECONDS"] == "120"
     script = payload["dockerStartCmd"][0]
@@ -134,9 +147,7 @@ def test_runpod_unitree_groot_sonic_persistent_payload_uses_provider_kind() -> N
 
 
 def test_runpod_small_carrier_payload_attaches_exact_verified_network_volume() -> None:
-    carrier_ref = (
-        "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
-    )
+    carrier_ref = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
     payload = runner._pod_payload(
         job_name="blueprint-carrier-volume-test",
         image_name=carrier_ref,
@@ -148,9 +159,7 @@ def test_runpod_small_carrier_payload_attaches_exact_verified_network_volume() -
         provider_runtime_config_env={},
         container_disk_gb=240,
         volume_gb=120,
-        carrier_volume_admission=_carrier_volume_admission(
-            carrier_image_ref=carrier_ref
-        ),
+        carrier_volume_admission=_carrier_volume_admission(carrier_image_ref=carrier_ref),
     )
 
     assert payload["imageName"] == carrier_ref
@@ -222,9 +231,7 @@ def test_persistent_carrier_receipt_binds_pending_record_before_and_after_create
 
 
 def test_runpod_small_carrier_payload_rejects_h100_and_unverified_volume() -> None:
-    carrier_ref = (
-        "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
-    )
+    carrier_ref = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
     admission = _carrier_volume_admission(carrier_image_ref=carrier_ref)
     admission["s3_transfer_verification"]["full_redownload_sha256_verified"] = False
     with pytest.raises(ValueError, match="carrier_volume_s3_full_redownload_not_verified"):
@@ -254,9 +261,7 @@ def test_runpod_small_carrier_payload_rejects_h100_and_unverified_volume() -> No
             provider_runtime_config_env={},
             container_disk_gb=240,
             volume_gb=120,
-            carrier_volume_admission=_carrier_volume_admission(
-                carrier_image_ref=carrier_ref
-            ),
+            carrier_volume_admission=_carrier_volume_admission(carrier_image_ref=carrier_ref),
         )
 
 
@@ -300,7 +305,7 @@ def test_runpod_wam_payload_wraps_entrypoint_with_timeout_and_log() -> None:
     assert payload["env"]["BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS"] == "240"
     script = payload["dockerStartCmd"][0]
     assert "runpod_wam_provider_entrypoint.log" in script
-    assert "timeout \"$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS\" bash" in script
+    assert 'timeout "$WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS" bash' in script
     assert "runpod_wam_provider_entrypoint_execution.json" in script
     assert "runpod_wam_provider_entrypoint_timeout" in script
     assert "runpod_wam_outer_bootstrap_failed_before_runtime_result" in script
@@ -440,7 +445,7 @@ def test_runpod_wam_direct_url_files_block_on_launch_gates_without_leaking_urls(
     assert manifest["provider_runtime_config_env_status"]["status"] == "configured"
     assert manifest["provider_runtime_config_env_status"]["values"] == {
         "BLUEPRINT_OSCAR_WAM_CHECKPOINT_RESOLUTION_TIMEOUT_SECONDS": "1200",
-        "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY": "require_real_transformer_engine"
+        "BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY": "require_real_transformer_engine",
     }
     persisted = (tmp_path / "job" / "runpod_wam_async_create_manifest.json").read_text(
         encoding="utf-8"
@@ -704,8 +709,7 @@ def test_warm_candidate_string_false_flags_are_not_preserved_reuse(
     assert candidate["running_pod_preserved_for_hot_reuse"] is False
     assert candidate["stopped_pod_preserved_for_warm_reuse"] is False
     assert (
-        candidate["claim_boundary"]["running_hot_candidate_still_uses_update_start_path"]
-        is False
+        candidate["claim_boundary"]["running_hot_candidate_still_uses_update_start_path"] is False
     )
     assert candidate["claim_boundary"]["resident_in_pod_job_queue_not_proven"] is False
 
@@ -947,16 +951,12 @@ def test_runpod_create_labels_running_hot_candidate_reuse_boundary(
     warm = manifest["warm_existing_pod"]
     assert warm["candidate_reuse_kind"] == "running_hot_candidate"
     assert warm["dynamic_warm_candidate"]["running_pod_preserved_for_hot_reuse"] is True
-    assert (
-        warm["dynamic_warm_candidate"]["source_keepalive_poll_manifest_path"]
-        == str(tmp_path / "poll.json")
+    assert warm["dynamic_warm_candidate"]["source_keepalive_poll_manifest_path"] == str(
+        tmp_path / "poll.json"
     )
     assert warm["claim_boundary"]["existing_pod_id_reused"] is True
     assert warm["claim_boundary"]["existing_pod_update_start_path_used"] is True
-    assert (
-        warm["claim_boundary"]["running_hot_candidate_still_uses_update_start_path"]
-        is True
-    )
+    assert warm["claim_boundary"]["running_hot_candidate_still_uses_update_start_path"] is True
     assert warm["claim_boundary"]["resident_in_pod_job_queue_not_proven"] is True
 
 
@@ -1530,6 +1530,7 @@ def test_runpod_poll_can_keep_successful_pod_running_for_hot_reuse(
         "_read_runpod_api_key",
         lambda: ("runpod-secret-not-persisted", {"raw_secret_values_recorded": False}),
     )
+
     def fake_runpod_request(**kwargs):
         requests.append(dict(kwargs))
         if kwargs["path"] == "/pods/pod-hot-123":
@@ -1627,10 +1628,7 @@ def test_runpod_poll_keeps_successful_running_pod_when_runtime_metadata_sparse(
     assert manifest["keep_running_on_success"] is True
     assert manifest["keepalive_runtime_unhealthy_on_success"] is False
     assert manifest["keepalive_runtime_health"]["runtime_present"] is False
-    assert (
-        manifest["keepalive_runtime_health"]["active_status_without_runtime_metadata"]
-        is True
-    )
+    assert manifest["keepalive_runtime_health"]["active_status_without_runtime_metadata"] is True
     assert (
         manifest["keepalive_runtime_health"]["health_basis"]
         == "active_pod_status_without_runtime_metadata"
@@ -2175,8 +2173,9 @@ def test_runpod_poll_treats_entrypoint_failure_with_stale_heartbeat_as_terminal_
     assert manifest["provider_output_validation_status"] == "completed"
     assert manifest["runtime_result_status"] == "blocked"
     assert manifest["provider_command_status"] == "blocked"
-    assert "runpod_wam_provider_entrypoint_nonzero_or_timeout" in (
-        manifest["provider_command_blockers"]
+    assert (
+        "runpod_wam_provider_entrypoint_nonzero_or_timeout"
+        in (manifest["provider_command_blockers"])
     )
     assert manifest["provider_runtime_operational"] is False
     assert manifest["runtime_output_success"] is False
@@ -2255,7 +2254,10 @@ def test_runpod_unitree_unifolm_create_uses_provider_kind_without_leaking_urls(
     env = payload["env"]
     assert isinstance(env, dict)
     assert env["BLUEPRINT_RUNPOD_PROVIDER_BUNDLE_KIND"] == "unitree_unifolm"
-    assert env["BLUEPRINT_UNITREE_UNIFOLM_COMMAND"] == "/usr/local/bin/run_unitree_unifolm_vla_policy_once"
+    assert (
+        env["BLUEPRINT_UNITREE_UNIFOLM_COMMAND"]
+        == "/usr/local/bin/run_unitree_unifolm_vla_policy_once"
+    )
     assert env["BLUEPRINT_UNITREE_UNIFOLM_CHECKPOINT"] == "unitreerobotics/UnifoLM-VLA-Base"
     assert env["BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT"] == "unitreerobotics/UnifoLM-VLM-Base"
     script = payload["dockerStartCmd"][0]
@@ -2264,9 +2266,7 @@ def test_runpod_unitree_unifolm_create_uses_provider_kind_without_leaking_urls(
     persisted = (tmp_path / "job" / "runpod_wam_async_create_manifest.json").read_text(
         encoding="utf-8"
     )
-    state = (tmp_path / "job" / "runpod_wam_async_state.json").read_text(
-        encoding="utf-8"
-    )
+    state = (tmp_path / "job" / "runpod_wam_async_state.json").read_text(encoding="utf-8")
     assert "bundle-secret" not in persisted
     assert "output-secret" not in persisted
     assert "output-get-secret" not in persisted
@@ -2734,9 +2734,9 @@ def test_runpod_poll_tolerates_transient_pod_status_url_error(
     assert manifest["pod_status"] == "status_probe_error"
     assert manifest["pod_status_transient_error_count"] == 1
     assert manifest["last_pod_status_error"]["error_type"] == "URLError"
-    assert "download-secret" not in (tmp_path / "job" / "runpod_wam_async_poll_manifest.json").read_text(
-        encoding="utf-8"
-    )
+    assert "download-secret" not in (
+        tmp_path / "job" / "runpod_wam_async_poll_manifest.json"
+    ).read_text(encoding="utf-8")
 
 
 def test_runpod_poll_recognizes_oscar_wam_provider_output_heartbeat(
@@ -2920,9 +2920,7 @@ def test_runpod_poll_preserves_running_nonterminal_output(
     assert manifest["teardown_performed"] is False
     assert delete_called["value"] is False
     download_manifest = json.loads(
-        (tmp_path / "job" / "runpod_wam_output_download_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "job" / "runpod_wam_output_download_manifest.json").read_text(encoding="utf-8")
     )
     assert download_manifest["status"] == "nonterminal"
     assert download_manifest["terminal_output_present"] is False

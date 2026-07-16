@@ -47,6 +47,7 @@ from .groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ARCHIVE_PATH,
     DEFAULT_RUNTIME_MANIFEST_PATH,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+    verify_runtime_source_release_evidence,
     verify_carrier_volume_admission,
 )
 from .groot_oscar_runpod_model_volume import (
@@ -108,9 +109,7 @@ MIN_LOCAL_STAGING_BYTES = 1024**3
 NO_POD_PREFIX = "blueprint-storage-only-no-pod-"
 PROVIDER_LANE = "groot_oscar_model_volume"
 RETENTION_SCHEMA_VERSION = "groot_oscar_bounded_model_cache_retention.v1"
-RETENTION_ADMISSION_SCHEMA_VERSION = (
-    "groot_oscar_bounded_model_cache_retention_admission.v1"
-)
+RETENTION_ADMISSION_SCHEMA_VERSION = "groot_oscar_bounded_model_cache_retention_admission.v1"
 RETENTION_REMOTE_VERIFICATION_SCHEMA_VERSION = (
     "groot_oscar_bounded_model_cache_remote_verification.v1"
 )
@@ -167,7 +166,10 @@ def _retention_source_watchdog_mapping(
         "watchdog",
         "--state",
     ]
-    if argv[module_index + 1 : module_index + 4] != expected_prefix or len(argv) != module_index + 5:
+    if (
+        argv[module_index + 1 : module_index + 4] != expected_prefix
+        or len(argv) != module_index + 5
+    ):
         return {"watchdog_pid": current_pid}
     state_path = Path(argv[module_index + 4]).expanduser().resolve()
     try:
@@ -209,12 +211,8 @@ def _verify_retained_model_cache_remote(
     """Stream and hash every retained object before rotating teardown ownership."""
 
     blockers: list[str] = []
-    access_key, access_meta = _runpod_s3_secret_file(
-        access_key_file, label="runpod_s3_access_key"
-    )
-    secret_key, secret_meta = _runpod_s3_secret_file(
-        secret_key_file, label="runpod_s3_secret_key"
-    )
+    access_key, access_meta = _runpod_s3_secret_file(access_key_file, label="runpod_s3_access_key")
+    secret_key, secret_meta = _runpod_s3_secret_file(secret_key_file, label="runpod_s3_secret_key")
     blockers.extend(access_meta.get("blockers") or [])
     blockers.extend(secret_meta.get("blockers") or [])
     s3 = client
@@ -226,9 +224,7 @@ def _verify_retained_model_cache_remote(
                 secret_key=secret_key,
             )
         except Exception as exc:  # noqa: BLE001 - secret-free evidence
-            blockers.append(
-                f"bounded_cache_retention_s3_client_failed:{type(exc).__name__}"
-            )
+            blockers.append(f"bounded_cache_retention_s3_client_failed:{type(exc).__name__}")
     manifest: dict[str, Any] = {}
     manifest_key = f"{DEFAULT_REMOTE_PREFIX}/{RETENTION_MANIFEST_NAME}"
     if not blockers:
@@ -248,17 +244,14 @@ def _verify_retained_model_cache_remote(
                 raise ValueError("retained_manifest_not_object")
             manifest = parsed
         except Exception as exc:  # noqa: BLE001 - persist only exception class
-            blockers.append(
-                f"bounded_cache_retention_manifest_read_failed:{type(exc).__name__}"
-            )
+            blockers.append(f"bounded_cache_retention_manifest_read_failed:{type(exc).__name__}")
     entries = manifest.get("files")
     entries = entries if isinstance(entries, list) else []
     expected_rows: dict[str, tuple[int, str]] = {}
     if not blockers:
         observed_digest = str(manifest.get("manifest_digest") or "")
-        if (
-            observed_digest != expected_manifest_digest
-            or observed_digest != _canonical_digest(manifest)
+        if observed_digest != expected_manifest_digest or observed_digest != _canonical_digest(
+            manifest
         ):
             blockers.append("bounded_cache_retention_manifest_digest_mismatch")
         for entry in entries:
@@ -281,11 +274,9 @@ def _verify_retained_model_cache_remote(
                 blockers.append("bounded_cache_retention_manifest_entry_invalid")
                 continue
             expected_rows[relative] = (size, digest)
-        if (
-            manifest.get("file_count") != len(expected_rows)
-            or manifest.get("total_size_bytes")
-            != sum(size for size, _digest in expected_rows.values())
-        ):
+        if manifest.get("file_count") != len(expected_rows) or manifest.get(
+            "total_size_bytes"
+        ) != sum(size for size, _digest in expected_rows.values()):
             blockers.append("bounded_cache_retention_manifest_totals_invalid")
     verified_files = 0
     verified_bytes = 0
@@ -314,16 +305,11 @@ def _verify_retained_model_cache_remote(
                 token = next_token
             expected_keys = {
                 manifest_key,
-                *(
-                    f"{DEFAULT_REMOTE_PREFIX}/{relative}"
-                    for relative in expected_rows
-                ),
+                *(f"{DEFAULT_REMOTE_PREFIX}/{relative}" for relative in expected_rows),
             }
             if set(remote_keys) != expected_keys or len(remote_keys) != len(expected_keys):
                 raise ValueError("retained_inventory_mismatch")
-            for relative, (expected_size, expected_digest) in sorted(
-                expected_rows.items()
-            ):
+            for relative, (expected_size, expected_digest) in sorted(expected_rows.items()):
                 response = s3.get_object(
                     Bucket=volume_id,
                     Key=f"{DEFAULT_REMOTE_PREFIX}/{relative}",
@@ -335,10 +321,7 @@ def _verify_retained_model_cache_remote(
                     close = getattr(body, "close", None)
                     if callable(close):
                         close()
-                if (
-                    observed_size != expected_size
-                    or observed_digest != expected_digest
-                ):
+                if observed_size != expected_size or observed_digest != expected_digest:
                     raise ValueError("retained_object_digest_mismatch")
                 verified_files += 1
                 verified_bytes += observed_size
@@ -412,13 +395,9 @@ def retain_verified_model_cache(
     rotation_handoff: Mapping[str, Any] = lane_handoff
     lease_path_value = str(lane_handoff.get("lease_path") or "")
     if lease_path_value:
-        current_lease = read_lease(
-            "runpod", PROVIDER_LANE, Path(lease_path_value).parent
-        )
+        current_lease = read_lease("runpod", PROVIDER_LANE, Path(lease_path_value).parent)
         current_handoff = (
-            current_lease.get("handoff")
-            if isinstance(current_lease, Mapping)
-            else None
+            current_lease.get("handoff") if isinstance(current_lease, Mapping) else None
         )
         if isinstance(current_handoff, Mapping):
             rotation_handoff = current_handoff
@@ -455,16 +434,13 @@ def retain_verified_model_cache(
         source_handoff.get("schema_version") == WATCHDOG_HANDOFF_SCHEMA_VERSION
         and source_handoff.get("status") == "volume_ready_watchdog_retained"
         and source_handoff.get("volume_id") == volume_id
-        and rotation_handoff.get("status")
-        in {"pending_canary_acceptance", "accepted"}
+        and rotation_handoff.get("status") in {"pending_canary_acceptance", "accepted"}
         and binding.get("volume_id") == volume_id
     ):
         blockers.append("bounded_cache_retention_handoff_invalid")
     if not MIN_CACHE_RETENTION_SECONDS <= retention_ttl_seconds <= MAX_CACHE_RETENTION_SECONDS:
         blockers.append("bounded_cache_retention_ttl_out_of_bounds")
-    maximum_storage_spend = (
-        storage_hourly_rate_usd * retention_ttl_seconds / 3600
-    )
+    maximum_storage_spend = storage_hourly_rate_usd * retention_ttl_seconds / 3600
     if not bool(
         0 < storage_hourly_rate_usd <= MAX_CACHE_RETENTION_HOURLY_RATE_USD
         and 0 < max_retention_spend_usd <= MAX_CACHE_RETENTION_SPEND_USD
@@ -474,8 +450,7 @@ def retain_verified_model_cache(
     if not bool(
         campaign_spent_to_date_usd >= MIN_RECONCILED_CAMPAIGN_SPEND_USD
         and campaign_total_spend_cap_usd == 20.0
-        and campaign_spent_to_date_usd + maximum_storage_spend
-        <= campaign_total_spend_cap_usd
+        and campaign_spent_to_date_usd + maximum_storage_spend <= campaign_total_spend_cap_usd
     ):
         blockers.append("bounded_cache_retention_campaign_spend_invalid")
     if allow_paid is not True:
@@ -801,6 +776,8 @@ def build_storage_volume_admission(
     local_staging_bytes: int,
     paid_mutation_authorized: bool,
     watchdog_armed_before_allocation: bool,
+    runtime_bundle_requested: bool = False,
+    runtime_source_release_verified: bool = False,
 ) -> dict[str, Any]:
     blockers: list[str] = []
     if data_center_id not in RUNPOD_S3_VOLUME_DATA_CENTER_IDS:
@@ -816,9 +793,7 @@ def build_storage_volume_admission(
         type(builder_ttl_seconds) is not int
         or builder_ttl_seconds <= 0
         or storage_ttl_seconds
-        < builder_ttl_seconds
-        + BUILDER_TO_VOLUME_MARGIN_SECONDS
-        + CANARY_AND_HANDOFF_MARGIN_SECONDS
+        < builder_ttl_seconds + BUILDER_TO_VOLUME_MARGIN_SECONDS + CANARY_AND_HANDOFF_MARGIN_SECONDS
     ):
         blockers.append("storage_model_volume_ttl_does_not_cover_builder_and_canary")
     if (
@@ -828,8 +803,7 @@ def build_storage_volume_admission(
         or not isinstance(max_storage_spend_usd, (int, float))
         or isinstance(max_storage_spend_usd, bool)
         or max_storage_spend_usd <= 0
-        or storage_hourly_rate_usd * storage_ttl_seconds / 3600
-        > max_storage_spend_usd
+        or storage_hourly_rate_usd * storage_ttl_seconds / 3600 > max_storage_spend_usd
     ):
         blockers.append("storage_model_volume_cost_exceeds_cap")
     if inventory_verified_zero is not True:
@@ -844,6 +818,8 @@ def build_storage_volume_admission(
         blockers.append("storage_model_volume_paid_mutation_not_authorized")
     if watchdog_armed_before_allocation is not True:
         blockers.append("storage_model_volume_watchdog_not_armed_before_allocation")
+    if runtime_bundle_requested and runtime_source_release_verified is not True:
+        blockers.append("storage_runtime_source_release_evidence_unverified")
     return {
         "schema_version": SCHEMA_VERSION,
         "resource_class": "model_volume",
@@ -950,6 +926,7 @@ def run_storage_model_volume(
     allow_paid: bool,
     runtime_source_release_image_ref: str = "",
     carrier_image_ref: str = "",
+    runtime_source_release_evidence_path: Path | None = None,
 ) -> dict[str, Any]:
     output = output_dir.expanduser().resolve()
     root = repo_root.expanduser().resolve()
@@ -963,22 +940,33 @@ def run_storage_model_volume(
         builder_spend = _load(builder_spend_path)
         builder_evidence = _load(builder_evidence_path)
         builder_ttl = int(builder_spend["hard_ttl_seconds"])
-        runtime_bundle_requested = bool(
-            runtime_source_release_image_ref or carrier_image_ref
-        )
+        runtime_bundle_requested = bool(runtime_source_release_image_ref or carrier_image_ref)
         if bool(runtime_source_release_image_ref) != bool(carrier_image_ref):
             raise ValueError("storage_runtime_bundle_image_refs_incomplete")
+        runtime_source_verification: dict[str, Any] = {
+            "status": "not_requested",
+            "blockers": [],
+        }
+        if runtime_bundle_requested:
+            if runtime_source_release_evidence_path is None:
+                raise ValueError("storage_runtime_source_release_evidence_missing")
+            runtime_source_verification = verify_runtime_source_release_evidence(
+                _load(runtime_source_release_evidence_path),
+                expected_release_image_ref=runtime_source_release_image_ref,
+            )
+            write_json(
+                output / "runtime_source_release_evidence_verification.json",
+                runtime_source_verification,
+            )
+            if runtime_source_verification["status"] != "verified":
+                raise ValueError("storage_runtime_source_release_evidence_invalid")
         if runtime_bundle_requested and volume_size_gib < 120:
             raise ValueError("storage_runtime_bundle_requires_120_gib_volume")
         if runtime_bundle_requested and storage_ttl_seconds < max(
             MIN_RUNTIME_BUNDLE_STORAGE_TTL_SECONDS,
-            builder_ttl
-            + BUILDER_TO_VOLUME_MARGIN_SECONDS
-            + PERSISTENT_CARRIER_WATCHDOG_SECONDS,
+            builder_ttl + BUILDER_TO_VOLUME_MARGIN_SECONDS + PERSISTENT_CARRIER_WATCHDOG_SECONDS,
         ):
-            raise ValueError(
-                "storage_runtime_bundle_ttl_does_not_cover_builder_and_campaign"
-            )
+            raise ValueError("storage_runtime_bundle_ttl_does_not_cover_builder_and_campaign")
         source_commit, source_patch, source_dirty = _source_identity(root)
         prospective_packet = {
             "packet_kind": "model_cache_s3",
@@ -1007,9 +995,7 @@ def run_storage_model_volume(
         if live_profile.get("status") != "verified" or live_builders:
             raise ValueError("storage_model_volume_builder_live_profile_unverified")
         builder_maximum_cost = (
-            float(live_profile["observed"]["price_hourly_usd"])
-            * builder_ttl
-            / 3600
+            float(live_profile["observed"]["price_hourly_usd"]) * builder_ttl / 3600
         )
         if builder_maximum_cost > float(builder_spend["max_spend_usd"]):
             raise ValueError("storage_model_volume_builder_live_cost_exceeds_cap")
@@ -1117,14 +1103,14 @@ def run_storage_model_volume(
         storage_hourly_rate_usd=storage_hourly_rate_usd,
         max_storage_spend_usd=max_storage_spend_usd,
         builder_ttl_seconds=builder_ttl,
-        inventory_verified_zero=inventory_verified
-        and not existing_pods
-        and not existing_volumes,
+        inventory_verified_zero=inventory_verified and not existing_pods and not existing_volumes,
         credentials_verified=s3_preflight.get("status") == "ready" and hf_private,
         source_clean=not source_dirty and wheelhouse.get("status") == "ready",
         local_staging_bytes=_available_bytes(output),
         paid_mutation_authorized=allow_paid,
         watchdog_armed_before_allocation=watchdog["armed"],
+        runtime_bundle_requested=runtime_bundle_requested,
+        runtime_source_release_verified=(runtime_source_verification.get("status") == "verified"),
     )
     write_json(output / "model_volume_admission.json", admission)
     try:
@@ -1134,7 +1120,9 @@ def run_storage_model_volume(
             expected_schema_version=SCHEMA_VERSION,
         )
     except PaidResourceAdmissionBlocked:
-        write_json(output / "watchdog_handoff.json", {"status": "cancelled_before_provider_allocation"})
+        write_json(
+            output / "watchdog_handoff.json", {"status": "cancelled_before_provider_allocation"}
+        )
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": "blocked_before_allocation",
@@ -1199,11 +1187,7 @@ def run_storage_model_volume(
         locked_pods, locked_volumes, locked_inventory_verified = _matching_resources(
             key=key, pod_prefix=None, volume_prefix=None
         )
-        if (
-            not locked_inventory_verified
-            or locked_pods
-            or locked_volumes
-        ):
+        if not locked_inventory_verified or locked_pods or locked_volumes:
             raise RuntimeError("storage_model_volume_inventory_changed_under_lease")
         create_http, create_response = _runpod_call(
             "POST",
@@ -1320,26 +1304,21 @@ def run_storage_model_volume(
         result_dir = output / "cpu-builder/remote_results"
         canary = _load(result_dir / "external_model_cache_verification.json")
         transport = _load(result_dir / "runpod_s3_model_cache_transport_result.json")
-        remote_execution = _load(
-            result_dir / "model_cache_s3_remote_execution_result.json"
-        )
+        remote_execution = _load(result_dir / "model_cache_s3_remote_execution_result.json")
         if (
             canary.get("status") != "passed"
             or canary.get("provider_volume_id") != volume_id
             or canary.get("cache_root") != MODEL_CACHE_PATH
             or transport.get("status") != "completed"
             or transport.get("provider_volume_id") != volume_id
-            or canary.get("model_manifest_digest")
-            != transport.get("model_manifest_digest")
+            or canary.get("model_manifest_digest") != transport.get("model_manifest_digest")
         ):
             raise RuntimeError("storage_model_volume_canary_handoff_invalid")
         write_json(output / "model_cache_verification.json", canary)
         write_json(output / "model_cache_transport_result.json", transport)
         if runtime_bundle_requested:
             runtime_bundle = remote_execution.get("runtime_bundle")
-            runtime_bundle = (
-                runtime_bundle if isinstance(runtime_bundle, Mapping) else {}
-            )
+            runtime_bundle = runtime_bundle if isinstance(runtime_bundle, Mapping) else {}
             carrier_admission = {
                 "schema_version": CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
                 "status": "verified",
@@ -1358,12 +1337,11 @@ def run_storage_model_volume(
                     "archive_sha256": runtime_bundle.get("archive_sha256"),
                     "manifest_sha256": runtime_bundle.get("manifest_sha256"),
                 },
+                "runtime_source_release": runtime_source_verification,
                 "model_cache": {
                     "status": "verified",
                     "root": DEFAULT_MODEL_CACHE_ROOT,
-                    "manifest_sha256": transport.get(
-                        "model_manifest_file_sha256"
-                    ),
+                    "manifest_sha256": transport.get("model_manifest_file_sha256"),
                 },
                 "s3_transfer_verification": {
                     "upload_completed": transport.get("status") == "completed",
@@ -1492,9 +1470,7 @@ def run_storage_model_volume(
             global_pods, global_volumes, global_inventory_verified = _matching_resources(
                 key=key, pod_prefix=None, volume_prefix=None
             )
-            terminal = bool(
-                global_inventory_verified and not global_pods and not global_volumes
-            )
+            terminal = bool(global_inventory_verified and not global_pods and not global_volumes)
             if terminal:
                 if volume_id:
                     close_pending_teardown(
@@ -1558,9 +1534,7 @@ def run_storage_model_volume(
         "data_center_id": data_center_id,
         "model_cache_path": MODEL_CACHE_PATH,
         "model_manifest_digest": builder_result.get("model_manifest_digest"),
-        "runtime_bundle_requested": bool(
-            runtime_source_release_image_ref or carrier_image_ref
-        ),
+        "runtime_bundle_requested": bool(runtime_source_release_image_ref or carrier_image_ref),
         "runtime_source_release_image_ref": runtime_source_release_image_ref or None,
         "carrier_image_ref": carrier_image_ref or None,
         "carrier_volume_admission_path": (
@@ -1576,12 +1550,8 @@ def run_storage_model_volume(
         "provider_lane_lease_path": lease.get("path"),
         "pending_teardown_record": pending.get("path"),
         "provider_lane_handoff": lane_handoff,
-        "maximum_storage_spend_usd": storage_hourly_rate_usd
-        * storage_ttl_seconds
-        / 3600,
-        "maximum_builder_compute_spend_usd": builder_result.get(
-            "maximum_compute_spend_usd", 0.0
-        ),
+        "maximum_storage_spend_usd": storage_hourly_rate_usd * storage_ttl_seconds / 3600,
+        "maximum_builder_compute_spend_usd": builder_result.get("maximum_compute_spend_usd", 0.0),
         "error_type": error_type,
         "raw_secret_values_recorded": False,
     }

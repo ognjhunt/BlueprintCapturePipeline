@@ -7,6 +7,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_MANIFEST_PATH,
     DEFAULT_RUNTIME_ROOT,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+    RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
 )
 from blueprint_pipeline.groot_oscar_runpod_persistent_carrier import (
     PERSISTENT_CARRIER_IMAGE_REF,
@@ -34,7 +35,19 @@ def _carrier() -> dict:
             "archive_sha256": "3" * 64,
             "manifest_sha256": "4" * 64,
         },
-        "model_cache": {"status": "verified", "root": DEFAULT_MODEL_CACHE_ROOT, "manifest_sha256": "5" * 64},
+        "runtime_source_release": {
+            "schema_version": RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
+            "status": "verified",
+            "release_image_ref": RELEASE_REF,
+            "source_commit": "a" * 40,
+            "thin_release_contract_sha256": "6" * 64,
+            "models_externalized": True,
+        },
+        "model_cache": {
+            "status": "verified",
+            "root": DEFAULT_MODEL_CACHE_ROOT,
+            "manifest_sha256": "5" * 64,
+        },
         "s3_transfer_verification": {
             "upload_completed": True,
             "full_redownload_sha256_verified": True,

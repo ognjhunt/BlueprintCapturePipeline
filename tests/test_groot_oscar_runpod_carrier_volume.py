@@ -7,10 +7,12 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_MANIFEST_PATH,
     DEFAULT_RUNTIME_ROOT,
     RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+    RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
     build_runtime_bundle_manifest,
     canonical_json_sha256,
     runtime_bootstrap_shell_prefix,
     verify_carrier_volume_admission,
+    verify_runtime_source_release_evidence,
 )
 
 
@@ -37,6 +39,14 @@ def _admission() -> dict:
             "archive_sha256": "3" * 64,
             "manifest_sha256": "4" * 64,
         },
+        "runtime_source_release": {
+            "schema_version": RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
+            "status": "verified",
+            "release_image_ref": SOURCE_REF,
+            "source_commit": "a" * 40,
+            "thin_release_contract_sha256": "6" * 64,
+            "models_externalized": True,
+        },
         "model_cache": {
             "status": "verified",
             "root": DEFAULT_MODEL_CACHE_ROOT,
@@ -50,6 +60,52 @@ def _admission() -> dict:
         },
         "raw_secret_values_recorded": False,
     }
+
+
+def _release_evidence() -> dict:
+    return {
+        "schema_version": "groot_oscar_thin_remote_build_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "release_image_ref": SOURCE_REF,
+        "resolved_digest_ref": SOURCE_REF,
+        "runnable_platform": "linux/amd64",
+        "required_cuda_version": "12.8",
+        "source_commit": "a" * 40,
+        "thin_release_contract_status": "passed",
+        "thin_release_contract": {
+            "schema_version": "groot_oscar_thin_release_image_contract.v1",
+            "status": "passed",
+            "blockers": [],
+            "release_image_ref": SOURCE_REF,
+            "models_externalized": True,
+            "release_delta_budget_passed": True,
+        },
+        "models_embedded": False,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def test_runtime_source_release_evidence_requires_exact_thin_release() -> None:
+    verified = verify_runtime_source_release_evidence(
+        _release_evidence(), expected_release_image_ref=SOURCE_REF
+    )
+    assert verified["status"] == "verified"
+    assert verified["release_image_ref"] == SOURCE_REF
+    assert verified["models_externalized"] is True
+    assert len(verified["thin_release_contract_sha256"]) == 64
+
+    sealed = _release_evidence()
+    sealed["release_image_ref"] = "docker.io/blueprint/sealed@sha256:" + "9" * 64
+    sealed["resolved_digest_ref"] = sealed["release_image_ref"]
+    sealed["thin_release_contract"]["release_image_ref"] = sealed["release_image_ref"]
+    sealed["thin_release_contract"]["models_externalized"] = False
+    sealed["models_embedded"] = True
+    blocked = verify_runtime_source_release_evidence(sealed, expected_release_image_ref=SOURCE_REF)
+    assert blocked["status"] == "blocked"
+    assert "runtime_source_release_ref_mismatch" in blocked["blockers"]
+    assert "runtime_source_release_models_embedded" in blocked["blockers"]
+    assert "runtime_source_thin_contract_models_not_externalized" in blocked["blockers"]
 
 
 def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
@@ -86,9 +142,7 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
 
 
 def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
-    verified = verify_carrier_volume_admission(
-        _admission(), expected_carrier_image_ref=CARRIER_REF
-    )
+    verified = verify_carrier_volume_admission(_admission(), expected_carrier_image_ref=CARRIER_REF)
 
     assert verified["status"] == "verified"
     assert verified["network_volume_id"] == "volume123"
