@@ -23,8 +23,11 @@ from .common import utc_now_iso
 
 SCHEMA_VERSION = "production_gpu_campaign_budget.v1"
 AUTHORIZED_SPEND_CAP_USD = 20.0
-AUTHORIZED_GPU_WALL_CAP_SECONDS = 19_154
-MAX_HOURLY_RATE_USD = 1.99
+AUTHORIZED_GPU_WALL_CAP_SECONDS = 21_000
+# The campaign remains bounded by the unchanged USD 20 total cap.  The higher
+# per-hour ceiling permits the explicitly selected persistent H100 fallback;
+# it is not a separate spend allowance.
+MAX_HOURLY_RATE_USD = 3.50
 
 
 def _number(value: object, *, field: str) -> float:

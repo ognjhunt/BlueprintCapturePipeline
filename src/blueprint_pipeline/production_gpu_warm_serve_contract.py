@@ -92,10 +92,10 @@ def campaign_budget_reservation_valid(supervisor: Mapping[str, Any]) -> bool:
         ledger.get("schema_version") == "production_gpu_campaign_budget.v1"
         and reservation.get("status") == "open"
         and 0 < spend_cap <= 20.0
-        and 0 < wall_cap <= 19_154
+        and 0 < wall_cap <= 21_000
         and 0 <= committed_usd <= spend_cap
         and 0 <= committed_seconds <= wall_cap
-        and 0 < max_rate <= 1.99
+        and 0 < max_rate <= 3.50
         and reserved_usd <= max_rate * reserved_seconds / 3600.0 + 0.000001
         and reserved_seconds >= deadline - armed_epoch
     )

@@ -144,24 +144,24 @@ def test_staged_canary_then_campaign_fits_reduced_combined_plan(tmp_path) -> Non
     assert snapshot["remaining_gpu_seconds"] == 81
 
 
-def test_new_19154_second_authority_is_exact_and_not_per_attempt(tmp_path) -> None:
+def test_new_21000_second_authority_is_exact_and_not_per_attempt(tmp_path) -> None:
     ledger = ProductionGpuCampaignBudget(
-        tmp_path / "authorized-19154-second-budget.json",
-        initial_spent_usd=14.308253,
-        initial_used_gpu_seconds=15_174,
-        combined_gpu_wall_cap_seconds=19_154,
+        tmp_path / "authorized-21000-second-budget.json",
+        initial_spent_usd=14.557003,
+        initial_used_gpu_seconds=15_624,
+        combined_gpu_wall_cap_seconds=21_000,
     )
     strict = ledger.reserve(
         reservation_id="strict-policy-smoke",
         gpu_seconds=480,
-        max_hourly_rate_usd=1.99,
+        max_hourly_rate_usd=3.50,
     )
     assert strict["reserved_gpu_seconds"] == 480
     with pytest.raises(CampaignBudgetExceeded):
         ledger.reserve(
             reservation_id="single-cap-sized-job",
-            gpu_seconds=19_154,
-            max_hourly_rate_usd=1.99,
+            gpu_seconds=21_000,
+            max_hourly_rate_usd=3.50,
         )
 
     with pytest.raises(ValueError, match="wall_cap_exceeds_authorization"):
@@ -169,5 +169,5 @@ def test_new_19154_second_authority_is_exact_and_not_per_attempt(tmp_path) -> No
             tmp_path / "over-authorized-budget.json",
             initial_spent_usd=0,
             initial_used_gpu_seconds=0,
-            combined_gpu_wall_cap_seconds=19_155,
+            combined_gpu_wall_cap_seconds=21_001,
         )
