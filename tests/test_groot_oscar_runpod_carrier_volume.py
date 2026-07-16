@@ -120,6 +120,7 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
         healthcheck_argv=(
             ("/opt/gr00t-venv/bin/python", "--version"),
             ("/opt/oscar-venv/bin/python", "--version"),
+            ("/isaac-sim/python.sh", "-c", "import isaacsim"),
         ),
         generated_at="2026-07-15T12:00:00Z",
     )
@@ -130,6 +131,7 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
     assert "isaac-sim" in manifest["archive"]["member_roots"]
     assert "opt/gr00t-venv" in manifest["archive"]["member_roots"]
     assert "opt/runpod-serverless-venv" in manifest["archive"]["member_roots"]
+    assert manifest["healthcheck_argv"][-1][0] == "/isaac-sim/python.sh"
     assert len(canonical_json_sha256(manifest)) == 64
     assert "semantic task success" in manifest["claim_boundary"]
 

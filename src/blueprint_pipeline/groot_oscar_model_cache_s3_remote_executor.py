@@ -88,6 +88,13 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _SAFE_NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 _SAFE_DROPLET_ID = re.compile(r"[0-9]{1,32}")
+_MISSING_SONAME = re.compile(
+    r"\b([A-Za-z0-9_+.-]+\.so(?:\.[A-Za-z0-9_.-]+)*)"
+    r"(?:\s+=>\s+not found|:\s+cannot open shared object file)"
+)
+_MISSING_PYTHON_MODULE = re.compile(
+    r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]"
+)
 _PACKET_KEYS = frozenset(
     {
         "schema_version",
@@ -256,26 +263,110 @@ def _remove_embedded_model_payloads(payload_root: Path) -> list[str]:
     return removed
 
 
-def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_root: Path) -> None:
+class RuntimeCarrierValidationError(RuntimeError):
+    """Typed failure carrying only allowlisted, secret-free audit evidence."""
+
+    def __init__(self, *, failed_checks: list[str], evidence: Mapping[str, Any]) -> None:
+        super().__init__(
+            "typed_runtime_bundle_carrier_validation_failed:"
+            + ":".join(failed_checks)
+        )
+        self.evidence = dict(evidence)
+
+
+def _validation_diagnostic_tokens(exc: BaseException) -> list[str]:
+    text = "\n".join(
+        value
+        for value in (getattr(exc, "stdout", ""), getattr(exc, "stderr", ""))
+        if isinstance(value, str)
+    )
+    return sorted(
+        {
+            *(_MISSING_SONAME.findall(text)),
+            *(_MISSING_PYTHON_MODULE.findall(text)),
+        }
+    )[:256]
+
+
+def _validate_runtime_inside_carrier(
+    runner: Any, *, carrier_ref: str, payload_root: Path
+) -> dict[str, Any]:
     validations = (
         (
-            "gr00t_import",
-            "/opt/gr00t-venv/bin/python -c 'from gr00t.policy.gr00t_policy import Gr00tPolicy'",
+            "all_archived_elf_linkage",
+            r"""
+missing="$(mktemp)"
+elf_count=0
+while IFS= read -r -d '' candidate; do
+  magic="$(head -c 4 "$candidate" 2>/dev/null || true)"
+  [[ "$magic" == $'\x7fELF' ]] || continue
+  elf_count=$((elf_count + 1))
+  linkage="$(ldd "$candidate" 2>&1 || true)"
+  if grep -Fq 'not found' <<<"$linkage"; then
+    {
+      printf 'ELF %s\n' "$candidate"
+      printf '%s\n' "$linkage"
+    } >>"$missing"
+  fi
+done < <(find \
+  /isaac-sim \
+  /opt/OSCAR \
+  /opt/blueprint \
+  /opt/gr00t \
+  /opt/gr00t-venv \
+  /opt/onnxruntime \
+  /opt/oscar-venv \
+  /opt/runpod-serverless-venv \
+  /opt/uv-python \
+  /opt/wbc \
+  -xdev -type f -print0)
+test "$elf_count" -gt 0
+if [[ -s "$missing" ]]; then
+  cat "$missing"
+  exit 91
+fi
+printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
+""",
+            900,
         ),
-        ("oscar_import", "/opt/oscar-venv/bin/python -c 'import inference.inference_oscar'"),
-        ("blueprint_import", "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline'"),
+        (
+            "gr00t_import",
+            "/opt/gr00t-venv/bin/python -c 'import numpy; import safetensors; "
+            "import torch; import transformers; "
+            "from gr00t.policy.gr00t_policy import Gr00tPolicy'",
+            300,
+        ),
+        (
+            "oscar_import_matrix",
+            "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline; import diffusers; "
+            "import imageio; import msgpack; import mujoco; import numpy; import PIL; "
+            "import safetensors; import torch; import transformers; import yaml; import zmq; "
+            "import inference.inference_oscar; "
+            "from transformer_engine.pytorch.attention import apply_rotary_pos_emb'",
+            300,
+        ),
         (
             "serverless_import",
             "/opt/runpod-serverless-venv/bin/python -c 'import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker'",
+            300,
         ),
-        ("isaac_python_executable", "test -x /isaac-sim/python.sh"),
+        (
+            "isaac_import_matrix",
+            "/isaac-sim/python.sh -c 'import blueprint_pipeline; import carb; import isaacsim; "
+            "from isaacsim import SimulationApp; from isaacsim.core.prims import SingleArticulation; "
+            "import omni.kit.app; import omni.timeline; import omni.usd; "
+            "import blueprint_pipeline.isaac_runtime_task_backend'",
+            300,
+        ),
         (
             "wbc_binary_executable",
             "test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
+            300,
         ),
         (
             "wbc_dynamic_linkage",
             "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
+            300,
         ),
     )
     carrier_env_argv = [
@@ -283,9 +374,12 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
         for key, value in RUNTIME_CARRIER_ENV.items()
         for item in ("--env", f"{key}={value}")
     ]
-    for check_name, validation in validations:
+    failed_checks: list[str] = []
+    checks: list[dict[str, Any]] = []
+    archived_elf_file_count = 0
+    for check_name, validation, timeout_seconds in validations:
         try:
-            _run_command(
+            completed = _run_command(
                 runner,
                 [
                     "docker",
@@ -306,12 +400,58 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
                     "-c",
                     validation,
                 ],
-                timeout=300,
+                timeout=timeout_seconds,
+            )
+            if check_name == "all_archived_elf_linkage":
+                match = re.search(r"count=([1-9][0-9]*)", completed.stdout or "")
+                if match is None:
+                    failed_checks.append(check_name)
+                    checks.append(
+                        {
+                            "name": check_name,
+                            "status": "failed",
+                            "diagnostic_tokens": ["elf_count_evidence_missing"],
+                        }
+                    )
+                    continue
+                archived_elf_file_count = int(match.group(1))
+            checks.append(
+                {
+                    "name": check_name,
+                    "status": "passed",
+                    "diagnostic_tokens": [],
+                }
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(
-                f"typed_runtime_bundle_carrier_validation_failed:{check_name}"
-            ) from exc
+            failed_checks.append(check_name)
+            checks.append(
+                {
+                    "name": check_name,
+                    "status": "failed",
+                    "diagnostic_tokens": _validation_diagnostic_tokens(exc),
+                }
+            )
+    evidence = {
+        "schema_version": "groot_oscar_runtime_carrier_compatibility_audit.v1",
+        "status": "failed" if failed_checks else "passed",
+        "failed_checks": failed_checks,
+        "checks": checks,
+        "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
+        "archived_elf_file_count": archived_elf_file_count,
+        "all_failures_collected_before_blocking": True,
+        "claim_boundary": (
+            "This validates archived ELF linkage and import surfaces inside the exact "
+            "carrier on CPU. It does not prove GPU, CUDA-driver, Isaac rendering, policy "
+            "execution, artifact completion, or semantic task success."
+        ),
+        "raw_secret_values_recorded": False,
+    }
+    if failed_checks:
+        raise RuntimeCarrierValidationError(
+            failed_checks=failed_checks,
+            evidence=evidence,
+        )
+    return evidence
 
 
 def prepare_runtime_bundle(
@@ -409,7 +549,9 @@ def prepare_runtime_bundle(
         if not _runtime_payload_tree_safe(payload_root):
             raise RuntimeError("typed_runtime_bundle_payload_tree_unsafe")
         record_progress("validating_runtime_inside_carrier")
-        _validate_runtime_inside_carrier(runner, carrier_ref=carrier_ref, payload_root=payload_root)
+        carrier_validation = _validate_runtime_inside_carrier(
+            runner, carrier_ref=carrier_ref, payload_root=payload_root
+        )
         record_progress("archiving_runtime_bundle")
         archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
         with tarfile.open(archive_path, "w:gz", compresslevel=6) as archive:
@@ -424,23 +566,30 @@ def prepare_runtime_bundle(
                 (
                     "/opt/gr00t-venv/bin/python",
                     "-c",
+                    "import numpy; import safetensors; import torch; import transformers; "
                     "from gr00t.policy.gr00t_policy import Gr00tPolicy",
                 ),
                 (
                     "/opt/oscar-venv/bin/python",
                     "-c",
-                    "import inference.inference_oscar",
+                    "import blueprint_pipeline; import diffusers; import imageio; import msgpack; "
+                    "import mujoco; import numpy; import PIL; import safetensors; import torch; "
+                    "import transformers; import yaml; import zmq; import inference.inference_oscar; "
+                    "from transformer_engine.pytorch.attention import apply_rotary_pos_emb",
                 ),
-                ("/opt/oscar-venv/bin/python", "-c", "import blueprint_pipeline"),
                 (
                     "/opt/runpod-serverless-venv/bin/python",
                     "-c",
                     "import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker",
                 ),
                 (
-                    "/opt/oscar-venv/bin/python",
+                    "/isaac-sim/python.sh",
                     "-c",
-                    "from pathlib import Path; assert Path('/isaac-sim/python.sh').is_file()",
+                    "import blueprint_pipeline; import carb; import isaacsim; "
+                    "from isaacsim import SimulationApp; "
+                    "from isaacsim.core.prims import SingleArticulation; "
+                    "import omni.kit.app; import omni.timeline; import omni.usd; "
+                    "import blueprint_pipeline.isaac_runtime_task_backend",
                 ),
             ),
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
@@ -480,6 +629,7 @@ def prepare_runtime_bundle(
             "embedded_model_paths_present_and_removed": removed_embedded_model_paths,
             "models_supplied_only_by_verified_external_cache": True,
             "runtime_imports_and_wbc_linkage_verified_in_exact_carrier": True,
+            "carrier_validation": carrier_validation,
             "gpu_compute_allocated": False,
             "raw_secret_values_recorded": False,
         }
@@ -898,6 +1048,7 @@ def execute_remote_packet() -> dict[str, Any]:
             "provider_volume_id": volume["id"],
             "model_manifest_digest": local["model_manifest_digest"],
             "runtime_bundle": runtime_bundle,
+            "runtime_carrier_validation": runtime_bundle.get("carrier_validation"),
             "provider_mutations_performed": transport["provider_mutations_performed"],
             "outer_volume_deletion_required": False,
             "gpu_compute_allocated": False,
@@ -922,6 +1073,8 @@ def execute_remote_packet() -> dict[str, Any]:
                     "runtime_bundle_progress": dict(runtime_bundle_progress),
                 }
             )
+            if isinstance(exc, RuntimeCarrierValidationError):
+                result["runtime_carrier_validation"] = exc.evidence
         result.update(
             {
                 "provider_mutations_performed": int(
