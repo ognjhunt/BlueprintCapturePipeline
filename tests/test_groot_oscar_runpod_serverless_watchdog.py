@@ -87,9 +87,7 @@ def test_ambiguous_create_is_charged_only_when_provider_saw_endpoint(monkeypatch
             "pre_teardown": {"matching_endpoint_count": 1},
         },
     )
-    assert present["measurement"] == (
-        "endpoint_request_wall_clock_provider_presence_confirmed"
-    )
+    assert present["measurement"] == ("endpoint_request_wall_clock_provider_presence_confirmed")
     assert settlements[-1]["charged_gpu_seconds"] == 10
 
     absent = watchdog._settle_budget(
@@ -102,3 +100,44 @@ def test_ambiguous_create_is_charged_only_when_provider_saw_endpoint(monkeypatch
     )
     assert absent["measurement"] == "endpoint_wall_clock"
     assert settlements[-1]["charged_gpu_seconds"] == 0
+
+
+def test_queue_only_job_settles_zero_gpu_time(monkeypatch):
+    settlements = []
+
+    class Budget:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def settle(self, **kwargs):
+            settlements.append(kwargs)
+            return {"ledger_status": "settled"}
+
+    monkeypatch.setattr(watchdog, "ProductionGpuCampaignBudget", Budget)
+    monkeypatch.setattr(watchdog.time, "time", lambda: 1_307.0)
+    result = watchdog._settle_budget(
+        {
+            "endpoint_allocated_at_epoch": 100.0,
+            "serverless_job_execution": {
+                "worker_execution_observed": False,
+                "provider_job_status": "IN_QUEUE",
+                "poll_result_status": "WALL_TIMEOUT",
+                "execution_time_ms": None,
+            },
+            "campaign_budget": {
+                "ledger_path": "unused",
+                "reservation_id": "reservation-queue-only",
+                "reserved_gpu_seconds": 5_215,
+                "max_hourly_rate_usd": 1.75,
+                "initial_spent_usd": 0.0,
+                "initial_used_gpu_seconds": 0,
+                "total_spend_cap_usd": 20.0,
+                "combined_gpu_wall_cap_seconds": 21_000,
+            },
+        },
+        {"status": "PASS", "reason": "queue_timeout"},
+    )
+
+    assert result["measurement"] == "provider_job_queue_only_no_worker_execution"
+    assert settlements[-1]["charged_gpu_seconds"] == 0
+    assert settlements[-1]["charged_usd"] == 0

@@ -370,9 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     warm.add_argument("--expected-source-commit", required=True)
     warm.add_argument("--campaign-budget-ledger", required=True)
     warm.add_argument("--campaign-initial-spent-usd", required=True, type=float)
-    warm.add_argument(
-        "--campaign-initial-used-gpu-seconds", required=True, type=int
-    )
+    warm.add_argument("--campaign-initial-used-gpu-seconds", required=True, type=int)
     warm.add_argument(
         "--campaign-reservation-seconds",
         type=int,
@@ -384,6 +382,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_MAX_HOURLY_RATE_USD,
     )
     warm.add_argument("--campaign-io-evidence", required=True)
+    warm.add_argument("--carrier-volume-admission")
+    warm.add_argument(
+        "--gpu-type-id",
+        action="append",
+        dest="gpu_type_ids",
+        default=None,
+    )
     warm.add_argument(
         "--runpod-s3-access-key-file",
         default="~/.blueprint-secrets/runpod_s3_access_key",
@@ -402,6 +407,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--runtime-source-release-image-ref", default="")
         model.add_argument("--runtime-source-release-evidence")
         model.add_argument("--carrier-image-ref", default="")
+        model.add_argument("--replacement-source-output")
         model.add_argument("--storage-hourly-rate-usd", type=float, required=True)
         model.add_argument("--storage-ttl-seconds", type=int, default=14_400)
         model.add_argument("--max-storage-spend-usd", type=float, default=0.05)
@@ -755,6 +761,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             initial_gpu_seconds=args.campaign_initial_used_gpu_seconds,
             reservation_seconds=args.campaign_reservation_seconds,
             max_hourly_rate_usd=args.campaign_max_hourly_rate_usd,
+            carrier_volume_admission=args.carrier_volume_admission,
+            gpu_type_ids=(
+                tuple(args.gpu_type_ids) if args.gpu_type_ids else ("NVIDIA A40", "NVIDIA L40S")
+            ),
         )
         success = result.get("status") in {
             "dry_run_ready",
@@ -837,6 +847,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.carrier_image_ref:
             vector.extend(["--carrier-image-ref", args.carrier_image_ref])
+        if args.replacement_source_output:
+            vector.extend(["--replacement-source-output", args.replacement_source_output])
         result = launch_detached_model_volume(
             output_dir=Path(args.output_dir), run_arguments=vector
         )
@@ -867,6 +879,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.runtime_source_release_evidence)
                 if args.runtime_source_release_evidence
                 else None
+            ),
+            replacement_source_output_dir=(
+                Path(args.replacement_source_output) if args.replacement_source_output else None
             ),
         )
         success = result.get("status") == "completed"

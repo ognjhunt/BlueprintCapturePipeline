@@ -75,11 +75,14 @@ from .paid_lane_guard import (
     open_pending_teardown,
 )
 from .paid_provider_lane_lease import (
+    accept_paid_provider_lane_lease_handoff,
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
     read_lease,
     read_process_argv,
+    rebind_paid_provider_lane_lease_to_replacement_volume,
     release_paid_provider_lane_lease,
+    restore_paid_provider_lane_lease_to_retained_watchdog,
     rotate_paid_provider_lane_lease_to_retention_watchdog,
     transfer_paid_provider_lane_lease_to_watchdog,
 )
@@ -927,6 +930,7 @@ def run_storage_model_volume(
     runtime_source_release_image_ref: str = "",
     carrier_image_ref: str = "",
     runtime_source_release_evidence_path: Path | None = None,
+    replacement_source_output_dir: Path | None = None,
 ) -> dict[str, Any]:
     output = output_dir.expanduser().resolve()
     root = repo_root.expanduser().resolve()
@@ -936,6 +940,11 @@ def run_storage_model_volume(
         raise ValueError("storage_model_volume_output_already_terminal")
     provider = get_render_provider("runpod")
     key = provider._key()  # type: ignore[attr-defined]
+    replacement_source: dict[str, Any] = {}
+    replacement_handoff: dict[str, Any] = {}
+    replacement_binding: dict[str, Any] = {}
+    replacement_volume_id = ""
+    replacement_watchdog_pid = 0
     try:
         builder_spend = _load(builder_spend_path)
         builder_evidence = _load(builder_evidence_path)
@@ -1020,6 +1029,52 @@ def run_storage_model_volume(
         existing_pods, existing_volumes, inventory_verified = _matching_resources(
             key=key, pod_prefix=None, volume_prefix=None
         )
+        if replacement_source_output_dir is not None:
+            replacement_root = replacement_source_output_dir.expanduser().resolve()
+            replacement_source = _load(replacement_root / "bounded_model_cache_retention.json")
+            replacement_handoff = _load(replacement_root / "watchdog_handoff.json")
+            replacement_volume_id = str(replacement_source.get("volume_id") or "")
+            lane_handoff = replacement_handoff.get("provider_lane_handoff")
+            lane_handoff = lane_handoff if isinstance(lane_handoff, Mapping) else {}
+            lease_path_value = str(lane_handoff.get("lease_path") or "")
+            current_lease = (
+                read_lease("runpod", PROVIDER_LANE, Path(lease_path_value).parent)
+                if lease_path_value
+                else None
+            )
+            current_handoff = (
+                current_lease.get("handoff") if isinstance(current_lease, Mapping) else None
+            )
+            if isinstance(current_handoff, Mapping):
+                lane_handoff = current_handoff
+            replacement_handoff["provider_lane_handoff"] = dict(lane_handoff)
+            binding = lane_handoff.get("binding")
+            replacement_binding = dict(binding) if isinstance(binding, Mapping) else {}
+            if not bool(
+                replacement_source.get("status") == "retained"
+                and replacement_handoff.get("status") == "volume_ready_watchdog_retained"
+                and replacement_handoff.get("volume_id") == replacement_volume_id
+                and replacement_binding.get("provider") == "runpod"
+                and replacement_binding.get("lane") == PROVIDER_LANE
+                and replacement_binding.get("volume_id") == replacement_volume_id
+                and lane_handoff.get("status") == "pending_canary_acceptance"
+                and inventory_verified
+                and not existing_pods
+                and existing_volumes == [replacement_volume_id]
+            ):
+                raise ValueError("storage_replacement_source_not_exactly_retained")
+            remote = _verify_retained_model_cache_remote(
+                volume_id=replacement_volume_id,
+                data_center_id=str(replacement_source.get("data_center_id") or ""),
+                expected_manifest_digest=str(replacement_source.get("model_manifest_digest") or ""),
+                access_key_file=runpod_s3_access_key_file,
+                secret_key_file=runpod_s3_secret_key_file,
+            )
+            if remote.get("status") != "passed":
+                raise ValueError("storage_replacement_source_remote_cache_unverified")
+            replacement_watchdog_pid = int(lane_handoff.get("source_owner_pid") or 0)
+        elif existing_pods or existing_volumes:
+            raise ValueError("storage_model_volume_preallocation_inventory_not_zero")
     except Exception as exc:  # noqa: BLE001 - strictly pre-allocation
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -1035,26 +1090,52 @@ def run_storage_model_volume(
     allocation_nonce = secrets.token_hex(8)
     volume_name = VOLUME_NAME_PREFIX + allocation_nonce
     deadline = time.time() + storage_ttl_seconds
-    reconciliation = build_paid_provider_lane_reconciliation(
-        provider="runpod",
-        lane=PROVIDER_LANE,
-        provider_inventory={
+    replacement_mode = bool(replacement_source_output_dir is not None)
+    reconciliation = (
+        {
+            "schema_version": "groot_oscar_model_volume_replacement_inventory.v1",
+            "status": "passed",
+            "provider": "runpod",
+            "lane": PROVIDER_LANE,
             "api_confirmed": inventory_verified,
-            "live_resource_count": len(existing_pods) + len(existing_volumes),
-            "resources": [],
-        },
-        open_pending_teardowns=load_pending_teardowns(),
+            "live_pod_ids": existing_pods,
+            "live_network_volume_ids": existing_volumes,
+            "whitelisted_source_volume_id": replacement_volume_id,
+            "bounded_overlap_limit": 2,
+            "raw_provider_response_recorded": False,
+        }
+        if replacement_mode
+        else build_paid_provider_lane_reconciliation(
+            provider="runpod",
+            lane=PROVIDER_LANE,
+            provider_inventory={
+                "api_confirmed": inventory_verified,
+                "live_resource_count": len(existing_pods) + len(existing_volumes),
+                "resources": [],
+            },
+            open_pending_teardowns=load_pending_teardowns(),
+        )
     )
     write_json(output / "provider_lane_reconciliation.json", reconciliation)
-    lease = acquire_paid_provider_lane_lease(
-        provider="runpod",
-        lane=PROVIDER_LANE,
-        job_dir=str(output),
-        ttl_seconds=storage_ttl_seconds,
-        reconciliation=reconciliation,
+    lease = (
+        {
+            "status": "pending_replacement_handoff_acceptance",
+            "path": replacement_handoff.get("provider_lane_handoff", {}).get("lease_path"),
+        }
+        if replacement_mode
+        else acquire_paid_provider_lane_lease(
+            provider="runpod",
+            lane=PROVIDER_LANE,
+            job_dir=str(output),
+            ttl_seconds=storage_ttl_seconds,
+            reconciliation=reconciliation,
+        )
     )
     write_json(output / "provider_lane_lease.json", lease)
-    if lease.get("status") != "acquired":
+    if lease.get("status") not in {
+        "acquired",
+        "pending_replacement_handoff_acceptance",
+    }:
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
             "status": "blocked_before_allocation",
@@ -1096,6 +1177,47 @@ def run_storage_model_volume(
             ),
         )
         return result
+    replacement_acceptance: dict[str, Any] = {}
+    if replacement_mode:
+        replacement_acceptance = accept_paid_provider_lane_lease_handoff(
+            replacement_handoff["provider_lane_handoff"],
+            canary_watchdog={
+                "watchdog_pid": watchdog["pid"],
+                "watchdog_pod_name_prefix": watchdog["pod_name_prefix"],
+                "watchdog_deadline_epoch": deadline,
+                "watchdog_process_identity_verified": True,
+                "independent_teardown_watchdog": True,
+                "volume_replacement_watchdog": True,
+                "watchdog_state_path": watchdog["state_path"],
+                "volume_name": watchdog["volume_name"],
+                "watchdog_nonce": watchdog["watchdog_nonce"],
+            },
+            expected_binding=replacement_binding,
+        )
+        write_json(
+            output / "provider_lane_replacement_handoff_acceptance.json",
+            replacement_acceptance,
+        )
+        if replacement_acceptance.get("status") != "accepted":
+            write_json(
+                output / "watchdog_handoff.json",
+                {"status": "cancelled_before_provider_allocation"},
+            )
+            watch.terminate()
+            watch.wait(timeout=10)
+            result = {
+                "schema_version": RESULT_SCHEMA_VERSION,
+                "status": "blocked_before_allocation",
+                "blockers": [
+                    *list(replacement_acceptance.get("blockers") or []),
+                    "storage_replacement_handoff_not_accepted",
+                ],
+                "provider_mutation_attempted": False,
+                "gpu_compute_allocated": False,
+                "raw_secret_values_recorded": False,
+            }
+            write_json(result_path, result)
+            return result
     admission = build_storage_volume_admission(
         data_center_id=data_center_id,
         volume_size_gib=volume_size_gib,
@@ -1103,7 +1225,15 @@ def run_storage_model_volume(
         storage_hourly_rate_usd=storage_hourly_rate_usd,
         max_storage_spend_usd=max_storage_spend_usd,
         builder_ttl_seconds=builder_ttl,
-        inventory_verified_zero=inventory_verified and not existing_pods and not existing_volumes,
+        inventory_verified_zero=bool(
+            inventory_verified
+            and not existing_pods
+            and (
+                existing_volumes == [replacement_volume_id]
+                if replacement_mode
+                else not existing_volumes
+            )
+        ),
         credentials_verified=s3_preflight.get("status") == "ready" and hf_private,
         source_clean=not source_dirty and wheelhouse.get("status") == "ready",
         local_staging_bytes=_available_bytes(output),
@@ -1134,10 +1264,14 @@ def run_storage_model_volume(
         write_json(result_path, result)
         write_json(
             output / "provider_lane_release.json",
-            release_paid_provider_lane_lease(
-                lease,
-                reason="storage_admission_blocked_before_provider_mutation",
-                provider_mutation_started=False,
+            (
+                restore_paid_provider_lane_lease_to_retained_watchdog(replacement_acceptance)
+                if replacement_mode
+                else release_paid_provider_lane_lease(
+                    lease,
+                    reason="storage_admission_blocked_before_provider_mutation",
+                    provider_mutation_started=False,
+                )
             ),
         )
         return result
@@ -1146,6 +1280,9 @@ def run_storage_model_volume(
     volume_teardown: dict[str, Any] = {"provider_absence_confirmed": False}
     builder_result: dict[str, Any] = {}
     lane_handoff: dict[str, Any] = {}
+    replacement_rebind_committed = False
+    replacement_source_teardown: dict[str, Any] = {}
+    replacement_source_watchdog_stopped = False
     error_type: str | None = None
     try:
         pending = open_pending_teardown(
@@ -1165,10 +1302,14 @@ def run_storage_model_volume(
         )
         write_json(
             output / "provider_lane_release.json",
-            release_paid_provider_lane_lease(
-                lease,
-                reason="pending_teardown_open_failed_before_provider_mutation",
-                provider_mutation_started=False,
+            (
+                restore_paid_provider_lane_lease_to_retained_watchdog(replacement_acceptance)
+                if replacement_mode
+                else release_paid_provider_lane_lease(
+                    lease,
+                    reason="pending_teardown_open_failed_before_provider_mutation",
+                    provider_mutation_started=False,
+                )
             ),
         )
         result = {
@@ -1187,7 +1328,15 @@ def run_storage_model_volume(
         locked_pods, locked_volumes, locked_inventory_verified = _matching_resources(
             key=key, pod_prefix=None, volume_prefix=None
         )
-        if not locked_inventory_verified or locked_pods or locked_volumes:
+        if not bool(
+            locked_inventory_verified
+            and not locked_pods
+            and (
+                locked_volumes == [replacement_volume_id]
+                if replacement_mode
+                else not locked_volumes
+            )
+        ):
             raise RuntimeError("storage_model_volume_inventory_changed_under_lease")
         create_http, create_response = _runpod_call(
             "POST",
@@ -1342,6 +1491,7 @@ def run_storage_model_volume(
                     "status": "verified",
                     "root": DEFAULT_MODEL_CACHE_ROOT,
                     "manifest_sha256": transport.get("model_manifest_file_sha256"),
+                    "manifest_digest": transport.get("model_manifest_digest"),
                 },
                 "s3_transfer_verification": {
                     "upload_completed": transport.get("status") == "completed",
@@ -1419,19 +1569,46 @@ def run_storage_model_volume(
             )
         if success:
             try:
-                lane_handoff = transfer_paid_provider_lane_lease_to_watchdog(
-                    lease,
-                    watchdog_pid=int(watchdog["pid"]),
-                    capability_path=output / "provider_lane_handoff.capability",
-                    binding={
-                        "provider": "runpod",
-                        "lane": PROVIDER_LANE,
-                        "volume_id": volume_id,
-                        "pending_teardown_record": pending["path"],
-                        "watchdog_nonce": watchdog["watchdog_nonce"],
-                        "watchdog_deadline_epoch": deadline,
-                    },
-                )
+                new_binding = {
+                    "provider": "runpod",
+                    "lane": PROVIDER_LANE,
+                    "volume_id": volume_id,
+                    "pending_teardown_record": pending["path"],
+                    "watchdog_nonce": watchdog["watchdog_nonce"],
+                    "watchdog_deadline_epoch": deadline,
+                }
+                if replacement_mode:
+                    overlap_pods, overlap_volumes, overlap_verified = _matching_resources(
+                        key=key, pod_prefix=None, volume_prefix=None
+                    )
+                    lane_handoff = rebind_paid_provider_lane_lease_to_replacement_volume(
+                        replacement_acceptance,
+                        replacement_watchdog={
+                            "watchdog_pid": watchdog["pid"],
+                            "watchdog_state_path": watchdog["state_path"],
+                            "watchdog_deadline_epoch": deadline,
+                            "pod_name_prefix": watchdog["pod_name_prefix"],
+                            "volume_name": watchdog["volume_name"],
+                            "watchdog_nonce": watchdog["watchdog_nonce"],
+                        },
+                        replacement_binding=new_binding,
+                        capability_path=output / "provider_lane_handoff.capability",
+                        provider_inventory={
+                            "api_confirmed": overlap_verified,
+                            "live_pod_ids": overlap_pods,
+                            "live_network_volume_ids": overlap_volumes,
+                        },
+                    )
+                    replacement_rebind_committed = (
+                        lane_handoff.get("status") == "pending_canary_acceptance"
+                    )
+                else:
+                    lane_handoff = transfer_paid_provider_lane_lease_to_watchdog(
+                        lease,
+                        watchdog_pid=int(watchdog["pid"]),
+                        capability_path=output / "provider_lane_handoff.capability",
+                        binding=new_binding,
+                    )
             except Exception as exc:  # noqa: BLE001 - teardown must still run
                 lane_handoff = {
                     "status": "blocked",
@@ -1443,6 +1620,8 @@ def run_storage_model_volume(
                 error_type = "PaidProviderLaneHandoffBlocked"
                 for candidate in final_volumes or ([volume_id] if volume_id else []):
                     volume_teardown = _delete_volume(key=key, volume_id=candidate)
+                if replacement_mode:
+                    restore_paid_provider_lane_lease_to_retained_watchdog(replacement_acceptance)
             else:
                 watchdog_state = _load(Path(watchdog["state_path"]))
                 write_json(
@@ -1454,6 +1633,63 @@ def run_storage_model_volume(
                         "volume_id": volume_id,
                     },
                 )
+                if replacement_mode:
+                    replacement_source_teardown = _delete_volume(
+                        key=key, volume_id=replacement_volume_id
+                    )
+                    if replacement_source_teardown.get("provider_absence_confirmed") is True:
+                        cutover_pods, cutover_volumes, cutover_verified = _matching_resources(
+                            key=key, pod_prefix=None, volume_prefix=None
+                        )
+                        cutover_terminal = bool(
+                            cutover_verified and not cutover_pods and cutover_volumes == [volume_id]
+                        )
+                        if not cutover_terminal:
+                            success = False
+                            error_type = "ReplacementCutoverInventoryBlocked"
+                        else:
+                            close_pending_teardown(
+                                replacement_binding["pending_teardown_record"],
+                                {
+                                    "status": "PASS",
+                                    "provider_absence_confirmed": True,
+                                    "instance_id": replacement_volume_id,
+                                    "replacement_volume_id": volume_id,
+                                },
+                            )
+                            source_pid = int(
+                                replacement_handoff.get("watchdog_pid")
+                                or replacement_watchdog_pid
+                                or 0
+                            )
+                            source_state = str(replacement_handoff.get("watchdog_state_path") or "")
+                            source_argv = [str(item) for item in read_process_argv(source_pid)]
+                            replacement_source_watchdog_stopped = bool(
+                                source_pid > 0 and not _pid_is_alive(source_pid)
+                            )
+                            canonical = [
+                                "-m",
+                                "blueprint_pipeline.groot_oscar_runpod_model_volume",
+                                "watchdog",
+                                "--state",
+                                str(Path(source_state).expanduser().resolve()),
+                            ]
+                            if source_pid > 0 and any(
+                                source_argv[index : index + len(canonical)] == canonical
+                                for index in range(len(source_argv))
+                            ):
+                                os.kill(source_pid, signal.SIGTERM)
+                                for _ in range(100):
+                                    if not _pid_is_alive(source_pid):
+                                        replacement_source_watchdog_stopped = True
+                                        break
+                                    time.sleep(0.05)
+                            if not replacement_source_watchdog_stopped:
+                                success = False
+                                error_type = "ReplacementSourceWatchdogStopBlocked"
+                    else:
+                        success = False
+                        error_type = "ReplacementSourceVolumeTeardownBlocked"
         if success:
             write_json(
                 output / "watchdog_handoff.json",
@@ -1466,11 +1702,19 @@ def run_storage_model_volume(
                     "provider_lane_handoff": lane_handoff,
                 },
             )
-        else:
+        elif not replacement_rebind_committed:
             global_pods, global_volumes, global_inventory_verified = _matching_resources(
                 key=key, pod_prefix=None, volume_prefix=None
             )
-            terminal = bool(global_inventory_verified and not global_pods and not global_volumes)
+            terminal = bool(
+                global_inventory_verified
+                and not global_pods
+                and (
+                    global_volumes == [replacement_volume_id]
+                    if replacement_mode
+                    else not global_volumes
+                )
+            )
             if terminal:
                 if volume_id:
                     close_pending_teardown(
@@ -1487,25 +1731,33 @@ def run_storage_model_volume(
                         reason="provider_inventory_verified_zero_after_ambiguous_create",
                         evidence={"provider_absence_confirmed": True},
                     )
-                terminal_reconciliation = build_paid_provider_lane_reconciliation(
-                    provider="runpod",
-                    lane=PROVIDER_LANE,
-                    provider_inventory={
-                        "api_confirmed": True,
-                        "live_resource_count": 0,
-                        "resources": [],
-                    },
-                    open_pending_teardowns=load_pending_teardowns(),
-                )
-                write_json(
-                    output / "provider_lane_release.json",
-                    release_paid_provider_lane_lease(
-                        lease,
-                        reason="storage_model_volume_failure_provider_terminal",
-                        provider_mutation_started=True,
-                        terminal_reconciliation=terminal_reconciliation,
-                    ),
-                )
+                if replacement_mode:
+                    write_json(
+                        output / "provider_lane_release.json",
+                        restore_paid_provider_lane_lease_to_retained_watchdog(
+                            replacement_acceptance
+                        ),
+                    )
+                else:
+                    terminal_reconciliation = build_paid_provider_lane_reconciliation(
+                        provider="runpod",
+                        lane=PROVIDER_LANE,
+                        provider_inventory={
+                            "api_confirmed": True,
+                            "live_resource_count": 0,
+                            "resources": [],
+                        },
+                        open_pending_teardowns=load_pending_teardowns(),
+                    )
+                    write_json(
+                        output / "provider_lane_release.json",
+                        release_paid_provider_lane_lease(
+                            lease,
+                            reason="storage_model_volume_failure_provider_terminal",
+                            provider_mutation_started=True,
+                            terminal_reconciliation=terminal_reconciliation,
+                        ),
+                    )
             else:
                 mark_pending_teardown_ambiguous(
                     pending["path"],
@@ -1523,6 +1775,19 @@ def run_storage_model_volume(
                     ),
                     "volume_id": volume_id or None,
                     "failure_volume_absence_confirmed": terminal,
+                    "raw_secret_values_recorded": False,
+                },
+            )
+        elif not success:
+            write_json(
+                output / "watchdog_handoff.json",
+                {
+                    **storage_handoff,
+                    "status": "replacement_source_cleanup_blocked",
+                    "volume_presence_confirmed": True,
+                    "provider_lane_handoff": lane_handoff,
+                    "source_volume_id": replacement_volume_id,
+                    "source_volume_teardown": replacement_source_teardown,
                     "raw_secret_values_recorded": False,
                 },
             )
@@ -1550,6 +1815,10 @@ def run_storage_model_volume(
         "provider_lane_lease_path": lease.get("path"),
         "pending_teardown_record": pending.get("path"),
         "provider_lane_handoff": lane_handoff,
+        "replacement_mode": replacement_mode,
+        "replacement_source_volume_id": replacement_volume_id or None,
+        "replacement_source_volume_teardown": replacement_source_teardown,
+        "replacement_source_watchdog_stopped": replacement_source_watchdog_stopped,
         "maximum_storage_spend_usd": storage_hourly_rate_usd * storage_ttl_seconds / 3600,
         "maximum_builder_compute_spend_usd": builder_result.get("maximum_compute_spend_usd", 0.0),
         "error_type": error_type,

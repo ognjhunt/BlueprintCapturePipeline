@@ -30,12 +30,14 @@ DEFAULT_MODEL_CACHE_MANIFEST_PATH = (
 )
 MIN_CARRIER_VOLUME_GIB = 120
 RUNTIME_ARCHIVE_ROOTS = (
+    "isaac-sim",
     "opt/OSCAR",
     "opt/blueprint",
     "opt/gr00t",
     "opt/gr00t-venv",
     "opt/onnxruntime",
     "opt/oscar-venv",
+    "opt/runpod-serverless-venv",
     "opt/uv-python",
     "opt/wbc",
 )
@@ -268,6 +270,12 @@ def verify_carrier_volume_admission(
     model_manifest_digest = _sha256_digest(model.get("manifest_sha256"))
     if not model_manifest_digest:
         blockers.append("carrier_model_cache_manifest_sha256_invalid")
+    model_content_digest = _string(model.get("manifest_digest"))
+    if not (
+        model_content_digest.startswith("sha256:")
+        and _sha256_digest(model_content_digest.removeprefix("sha256:"))
+    ):
+        blockers.append("carrier_model_cache_content_digest_invalid")
     if transfer.get("upload_completed") is not True:
         blockers.append("carrier_volume_s3_upload_not_complete")
     if transfer.get("full_redownload_sha256_verified") is not True:
@@ -297,6 +305,7 @@ def verify_carrier_volume_admission(
         "model_cache_root": DEFAULT_MODEL_CACHE_ROOT,
         "model_cache_manifest_path": DEFAULT_MODEL_CACHE_MANIFEST_PATH,
         "model_manifest_sha256": model_manifest_digest,
+        "model_manifest_digest": model_content_digest,
         "claim_boundary": (
             "This admission proves a digest-bound request may attach preverified volume bytes. "
             "The carrier must still reverify and activate them after container start. It does "
@@ -457,15 +466,19 @@ result = Path(os.environ["BLUEPRINT_RUNPOD_CARRIER_BOOTSTRAP_RESULT"])
 archive = result.parent / "runpod_carrier_runtime_bootstrap_blocked.zip"
 with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
     output.write(result, "runpod_carrier_runtime_bootstrap.json")
-request = urllib.request.Request(
+target = (
     os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL")
-    or os.environ["BLUEPRINT_ARTIFACT_OUTPUT_URI"],
-    data=archive.read_bytes(),
-    method="PUT",
-    headers={"Content-Type": "application/zip"},
+    or os.environ.get("BLUEPRINT_ARTIFACT_OUTPUT_URI")
 )
-with urllib.request.urlopen(request, timeout=300) as response:
-    response.read()
+if target:
+    request = urllib.request.Request(
+        target,
+        data=archive.read_bytes(),
+        method="PUT",
+        headers={"Content-Type": "application/zip"},
+    )
+    with urllib.request.urlopen(request, timeout=300) as response:
+        response.read()
 PY
   exit 86
 fi

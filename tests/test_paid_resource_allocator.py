@@ -207,9 +207,7 @@ def test_allocator_cli_never_prints_provider_result_secrets(monkeypatch, capsys)
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
-def test_gpu_warm_worker_uses_canonical_allocator_and_redacts_stdout(
-    monkeypatch, capsys
-) -> None:
+def test_gpu_warm_worker_uses_canonical_allocator_and_redacts_stdout(monkeypatch, capsys) -> None:
     observed = {}
 
     def fake_run_active_worker(**kwargs):
@@ -243,6 +241,10 @@ def test_gpu_warm_worker_uses_canonical_allocator_and_redacts_stdout(
             "15785",
             "--campaign-io-evidence",
             "campaign_io.json",
+            "--carrier-volume-admission",
+            "carrier.json",
+            "--gpu-type-id",
+            "NVIDIA RTX 6000 Ada Generation",
             "--execute",
         ]
     )
@@ -252,12 +254,12 @@ def test_gpu_warm_worker_uses_canonical_allocator_and_redacts_stdout(
     assert observed["initial_gpu_seconds"] == 15_785
     assert observed["expected_source_commit"] == "c" * 40
     assert observed["campaign_io_evidence"] == "campaign_io.json"
+    assert observed["carrier_volume_admission"] == "carrier.json"
+    assert observed["gpu_type_ids"] == ("NVIDIA RTX 6000 Ada Generation",)
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
-def test_gpu_warm_worker_routes_only_through_canonical_allocator(
-    monkeypatch, capsys
-) -> None:
+def test_gpu_warm_worker_routes_only_through_canonical_allocator(monkeypatch, capsys) -> None:
     observed = {}
 
     def fake_run(**kwargs):
@@ -431,6 +433,8 @@ def test_model_volume_run_forwards_storage_only_composite_arguments(monkeypatch,
             "thin-release.json",
             "--carrier-image-ref",
             "pytorch/pytorch:runtime@sha256:" + "2" * 64,
+            "--replacement-source-output",
+            "retained-cache",
             "--allow-paid",
         ]
     )
@@ -439,6 +443,7 @@ def test_model_volume_run_forwards_storage_only_composite_arguments(monkeypatch,
     assert observed["builder_evidence_path"] == Path("builder.json")
     assert observed["builder_spend_path"] == Path("spend.json")
     assert observed["runtime_source_release_evidence_path"] == Path("thin-release.json")
+    assert observed["replacement_source_output_dir"] == Path("retained-cache")
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 

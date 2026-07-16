@@ -1,4 +1,5 @@
 """Exclusive cross-process lease for paid provider lane mutations."""
+
 from __future__ import annotations
 
 import json
@@ -27,11 +28,133 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     claim_transferred_paid_provider_lane_teardown,
     lease_path,
     read_lease,
+    rebind_paid_provider_lane_lease_to_replacement_volume,
     release_paid_provider_lane_lease,
     restore_paid_provider_lane_lease_to_retained_watchdog,
     rotate_paid_provider_lane_lease_to_retention_watchdog,
     transfer_paid_provider_lane_lease_to_watchdog,
 )
+
+
+def test_verified_volume_replacement_rebinds_same_lane_without_owner_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 1_000.0
+    old_deadline = now + 10_000
+    new_deadline = now + 8_000
+    live = {111, 222}
+    monkeypatch.setattr(lease_module, "_pid_is_alive", lambda pid: pid in live)
+    acquired = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        job_dir=str(tmp_path),
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane="groot_oscar_model_volume"),
+    )
+    old_pending = open_pending_teardown(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        run_id="old",
+        resource_kind="network_volume",
+        resource_name="old-volume",
+        registry_dir=tmp_path / "pending",
+    )
+    bind_pending_teardown_instance(old_pending["path"], "old-volume")
+    old_binding = {
+        "provider": "runpod",
+        "lane": "groot_oscar_model_volume",
+        "volume_id": "old-volume",
+        "pending_teardown_record": old_pending["path"],
+        "watchdog_nonce": "old-nonce",
+        "watchdog_deadline_epoch": old_deadline,
+    }
+    old_capability = tmp_path / "provider_lane_handoff.capability"
+    handoff = transfer_paid_provider_lane_lease_to_watchdog(
+        acquired,
+        watchdog_pid=111,
+        capability_path=old_capability,
+        binding=old_binding,
+        clock=lambda: now,
+    )
+    replacement_root = tmp_path / "replacement"
+    replacement_root.mkdir()
+    state_path = (replacement_root / "watchdog_state.json").resolve()
+    state = {
+        "deadline_epoch": new_deadline,
+        "pod_name_prefix": "blueprint-storage-only-no-pod-replacement",
+        "volume_name": "new-volume",
+        "watchdog_nonce": "new-nonce",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (replacement_root / "watchdog_armed.json").write_text(
+        json.dumps({**state, "status": "armed", "pid": 222}), encoding="utf-8"
+    )
+    argv = (
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "watchdog",
+        "--state",
+        str(state_path),
+    )
+    accepted = accept_paid_provider_lane_lease_handoff(
+        handoff,
+        canary_watchdog={
+            "watchdog_pid": 222,
+            "watchdog_pod_name_prefix": state["pod_name_prefix"],
+            "watchdog_deadline_epoch": new_deadline,
+            "watchdog_process_identity_verified": True,
+            "independent_teardown_watchdog": True,
+            "volume_replacement_watchdog": True,
+            "watchdog_state_path": str(state_path),
+            "volume_name": "new-volume",
+            "watchdog_nonce": "new-nonce",
+        },
+        expected_binding=old_binding,
+        process_argv_probe=lambda _pid: argv,
+        clock=lambda: now,
+    )
+    assert accepted["status"] == "accepted"
+    new_pending = open_pending_teardown(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        run_id="new",
+        resource_kind="network_volume",
+        resource_name="new-volume",
+        registry_dir=tmp_path / "pending",
+    )
+    bind_pending_teardown_instance(new_pending["path"], "new-volume")
+    new_binding = {
+        **old_binding,
+        "volume_id": "new-volume",
+        "pending_teardown_record": new_pending["path"],
+        "watchdog_nonce": "new-nonce",
+        "watchdog_deadline_epoch": new_deadline,
+    }
+    rebound = rebind_paid_provider_lane_lease_to_replacement_volume(
+        accepted,
+        replacement_watchdog={
+            "watchdog_pid": 222,
+            "watchdog_state_path": str(state_path),
+            "watchdog_deadline_epoch": new_deadline,
+            "pod_name_prefix": state["pod_name_prefix"],
+            "volume_name": "new-volume",
+            "watchdog_nonce": "new-nonce",
+        },
+        replacement_binding=new_binding,
+        capability_path=replacement_root / "provider_lane_handoff.capability",
+        provider_inventory={
+            "api_confirmed": True,
+            "live_pod_ids": [],
+            "live_network_volume_ids": ["old-volume", "new-volume"],
+        },
+        process_argv_probe=lambda _pid: argv,
+        clock=lambda: now,
+    )
+    assert rebound["status"] == "pending_canary_acceptance"
+    assert rebound["binding"] == new_binding
+    assert rebound["replaced_volume_id"] == "old-volume"
+    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)["handoff"] == rebound
 
 
 def test_serverless_watchdog_is_valid_canary_handoff_owner(monkeypatch) -> None:
@@ -71,6 +194,7 @@ def test_serverless_watchdog_is_valid_canary_handoff_owner(monkeypatch) -> None:
 
     assert valid is True
 
+
 _SCENARIOS = [
     {
         "scenario_id": "s1",
@@ -100,9 +224,7 @@ def _reconciliation(
             "status": "observed",
             "api_confirmed": True,
             "live_resource_count": live_resource_count,
-            "resources": [
-                {"instance_id": "live-1", "name": "blueprint-isaac-g1-kitchen-parity"}
-            ]
+            "resources": [{"instance_id": "live-1", "name": "blueprint-isaac-g1-kitchen-parity"}]
             if live_resource_count
             else [],
         },
@@ -137,13 +259,19 @@ def test_acquire_records_owner_identity_and_scope(tmp_path: Path) -> None:
 
 def test_second_acquire_blocks_while_owner_is_alive(tmp_path: Path) -> None:
     first = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="a", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="a",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(),
     )
     assert first["status"] == "acquired"
 
     second = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="b", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="b",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(),
     )
 
@@ -266,15 +394,11 @@ def test_watchdog_handoff_is_one_time_bound_and_has_no_unowned_gap(
         "status": "refused_identity_mismatch",
         "restored": False,
     }
-    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)[
-        "owner_pid"
-    ] == 222
+    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)["owner_pid"] == 222
 
     restored = restore_paid_provider_lane_lease_to_retained_watchdog(accepted)
     assert restored == {"status": "restored", "restored": True, "owner_pid": 111}
-    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)[
-        "owner_pid"
-    ] == 111
+    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)["owner_pid"] == 111
 
     reused = accept_paid_provider_lane_lease_handoff(
         handoff,
@@ -332,7 +456,7 @@ def test_live_retained_watchdog_prevents_parent_exit_stale_reclaim(
 
 
 def test_concurrent_process_blocks_before_paid_lane_mutation(tmp_path: Path) -> None:
-    script = r'''
+    script = r"""
 import json, sys
 from blueprint_pipeline.paid_provider_lane_lease import (
     acquire_paid_provider_lane_lease,
@@ -356,7 +480,7 @@ release_paid_provider_lane_lease(
     acquired, reason="test_child_done", provider_mutation_started=False,
     lease_dir=lease_dir,
 )
-'''
+"""
     child = subprocess.Popen(
         [sys.executable, "-c", script, str(tmp_path)],
         stdin=subprocess.PIPE,
@@ -408,15 +532,24 @@ release_paid_provider_lane_lease(
 
 def test_distinct_lanes_and_providers_do_not_contend(tmp_path: Path) -> None:
     a = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="a", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="a",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(),
     )
     b = acquire_paid_provider_lane_lease(
-        provider="digitalocean", lane="lane", job_dir="b", lease_dir=tmp_path,
+        provider="digitalocean",
+        lane="lane",
+        job_dir="b",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(provider="digitalocean"),
     )
     c = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="other-lane", job_dir="c", lease_dir=tmp_path,
+        provider="runpod",
+        lane="other-lane",
+        job_dir="c",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(lane="other-lane"),
     )
     assert {r["status"] for r in (a, b, c)} == {"acquired"}
@@ -443,14 +576,15 @@ def test_stale_dead_owner_requires_reconciliation_evidence(tmp_path: Path) -> No
     )
 
     blocked = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="new", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="new",
+        lease_dir=tmp_path,
     )
     assert blocked["status"] == "blocked"
     assert blocked["blockers"] == [BLOCKER_STALE_REQUIRES_RECONCILIATION]
     assert blocked["stale_reason"] == "owner_pid_not_alive"
-    assert list(STALE_RECLAIM_REQUIRED_EVIDENCE) == blocked[
-        "required_reconciliation_evidence"
-    ]
+    assert list(STALE_RECLAIM_REQUIRED_EVIDENCE) == blocked["required_reconciliation_evidence"]
     # The stale lease is preserved: a crashed owner may have left an
     # allocation behind, so the lane stays closed.
     assert read_lease("runpod", "lane", tmp_path)["job_dir"] == "crashed"
@@ -587,9 +721,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert current["expires_at_epoch"] == retention_deadline
     assert current["handoff"] == rotated
     retained_pending = json.loads(Path(pending["path"]).read_text(encoding="utf-8"))
-    assert retained_pending["retention_class"] == (
-        "bounded_persistent_verified_model_cache"
-    )
+    assert retained_pending["retention_class"] == ("bounded_persistent_verified_model_cache")
     assert retained_pending["retention_deadline_epoch"] == retention_deadline
     assert retained_pending["max_age_seconds"] >= 7 * 24 * 3600 - 1
 
@@ -624,9 +756,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
 
     restored = restore_paid_provider_lane_lease_to_retained_watchdog(accepted)
     assert restored == {"status": "restored", "restored": True, "owner_pid": 333}
-    accepted_handoff = read_lease(
-        "runpod", "groot_oscar_model_volume", tmp_path
-    )["handoff"]
+    accepted_handoff = read_lease("runpod", "groot_oscar_model_volume", tmp_path)["handoff"]
     live_pids.add(555)
     renewal_deadline = retention_deadline + 24 * 3600
     renewal = watchdog(555, "renewal", "renewal-nonce", renewal_deadline)
@@ -655,9 +785,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert renewed["renewed_after_terminal_canary"] is True
     assert renewed["source_owner_pid"] == 555
     assert capability.is_file()
-    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)[
-        "handoff"
-    ] == renewed
+    assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)["handoff"] == renewed
     claimed = claim_transferred_paid_provider_lane_teardown(
         lease_path_value=renewed["lease_path"],
         teardown_owner_pid=555,
@@ -885,7 +1013,10 @@ def test_cross_host_lease_is_stale_only_after_expiry(tmp_path: Path) -> None:
     path.write_text(json.dumps(record), encoding="utf-8")
 
     unexpired = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="new", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="new",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(),
     )
     assert unexpired["status"] == "blocked"
@@ -894,7 +1025,10 @@ def test_cross_host_lease_is_stale_only_after_expiry(tmp_path: Path) -> None:
     record["expires_at_epoch"] = now - 1
     path.write_text(json.dumps(record), encoding="utf-8")
     expired = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="new", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="new",
+        lease_dir=tmp_path,
     )
     assert expired["status"] == "blocked"
     assert expired["stale_reason"] == "lease_expired"
@@ -903,7 +1037,10 @@ def test_cross_host_lease_is_stale_only_after_expiry(tmp_path: Path) -> None:
 
 def test_release_after_verified_teardown_and_owner_check(tmp_path: Path) -> None:
     acquired = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="a", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="a",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(),
     )
     released = release_paid_provider_lane_lease(
@@ -924,7 +1061,10 @@ def test_release_after_verified_teardown_and_owner_check(tmp_path: Path) -> None
     assert again["status"] == "already_released"
 
     other = acquire_paid_provider_lane_lease(
-        provider="runpod", lane="lane", job_dir="other", lease_dir=tmp_path,
+        provider="runpod",
+        lane="lane",
+        job_dir="other",
+        lease_dir=tmp_path,
         reconciliation=_reconciliation(),
     )
     assert other["status"] == "acquired"
@@ -1040,9 +1180,7 @@ def test_supervised_descendant_allocation_is_inside_parity_lease_scope(
 
     assert summary["status"] == "blocked"
     assert summary["blockers"] == [BLOCKER_ALREADY_OWNED]
-    assert summary["leases"][0]["reconciliation"][
-        "provider_live_resource_count"
-    ] == 1
+    assert summary["leases"][0]["reconciliation"]["provider_live_resource_count"] == 1
 
 
 def test_release_retains_lease_until_terminal_reconciliation_passes(
@@ -1084,9 +1222,7 @@ def test_paid_job_blocks_before_provider_mutation_when_lane_owned(
     assert other_owner["status"] == "acquired"
 
     monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "50.0")
-    monkeypatch.setenv(
-        J.ISAAC_WORKER_IMAGE_REF_ENV, "registry.example/worker:20260711"
-    )
+    monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_REF_ENV, "registry.example/worker:20260711")
     monkeypatch.setattr(
         J,
         "_git_worktree_evidence",
@@ -1129,13 +1265,12 @@ def test_paid_job_blocks_before_provider_mutation_when_lane_owned(
     assert m["status"] == "blocked"
     assert BLOCKER_ALREADY_OWNED in m["blockers"]
     assert m["paid_provider_lane_lease"]["status"] == "blocked"
-    assert m["paid_provider_lane_lease"]["leases"][0]["holder"]["job_dir"] == (
-        "other-agent-job"
-    )
+    assert m["paid_provider_lane_lease"]["leases"][0]["holder"]["job_dir"] == ("other-agent-job")
     # The prior owner's lease is untouched.
-    assert read_lease(
-        "runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir
-    )["job_dir"] == "other-agent-job"
+    assert (
+        read_lease("runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir)["job_dir"]
+        == "other-agent-job"
+    )
 
 
 def _stage_for_paid_job(_bundle_zip, job_dir, *, key_prefix):
@@ -1169,27 +1304,19 @@ class _InventoryProvider:
             "status": "observed",
             "api_confirmed": True,
             "live_resource_count": 1 if self.live else 0,
-            "resources": (
-                [{"instance_id": "pod-live", "name": name_prefix}]
-                if self.live
-                else []
-            ),
+            "resources": ([{"instance_id": "pod-live", "name": name_prefix}] if self.live else []),
         }
 
 
 def _configure_paid_job(monkeypatch, provider: _InventoryProvider) -> None:
     monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "50.0")
-    monkeypatch.setenv(
-        J.ISAAC_WORKER_IMAGE_REF_ENV, "registry.example/worker:20260711"
-    )
+    monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_REF_ENV, "registry.example/worker:20260711")
     monkeypatch.setattr(
         J,
         "_git_worktree_evidence",
         lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
     )
-    monkeypatch.setattr(
-        J, "get_render_provider", lambda _name, warm_candidates=(): provider
-    )
+    monkeypatch.setattr(J, "get_render_provider", lambda _name, warm_candidates=(): provider)
     monkeypatch.setattr(J, "stage_bundle", _stage_for_paid_job)
 
 
@@ -1224,9 +1351,7 @@ def test_paid_job_blocks_on_legacy_open_teardown_before_provider_create(
 
     assert manifest["status"] == "blocked"
     assert BLOCKER_ALREADY_OWNED in manifest["blockers"]
-    reconciliation = manifest["paid_provider_lane_lease"]["leases"][0][
-        "reconciliation"
-    ]
+    reconciliation = manifest["paid_provider_lane_lease"]["leases"][0]["reconciliation"]
     assert reconciliation["open_pending_teardown_count"] == 1
 
 
@@ -1254,14 +1379,10 @@ def test_launch_exception_releases_lease_when_inventory_proves_no_allocation(
         )
 
     lease_dir = Path(os.environ["BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR"])
-    assert read_lease(
-        "runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir
-    ) is None
+    assert read_lease("runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir) is None
 
 
-def test_stopped_billable_allocation_retains_lane_lease(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_stopped_billable_allocation_retains_lane_lease(tmp_path: Path, monkeypatch) -> None:
     provider = _InventoryProvider()
     _configure_paid_job(monkeypatch, provider)
 
@@ -1303,6 +1424,4 @@ def test_stopped_billable_allocation_retains_lane_lease(
     assert release["all_providers_terminal"] is False
     assert release["results"][0]["status"] == "retained_unverified_teardown"
     lease_dir = Path(os.environ["BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR"])
-    assert read_lease(
-        "runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir
-    ) is not None
+    assert read_lease("runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir) is not None

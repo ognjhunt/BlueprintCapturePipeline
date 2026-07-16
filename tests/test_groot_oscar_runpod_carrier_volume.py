@@ -51,6 +51,7 @@ def _admission() -> dict:
             "status": "verified",
             "root": DEFAULT_MODEL_CACHE_ROOT,
             "manifest_sha256": "5" * 64,
+            "manifest_digest": "sha256:" + "7" * 64,
         },
         "s3_transfer_verification": {
             "upload_completed": True,
@@ -123,7 +124,9 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
 
     assert manifest["status"] == "complete"
     assert manifest["archive"]["format"] == "tar.gz"
+    assert "isaac-sim" in manifest["archive"]["member_roots"]
     assert "opt/gr00t-venv" in manifest["archive"]["member_roots"]
+    assert "opt/runpod-serverless-venv" in manifest["archive"]["member_roots"]
     assert len(canonical_json_sha256(manifest)) == 64
     assert "semantic task success" in manifest["claim_boundary"]
 
@@ -149,6 +152,7 @@ def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
     assert verified["data_center_id"] == "EUR-IS-1"
     assert verified["runtime_archive_sha256"] == "3" * 64
     assert verified["model_manifest_sha256"] == "5" * 64
+    assert verified["model_manifest_digest"] == "sha256:" + "7" * 64
     assert "provider attachment" in verified["claim_boundary"]
 
     bad = _admission()
@@ -178,6 +182,7 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_wbc_dynamic_linkage_failed" in script
     assert "BLUEPRINT_OSCAR_WAM_CHECKPOINT" in script
     assert "runpod_carrier_runtime_bootstrap_blocked.zip" in script
+    assert 'or os.environ.get("BLUEPRINT_ARTIFACT_OUTPUT_URI")' in script
     assert 'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT="/opt/gr00t"' in script
     assert 'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT="/opt/wbc"' in script
     assert script.index("BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT") < script.index(
