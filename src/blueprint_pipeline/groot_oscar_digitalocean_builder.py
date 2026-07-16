@@ -66,6 +66,9 @@ MODEL_CACHE_RESULT_FILES = (
     "external_model_cache_verification.json",
     "model_cache_s3_remote_execution_result.json",
 )
+CARRIER_PACKET_DIRECTORY = "groot_oscar_carrier_remote_build"
+CARRIER_BUILD_SCRIPT = "remote_build_groot_oscar_carrier.sh"
+CARRIER_RESULT_NAME = "groot_oscar_carrier_remote_build_result.json"
 
 
 def _safe_archive_member(name: str) -> bool:
@@ -73,9 +76,7 @@ def _safe_archive_member(name: str) -> bool:
     return bool(name) and not path.is_absolute() and ".." not in path.parts
 
 
-def _validate_model_cache_archive(
-    path: Path, packet: Mapping[str, Any]
-) -> list[str]:
+def _validate_model_cache_archive(path: Path, packet: Mapping[str, Any]) -> list[str]:
     blockers: list[str] = []
     if path.name != MODEL_CACHE_TARBALL_NAME:
         blockers.append("digitalocean_model_cache_tarball_name_invalid")
@@ -121,8 +122,7 @@ def _validate_model_cache_archive(
         blockers.append("digitalocean_model_cache_archive_contract_json_invalid")
         return blockers
     if (
-        inner_packet.get("schema_version")
-        != "groot_oscar_model_cache_s3_remote_packet.v1"
+        inner_packet.get("schema_version") != "groot_oscar_model_cache_s3_remote_packet.v1"
         or inner_packet.get("packet_kind") != "model_cache_s3"
         or inner_packet.get("result_files") != list(MODEL_CACHE_RESULT_FILES)
         or inner_packet.get("raw_secret_values_recorded") is not False
@@ -139,15 +139,11 @@ def _validate_model_cache_archive(
     ):
         blockers.append("digitalocean_model_cache_inner_outer_binding_mismatch")
     context_bytes = payloads[prefix + "context_manifest.json"]
-    if hashlib.sha256(context_bytes).hexdigest() != inner_packet.get(
-        "context_manifest_sha256"
-    ):
+    if hashlib.sha256(context_bytes).hexdigest() != inner_packet.get("context_manifest_sha256"):
         blockers.append("digitalocean_model_cache_context_manifest_digest_mismatch")
     context_rows = context.get("files") if isinstance(context.get("files"), list) else []
     dependency_rows = (
-        dependencies.get("wheels")
-        if isinstance(dependencies.get("wheels"), list)
-        else []
+        dependencies.get("wheels") if isinstance(dependencies.get("wheels"), list) else []
     )
     expected_members = {
         prefix + "packet.json",
@@ -157,9 +153,7 @@ def _validate_model_cache_archive(
         prefix + "uv.lock",
         prefix + "requirements_closure.json",
     }
-    context_paths = [
-        str(row.get("path") or "") for row in context_rows if isinstance(row, dict)
-    ]
+    context_paths = [str(row.get("path") or "") for row in context_rows if isinstance(row, dict)]
     if len(context_paths) != len(set(context_paths)):
         blockers.append("digitalocean_model_cache_context_path_duplicate")
     for row in context_rows:
@@ -213,10 +207,15 @@ def _validate_model_cache_archive(
                         member_path = Path(wheel_member.filename)
                         parts = member_path.parts
                         mode = (wheel_member.external_attr >> 16) & 0o170000
-                        if len(parts) >= 3 and parts[0].endswith(".data") and parts[1] in {
-                            "purelib",
-                            "platlib",
-                        }:
+                        if (
+                            len(parts) >= 3
+                            and parts[0].endswith(".data")
+                            and parts[1]
+                            in {
+                                "purelib",
+                                "platlib",
+                            }
+                        ):
                             top_level = parts[2]
                         else:
                             top_level = parts[0] if parts else ""
@@ -229,15 +228,11 @@ def _validate_model_cache_archive(
                             or module_name in sys.stdlib_module_names
                             or module_name == "blueprint_pipeline"
                         ):
-                            blockers.append(
-                                "digitalocean_model_cache_wheel_startup_hook_forbidden"
-                            )
+                            blockers.append("digitalocean_model_cache_wheel_startup_hook_forbidden")
             except zipfile.BadZipFile:
                 blockers.append("digitalocean_model_cache_dependency_wheel_invalid")
     wheel_names = [
-        str(row.get("filename") or "")
-        for row in dependency_rows
-        if isinstance(row, dict)
+        str(row.get("filename") or "") for row in dependency_rows if isinstance(row, dict)
     ]
     if len(wheel_names) != len(set(wheel_names)):
         blockers.append("digitalocean_model_cache_dependency_filename_duplicate")
@@ -252,9 +247,7 @@ def _validate_model_cache_archive(
             if isinstance(dependencies.get("platform_tags"), list)
             else []
         )
-        or not re.fullmatch(
-            r"[0-9a-f]{64}", str(dependencies.get("lockfile_sha256") or "")
-        )
+        or not re.fullmatch(r"[0-9a-f]{64}", str(dependencies.get("lockfile_sha256") or ""))
         or not re.fullmatch(
             r"[0-9a-f]{64}",
             str(dependencies.get("requirements_closure_sha256") or ""),
@@ -267,10 +260,8 @@ def _validate_model_cache_archive(
     closure_body = payloads.get(prefix + "requirements_closure.json")
     if (
         lock_body is None
-        or hashlib.sha256(lock_body).hexdigest()
-        != dependencies.get("lockfile_sha256")
-        or hashlib.sha256(lock_body).hexdigest()
-        != inner_packet.get("dependency_lock_sha256")
+        or hashlib.sha256(lock_body).hexdigest() != dependencies.get("lockfile_sha256")
+        or hashlib.sha256(lock_body).hexdigest() != inner_packet.get("dependency_lock_sha256")
     ):
         blockers.append("digitalocean_model_cache_dependency_lock_digest_mismatch")
     if lock_body is not None:
@@ -284,9 +275,7 @@ def _validate_model_cache_archive(
                 for row in locked_plan["wheels"]
             ]
             if dependencies.get("requirements") != locked_plan["requirements"]:
-                blockers.append(
-                    "digitalocean_model_cache_dependency_closure_not_locked"
-                )
+                blockers.append("digitalocean_model_cache_dependency_closure_not_locked")
             if dependency_rows != locked_wheels:
                 blockers.append("digitalocean_model_cache_dependency_wheels_not_locked")
     if (
@@ -319,9 +308,7 @@ def _validate_model_cache_archive(
     return sorted(set(blockers))
 
 
-def model_cache_archive_verifier_script(
-    *, packet: Mapping[str, Any], tarball_path: Path
-) -> str:
+def model_cache_archive_verifier_script(*, packet: Mapping[str, Any], tarball_path: Path) -> str:
     """Return a stdlib-only verifier/extractor that runs before packet imports."""
 
     blockers = _validate_model_cache_archive(tarball_path, packet)
@@ -492,6 +479,45 @@ def verify_packet_tarball(packet: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_remote_carrier_result(
+    results_dir: Path, *, packet: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Bind the carrier build receipt to the exact packet and registry digest."""
+
+    blockers: list[str] = []
+    path = results_dir / CARRIER_RESULT_NAME
+    payload = _load_object(path) if path.is_file() else {}
+    resolved = str(payload.get("resolved_digest_ref") or "")
+    expected_tag = str(packet.get("carrier_image_ref") or "")
+    expected_base = str(packet.get("carrier_base_image_ref") or "")
+    expected_dockerfile = str(packet.get("carrier_dockerfile_sha256") or "")
+    if payload.get("schema_version") != "groot_oscar_carrier_remote_build_result.v1":
+        blockers.append("carrier_remote_build_result_schema_invalid")
+    if payload.get("status") != "completed" or payload.get("blockers") not in ([], ()):
+        blockers.append("carrier_remote_build_not_completed")
+    if payload.get("image_ref") != expected_tag:
+        blockers.append("carrier_remote_build_image_ref_mismatch")
+    if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", resolved):
+        blockers.append("carrier_remote_build_digest_ref_invalid")
+    if payload.get("base_image_ref") != expected_base:
+        blockers.append("carrier_remote_build_base_ref_mismatch")
+    if payload.get("dockerfile_sha256") != expected_dockerfile:
+        blockers.append("carrier_remote_build_dockerfile_sha256_mismatch")
+    if payload.get("source_commit") != packet.get("source_commit"):
+        blockers.append("carrier_remote_build_source_commit_mismatch")
+    if payload.get("platform") != "linux/amd64":
+        blockers.append("carrier_remote_build_platform_invalid")
+    if payload.get("raw_secret_values_recorded") is not False:
+        blockers.append("carrier_remote_build_secret_boundary_invalid")
+    return {
+        "schema_version": "groot_oscar_carrier_remote_build_verification.v1",
+        "status": "verified" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "resolved_digest_ref": resolved or None,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def live_machine_probe_command(
     *,
     mount_path: str = "/",
@@ -623,9 +649,10 @@ def observe_local_machine(
             # Fail closed: the default remains unverified on transport failure.
             https_verified = False
     with tempfile.TemporaryDirectory(prefix="blueprint-venv-probe-") as probe_dir:
-        venv_verified = succeeds([sys.executable, "-m", "venv", probe_dir]) and (
-            Path(probe_dir) / "bin/pip"
-        ).is_file()
+        venv_verified = (
+            succeeds([sys.executable, "-m", "venv", probe_dir])
+            and (Path(probe_dir) / "bin/pip").is_file()
+        )
     return build_live_machine_capability_evidence(
         {
             "observation_source": "live_machine_probe",
@@ -673,9 +700,7 @@ def validate_remote_model_cache_results(
     actual = {path.name for path in entries}
     if actual != set(MODEL_CACHE_RESULT_FILES):
         blockers.append("remote_model_cache_result_inventory_invalid")
-    if any(
-        path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode) for path in entries
-    ):
+    if any(path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode) for path in entries):
         blockers.append("remote_model_cache_result_nonregular_entry")
     payloads: dict[str, dict[str, Any]] = {}
     for name in MODEL_CACHE_RESULT_FILES:
@@ -707,32 +732,30 @@ def validate_remote_model_cache_results(
     ):
         blockers.append("remote_model_cache_transport_not_verified")
     if (
-        canary.get("schema_version")
-        != "groot_oscar_external_model_cache_verification.v2"
+        canary.get("schema_version") != "groot_oscar_external_model_cache_verification.v2"
         or canary.get("status") != "passed"
         or canary.get("provider_volume_id") != volume_id
-        or canary.get("cache_root")
-        != "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
+        or canary.get("cache_root") != "/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1"
         or canary.get("checks", {}).get("models_cached_offline") is not True
         or canary.get("runtime_path_mapping_verified") is not True
         or canary.get("transport_result_sha256") != transport_sha256
-        or canary.get("remote_verification_sha256")
-        != transport.get("remote_verification_sha256")
-        or canary.get("verified_file_count")
-        != transport.get("remote_verified_file_count")
+        or canary.get("remote_verification_sha256") != transport.get("remote_verification_sha256")
+        or canary.get("verified_file_count") != transport.get("remote_verified_file_count")
         or canary.get("verified_size_bytes") != transport.get("verified_size_bytes")
         or canary.get("remote_prefix") != transport.get("remote_prefix")
         or canary.get("raw_secret_values_recorded") is not False
     ):
         blockers.append("remote_model_cache_canary_verification_invalid")
     if (
-        execution.get("schema_version")
-        != "groot_oscar_model_cache_s3_remote_execution.v1"
+        execution.get("schema_version") != "groot_oscar_model_cache_s3_remote_execution.v1"
         or execution.get("status") != "completed"
         or execution.get("source_commit") != packet.get("source_commit")
         or execution.get("source_patch_sha256") != packet.get("source_patch_sha256")
         or execution.get("tarball_sha256") != packet.get("tarball_sha256")
-        or (parent_binding is not None and execution.get("tarball_sha256") != parent_binding.get("tarball_sha256"))
+        or (
+            parent_binding is not None
+            and execution.get("tarball_sha256") != parent_binding.get("tarball_sha256")
+        )
         or (droplet_id is not None and execution.get("droplet_id") != droplet_id)
         or execution.get("provider_volume_id") != volume_id
         or execution.get("provider_mutations_performed")
@@ -843,19 +866,17 @@ def build_cloud_init(
         raise ValueError("launch_bound_host_key_material_missing")
     if shutdown_minutes <= 0 or shutdown_minutes > 120:
         raise ValueError("shutdown_minutes_must_be_between_1_and_120")
-    if packet_kind not in {"thin_release", "model_cache_s3"}:
+    if packet_kind not in {"thin_release", "carrier_image", "model_cache_s3"}:
         raise ValueError("builder_packet_kind_unsupported")
     if runtime_bundle_requested and packet_kind != "model_cache_s3":
         raise ValueError("runtime_bundle_requires_model_cache_packet")
-    if packet_kind == "thin_release":
+    if packet_kind in {"thin_release", "carrier_image"}:
         package_lines = (
             "  - ca-certificates\n  - curl\n  - git\n  - jq\n  - python3\n"
             "  - docker.io\n  - docker-buildx"
         )
         runtime_commands = (
-            "  - systemctl enable --now docker\n"
-            "  - docker info\n"
-            "  - docker buildx version"
+            "  - systemctl enable --now docker\n  - docker info\n  - docker buildx version"
         )
         ready_command = (
             "  - bash -c 'docker info >/dev/null && docker buildx version "
@@ -871,10 +892,7 @@ def build_cloud_init(
         ready_checks = "python3 -m venv /root/blueprint-venv-ready-probe"
         if runtime_bundle_requested:
             package_lines += "\n  - docker.io"
-            runtime_commands += (
-                "\n  - systemctl enable --now docker\n"
-                "  - docker info"
-            )
+            runtime_commands += "\n  - systemctl enable --now docker\n  - docker info"
             ready_checks = f"docker info >/dev/null && {ready_checks}"
         ready_command = (
             "  - bash -c '"
@@ -990,9 +1008,7 @@ def _list_droplets_by_tag(
         http_status, payload = _request(
             token=token,
             method="GET",
-            path=(
-                f"/droplets?tag_name={encoded_tag}&per_page={per_page}&page={page}"
-            ),
+            path=(f"/droplets?tag_name={encoded_tag}&per_page={per_page}&page={page}"),
         )
         if http_status != 200:
             return http_status, []
@@ -1023,9 +1039,7 @@ def _reconcile_ambiguous_create(
         if attempt:
             sleeper(5)
         try:
-            http_status, tagged_rows = _list_droplets_by_tag(
-                token=token, tag=BUILDER_TAG
-            )
+            http_status, tagged_rows = _list_droplets_by_tag(token=token, tag=BUILDER_TAG)
         except Exception as exc:  # noqa: BLE001 - mutation outcome must be reconciled
             observations.append(
                 {
@@ -1129,9 +1143,7 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
         time.sleep(15)
     token = _read_secret(token_file)
     if droplet_id:
-        result = _delete_with_fail_closed_evidence(
-            token=token, droplet_id=droplet_id
-        )
+        result = _delete_with_fail_closed_evidence(token=token, droplet_id=droplet_id)
     else:
         result = _reconcile_ambiguous_create(token=token, name=name, region=region)
     payload = {
@@ -1151,9 +1163,7 @@ def watchdog(*, state_path: Path, token_file: Path) -> int:
 
 def _live_profile(*, token: str, region: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     sizes_http, sizes_payload = _request(token=token, method="GET", path="/sizes?per_page=200")
-    droplets_http, tagged_droplets = _list_droplets_by_tag(
-        token=token, tag=BUILDER_TAG
-    )
+    droplets_http, tagged_droplets = _list_droplets_by_tag(token=token, tag=BUILDER_TAG)
     if sizes_http != 200 or droplets_http != 200:
         raise RuntimeError("digitalocean_builder_inventory_query_failed")
     size = next(
@@ -1214,9 +1224,7 @@ def run_builder(
     write_json(output / "build_plane_admission.json", admission)
     blockers = list(admission["blockers"])
     packet_tarball_verification = verify_packet_tarball(packet)
-    write_json(
-        output / "packet_tarball_verification.json", packet_tarball_verification
-    )
+    write_json(output / "packet_tarball_verification.json", packet_tarball_verification)
     blockers.extend(packet_tarball_verification["blockers"])
     if not allow_paid:
         blockers.append("digitalocean_builder_allow_paid_flag_missing")
@@ -1273,13 +1281,11 @@ def run_builder(
         return result
     try:
         _read_secret(login_private_key)
-        if packet_kind == "thin_release":
+        if packet_kind in {"thin_release", "carrier_image"}:
             _read_private_secret(docker_username_file)
             _read_private_secret(docker_password_file)
         else:
-            if not all(
-                (hf_token_file, runpod_s3_access_key_file, runpod_s3_secret_key_file)
-            ):
+            if not all((hf_token_file, runpod_s3_access_key_file, runpod_s3_secret_key_file)):
                 raise ValueError("model_cache_secret_paths_missing")
             for prerequisite_file in (
                 hf_token_file,
@@ -1295,11 +1301,12 @@ def run_builder(
         }
         write_json(output / "builder_run_result.json", result)
         return result
-    name = (
-        f"blueprint-groot-oscar-cache-{str(packet['allocation_nonce'])[:16]}"
-        if packet_kind == "model_cache_s3"
-        else f"blueprint-groot-oscar-thin-{str(packet['source_commit'])[:8]}"
-    )
+    if packet_kind == "model_cache_s3":
+        name = f"blueprint-groot-oscar-cache-{str(packet['allocation_nonce'])[:16]}"
+    elif packet_kind == "carrier_image":
+        name = f"blueprint-groot-oscar-carrier-{str(packet['source_commit'])[:8]}"
+    else:
+        name = f"blueprint-groot-oscar-thin-{str(packet['source_commit'])[:8]}"
     user_data = build_cloud_init(
         host_private_b64=host_private_b64,
         host_public_b64=host_public_b64,
@@ -1403,9 +1410,7 @@ def run_builder(
         },
     )
     create_succeeded = create_http in {200, 201, 202} and bool(droplet_id)
-    definitive_rejection = (
-        400 <= create_http < 500 and create_http not in {408, 409, 425, 429}
-    )
+    definitive_rejection = 400 <= create_http < 500 and create_http not in {408, 409, 425, 429}
     if not create_succeeded and not definitive_rejection:
         reconciliation = _reconcile_ambiguous_create(
             token=token,
@@ -1551,13 +1556,11 @@ def run_builder(
             raise RuntimeError("digitalocean_builder_execution_admission_blocked")
 
         packet_tarball = Path(packet_tarball_verification["tarball_path"])
-        packet_tarball_sha256 = str(
-            packet_tarball_verification["observed_sha256"] or ""
-        )
+        packet_tarball_sha256 = str(packet_tarball_verification["observed_sha256"] or "")
         transfers: list[tuple[Path, str]] = [
             (packet_tarball, f"/root/blueprint-build/{packet_tarball.name}")
         ]
-        if packet_kind == "thin_release":
+        if packet_kind in {"thin_release", "carrier_image"}:
             transfers.extend(
                 [
                     (docker_username_file.expanduser(), "/root/blueprint-build/docker_username"),
@@ -1631,13 +1634,21 @@ def run_builder(
                 capability_path.unlink(missing_ok=True)
             except OSError as exc:
                 local_capability_cleanup_verified = False
-                raise RuntimeError(
-                    "digitalocean_builder_local_capability_cleanup_failed"
-                ) from exc
+                raise RuntimeError("digitalocean_builder_local_capability_cleanup_failed") from exc
             else:
                 local_capability_cleanup_verified = not capability_path.exists()
         remote_tarball = "/root/blueprint-build/" + packet_tarball.name
-        if packet_kind == "thin_release":
+        if packet_kind in {"thin_release", "carrier_image"}:
+            packet_directory = (
+                CARRIER_PACKET_DIRECTORY
+                if packet_kind == "carrier_image"
+                else "groot_oscar_thin_remote_build"
+            )
+            build_script = (
+                CARRIER_BUILD_SCRIPT
+                if packet_kind == "carrier_image"
+                else "remote_build_groot_oscar_thin_images.sh"
+            )
             remote_command = " && ".join(
                 [
                     "set -euo pipefail",
@@ -1650,8 +1661,8 @@ def run_builder(
                     f"{shlex.quote(packet_tarball_sha256)} "
                     f"{shlex.quote(remote_tarball)} | sha256sum -c -",
                     f"tar -xzf {shlex.quote(remote_tarball)} -C /root/blueprint-build/run",
-                    "cd /root/blueprint-build/run/groot_oscar_thin_remote_build",
-                    "BLUEPRINT_REMOTE_IMAGE_BUILD_DOCKER_LOGIN=true ./remote_build_groot_oscar_thin_images.sh",
+                    f"cd /root/blueprint-build/run/{packet_directory}",
+                    f"BLUEPRINT_REMOTE_IMAGE_BUILD_DOCKER_LOGIN=true ./{build_script}",
                 ]
             )
         else:
@@ -1687,24 +1698,29 @@ def run_builder(
         build_exit = completed.returncode
         results_dir = output / "remote_results"
         ensure_dir(results_dir)
-        if packet_kind == "thin_release":
+        if packet_kind in {"thin_release", "carrier_image"}:
+            packet_directory = (
+                CARRIER_PACKET_DIRECTORY
+                if packet_kind == "carrier_image"
+                else "groot_oscar_thin_remote_build"
+            )
             subprocess.run(
                 [
                     "scp",
                     *options,
-                    "root@"
-                    + public_ip
-                    + ":/root/blueprint-build/run/groot_oscar_thin_remote_build/*.json",
+                    "root@" + public_ip + f":/root/blueprint-build/run/{packet_directory}/*.json",
                     str(results_dir) + "/",
                 ],
                 check=True,
             )
-            result_verification = validate_remote_build_results(results_dir)
-            verification_name = "remote_build_results_verification.json"
+            if packet_kind == "carrier_image":
+                result_verification = validate_remote_carrier_result(results_dir, packet=packet)
+                verification_name = "remote_carrier_build_result_verification.json"
+            else:
+                result_verification = validate_remote_build_results(results_dir)
+                verification_name = "remote_build_results_verification.json"
         else:
-            remote_results = (
-                "/root/blueprint-build/run/groot_oscar_model_cache_s3_remote/results"
-            )
+            remote_results = "/root/blueprint-build/run/groot_oscar_model_cache_s3_remote/results"
             retrievals: list[dict[str, Any]] = []
 
             def retrieve(remote_path: str, local_path: Path) -> None:
@@ -1738,16 +1754,12 @@ def run_builder(
                 )
 
             for result_name in MODEL_CACHE_RESULT_FILES:
-                retrieve(
-                    f"{remote_results}/{result_name}", results_dir / result_name
-                )
+                retrieve(f"{remote_results}/{result_name}", results_dir / result_name)
             for evidence_name in (
                 "model_cache_archive_verification.json",
                 "model_cache_dependency_verification.json",
             ):
-                retrieve(
-                    f"/root/blueprint-build/{evidence_name}", output / evidence_name
-                )
+                retrieve(f"/root/blueprint-build/{evidence_name}", output / evidence_name)
             write_json(
                 output / "model_cache_artifact_retrieval.json",
                 {
@@ -1763,16 +1775,13 @@ def run_builder(
             )
             archive_path = output / "model_cache_archive_verification.json"
             dependency_path = output / "model_cache_dependency_verification.json"
-            archive_verification = (
-                _load_object(archive_path) if archive_path.is_file() else {}
-            )
+            archive_verification = _load_object(archive_path) if archive_path.is_file() else {}
             dependency_verification = (
                 _load_object(dependency_path) if dependency_path.is_file() else {}
             )
             if (
                 archive_verification.get("status") != "verified"
-                or archive_verification.get("tarball_sha256")
-                != packet_tarball_sha256
+                or archive_verification.get("tarball_sha256") != packet_tarball_sha256
                 or archive_verification.get("expected_member_map_sha256")
                 != packet.get("archive_member_manifest_sha256")
                 or dependency_verification.get("status") != "verified"
@@ -1806,12 +1815,9 @@ def run_builder(
                 local_capability_cleanup_verified = False
             else:
                 local_capability_cleanup_verified = (
-                    local_capability_cleanup_verified
-                    and not capability_path.exists()
+                    local_capability_cleanup_verified and not capability_path.exists()
                 )
-        teardown = _delete_with_fail_closed_evidence(
-            token=token, droplet_id=droplet_id
-        )
+        teardown = _delete_with_fail_closed_evidence(token=token, droplet_id=droplet_id)
         elapsed = max(0.0, time.time() - started)
         teardown.update(
             {
@@ -1843,7 +1849,11 @@ def run_builder(
                     (
                         "remote_model_cache_preparation_failed"
                         if packet_kind == "model_cache_s3"
-                        else "remote_thin_image_build_failed"
+                        else (
+                            "remote_carrier_image_build_failed"
+                            if packet_kind == "carrier_image"
+                            else "remote_thin_image_build_failed"
+                        )
                     )
                 ]
             ),
@@ -1875,15 +1885,14 @@ def run_builder(
             and local_capability_cleanup_verified
         ),
         "local_capability_cleanup_verified": local_capability_cleanup_verified,
-        "remote_secret_cleanup_proven_by_droplet_absence": packet_kind
-        == "model_cache_s3"
+        "remote_secret_cleanup_proven_by_droplet_absence": packet_kind == "model_cache_s3"
         and teardown["provider_absence_confirmed"],
         "provider_absence_confirmed": teardown["provider_absence_confirmed"],
         "maximum_compute_spend_usd": teardown["maximum_compute_spend_usd"],
         "raw_secret_values_recorded": False,
         "claim_boundary": {
             "image_build_is_not_model_cache_verification": packet_kind
-            == "thin_release",
+            in {"thin_release", "carrier_image"},
             "image_build_is_not_runpod_startup": True,
             "image_build_is_not_task_success": True,
         },

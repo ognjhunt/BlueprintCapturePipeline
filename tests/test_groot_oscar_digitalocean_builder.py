@@ -21,6 +21,7 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     observe_local_machine,
     parse_live_machine_probe,
     run_builder,
+    validate_remote_carrier_result,
     validate_remote_build_results,
     verify_packet_tarball,
 )
@@ -28,9 +29,7 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
 
 def test_builder_inventory_follows_every_tag_filtered_page(monkeypatch) -> None:
     observed_paths: list[str] = []
-    first_page = [
-        {"id": index, "tags": [BUILDER_TAG]} for index in range(200)
-    ]
+    first_page = [{"id": index, "tags": [BUILDER_TAG]} for index in range(200)]
 
     def fake_request(*, token, method, path, payload=None):
         del token, method, payload
@@ -69,9 +68,7 @@ def test_digitalocean_watchdog_persists_teardown_transport_error(
     from blueprint_pipeline.groot_oscar_digitalocean_builder import watchdog
 
     state = tmp_path / "allocation_state.json"
-    state.write_text(
-        json.dumps({"droplet_id": "123", "deadline_epoch": 0}), encoding="utf-8"
-    )
+    state.write_text(json.dumps({"droplet_id": "123", "deadline_epoch": 0}), encoding="utf-8")
     token_file = tmp_path / "token"
     token_file.write_text("secret", encoding="utf-8")
     monkeypatch.setattr(
@@ -88,9 +85,7 @@ def test_digitalocean_watchdog_persists_teardown_transport_error(
     assert "secret response" not in json.dumps(persisted)
 
 
-def test_digitalocean_watchdog_reconciles_precreate_identity(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_digitalocean_watchdog_reconciles_precreate_identity(tmp_path: Path, monkeypatch) -> None:
     from blueprint_pipeline.groot_oscar_digitalocean_builder import watchdog
 
     state = tmp_path / "allocation_state.json"
@@ -133,7 +128,9 @@ def test_builder_arms_watchdog_before_provider_create() -> None:
         Path(__file__).resolve().parents[1]
         / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
     ).read_text(encoding="utf-8")
-    run_source = source[source.index("def run_builder(") : source.index("def launch_detached_builder(")]
+    run_source = source[
+        source.index("def run_builder(") : source.index("def launch_detached_builder(")
+    ]
     assert run_source.index("watchdog_process = subprocess.Popen(") < run_source.index(
         'method="POST", path="/droplets"'
     )
@@ -230,6 +227,47 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
     assert "shutdown -h +120" in text
     assert "docker_pat" not in text
     assert "docker_username" not in text
+
+
+def test_carrier_cloud_init_uses_the_governed_docker_build_plane() -> None:
+    text = build_cloud_init(
+        host_private_b64="private",
+        host_public_b64="public",
+        shutdown_minutes=30,
+        packet_kind="carrier_image",
+    )
+    assert text.splitlines().count("  - docker.io") == 1
+    assert "docker-buildx" in text
+    assert "touch /root/blueprint-builder-ready" in text
+
+
+def test_carrier_remote_result_binds_digest_base_source_and_dockerfile(
+    tmp_path: Path,
+) -> None:
+    packet = {
+        "carrier_image_ref": "docker.io/example/carrier:versioned",
+        "carrier_base_image_ref": "docker.io/example/base@sha256:" + "b" * 64,
+        "carrier_dockerfile_sha256": "c" * 64,
+        "source_commit": "a" * 40,
+    }
+    payload = {
+        "schema_version": "groot_oscar_carrier_remote_build_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "image_ref": packet["carrier_image_ref"],
+        "resolved_digest_ref": "docker.io/example/carrier@sha256:" + "d" * 64,
+        "base_image_ref": packet["carrier_base_image_ref"],
+        "dockerfile_sha256": packet["carrier_dockerfile_sha256"],
+        "source_commit": packet["source_commit"],
+        "platform": "linux/amd64",
+        "raw_secret_values_recorded": False,
+    }
+    (tmp_path / "groot_oscar_carrier_remote_build_result.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    verified = validate_remote_carrier_result(tmp_path, packet=packet)
+    assert verified["status"] == "verified"
+    assert verified["resolved_digest_ref"] == payload["resolved_digest_ref"]
 
 
 def test_model_cache_runtime_bundle_cloud_init_installs_docker() -> None:
@@ -406,9 +444,9 @@ def test_local_machine_probe_requires_observed_builder_marker(
     monkeypatch.setattr(
         Path,
         "is_file",
-        lambda self: False
-        if self == Path("/root/blueprint-builder-ready")
-        else original_is_file(self),
+        lambda self: (
+            False if self == Path("/root/blueprint-builder-ready") else original_is_file(self)
+        ),
     )
 
     evidence = observe_local_machine(mount_path=tmp_path)
@@ -438,14 +476,8 @@ def test_builder_source_copies_registry_files_to_fixed_remote_names() -> None:
         Path(__file__).resolve().parents[1]
         / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
     ).read_text(encoding="utf-8")
-    assert (
-        '(docker_username_file.expanduser(), "/root/blueprint-build/docker_username")'
-        in source
-    )
-    assert (
-        '(docker_password_file.expanduser(), "/root/blueprint-build/docker_pat")'
-        in source
-    )
+    assert '(docker_username_file.expanduser(), "/root/blueprint-build/docker_username")' in source
+    assert '(docker_password_file.expanduser(), "/root/blueprint-build/docker_pat")' in source
 
 
 def test_remote_build_results_must_be_complete_and_completed(tmp_path: Path) -> None:
@@ -453,10 +485,7 @@ def test_remote_build_results_must_be_complete_and_completed(tmp_path: Path) -> 
     results.mkdir()
     blocked = validate_remote_build_results(results)
     assert blocked["status"] == "blocked"
-    assert any(
-        item.startswith("remote_build_result_missing:")
-        for item in blocked["blockers"]
-    )
+    assert any(item.startswith("remote_build_result_missing:") for item in blocked["blockers"])
 
     for name in blocked["required_results"]:
         if name.startswith("groot_oscar_thin"):
@@ -681,6 +710,4 @@ def test_run_builder_persists_live_cost_cap_failure_before_allocation(
     )
     assert credential_result["status"] == "blocked_pre_allocation"
     assert credential_result["provider_mutation_performed"] is False
-    assert credential_result["blockers"] == [
-        "digitalocean_builder_local_credentials_unavailable"
-    ]
+    assert credential_result["blockers"] == ["digitalocean_builder_local_credentials_unavailable"]

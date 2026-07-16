@@ -215,6 +215,29 @@ def test_build_plane_admits_known_native_docker_builder() -> None:
     assert result["checks"]["free_disk_at_least_120_gib"] is True
 
 
+def test_build_plane_admits_typed_carrier_image_packet() -> None:
+    packet = {**_packet(), "packet_kind": "carrier_image"}
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "admitted"
+    assert result["checks"]["packet_kind"] == "carrier_image"
+
+    live = build_live_machine_capability_evidence(
+        {
+            "observation_source": "live_machine_probe",
+            "system": "Linux",
+            "architecture": "x86_64",
+            "mount_path": "/",
+            "free_bytes": MIN_BUILD_FREE_BYTES,
+            "docker_cli_present": True,
+            "docker_daemon_responding": True,
+            "docker_buildx_available": True,
+            "builder_ready_marker": True,
+        },
+        packet_kind="carrier_image",
+    )
+    assert live["status"] == "verified"
+
+
 def test_build_plane_refuses_runpod_even_when_claimed_capabilities_are_true() -> None:
     result = build_build_plane_admission(
         packet=_packet(), builder=_builder("runpod"), spend=_spend()
@@ -449,9 +472,7 @@ def test_runpod_serve_plane_rejects_volume_smaller_than_verified_cache() -> None
         spend=_serve_spend(),
     )
     assert result["status"] == "blocked"
-    assert "runpod_network_volume_smaller_than_verified_model_cache" in result[
-        "blockers"
-    ]
+    assert "runpod_network_volume_smaller_than_verified_model_cache" in result["blockers"]
 
 
 def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:

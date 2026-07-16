@@ -34,6 +34,8 @@ from .groot_oscar_runpod_carrier_volume import (
     DEFAULT_RUNTIME_ROOT,
     MIN_CARRIER_VOLUME_GIB,
     RUNTIME_ARCHIVE_ROOTS,
+    RUNTIME_CARRIER_LD_LIBRARY_PATH,
+    RUNTIME_CARRIER_PYTHONPATH,
     build_runtime_bundle_manifest,
 )
 from .groot_oscar_model_cache import (
@@ -256,39 +258,59 @@ def _remove_embedded_model_payloads(payload_root: Path) -> list[str]:
 
 
 def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_root: Path) -> None:
-    validation = " && ".join(
+    validations = (
         (
+            "gr00t_import",
             "/opt/gr00t-venv/bin/python -c 'from gr00t.policy.gr00t_policy import Gr00tPolicy'",
-            "/opt/oscar-venv/bin/python -c 'import inference.inference_oscar'",
-            "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline'",
+        ),
+        ("oscar_import", "/opt/oscar-venv/bin/python -c 'import inference.inference_oscar'"),
+        ("blueprint_import", "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline'"),
+        (
+            "serverless_import",
             "/opt/runpod-serverless-venv/bin/python -c 'import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker'",
-            "test -x /isaac-sim/python.sh",
+        ),
+        ("isaac_python_executable", "test -x /isaac-sim/python.sh"),
+        (
+            "wbc_binary_executable",
             "test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
+        ),
+        (
+            "wbc_dynamic_linkage",
             "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
-        )
+        ),
     )
-    _run_command(
-        runner,
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--entrypoint",
-            "/bin/bash",
-            "--mount",
-            f"type=bind,src={payload_root / 'opt'},dst=/opt,readonly",
-            "--mount",
-            f"type=bind,src={payload_root / 'isaac-sim'},dst=/isaac-sim,readonly",
-            carrier_ref,
-            "-o",
-            "pipefail",
-            "-c",
-            validation,
-        ],
-        timeout=1800,
-    )
+    for check_name, validation in validations:
+        try:
+            _run_command(
+                runner,
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "--entrypoint",
+                    "/bin/bash",
+                    "--env",
+                    f"PYTHONPATH={RUNTIME_CARRIER_PYTHONPATH}",
+                    "--env",
+                    f"LD_LIBRARY_PATH={RUNTIME_CARRIER_LD_LIBRARY_PATH}",
+                    "--mount",
+                    f"type=bind,src={payload_root / 'opt'},dst=/opt,readonly",
+                    "--mount",
+                    f"type=bind,src={payload_root / 'isaac-sim'},dst=/isaac-sim,readonly",
+                    carrier_ref,
+                    "-o",
+                    "pipefail",
+                    "-c",
+                    validation,
+                ],
+                timeout=300,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                f"typed_runtime_bundle_carrier_validation_failed:{check_name}"
+            ) from exc
 
 
 def prepare_runtime_bundle(
@@ -386,12 +408,7 @@ def prepare_runtime_bundle(
         if not _runtime_payload_tree_safe(payload_root):
             raise RuntimeError("typed_runtime_bundle_payload_tree_unsafe")
         record_progress("validating_runtime_inside_carrier")
-        try:
-            _validate_runtime_inside_carrier(
-                runner, carrier_ref=carrier_ref, payload_root=payload_root
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError("typed_runtime_bundle_carrier_validation_failed") from exc
+        _validate_runtime_inside_carrier(runner, carrier_ref=carrier_ref, payload_root=payload_root)
         record_progress("archiving_runtime_bundle")
         archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
         with tarfile.open(archive_path, "w:gz", compresslevel=6) as archive:

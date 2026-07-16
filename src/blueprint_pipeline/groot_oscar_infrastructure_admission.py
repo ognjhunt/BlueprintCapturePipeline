@@ -69,9 +69,7 @@ RUNPOD_S3_DATA_CENTER_IDS = frozenset(
         "US-WA-1",
     }
 )
-RUNPOD_S3_VOLUME_DATA_CENTER_IDS = (
-    RUNPOD_S3_DATA_CENTER_IDS & RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS
-)
+RUNPOD_S3_VOLUME_DATA_CENTER_IDS = RUNPOD_S3_DATA_CENTER_IDS & RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS
 
 BUILD_SCHEMA_VERSION = "groot_oscar_build_plane_admission.v1"
 SERVE_SCHEMA_VERSION = "groot_oscar_runpod_serve_plane_admission.v1"
@@ -139,9 +137,9 @@ def build_live_machine_capability_evidence(
     free_bytes = observation.get("free_bytes")
     if type(free_bytes) is not int or free_bytes < minimum_free_bytes:
         blockers.append("live_machine_free_space_below_minimum")
-    if packet_kind not in {"thin_release", "model_cache_s3"}:
+    if packet_kind not in {"thin_release", "carrier_image", "model_cache_s3"}:
         blockers.append("live_machine_packet_kind_unsupported")
-    if packet_kind == "thin_release":
+    if packet_kind in {"thin_release", "carrier_image"}:
         if observation.get("docker_cli_present") is not True:
             blockers.append("live_machine_docker_cli_missing")
         if observation.get("docker_daemon_responding") is not True:
@@ -421,10 +419,11 @@ def build_build_plane_admission(
     blockers: list[str] = []
     provider = _string(builder.get("provider")).lower()
     packet_kind = _string(packet.get("packet_kind")) or "thin_release"
-    if packet_kind not in {"thin_release", "model_cache_s3"}:
+    if packet_kind not in {"thin_release", "carrier_image", "model_cache_s3"}:
         blockers.append("builder_packet_kind_unsupported")
     expected_purpose = {
         "thin_release": "image_build",
+        "carrier_image": "image_build",
         "model_cache_s3": "model_cache_s3",
     }.get(packet_kind)
     if provider in {"runpod", "runpod_pod", "runpod-pod"}:
@@ -433,7 +432,7 @@ def build_build_plane_admission(
         blockers.append("builder_purpose_does_not_match_packet_kind")
     if _string(builder.get("platform")) != "linux/amd64":
         blockers.append("builder_native_linux_amd64_not_verified")
-    if packet_kind == "thin_release":
+    if packet_kind in {"thin_release", "carrier_image"}:
         if builder.get("docker_daemon_verified") is not True:
             blockers.append("builder_docker_daemon_not_verified")
         if builder.get("docker_buildx_verified") is not True:
@@ -461,7 +460,7 @@ def build_build_plane_admission(
     if type(free_bytes) is not int or free_bytes < MIN_BUILD_FREE_BYTES:
         blockers.append("builder_free_disk_below_120_gib")
     if (
-        packet_kind == "thin_release"
+        packet_kind in {"thin_release", "carrier_image"}
         and builder.get("registry_push_auth_file_verified") is not True
     ):
         blockers.append("builder_file_based_registry_push_auth_not_verified")
@@ -511,7 +510,7 @@ def build_build_plane_admission(
         "execution_runtime_ready": (
             builder.get("docker_daemon_verified") is True
             and builder.get("docker_buildx_verified") is True
-            if packet_kind == "thin_release"
+            if packet_kind in {"thin_release", "carrier_image"}
             else builder.get("python_runtime_verified") is True
             and builder.get("python_version") == "3.12"
             and builder.get("dependency_lock_verified") is True
@@ -580,10 +579,7 @@ def build_runpod_serve_plane_admission(
         blockers.append("runpod_release_platform_not_linux_amd64")
 
     manifest_digest = _string(model_cache.get("model_manifest_digest"))
-    if (
-        model_cache.get("schema_version")
-        != "groot_oscar_external_model_cache_verification.v2"
-    ):
+    if model_cache.get("schema_version") != "groot_oscar_external_model_cache_verification.v2":
         blockers.append("runpod_model_cache_verification_schema_invalid")
     if model_cache.get("status") != "passed":
         blockers.append("runpod_external_model_cache_not_verified")
