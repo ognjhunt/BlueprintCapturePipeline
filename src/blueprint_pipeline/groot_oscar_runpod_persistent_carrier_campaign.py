@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -20,6 +21,7 @@ from .groot_oscar_runpod_canary import (
 from .gpu_render_providers import _runpod_call, get_render_provider
 from .groot_oscar_runpod_persistent_carrier import (
     PERSISTENT_LOOP_MAX_WAIT_SECONDS,
+    PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
     prepare_persistent_carrier_launch,
 )
 from .paid_provider_lane_lease import (
@@ -39,6 +41,17 @@ from .unitree_groot_n17_sonic_vast_persistent_session import (
 
 EXPECTED_MEDIA_FILE_COUNT = 21
 _MEDIA_SUFFIXES = frozenset({".gif", ".jpeg", ".jpg", ".mp4", ".png", ".webm"})
+_PERSISTENT_RUNTIME_TIMEOUT_ENV = {
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS": str(
+        PERSISTENT_LOOP_MAX_WAIT_SECONDS
+    ),
+    "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS": str(
+        PERSISTENT_WATCHDOG_MAX_TTL_SECONDS - 300
+    ),
+    "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS": str(
+        PERSISTENT_WATCHDOG_MAX_TTL_SECONDS - 300
+    ),
+}
 
 
 def _read(path: str | Path) -> dict[str, Any]:
@@ -468,24 +481,35 @@ def run_persistent_carrier_campaign(
     try:
         campaign_contract = prepared["admission"]["campaign_contract"]
         request_shape = prepared["bound_request"]["provider_request_shape"]
-        session_result, exit_code = session_runner(
-            policy_observation_path=policy_observation_path,
-            job_dir=persistent_job_dir,
-            loop_step_count=5,
-            task_prompt=task_prompt,
-            timeout_seconds=3600.0,
-            use_live_wam=True,
-            allow_structural_wam_fallback=False,
-            max_wait_seconds=PERSISTENT_LOOP_MAX_WAIT_SECONDS,
-            paid_resource_admission_grant=runner_grant,
-            carrier_volume_admission=carrier,
-            pod_name=pod_name,
-            provider_lane_handoff_receipt_path=receipt_path,
-            gpu_type_ids=(prepared["admission"]["gpu_type_id"],),
-            container_disk_gb=campaign_contract["container_disk_gib"],
-            volume_gb=campaign_contract["network_volume_gib"],
-            allowed_cuda_versions=tuple(request_shape["allowed_cuda_versions"]),
-        )
+        previous_runtime_timeout_env = {
+            key: os.environ.get(key) for key in _PERSISTENT_RUNTIME_TIMEOUT_ENV
+        }
+        os.environ.update(_PERSISTENT_RUNTIME_TIMEOUT_ENV)
+        try:
+            session_result, exit_code = session_runner(
+                policy_observation_path=policy_observation_path,
+                job_dir=persistent_job_dir,
+                loop_step_count=5,
+                task_prompt=task_prompt,
+                timeout_seconds=3600.0,
+                use_live_wam=True,
+                allow_structural_wam_fallback=False,
+                max_wait_seconds=PERSISTENT_LOOP_MAX_WAIT_SECONDS,
+                paid_resource_admission_grant=runner_grant,
+                carrier_volume_admission=carrier,
+                pod_name=pod_name,
+                provider_lane_handoff_receipt_path=receipt_path,
+                gpu_type_ids=(prepared["admission"]["gpu_type_id"],),
+                container_disk_gb=campaign_contract["container_disk_gib"],
+                volume_gb=campaign_contract["network_volume_gib"],
+                allowed_cuda_versions=tuple(request_shape["allowed_cuda_versions"]),
+            )
+        finally:
+            for key, value in previous_runtime_timeout_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     except Exception as exc:  # noqa: BLE001 - watchdog retains provider control
         mutation_started = _receipt_mutation_started(receipt_path)
         if mutation_started:
