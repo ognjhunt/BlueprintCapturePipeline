@@ -216,7 +216,14 @@ def test_build_plane_admits_known_native_docker_builder() -> None:
 
 
 def test_build_plane_admits_typed_carrier_image_packet() -> None:
-    packet = {**_packet(), "packet_kind": "carrier_image"}
+    packet = {
+        **_packet(),
+        "schema_version": "groot_oscar_carrier_remote_build_packet.v1",
+        "packet_kind": "carrier_image",
+        "carrier_image_ref": "docker.io/example/carrier:versioned",
+        "carrier_base_image_ref": "docker.io/example/base@sha256:" + "a" * 64,
+        "carrier_dockerfile_sha256": "b" * 64,
+    }
     result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
     assert result["status"] == "admitted"
     assert result["checks"]["packet_kind"] == "carrier_image"
@@ -236,6 +243,23 @@ def test_build_plane_admits_typed_carrier_image_packet() -> None:
         packet_kind="carrier_image",
     )
     assert live["status"] == "verified"
+
+
+def test_build_plane_rejects_malformed_carrier_packet_before_allocation() -> None:
+    packet = {
+        **_packet(),
+        "schema_version": "groot_oscar_carrier_remote_build_packet.v0",
+        "packet_kind": "carrier_image",
+        "carrier_image_ref": "docker.io/example/carrier",
+        "carrier_base_image_ref": "docker.io/example/base:latest",
+        "carrier_dockerfile_sha256": "bad",
+    }
+    result = build_build_plane_admission(packet=packet, builder=_builder(), spend=_spend())
+    assert result["status"] == "blocked"
+    assert "builder_carrier_packet_schema_invalid" in result["blockers"]
+    assert "builder_carrier_image_ref_not_versioned" in result["blockers"]
+    assert "builder_carrier_base_image_not_digest_pinned" in result["blockers"]
+    assert "builder_carrier_dockerfile_sha256_invalid" in result["blockers"]
 
 
 def test_build_plane_refuses_runpod_even_when_claimed_capabilities_are_true() -> None:

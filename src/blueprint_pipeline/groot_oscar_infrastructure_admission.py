@@ -98,6 +98,8 @@ DIGITALOCEAN_CPU_BUILDER_PROFILE = {
 _COMMIT = re.compile(r"\A[0-9a-f]{40}\Z")
 _DIGEST_REF = re.compile(r"\A[^\s@]+@sha256:[0-9a-f]{64}\Z")
 _SHA256 = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+_HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+_IMAGE_TAG = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z")
 _SSH_HOST_KEY_SHA256 = re.compile(r"\ASHA256:[A-Za-z0-9+/]{43}\Z")
 
 
@@ -107,6 +109,20 @@ def _string(value: Any) -> str:
 
 def _positive_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _versioned_image_ref(value: Any) -> bool:
+    ref = _string(value)
+    leaf = ref.rsplit("/", 1)[-1]
+    name, separator, tag = leaf.rpartition(":")
+    return bool(
+        name
+        and separator
+        and _IMAGE_TAG.fullmatch(tag)
+        and tag not in {"latest", "dev", "test", "local"}
+        and "@" not in ref
+        and not any(char.isspace() for char in ref)
+    )
 
 
 def build_live_machine_capability_evidence(
@@ -426,6 +442,15 @@ def build_build_plane_admission(
         "carrier_image": "image_build",
         "model_cache_s3": "model_cache_s3",
     }.get(packet_kind)
+    if packet_kind == "carrier_image":
+        if packet.get("schema_version") != "groot_oscar_carrier_remote_build_packet.v1":
+            blockers.append("builder_carrier_packet_schema_invalid")
+        if not _versioned_image_ref(packet.get("carrier_image_ref")):
+            blockers.append("builder_carrier_image_ref_not_versioned")
+        if not _DIGEST_REF.fullmatch(_string(packet.get("carrier_base_image_ref"))):
+            blockers.append("builder_carrier_base_image_not_digest_pinned")
+        if not _HEX64.fullmatch(_string(packet.get("carrier_dockerfile_sha256"))):
+            blockers.append("builder_carrier_dockerfile_sha256_invalid")
     if provider in {"runpod", "runpod_pod", "runpod-pod"}:
         blockers.append("runpod_pods_are_serve_plane_not_image_build_plane")
     if expected_purpose is not None and _string(builder.get("purpose")) != expected_purpose:
