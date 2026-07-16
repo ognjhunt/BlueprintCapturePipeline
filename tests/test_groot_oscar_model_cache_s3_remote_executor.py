@@ -205,6 +205,8 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert 'missing_operands.append(("SYSTEM_PATH", normalized))' in elf_scan
     assert 'missing_operands.append(("PATH", basename))' in elf_scan
     assert "INVALID_HASH" in elf_scan
+    assert "safe_library_token_count" in elf_scan
+    assert 'f"{digest}_{shape}"' in elf_scan
     assert "elf_missing_system_path_%s" in elf_scan
     assert "elf_missing_path_%s" in elf_scan
     assert "elf_missing_operand_%s" in elf_scan
@@ -526,7 +528,10 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "MISSING_PATH\tlibescape.so.2" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 1
-    assert len(invalid_hashes[0].split("\t", 1)[1]) == 16
+    invalid_diagnostic = invalid_hashes[0].split("\t", 1)[1]
+    digest, shape = invalid_diagnostic.split("_", 1)
+    assert len(digest) == 16
+    assert shape == "a1n1s0c1q0p0x0k0t1o26b13"
     assert "/opt/private" not in scan.read_text(encoding="utf-8")
     assert "/usr/lib/x/../" not in scan.read_text(encoding="utf-8")
     assert "/usr//lib" not in scan.read_text(encoding="utf-8")
