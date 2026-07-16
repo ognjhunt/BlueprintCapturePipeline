@@ -269,6 +269,45 @@ def _remove_embedded_model_payloads(payload_root: Path) -> list[str]:
     return removed
 
 
+def _resolve_archived_symlink_content_path(
+    payload_root: Path,
+    path: Path,
+) -> Path | None:
+    """Resolve archived links against the staged tree, never the builder root."""
+
+    current = path
+    visited: set[str] = set()
+    for _ in range(64):
+        try:
+            member = current.relative_to(payload_root).as_posix()
+            mode = current.lstat().st_mode
+        except (OSError, ValueError):
+            return None
+        if not stat.S_ISLNK(mode):
+            return current if stat.S_ISREG(mode) else None
+        if member in visited:
+            return None
+        visited.add(member)
+        try:
+            target = os.readlink(current)
+        except OSError:
+            return None
+        resolved = (
+            posixpath.normpath(target).lstrip("/")
+            if target.startswith("/")
+            else posixpath.normpath(posixpath.join(posixpath.dirname(member), target))
+        )
+        if resolved == ".." or resolved.startswith("../"):
+            return None
+        if not any(
+            resolved == root or resolved.startswith(root + "/")
+            for root in RUNTIME_ARCHIVE_ROOTS
+        ):
+            return None
+        current = payload_root / resolved
+    return None
+
+
 def _stage_runtime_elf_symlink_farm(payload_root: Path) -> dict[str, Any]:
     """Expose only unambiguous archived ELF SONAMEs to the real loader path."""
 
@@ -297,11 +336,14 @@ def _stage_runtime_elf_symlink_farm(payload_root: Path) -> dict[str, Any]:
                 or is_nvidia_driver_soname(basename)
             ):
                 continue
+            content_path = _resolve_archived_symlink_content_path(payload_root, path)
+            if content_path is None:
+                continue
             try:
-                with path.open("rb") as handle:
+                with content_path.open("rb") as handle:
                     if handle.read(4) != b"\x7fELF":
                         continue
-                digest = _sha256(path)
+                digest = _sha256(content_path)
             except OSError:
                 if stat.S_ISLNK(mode):
                     continue

@@ -293,6 +293,8 @@ def test_runtime_elf_symlink_farm_only_exposes_unique_content_elf_sonames(
     (second / "libambiguous.so.1").write_bytes(b"\x7fELFsecond")
     (first / "libfake.so.1").write_text("not an ELF\n", encoding="utf-8")
     (first / "libbroken.so.1").symlink_to("/opt/OSCAR/missing.so")
+    (first / "libabsolute.so.1.2").write_bytes(b"\x7fELFabsolute")
+    (first / "libabsolute.so.1").symlink_to("/opt/OSCAR/lib/libabsolute.so.1.2")
     (first / "libcuda.so.1").write_bytes(b"\x7fELFdriver-stub")
 
     evidence = executor._stage_runtime_elf_symlink_farm(payload)
@@ -301,7 +303,7 @@ def test_runtime_elf_symlink_farm_only_exposes_unique_content_elf_sonames(
         "schema_version": "groot_oscar_runtime_elf_symlink_farm.v1",
         "status": "staged",
         "runtime_path": "/opt/blueprint/runtime-libs",
-        "linked_unique_content_soname_count": 2,
+        "linked_unique_content_soname_count": 4,
         "ambiguous_multi_content_soname_count": 1,
         "duplicate_same_content_soname_count": 1,
         "ambiguous_sonames_excluded": True,
@@ -312,6 +314,14 @@ def test_runtime_elf_symlink_farm_only_exposes_unique_content_elf_sonames(
     farm = payload / "opt/blueprint/runtime-libs"
     assert os.readlink(farm / "libunique.so.1") == "/opt/OSCAR/lib/libunique.so.1"
     assert os.readlink(farm / "libsame.so.1") == "/opt/OSCAR/lib/libsame.so.1"
+    assert (
+        os.readlink(farm / "libabsolute.so.1")
+        == "/opt/OSCAR/lib/libabsolute.so.1"
+    )
+    assert (
+        os.readlink(farm / "libabsolute.so.1.2")
+        == "/opt/OSCAR/lib/libabsolute.so.1.2"
+    )
     assert not (farm / "libambiguous.so.1").exists()
     assert not (farm / "libfake.so.1").exists()
     assert not (farm / "libbroken.so.1").exists()
