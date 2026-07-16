@@ -26,6 +26,18 @@ GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_WAM_SUCCESS_LABELING"
 MODEL_ENV = "BLUEPRINT_GEMINI_WAM_SUCCESS_LABEL_MODEL"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_OUTPUT_FILENAME = "wam_success_labels.command.json"
+
+# Controlled vocabulary value for where a success label came from. A WAM label
+# is a semantic VLM judgment over GENERATED rollout video, so its provenance is
+# always ``generated_video_vlm`` — never simulator physics or captured/real
+# trace truth. Downstream buyer reports read ``success_label_provenance`` from
+# each label to gate how ``success_rate`` may be presented.
+GENERATED_VIDEO_VLM_PROVENANCE = "generated_video_vlm"
+# The disclosure a buyer surface must attach to any success_rate derived from
+# ``generated_video_vlm`` labels: it is not physics or captured truth.
+SUCCESS_RATE_GENERATED_VIDEO_VLM_CLAIM_BOUNDARY = (
+    "success_rate_from_generated_video_vlm_is_not_physics_or_captured_truth"
+)
 DEFAULT_MAX_INLINE_BYTES = 95 * 1024 * 1024
 DEFAULT_MAX_FRAMES = 6
 DEFAULT_MAX_FRAME_DIMENSION = 768
@@ -654,6 +666,9 @@ def _gemini_label_one(
             frame.get("frame_index") for frame in sampled_frames if isinstance(frame, Mapping)
         ],
         "label_source": "gemini_generated_video_judge",
+        "success_label_provenance": GENERATED_VIDEO_VLM_PROVENANCE,
+        "success_label_claim_boundary": SUCCESS_RATE_GENERATED_VIDEO_VLM_CLAIM_BOUNDARY,
+        "success_label_is_physics_or_captured_truth": False,
         "model": model,
         "visual_evidence_used": True,
         "keyframe_evidence_used": bool(keyframe_path and keyframe_path.is_file()),
@@ -837,10 +852,13 @@ def build_gemini_wam_success_labels(
         "visual_evidence_used": bool(labels),
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
+        "success_label_provenance": GENERATED_VIDEO_VLM_PROVENANCE,
         "claim_boundary": {
             "success_label_is_from_generated_video_not_physical_robot": True,
             "success_label_does_not_prove_forward_inverse_consistency": True,
             "generated_world_policy_evaluation_scope_proven": False,
+            "success_label_provenance": GENERATED_VIDEO_VLM_PROVENANCE,
+            "success_rate_from_generated_video_vlm_is_not_physics_or_captured_truth": True,
         },
     }
     manifest = attach_success_label_runtime_attestation(

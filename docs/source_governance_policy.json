@@ -1,5 +1,5 @@
 {
-  "baseline_date": "2026-07-14",
+  "baseline_date": "2026-07-16",
   "characterization_tests": {
     "src/blueprint_pipeline/alpha_readiness.py": [
       "tests/test_alpha_readiness.py"
@@ -15,6 +15,10 @@
     ],
     "src/blueprint_pipeline/evaluation_prep_stage.py": [
       "tests/test_evaluation_prep_stage_coverage_edges.py"
+    ],
+    "src/blueprint_pipeline/eval_ready_task_grounding.py": [
+      "tests/test_eval_ready_task_grounding.py",
+      "tests/test_eval_ready_task_grounding_industrial.py"
     ],
     "src/blueprint_pipeline/first_gpu_run_packet.py": [
       "tests/test_first_gpu_run_packet.py"
@@ -39,6 +43,9 @@
     ],
     "src/blueprint_pipeline/live_pipeline_control_plane.py": [
       "tests/test_live_pipeline_control_plane.py"
+    ],
+    "src/blueprint_pipeline/live_pipeline_intake_service.py": [
+      "tests/test_live_pipeline_intake_service.py"
     ],
     "src/blueprint_pipeline/live_robot_eval_closure.py": [
       "tests/test_live_robot_eval_closure_coverage_edges.py"
@@ -141,7 +148,7 @@
   },
   "claim_literal_maximums": {
     "generated_world_rank_fidelity": 258,
-    "public_claim_upgrade_allowed": 285,
+    "public_claim_upgrade_allowed": 288,
     "rank_fidelity_result_proven": 521,
     "success_rate_difference_pp": 4,
     "task_success_proven": 50
@@ -156,6 +163,7 @@
     "src/blueprint_pipeline/capture_orchestrator.py": 2002,
     "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": 2686,
     "src/blueprint_pipeline/evaluation_prep_stage.py": 5141,
+    "src/blueprint_pipeline/eval_ready_task_grounding.py": 2248,
     "src/blueprint_pipeline/first_gpu_run_packet.py": 5015,
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
     "src/blueprint_pipeline/geometry_stage.py": 2218,
@@ -164,12 +172,13 @@
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
     "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3212,
     "src/blueprint_pipeline/live_pipeline_control_plane.py": 2313,
+    "src/blueprint_pipeline/live_pipeline_intake_service.py": 2101,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2198,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6059,
     "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12297,
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
-    "src/blueprint_pipeline/object_index_stage.py": 2369,
+    "src/blueprint_pipeline/object_index_stage.py": 2374,
     "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
     "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": 6607,
     "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 5296,
@@ -179,7 +188,7 @@
     "src/blueprint_pipeline/post_training_data_package.py": 6678,
     "src/blueprint_pipeline/qualification.py": 5560,
     "src/blueprint_pipeline/retrieval_index_stage.py": 2215,
-    "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
+    "src/blueprint_pipeline/robot_eval_dataset.py": 5061,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
     "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,
     "src/blueprint_pipeline/robot_eval_worker.py": 2356,

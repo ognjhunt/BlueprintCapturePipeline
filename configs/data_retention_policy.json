@@ -1,0 +1,170 @@
+{
+  "schema_version": "1.0",
+  "finding": "R048",
+  "policy_doc": "docs/DATA_RETENTION_POLICY.md",
+  "capture_truth_floor_days": 2555,
+  "financial_floor_days": 2555,
+  "pii_floor_days": 30,
+  "notes": [
+    "Single cross-surface data-retention contract for Blueprint (GCP project blueprint-8c1ca).",
+    "Raw capture bundles are AUTHORITATIVE and are the longest-lived data class; every other",
+    "class (derived, hosted, financial, PII, operational, cache) is retained no longer than raw,",
+    "and derived/hosted artifacts are retained strictly shorter than raw.",
+    "enforced_by declares the REAL enforcement mechanism per entry; some entries are enforced by",
+    "committed config (gcs_lifecycle / firestore_ttl) and some are documented human/scheduled steps",
+    "(scheduled_job / manual_review). See policy_doc for the apply commands and the human steps."
+  ],
+  "surfaces": {
+    "storage_prefixes": [
+      {
+        "bucket": "blueprint-8c1ca.appspot.com",
+        "prefix": "scenes/",
+        "class": "raw_capture_authoritative",
+        "retention_days": 3650,
+        "action": "tier_then_delete",
+        "enforced_by": "gcs_lifecycle",
+        "managed_by": "BlueprintCapture/storage.lifecycle.json",
+        "note": "Raw capture truth (scenes/{sceneId}/captures/{captureId}/raw/...). Lifecycle (R042) tiers NEARLINE@90d, COLDLINE@365d, Delete@3650d. Never deleted before the 7-year floor."
+      },
+      {
+        "bucket": "blueprint-8c1ca.appspot.com",
+        "prefix": "site-worlds/",
+        "class": "derived_world_model",
+        "retention_days": 730,
+        "action": "delete",
+        "enforced_by": "gcs_lifecycle",
+        "note": "Hosted/derived canonical world-model artifacts. Regenerable from raw; kept 2y for hosted runtime + buyer access."
+      },
+      {
+        "bucket": "blueprint-8c1ca.appspot.com",
+        "prefix": "marketplace-artifacts/",
+        "class": "derived_hosted_delivery",
+        "retention_days": 365,
+        "action": "delete",
+        "enforced_by": "gcs_lifecycle",
+        "note": "Delivered buyer package bundles (signed-URL source, see arena_package_delivery_gcs.py). Derived; 1y covers delivery + dispute window."
+      },
+      {
+        "bucket": "blueprint-8c1ca.appspot.com",
+        "prefix": "scenes/*/captures/*/pipeline/",
+        "class": "derived_pipeline_intermediate",
+        "retention_days": 180,
+        "action": "delete",
+        "enforced_by": "scheduled_job",
+        "note": "Intermediate pipeline outputs live mid-path under scenes/.../pipeline/. GCS lifecycle can only prefix-match the START of an object name, so these cannot be isolated by a bucket lifecycle rule and are swept by a scheduled cleanup job (documented human/ops step). Regenerable from raw."
+      }
+    ],
+    "firestore_collections": [
+      {
+        "collection": "creatorPayouts",
+        "class": "financial",
+        "retention_days": 2555,
+        "action": "review_then_delete",
+        "enforced_by": "manual_review",
+        "legal_hold": true,
+        "note": "Creator payout ledger (Stripe references, amounts). 7-year tax/financial retention; never auto-deleted."
+      },
+      {
+        "collection": "buyerOrders",
+        "class": "financial",
+        "retention_days": 2555,
+        "action": "review_then_delete",
+        "enforced_by": "manual_review",
+        "legal_hold": true,
+        "note": "Buyer purchase/order records. 7-year tax/financial retention; never auto-deleted."
+      },
+      {
+        "collection": "marketplaceEntitlements",
+        "class": "access_grant",
+        "retention_days": 730,
+        "action": "review_then_delete",
+        "enforced_by": "manual_review",
+        "note": "Buyer access grants to hosted world models. Retained 2y after revocation for audit/dispute; entitlement != financial ledger."
+      },
+      {
+        "collection": "waitlistSubmissions",
+        "class": "pii_lead",
+        "retention_days": 365,
+        "action": "ttl_delete",
+        "enforced_by": "firestore_ttl",
+        "ttl_field": "expireAt",
+        "note": "Creator/supply waitlist leads (email, phone, location). 12-month PII retention via Firestore TTL."
+      },
+      {
+        "collection": "inboundRequests",
+        "class": "pii_lead",
+        "retention_days": 365,
+        "action": "ttl_delete",
+        "enforced_by": "firestore_ttl",
+        "ttl_field": "expireAt",
+        "note": "Buyer inbound demand leads (contact info, site context). 12-month PII retention via Firestore TTL."
+      },
+      {
+        "collection": "contactRequests",
+        "class": "pii_lead",
+        "retention_days": 730,
+        "action": "ttl_delete",
+        "enforced_by": "firestore_ttl",
+        "ttl_field": "expireAt",
+        "note": "General contact submissions (name, email, company, message). 24-month PII retention via Firestore TTL."
+      },
+      {
+        "collection": "leadEnrichmentDossiers",
+        "class": "derived_lead",
+        "retention_days": 365,
+        "action": "delete",
+        "enforced_by": "scheduled_job",
+        "note": "Derived enrichment tied to a source lead. Deleted when the source lead is deleted; capped at the source PII retention."
+      },
+      {
+        "collection": "capture_jobs",
+        "class": "operational",
+        "retention_days": 730,
+        "action": "review_then_delete",
+        "enforced_by": "manual_review",
+        "note": "Curated capture opportunities / assignment context. 2y operational retention."
+      },
+      {
+        "collection": "creatorCaptures",
+        "class": "creator_operational",
+        "retention_days": 90,
+        "action": "review_then_delete",
+        "enforced_by": "manual_review",
+        "note": "Creator capture METADATA records. Indefinite while commercially active; 90d after delisting/rejection. Deleting this record does NOT delete raw capture truth in GCS (scenes/), which keeps its own 10-year floor."
+      },
+      {
+        "collection": "hostedSessions",
+        "class": "hosted_session_ephemeral",
+        "retention_days": 90,
+        "action": "ttl_delete",
+        "enforced_by": "firestore_ttl",
+        "ttl_field": "expiresAt",
+        "note": "Ephemeral hosted world-model runtime sessions. Short-lived; expired via Firestore TTL."
+      },
+      {
+        "collection": "action_ledger",
+        "class": "audit",
+        "retention_days": 730,
+        "action": "delete",
+        "enforced_by": "scheduled_job",
+        "note": "Server control-plane action/audit trail. 2y retention swept by a scheduled job."
+      },
+      {
+        "collection": "answer_cache",
+        "class": "cache",
+        "retention_days": 30,
+        "action": "ttl_delete",
+        "enforced_by": "firestore_ttl",
+        "ttl_field": "expiresAt",
+        "note": "Regenerable answer/response cache. 30-day TTL."
+      }
+    ]
+  },
+  "default_firestore_retention": {
+    "class": "operational",
+    "retention_days": 730,
+    "action": "review_then_delete",
+    "enforced_by": "manual_review",
+    "note": "Any Firestore collection not explicitly listed above inherits this default: 2-year review-then-delete. Add an explicit entry to override."
+  }
+}

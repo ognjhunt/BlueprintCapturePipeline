@@ -289,6 +289,31 @@ def _resume(statuses: Mapping[str, Mapping[str, Any]], retry_stage: str | None) 
     return {"resume_from_stage": None, "next_stage": None}
 
 
+def _quarantine_capture(
+    *,
+    raw_root: str | Path,
+    error: BaseException,
+    capture_id: str | None,
+    site_id: str | None,
+) -> Dict[str, Any]:
+    """Record why a single malformed capture was skipped from the registry build.
+
+    Mirrors the per-request isolation used by the robot-eval job inbox runner: one
+    bad capture is quarantined with a bounded reason instead of aborting the whole
+    batch, so the good captures still make it into the registry.
+    """
+
+    return {
+        "capture_root": str(raw_root),
+        "capture_id": capture_id,
+        "site_id": site_id,
+        "status": "skipped",
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "reason": "skipped_after_capture_build_error",
+    }
+
+
 def update_capture_batch_registry(
     *,
     capture_roots: Sequence[str | Path],
@@ -317,13 +342,21 @@ def update_capture_batch_registry(
         "dead_letter_dir": str(dead_letter_dir),
         "quarantined_captures": [],
         "sites": {},
+        "skipped_captures": [],
+        "skipped_capture_count": 0,
+        "skipped_capture_ids": [],
     }
+    skipped_captures: List[Dict[str, Any]] = []
     for raw_root in capture_roots:
+        resolved_capture_id: str | None = None
+        resolved_site_id: str | None = None
         try:
             context = resolve_local_capture_context(raw_root)
+            resolved_capture_id = context.capture_id
             descriptor = _read_optional_mapping(context.descriptor_path)
             raw_manifest = _read_optional_mapping(context.raw_root / "manifest.json")
             site_id = _site_id(context, descriptor, raw_manifest)
+            resolved_site_id = site_id
             statuses = _stage_statuses(context.capture_root)
             if retry_stage:
                 previous_status = statuses[retry_stage]["status"]
@@ -351,6 +384,14 @@ def update_capture_batch_registry(
             }
             registry["processed_capture_count"] += 1
         except Exception as exc:  # noqa: BLE001 - one malformed capture must not abort the registry
+            skipped_captures.append(
+                _quarantine_capture(
+                    raw_root=raw_root,
+                    error=exc,
+                    capture_id=resolved_capture_id,
+                    site_id=resolved_site_id,
+                )
+            )
             registry["quarantined_captures"].append(
                 _write_capture_quarantine_record(
                     raw_capture_root=raw_root,
@@ -364,6 +405,11 @@ def update_capture_batch_registry(
             )
             registry["quarantined_capture_count"] += 1
             continue
+    registry["skipped_captures"] = skipped_captures
+    registry["skipped_capture_count"] = len(skipped_captures)
+    registry["skipped_capture_ids"] = [
+        entry["capture_id"] or entry["capture_root"] for entry in skipped_captures
+    ]
     if registry["quarantined_capture_count"] and registry["processed_capture_count"]:
         registry["status"] = "completed_with_quarantined_captures"
     elif registry["quarantined_capture_count"]:
@@ -398,6 +444,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"[capture-batch-registry] registry={args.registry_path}")
     print(f"[capture-batch-registry] site_count={len(registry['sites'])}")
+    print(
+        "[capture-batch-registry] skipped_capture_count="
+        f"{registry['skipped_capture_count']}"
+    )
     return 0
 
 

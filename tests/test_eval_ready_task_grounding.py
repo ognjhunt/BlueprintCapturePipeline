@@ -770,3 +770,46 @@ def test_derive_task_aware_detection_prompts() -> None:
     assert grounding.derive_task_aware_detection_prompts(task_text="", target_label="") == []
     assert grounding.derive_task_aware_detection_prompts(task_text="   ", target_label="   ") == []
     assert grounding.derive_task_aware_detection_prompts(task_text="!!! @@@ ###", target_label="") == []
+
+
+def test_industrial_affordance_detection_prompts() -> None:
+    """Audit R073: industrial task text / sites get industrial affordance prompts."""
+    # Token-driven: industrial task text expands to concrete site sub-targets,
+    # not just the broad environment labels.
+    prompts = grounding.derive_task_aware_detection_prompts(
+        task_text="move the tote from the rack to the pallet on the conveyor",
+        target_label="tote",
+        max_prompts=64,
+    )
+    for expected in ("tote handle", "pallet stringer", "rack upright", "conveyor guard"):
+        assert expected in prompts, expected
+    assert len(prompts) == len(set(prompts))
+
+    # Site-taxonomy-keyed: a recognized industrial site seeds the core
+    # industrial affordances even when the task text is terse.
+    seeded = grounding.derive_task_aware_detection_prompts(
+        task_text="inspect the area",
+        target_label="",
+        site_type="warehouse",
+    )
+    for affordance in ("tote", "pallet", "rack", "conveyor", "dock door", "forklift"):
+        assert affordance in seeded, affordance
+
+    # A non-industrial site type does NOT seed industrial affordances (kitchen
+    # behavior preserved).
+    kitchen_seeded = grounding.derive_task_aware_detection_prompts(
+        task_text="inspect the area",
+        target_label="",
+        site_type="kitchen",
+    )
+    assert "forklift" not in kitchen_seeded
+    assert "pallet" not in kitchen_seeded
+
+    # Kitchen sink expansion still fires and stays free of industrial prompts.
+    sink_prompts = grounding.derive_task_aware_detection_prompts(
+        task_text="turn on the sink right handle",
+        target_label="right sink handle",
+    )
+    assert "faucet handle" in sink_prompts
+    assert "water stream" in sink_prompts
+    assert "forklift" not in sink_prompts

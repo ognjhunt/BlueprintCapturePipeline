@@ -1,0 +1,58 @@
+{
+  "kitchen_usd": "tests/fixtures/warehouse_task_min/assets/WarehouseFloor.usd",
+  "scenarios": [
+    {
+      "affordance_object_ids": [
+        "handle",
+        "tote",
+        "bin",
+        "lip",
+        "grip"
+      ],
+      "description": "Stand at the pick shelf and place the tote into the staging bin.",
+      "floor_z_hint": 0.05,
+      "perception_target_prompts": [
+        "Stand at the pick shelf and place the tote into the staging bin.",
+        "tote",
+        "bin",
+        "pick shelf",
+        "staging bin lip"
+      ],
+      "preferred_stance_distance_m": 0.5,
+      "scenario_id": "fixture_warehouse_task_01_tote_to_bin",
+      "stance_distance_candidates_m": [
+        0.35,
+        0.5,
+        0.7
+      ],
+      "target_object_ids": [
+        "tote",
+        "bin",
+        "pallet",
+        "shelf",
+        "rack",
+        "staging"
+      ],
+      "task": "Stand at the pick shelf and place the tote into the staging bin.",
+      "task_description": "Stand at the pick shelf and place the tote into the staging bin.",
+      "task_instruction": "Stand at the pick shelf and place the tote into the staging bin.",
+      "task_target_deferred": true
+    },
+    {
+      "description": "Stand at the conveyor and transfer a carton from the pick cart to the conveyor belt.",
+      "floor_z_hint": 0.05,
+      "preferred_stance_distance_m": 0.9,
+      "scenario_id": "fixture_warehouse_task_02_cart_to_conveyor_transfer",
+      "stance_distance_candidates_m": [
+        0.8,
+        0.9,
+        1.05
+      ],
+      "task": "Stand at the conveyor and transfer a carton from the pick cart to the conveyor belt.",
+      "task_description": "Stand at the conveyor and transfer a carton from the pick cart to the conveyor belt.",
+      "task_instruction": "Stand at the conveyor and transfer a carton from the pick cart to the conveyor belt.",
+      "task_target_deferred": true
+    }
+  ],
+  "schema_version": "kitchen_task_scaling_preflight_request.v1"
+}

@@ -44,6 +44,7 @@ from .agent_operator_runtime import (
 from .arena_result_ingest import build_arena_result_ingest
 from .action_normalization import build_action_normalization_from_trace
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
+from .fleet_spend_ledger import evaluate_fleet_spend_guard
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
 from .evaluation_run import compile_evaluation_run
@@ -2444,6 +2445,10 @@ def _provider_prelaunch_spend_guard(
     request_blockers: Sequence[str],
     env_allowed: bool,
     allow_gpu_provisioning: bool,
+    fleet_spend_now: Optional[Any] = None,
+    fleet_spend_clock: Optional[Any] = None,
+    fleet_spend_env: Optional[Mapping[str, str]] = None,
+    fleet_spend_ledger_path: Optional[Any] = None,
 ) -> Dict[str, Any]:
     external_provider = provider != "fixture_local"
     gpu_allocation = _mapping(scheduler_decision.get("gpu_allocation"))
@@ -2523,6 +2528,26 @@ def _provider_prelaunch_spend_guard(
             blockers.extend(f"approval:{blocker}" for blocker in approval_blockers)
         if request_blockers:
             blockers.extend(f"launch_request:{blocker}" for blocker in request_blockers)
+    # R041 aggregate/fleet ceiling: consult the platform-level rolling spend
+    # ledger IN ADDITION to the per-job checks above. This is additive and
+    # DEFAULT-SAFE - with no fleet caps configured the decision is `allowed`
+    # with no blockers, so existing per-job behaviour is unchanged. The check
+    # only contributes blockers for external providers (fixture_local never
+    # spends), matching the per-job gate scoping.
+    fleet_gpu_count = max(1, max_active_workers) if external_provider else 0
+    fleet_estimated_usd = float(requested_budget) if requested_budget is not None else 0.0
+    fleet_spend_ledger = evaluate_fleet_spend_guard(
+        estimated_usd=fleet_estimated_usd,
+        gpu_count=fleet_gpu_count,
+        now=fleet_spend_now,
+        clock=fleet_spend_clock,
+        env=fleet_spend_env,
+        ledger_path=fleet_spend_ledger_path,
+    )
+    fleet_blockers = _string_list(fleet_spend_ledger.get("blockers"))
+    if external_provider and fleet_spend_ledger.get("allowed") is not True:
+        blockers.extend(f"fleet_spend:{blocker}" for blocker in fleet_blockers)
+        blockers.append("prelaunch_fleet_aggregate_ceiling_blocked")
     can_launch = bool(external_provider and not blockers)
     return {
         "schema_version": PROVIDER_PRELAUNCH_SPEND_GUARD_SCHEMA_VERSION,
@@ -2533,6 +2558,12 @@ def _provider_prelaunch_spend_guard(
         "requested_budget_usd": requested_budget,
         "max_billable_gpu_seconds": hard_timeout_seconds,
         "max_active_workers": max_active_workers,
+        "fleet_spend_ledger": fleet_spend_ledger,
+        "fleet_aggregate_ceiling_enforced": bool(
+            fleet_spend_ledger.get("aggregate_ceiling_enforced")
+        ),
+        "fleet_spend_remaining": fleet_spend_ledger.get("remaining"),
+        "fleet_spend_blockers": fleet_blockers,
         "checks": {
             "env_BLUEPRINT_ALLOW_GPU_PROVISIONING_present": env_allowed,
             "cli_allow_gpu_provisioning_present": bool(allow_gpu_provisioning),
@@ -9825,12 +9856,19 @@ def run_robot_eval_job_request_inbox(
             request_digest,
         )
         if marker_path.is_file():
+            existing_marker = _read_optional_mapping(marker_path)
+            skip_reason = (
+                "already_quarantined_same_content"
+                if existing_marker.get("status")
+                in {"failed", ROBOT_EVAL_QUEUE_PERMANENT_INVALID}
+                else "already_processed_same_content"
+            )
             skipped_processed_requests.append(
                 {
                     "source_request_path": str(request_path),
                     "source_request_sha256": request_digest,
                     "processed_marker_path": str(marker_path),
-                    "reason": "already_processed_same_content",
+                    "reason": skip_reason,
                 }
             )
             continue

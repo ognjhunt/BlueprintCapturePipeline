@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM nvidia/cuda:11.7.1-cudnn8-devel-ubuntu22.04@sha256:38e59267704b5d91ef63c7d8f613359c629fab0aead1283d59ca7821029e73bc
+FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04@sha256:217134b60289ced62b47463be32584329baf35cb55a9ccda6626b91bd59803be
 
 ARG DEEPPRIVACY2_SOURCE_REF=f4d8f09d1eb8f758c89cf1795ae41f20533942d3
 ARG APP_UID=10001

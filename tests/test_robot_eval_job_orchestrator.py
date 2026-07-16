@@ -7722,6 +7722,95 @@ def test_robot_eval_job_request_inbox_skips_processed_same_content_until_changed
     assert third["jobs"][0]["job_id"] == "webapp-job-2"
 
 
+def test_robot_eval_job_request_inbox_isolates_permanent_and_retryable_failures(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    inbox_dir = tmp_path / "webapp-robot-eval-job-requests"
+
+    # Three well-formed requests that must all still process despite sibling failures.
+    good_job_ids = ["good-1", "good-2", "good-3"]
+    for job_id in good_job_ids:
+        request = _full_job_request(capture_root)
+        request["job_id"] = job_id
+        _write_json(inbox_dir / f"{job_id}.json", request)
+
+    # Poison request #1: non-object payload -> _read_job_request raises during load.
+    poison_read_path = inbox_dir / "poison-read.json"
+    poison_read_path.parent.mkdir(parents=True, exist_ok=True)
+    poison_read_path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+
+    # Poison request #2: well-formed object but capture_root cannot be resolved, so
+    # resolve_local_capture_context raises during the build phase.
+    poison_build = _full_job_request(capture_root)
+    poison_build["job_id"] = "poison-build"
+    poison_build["site_package"] = {
+        **poison_build["site_package"],
+        "capture_root": str(tmp_path / "not-a-capture-tree"),
+    }
+    _write_json(inbox_dir / "poison-build.json", poison_build)
+
+    result = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    # Every good request still produced a job, while the retryable infrastructure
+    # failure remains visible in the batch disposition.
+    assert result["status"] == "fatal_infrastructure"
+    assert result["queue_disposition"] == "fatal_infrastructure"
+    assert result["processed_count"] == 3
+    assert {job["job_id"] for job in result["jobs"]} == set(good_job_ids)
+
+    # Malformed content is permanently invalid and dead-lettered. A missing local
+    # capture tree is retryable infrastructure state and must not get a processed
+    # marker that would suppress a later successful retry.
+    assert result["quarantined_request_count"] == 1
+    read_failure = result["quarantined_requests"][0]
+    assert read_failure["phase"] == "load"
+    assert read_failure["error_class"] == "ValueError"
+    assert read_failure["dead_letter_copy_succeeded"] is True
+    assert Path(read_failure["path"]).is_file()
+    assert Path(read_failure["dead_letter_request_path"]).is_file()
+
+    assert result["fatal_infrastructure_request_count"] == 1
+    build_failure = result["fatal_infrastructure_requests"][0]
+    assert build_failure["job_id"] == "poison-build"
+    assert build_failure["attempt_history"][-1]["phase"] == "process"
+    assert build_failure["attempt_history"][-1]["error_class"] == "ValueError"
+    assert build_failure["processed_marker_written"] is False
+
+    # Good requests wrote real job run manifests; the build-phase poison made no job dir.
+    for job_id in good_job_ids:
+        assert (
+            capture_root / "pipeline" / "robot_eval_jobs" / job_id / "job_run_manifest.json"
+        ).is_file()
+    assert not (capture_root / "pipeline" / "robot_eval_jobs" / "poison-build").exists()
+
+    # Re-running skips the permanent-invalid payload but retries the infrastructure
+    # failure, preserving recovery if the referenced capture tree later appears.
+    rerun = run_robot_eval_job_request_inbox(
+        capture_root=capture_root,
+        inbox_dir=inbox_dir,
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+    assert rerun["quarantined_request_count"] == 0
+    assert rerun["fatal_infrastructure_request_count"] == 1
+    quarantine_skips = {
+        Path(entry["source_request_path"]).name
+        for entry in rerun["skipped_processed_requests"]
+        if entry["reason"] == "already_quarantined_same_content"
+    }
+    assert quarantine_skips == {"poison-read.json"}
+
+
 def test_robot_eval_job_request_inbox_uses_request_capture_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

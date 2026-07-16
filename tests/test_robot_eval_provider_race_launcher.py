@@ -12,6 +12,44 @@ from blueprint_pipeline.robot_eval_provider_race_launcher import (
 )
 
 
+_NO_SLEEP = lambda *_a, **_k: None  # noqa: E731 - deterministic, no wall-clock in tests
+
+
+class _FakeRaceProvider:
+    """Honors only the surface race_launch touches: launch/terminate/inspect/marker."""
+
+    def __init__(self, name: str, *, boots: bool = True, launches: bool = True) -> None:
+        self.name = name
+        self.boots = boots
+        self._launches = launches
+        self.launch_calls = 0
+        self.terminate_calls: list[str] = []
+
+    def launch(self, job_dir, request, *, cold=False, **_kwargs):  # noqa: ANN001
+        self.launch_calls += 1
+        assert isinstance(job_dir, Path)
+        if not self._launches:
+            return {"status": "blocked", "blockers": ["no_capacity"]}
+        return {"status": "launched", "instance_id": f"{self.name}-iid", "mode": "fake_cold"}
+
+    def terminate(self, instance_id):  # noqa: ANN001
+        self.terminate_calls.append(instance_id)
+        return {"status": "terminated", "http": 204, "instance_id": instance_id}
+
+    def inspect(self, instance_id):  # noqa: ANN001
+        # After terminate the allocation is gone -> billing-terminal (API 404).
+        if instance_id in self.terminate_calls:
+            return {"status": "unavailable", "http": 404}
+        return {"status": "observed", "http": 200, "desiredStatus": "RUNNING"}
+
+    def has_marker(self, _launch_result):  # noqa: ANN001
+        return self.boots
+
+
+def _marker_check(provider, launch_result):  # noqa: ANN001
+    return provider.has_marker(launch_result)
+
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

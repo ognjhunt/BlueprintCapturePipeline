@@ -108,6 +108,53 @@ def test_capture_batch_registry_tracks_per_site_status_and_retry_resume(
     assert _read_json(registry_path)["schema_version"] == "site_capture_batch_registry.v1"
 
 
+def test_capture_batch_registry_skips_malformed_capture_and_keeps_good_ones(
+    tmp_path: Path,
+) -> None:
+    # R077: one malformed capture must be quarantined with a recorded reason while
+    # the registry build continues from the good captures instead of aborting.
+    good_root = _capture_root(tmp_path)
+    _write_stage_artifacts(good_root)
+
+    # A capture whose descriptor is malformed JSON: reading it raises mid-build.
+    bad_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-bad"
+    (bad_root).mkdir(parents=True, exist_ok=True)
+    (bad_root / "capture_descriptor.json").write_text("{not valid json", encoding="utf-8")
+
+    # A capture whose path is not inside a scenes/<scene>/captures/<capture> tree:
+    # resolve_local_capture_context raises before any id is known.
+    off_tree_root = tmp_path / "not-a-capture-tree"
+    off_tree_root.mkdir(parents=True, exist_ok=True)
+
+    registry_path = tmp_path / "site_capture_batch_registry.json"
+    registry = update_capture_batch_registry(
+        capture_roots=[good_root, bad_root, off_tree_root],
+        registry_path=registry_path,
+        resume=True,
+    )
+
+    # Good capture still made it into the registry.
+    assert "capture-1" in registry["sites"]["site-1"]["captures"]
+
+    # Both malformed captures were skipped with recorded reasons.
+    assert registry["skipped_capture_count"] == 2
+    skipped_by_id = {entry["capture_id"] or entry["capture_root"]: entry for entry in registry["skipped_captures"]}
+    # The bad-json capture id is still resolvable from its path before the read fails.
+    assert "capture-bad" in skipped_by_id
+    assert skipped_by_id["capture-bad"]["reason"] == "skipped_after_capture_build_error"
+    assert skipped_by_id["capture-bad"]["error_type"]  # non-empty error type recorded
+    # The off-tree capture is keyed by its root (id could not be resolved).
+    off_entry = skipped_by_id[str(off_tree_root)]
+    assert off_entry["capture_id"] is None
+    assert off_entry["error_type"] == "PipelineError"
+
+    # Reasons/ids are persisted to disk so the skip is auditable.
+    persisted = _read_json(registry_path)
+    assert persisted["skipped_capture_count"] == 2
+    assert "capture-bad" in persisted["skipped_capture_ids"]
+    assert str(off_tree_root) in persisted["skipped_capture_ids"]
+
+
 def test_capture_batch_registry_handles_pending_complete_and_cli_paths(
     tmp_path: Path,
     capsys,

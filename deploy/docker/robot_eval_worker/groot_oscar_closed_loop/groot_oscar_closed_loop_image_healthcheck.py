@@ -59,6 +59,17 @@ ISAAC_KIT_RUNTIME_WRITE_DIRS = (
     "/isaac-sim/kit/logs",
 )
 
+# IMGFIX-004: the Isaac 6 kit creates DerivedDataCache under kit/cache and
+# documents/ under kit/data at renderer startup. The 2026-07-12 live A40
+# canary wedged because the base image ships these writable only by uid 1234.
+# The healthcheck runs as the runtime user (build step 7), so a real
+# create/delete probe here fails the BUILD instead of wedging a paid pod.
+ISAAC_KIT_RUNTIME_WRITE_DIRS = (
+    "/isaac-sim/kit/cache",
+    "/isaac-sim/kit/data",
+    "/isaac-sim/kit/logs",
+)
+
 # Main-env modules the closed loop imports (import name : label).
 MAIN_ENV_MODULES = {
     "blueprint_pipeline": "blueprint_pipeline",

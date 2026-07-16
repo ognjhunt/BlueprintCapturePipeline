@@ -258,6 +258,112 @@ def test_historical_warm_candidate_ids_do_not_bypass_dynamic_protection() -> Non
         ) is False
 
 
+# ------------------- R056: booted-orphan reap rules (careful) -------------------
+
+
+def _booted_inst(**over: object) -> "guard.GpuInstance":
+    base = dict(
+        provider="runpod",
+        id="pod-booted",
+        name="booted",
+        state="running",
+        booted=True,
+        live=True,
+        cost_per_hr=0.79,
+        age_seconds=30_000.0,
+    )
+    base.update(over)
+    return guard.GpuInstance(**base)  # type: ignore[arg-type]
+
+
+def test_booted_orphan_reaping_uses_current_default_hard_ttl() -> None:
+    # Current main is fail-closed: an unowned booted pod older than the default
+    # hard TTL is eligible even when callers do not pass the compatibility alias.
+    inst = _booted_inst()
+    assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is True
+
+
+def test_booted_orphan_old_and_unowned_is_reapable_when_enabled() -> None:
+    inst = _booted_inst(age_seconds=30_000.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids=set(),
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is True
+    )
+
+
+def test_booted_orphan_within_hard_age_is_not_reapable() -> None:
+    inst = _booted_inst(age_seconds=600.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids=set(),
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
+def test_booted_orphan_with_unknown_age_is_not_reapable() -> None:
+    inst = _booted_inst(age_seconds=None)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids=set(),
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
+def test_booted_warm_serve_protected_pod_is_never_reaped_even_when_old() -> None:
+    # A live warm-serve pod (its id in protected_ids via the serving marker) must
+    # survive booted-orphan reaping no matter how old it is.
+    inst = _booted_inst(id="pod-serve", age_seconds=999_999.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids={"pod-serve"},
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
+def test_stale_historical_warm_candidate_id_is_not_an_implicit_lease() -> None:
+    for pod_id in guard.DEFAULT_WARM_CANDIDATE_IDS:
+        inst = _booted_inst(id=pod_id, age_seconds=999_999.0)
+        assert (
+            guard.is_reapable(
+                inst,
+                max_boot_seconds=480,
+                protected_ids=set(),
+                orphan_booted_max_age_seconds=21_600,
+            )
+            is True
+        )
+
+
+def test_booted_fresh_owner_pod_is_never_reaped() -> None:
+    inst = _booted_inst(id="pod-owned", age_seconds=999_999.0)
+    assert (
+        guard.is_reapable(
+            inst,
+            max_boot_seconds=480,
+            protected_ids={"pod-owned"},
+            orphan_booted_max_age_seconds=21_600,
+        )
+        is False
+    )
+
+
 # --------------------------- ownership / live owner ---------------------------
 
 

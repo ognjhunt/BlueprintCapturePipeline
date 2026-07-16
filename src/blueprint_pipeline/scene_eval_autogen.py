@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .industrial_ontology import classify_industrial_entity
 from .robot_eval_dataset import (
     DEFAULT_TASK_THRESHOLD_TEMPLATES,
     SCENARIO_FAMILY_LIBRARY_SCHEMA_VERSION,
@@ -501,6 +502,52 @@ def classify_environment(scene: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ----------------------------- hazard grounding (R060) -----------------------------
+
+# Base scenario variations that model a physical site hazard. When the industrial
+# hazard ontology grounds a real hazard-relevant entity in the scene, these
+# variations carry that grounding so hazards inform the eval scenarios regardless
+# of whether the optional qualification trust layer ever runs.
+_HAZARD_SCENARIO_VARIATIONS = frozenset({"blocked_path", "human_crossing", "forklift_nearby"})
+
+
+def derive_hazard_grounding(scene: Mapping[str, Any]) -> Dict[str, Any]:
+    """Classify recovered scene labels through the industrial hazard ontology.
+
+    R060: the structured hazard classification in ``industrial_ontology`` was only
+    consumed by the OPTIONAL qualification trust layer, so hazards (forklift lanes,
+    shared traffic, barriers, human-interaction zones, thresholds, floor hazards)
+    never reached the always-on scenario grounding lane. This surfaces the SAME
+    ``classify_industrial_entity`` output here so hazard-relevant entities inform
+    eval scenarios even when qualification is not run. Heuristic name-token
+    grounding only — not a verified site hazard assessment.
+    """
+    labels = [str(label) for label in (scene.get("object_labels") or [])]
+    filename_tokens = _slug(
+        Path(str(scene.get("scene_file_name") or "")).stem
+    ).split("_")
+    hazard_labels: Dict[str, List[str]] = {}
+    for value in [*labels, *filename_tokens]:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        entity = classify_industrial_entity(text)
+        if not entity.hazard_relevant:
+            continue
+        bucket = hazard_labels.setdefault(entity.entity_type, [])
+        if text not in bucket:
+            bucket.append(text)
+    hazard_entity_types = sorted(hazard_labels)
+    return {
+        "schema_version": "scene_eval_autogen_hazard_grounding.v1",
+        "ontology_source": "industrial_ontology.classify_industrial_entity",
+        "hazard_entity_types": hazard_entity_types,
+        "hazard_relevant_labels": {key: hazard_labels[key] for key in hazard_entity_types},
+        "any_grounded_hazard": bool(hazard_entity_types),
+        "claim_boundary": "name_token_hazard_grounding_not_verified_site_hazard_assessment",
+    }
+
+
 # ----------------------------- zones -----------------------------
 
 def derive_scene_zones(scene: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -890,8 +937,20 @@ def synthesize_scenarios(
     tasks: Sequence[Mapping[str, Any]],
     *,
     seeds_per_variation: int = DEFAULT_SEEDS_PER_VARIATION,
+    hazard_grounding: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Baseline + every canonical variation x difficulty seeds, per task."""
+    """Baseline + every canonical variation x difficulty seeds, per task.
+
+    When ``hazard_grounding`` (from :func:`derive_hazard_grounding`) surfaces
+    ontology-classified site hazards, hazard-family scenarios (blocked path, human
+    crossing, forklift nearby) carry that grounding so the eval scope reflects real
+    site hazards independently of the optional qualification layer (R060).
+    """
+    grounded_hazard_types = (
+        list(hazard_grounding.get("hazard_entity_types") or [])
+        if isinstance(hazard_grounding, Mapping)
+        else []
+    )
     scenarios: List[Dict[str, Any]] = []
     for task in tasks:
         task_id = str(task.get("task_id"))
@@ -913,23 +972,27 @@ def synthesize_scenarios(
             for seed in range(1, max(1, seeds_per_variation) + 1):
                 tier = DIFFICULTY_TIERS[(seed - 1) % len(DIFFICULTY_TIERS)]
                 unit = _hash01(task_id, variation_id, seed)
-                scenarios.append(
-                    {
-                        "scenario_id": f"scn_{task_id}_{variation_id}_s{seed}",
-                        "task_id": task_id,
-                        "variation_id": variation_id,
-                        "label": str(definition.get("label") or variation_id),
-                        "seed": seed,
-                        "difficulty_tier": tier,
-                        "parameters": _scenario_parameters(
-                            variation_id, task, tier=tier, unit=unit
-                        ),
-                        "scenario_status": str(
-                            definition.get("default_status") or "agent-inferred-needs-review"
-                        ),
-                        "claim_boundary": "auto_generated_scenario_is_engine_input_not_sim_or_robot_result",
-                    }
-                )
+                scenario: Dict[str, Any] = {
+                    "scenario_id": f"scn_{task_id}_{variation_id}_s{seed}",
+                    "task_id": task_id,
+                    "variation_id": variation_id,
+                    "label": str(definition.get("label") or variation_id),
+                    "seed": seed,
+                    "difficulty_tier": tier,
+                    "parameters": _scenario_parameters(
+                        variation_id, task, tier=tier, unit=unit
+                    ),
+                    "scenario_status": str(
+                        definition.get("default_status") or "agent-inferred-needs-review"
+                    ),
+                    "claim_boundary": "auto_generated_scenario_is_engine_input_not_sim_or_robot_result",
+                }
+                if variation_id in _HAZARD_SCENARIO_VARIATIONS and grounded_hazard_types:
+                    scenario["grounded_site_hazards"] = list(grounded_hazard_types)
+                    scenario["hazard_grounding_source"] = (
+                        "industrial_ontology.classify_industrial_entity"
+                    )
+                scenarios.append(scenario)
     return scenarios
 
 
@@ -1053,10 +1116,15 @@ def generate_scene_eval_tasks(
             "claim_boundary": "caller_supplied_environment_override",
         }
     zones = derive_scene_zones(scene)
+    hazard_grounding = derive_hazard_grounding(scene)
     tasks = synthesize_tasks(
         scene, environment, zones, min_tasks=min_tasks, max_tasks=max_tasks
     )
-    scenarios = synthesize_scenarios(tasks, seeds_per_variation=seeds_per_variation)
+    scenarios = synthesize_scenarios(
+        tasks,
+        seeds_per_variation=seeds_per_variation,
+        hazard_grounding=hazard_grounding,
+    )
     evals = _eval_cards(tasks, scenarios, attempts_per_scenario=attempts_per_scenario)
 
     scene_analysis = {
@@ -1066,6 +1134,7 @@ def generate_scene_eval_tasks(
         "scene": scene,
         "environment": environment,
         "zones": zones,
+        "hazard_grounding": hazard_grounding,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
     task_cards = {
@@ -1120,6 +1189,8 @@ def generate_scene_eval_tasks(
             "geometry_grounding": "bounds_recovered"
             if scene.get("bounds")
             else "bounds_missing_header_only",
+            "grounded_site_hazards": list(hazard_grounding.get("hazard_entity_types") or []),
+            "any_grounded_hazard": bool(hazard_grounding.get("any_grounded_hazard")),
             "limitations": list(scene.get("limitations") or []),
             "artifacts": {
                 "scene_analysis": "scene_analysis.json",

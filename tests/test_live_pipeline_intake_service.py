@@ -534,6 +534,95 @@ def _real_robot_pov_manifest(job_id: str = "webapp-job-1") -> dict[str, object]:
     }
 
 
+def test_intake_bearer_compare_is_constant_time(tmp_path: Path, monkeypatch) -> None:
+    # R083: the shared bearer must be compared with a constant-time comparator
+    # (hmac.compare_digest) rather than a plain `!=`, while still accepting the
+    # correct token and rejecting a wrong one.
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+
+    calls: list[tuple[object, object]] = []
+    real_compare = service.hmac.compare_digest
+
+    def spy(left: object, right: object) -> bool:
+        calls.append((left, right))
+        return real_compare(left, right)
+
+    monkeypatch.setattr(service.hmac, "compare_digest", spy)
+    client = TestClient(create_app())
+
+    ok = client.post(
+        "/api/live-pipeline/job-requests",
+        json=_webapp_request(capture_root),
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+    assert ok.status_code == 200, ok.text
+    # The constant-time comparator was used for the bearer, comparing byte strings.
+    assert any(left == b"test-intake-token" for left, _right in calls)
+
+    bad = client.post(
+        "/api/live-pipeline/job-requests",
+        json=_webapp_request(capture_root),
+        headers={"authorization": "Bearer wrong-token"},
+    )
+    assert bad.status_code == 401
+
+
+def test_intake_rejects_replayed_and_expired_nonce(tmp_path: Path, monkeypatch) -> None:
+    # R083: with replay protection enabled, a fresh timestamp+nonce passes, a
+    # replayed nonce is rejected, and an expired timestamp is rejected.
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.setenv(service.INTAKE_REQUIRE_SIGNED_REQUEST_ENV, "true")
+    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE", "true")
+    service._reset_intake_replay_cache()
+    client = TestClient(create_app())
+    now = datetime.now(timezone.utc).timestamp()
+
+    def _post(nonce: str, timestamp: float):
+        return client.post(
+            "/api/live-pipeline/job-requests",
+            json=_webapp_request(capture_root),
+            headers={
+                "authorization": "Bearer test-intake-token",
+                "x-blueprint-intake-timestamp": str(timestamp),
+                "x-blueprint-intake-nonce": nonce,
+            },
+        )
+
+    # Enforcement on but no replay headers -> rejected.
+    missing = client.post(
+        "/api/live-pipeline/job-requests",
+        json=_webapp_request(capture_root),
+        headers={"authorization": "Bearer test-intake-token"},
+    )
+    assert missing.status_code == 401
+    assert "timestamp and nonce" in missing.json()["detail"]
+
+    # Fresh valid request passes.
+    first = _post("nonce-1", now)
+    assert first.status_code == 200, first.text
+
+    # Replaying the same nonce inside the window is rejected.
+    replay = _post("nonce-1", now)
+    assert replay.status_code == 401
+    assert "nonce already used" in replay.json()["detail"]
+
+    # Expired timestamp is rejected even with a fresh nonce.
+    expired = _post("nonce-2", now - 10_000)
+    assert expired.status_code == 401
+    assert "outside allowed window" in expired.json()["detail"]
+
+    # A different fresh nonce with a valid timestamp still passes.
+    third = _post("nonce-3", now)
+    assert third.status_code == 200, third.text
+    service._reset_intake_replay_cache()
+
+
 def test_live_pipeline_intake_service_requires_token(tmp_path: Path, monkeypatch) -> None:
     capture_root = _capture_root(tmp_path)
     manifest_path = _control_manifest(tmp_path, capture_root)

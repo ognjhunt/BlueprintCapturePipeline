@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04@sha256:517da2300c184c9999ec203c2665244bdebd3578d12fcc7065e83667932643d9
+FROM nvidia/cuda:13.3.0-runtime-ubuntu22.04@sha256:aa89ba5b690e634093fee3bec549bf3f42a67a11616fc0541b582dbebd03a5b5
 
 ARG APP_UID=10001
 ARG APP_GID=10001

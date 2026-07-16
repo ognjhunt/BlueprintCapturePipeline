@@ -868,6 +868,17 @@ def run_gpu_provider_launcher(
     allow_serial_provider_launch: bool = False,
     provider_launch_command: str | None = None,
     timeout_seconds: int | None = None,
+    run_provider_race: bool = False,
+    race_providers: Sequence | None = None,
+    race_provider_factory: Any = None,
+    race_marker_check: Any = None,
+    race_request_builder: Any = None,
+    race_marker_timeout: float = 180.0,
+    race_poll_interval: float = 10.0,
+    race_sleep: Any = None,
+    race_monotonic: Any = None,
+    allow_live_provider_race: bool = False,
+    live_provider_race: bool = False,
 ) -> dict[str, Any]:
     """Run an explicitly supplied GPU provider launcher command.
 
@@ -875,6 +886,15 @@ def run_gpu_provider_launcher(
     dry-run provider request, requires an env gate plus a CLI gate for live
     providers, executes only the supplied command argv, and writes a result
     artifact that cannot upgrade simulator or rank-fidelity proof.
+
+    When ``run_provider_race`` is set and the request declares provider-race
+    failover, the launcher delegates to
+    :func:`blueprint_pipeline.robot_eval_provider_race_launcher.run_robot_eval_provider_race_runtime`
+    instead of blocking the serial path — this is how the render-proven
+    ``race_launch``/circuit-breaker orchestration is wired into the customer eval
+    launch path. Without injected provider objects the race runtime stays a
+    no-spend, dry-run-verifiable proof that the runtime is wired. The serial
+    single-provider override (``allow_serial_provider_launch``) is unchanged.
     """
 
     request_path = Path(provider_launch_request_path).resolve()
@@ -942,6 +962,57 @@ def run_gpu_provider_launcher(
                 "status": "not_required_for_fixture_local",
                 "reason": "fixture_local_does_not_require_provider_launcher",
                 "blockers": [],
+            }
+        )
+        return _write_result(resolved_output, result)
+
+    provider_race_for_run = _provider_race_contract(request)
+    if run_provider_race and _provider_race_required(provider_race_for_run):
+        from .robot_eval_provider_race_launcher import (
+            run_robot_eval_provider_race_runtime,
+        )
+
+        race_runtime = run_robot_eval_provider_race_runtime(
+            provider_launch_request_path=request_path,
+            handoff_path=_provider_race_handoff_path(
+                request_path=request_path,
+                request=request,
+                provider_race=provider_race_for_run,
+            ),
+            output_path=resolved_output.parent / "gpu_provider_race_runtime_result.json",
+            providers=race_providers,
+            provider_factory=race_provider_factory,
+            marker_check=race_marker_check,
+            request_builder=race_request_builder,
+            marker_timeout=race_marker_timeout,
+            poll_interval=race_poll_interval,
+            sleep=race_sleep,
+            monotonic=race_monotonic,
+            allow_live_provider_race=allow_live_provider_race,
+            live_provider_race=live_provider_race,
+        )
+        race_status = _string(race_runtime.get("status"))
+        launcher_status = {
+            "provider_race_executed": "completed",
+            "ready_for_live_provider_race_runtime": "provider_race_runtime_wired",
+        }.get(race_status, "blocked")
+        result.update(
+            {
+                "status": launcher_status,
+                "reason": _string(race_runtime.get("reason"))
+                or "provider_race_runtime_delegated",
+                "blockers": _string_list(race_runtime.get("blockers")),
+                "provider_race_runtime": race_runtime,
+                "provider_race_runtime_launcher_implemented": True,
+                "execution_performed": bool(
+                    race_runtime.get("provider_race_execution_performed")
+                ),
+                "live_provider_calls_performed_by_launcher_module": bool(
+                    race_runtime.get("live_provider_calls_performed")
+                ),
+                "provider_side_effects_may_have_occurred": bool(
+                    race_runtime.get("provider_race_execution_performed")
+                ),
             }
         )
         return _write_result(resolved_output, result)
@@ -1284,6 +1355,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{ALLOW_SERIAL_PROVIDER_LAUNCH_ENV}=true."
         ),
     )
+    parser.add_argument(
+        "--run-provider-race",
+        action="store_true",
+        help=(
+            "When the request declares provider-race failover, run the provider-race "
+            "runtime (race_launch/circuit-breaker) instead of the serial path. From the "
+            "CLI, with no in-process provider objects, this is a no-spend proof that the "
+            "runtime is wired and reports what still needs live provider credentials."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1297,6 +1378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_serial_provider_launch=args.allow_serial_provider_launch,
         provider_launch_command=args.provider_launch_command,
         timeout_seconds=args.timeout_seconds,
+        run_provider_race=args.run_provider_race,
     )
     print(f"[robot-eval-provider-launcher] result={result['output_path']}")
     print(f"[robot-eval-provider-launcher] status={result['status']}")
@@ -1305,7 +1387,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     blockers = result.get("blockers")
     if blockers:
         print("[robot-eval-provider-launcher] blockers=" + ",".join(blockers))
-    return 0 if result["status"] in {"completed", "not_required_for_fixture_local"} else 1
+    return 0 if result["status"] in {
+        "completed",
+        "not_required_for_fixture_local",
+        "provider_race_runtime_wired",
+    } else 1
 
 
 if __name__ == "__main__":  # pragma: no cover
