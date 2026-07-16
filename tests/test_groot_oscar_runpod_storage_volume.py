@@ -777,8 +777,9 @@ def test_builder_live_preflight_failure_blocks_before_runpod_volume_post(
     assert result["provider_mutation_attempted"] is False
 
 
-def test_runtime_bundle_requires_120_gib_before_runpod_volume_post(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("volume_size_gib", [50, 121, 200])
+def test_runtime_bundle_requires_exactly_120_gib_before_runpod_volume_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, volume_size_gib: int
 ) -> None:
     _patch_preallocation(monkeypatch)
     monkeypatch.setattr(
@@ -789,6 +790,7 @@ def test_runtime_bundle_requires_120_gib_before_runpod_volume_post(
         ),
     )
     inputs = _inputs(tmp_path)
+    inputs["volume_size_gib"] = volume_size_gib
     release_ref = "docker.io/blueprint/release@sha256:" + "1" * 64
     inputs.update(
         runtime_source_release_image_ref=release_ref,

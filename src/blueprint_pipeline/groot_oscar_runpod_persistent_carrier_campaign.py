@@ -299,6 +299,7 @@ def run_persistent_carrier_campaign(
     write_json(Path(admission_out), prepared)
     write_json(Path(bound_request_out), prepared["bound_request"])
     if prepared["status"] != "admitted":
+        write_json(Path(adapter_output), prepared)
         return prepared
     if not execute:
         result = {

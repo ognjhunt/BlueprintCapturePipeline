@@ -960,8 +960,8 @@ def run_storage_model_volume(
             )
             if runtime_source_verification["status"] != "verified":
                 raise ValueError("storage_runtime_source_release_evidence_invalid")
-        if runtime_bundle_requested and volume_size_gib < 120:
-            raise ValueError("storage_runtime_bundle_requires_120_gib_volume")
+        if runtime_bundle_requested and volume_size_gib != 120:
+            raise ValueError("storage_runtime_bundle_requires_exactly_120_gib_volume")
         if runtime_bundle_requested and storage_ttl_seconds < max(
             MIN_RUNTIME_BUNDLE_STORAGE_TTL_SECONDS,
             builder_ttl + BUILDER_TO_VOLUME_MARGIN_SECONDS + PERSISTENT_CARRIER_WATCHDOG_SECONDS,

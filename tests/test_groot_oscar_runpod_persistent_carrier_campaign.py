@@ -202,6 +202,24 @@ def test_persistent_campaign_dry_run_is_provider_pure(tmp_path: Path) -> None:
     }
 
 
+def test_blocked_persistent_admission_writes_adapter_output(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    carrier = json.loads(inputs["carrier_volume_admission"].read_text(encoding="utf-8"))
+    carrier["network_volume"]["size_gib"] = 121
+    _write(inputs["carrier_volume_admission"], carrier)
+
+    result = campaign.run_persistent_carrier_campaign(
+        **inputs,
+        pod_name="blueprint-persistent-blocked",
+        execute=False,
+    )
+
+    adapter = json.loads(inputs["adapter_output"].read_text(encoding="utf-8"))
+    assert result["status"] == "blocked"
+    assert adapter == result
+    assert result["provider_mutations_performed"] == 0
+
+
 def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
