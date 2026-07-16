@@ -20,6 +20,7 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     accept_paid_provider_lane_lease_handoff,
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
+    claim_transferred_paid_provider_lane_teardown,
     lease_path,
     read_lease,
     release_paid_provider_lane_lease,
@@ -619,6 +620,181 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     assert read_lease("runpod", "groot_oscar_model_volume", tmp_path)[
         "handoff"
     ] == renewed
+    claimed = claim_transferred_paid_provider_lane_teardown(
+        lease_path_value=renewed["lease_path"],
+        teardown_owner_pid=555,
+        expected_binding=renewed["binding"],
+        clock=lambda: now + 2,
+    )
+    assert claimed["status"] == "claimed"
+    live_pids.add(666)
+    fenced_deadline = renewal_deadline + 24 * 3600
+    fenced_watchdog = watchdog(666, "fenced", "fenced-nonce", fenced_deadline)
+    argv[666] = (
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "watchdog",
+        "--state",
+        fenced_watchdog["watchdog_state_path"],
+    )
+    fenced_rotation = rotate_paid_provider_lane_lease_to_retention_watchdog(
+        renewed,
+        source_watchdog=renewal,
+        retention_watchdog=fenced_watchdog,
+        expected_binding=renewed["binding"],
+        retention_binding={
+            **renewed["binding"],
+            "watchdog_nonce": "fenced-nonce",
+            "watchdog_deadline_epoch": fenced_deadline,
+        },
+        process_argv_probe=lambda pid: argv[pid],
+        clock=lambda: now + 3,
+    )
+    assert fenced_rotation == {
+        "status": "blocked",
+        "blockers": ["paid_provider_lane_teardown_already_claimed"],
+    }
+
+
+def test_teardown_claim_rejects_stale_binding_and_fences_further_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    acquired = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        job_dir=str(tmp_path),
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane="groot_oscar_model_volume"),
+    )
+    pending = open_pending_teardown(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        run_id="teardown-claim-test",
+        resource_kind="network_volume",
+        resource_name="model-cache-volume",
+        registry_dir=tmp_path / "pending",
+    )
+    bind_pending_teardown_instance(pending["path"], "volume-1")
+    old_binding = {
+        "provider": "runpod",
+        "lane": "groot_oscar_model_volume",
+        "volume_id": "volume-1",
+        "pending_teardown_record": pending["path"],
+        "watchdog_nonce": "old-nonce",
+        "watchdog_deadline_epoch": now + 60,
+    }
+    new_binding = {
+        **old_binding,
+        "watchdog_nonce": "new-nonce",
+        "watchdog_deadline_epoch": now + 3600,
+    }
+    path = Path(acquired["path"])
+    current = json.loads(path.read_text(encoding="utf-8"))
+    current.update(
+        {
+            "owner_pid": 333,
+            "retained_teardown_owner_pid": 333,
+            "owner_role": "bounded_persistent_cache_watchdog",
+            "handoff": {
+                "schema_version": "paid_provider_lane_lease_handoff.v1",
+                "status": "pending_canary_acceptance",
+                "binding": new_binding,
+            },
+        }
+    )
+    path.write_text(json.dumps(current), encoding="utf-8")
+    monkeypatch.setattr(lease_module, "_pid_is_alive", lambda pid: pid == 333)
+
+    stale = claim_transferred_paid_provider_lane_teardown(
+        lease_path_value=path,
+        teardown_owner_pid=111,
+        expected_binding=old_binding,
+        clock=lambda: now,
+    )
+    assert stale["status"] == "ownership_transferred"
+    assert stale["provider_mutations_performed"] == 0
+    assert "teardown_claim" not in json.loads(path.read_text(encoding="utf-8"))
+
+    claimed = claim_transferred_paid_provider_lane_teardown(
+        lease_path_value=path,
+        teardown_owner_pid=333,
+        expected_binding=new_binding,
+        clock=lambda: now,
+    )
+    assert claimed["status"] == "claimed"
+    assert claimed["recovered_dead_owner"] is False
+    recorded = json.loads(path.read_text(encoding="utf-8"))
+    assert recorded["teardown_claim"]["binding"] == new_binding
+    assert recorded["owner_role"] == "retained_network_volume_teardown_watchdog"
+
+    idempotent = claim_transferred_paid_provider_lane_teardown(
+        lease_path_value=path,
+        teardown_owner_pid=333,
+        expected_binding=new_binding,
+        clock=lambda: now + 1,
+    )
+    assert idempotent["status"] == "claimed"
+    assert idempotent["idempotent"] is True
+
+
+def test_teardown_claim_recovers_exact_binding_from_dead_same_host_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    acquired = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        job_dir=str(tmp_path),
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane="groot_oscar_model_volume"),
+    )
+    pending = open_pending_teardown(
+        provider="runpod",
+        lane="groot_oscar_model_volume",
+        run_id="dead-owner-teardown-claim",
+        resource_kind="network_volume",
+        resource_name="model-cache-volume",
+        registry_dir=tmp_path / "pending",
+    )
+    bind_pending_teardown_instance(pending["path"], "volume-1")
+    binding = {
+        "provider": "runpod",
+        "lane": "groot_oscar_model_volume",
+        "volume_id": "volume-1",
+        "pending_teardown_record": pending["path"],
+        "watchdog_nonce": "dead-owner-nonce",
+        "watchdog_deadline_epoch": now - 1,
+    }
+    path = Path(acquired["path"])
+    current = json.loads(path.read_text(encoding="utf-8"))
+    current.update(
+        {
+            "owner_pid": 777,
+            "retained_teardown_owner_pid": 777,
+            "handoff": {
+                "schema_version": "paid_provider_lane_lease_handoff.v1",
+                "status": "pending_canary_acceptance",
+                "binding": binding,
+            },
+        }
+    )
+    path.write_text(json.dumps(current), encoding="utf-8")
+    monkeypatch.setattr(lease_module, "_pid_is_alive", lambda _pid: False)
+
+    recovered = claim_transferred_paid_provider_lane_teardown(
+        lease_path_value=path,
+        teardown_owner_pid=os.getpid(),
+        expected_binding=binding,
+        clock=lambda: now,
+    )
+
+    assert recovered["status"] == "claimed"
+    assert recovered["recovered_dead_owner"] is True
+    recorded = json.loads(path.read_text(encoding="utf-8"))
+    assert recorded["owner_pid"] == os.getpid()
+    assert recorded["teardown_claim"]["owner_pid"] == os.getpid()
 
 
 def test_live_same_host_owner_is_never_stale_even_past_expiry(tmp_path: Path) -> None:
