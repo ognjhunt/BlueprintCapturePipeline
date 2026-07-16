@@ -496,6 +496,17 @@ PY
             120,
         ),
         (
+            "isaac_core_extension_inventory",
+            r"""
+prims_init="$(find /isaac-sim -type f -path '*/isaacsim/core/prims/__init__.py' -print -quit)"
+test -n "$prims_init"
+prims_root="$(dirname "$prims_init")"
+grep -R -Fq 'SingleArticulation' "$prims_root"
+printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
+""",
+            120,
+        ),
+        (
             "wbc_binary_executable",
             "test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
             300,
@@ -626,9 +637,10 @@ PY
         ),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
-            "This validates archived ELF linkage and import surfaces inside the exact "
-            "carrier on CPU. It does not prove GPU, CUDA-driver, Isaac rendering, policy "
-            "execution, artifact completion, or semantic task success."
+            "This validates archived ELF linkage, CPU-safe imports, and required Isaac "
+            "extension inventory inside the exact carrier on CPU. It does not prove GPU, "
+            "CUDA-driver, initialized Isaac extensions, Isaac rendering, policy execution, "
+            "artifact completion, or semantic task success."
         ),
         "raw_secret_values_recorded": False,
     }

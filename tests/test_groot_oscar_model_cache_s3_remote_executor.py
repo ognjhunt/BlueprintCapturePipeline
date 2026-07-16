@@ -159,7 +159,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     carrier_runs = [call for call in docker.calls if call[1] == "run"]
-    assert len(carrier_runs) == 6
+    assert len(carrier_runs) == 7
     assert all("--network" in call for call in carrier_runs)
     assert all("none" in call for call in carrier_runs)
     assert all("--env" in call for call in carrier_runs)
@@ -196,6 +196,12 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "import blueprint_pipeline.isaac_runtime_task_backend" in isaac_scan
     assert "app = SimulationApp" not in isaac_scan
     assert "isaacsim.core" not in isaac_scan
+    isaac_inventory = next(
+        script for script in validation_scripts if "ISAAC_CORE_EXTENSION_INVENTORY" in script
+    )
+    assert "-path '*/isaacsim/core/prims/__init__.py'" in isaac_inventory
+    assert 'test -n "$prims_init"' in isaac_inventory
+    assert "grep -R -Fq 'SingleArticulation'" in isaac_inventory
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
@@ -344,7 +350,7 @@ def test_runtime_carrier_validation_collects_all_failures_before_blocking(
     message = str(raised.value)
     assert "all_archived_elf_linkage" in message
     assert "isaac_bootstrap_import" in message
-    assert sum(call[1] == "run" for call in docker.calls) == 6
+    assert sum(call[1] == "run" for call in docker.calls) == 7
 
 
 def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:
