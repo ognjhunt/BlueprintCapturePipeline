@@ -49,7 +49,7 @@ def _model() -> dict:
 def _volume() -> dict:
     return {
         "id": "volume-1",
-        "data_center_id": "EUR-IS-1",
+        "data_center_id": "US-MO-2",
         "provider_api_verified": True,
     }
 
@@ -91,7 +91,7 @@ def test_endpoint_uses_active_flashboot_a40_then_l40s_and_one_worker() -> None:
         name="blueprint-groot-oscar-serverless-test",
         template_id="template-1",
         network_volume_id="volume-1",
-        data_center_id="EUR-IS-1",
+        data_center_id="US-MO-2",
     )
 
     assert payload["flashboot"] is True
@@ -99,7 +99,7 @@ def test_endpoint_uses_active_flashboot_a40_then_l40s_and_one_worker() -> None:
     assert payload["gpuTypeIds"] == ["NVIDIA A40", "NVIDIA L40S"]
     assert all("H100" not in gpu for gpu in payload["gpuTypeIds"])
     assert payload["networkVolumeId"] == "volume-1"
-    assert payload["dataCenterIds"] == ["EUR-IS-1"]
+    assert payload["dataCenterIds"] == ["US-MO-2"]
     assert payload["executionTimeoutMs"] == 3_500_000
 
 
@@ -120,6 +120,25 @@ def test_admission_preserves_full_campaign_and_exact_caps() -> None:
     assert result["ordinary_runpod_pod_create_allowed"] is False
     assert result["workers_min"] == 1
     assert result["semantic_task_success_proven"] is False
+
+
+def test_admission_rejects_volume_outside_s3_network_volume_locations() -> None:
+    volume = _volume()
+    volume["data_center_id"] = "US-TX-3"
+    result = validate_serverless_inputs(
+        release=_release(),
+        model_cache=_model(),
+        volume=volume,
+        provider_inventory=_inventory(),
+        expected_source_commit="c" * 40,
+        resource_name_prefix="blueprint-groot-oscar-serverless-test-",
+        reservation_seconds=DEFAULT_RESERVATION_SECONDS,
+        initial_spent_usd=14.708611,
+        initial_gpu_seconds=15_785,
+    )
+
+    assert result["status"] == "blocked"
+    assert "serverless_network_volume_datacenter_unsupported" in result["blockers"]
 
 
 def test_admission_blocks_unbounded_or_preexisting_compute() -> None:
@@ -244,7 +263,7 @@ def test_active_worker_runs_all_phases_then_retrieves_and_tears_down(
         assert key == "private"
         calls.append((method, path))
         if path == "/networkvolumes/volume-1":
-            return 200, {"id": "volume-1", "dataCenterId": "EUR-IS-1"}
+            return 200, {"id": "volume-1", "dataCenterId": "US-MO-2"}
         if method == "GET":
             return 200, []
         if path == "/templates":

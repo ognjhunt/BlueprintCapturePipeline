@@ -19,6 +19,7 @@ from typing import Any, Mapping
 
 from .common import write_json
 from .gpu_render_providers import _runpod_call
+from .groot_oscar_infrastructure_admission import RUNPOD_S3_VOLUME_DATA_CENTER_IDS
 from .groot_oscar_runpod_serverless_campaign_io import (
     cleanup_campaign_storage,
     retrieve_campaign_outputs,
@@ -38,6 +39,7 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .production_gpu_campaign_budget import (
+    AUTHORIZED_SPEND_CAP_USD,
     CampaignBudgetExceeded,
     ProductionGpuCampaignBudget,
 )
@@ -200,8 +202,8 @@ def validate_serverless_inputs(
         blockers.append("serverless_model_cache_volume_mismatch")
     if volume.get("provider_api_verified") is not True:
         blockers.append("serverless_network_volume_not_provider_verified")
-    if str(volume.get("data_center_id") or "") != "EUR-IS-1":
-        blockers.append("serverless_network_volume_datacenter_invalid")
+    if str(volume.get("data_center_id") or "") not in RUNPOD_S3_VOLUME_DATA_CENTER_IDS:
+        blockers.append("serverless_network_volume_datacenter_unsupported")
     if provider_inventory.get("api_confirmed") is not True:
         blockers.append("serverless_provider_inventory_unverified")
     if provider_inventory.get("matching_compute_count") != 0:
@@ -214,7 +216,10 @@ def validate_serverless_inputs(
         blockers.append("serverless_campaign_reservation_must_equal_remaining_wall_cap")
     if initial_gpu_seconds + reservation_seconds > 21_000:
         blockers.append("serverless_campaign_wall_cap_exceeded")
-    if initial_spent_usd + DEFAULT_MAX_HOURLY_RATE_USD * reservation_seconds / 3600 > 20:
+    if (
+        initial_spent_usd + DEFAULT_MAX_HOURLY_RATE_USD * reservation_seconds / 3600
+        > AUTHORIZED_SPEND_CAP_USD
+    ):
         blockers.append("serverless_campaign_spend_cap_exceeded")
     if max_hourly_rate_usd != DEFAULT_MAX_HOURLY_RATE_USD:
         blockers.append("serverless_campaign_hourly_rate_must_equal_l40s_ceiling")
