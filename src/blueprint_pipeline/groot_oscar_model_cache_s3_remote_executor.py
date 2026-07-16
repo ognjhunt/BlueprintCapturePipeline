@@ -70,6 +70,16 @@ CONSUMED_CAPABILITY_PATH = Path("/root/.blueprint-secrets/model_cache_parent_cap
 EXECUTION_LOCK_PATH = Path("/root/blueprint-build/model_cache_execution.lock")
 RUNTIME_BUNDLE_ROOT = Path(DEFAULT_RUNTIME_ROOT)
 RUNTIME_BUNDLE_BUILD_ROOT = Path("/workspace/.blueprint-runtime-build")
+RUNTIME_CARRIER_ENV = {
+    # The runtime payload is copied out of the release image and mounted into a
+    # small carrier. Docker image ENV metadata does not travel with those files,
+    # so reproduce the foundation runtime contract explicitly for validation.
+    "PYTHONPATH": "/opt/wbc:/opt/OSCAR",
+    "LD_LIBRARY_PATH": (
+        "/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
+        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+    ),
+}
 RUNTIME_EMBEDDED_MODEL_PATHS = (
     "opt/blueprint/ckpts",
     "opt/blueprint/hf_home",
@@ -267,6 +277,11 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
             "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
         )
     )
+    carrier_env_argv = [
+        item
+        for key, value in RUNTIME_CARRIER_ENV.items()
+        for item in ("--env", f"{key}={value}")
+    ]
     _run_command(
         runner,
         [
@@ -275,6 +290,7 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
             "--rm",
             "--network",
             "none",
+            *carrier_env_argv,
             "--entrypoint",
             "/bin/bash",
             "--mount",
