@@ -271,7 +271,7 @@ def verify_carrier_volume_admission(
     if not model_manifest_digest:
         blockers.append("carrier_model_cache_manifest_sha256_invalid")
     model_content_digest = _string(model.get("manifest_digest"))
-    if not (
+    if model_content_digest and not (
         model_content_digest.startswith("sha256:")
         and _sha256_digest(model_content_digest.removeprefix("sha256:"))
     ):
@@ -305,7 +305,8 @@ def verify_carrier_volume_admission(
         "model_cache_root": DEFAULT_MODEL_CACHE_ROOT,
         "model_cache_manifest_path": DEFAULT_MODEL_CACHE_MANIFEST_PATH,
         "model_manifest_sha256": model_manifest_digest,
-        "model_manifest_digest": model_content_digest,
+        "model_manifest_digest": model_content_digest or None,
+        "requires_external_model_manifest_digest_binding": not bool(model_content_digest),
         "claim_boundary": (
             "This admission proves a digest-bound request may attach preverified volume bytes. "
             "The carrier must still reverify and activate them after container start. It does "

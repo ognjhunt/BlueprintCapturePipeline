@@ -173,6 +173,39 @@ def test_template_bootstraps_verified_runtime_from_persistent_carrier_volume() -
     assert payload["env"]["BLUEPRINT_RUNTIME_CARRIER_IMAGE_DIGEST"] == CARRIER_IMAGE
 
 
+def test_legacy_v2_carrier_uses_volume_bound_model_verification_digest() -> None:
+    carrier = _carrier("US-WA-1")
+    carrier["model_cache"].pop("manifest_digest")
+    volume = _volume()
+    volume["data_center_id"] = "US-WA-1"
+
+    admission = validate_serverless_inputs(
+        release=_release(),
+        model_cache=_model(),
+        volume=volume,
+        provider_inventory=_inventory(),
+        expected_source_commit="c" * 40,
+        resource_name_prefix="blueprint-groot-oscar-serverless-legacy-",
+        reservation_seconds=5_215,
+        initial_spent_usd=15.875304422841,
+        initial_gpu_seconds=15_785,
+        max_hourly_rate_usd=1.75,
+        gpu_type_ids=("NVIDIA RTX 6000 Ada Generation",),
+        carrier_volume_admission=carrier,
+    )
+    payload = build_template_payload(
+        name="blueprint-groot-oscar-serverless-legacy",
+        image_ref=IMAGE,
+        source_commit="c" * 40,
+        model_manifest_digest=MODEL_DIGEST,
+        carrier_volume_admission=carrier,
+    )
+
+    assert admission["status"] == "admitted"
+    assert admission["model_manifest_digest"] == MODEL_DIGEST
+    assert payload["env"]["BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST"] == MODEL_DIGEST
+
+
 def test_admission_accepts_us_carrier_and_exact_residual_campaign_budget() -> None:
     volume = _volume()
     volume["data_center_id"] = "US-WA-1"
