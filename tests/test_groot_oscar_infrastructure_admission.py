@@ -168,7 +168,7 @@ def _carrier_packet(
 ) -> dict:
     image_ref = "docker.io/example/carrier:versioned"
     base_ref = "docker.io/example/base@sha256:" + "a" * 64
-    dockerfile = b"ARG PYTORCH_CARRIER_BASE\nFROM ${PYTORCH_CARRIER_BASE}\n"
+    dockerfile = b"ARG ISAAC_CARRIER_BASE\nFROM ${ISAAC_CARRIER_BASE}\n"
     dockerfile_sha256 = hashlib.sha256(dockerfile).hexdigest()
     script = render_remote_build_script(
         image_ref=image_ref,

@@ -3,11 +3,11 @@
 # GR00T/OSCAR/Isaac release. Runtime source and checkpoints stay on the verified
 # network volume; this image supplies only the compatible OS/CUDA link surface.
 
-ARG PYTORCH_CARRIER_BASE=pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca
+ARG ISAAC_CARRIER_BASE=nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d
 ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6
 ARG CUDA_CUDART_VERSION=12.6.77-1
 
-FROM ${PYTORCH_CARRIER_BASE}
+FROM ${ISAAC_CARRIER_BASE}
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TENSORRT_VERSION CUDA_CUDART_VERSION

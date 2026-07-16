@@ -346,7 +346,13 @@ def test_groot_oscar_small_carrier_matches_foundation_runtime_link_surface() -> 
     carrier = (
         ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Carrier.Dockerfile"
     ).read_text(encoding="utf-8")
-    assert "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" in carrier
+    assert (
+        "nvcr.io/nvidia/isaac-sim:6.0.0@sha256:"
+        "68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d"
+        in carrier
+    )
+    assert "ARG ISAAC_CARRIER_BASE=" in carrier
+    assert "FROM ${ISAAC_CARRIER_BASE}" in carrier
     assert "ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6" in carrier
     assert "ARG CUDA_CUDART_VERSION=12.6.77-1" in carrier
     assert "apt-cache madison libnvinfer10" in carrier
