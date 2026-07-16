@@ -415,6 +415,13 @@ def inspect(candidate):
         ):
             missing_operands.append(("SONAME", operand))
             continue
+        if (
+            0 < len(operand) <= 48
+            and operand not in {".", ".."}
+            and all(character in allowed for character in operand)
+        ):
+            missing_operands.append(("DEPENDENCY_HEX", operand.encode("ascii").hex()))
+            continue
         basename = os.path.basename(operand)
         normalized = os.path.normpath(operand)
         basename_safe = (
@@ -467,6 +474,7 @@ timeout_count = 0
 invalid_missing_count = 0
 invalid_diagnostic_overflow = 0
 missing_sonames = set()
+missing_dependency_hexes = set()
 missing_system_paths = set()
 missing_path_basenames = set()
 invalid_missing_hashes = set()
@@ -482,6 +490,9 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         for kind, value in values:
             if kind == "SONAME":
                 missing_sonames.add(value)
+                continue
+            if kind == "DEPENDENCY_HEX":
+                missing_dependency_hexes.add(value)
                 continue
             if kind == "SYSTEM_PATH":
                 missing_system_paths.add(value)
@@ -505,6 +516,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(f"INVALID_OVERFLOW\t{invalid_diagnostic_overflow}\n")
     for soname in sorted(missing_sonames):
         handle.write(f"MISSING\t{soname}\n")
+    for dependency_hex in sorted(missing_dependency_hexes):
+        handle.write(f"MISSING_DEPENDENCY_HEX\t{dependency_hex}\n")
     for path in sorted(missing_system_paths):
         handle.write(f"MISSING_SYSTEM_PATH\t{path}\n")
     for basename in sorted(missing_path_basenames):
@@ -540,6 +553,10 @@ while IFS=$'\t' read -r kind value; do
       ;;
     MISSING_PATH)
       printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_path_%s\n' "$value"
+      ;;
+    MISSING_DEPENDENCY_HEX)
+      printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_dependency_hex_%s\n' "$value"
+      printf 'hex:%s => not found\n' "$value" >>"$missing"
       ;;
     INVALID_HASH)
       printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_operand_%s\n' "$value"
