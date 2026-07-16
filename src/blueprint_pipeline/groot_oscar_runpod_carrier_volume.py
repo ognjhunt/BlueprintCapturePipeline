@@ -501,7 +501,9 @@ try:
         not driver_soname_allowed(value) for value in driver_sonames
     ):
         raise RuntimeError("runtime_gpu_driver_deferred_sonames_invalid")
-    driver_system_paths = manifest.get("gpu_driver_deferred_system_paths")
+    # This field was added to v2 manifests after the schema was already in use.
+    # Absence means the older producer deferred no exact driver paths.
+    driver_system_paths = manifest.get("gpu_driver_deferred_system_paths", [])
     driver_system_prefixes = (
         "/lib/",
         "/lib64/",
