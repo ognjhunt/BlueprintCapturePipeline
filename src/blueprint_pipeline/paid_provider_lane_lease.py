@@ -559,7 +559,9 @@ def _canary_watchdog_identity_valid(
         type(pid) is not int
         or pid <= 0
         or not _pid_is_alive(pid)
-        or not prefix.startswith("blueprint-groot-oscar-canary-")
+        or not prefix.startswith(
+            ("blueprint-groot-oscar-canary-", "blueprint-groot-oscar-serverless-")
+        )
         or not isinstance(deadline, (int, float))
         or float(deadline) <= float(clock()) + MIN_HANDOFF_REMAINING_SECONDS
         or watchdog.get("watchdog_process_identity_verified") is not True
@@ -567,12 +569,22 @@ def _canary_watchdog_identity_valid(
     ):
         return False
     tokens = tuple(str(token) for token in process_argv_probe(pid))
+    modules = (
+        ("blueprint_pipeline.groot_oscar_runpod_watchdog", "--pod-name-prefix"),
+        (
+            "blueprint_pipeline.groot_oscar_runpod_serverless_watchdog",
+            "--resource-name-prefix",
+        ),
+    )
     try:
-        module_index = tokens.index("blueprint_pipeline.groot_oscar_runpod_watchdog")
-        prefix_index = tokens.index("--pod-name-prefix", module_index + 1) + 1
+        module, prefix_flag = next(
+            item for item in modules if item[0] in tokens
+        )
+        module_index = tokens.index(module)
+        prefix_index = tokens.index(prefix_flag, module_index + 1) + 1
         deadline_index = tokens.index("--deadline-epoch", module_index + 1) + 1
         observed_deadline = float(tokens[deadline_index])
-    except (ValueError, IndexError):
+    except (StopIteration, ValueError, IndexError):
         return False
     return bool(
         module_index > 0
@@ -1003,6 +1015,11 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
                 "status": "blocked",
                 "blockers": ["paid_provider_lane_retention_source_not_owner"],
             }
+        if isinstance(current.get("teardown_claim"), Mapping):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_teardown_already_claimed"],
+            }
         try:
             pending = json.loads(
                 Path(current_binding["pending_teardown_record"]).read_text(
@@ -1132,6 +1149,152 @@ def rotate_paid_provider_lane_lease_to_retention_watchdog(
             # without killing the new teardown owner after the atomic commit.
             pass
     return new_handoff
+
+
+def claim_transferred_paid_provider_lane_teardown(
+    *,
+    lease_path_value: str | os.PathLike[str],
+    teardown_owner_pid: int,
+    expected_binding: Mapping[str, Any],
+    clock: Any = time.time,
+) -> dict[str, Any]:
+    """Atomically fence retention rotation before provider teardown.
+
+    A watchdog may be restarted after its original process dies, but it may not
+    act from an old state file after ownership has rotated to a newer watchdog.
+    The durable claim prevents a concurrent rotation from committing between
+    this check and the provider delete call.
+    """
+
+    path = Path(lease_path_value)
+    expected = _canonical_handoff_binding(expected_binding)
+    required = (
+        "provider",
+        "lane",
+        "volume_id",
+        "pending_teardown_record",
+        "watchdog_nonce",
+    )
+    if (
+        type(teardown_owner_pid) is not int
+        or teardown_owner_pid <= 0
+        or any(not expected[field] for field in required)
+        or not isinstance(expected.get("watchdog_deadline_epoch"), (int, float))
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["paid_provider_lane_teardown_claim_binding_invalid"],
+        }
+    with _reclaim_mutex(path):
+        try:
+            current_value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_teardown_claim_lease_unreadable"],
+            }
+        current = dict(current_value) if isinstance(current_value, Mapping) else {}
+        current_handoff = current.get("handoff")
+        current_handoff = (
+            current_handoff if isinstance(current_handoff, Mapping) else {}
+        )
+        current_binding = _canonical_handoff_binding(
+            current_handoff.get("binding")
+            if isinstance(current_handoff.get("binding"), Mapping)
+            else {}
+        )
+        if current_binding != expected:
+            return {
+                "status": "ownership_transferred",
+                "provider_mutations_performed": 0,
+                "current_owner_pid": current.get("owner_pid"),
+                "current_watchdog_deadline_epoch": current_binding.get(
+                    "watchdog_deadline_epoch"
+                ),
+                "raw_capability_recorded": False,
+            }
+        try:
+            pending_value = json.loads(
+                Path(expected["pending_teardown_record"]).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            pending_value = {}
+        pending = dict(pending_value) if isinstance(pending_value, Mapping) else {}
+        if not bool(
+            pending.get("status") == "open"
+            and str(pending.get("provider") or "").strip().lower()
+            == expected["provider"]
+            and str(pending.get("lane") or "") == expected["lane"]
+            and pending.get("resource_kind") == "network_volume"
+            and str(pending.get("instance_id") or "") == expected["volume_id"]
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_lane_teardown_claim_pending_invalid"],
+            }
+        existing_claim = current.get("teardown_claim")
+        existing_claim = (
+            existing_claim if isinstance(existing_claim, Mapping) else {}
+        )
+        if existing_claim:
+            if (
+                existing_claim.get("owner_pid") == teardown_owner_pid
+                and existing_claim.get("binding") == expected
+            ):
+                return {**dict(existing_claim), "status": "claimed", "idempotent": True}
+            return {
+                "status": "ownership_transferred",
+                "provider_mutations_performed": 0,
+                "current_owner_pid": existing_claim.get("owner_pid"),
+                "current_watchdog_deadline_epoch": expected.get(
+                    "watchdog_deadline_epoch"
+                ),
+                "raw_capability_recorded": False,
+            }
+        recorded_owner = current.get("owner_pid")
+        recorded_retained_owner = current.get("retained_teardown_owner_pid")
+        direct_owner = teardown_owner_pid in {recorded_owner, recorded_retained_owner}
+        recoverable_dead_owner = bool(
+            current.get("hostname") == _hostname()
+            and type(recorded_owner) is int
+            and recorded_owner > 0
+            and not _pid_is_alive(recorded_owner)
+            and (
+                type(recorded_retained_owner) is not int
+                or recorded_retained_owner <= 0
+                or not _pid_is_alive(recorded_retained_owner)
+            )
+        )
+        if not direct_owner and not recoverable_dead_owner:
+            return {
+                "status": "ownership_transferred",
+                "provider_mutations_performed": 0,
+                "current_owner_pid": recorded_owner,
+                "current_watchdog_deadline_epoch": expected.get(
+                    "watchdog_deadline_epoch"
+                ),
+                "raw_capability_recorded": False,
+            }
+        claim = {
+            "status": "claimed",
+            "owner_pid": teardown_owner_pid,
+            "binding": expected,
+            "claimed_at_epoch": float(clock()),
+            "recovered_dead_owner": bool(recoverable_dead_owner and not direct_owner),
+            "provider_mutations_performed": 0,
+            "raw_capability_recorded": False,
+        }
+        current.update(
+            {
+                "owner_pid": teardown_owner_pid,
+                "retained_teardown_owner_pid": teardown_owner_pid,
+                "owner_role": "retained_network_volume_teardown_watchdog",
+                "heartbeat_at_epoch": float(clock()),
+                "teardown_claim": claim,
+            }
+        )
+        _write_lease(path, current)
+    return claim
 
 
 def release_transferred_paid_provider_lane_lease(

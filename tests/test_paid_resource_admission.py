@@ -10,7 +10,9 @@ from blueprint_pipeline.paid_resource_admission import (
 )
 
 
-@pytest.mark.parametrize("resource_class", ["cpu_build", "gpu_canary"])
+@pytest.mark.parametrize(
+    "resource_class", ["cpu_build", "gpu_canary", "runpod_serverless_active_worker"]
+)
 def test_shared_chokepoint_grants_only_exact_admitted_contract(
     resource_class: str,
 ) -> None:
