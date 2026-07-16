@@ -487,9 +487,10 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
 
     rows = scan.read_text(encoding="utf-8").splitlines()
     assert "COUNT\t1" in rows
-    assert "INVALID_MISSING\t3" in rows
+    assert "INVALID_MISSING\t2" in rows
     assert "INVALID_OVERFLOW\t0" in rows
     assert "MISSING\tlibplain.so.1" in rows
+    assert "MISSING\tlibcuda.so.1" in rows
     assert "MISSING_SYSTEM_PATH\tlibcuda.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]

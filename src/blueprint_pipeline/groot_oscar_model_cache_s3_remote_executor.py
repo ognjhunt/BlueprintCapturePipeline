@@ -454,16 +454,16 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             if kind == "SONAME":
                 missing_sonames.add(value)
                 continue
+            if kind == "SYSTEM_PATH":
+                missing_system_path_basenames.add(value)
+                missing_sonames.add(value)
+                continue
             invalid_missing_count += 1
             diagnostic_count = (
-                len(missing_system_path_basenames)
-                + len(missing_path_basenames)
-                + len(invalid_missing_hashes)
+                len(missing_path_basenames) + len(invalid_missing_hashes)
             )
             if diagnostic_count >= max_invalid_diagnostics:
                 invalid_diagnostic_overflow += 1
-            elif kind == "SYSTEM_PATH":
-                missing_system_path_basenames.add(value)
             elif kind == "PATH":
                 missing_path_basenames.add(value)
             else:
