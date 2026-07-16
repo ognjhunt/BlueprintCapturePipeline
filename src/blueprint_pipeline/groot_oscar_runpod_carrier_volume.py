@@ -16,7 +16,7 @@ import shlex
 from typing import Any, Mapping, Sequence
 
 
-RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION = "groot_oscar_runtime_bundle_manifest.v1"
+RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION = "groot_oscar_runtime_bundle_manifest.v2"
 CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v3"
 LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v2"
 THIN_RUNTIME_SOURCE_EVIDENCE_SCHEMA_VERSION = "groot_oscar_thin_remote_build_result.v1"
@@ -428,17 +428,14 @@ try:
     if digest(manifest_path) != os.environ["BLUEPRINT_RUNTIME_MANIFEST_SHA256"]:
         raise RuntimeError("runtime_manifest_sha256_mismatch")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v1":
+    if manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v2":
         raise RuntimeError("runtime_manifest_schema_invalid")
     expected_runtime_env = {
         key: os.environ.get(key) for key in ("PYTHONPATH", "LD_LIBRARY_PATH")
     }
     if manifest.get("runtime_env") != expected_runtime_env:
         raise RuntimeError("runtime_manifest_env_mismatch")
-    # Pre-audit v1 manifests could not contain deferred driver SONAMEs: the
-    # CPU linkage check failed on every unresolved dependency.  Treat the
-    # absent additive field as the only valid historical value, an empty list.
-    driver_sonames = manifest.get("gpu_driver_deferred_sonames", [])
+    driver_sonames = manifest.get("gpu_driver_deferred_sonames")
     driver_stems = (
         "libcuda.so",
         "libnvcuvid.so",
