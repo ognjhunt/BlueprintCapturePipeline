@@ -450,6 +450,7 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
 
     evidence = raised.value.evidence
     assert evidence["archived_elf_file_count"] == 1234
+    assert evidence["archived_dependency_resolved_count"] == 0
     failed = next(row for row in evidence["checks"] if row["name"] == "all_archived_elf_linkage")
     assert failed["diagnostic_tokens"] == [
         "elf_missing_path_libescape.so.2",
