@@ -8,6 +8,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, cast
 
+from .production_gpu_campaign_budget import (
+    AUTHORIZED_GPU_WALL_CAP_SECONDS,
+    AUTHORIZED_SPEND_CAP_USD,
+    MAX_HOURLY_RATE_USD,
+)
+
 
 def external_process_alive(pid: int) -> bool:
     if pid <= 0 or pid == os.getpid():
@@ -91,11 +97,11 @@ def campaign_budget_reservation_valid(supervisor: Mapping[str, Any]) -> bool:
     return bool(
         ledger.get("schema_version") == "production_gpu_campaign_budget.v1"
         and reservation.get("status") == "open"
-        and 0 < spend_cap <= 20.0
-        and 0 < wall_cap <= 21_000
+        and 0 < spend_cap <= AUTHORIZED_SPEND_CAP_USD
+        and 0 < wall_cap <= AUTHORIZED_GPU_WALL_CAP_SECONDS
         and 0 <= committed_usd <= spend_cap
         and 0 <= committed_seconds <= wall_cap
-        and 0 < max_rate <= 3.50
+        and 0 < max_rate <= MAX_HOURLY_RATE_USD
         and reserved_usd <= max_rate * reserved_seconds / 3600.0 + 0.000001
         and reserved_seconds >= deadline - armed_epoch
     )
