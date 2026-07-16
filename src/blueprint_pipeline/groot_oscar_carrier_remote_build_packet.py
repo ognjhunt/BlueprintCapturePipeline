@@ -118,7 +118,6 @@ def prepare_remote_build_packet(
     output = Path(output_dir).expanduser().resolve()
     packet = output / PACKET_DIRNAME
     context = packet / "context"
-    ensure_dir(context)
     blockers: list[str] = []
     if not _DIGEST_REF.fullmatch(base_image_ref):
         blockers.append("carrier_base_image_not_digest_pinned")
@@ -162,6 +161,7 @@ def prepare_remote_build_packet(
         blockers.append("carrier_source_dirty_claim_mismatch")
     if source_worktree_dirty or actual_dirty:
         blockers.append("carrier_packet_requires_clean_source_worktree")
+    ensure_dir(context)
     source = root / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Carrier.Dockerfile"
     if not source.is_file():
         blockers.append("carrier_dockerfile_missing")

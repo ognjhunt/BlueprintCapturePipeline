@@ -60,3 +60,40 @@ def test_carrier_packet_rejects_unpinned_base_and_untagged_output(tmp_path: Path
     )
     assert "carrier_base_image_not_digest_pinned" in result["blockers"]
     assert "carrier_image_ref_not_versioned" in result["blockers"]
+
+
+def test_carrier_packet_checks_cleanliness_before_writing_inside_repo(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    dockerfile = repo / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Carrier.Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("ARG PYTORCH_CARRIER_BASE\nFROM ${PYTORCH_CARRIER_BASE}\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Packet Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "packet-test@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=repo, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    result = prepare_remote_build_packet(
+        output_dir=repo / "generated-packet",
+        repo_root=repo,
+        image_ref="docker.io/example/carrier:versioned",
+        base_image_ref=DEFAULT_BASE_IMAGE,
+        source_commit=head,
+        source_worktree_dirty=False,
+    )
+
+    assert result["status"] == "ready"
+    assert result["blockers"] == []
