@@ -292,3 +292,15 @@ def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependenc
         "liboptional.so.2",
         "omni.missing",
     ]
+
+
+def test_runtime_carrier_validation_soname_extraction_is_bounded_and_linear() -> None:
+    hostile = "-." * 100_000
+    text = (
+        f"{hostile}.so => not found\n"
+        "loader: error while loading shared libraries: libyaml-cpp.so.0.8: "
+        "cannot open shared object file\n"
+        "/unsafe/path/libescape.so.1 => not found\n"
+    )
+
+    assert executor._missing_soname_tokens(text) == {"libyaml-cpp.so.0.8"}
