@@ -132,8 +132,30 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert all(CARRIER_REF in call for call in carrier_runs)
     for key, value in executor.RUNTIME_CARRIER_ENV.items():
         assert all(f"{key}={value}" in call for call in carrier_runs)
+    serverless_runs = [
+        call
+        for call in carrier_runs
+        if "blueprint_pipeline.groot_oscar_runpod_serverless_worker" in call[-1]
+    ]
+    assert len(serverless_runs) == 1
+    assert "--verify-serverless-runtime" in serverless_runs[0][-1]
+    assert "import runpod" not in serverless_runs[0][-1]
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
+
+    serverless_healthcheck = [
+        argv
+        for argv in manifest["healthcheck_argv"]
+        if "blueprint_pipeline.groot_oscar_runpod_serverless_worker" in argv
+    ]
+    assert serverless_healthcheck == [
+        [
+            "/opt/runpod-serverless-venv/bin/python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_serverless_worker",
+            "--verify-serverless-runtime",
+        ]
+    ]
 
 
 def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:

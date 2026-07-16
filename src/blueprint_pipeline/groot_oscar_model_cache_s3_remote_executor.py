@@ -266,7 +266,9 @@ def _validate_runtime_inside_carrier(runner: Any, *, carrier_ref: str, payload_r
         ("blueprint_import", "/opt/oscar-venv/bin/python -c 'import blueprint_pipeline'"),
         (
             "serverless_import",
-            "/opt/runpod-serverless-venv/bin/python -c 'import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker'",
+            "/opt/runpod-serverless-venv/bin/python -m "
+            "blueprint_pipeline.groot_oscar_runpod_serverless_worker "
+            "--verify-serverless-runtime",
         ),
         ("isaac_python_executable", "test -x /isaac-sim/python.sh"),
         (
@@ -434,8 +436,9 @@ def prepare_runtime_bundle(
                 ("/opt/oscar-venv/bin/python", "-c", "import blueprint_pipeline"),
                 (
                     "/opt/runpod-serverless-venv/bin/python",
-                    "-c",
-                    "import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker",
+                    "-m",
+                    "blueprint_pipeline.groot_oscar_runpod_serverless_worker",
+                    "--verify-serverless-runtime",
                 ),
                 (
                     "/opt/oscar-venv/bin/python",
