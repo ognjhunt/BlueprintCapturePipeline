@@ -21,6 +21,7 @@ from .gpu_render_providers import _runpod_call, get_render_provider
 from .groot_oscar_infrastructure_admission import (
     RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS,
 )
+from .paid_provider_lane_lease import claim_transferred_paid_provider_lane_teardown
 
 
 SCHEMA_VERSION = "groot_oscar_runpod_model_volume_admission.v1"
@@ -259,6 +260,53 @@ def watchdog(*, state_path: Path) -> int:
                 )
                 return 0
         time.sleep(10)
+    try:
+        refreshed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        refreshed_state = {}
+    lane_handoff = (
+        refreshed_state.get("provider_lane_handoff")
+        if isinstance(refreshed_state, Mapping)
+        else None
+    )
+    lane_handoff = lane_handoff if isinstance(lane_handoff, Mapping) else {}
+    binding = lane_handoff.get("binding")
+    binding = binding if isinstance(binding, Mapping) else {}
+    lease_path_value = str(lane_handoff.get("lease_path") or "")
+    teardown_claim: dict[str, Any] = {"status": "legacy_state_without_lease"}
+    if lease_path_value:
+        teardown_claim = claim_transferred_paid_provider_lane_teardown(
+            lease_path_value=lease_path_value,
+            teardown_owner_pid=os.getpid(),
+            expected_binding=binding,
+        )
+        if teardown_claim.get("status") == "ownership_transferred":
+            write_json(
+                root / "watchdog_result.json",
+                {
+                    "schema_version": WATCHDOG_SCHEMA_VERSION,
+                    "status": "ownership_transferred_no_mutation",
+                    "provider_mutations_performed": 0,
+                    "provider_absence_confirmed": False,
+                    "teardown_claim": teardown_claim,
+                    "raw_secret_values_recorded": False,
+                },
+            )
+            return 0
+        if teardown_claim.get("status") != "claimed":
+            write_json(
+                root / "watchdog_result.json",
+                {
+                    "schema_version": WATCHDOG_SCHEMA_VERSION,
+                    "status": "teardown_unverified",
+                    "blockers": list(teardown_claim.get("blockers") or []),
+                    "provider_mutations_performed": 0,
+                    "provider_absence_confirmed": False,
+                    "teardown_claim": teardown_claim,
+                    "raw_secret_values_recorded": False,
+                },
+            )
+            return 2
     provider = get_render_provider("runpod")
     key = provider._key()  # type: ignore[attr-defined]
     if not key:
@@ -293,10 +341,6 @@ def watchdog(*, state_path: Path) -> int:
     ledger_close: dict[str, Any] = {}
     lease_release: dict[str, Any] = {}
     if terminal:
-        try:
-            refreshed_state = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            refreshed_state = {}
         global_pods, global_volumes, global_verified = _matching_resources(
             key=key,
             pod_prefix=None,
@@ -311,10 +355,6 @@ def watchdog(*, state_path: Path) -> int:
             )
 
             pending_path = str(refreshed_state.get("pending_teardown_record") or "")
-            lane_handoff = refreshed_state.get("provider_lane_handoff")
-            lane_handoff = lane_handoff if isinstance(lane_handoff, Mapping) else {}
-            binding = lane_handoff.get("binding")
-            binding = binding if isinstance(binding, Mapping) else {}
             if pending_path:
                 ledger_close = close_pending_teardown(
                     pending_path,
@@ -352,6 +392,7 @@ def watchdog(*, state_path: Path) -> int:
             "provider_absence_confirmed": terminal,
             "pending_teardown_close": ledger_close,
             "provider_lane_lease_release": lease_release,
+            "teardown_claim": teardown_claim,
             "raw_secret_values_recorded": False,
         },
     )

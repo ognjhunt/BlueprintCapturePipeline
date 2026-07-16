@@ -345,6 +345,56 @@ def test_ready_volume_handoff_still_deletes_volume_at_deadline(
     assert result["status"] == "provider_terminal"
 
 
+def test_stale_source_watchdog_does_not_mutate_after_retention_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "watchdog_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "deadline_epoch": time.time() - 1,
+                "pod_name_prefix": "blueprint-storage-only-no-pod-old",
+                "volume_name": "blueprint-groot-oscar-models-old",
+                "watchdog_nonce": "old-nonce",
+                "provider_lane_handoff": {
+                    "lease_path": str(tmp_path / "provider.lease.json"),
+                    "binding": {
+                        "provider": "runpod",
+                        "lane": "groot_oscar_model_volume",
+                        "volume_id": "volume-1",
+                        "pending_teardown_record": str(tmp_path / "pending.json"),
+                        "watchdog_nonce": "old-nonce",
+                        "watchdog_deadline_epoch": time.time() - 1,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        model_volume,
+        "claim_transferred_paid_provider_lane_teardown",
+        lambda **_kwargs: {
+            "status": "ownership_transferred",
+            "provider_mutations_performed": 0,
+            "current_owner_pid": 333,
+        },
+    )
+    monkeypatch.setattr(
+        model_volume,
+        "get_render_provider",
+        lambda _name: (_ for _ in ()).throw(
+            AssertionError("provider inventory reached from stale watchdog")
+        ),
+    )
+
+    assert watchdog(state_path=state) == 0
+    result = json.loads((tmp_path / "watchdog_result.json").read_text())
+    assert result["status"] == "ownership_transferred_no_mutation"
+    assert result["provider_mutations_performed"] == 0
+    assert result["provider_absence_confirmed"] is False
+
+
 def test_model_volume_reads_hf_token_before_provider_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

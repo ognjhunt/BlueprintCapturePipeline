@@ -3,8 +3,7 @@
 The website/control plane should enqueue a manifest URI. A prepared worker image
 can run this module, load that manifest, execute the existing deterministic job
 orchestrator, and copy artifacts to a configured destination before shutdown.
-Live GPU/provider execution still requires the same explicit env and CLI gates as
-the orchestrator.
+Live GPU execution still requires the orchestrator's explicit environment and CLI gates.
 """
 
 from __future__ import annotations
@@ -42,6 +41,7 @@ from .robot_eval_job_orchestrator import (
     _run_command_simulator,
 )
 from .robot_eval_evaluation_run_adapter import execute_legacy_robot_eval_request_as_evaluation_run
+from .runpod_serverless_volume import provider_runtime_local_path
 from .security_controls import (
     fetch_bounded_https,
     origins_from_env,
@@ -590,7 +590,7 @@ def _uri_to_local_path(uri: str, work_dir: Path) -> Path:
         raise ValueError("file:// worker manifest sources are disabled")
     if parsed.scheme == "":
         if _provider_runtime():
-            raise ValueError("local worker manifest sources are disabled in provider runtime")
+            return provider_runtime_local_path(uri, source="worker manifest")
         return Path(uri)
     if parsed.scheme == "http":
         raise ValueError("worker manifest URL must use HTTPS")
@@ -620,7 +620,7 @@ def _uri_to_local_file(uri: str, work_dir: Path, *, filename: str) -> Path:
         raise ValueError("file:// capture bundle sources are disabled")
     if parsed.scheme == "":
         if _provider_runtime():
-            raise ValueError("local capture bundle sources are disabled in provider runtime")
+            return provider_runtime_local_path(uri, source="capture bundle")
         return Path(uri)
     if (
         not filename

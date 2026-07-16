@@ -178,6 +178,100 @@ def test_allocator_cli_never_prints_provider_result_secrets(monkeypatch, capsys)
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_warm_worker_uses_canonical_allocator_and_redacts_stdout(
+    monkeypatch, capsys
+) -> None:
+    observed = {}
+
+    def fake_run_active_worker(**kwargs):
+        observed.update(kwargs)
+        return {
+            "status": "completed",
+            "api_key": "do-not-print",
+        }
+
+    monkeypatch.setattr(allocator, "run_active_worker", fake_run_active_worker)
+    exit_code = allocator.main(
+        [
+            "gpu-warm-worker",
+            "--output-dir",
+            "out",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "model.json",
+            "--watchdog-handoff-evidence",
+            "handoff.json",
+            "--resource-name-prefix",
+            "blueprint-groot-oscar-serverless-test-",
+            "--expected-source-commit",
+            "c" * 40,
+            "--campaign-budget-ledger",
+            "budget.json",
+            "--campaign-initial-spent-usd",
+            "14.708611",
+            "--campaign-initial-used-gpu-seconds",
+            "15785",
+            "--campaign-io-evidence",
+            "campaign_io.json",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["execute"] is True
+    assert observed["initial_gpu_seconds"] == 15_785
+    assert observed["expected_source_commit"] == "c" * 40
+    assert observed["campaign_io_evidence"] == "campaign_io.json"
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_warm_worker_routes_only_through_canonical_allocator(
+    monkeypatch, capsys
+) -> None:
+    observed = {}
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {
+            "status": "completed",
+            "provider_secret": "do-not-print",
+        }
+
+    monkeypatch.setattr(allocator, "run_active_worker", fake_run)
+    exit_code = allocator.main(
+        [
+            "gpu-warm-worker",
+            "--output-dir",
+            "out",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "cache.json",
+            "--watchdog-handoff-evidence",
+            "handoff.json",
+            "--resource-name-prefix",
+            "blueprint-groot-oscar-serverless-test-",
+            "--expected-source-commit",
+            "c" * 40,
+            "--campaign-budget-ledger",
+            "budget.json",
+            "--campaign-initial-spent-usd",
+            "14.708611",
+            "--campaign-initial-used-gpu-seconds",
+            "15785",
+            "--campaign-io-evidence",
+            "campaign_io.json",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["execute"] is True
+    assert observed["initial_gpu_seconds"] == 15_785
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_cpu_build_run_blocks_before_provider_when_live_prerequisites_fail(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -755,3 +755,19 @@ def test_robot_eval_worker_failure_fallback_and_finalizer_upload_edges(
     )
     assert runtime["status"] == "blocked"
     assert runtime["blockers"] == ["worker_runtime_manifest_upload_failed:RuntimeError"]
+
+
+def test_provider_runtime_allows_only_runpod_serverless_volume_local_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME", "true")
+    monkeypatch.setenv(
+        "BLUEPRINT_RUNPOD_SERVERLESS_NETWORK_VOLUME_RUNTIME", "true"
+    )
+    allowed = "/runpod-volume/jobs/smoke/manifest.json"
+
+    assert rew._uri_to_local_path(allowed, tmp_path) == Path(allowed)
+    with pytest.raises(ValueError, match="local worker manifest sources are disabled"):
+        rew._uri_to_local_path("/tmp/manifest.json", tmp_path)
+    with pytest.raises(ValueError, match="file:// worker manifest sources are disabled"):
+        rew._uri_to_local_path("file:///runpod-volume/jobs/manifest.json", tmp_path)

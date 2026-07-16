@@ -33,6 +33,11 @@ from .groot_oscar_infrastructure_admission import (
     build_cpu_build_execution_admission,
 )
 from .groot_oscar_runpod_canary import run_canary
+from .groot_oscar_runpod_serverless import (
+    DEFAULT_MAX_HOURLY_RATE_USD,
+    DEFAULT_RESERVATION_SECONDS,
+    run_active_worker,
+)
 from .groot_oscar_runpod_storage_volume import (
     launch_detached as launch_detached_model_volume,
 )
@@ -332,6 +337,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=DIGITALOCEAN_PREBAKE_DEFAULT_VOLUME_GIB,
     )
+    warm = commands.add_parser("gpu-warm-worker")
+    warm.add_argument("--output-dir", required=True)
+    warm.add_argument("--release-evidence", required=True)
+    warm.add_argument("--model-cache-evidence", required=True)
+    warm.add_argument("--watchdog-handoff-evidence", required=True)
+    warm.add_argument(
+        "--runpod-api-key-file",
+        default="~/.blueprint-secrets/runpod_api_key",
+    )
+    warm.add_argument("--resource-name-prefix", required=True)
+    warm.add_argument("--expected-source-commit", required=True)
+    warm.add_argument("--campaign-budget-ledger", required=True)
+    warm.add_argument("--campaign-initial-spent-usd", required=True, type=float)
+    warm.add_argument(
+        "--campaign-initial-used-gpu-seconds", required=True, type=int
+    )
+    warm.add_argument(
+        "--campaign-reservation-seconds",
+        type=int,
+        default=DEFAULT_RESERVATION_SECONDS,
+    )
+    warm.add_argument(
+        "--campaign-max-hourly-rate-usd",
+        type=float,
+        default=DEFAULT_MAX_HOURLY_RATE_USD,
+    )
+    warm.add_argument("--campaign-io-evidence", required=True)
+    warm.add_argument(
+        "--runpod-s3-access-key-file",
+        default="~/.blueprint-secrets/runpod_s3_access_key",
+    )
+    warm.add_argument(
+        "--runpod-s3-secret-key-file",
+        default="~/.blueprint-secrets/runpod_s3_secret_key",
+    )
+    warm.add_argument("--execute", action="store_true")
     for name, hidden in (("model-volume", False), ("model-volume-run", True)):
         model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
         model.add_argument("--output-dir", required=True)
@@ -586,6 +627,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             )
         success = result.get("status") in {"dry_run_ready", "submitted"}
+    elif args.command == "gpu-warm-worker":
+        result = run_active_worker(
+            output_dir=args.output_dir,
+            release_evidence=args.release_evidence,
+            model_cache_evidence=args.model_cache_evidence,
+            watchdog_handoff_evidence=args.watchdog_handoff_evidence,
+            api_key_file=args.runpod_api_key_file,
+            campaign_io_evidence=args.campaign_io_evidence,
+            runpod_s3_access_key_file=args.runpod_s3_access_key_file,
+            runpod_s3_secret_key_file=args.runpod_s3_secret_key_file,
+            resource_name_prefix=args.resource_name_prefix,
+            expected_source_commit=args.expected_source_commit,
+            execute=args.execute,
+            campaign_budget_ledger=args.campaign_budget_ledger,
+            initial_spent_usd=args.campaign_initial_spent_usd,
+            initial_gpu_seconds=args.campaign_initial_used_gpu_seconds,
+            reservation_seconds=args.campaign_reservation_seconds,
+            max_hourly_rate_usd=args.campaign_max_hourly_rate_usd,
+        )
+        success = result.get("status") in {
+            "dry_run_ready",
+            "completed",
+        }
     elif args.command == "model-volume":
         if args.retain_existing_output:
             if args.campaign_spent_to_date_usd is None:
