@@ -90,6 +90,7 @@ STARTUP_JOB_TIMEOUT_SECONDS = 1_200
 STRICT_JOB_TIMEOUT_SECONDS = 300
 STRICT_ATTEMPT_WALL_SECONDS = 480
 STRICT_TEARDOWN_BUFFER_SECONDS = 120
+STRICT_EXECUTION_RESERVE_SECONDS = STRICT_ATTEMPT_WALL_SECONDS - STRICT_TEARDOWN_BUFFER_SECONDS
 CAMPAIGN_JOB_TIMEOUT_SECONDS = 3_500
 CAMPAIGN_TEARDOWN_BUFFER_SECONDS = 120
 MODEL_CACHE_PATH = "/runpod-volume/.blueprint-model-cache/blueprint-groot-oscar-v1"
@@ -111,6 +112,16 @@ def _digest_ref(value: Any) -> bool:
     return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
 
 
+def _model_manifest_digest(value: Any) -> bool:
+    text = str(value or "")
+    digest = text.removeprefix("sha256:")
+    return (
+        text.startswith("sha256:")
+        and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+    )
+
+
 def _serverless_volume_path(path: str) -> str:
     prefix = "/workspace/"
     if not path.startswith(prefix):
@@ -126,7 +137,7 @@ def compute_startup_wall_timeout_seconds(*, deadline_epoch: float, now_epoch: fl
         int(
             deadline_epoch
             - now_epoch
-            - STRICT_JOB_TIMEOUT_SECONDS
+            - STRICT_EXECUTION_RESERVE_SECONDS
             - CAMPAIGN_JOB_TIMEOUT_SECONDS
             - CAMPAIGN_TEARDOWN_BUFFER_SECONDS
         ),
@@ -141,12 +152,7 @@ def build_template_payload(
     model_manifest_digest: str,
     carrier_volume_admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    model_manifest_hash = model_manifest_digest.removeprefix("sha256:")
-    if (
-        not model_manifest_digest.startswith("sha256:")
-        or len(model_manifest_hash) != 64
-        or any(char not in "0123456789abcdef" for char in model_manifest_hash)
-    ):
+    if not _model_manifest_digest(model_manifest_digest):
         raise ValueError("serverless_model_manifest_digest_invalid")
     payload = {
         "category": "NVIDIA",
@@ -300,7 +306,7 @@ def validate_serverless_inputs(
     ):
         blockers.append("serverless_model_cache_not_verified")
     manifest_digest = str(model_cache.get("model_manifest_digest") or "")
-    if not manifest_digest.startswith("sha256:") or len(manifest_digest) != 71:
+    if not _model_manifest_digest(manifest_digest):
         blockers.append("serverless_model_manifest_digest_invalid")
     if str(model_cache.get("provider_volume_id") or "") != str(volume.get("id") or ""):
         blockers.append("serverless_model_cache_volume_mismatch")
@@ -329,7 +335,7 @@ def validate_serverless_inputs(
     if reservation_seconds != remaining_wall_seconds:
         blockers.append("serverless_campaign_reservation_must_equal_remaining_wall_cap")
     minimum_reservation_seconds = (
-        STRICT_JOB_TIMEOUT_SECONDS
+        STRICT_EXECUTION_RESERVE_SECONDS
         + CAMPAIGN_JOB_TIMEOUT_SECONDS
         + CAMPAIGN_TEARDOWN_BUFFER_SECONDS
         + 1
@@ -380,7 +386,7 @@ def validate_serverless_inputs(
         "maximum_startup_seconds": max(
             0,
             reservation_seconds
-            - STRICT_JOB_TIMEOUT_SECONDS
+            - STRICT_EXECUTION_RESERVE_SECONDS
             - CAMPAIGN_JOB_TIMEOUT_SECONDS
             - CAMPAIGN_TEARDOWN_BUFFER_SECONDS,
         ),

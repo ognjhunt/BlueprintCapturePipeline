@@ -217,6 +217,23 @@ def test_template_rejects_non_hex_model_manifest_digest() -> None:
             model_manifest_digest="sha256:" + "z" * 64,
         )
 
+    malformed_model = _model()
+    malformed_model["model_manifest_digest"] = "sha256:" + "z" * 64
+    admission = validate_serverless_inputs(
+        release=_release(),
+        model_cache=malformed_model,
+        volume=_volume(),
+        provider_inventory=_inventory(),
+        expected_source_commit="c" * 40,
+        resource_name_prefix="blueprint-groot-oscar-serverless-invalid-digest-",
+        reservation_seconds=DEFAULT_RESERVATION_SECONDS,
+        initial_spent_usd=14.708611,
+        initial_gpu_seconds=15_785,
+        carrier_volume_admission=_carrier(),
+    )
+    assert admission["status"] == "blocked"
+    assert "serverless_model_manifest_digest_invalid" in admission["blockers"]
+
 
 def test_admission_accepts_us_carrier_and_exact_residual_campaign_budget() -> None:
     volume = _volume()
@@ -238,7 +255,7 @@ def test_admission_accepts_us_carrier_and_exact_residual_campaign_budget() -> No
 
     assert result["status"] == "admitted"
     assert result["carrier_volume_verified"] is True
-    assert result["maximum_startup_seconds"] == 1_295
+    assert result["maximum_startup_seconds"] == 1_235
     assert result["gpu_type_ids"] == ["NVIDIA RTX 6000 Ada Generation"]
 
 
@@ -319,7 +336,7 @@ def test_blocked_carrier_returns_admission_without_building_request_shape(
 
 
 def test_startup_timeout_preserves_strict_and_campaign_reserves() -> None:
-    assert compute_startup_wall_timeout_seconds(deadline_epoch=5_000.0, now_epoch=992.0) == 88
+    assert compute_startup_wall_timeout_seconds(deadline_epoch=5_000.0, now_epoch=992.0) == 28
     assert compute_startup_wall_timeout_seconds(deadline_epoch=10_000.0, now_epoch=1_000.0) == 1_200
 
 
