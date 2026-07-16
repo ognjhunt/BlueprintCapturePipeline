@@ -40,6 +40,7 @@ _SAFE_WHEEL = re.compile(r"[A-Za-z0-9_.+-]+[.]whl")
 _CONTEXT_MODULES = (
     "__init__.py",
     "common.py",
+    "groot_oscar_carrier_remote_build_packet.py",
     "groot_oscar_infrastructure_admission.py",
     "groot_oscar_model_cache.py",
     "groot_oscar_model_cache_s3_remote_executor.py",
