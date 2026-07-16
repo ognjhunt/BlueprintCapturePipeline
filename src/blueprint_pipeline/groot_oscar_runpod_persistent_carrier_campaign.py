@@ -34,6 +34,7 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .production_gpu_campaign_budget import ProductionGpuCampaignBudget
+from .runpod_wam_async_runner import RUNPOD_WAM_TEARDOWN_ACTION_ENV
 from .unitree_groot_n17_sonic_vast_persistent_session import (
     run_persistent_session_runpod,
 )
@@ -52,6 +53,7 @@ _PERSISTENT_RUNTIME_TIMEOUT_ENV = {
         PERSISTENT_WATCHDOG_MAX_TTL_SECONDS - 300
     ),
 }
+_PERSISTENT_TERMINAL_TEARDOWN_ENV = {RUNPOD_WAM_TEARDOWN_ACTION_ENV: "delete"}
 
 
 def _read(path: str | Path) -> dict[str, Any]:
@@ -481,10 +483,14 @@ def run_persistent_carrier_campaign(
     try:
         campaign_contract = prepared["admission"]["campaign_contract"]
         request_shape = prepared["bound_request"]["provider_request_shape"]
-        previous_runtime_timeout_env = {
-            key: os.environ.get(key) for key in _PERSISTENT_RUNTIME_TIMEOUT_ENV
+        campaign_env = {
+            **_PERSISTENT_RUNTIME_TIMEOUT_ENV,
+            **_PERSISTENT_TERMINAL_TEARDOWN_ENV,
         }
-        os.environ.update(_PERSISTENT_RUNTIME_TIMEOUT_ENV)
+        previous_campaign_env = {
+            key: os.environ.get(key) for key in campaign_env
+        }
+        os.environ.update(campaign_env)
         try:
             session_result, exit_code = session_runner(
                 policy_observation_path=policy_observation_path,
@@ -505,7 +511,7 @@ def run_persistent_carrier_campaign(
                 allowed_cuda_versions=tuple(request_shape["allowed_cuda_versions"]),
             )
         finally:
-            for key, value in previous_runtime_timeout_env.items():
+            for key, value in previous_campaign_env.items():
                 if value is None:
                     os.environ.pop(key, None)
                 else:

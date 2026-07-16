@@ -256,13 +256,17 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
     monkeypatch.setenv(
         "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS", "original"
     )
+    monkeypatch.setenv(campaign.RUNPOD_WAM_TEARDOWN_ACTION_ENV, "keep_on_success")
 
     def fake_session(**kwargs):
         observed.update(kwargs)
         observed_timeout_env.update(
             {
                 key: campaign.os.environ.get(key)
-                for key in campaign._PERSISTENT_RUNTIME_TIMEOUT_ENV
+                for key in {
+                    **campaign._PERSISTENT_RUNTIME_TIMEOUT_ENV,
+                    **campaign._PERSISTENT_TERMINAL_TEARDOWN_ENV,
+                }
             }
         )
         session_job = Path(kwargs["job_dir"]) / "20260716T054812_0000"
@@ -324,10 +328,14 @@ def test_persistent_campaign_executes_exact_loop_and_requires_teardown(
         "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS": "18000",
         "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_WRAPPER_WATCHDOG_SECONDS": "18300",
         "BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS": "18300",
+        "BLUEPRINT_RUNPOD_WAM_TEARDOWN_ACTION": "delete",
     }
     assert (
         campaign.os.environ["BLUEPRINT_RUNPOD_WAM_PROVIDER_ENTRYPOINT_TIMEOUT_SECONDS"]
         == "original"
+    )
+    assert campaign.os.environ[campaign.RUNPOD_WAM_TEARDOWN_ACTION_ENV] == (
+        "keep_on_success"
     )
     assert (
         "BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_ENTRYPOINT_TIMEOUT_SECONDS"
