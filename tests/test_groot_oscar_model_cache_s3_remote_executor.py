@@ -204,6 +204,8 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "and operand == normalized" in elf_scan
     assert 'missing_operands.append(("SYSTEM_PATH", normalized))' in elf_scan
     assert 'missing_operands.append(("PATH", basename))' in elf_scan
+    assert 'missing_operands.append(("DEPENDENCY_HEX"' in elf_scan
+    assert "elf_missing_dependency_hex_%s" in elf_scan
     assert "INVALID_HASH" in elf_scan
     assert "safe_library_token_count" in elf_scan
     assert 'f"{digest}_{shape}"' in elf_scan
@@ -499,7 +501,8 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
         "printf '%s\\n' '/usr/lib/x/../libcuda.so.1 => not found'\n"
         "printf '%s\\n' '/usr//lib/libnvidia-ml.so.1 => not found'\n"
         "printf '%s\\n' '/opt/private/libescape.so.2 => not found'\n"
-        "printf '%s\\n' '/opt/private/not-a-library => not found'\n",
+        "printf '%s\\n' '/opt/private/not-a-library => not found'\n"
+        "printf '%s\\n' 'missing-runtime => not found'\n",
         encoding="utf-8",
     )
     ldd.chmod(0o755)
@@ -526,6 +529,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "MISSING_PATH\tlibcuda.so.1" in rows
     assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
+    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 1
     invalid_diagnostic = invalid_hashes[0].split("\t", 1)[1]
