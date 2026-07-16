@@ -425,6 +425,7 @@ def inspect(candidate):
                 2 < len(token) <= 128
                 and token.startswith("(")
                 and token.endswith(")")
+                and ".so" not in token
                 and all(character in allowed for character in token[1:-1])
                 for token in tokens[1:]
             )

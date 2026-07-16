@@ -504,6 +504,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
         "printf '%s\\n' '/usr//lib/libnvidia-ml.so.1 => not found'\n"
         "printf '%s\\n' '/opt/private/libescape.so.2 => not found'\n"
         "printf '%s\\n' 'libtrailing.so.1 (ABI_1.0) => not found'\n"
+        "printf '%s\\n' 'libcuda.so.1 (libevil.so.1) => not found'\n"
         "printf '%s\\n' 'libfirst.so.1 libsecond.so.2 => not found'\n"
         "printf '%s\\n' 'libcuda.so.1 evil => not found'\n"
         "printf '%s\\n' '/opt/private/not-a-library => not found'\n",
@@ -521,7 +522,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
 
     rows = scan.read_text(encoding="utf-8").splitlines()
     assert "COUNT\t1" in rows
-    assert "INVALID_MISSING\t6" in rows
+    assert "INVALID_MISSING\t7" in rows
     assert "INVALID_OVERFLOW\t0" in rows
     assert "MISSING\tlibplain.so.1" in rows
     assert "MISSING\tlibtrailing.so.1" in rows
@@ -537,16 +538,19 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
-    assert len(invalid_hashes) == 3
+    assert len(invalid_hashes) == 4
     invalid_diagnostics = [
         row.split("\t", 1)[1].split("_", 1) for row in invalid_hashes
     ]
     assert all(len(digest) == 16 for digest, _shape in invalid_diagnostics)
-    assert {shape for _digest, shape in invalid_diagnostics} == {
+    assert sorted(shape for _digest, shape in invalid_diagnostics) == sorted(
+        [
         "a0n0s0c0q0p0x0k0t1o0b0",
         "a0n0s0c0q0p0x0k1t2o0b0",
+        "a0n0s0c0q0p0x0k1t2o0b0",
         "a0n0s0c0q0p0x0k2t2o0b0",
-    }
+        ]
+    )
     assert "/opt/private" not in scan.read_text(encoding="utf-8")
     assert "/usr/lib/x/../" not in scan.read_text(encoding="utf-8")
     assert "/usr//lib" not in scan.read_text(encoding="utf-8")
