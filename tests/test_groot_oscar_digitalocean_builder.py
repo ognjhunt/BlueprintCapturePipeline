@@ -8,6 +8,7 @@ import pytest
 
 from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     BUILDER_TAG,
+    REMOTE_BUILD_REQUIRED_RESULTS,
     TEARDOWN_TAG,
     _delete_with_fail_closed_evidence,
     _list_droplets_by_tag,
@@ -469,6 +470,41 @@ def test_remote_build_results_must_be_complete_and_completed(tmp_path: Path) -> 
             payload = {}
         (results / name).write_text(json.dumps(payload), encoding="utf-8")
     assert validate_remote_build_results(results)["status"] == "verified"
+
+
+def test_remote_build_results_accept_digest_pinned_serverless_foundation_reuse(
+    tmp_path: Path,
+) -> None:
+    results = tmp_path / "remote_results"
+    results.mkdir()
+    foundation_ref = "registry.example/foundation@sha256:" + "a" * 64
+    release_result = {
+        "status": "completed",
+        "foundation_image_ref": foundation_ref,
+        "serverless_worker_contract": {"status": "passed"},
+        "thin_release_contract": {
+            "status": "passed",
+            "foundation_image_ref": foundation_ref,
+        },
+    }
+    for name in REMOTE_BUILD_REQUIRED_RESULTS:
+        if name == "foundation_buildx_metadata.json":
+            continue
+        if name == "groot_oscar_thin_remote_build_result.json":
+            payload = release_result
+        elif name in {
+            "release_supply_chain_manifest.json",
+            "release_supply_chain_disk_admission.json",
+        }:
+            payload = {"status": "passed"}
+        else:
+            payload = {}
+        (results / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    verified = validate_remote_build_results(results)
+    assert verified["status"] == "verified"
+    assert verified["digest_pinned_foundation_reused"] is True
+    assert "foundation_buildx_metadata.json" not in verified["required_results"]
 
 
 def test_run_builder_is_dry_and_does_not_read_secrets_without_paid_gate(
