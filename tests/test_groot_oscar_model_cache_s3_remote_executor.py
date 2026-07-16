@@ -89,8 +89,10 @@ class FakeDocker:
                     f"BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH {system_path}\n"
                     for system_path in self.deferred_driver_system_paths
                 )
+                + "BLUEPRINT_ELF_AUDIT_COUNT count=42\n"
+                + "BLUEPRINT_ARCHIVED_LIBRARY_PATH /opt/oscar-venv/lib\n"
+                + "BLUEPRINT_ELF_ARCHIVED_LIBRARY_PATH_COUNT count=1\n"
                 + "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=42\n"
-                + "BLUEPRINT_ELF_ARCHIVED_DEPENDENCY_CLOSURE count=7\n"
                 if "elf_count" in command[-1]
                 else "runtime verified\n"
             )
@@ -138,7 +140,10 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["source_and_carrier_registry_digests_verified"] is True
     assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
     assert result["carrier_validation"]["archived_elf_file_count"] == 42
-    assert result["carrier_validation"]["archived_dependency_resolved_count"] == 7
+    assert result["carrier_validation"]["runtime_library_path_count"] == 1
+    assert result["carrier_validation"]["runtime_library_paths"] == [
+        "/opt/oscar-venv/lib"
+    ]
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
@@ -175,6 +180,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert manifest["gpu_driver_deferred_system_paths"] == [
         "/usr/lib/x86_64-linux-gnu/libcuda.so.1"
     ]
+    assert manifest["runtime_library_paths"] == ["/opt/oscar-venv/lib"]
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     carrier_runs = [call for call in docker.calls if call[1] == "run"]
@@ -184,8 +190,16 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert all("--env" in call for call in carrier_runs)
     assert all(SOURCE_REF not in call for call in carrier_runs)
     assert all(CARRIER_REF in call for call in carrier_runs)
-    for key, value in executor.RUNTIME_CARRIER_ENV.items():
-        assert all(f"{key}={value}" in call for call in carrier_runs)
+    assert all(
+        f"PYTHONPATH={executor.RUNTIME_CARRIER_ENV['PYTHONPATH']}" in call
+        for call in carrier_runs
+    )
+    base_ld_library_path = executor.RUNTIME_CARRIER_ENV["LD_LIBRARY_PATH"]
+    assert f"LD_LIBRARY_PATH={base_ld_library_path}" in carrier_runs[0]
+    assert all(
+        f"LD_LIBRARY_PATH={base_ld_library_path}:/opt/oscar-venv/lib" in call
+        for call in carrier_runs[1:]
+    )
     serverless_runs = [
         call
         for call in carrier_runs
@@ -450,7 +464,7 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
 
     evidence = raised.value.evidence
     assert evidence["archived_elf_file_count"] == 1234
-    assert evidence["archived_dependency_resolved_count"] == 0
+    assert evidence["runtime_library_path_count"] == 0
     failed = next(row for row in evidence["checks"] if row["name"] == "all_archived_elf_linkage")
     assert failed["diagnostic_tokens"] == [
         "elf_missing_path_libescape.so.2",
@@ -485,6 +499,9 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     (audit_root / "candidate.so").write_bytes(b"\x7fELFpayload")
     (audit_root / "libplain.so.1").write_bytes(b"archived dependency")
     (audit_root / "missing-runtime").write_bytes(b"archived dependency")
+    alias_root = audit_root / "alias"
+    alias_root.mkdir()
+    (alias_root / "candidate-alias.so").symlink_to(audit_root / "candidate.so")
     bin_root = tmp_path / "bin"
     bin_root.mkdir()
     ldd = bin_root / "ldd"
@@ -517,8 +534,10 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "COUNT\t1" in rows
     assert "INVALID_MISSING\t7" in rows
     assert "INVALID_OVERFLOW\t0" in rows
-    assert "ARCHIVED_RESOLVED\t2" in rows
-    assert "MISSING\tlibplain.so.1" not in rows
+    assert "ARCHIVED_LIBRARY_PATH_COUNT\t2" in rows
+    assert f"ARCHIVED_LIBRARY_PATH\t{audit_root}" in rows
+    assert f"ARCHIVED_LIBRARY_PATH\t{alias_root}" in rows
+    assert "MISSING\tlibplain.so.1" in rows
     assert "MISSING\tlibtrailing.so.1" in rows
     assert "MISSING\tlibfirst.so.1" not in rows
     assert "MISSING\tlibsecond.so.2" not in rows
@@ -529,7 +548,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "MISSING_PATH\tlibcuda.so.1" in rows
     assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
-    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" not in rows
+    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 4
     invalid_diagnostics = [

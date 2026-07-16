@@ -131,6 +131,10 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
         gpu_driver_deferred_system_paths=(
             "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
         ),
+        runtime_library_paths=(
+            "/opt/oscar-venv/lib",
+            "/isaac-sim/kit/lib",
+        ),
     )
 
     assert manifest["status"] == "complete"
@@ -147,6 +151,10 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
     ]
     assert manifest["gpu_driver_deferred_system_paths"] == [
         "/usr/lib/x86_64-linux-gnu/libcuda.so.1"
+    ]
+    assert manifest["runtime_library_paths"] == [
+        "/isaac-sim/kit/lib",
+        "/opt/oscar-venv/lib",
     ]
     assert len(canonical_json_sha256(manifest)) == 64
     assert "semantic task success" in manifest["claim_boundary"]
@@ -296,6 +304,9 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_manifest_sha256_mismatch" in script
     assert "runtime_archive_sha256_mismatch" in script
     assert "runtime_manifest_env_mismatch" in script
+    assert "runtime_manifest_library_paths_invalid" in script
+    assert 'os.environ["LD_LIBRARY_PATH"] = expanded_ld_library_path' in script
+    assert '. "$WORK_DIR/runtime_output/runtime_loader_env.sh"' in script
     assert 'export PYTHONPATH=/opt/wbc:/opt/OSCAR' in script
     assert (
         "export LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"

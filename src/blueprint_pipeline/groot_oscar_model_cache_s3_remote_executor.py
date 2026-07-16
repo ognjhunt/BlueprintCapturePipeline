@@ -360,7 +360,7 @@ system_path_prefixes = (
 )
 max_invalid_diagnostics = 256
 elf_paths = []
-archived_dependency_names = set()
+archived_library_paths = set()
 audit_error_count = 0
 
 def record_walk_error(_exc):
@@ -378,20 +378,34 @@ for root in roots:
     ):
         for filename in filenames:
             candidate = os.path.join(directory, filename)
-            if (
-                0 < len(filename) <= 256
-                and filename not in {".", ".."}
-                and all(character in allowed for character in filename)
-            ):
-                archived_dependency_names.add(filename)
             if os.path.islink(candidate):
+                try:
+                    with open(candidate, "rb") as handle:
+                        if handle.read(4) == b"\x7fELF":
+                            archived_library_paths.add(directory)
+                except OSError:
+                    pass
                 continue
             try:
                 with open(candidate, "rb") as handle:
                     if handle.read(4) == b"\x7fELF":
                         elf_paths.append(candidate)
+                        archived_library_paths.add(directory)
             except OSError:
                 audit_error_count += 1
+
+archived_library_paths = sorted(archived_library_paths)
+base_library_paths = [
+    value for value in os.environ.get("LD_LIBRARY_PATH", "").split(":") if value
+]
+expanded_library_paths = base_library_paths + [
+    value for value in archived_library_paths if value not in base_library_paths
+]
+expanded_ld_library_path = ":".join(expanded_library_paths)
+if len(archived_library_paths) > 4096 or len(expanded_ld_library_path) > 131072:
+    audit_error_count += 1
+audit_env = dict(os.environ)
+audit_env["LD_LIBRARY_PATH"] = expanded_ld_library_path
 
 def inspect(candidate):
     try:
@@ -401,6 +415,7 @@ def inspect(candidate):
             capture_output=True,
             text=True,
             timeout=30,
+            env=audit_env,
         )
     except subprocess.TimeoutExpired:
         return ("TIMEOUT", ())
@@ -447,9 +462,6 @@ def inspect(candidate):
             and all(character in allowed for character in tokens[0])
         ):
             operand = tokens[0]
-        if operand in archived_dependency_names:
-            missing_operands.append(("ARCHIVED", operand))
-            continue
         if 0 < len(operand) <= 256 and ".so" in operand and all(
             character in allowed for character in operand
         ):
@@ -513,7 +525,6 @@ def inspect(candidate):
 timeout_count = 0
 invalid_missing_count = 0
 invalid_diagnostic_overflow = 0
-archived_resolved_dependencies = set()
 missing_sonames = set()
 missing_dependency_hexes = set()
 missing_system_paths = set()
@@ -529,9 +540,6 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             audit_error_count += 1
             continue
         for kind, value in values:
-            if kind == "ARCHIVED":
-                archived_resolved_dependencies.add(value)
-                continue
             if kind == "SONAME":
                 missing_sonames.add(value)
                 continue
@@ -558,7 +566,9 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(f"AUDIT_ERROR\t{audit_error_count}\n")
     handle.write(f"INVALID_MISSING\t{invalid_missing_count}\n")
     handle.write(f"INVALID_OVERFLOW\t{invalid_diagnostic_overflow}\n")
-    handle.write(f"ARCHIVED_RESOLVED\t{len(archived_resolved_dependencies)}\n")
+    handle.write(f"ARCHIVED_LIBRARY_PATH_COUNT\t{len(archived_library_paths)}\n")
+    for library_path in archived_library_paths:
+        handle.write(f"ARCHIVED_LIBRARY_PATH\t{library_path}\n")
     for soname in sorted(missing_sonames):
         handle.write(f"MISSING\t{soname}\n")
     for dependency_hex in sorted(missing_dependency_hexes):
@@ -575,7 +585,7 @@ timeout_count=0
 audit_error_count=0
 invalid_missing_count=0
 invalid_diagnostic_overflow=0
-archived_resolved_count=0
+archived_library_path_count=0
 while IFS=$'\t' read -r kind value; do
   case "$kind" in
     COUNT) elf_count="$value" ;;
@@ -583,7 +593,10 @@ while IFS=$'\t' read -r kind value; do
     AUDIT_ERROR) audit_error_count="$value" ;;
     INVALID_MISSING) invalid_missing_count="$value" ;;
     INVALID_OVERFLOW) invalid_diagnostic_overflow="$value" ;;
-    ARCHIVED_RESOLVED) archived_resolved_count="$value" ;;
+    ARCHIVED_LIBRARY_PATH_COUNT) archived_library_path_count="$value" ;;
+    ARCHIVED_LIBRARY_PATH)
+      printf 'BLUEPRINT_ARCHIVED_LIBRARY_PATH %s\n' "$value"
+      ;;
     MISSING_SYSTEM_PATH)
       system_path="$value"
       soname="${system_path##*/}"
@@ -626,7 +639,7 @@ while IFS=$'\t' read -r kind value; do
 done <"$scan"
 test "$elf_count" -gt 0
 printf 'BLUEPRINT_ELF_AUDIT_COUNT count=%s\n' "$elf_count"
-printf 'BLUEPRINT_ELF_ARCHIVED_DEPENDENCY_CLOSURE count=%s\n' "$archived_resolved_count"
+printf 'BLUEPRINT_ELF_ARCHIVED_LIBRARY_PATH_COUNT count=%s\n' "$archived_library_path_count"
 if [[ "$audit_error_count" -gt 0 ]]; then
   printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_audit_error\n'
   printf 'BLUEPRINT_ELF_AUDIT_ERROR count=%s\n' "$audit_error_count"
@@ -716,7 +729,7 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
     failed_checks: list[str] = []
     checks: list[dict[str, Any]] = []
     archived_elf_file_count = 0
-    archived_dependency_resolved_count = 0
+    runtime_library_paths: list[str] = []
     gpu_driver_deferred_sonames: set[str] = set()
     gpu_driver_deferred_system_paths: set[str] = set()
     for check_name, validation, timeout_seconds in validations:
@@ -746,11 +759,43 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
             )
             if check_name == "all_archived_elf_linkage":
                 match = re.search(r"count=([1-9][0-9]*)", completed.stdout or "")
-                closure_match = re.search(
-                    r"BLUEPRINT_ELF_ARCHIVED_DEPENDENCY_CLOSURE count=([0-9]+)",
+                library_path_count_match = re.search(
+                    r"BLUEPRINT_ELF_ARCHIVED_LIBRARY_PATH_COUNT count=([0-9]+)",
                     completed.stdout or "",
                 )
-                if match is None or closure_match is None:
+                path_marker = "BLUEPRINT_ARCHIVED_LIBRARY_PATH "
+                candidate_library_paths = sorted(
+                    line.removeprefix(path_marker).strip()
+                    for line in (completed.stdout or "").splitlines()
+                    if line.startswith(path_marker)
+                )
+                allowed_library_roots = tuple(f"/{root}" for root in RUNTIME_ARCHIVE_ROOTS)
+                paths_valid = (
+                    len(candidate_library_paths) == len(set(candidate_library_paths))
+                    and len(candidate_library_paths) <= 4096
+                    and sum(len(path) + 1 for path in candidate_library_paths) <= 131072
+                    and all(
+                        path == posixpath.normpath(path)
+                        and len(path) <= 512
+                        and any(
+                            path == root or path.startswith(root + "/")
+                            for root in allowed_library_roots
+                        )
+                        and all(
+                            character
+                            in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
+                            for character in path
+                        )
+                        for path in candidate_library_paths
+                    )
+                )
+                if (
+                    match is None
+                    or library_path_count_match is None
+                    or int(library_path_count_match.group(1))
+                    != len(candidate_library_paths)
+                    or not paths_valid
+                ):
                     failed_checks.append(check_name)
                     checks.append(
                         {
@@ -761,7 +806,17 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                     )
                     continue
                 archived_elf_file_count = int(match.group(1))
-                archived_dependency_resolved_count = int(closure_match.group(1))
+                runtime_library_paths = candidate_library_paths
+                expanded_runtime_env = dict(RUNTIME_CARRIER_ENV)
+                if runtime_library_paths:
+                    expanded_runtime_env["LD_LIBRARY_PATH"] += ":" + ":".join(
+                        runtime_library_paths
+                    )
+                carrier_env_argv = [
+                    item
+                    for key, value in expanded_runtime_env.items()
+                    for item in ("--env", f"{key}={value}")
+                ]
                 invalid_deferred_soname = False
                 invalid_deferred_system_path = False
                 for line in (completed.stdout or "").splitlines():
@@ -835,12 +890,6 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 )
                 if count_match is not None:
                     archived_elf_file_count = int(count_match.group(1))
-                closure_match = re.search(
-                    r"BLUEPRINT_ELF_ARCHIVED_DEPENDENCY_CLOSURE count=([0-9]+)",
-                    failure_text,
-                )
-                if closure_match is not None:
-                    archived_dependency_resolved_count = int(closure_match.group(1))
             dependency_tokens = _validation_dependency_tokens(exc)
             if dependency_tokens and all(
                 is_nvidia_driver_soname(token) for token in dependency_tokens
@@ -879,7 +928,8 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
         "checks": checks,
         "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
         "archived_elf_file_count": archived_elf_file_count,
-        "archived_dependency_resolved_count": archived_dependency_resolved_count,
+        "runtime_library_paths": runtime_library_paths,
+        "runtime_library_path_count": len(runtime_library_paths),
         "gpu_driver_deferred_sonames": sorted(gpu_driver_deferred_sonames),
         "gpu_driver_deferred_system_paths": sorted(gpu_driver_deferred_system_paths),
         "gpu_driver_resolution_required_at_bootstrap": bool(gpu_driver_deferred_sonames),
@@ -888,11 +938,10 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
         ),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
-            "This validates that every archived ELF was inspected, every unresolved loader "
-            "operand is either present by exact basename in the pinned archive or explicitly "
-            "reported, and CPU-safe imports plus required Isaac extension inventory pass "
-            "inside the exact carrier on CPU. It does not prove application-specific loader "
-            "search paths for optional plugins, GPU, "
+            "This validates every archived ELF under the exact bounded runtime library path "
+            "set that is persisted into the runtime manifest and exported at bootstrap, plus "
+            "CPU-safe imports and required Isaac extension inventory inside the exact carrier. "
+            "It does not prove GPU, "
             "CUDA-driver, initialized Isaac extensions, Isaac rendering, policy execution, "
             "artifact completion, or semantic task success."
         ),
@@ -1053,6 +1102,7 @@ def prepare_runtime_bundle(
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
             gpu_driver_deferred_sonames=carrier_validation["gpu_driver_deferred_sonames"],
             gpu_driver_deferred_system_paths=carrier_validation["gpu_driver_deferred_system_paths"],
+            runtime_library_paths=carrier_validation["runtime_library_paths"],
         )
         if manifest["status"] != "complete":
             raise RuntimeError("typed_runtime_bundle_manifest_blocked")
