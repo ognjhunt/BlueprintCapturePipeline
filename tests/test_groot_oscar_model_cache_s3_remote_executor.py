@@ -208,6 +208,8 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "harmless_annotations" in elf_scan
     assert 'missing_operands.append(("SYSTEM_PATH", normalized))' in elf_scan
     assert 'missing_operands.append(("PATH", basename))' in elf_scan
+    assert 'missing_operands.append(("DEPENDENCY_HEX"' in elf_scan
+    assert "elf_missing_dependency_hex_%s" in elf_scan
     assert "INVALID_HASH" in elf_scan
     assert "safe_library_token_count" in elf_scan
     assert 'f"{digest}_{shape}"' in elf_scan
@@ -507,7 +509,8 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
         "printf '%s\\n' 'libcuda.so.1 (libevil.so.1) => not found'\n"
         "printf '%s\\n' 'libfirst.so.1 libsecond.so.2 => not found'\n"
         "printf '%s\\n' 'libcuda.so.1 evil => not found'\n"
-        "printf '%s\\n' '/opt/private/not-a-library => not found'\n",
+        "printf '%s\\n' '/opt/private/not-a-library => not found'\n"
+        "printf '%s\\n' 'missing-runtime => not found'\n",
         encoding="utf-8",
     )
     ldd.chmod(0o755)
@@ -537,6 +540,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "MISSING_PATH\tlibcuda.so.1" in rows
     assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
+    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 4
     invalid_diagnostics = [
@@ -545,10 +549,10 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert all(len(digest) == 16 for digest, _shape in invalid_diagnostics)
     assert sorted(shape for _digest, shape in invalid_diagnostics) == sorted(
         [
-        "a0n0s0c0q0p0x0k0t1o0b0",
-        "a0n0s0c0q0p0x0k1t2o0b0",
-        "a0n0s0c0q0p0x0k1t2o0b0",
-        "a0n0s0c0q0p0x0k2t2o0b0",
+            "a0n0s0c0q0p0x0k0t1o0b0",
+            "a0n0s0c0q0p0x0k1t2o0b0",
+            "a0n0s0c0q0p0x0k1t2o0b0",
+            "a0n0s0c0q0p0x0k2t2o0b0",
         ]
     )
     assert "/opt/private" not in scan.read_text(encoding="utf-8")
