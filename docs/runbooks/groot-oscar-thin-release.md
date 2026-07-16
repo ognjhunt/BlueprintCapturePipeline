@@ -147,8 +147,11 @@ python -m blueprint_pipeline.paid_resource_allocator model-volume \
 For the bounded persistent carrier lane, the same allocator can populate the
 verified model cache and an allowlisted runtime archive onto one fresh 120 GiB
 volume without allocating a GPU. Both images must be immutable digest refs.
-The source release supplies the exact `/opt` runtime roots; the small PyTorch
-image is only the RunPod carrier:
+The source release supplies the exact `/opt` runtime roots. The independently
+published system-complete carrier is built from `Carrier.Dockerfile`; it adds
+the foundation's pinned TensorRT, CUDA 12.6 compatibility, ZeroMQ, yaml-cpp,
+and GL/OSMesa packages to the digest-pinned PyTorch base without embedding the
+runtime or model payloads:
 
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator model-volume \
@@ -157,7 +160,7 @@ python -m blueprint_pipeline.paid_resource_allocator model-volume \
   --volume-size-gib 120 \
   --runtime-source-release-image-ref '<release>@sha256:<digest>' \
   --runtime-source-release-evidence <groot_oscar_thin_remote_build_result.json> \
-  --carrier-image-ref 'pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca' \
+  --carrier-image-ref 'docker.io/nijelhunt/blueprint-groot-oscar-carrier@sha256:d8f7e8c92e87cebc6ae0c15ebc94d5a083811ed3f63d2b2047a235e80b2de42d' \
   --storage-hourly-rate-usd '<provider-verified-rate>' \
   --storage-ttl-seconds 28800 \
   --max-storage-spend-usd '<bounded-eight-hour-volume-cost>' \
