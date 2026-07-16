@@ -167,16 +167,13 @@ def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
     assert "carrier_model_cache_not_verified" in blocked["blockers"]
 
 
-def test_carrier_volume_admission_preserves_legacy_v2_manifest_binding() -> None:
-    legacy = _admission()
-    legacy["model_cache"].pop("manifest_digest")
+def test_carrier_volume_admission_rejects_missing_or_malformed_content_digest() -> None:
+    missing = _admission()
+    missing["model_cache"].pop("manifest_digest")
 
-    verified = verify_carrier_volume_admission(legacy, expected_carrier_image_ref=CARRIER_REF)
-
-    assert verified["status"] == "verified"
-    assert verified["model_manifest_sha256"] == "5" * 64
-    assert verified["model_manifest_digest"] is None
-    assert verified["requires_external_model_manifest_digest_binding"] is True
+    blocked = verify_carrier_volume_admission(missing, expected_carrier_image_ref=CARRIER_REF)
+    assert blocked["status"] == "blocked"
+    assert "carrier_model_cache_content_digest_invalid" in blocked["blockers"]
 
     malformed = _admission()
     malformed["model_cache"]["manifest_digest"] = "sha256:bad"

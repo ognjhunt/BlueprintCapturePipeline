@@ -173,7 +173,7 @@ def test_template_bootstraps_verified_runtime_from_persistent_carrier_volume() -
     assert payload["env"]["BLUEPRINT_RUNTIME_CARRIER_IMAGE_DIGEST"] == CARRIER_IMAGE
 
 
-def test_legacy_v2_carrier_uses_volume_bound_model_verification_digest() -> None:
+def test_carrier_without_content_digest_is_blocked() -> None:
     carrier = _carrier("US-WA-1")
     carrier["model_cache"].pop("manifest_digest")
     volume = _volume()
@@ -193,17 +193,26 @@ def test_legacy_v2_carrier_uses_volume_bound_model_verification_digest() -> None
         gpu_type_ids=("NVIDIA RTX 6000 Ada Generation",),
         carrier_volume_admission=carrier,
     )
-    payload = build_template_payload(
-        name="blueprint-groot-oscar-serverless-legacy",
-        image_ref=IMAGE,
-        source_commit="c" * 40,
-        model_manifest_digest=MODEL_DIGEST,
-        carrier_volume_admission=carrier,
-    )
+    assert admission["status"] == "blocked"
+    assert "carrier_model_cache_content_digest_invalid" in admission["blockers"]
+    with pytest.raises(ValueError, match="serverless_carrier_volume_admission_invalid"):
+        build_template_payload(
+            name="blueprint-groot-oscar-serverless-missing-digest",
+            image_ref=IMAGE,
+            source_commit="c" * 40,
+            model_manifest_digest=MODEL_DIGEST,
+            carrier_volume_admission=carrier,
+        )
 
-    assert admission["status"] == "admitted"
-    assert admission["model_manifest_digest"] == MODEL_DIGEST
-    assert payload["env"]["BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST"] == MODEL_DIGEST
+
+def test_template_rejects_non_hex_model_manifest_digest() -> None:
+    with pytest.raises(ValueError, match="serverless_model_manifest_digest_invalid"):
+        build_template_payload(
+            name="blueprint-groot-oscar-serverless-invalid-digest",
+            image_ref=IMAGE,
+            source_commit="c" * 40,
+            model_manifest_digest="sha256:" + "z" * 64,
+        )
 
 
 def test_admission_accepts_us_carrier_and_exact_residual_campaign_budget() -> None:
