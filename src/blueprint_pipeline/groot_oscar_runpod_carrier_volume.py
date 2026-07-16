@@ -213,6 +213,7 @@ def build_runtime_bundle_manifest(
     generated_at: str,
     gpu_driver_deferred_sonames: Sequence[str] = (),
     gpu_driver_deferred_system_paths: Sequence[str] = (),
+    runtime_library_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Describe a deterministic runtime archive without claiming it was uploaded."""
 
@@ -264,6 +265,32 @@ def build_runtime_bundle_manifest(
             continue
         deferred_system_paths.append(path)
     deferred_system_paths = sorted(set(deferred_system_paths))
+    allowed_runtime_roots = tuple(f"/{root}" for root in RUNTIME_ARCHIVE_ROOTS)
+    bounded_runtime_library_paths: list[str] = []
+    for value in runtime_library_paths:
+        path = _string(value)
+        if not (
+            path
+            and len(path) <= 512
+            and path == posixpath.normpath(path)
+            and any(
+                path == root or path.startswith(root + "/")
+                for root in allowed_runtime_roots
+            )
+            and all(
+                character
+                in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
+                for character in path
+            )
+        ):
+            blockers.append("runtime_library_path_invalid")
+            continue
+        bounded_runtime_library_paths.append(path)
+    bounded_runtime_library_paths = sorted(set(bounded_runtime_library_paths))
+    if len(bounded_runtime_library_paths) > 4096 or sum(
+        len(path) + 1 for path in bounded_runtime_library_paths
+    ) > 131072:
+        blockers.append("runtime_library_paths_bounds_invalid")
     manifest = {
         "schema_version": RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
         "generated_at": _string(generated_at),
@@ -280,6 +307,7 @@ def build_runtime_bundle_manifest(
         "healthcheck_argv": checks,
         "gpu_driver_deferred_sonames": deferred_sonames,
         "gpu_driver_deferred_system_paths": deferred_system_paths,
+        "runtime_library_paths": bounded_runtime_library_paths,
         "runtime_env": dict(RUNTIME_CARRIER_ENV),
         "blockers": sorted(set(blockers)),
         "claim_boundary": (
@@ -476,6 +504,32 @@ try:
     }
     if manifest.get("runtime_env") != expected_runtime_env:
         raise RuntimeError("runtime_manifest_env_mismatch")
+    runtime_library_paths = manifest.get("runtime_library_paths")
+    allowed_runtime_roots = tuple("/" + root for root in allowed_roots)
+    runtime_library_paths_valid = isinstance(runtime_library_paths, list) and all(
+            isinstance(path, str)
+            and path
+            and len(path) <= 512
+            and path == posixpath.normpath(path)
+            and any(
+                path == root or path.startswith(root + "/")
+                for root in allowed_runtime_roots
+            )
+            and all(
+                character
+                in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
+                for character in path
+            )
+            for path in runtime_library_paths
+        )
+    if runtime_library_paths_valid:
+        runtime_library_paths_valid = (
+            runtime_library_paths == sorted(set(runtime_library_paths))
+            and len(runtime_library_paths) <= 4096
+            and sum(len(path) + 1 for path in runtime_library_paths) <= 131072
+        )
+    if not runtime_library_paths_valid:
+        raise RuntimeError("runtime_manifest_library_paths_invalid")
     driver_sonames = manifest.get("gpu_driver_deferred_sonames")
     driver_stems = (
         "libcuda.so",
@@ -562,6 +616,15 @@ try:
                 ):
                     raise RuntimeError("runtime_archive_link_outside_allowlist")
         archive.extractall(path="/", filter=lambda member, _path: member)
+    expanded_ld_library_path = expected_runtime_env["LD_LIBRARY_PATH"]
+    if runtime_library_paths:
+        expanded_ld_library_path += ":" + ":".join(runtime_library_paths)
+    os.environ["LD_LIBRARY_PATH"] = expanded_ld_library_path
+    loader_env_path = result_path.parent / "runtime_loader_env.sh"
+    loader_env_path.write_text(
+        "export LD_LIBRARY_PATH=" + json.dumps(expanded_ld_library_path) + "\n",
+        encoding="utf-8",
+    )
     for soname in driver_sonames:
         try:
             ctypes.CDLL(soname)
@@ -639,6 +702,8 @@ try:
         "declared_model_file_count": len(declared_model_paths),
         "external_model_cache_bound_to_runtime": True,
         "runtime_healthchecks_passed": True,
+        "runtime_library_paths_exported": True,
+        "runtime_library_path_count": len(runtime_library_paths),
         "gpu_driver_deferred_sonames_resolved": True,
         "gpu_driver_deferred_soname_count": len(driver_sonames),
         "gpu_driver_deferred_system_paths_resolved": True,
@@ -676,6 +741,7 @@ if target:
 PY
   exit 86
 fi
+. "$WORK_DIR/runtime_output/runtime_loader_env.sh"
 export BLUEPRINT_UNITREE_GROOT_N17_SONIC_ROOT="/opt/gr00t"
 export BLUEPRINT_UNITREE_GROOT_N17_SONIC_WBC_ROOT="/opt/wbc"
 export BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/sonic"
