@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 import shlex
 from typing import Any, Mapping, Sequence
@@ -58,6 +59,14 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _VOLUME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,127}")
 _DATA_CENTER_ID = re.compile(r"[A-Z]{2,8}(?:-[A-Z0-9]+)+")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+NVIDIA_DRIVER_SYSTEM_PATH_PREFIXES = (
+    "/lib/",
+    "/lib64/",
+    "/usr/lib/",
+    "/usr/lib64/",
+    "/usr/local/cuda/",
+    "/usr/local/nvidia/",
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -88,6 +97,25 @@ def is_nvidia_driver_soname(value: Any) -> bool:
     return (
         soname.startswith("libnvidia-") and ".so" in soname
     ) or any(soname == stem or soname.startswith(stem + ".") for stem in exact_stems)
+
+
+def is_nvidia_driver_system_path(value: Any) -> bool:
+    """Return whether an exact absolute path can be GPU-driver verified at bootstrap."""
+
+    path = _string(value)
+    if (
+        not path
+        or len(path) > 512
+        or not path.startswith("/")
+        or any(character.isspace() or character in "\\\x00" for character in path)
+    ):
+        return False
+    normalized = posixpath.normpath(path)
+    if normalized != path or not any(
+        normalized.startswith(prefix) for prefix in NVIDIA_DRIVER_SYSTEM_PATH_PREFIXES
+    ):
+        return False
+    return is_nvidia_driver_soname(posixpath.basename(normalized))
 
 
 def _sha256_digest(value: Any) -> str:
@@ -184,6 +212,7 @@ def build_runtime_bundle_manifest(
     healthcheck_argv: Sequence[Sequence[str]],
     generated_at: str,
     gpu_driver_deferred_sonames: Sequence[str] = (),
+    gpu_driver_deferred_system_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Describe a deterministic runtime archive without claiming it was uploaded."""
 
@@ -224,6 +253,17 @@ def build_runtime_bundle_manifest(
             continue
         deferred_sonames.append(soname)
     deferred_sonames = sorted(set(deferred_sonames))
+    deferred_system_paths: list[str] = []
+    for value in gpu_driver_deferred_system_paths:
+        path = _string(value)
+        if not is_nvidia_driver_system_path(path):
+            blockers.append("runtime_gpu_driver_deferred_system_path_invalid")
+            continue
+        if posixpath.basename(path) not in deferred_sonames:
+            blockers.append("runtime_gpu_driver_deferred_system_path_soname_missing")
+            continue
+        deferred_system_paths.append(path)
+    deferred_system_paths = sorted(set(deferred_system_paths))
     manifest = {
         "schema_version": RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
         "generated_at": _string(generated_at),
@@ -239,6 +279,7 @@ def build_runtime_bundle_manifest(
         },
         "healthcheck_argv": checks,
         "gpu_driver_deferred_sonames": deferred_sonames,
+        "gpu_driver_deferred_system_paths": deferred_system_paths,
         "runtime_env": dict(RUNTIME_CARRIER_ENV),
         "blockers": sorted(set(blockers)),
         "claim_boundary": (
@@ -460,6 +501,31 @@ try:
         not driver_soname_allowed(value) for value in driver_sonames
     ):
         raise RuntimeError("runtime_gpu_driver_deferred_sonames_invalid")
+    driver_system_paths = manifest.get("gpu_driver_deferred_system_paths")
+    driver_system_prefixes = (
+        "/lib/",
+        "/lib64/",
+        "/usr/lib/",
+        "/usr/lib64/",
+        "/usr/local/cuda/",
+        "/usr/local/nvidia/",
+    )
+    def driver_system_path_allowed(value):
+        return (
+            isinstance(value, str)
+            and value
+            and len(value) <= 512
+            and value.startswith("/")
+            and not any(character.isspace() or character in "\\\x00" for character in value)
+            and posixpath.normpath(value) == value
+            and any(value.startswith(prefix) for prefix in driver_system_prefixes)
+            and driver_soname_allowed(posixpath.basename(value))
+            and posixpath.basename(value) in driver_sonames
+        )
+    if not isinstance(driver_system_paths, list) or any(
+        not driver_system_path_allowed(value) for value in driver_system_paths
+    ):
+        raise RuntimeError("runtime_gpu_driver_deferred_system_paths_invalid")
     if digest(archive_path) != os.environ["BLUEPRINT_RUNTIME_ARCHIVE_SHA256"]:
         raise RuntimeError("runtime_archive_sha256_mismatch")
     with tarfile.open(archive_path, "r:gz") as archive:
@@ -499,6 +565,11 @@ try:
             ctypes.CDLL(soname)
         except OSError as exc:
             raise RuntimeError("runtime_gpu_driver_soname_unresolved") from exc
+    for system_path in driver_system_paths:
+        try:
+            ctypes.CDLL(system_path)
+        except OSError as exc:
+            raise RuntimeError("runtime_gpu_driver_system_path_unresolved") from exc
     for argv in manifest.get("healthcheck_argv", []):
         healthcheck_timeout = 300 if argv[0] == "/isaac-sim/python.sh" else 120
         completed = subprocess.run(
@@ -568,6 +639,8 @@ try:
         "runtime_healthchecks_passed": True,
         "gpu_driver_deferred_sonames_resolved": True,
         "gpu_driver_deferred_soname_count": len(driver_sonames),
+        "gpu_driver_deferred_system_paths_resolved": True,
+        "gpu_driver_deferred_system_path_count": len(driver_system_paths),
     })
 except Exception as exc:
     result["blockers"] = [str(exc)]

@@ -15,6 +15,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     build_runtime_bundle_manifest,
     canonical_json_sha256,
     is_nvidia_driver_soname,
+    is_nvidia_driver_system_path,
     runtime_bootstrap_shell_prefix,
     verify_carrier_volume_admission,
     verify_runtime_source_release_evidence,
@@ -127,6 +128,9 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
         ),
         generated_at="2026-07-15T12:00:00Z",
         gpu_driver_deferred_sonames=("libnvidia-ml.so.1", "libcuda.so.1"),
+        gpu_driver_deferred_system_paths=(
+            "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+        ),
     )
 
     assert manifest["status"] == "complete"
@@ -140,6 +144,9 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
     assert manifest["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
+    ]
+    assert manifest["gpu_driver_deferred_system_paths"] == [
+        "/usr/lib/x86_64-linux-gnu/libcuda.so.1"
     ]
     assert len(canonical_json_sha256(manifest)) == 64
     assert "semantic task success" in manifest["claim_boundary"]
@@ -168,6 +175,22 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
     )
     assert blocked_driver["status"] == "blocked"
     assert "runtime_gpu_driver_deferred_soname_invalid" in blocked_driver["blockers"]
+
+    blocked_system_path = build_runtime_bundle_manifest(
+        source_release_image_ref=SOURCE_REF,
+        carrier_image_ref=CARRIER_REF,
+        archive_sha256="a" * 64,
+        archive_size_bytes=1234,
+        healthcheck_argv=(("/opt/gr00t-venv/bin/python", "--version"),),
+        generated_at="2026-07-15T12:00:00Z",
+        gpu_driver_deferred_sonames=("libcuda.so.1",),
+        gpu_driver_deferred_system_paths=("/opt/private/libcuda.so.1",),
+    )
+    assert blocked_system_path["status"] == "blocked"
+    assert (
+        "runtime_gpu_driver_deferred_system_path_invalid"
+        in blocked_system_path["blockers"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -201,6 +224,20 @@ def test_nvidia_driver_soname_allowlist_rejects_carrier_and_unsafe_libraries(
     soname: str,
 ) -> None:
     assert is_nvidia_driver_soname(soname) is False
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    (
+        ("/usr/lib/x86_64-linux-gnu/libcuda.so.1", True),
+        ("/usr/local/nvidia/lib64/libnvidia-ml.so.1", True),
+        ("/opt/private/libcuda.so.1", False),
+        ("/usr/lib/../private/libcuda.so.1", False),
+        ("/usr/lib/libcudart.so.12", False),
+    ),
+)
+def test_nvidia_driver_system_path_allowlist(path: str, expected: bool) -> None:
+    assert is_nvidia_driver_system_path(path) is expected
 
 
 def test_carrier_volume_admission_binds_runtime_models_s3_and_volume() -> None:
@@ -272,12 +309,15 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_wbc_dynamic_linkage_failed" in script
     assert "runtime_gpu_driver_soname_unresolved" in script
     assert "ctypes.CDLL(soname)" in script
+    assert "runtime_gpu_driver_system_path_unresolved" in script
+    assert "ctypes.CDLL(system_path)" in script
     assert script.index("for soname in driver_sonames:") < script.index(
         'for argv in manifest.get("healthcheck_argv", []):'
     )
     assert 'healthcheck_timeout = 300 if argv[0] == "/isaac-sim/python.sh" else 120' in script
     assert "timeout=healthcheck_timeout" in script
     assert "gpu_driver_deferred_sonames_resolved" in script
+    assert "gpu_driver_deferred_system_paths_resolved" in script
     assert 'manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v2"' in script
     assert 'manifest.get("gpu_driver_deferred_sonames")' in script
     assert 'manifest.get("gpu_driver_deferred_sonames", [])' not in script

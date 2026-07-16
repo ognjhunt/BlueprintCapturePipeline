@@ -30,12 +30,14 @@ class FakeDocker:
         fail_copy_root: str = "",
         fail_validation_text: str = "",
         deferred_driver_sonames: tuple[str, ...] = (),
+        deferred_driver_system_paths: tuple[str, ...] = (),
     ) -> None:
         self.calls: list[list[str]] = []
         self.verify_digest = verify_digest
         self.fail_copy_root = fail_copy_root
         self.fail_validation_text = fail_validation_text
         self.deferred_driver_sonames = deferred_driver_sonames
+        self.deferred_driver_system_paths = deferred_driver_system_paths
 
     def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -83,6 +85,11 @@ class FakeDocker:
                     f"BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME {soname}\n"
                     for soname in self.deferred_driver_sonames
                 )
+                + "".join(
+                    "BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH "
+                    f"{system_path}\n"
+                    for system_path in self.deferred_driver_system_paths
+                )
                 + "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=42\n"
                 if "elf_count" in command[-1]
                 else "runtime verified\n"
@@ -112,7 +119,12 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
         return real_tarfile_open(*args, **kwargs)
 
     monkeypatch.setattr(executor.tarfile, "open", tracked_tarfile_open)
-    docker = FakeDocker(deferred_driver_sonames=("libnvidia-ml.so.1", "libcuda.so.1"))
+    docker = FakeDocker(
+        deferred_driver_sonames=("libnvidia-ml.so.1", "libcuda.so.1"),
+        deferred_driver_system_paths=(
+            "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+        ),
+    )
     runtime_root = tmp_path / "runtime"
     build_root = tmp_path / "build"
 
@@ -131,6 +143,9 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
+    ]
+    assert result["carrier_validation"]["gpu_driver_deferred_system_paths"] == [
+        "/usr/lib/x86_64-linux-gnu/libcuda.so.1"
     ]
     assert result["runtime_imports_and_wbc_linkage_verified_in_exact_carrier"] is False
     assert result["runtime_cpu_compatible_with_gpu_driver_deferred_linkage"] is True
@@ -158,6 +173,9 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
         "libcuda.so.1",
         "libnvidia-ml.so.1",
     ]
+    assert manifest["gpu_driver_deferred_system_paths"] == [
+        "/usr/lib/x86_64-linux-gnu/libcuda.so.1"
+    ]
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     carrier_runs = [call for call in docker.calls if call[1] == "run"]
@@ -183,7 +201,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "ThreadPoolExecutor(max_workers=workers)" in elf_scan
     assert '["ldd", candidate]' in elf_scan
     assert "min(8, os.cpu_count() or 1)" in elf_scan
-    assert 'missing_operands.append(("SYSTEM_PATH", basename))' in elf_scan
+    assert 'missing_operands.append(("SYSTEM_PATH", normalized))' in elf_scan
     assert 'missing_operands.append(("PATH", basename))' in elf_scan
     assert "INVALID_HASH" in elf_scan
     assert "elf_missing_system_path_%s" in elf_scan
@@ -490,8 +508,10 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "INVALID_MISSING\t2" in rows
     assert "INVALID_OVERFLOW\t0" in rows
     assert "MISSING\tlibplain.so.1" in rows
-    assert "MISSING\tlibcuda.so.1" in rows
-    assert "MISSING_SYSTEM_PATH\tlibcuda.so.1" in rows
+    assert "MISSING\tlibcuda.so.1" not in rows
+    assert (
+        "MISSING_SYSTEM_PATH\t/usr/lib/x86_64-linux-gnu/libcuda.so.1" in rows
+    )
     assert "MISSING_PATH\tlibescape.so.2" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 1

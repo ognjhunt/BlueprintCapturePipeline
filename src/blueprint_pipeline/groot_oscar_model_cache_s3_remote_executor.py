@@ -37,6 +37,7 @@ from .groot_oscar_runpod_carrier_volume import (
     RUNTIME_CARRIER_ENV,
     build_runtime_bundle_manifest,
     is_nvidia_driver_soname,
+    is_nvidia_driver_system_path,
 )
 from .groot_oscar_model_cache import (
     COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
@@ -329,6 +330,7 @@ def _validate_runtime_inside_carrier(
             r"""
 missing="$(mktemp)"
 deferred="$(mktemp)"
+deferred_system_paths="$(mktemp)"
 scan="$(mktemp)"
 /opt/oscar-venv/bin/python - "$scan" <<'PY'
 import concurrent.futures
@@ -352,6 +354,7 @@ roots = (
 allowed = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-"
 )
+path_allowed = allowed | frozenset("/")
 system_path_prefixes = (
     "/lib/",
     "/lib64/",
@@ -422,9 +425,11 @@ def inspect(candidate):
         if (
             basename_safe
             and os.path.isabs(operand)
+            and len(normalized) <= 512
+            and all(character in path_allowed for character in normalized)
             and any(normalized.startswith(prefix) for prefix in system_path_prefixes)
         ):
-            missing_operands.append(("SYSTEM_PATH", basename))
+            missing_operands.append(("SYSTEM_PATH", normalized))
         elif basename_safe:
             missing_operands.append(("PATH", basename))
         else:
@@ -438,7 +443,7 @@ timeout_count = 0
 invalid_missing_count = 0
 invalid_diagnostic_overflow = 0
 missing_sonames = set()
-missing_system_path_basenames = set()
+missing_system_paths = set()
 missing_path_basenames = set()
 invalid_missing_hashes = set()
 workers = max(1, min(8, os.cpu_count() or 1))
@@ -455,8 +460,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
                 missing_sonames.add(value)
                 continue
             if kind == "SYSTEM_PATH":
-                missing_system_path_basenames.add(value)
-                missing_sonames.add(value)
+                missing_system_paths.add(value)
                 continue
             invalid_missing_count += 1
             diagnostic_count = (
@@ -477,8 +481,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(f"INVALID_OVERFLOW\t{invalid_diagnostic_overflow}\n")
     for soname in sorted(missing_sonames):
         handle.write(f"MISSING\t{soname}\n")
-    for basename in sorted(missing_system_path_basenames):
-        handle.write(f"MISSING_SYSTEM_PATH\t{basename}\n")
+    for path in sorted(missing_system_paths):
+        handle.write(f"MISSING_SYSTEM_PATH\t{path}\n")
     for basename in sorted(missing_path_basenames):
         handle.write(f"MISSING_PATH\t{basename}\n")
     for digest in sorted(invalid_missing_hashes):
@@ -497,7 +501,18 @@ while IFS=$'\t' read -r kind value; do
     INVALID_MISSING) invalid_missing_count="$value" ;;
     INVALID_OVERFLOW) invalid_diagnostic_overflow="$value" ;;
     MISSING_SYSTEM_PATH)
-      printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_system_path_%s\n' "$value"
+      system_path="$value"
+      soname="${system_path##*/}"
+      printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_system_path_%s\n' "$soname"
+      case "$soname" in
+        libnvidia-*.so*|libcuda.so|libcuda.so.*|libnvcuvid.so|libnvcuvid.so.*|libnvoptix.so|libnvoptix.so.*|libGLX_nvidia.so|libGLX_nvidia.so.*|libEGL_nvidia.so|libEGL_nvidia.so.*|libGLESv1_CM_nvidia.so|libGLESv1_CM_nvidia.so.*|libGLESv2_nvidia.so|libGLESv2_nvidia.so.*)
+          printf '%s\n' "$soname" >>"$deferred"
+          printf '%s\n' "$system_path" >>"$deferred_system_paths"
+          ;;
+        *)
+          printf '%s => not found\n' "$soname" >>"$missing"
+          ;;
+      esac
       ;;
     MISSING_PATH)
       printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_path_%s\n' "$value"
@@ -549,6 +564,11 @@ if [[ -s "$deferred" ]]; then
   while IFS= read -r soname; do
     printf 'BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME %s\n' "$soname"
   done < <(sort -u "$deferred")
+fi
+if [[ -s "$deferred_system_paths" ]]; then
+  while IFS= read -r system_path; do
+    printf 'BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH %s\n' "$system_path"
+  done < <(sort -u "$deferred_system_paths")
 fi
 printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
 """,
@@ -610,6 +630,7 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
     checks: list[dict[str, Any]] = []
     archived_elf_file_count = 0
     gpu_driver_deferred_sonames: set[str] = set()
+    gpu_driver_deferred_system_paths: set[str] = set()
     for check_name, validation, timeout_seconds in validations:
         try:
             completed = _run_command(
@@ -649,8 +670,19 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                     continue
                 archived_elf_file_count = int(match.group(1))
                 invalid_deferred_soname = False
+                invalid_deferred_system_path = False
                 for line in (completed.stdout or "").splitlines():
                     marker = "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME "
+                    system_path_marker = (
+                        "BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH "
+                    )
+                    if line.startswith(system_path_marker):
+                        system_path = line.removeprefix(system_path_marker).strip()
+                        if not is_nvidia_driver_system_path(system_path):
+                            invalid_deferred_system_path = True
+                            break
+                        gpu_driver_deferred_system_paths.add(system_path)
+                        continue
                     if not line.startswith(marker):
                         continue
                     soname = line.removeprefix(marker).strip()
@@ -665,6 +697,19 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                             "name": check_name,
                             "status": "failed",
                             "diagnostic_tokens": ["driver_deferred_soname_invalid"],
+                        }
+                    )
+                    continue
+                if invalid_deferred_system_path or any(
+                    path.rsplit("/", 1)[-1] not in gpu_driver_deferred_sonames
+                    for path in gpu_driver_deferred_system_paths
+                ):
+                    failed_checks.append(check_name)
+                    checks.append(
+                        {
+                            "name": check_name,
+                            "status": "failed",
+                            "diagnostic_tokens": ["driver_deferred_system_path_invalid"],
                         }
                     )
                     continue
@@ -744,8 +789,14 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
         "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
         "archived_elf_file_count": archived_elf_file_count,
         "gpu_driver_deferred_sonames": sorted(gpu_driver_deferred_sonames),
+        "gpu_driver_deferred_system_paths": sorted(
+            gpu_driver_deferred_system_paths
+        ),
         "gpu_driver_resolution_required_at_bootstrap": bool(
             gpu_driver_deferred_sonames
+        ),
+        "gpu_driver_system_path_resolution_required_at_bootstrap": bool(
+            gpu_driver_deferred_system_paths
         ),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
@@ -911,6 +962,9 @@ def prepare_runtime_bundle(
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
             gpu_driver_deferred_sonames=carrier_validation[
                 "gpu_driver_deferred_sonames"
+            ],
+            gpu_driver_deferred_system_paths=carrier_validation[
+                "gpu_driver_deferred_system_paths"
             ],
         )
         if manifest["status"] != "complete":
