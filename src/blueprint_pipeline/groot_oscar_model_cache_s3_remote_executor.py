@@ -332,6 +332,7 @@ deferred="$(mktemp)"
 scan="$(mktemp)"
 /opt/oscar-venv/bin/python - "$scan" <<'PY'
 import concurrent.futures
+import hashlib
 import os
 import subprocess
 import sys
@@ -351,6 +352,15 @@ roots = (
 allowed = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-"
 )
+system_path_prefixes = (
+    "/lib/",
+    "/lib64/",
+    "/usr/lib/",
+    "/usr/lib64/",
+    "/usr/local/cuda/",
+    "/usr/local/nvidia/",
+)
+max_invalid_diagnostics = 256
 elf_paths = []
 audit_error_count = 0
 
@@ -391,23 +401,46 @@ def inspect(candidate):
         return ("TIMEOUT", ())
     except OSError:
         return ("AUDIT_ERROR", ())
-    missing_sonames = []
+    missing_operands = []
     for line in (completed.stdout + "\n" + completed.stderr).splitlines():
         if "=> not found" not in line:
             continue
         left = line.split("=> not found", 1)[0].strip()
-        soname = left.split()[-1] if left else ""
-        if 0 < len(soname) <= 256 and ".so" in soname and all(
-            character in allowed for character in soname
+        operand = left.split()[-1] if left else ""
+        if 0 < len(operand) <= 256 and ".so" in operand and all(
+            character in allowed for character in operand
         ):
-            missing_sonames.append(soname)
+            missing_operands.append(("SONAME", operand))
+            continue
+        basename = os.path.basename(operand)
+        normalized = os.path.normpath(operand)
+        basename_safe = (
+            0 < len(basename) <= 96
+            and ".so" in basename
+            and all(character in allowed for character in basename)
+        )
+        if (
+            basename_safe
+            and os.path.isabs(operand)
+            and any(normalized.startswith(prefix) for prefix in system_path_prefixes)
+        ):
+            missing_operands.append(("SYSTEM_PATH", basename))
+        elif basename_safe:
+            missing_operands.append(("PATH", basename))
         else:
-            missing_sonames.append("")
-    return ("OK", tuple(missing_sonames))
+            digest = hashlib.sha256(
+                left[:4096].encode("utf-8", errors="replace")
+            ).hexdigest()[:16]
+            missing_operands.append(("INVALID", digest))
+    return ("OK", tuple(missing_operands))
 
 timeout_count = 0
 invalid_missing_count = 0
+invalid_diagnostic_overflow = 0
 missing_sonames = set()
+missing_system_path_basenames = set()
+missing_path_basenames = set()
+invalid_missing_hashes = set()
 workers = max(1, min(8, os.cpu_count() or 1))
 with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
     for status, values in executor.map(inspect, elf_paths):
@@ -417,30 +450,61 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         if status == "AUDIT_ERROR":
             audit_error_count += 1
             continue
-        for soname in values:
-            if soname:
-                missing_sonames.add(soname)
+        for kind, value in values:
+            if kind == "SONAME":
+                missing_sonames.add(value)
+                continue
+            invalid_missing_count += 1
+            diagnostic_count = (
+                len(missing_system_path_basenames)
+                + len(missing_path_basenames)
+                + len(invalid_missing_hashes)
+            )
+            if diagnostic_count >= max_invalid_diagnostics:
+                invalid_diagnostic_overflow += 1
+            elif kind == "SYSTEM_PATH":
+                missing_system_path_basenames.add(value)
+            elif kind == "PATH":
+                missing_path_basenames.add(value)
             else:
-                invalid_missing_count += 1
+                invalid_missing_hashes.add(value)
 
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(f"COUNT\t{len(elf_paths)}\n")
     handle.write(f"TIMEOUT\t{timeout_count}\n")
     handle.write(f"AUDIT_ERROR\t{audit_error_count}\n")
     handle.write(f"INVALID_MISSING\t{invalid_missing_count}\n")
+    handle.write(f"INVALID_OVERFLOW\t{invalid_diagnostic_overflow}\n")
     for soname in sorted(missing_sonames):
         handle.write(f"MISSING\t{soname}\n")
+    for basename in sorted(missing_system_path_basenames):
+        handle.write(f"MISSING_SYSTEM_PATH\t{basename}\n")
+    for basename in sorted(missing_path_basenames):
+        handle.write(f"MISSING_PATH\t{basename}\n")
+    for digest in sorted(invalid_missing_hashes):
+        handle.write(f"INVALID_HASH\t{digest}\n")
 PY
 elf_count=0
 timeout_count=0
 audit_error_count=0
 invalid_missing_count=0
+invalid_diagnostic_overflow=0
 while IFS=$'\t' read -r kind value; do
   case "$kind" in
     COUNT) elf_count="$value" ;;
     TIMEOUT) timeout_count="$value" ;;
     AUDIT_ERROR) audit_error_count="$value" ;;
     INVALID_MISSING) invalid_missing_count="$value" ;;
+    INVALID_OVERFLOW) invalid_diagnostic_overflow="$value" ;;
+    MISSING_SYSTEM_PATH)
+      printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_system_path_%s\n' "$value"
+      ;;
+    MISSING_PATH)
+      printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_path_%s\n' "$value"
+      ;;
+    INVALID_HASH)
+      printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_operand_%s\n' "$value"
+      ;;
     MISSING)
       soname="$value"
       missing_line="$soname => not found"
@@ -458,6 +522,7 @@ while IFS=$'\t' read -r kind value; do
   esac
 done <"$scan"
 test "$elf_count" -gt 0
+printf 'BLUEPRINT_ELF_AUDIT_COUNT count=%s\n' "$elf_count"
 if [[ "$audit_error_count" -gt 0 ]]; then
   printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_audit_error\n'
   printf 'BLUEPRINT_ELF_AUDIT_ERROR count=%s\n' "$audit_error_count"
@@ -470,6 +535,9 @@ if [[ "$timeout_count" -gt 0 ]]; then
 fi
 if [[ "$invalid_missing_count" -gt 0 ]]; then
   printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_soname_invalid\n'
+  if [[ "$invalid_diagnostic_overflow" -gt 0 ]]; then
+    printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_operand_overflow\n'
+  fi
   printf 'BLUEPRINT_ELF_MISSING_SONAME_INVALID count=%s\n' "$invalid_missing_count"
   exit 93
 fi
@@ -616,6 +684,21 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 }
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            if check_name == "all_archived_elf_linkage":
+                failure_text = "\n".join(
+                    value
+                    for value in (
+                        getattr(exc, "stdout", ""),
+                        getattr(exc, "stderr", ""),
+                    )
+                    if isinstance(value, str)
+                )
+                count_match = re.search(
+                    r"BLUEPRINT_ELF_AUDIT_COUNT count=([1-9][0-9]*)",
+                    failure_text,
+                )
+                if count_match is not None:
+                    archived_elf_file_count = int(count_match.group(1))
             dependency_tokens = _validation_dependency_tokens(exc)
             if dependency_tokens and all(
                 is_nvidia_driver_soname(token) for token in dependency_tokens

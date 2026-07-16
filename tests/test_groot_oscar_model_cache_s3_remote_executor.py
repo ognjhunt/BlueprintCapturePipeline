@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -181,6 +183,13 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "ThreadPoolExecutor(max_workers=workers)" in elf_scan
     assert '["ldd", candidate]' in elf_scan
     assert "min(8, os.cpu_count() or 1)" in elf_scan
+    assert 'missing_operands.append(("SYSTEM_PATH", basename))' in elf_scan
+    assert 'missing_operands.append(("PATH", basename))' in elf_scan
+    assert "INVALID_HASH" in elf_scan
+    assert "elf_missing_system_path_%s" in elf_scan
+    assert "elf_missing_path_%s" in elf_scan
+    assert "elf_missing_operand_%s" in elf_scan
+    assert "max_invalid_diagnostics = 256" in elf_scan
     assert "BLUEPRINT_ELF_LDD_TIMEOUT" in elf_scan
     assert "BLUEPRINT_ELF_AUDIT_ERROR" in elf_scan
     assert "onerror=record_walk_error" in elf_scan
@@ -383,6 +392,110 @@ def test_runtime_carrier_validation_preserves_structured_timeout_evidence(
     }
     assert "stdout" not in json.dumps(raised.value.evidence)
     assert "stderr" not in json.dumps(raised.value.evidence)
+
+
+def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_token(
+    tmp_path: Path,
+) -> None:
+    class MissingPathDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and "elf_count" in command[-1]:
+                self.calls.append(command)
+                raise subprocess.CalledProcessError(
+                    returncode=93,
+                    cmd=command,
+                    output=(
+                        "BLUEPRINT_ELF_AUDIT_COUNT count=1234\n"
+                        "BLUEPRINT_VALIDATION_DIAGNOSTIC "
+                        "elf_missing_path_libescape.so.2\n"
+                        "BLUEPRINT_VALIDATION_DIAGNOSTIC "
+                        "elf_missing_soname_invalid\n"
+                    ),
+                )
+            return super().__call__(argv, **kwargs)
+
+    with pytest.raises(executor.RuntimeCarrierValidationError) as raised:
+        executor._validate_runtime_inside_carrier(
+            MissingPathDocker(),
+            carrier_ref=CARRIER_REF,
+            payload_root=tmp_path,
+        )
+
+    evidence = raised.value.evidence
+    assert evidence["archived_elf_file_count"] == 1234
+    failed = next(
+        row
+        for row in evidence["checks"]
+        if row["name"] == "all_archived_elf_linkage"
+    )
+    assert failed["diagnostic_tokens"] == [
+        "elf_missing_path_libescape.so.2",
+        "elf_missing_soname_invalid",
+    ]
+    assert "stdout" not in json.dumps(evidence)
+    assert "stderr" not in json.dumps(evidence)
+
+
+def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
+    tmp_path: Path,
+) -> None:
+    docker = FakeDocker()
+    executor.prepare_runtime_bundle(
+        _request(),
+        runtime_root=tmp_path / "runtime",
+        build_root=tmp_path / "build",
+        runner=docker,
+    )
+    elf_scan = next(
+        call[-1]
+        for call in docker.calls
+        if call[1] == "run" and "elf_count" in call[-1]
+    )
+    embedded = elf_scan.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    roots_start = embedded.index("roots = (")
+    roots_end = embedded.index("\nallowed = ", roots_start)
+    embedded = (
+        embedded[:roots_start]
+        + "roots = (sys.argv[2],)"
+        + embedded[roots_end:]
+    )
+
+    audit_root = tmp_path / "audit-root"
+    audit_root.mkdir()
+    (audit_root / "candidate.so").write_bytes(b"\x7fELFpayload")
+    bin_root = tmp_path / "bin"
+    bin_root.mkdir()
+    ldd = bin_root / "ldd"
+    ldd.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'libplain.so.1 => not found'\n"
+        "printf '%s\\n' '/usr/lib/x86_64-linux-gnu/libcuda.so.1 => not found'\n"
+        "printf '%s\\n' '/opt/private/libescape.so.2 => not found'\n"
+        "printf '%s\\n' '/opt/private/not-a-library => not found'\n",
+        encoding="utf-8",
+    )
+    ldd.chmod(0o755)
+    scan = tmp_path / "scan.tsv"
+    subprocess.run(
+        [sys.executable, "-", str(scan), str(audit_root)],
+        input=embedded,
+        text=True,
+        check=True,
+        env={**os.environ, "PATH": f"{bin_root}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    rows = scan.read_text(encoding="utf-8").splitlines()
+    assert "COUNT\t1" in rows
+    assert "INVALID_MISSING\t3" in rows
+    assert "INVALID_OVERFLOW\t0" in rows
+    assert "MISSING\tlibplain.so.1" in rows
+    assert "MISSING_SYSTEM_PATH\tlibcuda.so.1" in rows
+    assert "MISSING_PATH\tlibescape.so.2" in rows
+    invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
+    assert len(invalid_hashes) == 1
+    assert len(invalid_hashes[0].split("\t", 1)[1]) == 16
+    assert "/opt/private" not in scan.read_text(encoding="utf-8")
 
 
 def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:
