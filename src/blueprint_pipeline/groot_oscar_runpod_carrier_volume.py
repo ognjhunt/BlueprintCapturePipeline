@@ -16,7 +16,7 @@ import shlex
 from typing import Any, Mapping, Sequence
 
 
-RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION = "groot_oscar_runtime_bundle_manifest.v1"
+RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION = "groot_oscar_runtime_bundle_manifest.v2"
 CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v3"
 LEGACY_CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION = "groot_oscar_runpod_carrier_volume_admission.v2"
 THIN_RUNTIME_SOURCE_EVIDENCE_SCHEMA_VERSION = "groot_oscar_thin_remote_build_result.v1"
@@ -428,7 +428,7 @@ try:
     if digest(manifest_path) != os.environ["BLUEPRINT_RUNTIME_MANIFEST_SHA256"]:
         raise RuntimeError("runtime_manifest_sha256_mismatch")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v1":
+    if manifest.get("schema_version") != "groot_oscar_runtime_bundle_manifest.v2":
         raise RuntimeError("runtime_manifest_schema_invalid")
     expected_runtime_env = {
         key: os.environ.get(key) for key in ("PYTHONPATH", "LD_LIBRARY_PATH")
