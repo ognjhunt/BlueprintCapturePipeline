@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +62,28 @@ COMBINED_GPU_PLAN_SECONDS = (
     GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
 )
 PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
+DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = (
+    "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
+)
+
+
+def _configure_detached_model_volume_signal_policy(command: str) -> bool:
+    """Keep an explicitly detached paid supervisor alive through local SIGINT.
+
+    SIGTERM remains available for an intentional stop. Provider resources also
+    remain bounded by their independent deadline watchdogs.
+    """
+
+    if not (
+        command == "model-volume-run"
+        and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
+    ):
+        return False
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (AttributeError, OSError, ValueError):
+        return False
+    return True
 
 
 def _add_cpu_arguments(parser: argparse.ArgumentParser, *, require_provider: bool = True) -> None:
@@ -391,6 +414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
+    _configure_detached_model_volume_signal_policy(args.command)
     if args.command in {"model-volume", "model-volume-run"} and not (
         args.command == "model-volume" and args.retain_existing_output
     ):

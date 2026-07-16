@@ -1602,6 +1602,10 @@ def launch_detached(*, output_dir: Path, run_arguments: Sequence[str]) -> dict[s
     with os.fdopen(lock_fd, "w", encoding="utf-8") as lock:
         lock.write(f"created_by_pid={os.getpid()}\n")
     with (output / "supervisor.log").open("ab") as log:
+        supervisor_env = {
+            **os.environ,
+            "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR": "1",
+        }
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -1614,12 +1618,15 @@ def launch_detached(*, output_dir: Path, run_arguments: Sequence[str]) -> dict[s
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=supervisor_env,
         )
     result = {
         "schema_version": "groot_oscar_storage_model_volume_supervisor.v1",
         "status": "supervisor_started",
         "pid": process.pid,
         "start_new_session": True,
+        "local_sigint_ignored": True,
+        "sigterm_remains_available": True,
         "raw_secret_values_recorded": False,
     }
     write_json(output / "supervisor_launch.json", result)

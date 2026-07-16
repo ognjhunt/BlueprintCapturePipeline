@@ -813,8 +813,19 @@ def test_storage_detached_launch_is_single_supervisor(
     class Process:
         pid = 1234
 
-    monkeypatch.setattr(storage.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    popen_kwargs: dict[str, object] = {}
+
+    def popen(*_args: object, **kwargs: object) -> Process:
+        popen_kwargs.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(storage.subprocess, "Popen", popen)
     launched = launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])
     assert launched["status"] == "supervisor_started"
+    assert launched["local_sigint_ignored"] is True
+    assert popen_kwargs["start_new_session"] is True
+    assert popen_kwargs["env"][
+        "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
+    ] == "1"
     with pytest.raises(ValueError, match="already_has_supervisor"):
         launch_detached(output_dir=tmp_path, run_arguments=["--allow-paid"])

@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import subprocess
 from argparse import Namespace
 from pathlib import Path
@@ -12,6 +13,42 @@ from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     build_live_machine_capability_evidence,
 )
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
+
+
+def test_detached_model_volume_supervisor_ignores_only_sigint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, object]] = []
+    monkeypatch.setenv(allocator.DETACHED_MODEL_VOLUME_SUPERVISOR_ENV, "1")
+    monkeypatch.setattr(
+        allocator.signal,
+        "signal",
+        lambda signum, handler: calls.append((signum, handler)),
+    )
+
+    assert allocator._configure_detached_model_volume_signal_policy(
+        "model-volume-run"
+    ) is True
+    assert calls == [(signal.SIGINT, signal.SIG_IGN)]
+
+
+def test_foreground_model_volume_keeps_default_signal_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(
+        allocator.DETACHED_MODEL_VOLUME_SUPERVISOR_ENV, raising=False
+    )
+    monkeypatch.setattr(
+        allocator.signal,
+        "signal",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("signal policy changed")
+        ),
+    )
+
+    assert allocator._configure_detached_model_volume_signal_policy(
+        "model-volume-run"
+    ) is False
 
 
 def _write_inputs(tmp_path: Path, *, paid: bool = True) -> Namespace:
