@@ -95,6 +95,10 @@ _SAFE_DROPLET_ID = re.compile(r"[0-9]{1,32}")
 _MISSING_PYTHON_MODULE = re.compile(
     r"No module named ['\"]([A-Za-z0-9_.-]+)['\"]"
 )
+_VALIDATION_DIAGNOSTIC_MARKER = re.compile(
+    r"^BLUEPRINT_VALIDATION_DIAGNOSTIC ([A-Za-z0-9_.-]{1,128})$",
+    re.MULTILINE,
+)
 _PACKET_KEYS = frozenset(
     {
         "schema_version",
@@ -308,6 +312,7 @@ def _validation_dependency_tokens(exc: BaseException) -> set[str]:
     return {
         *_missing_soname_tokens(text),
         *(_MISSING_PYTHON_MODULE.findall(text)),
+        *(_VALIDATION_DIAGNOSTIC_MARKER.findall(text)),
     }
 
 
@@ -322,55 +327,143 @@ def _validate_runtime_inside_carrier(
         (
             "all_archived_elf_linkage",
             r"""
-missing="$(mktemp)"
-deferred="$(mktemp)"
-elf_count=0
-while IFS= read -r -d '' candidate; do
-  magic="$(head -c 4 "$candidate" 2>/dev/null || true)"
-  [[ "$magic" == $'\x7fELF' ]] || continue
-  elf_count=$((elf_count + 1))
-  linkage="$(ldd "$candidate" 2>&1 || true)"
-  while IFS= read -r missing_line; do
-    soname="${missing_line%%=>*}"
-    soname="${soname#"${soname%%[![:space:]]*}"}"
-    soname="${soname%"${soname##*[![:space:]]}"}"
-    case "$soname" in
-      libnvidia-*.so*|libcuda.so|libcuda.so.*|libnvcuvid.so|libnvcuvid.so.*|libnvoptix.so|libnvoptix.so.*|libGLX_nvidia.so|libGLX_nvidia.so.*|libEGL_nvidia.so|libEGL_nvidia.so.*|libGLESv1_CM_nvidia.so|libGLESv1_CM_nvidia.so.*|libGLESv2_nvidia.so|libGLESv2_nvidia.so.*)
-        printf '%s\n' "$soname" >>"$deferred"
-        ;;
-      *)
-        {
-          printf 'ELF %s\n' "$candidate"
-          printf '%s\n' "$missing_line"
-        } >>"$missing"
-        ;;
-    esac
-  done < <(grep -F 'not found' <<<"$linkage" || true)
-done < <(find \
-  /isaac-sim \
-  /opt/OSCAR \
-  /opt/blueprint \
-  /opt/gr00t \
-  /opt/gr00t-venv \
-  /opt/onnxruntime \
-  /opt/oscar-venv \
-  /opt/runpod-serverless-venv \
-  /opt/uv-python \
-  /opt/wbc \
-  -xdev -type f -print0)
-test "$elf_count" -gt 0
-if [[ -s "$missing" ]]; then
-  cat "$missing"
-  exit 91
-fi
-if [[ -s "$deferred" ]]; then
-  while IFS= read -r soname; do
-    printf 'BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME %s\n' "$soname"
-  done < <(sort -u "$deferred")
-fi
-printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
+/opt/oscar-venv/bin/python - <<'PY'
+from __future__ import annotations
+
+import concurrent.futures
+import fnmatch
+import os
+import subprocess
+
+ROOTS = (
+    "/isaac-sim",
+    "/opt/OSCAR",
+    "/opt/blueprint",
+    "/opt/gr00t",
+    "/opt/gr00t-venv",
+    "/opt/onnxruntime",
+    "/opt/oscar-venv",
+    "/opt/runpod-serverless-venv",
+    "/opt/uv-python",
+    "/opt/wbc",
+)
+DRIVER_PATTERNS = (
+    "libnvidia-*.so*",
+    "libcuda.so",
+    "libcuda.so.*",
+    "libnvcuvid.so",
+    "libnvcuvid.so.*",
+    "libnvoptix.so",
+    "libnvoptix.so.*",
+    "libGLX_nvidia.so",
+    "libGLX_nvidia.so.*",
+    "libEGL_nvidia.so",
+    "libEGL_nvidia.so.*",
+    "libGLESv1_CM_nvidia.so",
+    "libGLESv1_CM_nvidia.so.*",
+    "libGLESv2_nvidia.so",
+    "libGLESv2_nvidia.so.*",
+)
+
+
+def files_under_roots():
+    for root in ROOTS:
+        for directory, directories, files in os.walk(root, followlinks=False):
+            directories[:] = [
+                name
+                for name in directories
+                if not os.path.islink(os.path.join(directory, name))
+            ]
+            for name in files:
+                path = os.path.join(directory, name)
+                if not os.path.islink(path):
+                    yield path
+
+
+def missing_sonames(text):
+    for line in text.splitlines():
+        if "=> not found" not in line:
+            continue
+        left = line.split("=> not found", 1)[0].strip().split()
+        if not left:
+            continue
+        soname = left[-1]
+        if soname:
+            yield soname
+
+
+def inspect(path):
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(4) != b"\x7fELF":
+                return None
+    except OSError:
+        return ("read_error", path, ())
+    try:
+        completed = subprocess.run(
+            ["ldd", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ("timeout", path, ())
+    missing = tuple(sorted(set(missing_sonames(completed.stdout + completed.stderr))))
+    return ("elf", path, missing)
+
+
+elf_count = 0
+deferred = set()
+missing = []
+timeouts = []
+read_errors = []
+workers = min(32, max(4, (os.cpu_count() or 1) * 2))
+with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+    paths = files_under_roots()
+    while True:
+        batch = []
+        try:
+            for _ in range(2048):
+                batch.append(next(paths))
+        except StopIteration:
+            pass
+        if not batch:
+            break
+        for result in pool.map(inspect, batch):
+            if result is None:
+                continue
+            status, path, sonames = result
+            if status == "timeout":
+                timeouts.append(path)
+                continue
+            if status == "read_error":
+                read_errors.append(path)
+                continue
+            elf_count += 1
+            for soname in sonames:
+                if any(fnmatch.fnmatchcase(soname, pattern) for pattern in DRIVER_PATTERNS):
+                    deferred.add(soname)
+                else:
+                    missing.append((path, soname))
+
+for soname in sorted(deferred):
+    print(f"BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME {soname}")
+for path, soname in missing:
+    print(f"ELF {path}")
+    print(f"{soname} => not found")
+if timeouts:
+    print("BLUEPRINT_VALIDATION_DIAGNOSTIC elf_linkage_timeout")
+if read_errors:
+    print("BLUEPRINT_VALIDATION_DIAGNOSTIC elf_read_error")
+if not elf_count:
+    print("BLUEPRINT_VALIDATION_DIAGNOSTIC elf_count_zero")
+if missing or timeouts or read_errors or not elf_count:
+    raise SystemExit(91)
+print(f"BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count={elf_count}")
+PY
 """,
-            900,
+            600,
         ),
         (
             "gr00t_import",
@@ -398,9 +491,10 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         (
             "isaac_import_matrix",
             "/isaac-sim/python.sh -c 'import blueprint_pipeline; import carb; import isaacsim; "
-            "from isaacsim import SimulationApp; from isaacsim.core.prims import SingleArticulation; "
+            "from isaacsim import SimulationApp; app = SimulationApp({\"headless\": True}); "
+            "from isaacsim.core.prims import SingleArticulation; "
             "import omni.kit.app; import omni.timeline; import omni.usd; "
-            "import blueprint_pipeline.isaac_runtime_task_backend'",
+            "import blueprint_pipeline.isaac_runtime_task_backend; app.close()'",
             300,
         ),
         (
@@ -686,9 +780,10 @@ def prepare_runtime_bundle(
                     "-c",
                     "import blueprint_pipeline; import carb; import isaacsim; "
                     "from isaacsim import SimulationApp; "
+                    "app = SimulationApp({\"headless\": True}); "
                     "from isaacsim.core.prims import SingleArticulation; "
                     "import omni.kit.app; import omni.timeline; import omni.usd; "
-                    "import blueprint_pipeline.isaac_runtime_task_backend",
+                    "import blueprint_pipeline.isaac_runtime_task_backend; app.close()",
                 ),
             ),
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),

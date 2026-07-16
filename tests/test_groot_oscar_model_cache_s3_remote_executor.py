@@ -178,12 +178,25 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     validation_scripts = [call[-1] for call in carrier_runs]
     elf_scan = next(script for script in validation_scripts if "elf_count" in script)
     assert all(f"/{root}" in elf_scan for root in RUNTIME_ARCHIVE_ROOTS)
-    assert "ldd \"$candidate\"" in elf_scan
+    assert "ThreadPoolExecutor" in elf_scan
+    assert "subprocess.run(" in elf_scan
+    assert '["ldd", path]' in elf_scan
+    assert "timeout=30" in elf_scan
+    assert "BLUEPRINT_VALIDATION_DIAGNOSTIC elf_linkage_timeout" in elf_scan
+    elf_python = elf_scan.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    compile(elf_python, "<carrier-elf-audit>", "exec")
     assert "not found" in elf_scan
     assert "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME" in elf_scan
     assert "libcuda.so.*" in elf_scan
     assert any("import diffusers" in script for script in validation_scripts)
-    assert any("import carb; import isaacsim" in script for script in validation_scripts)
+    isaac_scan = next(
+        script for script in validation_scripts if "import carb; import isaacsim" in script
+    )
+    assert "app = SimulationApp" in isaac_scan
+    assert isaac_scan.index("app = SimulationApp") < isaac_scan.index(
+        "from isaacsim.core.prims import SingleArticulation"
+    )
+    assert "app.close()" in isaac_scan
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
@@ -200,6 +213,14 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
             "--verify-serverless-runtime",
         ]
     ]
+    isaac_healthcheck = [
+        argv for argv in manifest["healthcheck_argv"] if argv[0] == "/isaac-sim/python.sh"
+    ]
+    assert len(isaac_healthcheck) == 1
+    assert isaac_healthcheck[0][2].index("app = SimulationApp") < isaac_healthcheck[0][
+        2
+    ].index("from isaacsim.core.prims import SingleArticulation")
+    assert isaac_healthcheck[0][2].endswith("app.close()")
 
 
 def test_runtime_carrier_env_matches_foundation_runtime_contract() -> None:
@@ -334,16 +355,32 @@ def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependenc
         output=(
             "libcuda_runtime.so.1 => not found\n"
             "ModuleNotFoundError: No module named 'omni.missing'\n"
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC elf_linkage_timeout\n"
             "credential-like text must not be copied\n"
         ),
         stderr="liboptional.so.2: cannot open shared object file\n",
     )
 
     assert executor._validation_diagnostic_tokens(failure) == [
+        "elf_linkage_timeout",
         "libcuda_runtime.so.1",
         "liboptional.so.2",
         "omni.missing",
     ]
+
+
+def test_runtime_carrier_validation_diagnostic_marker_is_strictly_bounded() -> None:
+    failure = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["docker", "run"],
+        output=(
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC elf_read_error\n"
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC ../../secret\n"
+            "BLUEPRINT_VALIDATION_DIAGNOSTIC value with spaces\n"
+        ),
+    )
+
+    assert executor._validation_diagnostic_tokens(failure) == ["elf_read_error"]
 
 
 def test_runtime_carrier_import_failure_defers_only_pure_driver_sonames(
