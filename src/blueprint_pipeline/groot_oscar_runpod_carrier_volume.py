@@ -435,7 +435,7 @@ try:
     }
     if manifest.get("runtime_env") != expected_runtime_env:
         raise RuntimeError("runtime_manifest_env_mismatch")
-    driver_sonames = manifest.get("gpu_driver_deferred_sonames")
+    driver_sonames = manifest.get("gpu_driver_deferred_sonames", [])
     driver_stems = (
         "libcuda.so",
         "libnvcuvid.so",

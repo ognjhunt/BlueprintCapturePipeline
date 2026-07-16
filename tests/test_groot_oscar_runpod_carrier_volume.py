@@ -272,6 +272,7 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_gpu_driver_soname_unresolved" in script
     assert "ctypes.CDLL(soname)" in script
     assert "gpu_driver_deferred_sonames_resolved" in script
+    assert 'manifest.get("gpu_driver_deferred_sonames", [])' in script
     assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in script
     assert "/usr/local/nvidia/lib:/usr/local/nvidia/lib64" in script
     assert "export BLUEPRINT_GROOT_OSCAR_OSCAR_REPO=/opt/OSCAR" in script
