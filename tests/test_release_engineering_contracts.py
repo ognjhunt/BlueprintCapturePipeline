@@ -338,6 +338,38 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation
 
 
+def test_groot_oscar_carrier_preserves_foundation_system_runtime_contract() -> None:
+    root = ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
+    foundation = (root / "Foundation.Dockerfile").read_text(encoding="utf-8")
+    carrier = (root / "Carrier.Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:"
+        "b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca"
+    ) in carrier
+    assert "ARG TENSORRT_VERSION=10.4.0.26-1+cuda12.6" in carrier
+    assert "ARG CUDA_CUDART_VERSION=12.6.77-1" in carrier
+    assert "sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba" in carrier
+    for package_contract in (
+        "libosmesa6",
+        "ffmpeg",
+        "gettext-base",
+        "libzmq5",
+        "libyaml-cpp0.8",
+        "zlib1g",
+        "cuda-cudart-12-6=${CUDA_CUDART_VERSION}",
+        "libnvinfer10=${TENSORRT_VERSION}",
+        "libnvinfer-plugin10=${TENSORRT_VERSION}",
+        "libnvonnxparsers10=${TENSORRT_VERSION}",
+    ):
+        assert package_contract in foundation
+        assert package_contract in carrier
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in carrier
+    assert "LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib" in carrier
+    assert "apt-cache madison libnvinfer10" in carrier
+    assert "apt-cache madison cuda-cudart-12-6" in carrier
+
+
 def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
     lock = (
         ROOT
