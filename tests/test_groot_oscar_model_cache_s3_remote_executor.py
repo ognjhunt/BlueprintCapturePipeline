@@ -27,11 +27,13 @@ class FakeDocker:
         verify_digest: bool = True,
         fail_copy_root: str = "",
         fail_validation_text: str = "",
+        deferred_driver_sonames: tuple[str, ...] = (),
     ) -> None:
         self.calls: list[list[str]] = []
         self.verify_digest = verify_digest
         self.fail_copy_root = fail_copy_root
         self.fail_validation_text = fail_validation_text
+        self.deferred_driver_sonames = deferred_driver_sonames
 
     def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -75,7 +77,11 @@ class FakeDocker:
                     stderr="credential-like diagnostic must not be persisted",
                 )
             stdout = (
-                "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=42\n"
+                "".join(
+                    f"BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME {soname}\n"
+                    for soname in self.deferred_driver_sonames
+                )
+                + "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=42\n"
                 if "elf_count" in command[-1]
                 else "runtime verified\n"
             )
@@ -95,7 +101,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
-    docker = FakeDocker()
+    docker = FakeDocker(deferred_driver_sonames=("libnvidia-ml.so.1", "libcuda.so.1"))
     runtime_root = tmp_path / "runtime"
     build_root = tmp_path / "build"
 
@@ -111,6 +117,10 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["source_and_carrier_registry_digests_verified"] is True
     assert result["carrier_validation"]["status"] == "passed"
     assert result["carrier_validation"]["archived_elf_file_count"] == 42
+    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
+        "libcuda.so.1",
+        "libnvidia-ml.so.1",
+    ]
     assert len(result["additional_artifacts"]) == 2
     assert {row["remote_key"] for row in result["additional_artifacts"]} == {
         DEFAULT_RUNTIME_ARCHIVE_PATH.removeprefix("/workspace/"),
@@ -128,10 +138,14 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert manifest["status"] == "complete"
     assert manifest["source_release_image_ref"] == SOURCE_REF
     assert manifest["carrier_image_ref"] == CARRIER_REF
+    assert manifest["gpu_driver_deferred_sonames"] == [
+        "libcuda.so.1",
+        "libnvidia-ml.so.1",
+    ]
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     carrier_runs = [call for call in docker.calls if call[1] == "run"]
-    assert len(carrier_runs) == 7
+    assert len(carrier_runs) == 6
     assert all("--network" in call for call in carrier_runs)
     assert all("none" in call for call in carrier_runs)
     assert all("--env" in call for call in carrier_runs)
@@ -144,6 +158,8 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert all(f"/{root}" in elf_scan for root in RUNTIME_ARCHIVE_ROOTS)
     assert "ldd \"$candidate\"" in elf_scan
     assert "not found" in elf_scan
+    assert "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME" in elf_scan
+    assert "libcuda.so.*" in elf_scan
     assert any("import diffusers" in script for script in validation_scripts)
     assert any("import carb; import isaacsim" in script for script in validation_scripts)
     assert Path(result["archive_path"]).parent == runtime_root
@@ -272,7 +288,7 @@ def test_runtime_carrier_validation_collects_all_failures_before_blocking(
     message = str(raised.value)
     assert "all_archived_elf_linkage" in message
     assert "isaac_import_matrix" in message
-    assert sum(call[1] == "run" for call in docker.calls) == 7
+    assert sum(call[1] == "run" for call in docker.calls) == 6
 
 
 def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:

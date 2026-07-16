@@ -36,6 +36,7 @@ from .groot_oscar_runpod_carrier_volume import (
     RUNTIME_ARCHIVE_ROOTS,
     RUNTIME_CARRIER_ENV,
     build_runtime_bundle_manifest,
+    is_nvidia_driver_soname,
 )
 from .groot_oscar_model_cache import (
     COSMOS_RUNTIME_MODEL_RELATIVE_PATH,
@@ -317,18 +318,29 @@ def _validate_runtime_inside_carrier(
             "all_archived_elf_linkage",
             r"""
 missing="$(mktemp)"
+deferred="$(mktemp)"
 elf_count=0
 while IFS= read -r -d '' candidate; do
   magic="$(head -c 4 "$candidate" 2>/dev/null || true)"
   [[ "$magic" == $'\x7fELF' ]] || continue
   elf_count=$((elf_count + 1))
   linkage="$(ldd "$candidate" 2>&1 || true)"
-  if grep -Fq 'not found' <<<"$linkage"; then
-    {
-      printf 'ELF %s\n' "$candidate"
-      printf '%s\n' "$linkage"
-    } >>"$missing"
-  fi
+  while IFS= read -r missing_line; do
+    soname="${missing_line%%=>*}"
+    soname="${soname#"${soname%%[![:space:]]*}"}"
+    soname="${soname%"${soname##*[![:space:]]}"}"
+    case "$soname" in
+      libnvidia-*.so*|libcuda.so|libcuda.so.*|libnvcuvid.so|libnvcuvid.so.*|libnvoptix.so|libnvoptix.so.*|libGLX_nvidia.so|libGLX_nvidia.so.*|libEGL_nvidia.so|libEGL_nvidia.so.*|libGLESv1_CM_nvidia.so|libGLESv1_CM_nvidia.so.*|libGLESv2_nvidia.so|libGLESv2_nvidia.so.*)
+        printf '%s\n' "$soname" >>"$deferred"
+        ;;
+      *)
+        {
+          printf 'ELF %s\n' "$candidate"
+          printf '%s\n' "$missing_line"
+        } >>"$missing"
+        ;;
+    esac
+  done < <(grep -F 'not found' <<<"$linkage" || true)
 done < <(find \
   /isaac-sim \
   /opt/OSCAR \
@@ -345,6 +357,11 @@ test "$elf_count" -gt 0
 if [[ -s "$missing" ]]; then
   cat "$missing"
   exit 91
+fi
+if [[ -s "$deferred" ]]; then
+  while IFS= read -r soname; do
+    printf 'BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME %s\n' "$soname"
+  done < <(sort -u "$deferred")
 fi
 printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
 """,
@@ -384,11 +401,6 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
             "test -x /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
             300,
         ),
-        (
-            "wbc_dynamic_linkage",
-            "! ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref | grep -F 'not found'",
-            300,
-        ),
     )
     carrier_env_argv = [
         item
@@ -398,6 +410,7 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
     failed_checks: list[str] = []
     checks: list[dict[str, Any]] = []
     archived_elf_file_count = 0
+    gpu_driver_deferred_sonames: set[str] = set()
     for check_name, validation, timeout_seconds in validations:
         try:
             completed = _run_command(
@@ -436,6 +449,34 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
                     )
                     continue
                 archived_elf_file_count = int(match.group(1))
+                invalid_deferred_soname = False
+                for line in (completed.stdout or "").splitlines():
+                    marker = "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME "
+                    if not line.startswith(marker):
+                        continue
+                    soname = line.removeprefix(marker).strip()
+                    if not is_nvidia_driver_soname(soname):
+                        invalid_deferred_soname = True
+                        break
+                    gpu_driver_deferred_sonames.add(soname)
+                if invalid_deferred_soname:
+                    failed_checks.append(check_name)
+                    checks.append(
+                        {
+                            "name": check_name,
+                            "status": "failed",
+                            "diagnostic_tokens": ["driver_deferred_soname_invalid"],
+                        }
+                    )
+                    continue
+                checks.append(
+                    {
+                        "name": check_name,
+                        "status": "passed",
+                        "diagnostic_tokens": [],
+                    }
+                )
+                continue
             checks.append(
                 {
                     "name": check_name,
@@ -459,6 +500,10 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         "checks": checks,
         "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
         "archived_elf_file_count": archived_elf_file_count,
+        "gpu_driver_deferred_sonames": sorted(gpu_driver_deferred_sonames),
+        "gpu_driver_resolution_required_at_bootstrap": bool(
+            gpu_driver_deferred_sonames
+        ),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
             "This validates archived ELF linkage and import surfaces inside the exact "
@@ -614,6 +659,9 @@ def prepare_runtime_bundle(
                 ),
             ),
             generated_at=generated_at or datetime.now(timezone.utc).isoformat(),
+            gpu_driver_deferred_sonames=carrier_validation[
+                "gpu_driver_deferred_sonames"
+            ],
         )
         if manifest["status"] != "complete":
             raise RuntimeError("typed_runtime_bundle_manifest_blocked")
