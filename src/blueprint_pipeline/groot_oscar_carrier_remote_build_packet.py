@@ -187,11 +187,9 @@ def prepare_remote_build_packet(
         encoding="utf-8",
     )
     tarball = output / "groot_oscar_carrier_remote_build_packet.tar.gz"
-    archive_paths = (
-        packet / "README.md",
-        context / "Dockerfile",
-        script,
-    )
+    archive_paths = [packet / "README.md", script]
+    if source.is_file():
+        archive_paths.insert(1, context / "Dockerfile")
     archive_member_sha256 = {
         path.relative_to(output).as_posix(): _sha256(path) for path in archive_paths
     }

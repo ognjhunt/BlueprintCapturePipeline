@@ -502,6 +502,13 @@ def validate_remote_carrier_result(
         blockers.append("carrier_remote_build_image_ref_mismatch")
     if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", resolved):
         blockers.append("carrier_remote_build_digest_ref_invalid")
+    else:
+        expected_repository = expected_tag.split("@", 1)[0]
+        if ":" in expected_repository.rsplit("/", 1)[-1]:
+            expected_repository = expected_repository.rsplit(":", 1)[0]
+        resolved_repository = resolved.split("@", 1)[0]
+        if resolved_repository != expected_repository:
+            blockers.append("carrier_remote_build_digest_repository_mismatch")
     if payload.get("base_image_ref") != expected_base:
         blockers.append("carrier_remote_build_base_ref_mismatch")
     if payload.get("dockerfile_sha256") != expected_dockerfile:

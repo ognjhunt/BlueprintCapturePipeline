@@ -270,6 +270,35 @@ def test_carrier_remote_result_binds_digest_base_source_and_dockerfile(
     assert verified["resolved_digest_ref"] == payload["resolved_digest_ref"]
 
 
+def test_carrier_remote_result_rejects_wrong_digest_repository(tmp_path: Path) -> None:
+    packet = {
+        "carrier_image_ref": "docker.io/example/carrier:versioned",
+        "carrier_base_image_ref": "docker.io/example/base@sha256:" + "b" * 64,
+        "carrier_dockerfile_sha256": "c" * 64,
+        "source_commit": "a" * 40,
+    }
+    payload = {
+        "schema_version": "groot_oscar_carrier_remote_build_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "image_ref": packet["carrier_image_ref"],
+        "resolved_digest_ref": "docker.io/example/other@sha256:" + "d" * 64,
+        "base_image_ref": packet["carrier_base_image_ref"],
+        "dockerfile_sha256": packet["carrier_dockerfile_sha256"],
+        "source_commit": packet["source_commit"],
+        "platform": "linux/amd64",
+        "raw_secret_values_recorded": False,
+    }
+    (tmp_path / "groot_oscar_carrier_remote_build_result.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    blocked = validate_remote_carrier_result(tmp_path, packet=packet)
+
+    assert blocked["status"] == "blocked"
+    assert "carrier_remote_build_digest_repository_mismatch" in blocked["blockers"]
+
+
 def test_model_cache_runtime_bundle_cloud_init_installs_docker() -> None:
     text = build_cloud_init(
         host_private_b64="private",
