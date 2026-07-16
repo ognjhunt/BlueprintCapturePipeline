@@ -7,6 +7,14 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline import runpod_wam_async_runner as runner
+from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
+    CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
+    DEFAULT_MODEL_CACHE_ROOT,
+    DEFAULT_RUNTIME_ARCHIVE_PATH,
+    DEFAULT_RUNTIME_MANIFEST_PATH,
+    DEFAULT_RUNTIME_ROOT,
+    RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+)
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -31,6 +39,37 @@ def _paid_grant():
     )
 
 
+def _carrier_volume_admission(*, carrier_image_ref: str) -> dict:
+    return {
+        "schema_version": CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
+        "status": "verified",
+        "carrier_image_ref": carrier_image_ref,
+        "network_volume": {
+            "id": "volume123",
+            "data_center_id": "EUR-IS-1",
+            "size_gib": 120,
+        },
+        "runtime_bundle": {
+            "manifest_schema_version": RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+            "source_release_image_ref": "docker.io/blueprint/release@sha256:" + "1" * 64,
+            "root": DEFAULT_RUNTIME_ROOT,
+            "archive_path": DEFAULT_RUNTIME_ARCHIVE_PATH,
+            "manifest_path": DEFAULT_RUNTIME_MANIFEST_PATH,
+            "archive_sha256": "3" * 64,
+            "manifest_sha256": "4" * 64,
+        },
+        "model_cache": {
+            "status": "verified",
+            "root": DEFAULT_MODEL_CACHE_ROOT,
+            "manifest_sha256": "5" * 64,
+        },
+        "s3_transfer_verification": {
+            "upload_completed": True,
+            "full_redownload_sha256_verified": True,
+            "provider_volume_id": "volume123",
+            "data_center_id": "EUR-IS-1",
+        },
+    }
 def _python_heredoc_chunks(script: str) -> list[str]:
     chunks: list[str] = []
     current: list[str] | None = None
@@ -92,6 +131,133 @@ def test_runpod_unitree_groot_sonic_persistent_payload_uses_provider_kind() -> N
     for index, chunk in enumerate(heredocs):
         compile(chunk, f"<unitree_groot_sonic_runpod_heredoc_{index}>", "exec")
     assert len(script) < 4500
+
+
+def test_runpod_small_carrier_payload_attaches_exact_verified_network_volume() -> None:
+    carrier_ref = (
+        "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
+    )
+    payload = runner._pod_payload(
+        job_name="blueprint-carrier-volume-test",
+        image_name=carrier_ref,
+        gpu_type_ids=("NVIDIA A40",),
+        provider_bundle_url="https://store.example/bundle.zip?secret",
+        provider_output_put_url="https://store.example/out.zip?secret",
+        provider_bundle_kind="unitree_groot_n17_sonic",
+        model_secret_env={},
+        provider_runtime_config_env={},
+        container_disk_gb=240,
+        volume_gb=120,
+        carrier_volume_admission=_carrier_volume_admission(
+            carrier_image_ref=carrier_ref
+        ),
+    )
+
+    assert payload["imageName"] == carrier_ref
+    assert payload["networkVolumeId"] == "volume123"
+    assert payload["dataCenterIds"] == ["EUR-IS-1"]
+    assert payload["volumeMountPath"] == "/workspace"
+    assert payload["containerDiskInGb"] == 240
+    assert payload["volumeInGb"] == 120
+    assert payload["gpuTypeIds"] == ["NVIDIA A40"]
+    assert payload["env"]["BLUEPRINT_RUNTIME_ARCHIVE_SHA256"] == "3" * 64
+    assert payload["env"]["BLUEPRINT_MODEL_CACHE_MANIFEST_SHA256"] == "5" * 64
+    script = payload["dockerStartCmd"][0]
+    assert script.index("BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_STARTED") < script.index(
+        "BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_PERSISTENT_PROVIDER_STARTED"
+    )
+
+
+def test_persistent_carrier_receipt_binds_pending_record_before_and_after_create(
+    tmp_path: Path,
+) -> None:
+    pod_name = "blueprint-groot-oscar-canary-persistent-test"
+    receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "status": "accepted",
+                "campaign_kind": "persistent_policy_wam_loop",
+                "pod_name_prefix": "blueprint-groot-oscar-canary-",
+                "pre_provider_mutation_confirmed_absent": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_path.chmod(0o600)
+    pending_path = tmp_path / "pending.json"
+    pending = {
+        "status": "open",
+        "provider": "runpod",
+        "lane": runner.RUNPOD_WAM_LANE,
+        "resource_kind": "compute_instance",
+        "resource_name": pod_name,
+        "instance_id": None,
+    }
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+
+    before = runner._update_provider_lane_handoff_receipt(
+        receipt_path,
+        pod_name=pod_name,
+        pending_teardown_record=str(pending_path),
+    )
+    bound_before = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert before["status"] == "pending_create_bound"
+    assert bound_before["pod_pending_teardown_record"] == str(pending_path)
+    assert bound_before["pre_provider_mutation_confirmed_absent"] is False
+    assert bound_before["pod_id"] is None
+
+    pending["instance_id"] = "pod-123"
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+    after = runner._update_provider_lane_handoff_receipt(
+        receipt_path,
+        pod_name=pod_name,
+        pending_teardown_record=str(pending_path),
+        pod_id="pod-123",
+    )
+    bound_after = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert after["status"] == "pod_id_bound"
+    assert bound_after["pod_id"] == "pod-123"
+    assert bound_after["provider_mutation_state"] == "pod_id_bound"
+
+
+def test_runpod_small_carrier_payload_rejects_h100_and_unverified_volume() -> None:
+    carrier_ref = (
+        "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
+    )
+    admission = _carrier_volume_admission(carrier_image_ref=carrier_ref)
+    admission["s3_transfer_verification"]["full_redownload_sha256_verified"] = False
+    with pytest.raises(ValueError, match="carrier_volume_s3_full_redownload_not_verified"):
+        runner._pod_payload(
+            job_name="blocked",
+            image_name=carrier_ref,
+            gpu_type_ids=("NVIDIA A40",),
+            provider_bundle_url="https://store.example/bundle.zip",
+            provider_output_put_url="https://store.example/out.zip",
+            provider_bundle_kind="unitree_groot_n17_sonic",
+            model_secret_env={},
+            provider_runtime_config_env={},
+            container_disk_gb=240,
+            volume_gb=120,
+            carrier_volume_admission=admission,
+        )
+
+    with pytest.raises(ValueError, match="carrier_volume_h100_disallowed"):
+        runner._pod_payload(
+            job_name="blocked-h100",
+            image_name=carrier_ref,
+            gpu_type_ids=("NVIDIA H100 PCIe",),
+            provider_bundle_url="https://store.example/bundle.zip",
+            provider_output_put_url="https://store.example/out.zip",
+            provider_bundle_kind="unitree_groot_n17_sonic",
+            model_secret_env={},
+            provider_runtime_config_env={},
+            container_disk_gb=240,
+            volume_gb=120,
+            carrier_volume_admission=_carrier_volume_admission(
+                carrier_image_ref=carrier_ref
+            ),
+        )
 
 
 def test_runpod_payload_forwards_success_keepalive_when_keep_requested(monkeypatch) -> None:

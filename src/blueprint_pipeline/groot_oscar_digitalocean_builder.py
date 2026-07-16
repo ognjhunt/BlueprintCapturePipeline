@@ -1561,6 +1561,7 @@ def run_builder(
         execution_admission = build_cpu_build_execution_admission(
             allocation_admission=admission,
             live_machine=live_capability,
+            runtime_bundle_requested=bool(packet.get("runtime_bundle_requested")),
         )
         write_json(output / "cpu_build_execution_admission.json", execution_admission)
         if execution_admission["status"] != "admitted":

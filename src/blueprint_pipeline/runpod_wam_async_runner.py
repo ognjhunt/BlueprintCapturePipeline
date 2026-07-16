@@ -17,6 +17,11 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, parse_bool, utc_now_iso, write_json
+from .groot_oscar_runpod_carrier_volume import (
+    RUNTIME_ARCHIVE_ROOTS,
+    runtime_bootstrap_shell_prefix,
+    verify_carrier_volume_admission,
+)
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -657,6 +662,8 @@ def _redacted_payload_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "gpuTypeIds": body.get("gpuTypeIds"),
         "gpuTypePriority": body.get("gpuTypePriority"),
         "volumeInGb": body.get("volumeInGb"),
+        "networkVolumeId": body.get("networkVolumeId"),
+        "dataCenterIds": body.get("dataCenterIds"),
         "containerDiskInGb": body.get("containerDiskInGb"),
         "minVCPUPerGPU": body.get("minVCPUPerGPU"),
         "minRAMPerGPU": body.get("minRAMPerGPU"),
@@ -676,7 +683,7 @@ set -euo pipefail
 echo BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_PERSISTENT_PROVIDER_STARTED
 WORK_DIR="${BLUEPRINT_RUNPOD_PROVIDER_WORK_DIR:-/workspace/blueprint_unitree_groot_sonic_persistent_provider}"
 BUNDLE_URL="${BLUEPRINT_EVAL_MANIFEST_URI:-}"
-OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-}"
+OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-${BLUEPRINT_ARTIFACT_OUTPUT_URI:-}}"
 export WORK_DIR BUNDLE_URL OUTPUT_PUT_URL
 mkdir -p "$WORK_DIR"
 mkdir -p "$WORK_DIR/runtime_output"
@@ -1112,6 +1119,7 @@ def _pod_payload(
     allowed_cuda_versions: Sequence[str] = (),
     min_vcpu_per_gpu: int = 2,
     min_ram_per_gpu: int = 8,
+    carrier_volume_admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     env = {
         "BLUEPRINT_EVAL_MANIFEST_URI": provider_bundle_url,
@@ -1128,6 +1136,45 @@ def _pod_payload(
         env["BLUEPRINT_RUNPOD_KEEPALIVE_AFTER_SUCCESS"] = "1"
     env.update({key: value for key, value in provider_runtime_config_env.items() if _string(value)})
     env.update({key: value for key, value in model_secret_env.items() if _string(value)})
+    carrier_volume = None
+    if carrier_volume_admission is not None:
+        carrier_volume = verify_carrier_volume_admission(
+            carrier_volume_admission,
+            expected_carrier_image_ref=image_name,
+        )
+        if carrier_volume["status"] != "verified":
+            raise ValueError(
+                "carrier_volume_admission_invalid:"
+                + ",".join(carrier_volume["blockers"])
+            )
+        if any("H100" in gpu_type_id.upper() for gpu_type_id in gpu_type_ids):
+            raise ValueError("carrier_volume_h100_disallowed")
+        env.update(
+            {
+                "BLUEPRINT_RUNTIME_ARCHIVE_PATH": carrier_volume["runtime_archive_path"],
+                "BLUEPRINT_RUNTIME_MANIFEST_PATH": carrier_volume["runtime_manifest_path"],
+                "BLUEPRINT_RUNTIME_ARCHIVE_SHA256": carrier_volume[
+                    "runtime_archive_sha256"
+                ],
+                "BLUEPRINT_RUNTIME_MANIFEST_SHA256": carrier_volume[
+                    "runtime_manifest_sha256"
+                ],
+                "BLUEPRINT_RUNTIME_ARCHIVE_ROOTS": ":".join(RUNTIME_ARCHIVE_ROOTS),
+                "BLUEPRINT_MODEL_CACHE_ROOT": carrier_volume["model_cache_root"],
+                "BLUEPRINT_MODEL_CACHE_MANIFEST_PATH": (
+                    carrier_volume["model_cache_manifest_path"]
+                ),
+                "BLUEPRINT_MODEL_CACHE_MANIFEST_SHA256": carrier_volume[
+                    "model_manifest_sha256"
+                ],
+                "BLUEPRINT_RUNPOD_CARRIER_VOLUME_ID": carrier_volume[
+                    "network_volume_id"
+                ],
+            }
+        )
+    provider_script = _provider_shell_script(provider_bundle_kind)
+    if carrier_volume is not None:
+        provider_script = runtime_bootstrap_shell_prefix() + "\n" + provider_script
     return {
         "cloudType": cloud_type,
         "computeType": "GPU",
@@ -1141,10 +1188,18 @@ def _pod_payload(
         "name": job_name,
         "imageName": image_name,
         "dockerEntrypoint": ["bash", "-lc"],
-        "dockerStartCmd": [_provider_shell_script(provider_bundle_kind)],
+        "dockerStartCmd": [provider_script],
         "ports": [],
         "volumeMountPath": "/workspace",
         "env": env,
+        **(
+            {
+                "networkVolumeId": carrier_volume["network_volume_id"],
+                "dataCenterIds": [carrier_volume["data_center_id"]],
+            }
+            if carrier_volume is not None
+            else {}
+        ),
         **({"allowedCudaVersions": list(allowed_cuda_versions)} if allowed_cuda_versions else {}),
     }
 
@@ -1603,6 +1658,101 @@ def _staging_urls(public_base_url: str, token_file: Path) -> tuple[str, str, dic
     )
 
 
+def _update_provider_lane_handoff_receipt(
+    receipt_path: str | Path,
+    *,
+    pod_name: str,
+    pending_teardown_record: str,
+    pod_id: str = "",
+) -> dict[str, Any]:
+    """Bind watchdog control to this runner before and after Pod creation."""
+
+    path = Path(receipt_path).expanduser()
+    if not path.is_absolute():
+        raise ValueError("provider_lane_handoff_receipt_path_not_absolute")
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError("provider_lane_handoff_receipt_missing") from exc
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("provider_lane_handoff_receipt_not_regular_file")
+    if metadata.st_mode & 0o077:
+        raise ValueError("provider_lane_handoff_receipt_permissions_unsafe")
+    if metadata.st_uid not in {0, os.geteuid()}:
+        raise ValueError("provider_lane_handoff_receipt_owner_untrusted")
+    if metadata.st_size > 1024 * 1024:
+        raise ValueError("provider_lane_handoff_receipt_oversized")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("provider_lane_handoff_receipt_unreadable") from exc
+    receipt = dict(value) if isinstance(value, Mapping) else {}
+    prefix = _string(receipt.get("pod_name_prefix"))
+    if (
+        receipt.get("status") != "accepted"
+        or receipt.get("campaign_kind") != "persistent_policy_wam_loop"
+        or not prefix
+        or not pod_name.startswith(prefix)
+    ):
+        raise ValueError("provider_lane_handoff_receipt_binding_invalid")
+    pending_path = Path(pending_teardown_record).expanduser()
+    if not pending_path.is_absolute():
+        raise ValueError("provider_lane_handoff_pending_teardown_path_not_absolute")
+    try:
+        pending_value = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("provider_lane_handoff_pending_teardown_unreadable") from exc
+    pending = dict(pending_value) if isinstance(pending_value, Mapping) else {}
+    if (
+        pending.get("status") != "open"
+        or pending.get("provider") != "runpod"
+        or pending.get("lane") != RUNPOD_WAM_LANE
+        or pending.get("resource_kind") != "compute_instance"
+        or pending.get("resource_name") != pod_name
+    ):
+        raise ValueError("provider_lane_handoff_pending_teardown_binding_invalid")
+    bound_pending_pod_id = _string(pending.get("instance_id"))
+    if pod_id and bound_pending_pod_id != pod_id:
+        raise ValueError("provider_lane_handoff_pending_teardown_pod_id_mismatch")
+    receipt.update(
+        {
+            "pod_id": pod_id or None,
+            "pod_name": pod_name,
+            "pod_pending_teardown_record": str(pending_path),
+            "pre_provider_mutation_confirmed_absent": False,
+            "provider_mutation_state": "pod_id_bound" if pod_id else "pending_create",
+            "raw_secret_values_recorded": False,
+        }
+    )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    descriptor = -1
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump(receipt, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return {
+        "status": "pod_id_bound" if pod_id else "pending_create_bound",
+        "path": str(path),
+        "pod_id_present": bool(pod_id),
+        "raw_secret_values_recorded": False,
+    }
+
+
 def create_runpod_wam_async_run(
     *,
     job_dir: str | Path,
@@ -1633,6 +1783,9 @@ def create_runpod_wam_async_run(
     existing_pod_id: str = "",
     generated_at: str | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
+    carrier_volume_admission: Mapping[str, Any] | None = None,
+    pod_name: str = "",
+    provider_lane_handoff_receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     if provider_bundle_kind not in RUNPOD_PROVIDER_BUNDLE_KINDS:
@@ -1908,23 +2061,54 @@ def create_runpod_wam_async_run(
         }
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
-    payload = _pod_payload(
-        job_name=f"blueprint-{provider_bundle_kind.replace('_', '-')}-{int(time.time())}",
-        image_name=image_name,
-        gpu_type_ids=gpu_type_ids,
-        provider_bundle_url=provider_bundle_url,
-        provider_output_put_url=provider_output_put_url,
-        provider_bundle_kind=provider_bundle_kind,
-        model_secret_env=model_secret_env,
-        provider_runtime_config_env=provider_runtime_config_env,
-        container_disk_gb=container_disk_gb,
-        volume_gb=volume_gb,
-        cloud_type=cloud_type,
-        allowed_cuda_versions=allowed_cuda_versions,
-        min_vcpu_per_gpu=min_vcpu_per_gpu,
-        min_ram_per_gpu=min_ram_per_gpu,
-    )
+    try:
+        payload = _pod_payload(
+            job_name=(
+                _string(pod_name)
+                or f"blueprint-{provider_bundle_kind.replace('_', '-')}-{int(time.time())}"
+            ),
+            image_name=image_name,
+            gpu_type_ids=gpu_type_ids,
+            provider_bundle_url=provider_bundle_url,
+            provider_output_put_url=provider_output_put_url,
+            provider_bundle_kind=provider_bundle_kind,
+            model_secret_env=model_secret_env,
+            provider_runtime_config_env=provider_runtime_config_env,
+            container_disk_gb=container_disk_gb,
+            volume_gb=volume_gb,
+            cloud_type=cloud_type,
+            allowed_cuda_versions=allowed_cuda_versions,
+            min_vcpu_per_gpu=min_vcpu_per_gpu,
+            min_ram_per_gpu=min_ram_per_gpu,
+            carrier_volume_admission=carrier_volume_admission,
+        )
+    except ValueError as exc:
+        manifest = {
+            "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(resolved_job_dir),
+            "provider_bundle_kind": provider_bundle_kind,
+            "blockers": [str(exc)],
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
+        return manifest
     explicit_existing_pod_id = _selected_existing_pod_id(existing_pod_id)
+    if carrier_volume_admission is not None and explicit_existing_pod_id:
+        manifest = {
+            "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(resolved_job_dir),
+            "provider_bundle_kind": provider_bundle_kind,
+            "blockers": ["carrier_network_volume_requires_fresh_pod_create"],
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
+        return manifest
     warm_candidate = (
         {
             "status": "not_considered",
@@ -1933,11 +2117,15 @@ def create_runpod_wam_async_run(
             "raw_secret_values_recorded": False,
         }
         if explicit_existing_pod_id
-        else _read_compatible_warm_candidate(
+        else ({
+            "status": "not_considered",
+            "reason": "carrier_network_volume_requires_fresh_pod_create",
+            "raw_secret_values_recorded": False,
+        } if carrier_volume_admission is not None else _read_compatible_warm_candidate(
             provider_bundle_kind=provider_bundle_kind,
             image_name=image_name,
             cloud_type=cloud_type,
-        )
+        ))
     )
     if not explicit_existing_pod_id:
         warm_candidate = _validate_running_warm_candidate_runtime(
@@ -1953,12 +2141,45 @@ def create_runpod_wam_async_run(
     warm_start_http_error: dict[str, Any] | None = None
     # Teardown obligation goes on disk BEFORE any billable RunPod call: if this
     # process dies between launch and collect, reap_orphans finds the record.
+    resolved_pod_name = _string(payload.get("name"))
     pending_teardown = open_pending_teardown(
         provider="runpod",
         lane=RUNPOD_WAM_LANE,
-        run_id=f"wam-{provider_bundle_kind}-{int(time.time() * 1000)}",
+        run_id=resolved_pod_name
+        or f"wam-{provider_bundle_kind}-{int(time.time() * 1000)}",
+        resource_kind="compute_instance",
+        resource_name=resolved_pod_name,
         job_dir=str(resolved_job_dir),
+        max_age_seconds=18_600 if carrier_volume_admission is not None else 7_200,
     )
+    handoff_receipt_update: dict[str, Any] = {"status": "not_configured"}
+    if provider_lane_handoff_receipt_path is not None:
+        try:
+            handoff_receipt_update = _update_provider_lane_handoff_receipt(
+                provider_lane_handoff_receipt_path,
+                pod_name=resolved_pod_name,
+                pending_teardown_record=pending_teardown["path"],
+            )
+        except ValueError as exc:
+            cancel_pending_teardown(
+                pending_teardown["path"],
+                reason="provider_lane_handoff_receipt_pre_create_update_failed",
+                evidence={"blocker": str(exc)},
+            )
+            manifest = {
+                "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+                "generated_at": generated,
+                "status": "blocked",
+                "job_dir": str(resolved_job_dir),
+                "provider_bundle_kind": provider_bundle_kind,
+                "blockers": [str(exc)],
+                "provider_mutations_performed": 0,
+                "raw_secret_values_recorded": False,
+            }
+            write_json(
+                resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest
+            )
+            return manifest
     try:
         if selected_existing_pod_id:
             update_payload = _existing_pod_update_payload(payload)
@@ -2182,6 +2403,23 @@ def create_runpod_wam_async_run(
         write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
         return manifest
     bind_pending_teardown_instance(pending_teardown["path"], pod_id)
+    if provider_lane_handoff_receipt_path is not None:
+        try:
+            handoff_receipt_update = _update_provider_lane_handoff_receipt(
+                provider_lane_handoff_receipt_path,
+                pod_name=resolved_pod_name,
+                pending_teardown_record=pending_teardown["path"],
+                pod_id=pod_id,
+            )
+        except ValueError as exc:
+            # The pre-create receipt already names the open pending record, whose
+            # bound instance id is authoritative to the independent watchdog.
+            handoff_receipt_update = {
+                "status": "post_create_update_failed_pending_record_still_bound",
+                "blocker": str(exc),
+                "pod_id_present_in_pending_record": True,
+                "raw_secret_values_recorded": False,
+            }
     state = {
         "schema_version": RUNPOD_WAM_STATE_SCHEMA_VERSION,
         "generated_at": generated,
@@ -2205,6 +2443,7 @@ def create_runpod_wam_async_run(
         "prelaunch_spend_guard": prelaunch_spend_guard,
         "pre_spend_preflight": pre_spend_preflight,
         "pending_teardown_record": pending_teardown["path"],
+        "provider_lane_handoff_receipt_update": handoff_receipt_update,
         "token_file_path_redacted": True,
         "secret_env_file_path_redacted": True,
         "secret_artifact_policy": secret_path_disclosure_policy(),
@@ -2216,6 +2455,14 @@ def create_runpod_wam_async_run(
         "min_ram_per_gpu": min_ram_per_gpu,
         "container_disk_gb": container_disk_gb,
         "volume_gb": volume_gb,
+        "carrier_volume_admission": (
+            verify_carrier_volume_admission(
+                carrier_volume_admission,
+                expected_carrier_image_ref=image_name,
+            )
+            if carrier_volume_admission is not None
+            else None
+        ),
         "model_secret_env_status": model_secret_env_status,
         "provider_runtime_config_env_status": provider_runtime_config_env_status,
         "created_at_epoch": time.time(),
@@ -2245,6 +2492,7 @@ def create_runpod_wam_async_run(
         "prelaunch_spend_guard": prelaunch_spend_guard,
         "pre_spend_preflight": pre_spend_preflight,
         "pending_teardown_record": pending_teardown["path"],
+        "provider_lane_handoff_receipt_update": handoff_receipt_update,
         "model_secret_env_status": model_secret_env_status,
         "provider_runtime_config_env_status": provider_runtime_config_env_status,
         "runpod_response_keys": sorted(response.keys()),

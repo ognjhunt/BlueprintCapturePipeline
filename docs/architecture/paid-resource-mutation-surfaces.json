@@ -2,11 +2,13 @@
   "schema_version": "paid_resource_mutation_surfaces.v1",
   "issuer_allowlist": {
     "build_paid_lane_admission": [
-      "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
+      "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
+      "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py"
     ],
     "require_paid_resource_admission": [
       "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
+      "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
       "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
       "src/blueprint_pipeline/paid_resource_allocator.py"
     ]
@@ -36,6 +38,11 @@
       "path": "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
       "classification": "canonical_adapter",
       "required_markers": ["require_paid_resource_admission", "run_runpod_provider_adapter"]
+    },
+    {
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["require_paid_resource_admission", "build_paid_lane_admission", "run_persistent_session_runpod"]
     },
     {
       "path": "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py",

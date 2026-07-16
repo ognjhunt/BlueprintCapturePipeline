@@ -53,6 +53,14 @@ _SAFE_NONCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 _TRANSPORT_CAPABILITY_ISSUER = object()
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class _TransportExecutionCapability:
     __slots__ = ("_consumed", "_issuer", "_lock")
 
@@ -525,6 +533,7 @@ def upload_and_verify_model_cache(
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     live_probe_attempts: int = 1,
     live_probe_interval_seconds: float = 0.0,
+    additional_artifacts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Grant-gated in-process wrapper for the storage transport."""
 
@@ -558,6 +567,7 @@ def upload_and_verify_model_cache(
         client=client,
         live_probe_attempts=live_probe_attempts,
         live_probe_interval_seconds=live_probe_interval_seconds,
+        additional_artifacts=additional_artifacts,
         execution_capability=_issue_transport_execution_capability(
             paid_resource_admission_grant=paid_resource_admission_grant
         ),
@@ -578,6 +588,7 @@ def _upload_and_verify_model_cache_impl(
     client: Any | None = None,
     live_probe_attempts: int = 1,
     live_probe_interval_seconds: float = 0.0,
+    additional_artifacts: Sequence[Mapping[str, Any]] = (),
     execution_capability: _TransportExecutionCapability | None = None,
 ) -> dict[str, Any]:
     """Private transport used by grant wrapper and fixed remote adapter only."""
@@ -642,6 +653,47 @@ def _upload_and_verify_model_cache_impl(
         return {**preflight, "schema_version": SCHEMA_VERSION}
     cache = Path(cache_root).expanduser().resolve()
     verification_parent = Path(verification_root).expanduser().resolve()
+    extra_rows: list[dict[str, Any]] = []
+    for row in additional_artifacts:
+        item = dict(row) if isinstance(row, Mapping) else {}
+        source = Path(str(item.get("local_path") or "")).expanduser().resolve()
+        remote_key = str(item.get("remote_key") or "").strip().strip("/")
+        digest = str(item.get("sha256") or "").strip().lower()
+        if (
+            set(item) != {"local_path", "remote_key", "sha256"}
+            or not source.is_file()
+            or source.is_symlink()
+            or _SAFE_PREFIX.fullmatch(remote_key) is None
+            or ".." in remote_key.split("/")
+            or "//" in remote_key
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or _sha256_file(source) != digest
+        ):
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "blocked",
+                "blockers": ["runpod_s3_additional_artifact_contract_invalid"],
+                "provider_mutations_performed": 0,
+                "gpu_compute_allocated": False,
+                "raw_secret_values_recorded": False,
+            }
+        extra_rows.append(
+            {
+                "local_path": source,
+                "remote_key": remote_key,
+                "sha256": digest,
+                "size_bytes": source.stat().st_size,
+            }
+        )
+    if len({row["remote_key"] for row in extra_rows}) != len(extra_rows):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["runpod_s3_additional_artifact_remote_key_duplicate"],
+            "provider_mutations_performed": 0,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
     if (
         cache == verification_parent
         or cache.is_relative_to(verification_parent)
@@ -665,7 +717,12 @@ def _upload_and_verify_model_cache_impl(
             "raw_secret_values_recorded": False,
         }
     size_bytes = volume_evidence.get("size_bytes")
-    required_remote = int(local["verified_size_bytes"]) + REMOTE_SAFETY_HEADROOM_BYTES
+    extra_size_bytes = sum(int(row["size_bytes"]) for row in extra_rows)
+    required_remote = (
+        int(local["verified_size_bytes"])
+        + extra_size_bytes
+        + REMOTE_SAFETY_HEADROOM_BYTES
+    )
     if type(size_bytes) is not int or size_bytes < required_remote:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -676,7 +733,11 @@ def _upload_and_verify_model_cache_impl(
             "gpu_compute_allocated": False,
             "raw_secret_values_recorded": False,
         }
-    required_free = int(local["verified_size_bytes"]) + REMOTE_SAFETY_HEADROOM_BYTES
+    required_free = (
+        int(local["verified_size_bytes"])
+        + extra_size_bytes
+        + REMOTE_SAFETY_HEADROOM_BYTES
+    )
     ensure_dir(verification_parent)
     available = _filesystem_available_bytes(verification_parent)
     if available < required_free:
@@ -706,7 +767,21 @@ def _upload_and_verify_model_cache_impl(
     ]
     manifest_path = cache / MANIFEST_NAME
     files = [*files, manifest_path]
-    expected_keys = [f"{prefix}/{path.relative_to(cache).as_posix()}" for path in files]
+    model_keys = [f"{prefix}/{path.relative_to(cache).as_posix()}" for path in files]
+    upload_rows = [
+        *[(path, key) for path, key in zip(files, model_keys, strict=True)],
+        *[(row["local_path"], row["remote_key"]) for row in extra_rows],
+    ]
+    expected_keys = [key for _path, key in upload_rows]
+    if len(set(expected_keys)) != len(expected_keys):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["runpod_s3_upload_remote_key_collision"],
+            "provider_mutations_performed": 0,
+            "gpu_compute_allocated": False,
+            "raw_secret_values_recorded": False,
+        }
     uploaded_keys: list[str] = []
     upload_attempt_count = 0
     upload_success_count = 0
@@ -769,7 +844,7 @@ def _upload_and_verify_model_cache_impl(
         verification = Path(
             tempfile.mkdtemp(prefix="runpod-s3-verify-", dir=verification_parent)
         )
-        for path, key in zip(files, expected_keys, strict=True):
+        for path, key in upload_rows:
             upload_attempt_count += 1
             recovered = _upload_file_with_ambiguous_completion_recovery(
                 s3,
@@ -781,7 +856,7 @@ def _upload_and_verify_model_cache_impl(
             ambiguous_complete_recovery_count += int(recovered)
             uploaded_keys.append(key)
             upload_success_count += 1
-        observed_keys = _remote_keys(s3, volume_id=volume, prefix=prefix)
+        observed_keys = _remote_keys(s3, volume_id=volume)
         if observed_keys != sorted(expected_keys):
             raise RuntimeError("runpod_s3_remote_inventory_mismatch")
         for key in expected_keys:
@@ -797,6 +872,23 @@ def _upload_and_verify_model_cache_impl(
         )
         if remote["status"] != "passed":
             raise RuntimeError("runpod_s3_redownload_verification_failed")
+        extra_verification: list[dict[str, Any]] = []
+        for row in extra_rows:
+            downloaded = verification / str(row["remote_key"])
+            observed_digest = _sha256_file(downloaded)
+            if (
+                observed_digest != row["sha256"]
+                or downloaded.stat().st_size != row["size_bytes"]
+            ):
+                raise RuntimeError("runpod_s3_additional_artifact_redownload_mismatch")
+            extra_verification.append(
+                {
+                    "remote_key": row["remote_key"],
+                    "sha256": observed_digest,
+                    "size_bytes": downloaded.stat().st_size,
+                    "full_redownload_sha256_verified": True,
+                }
+            )
         terminal_multipart = _abort_visible_multipart_uploads(
             s3,
             volume_id=volume,
@@ -879,6 +971,13 @@ def _upload_and_verify_model_cache_impl(
         "endpoint_url": endpoint_for_data_center(data_center_id),
         "remote_prefix": prefix,
         "remote_object_count": len(expected_keys),
+        "model_object_count": len(model_keys),
+        "additional_artifact_count": len(extra_rows),
+        "additional_artifact_verified_size_bytes": extra_size_bytes,
+        "additional_artifact_verification": extra_verification,
+        "additional_artifact_verification_method": (
+            "full_s3_redownload_and_sha256" if extra_rows else "not_requested"
+        ),
         "provider_mutations_performed": (
             upload_attempt_count + multipart_cleanup["multipart_abort_attempt_count"]
         ),
@@ -894,9 +993,13 @@ def _upload_and_verify_model_cache_impl(
         "cleanup_delete_success_count": 0,
         "storage_mutations_performed": True,
         "model_manifest_digest": local["model_manifest_digest"],
+        "model_manifest_file_sha256": _sha256_file(manifest_path),
         "verified_size_bytes": remote["verified_size_bytes"],
         "remote_verified_file_count": remote["verified_file_count"],
         "remote_model_manifest_digest": remote["model_manifest_digest"],
+        "remote_model_manifest_file_sha256": _sha256_file(
+            verification / MANIFEST_NAME
+        ),
         "remote_provider_volume_id": remote["provider_volume_id"],
         "remote_verification_sha256": hashlib.sha256(
             json.dumps(remote, sort_keys=True, separators=(",", ":")).encode()

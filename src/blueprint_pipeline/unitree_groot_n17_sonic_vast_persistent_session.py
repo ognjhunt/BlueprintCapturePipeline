@@ -22,6 +22,12 @@ from typing import Any, Mapping, Sequence
 
 from . import launch_provenance
 from .common import ensure_dir, utc_now_iso, write_json
+from .groot_oscar_runpod_carrier_volume import verify_carrier_volume_admission
+from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
+    require_paid_resource_admission_grant,
+)
 from .unitree_groot_n17_sonic_policy_runtime import POLICY_ID
 from .unitree_groot_n17_sonic_vast_policy_command import (
     ALLOWED_MACHINE_ID_ENVS,
@@ -5392,6 +5398,7 @@ def _runpod_unitree_groot_sonic_image_contract_policy(
     provider_bundle_kind: str,
     image_name: str,
     bootstrap_mode: str | None,
+    external_runtime_bundle_verified: bool = False,
 ) -> dict[str, Any]:
     is_wam_carrier = _string(provider_bundle_kind).lower() == "wam"
     runtime_bootstrap_allowed = _truthy(
@@ -5400,7 +5407,7 @@ def _runpod_unitree_groot_sonic_image_contract_policy(
     sealed_image_confirmed = _truthy(
         os.getenv(RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV)
     )
-    require_sealed_image = not runtime_bootstrap_allowed
+    require_sealed_image = not runtime_bootstrap_allowed and not external_runtime_bundle_verified
     explicit_require = _string(os.getenv(RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV))
     if explicit_require:
         require_sealed_image = _truthy(explicit_require)
@@ -5436,6 +5443,7 @@ def _runpod_unitree_groot_sonic_image_contract_policy(
         "require_sealed_image": require_sealed_image,
         "require_sealed_image_env": RUNPOD_UNITREE_GROOT_SONIC_REQUIRE_SEALED_IMAGE_ENV,
         "sealed_image_confirmed": sealed_image_confirmed,
+        "external_runtime_bundle_verified": external_runtime_bundle_verified,
         "sealed_image_confirmed_env": RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV,
         "runtime_dependency_install_disallowed_for_paid_launch": bool(
             is_wam_carrier and require_sealed_image and not runtime_bootstrap_allowed
@@ -9733,6 +9741,10 @@ def run_persistent_session_runpod(
     placement_validation_path: str | Path | None = None,
     task_stance_plan_path: str | Path | None = None,
     max_wait_seconds: int | None = None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
+    carrier_volume_admission: Mapping[str, Any] | None = None,
+    pod_name: str = "",
+    provider_lane_handoff_receipt_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     generated_at = utc_now_iso()
     job = _completed_runpod_resume_job(job_dir) or _job_dir(job_dir)
@@ -9759,6 +9771,50 @@ def run_persistent_session_runpod(
                 output_zip=resume_output_zip,
                 provider_output_resume_used=True,
             )
+    verified_carrier_volume: dict[str, Any] | None = None
+    if carrier_volume_admission is not None:
+        try:
+            require_paid_resource_admission_grant(
+                paid_resource_admission_grant,
+                resource_class="runpod_wam_async",
+            )
+        except PaidResourceAdmissionBlocked as exc:
+            output = _blocked_payload(
+                generated_at=generated_at,
+                job_dir=job,
+                blockers=[
+                    "runpod_carrier_persistent_session_allocator_grant_missing_or_invalid",
+                    *exc.blockers,
+                ],
+                details={"provider": "runpod", "provider_mutations_performed": 0},
+            )
+            write_json(
+                job / "unitree_groot_n17_sonic_vast_persistent_session_result.json",
+                output,
+            )
+            return output, 2
+        verified_carrier_volume = verify_carrier_volume_admission(
+            carrier_volume_admission
+        )
+        if verified_carrier_volume["status"] != "verified":
+            output = _blocked_payload(
+                generated_at=generated_at,
+                job_dir=job,
+                blockers=[
+                    "runpod_carrier_volume_admission_invalid",
+                    *verified_carrier_volume["blockers"],
+                ],
+                details={
+                    "provider": "runpod",
+                    "provider_mutations_performed": 0,
+                    "carrier_volume_verification": verified_carrier_volume,
+                },
+            )
+            write_json(
+                job / "unitree_groot_n17_sonic_vast_persistent_session_result.json",
+                output,
+            )
+            return output, 2
     launch_gate = launch_provenance.evaluate_dirty_tree_paid_launch_gate(
         git_evidence=git_evidence,
         allow_paid=True,
@@ -9790,6 +9846,9 @@ def run_persistent_session_runpod(
     )
     previous_wam_default_env = {key: os.environ.get(key) for key in RUNPOD_WAM_CARRIER_ENV_KEYS}
     previous_runpod_teardown_action = os.environ.get(RUNPOD_WAM_TEARDOWN_ACTION_ENV)
+    previous_sealed_image_confirmed = os.environ.get(
+        RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV
+    )
     os.environ["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"] = inner_policy_command
     os.environ[PERSISTENT_SESSION_INNER_POLICY_COMMAND_ENV] = inner_policy_command
     os.environ[INNER_POLICY_COMMAND_ENV] = inner_policy_command
@@ -9832,12 +9891,43 @@ def run_persistent_session_runpod(
             or _string(os.getenv(PERSISTENT_SESSION_PUBLIC_IMAGE_ENV))
             or _string(os.getenv("BLUEPRINT_VAST_UNITREE_GROOT_N17_SONIC_PUBLIC_IMAGE"))
             or _string(os.getenv("BLUEPRINT_VAST_WAM_PUBLIC_IMAGE"))
+            or (
+                _string(verified_carrier_volume.get("carrier_image_ref"))
+                if verified_carrier_volume is not None
+                else ""
+            )
             or default_runpod_image
         )
+        if verified_carrier_volume is not None:
+            rebound = verify_carrier_volume_admission(
+                carrier_volume_admission or {},
+                expected_carrier_image_ref=runpod_image_name,
+            )
+            if rebound["status"] != "verified":
+                output = _blocked_payload(
+                    generated_at=generated_at,
+                    job_dir=job,
+                    blockers=[
+                        "runpod_carrier_image_differs_from_volume_admission",
+                        *rebound["blockers"],
+                    ],
+                    details={
+                        "provider": "runpod",
+                        "provider_mutations_performed": 0,
+                        "carrier_volume_verification": rebound,
+                    },
+                )
+                write_json(
+                    job / "unitree_groot_n17_sonic_vast_persistent_session_result.json",
+                    output,
+                )
+                return output, 2
+            os.environ[UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV] = "sealed_image"
         image_contract_policy = _runpod_unitree_groot_sonic_image_contract_policy(
             provider_bundle_kind=runpod_provider_bundle_kind,
             image_name=runpod_image_name,
             bootstrap_mode=os.environ.get(UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE_ENV),
+            external_runtime_bundle_verified=verified_carrier_volume is not None,
         )
         if image_contract_policy.get("status") == "blocked":
             output = _blocked_payload(
@@ -9931,6 +10021,10 @@ def run_persistent_session_runpod(
             min_vcpu_per_gpu=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_MIN_VCPU", 8),
             min_ram_per_gpu=_int_env("BLUEPRINT_RUNPOD_UNITREE_GROOT_N17_SONIC_MIN_RAM_GB", 40),
             generated_at=generated_at,
+            paid_resource_admission_grant=paid_resource_admission_grant,
+            carrier_volume_admission=carrier_volume_admission,
+            pod_name=pod_name,
+            provider_lane_handoff_receipt_path=provider_lane_handoff_receipt_path,
         )
         if create_manifest.get("status") != "pod_created":
             output = _blocked_payload(
@@ -10067,6 +10161,15 @@ def run_persistent_session_runpod(
             os.environ.pop(RUNPOD_WAM_TEARDOWN_ACTION_ENV, None)
         else:
             os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = previous_runpod_teardown_action
+        if previous_sealed_image_confirmed is None:
+            os.environ.pop(
+                RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV,
+                None,
+            )
+        else:
+            os.environ[RUNPOD_UNITREE_GROOT_SONIC_SEALED_IMAGE_CONFIRMED_ENV] = (
+                previous_sealed_image_confirmed
+            )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -85,7 +85,11 @@ def _packet(
     monkeypatch: pytest.MonkeyPatch,
     *,
     startup_hook: bool = False,
+    volume_size_gib: int = 50,
+    runtime_source_release_image_ref: str = "",
+    carrier_image_ref: str = "",
 ) -> dict:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         "blueprint_pipeline.groot_oscar_model_cache_s3_remote_packet._source_identity",
         lambda _root: (COMMIT, False),
@@ -127,7 +131,7 @@ def _packet(
             "data_center_id": "US-WA-1",
             "allocation_nonce": NONCE,
             "allocation_name_verified": True,
-            "size_bytes": 50 * 1024**3,
+            "size_bytes": volume_size_gib * 1024**3,
         },
         volume_watchdog_handoff={
             "schema_version": "groot_oscar_model_volume_watchdog_handoff.v1",
@@ -140,6 +144,8 @@ def _packet(
         data_center_id="US-WA-1",
         dependency_wheelhouse=wheelhouse,
         dependency_manifest_path=dependency_manifest,
+        runtime_source_release_image_ref=runtime_source_release_image_ref,
+        carrier_image_ref=carrier_image_ref,
     )
 
 
@@ -148,6 +154,46 @@ def test_packet_round_trip_is_exact_and_preimport_verifiable(
 ) -> None:
     packet = _packet(tmp_path, monkeypatch)
     assert packet["status"] == "ready"
+
+
+def test_runtime_packet_requires_digest_refs_and_120_gib_volume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_ref = "docker.io/blueprint/release@sha256:" + "1" * 64
+    carrier_ref = (
+        "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
+    )
+    packet = _packet(
+        tmp_path,
+        monkeypatch,
+        volume_size_gib=120,
+        runtime_source_release_image_ref=source_ref,
+        carrier_image_ref=carrier_ref,
+    )
+
+    assert packet["status"] == "ready"
+    assert packet["runtime_bundle_requested"] is True
+    with tarfile.open(packet["tarball_path"], "r:gz") as archive:
+        inner = json.loads(
+            archive.extractfile(
+                "groot_oscar_model_cache_s3_remote/packet.json"
+            ).read()
+        )
+    assert inner["runtime_bundle_request"] == {
+        "enabled": True,
+        "source_release_image_ref": source_ref,
+        "carrier_image_ref": carrier_ref,
+    }
+
+    too_small = _packet(
+        tmp_path / "small",
+        monkeypatch,
+        volume_size_gib=50,
+        runtime_source_release_image_ref=source_ref,
+        carrier_image_ref=carrier_ref,
+    )
+    assert too_small["status"] == "blocked"
+    assert "model_cache_packet_runtime_volume_below_120_gib" in too_small["blockers"]
     assert Path(packet["tarball_path"]).name == MODEL_CACHE_TARBALL_NAME
     verification = verify_packet_tarball(packet)
     assert verification["status"] == "verified"

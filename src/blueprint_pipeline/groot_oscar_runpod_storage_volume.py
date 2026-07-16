@@ -41,6 +41,14 @@ from .groot_oscar_model_cache_s3_remote_packet import (
     prepare_remote_model_cache_packet,
 )
 from .groot_oscar_model_cache_wheelhouse import build_model_cache_wheelhouse
+from .groot_oscar_runpod_carrier_volume import (
+    CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
+    DEFAULT_MODEL_CACHE_ROOT,
+    DEFAULT_RUNTIME_ARCHIVE_PATH,
+    DEFAULT_RUNTIME_MANIFEST_PATH,
+    RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+    verify_carrier_volume_admission,
+)
 from .groot_oscar_runpod_model_volume import (
     MODEL_CACHE_PATH,
     VOLUME_NAME_PREFIX,
@@ -84,12 +92,15 @@ from .render_lock import _pid_is_alive
 SCHEMA_VERSION = "groot_oscar_storage_model_volume_admission.v1"
 RESULT_SCHEMA_VERSION = "groot_oscar_storage_model_volume_result.v1"
 MIN_VOLUME_GIB = 30
-MAX_VOLUME_GIB = 100
+MAX_VOLUME_GIB = 200
 MIN_STORAGE_TTL_SECONDS = 2 * 60 * 60
-MAX_STORAGE_TTL_SECONDS = 4 * 60 * 60
+MAX_STORAGE_TTL_SECONDS = 12 * 60 * 60
+MIN_RUNTIME_BUNDLE_STORAGE_TTL_SECONDS = 8 * 60 * 60
+PERSISTENT_CARRIER_WATCHDOG_SECONDS = 18_600
 MIN_CACHE_RETENTION_SECONDS = 4 * 60 * 60
 MAX_CACHE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 MAX_CACHE_RETENTION_SPEND_USD = 1.0
+MAX_CACHE_RETENTION_HOURLY_RATE_USD = 0.02
 MIN_RECONCILED_CAMPAIGN_SPEND_USD = 12.712289
 BUILDER_TO_VOLUME_MARGIN_SECONDS = 35 * 60
 CANARY_AND_HANDOFF_MARGIN_SECONDS = 30 * 60
@@ -455,7 +466,7 @@ def retain_verified_model_cache(
         storage_hourly_rate_usd * retention_ttl_seconds / 3600
     )
     if not bool(
-        0 < storage_hourly_rate_usd <= 0.01
+        0 < storage_hourly_rate_usd <= MAX_CACHE_RETENTION_HOURLY_RATE_USD
         and 0 < max_retention_spend_usd <= MAX_CACHE_RETENTION_SPEND_USD
         and maximum_storage_spend <= max_retention_spend_usd
     ):
@@ -795,7 +806,7 @@ def build_storage_volume_admission(
     if data_center_id not in RUNPOD_S3_VOLUME_DATA_CENTER_IDS:
         blockers.append("storage_model_volume_data_center_not_s3_volume_capable")
     if type(volume_size_gib) is not int or not MIN_VOLUME_GIB <= volume_size_gib <= MAX_VOLUME_GIB:
-        blockers.append("storage_model_volume_size_outside_30_to_100_gib")
+        blockers.append("storage_model_volume_size_outside_30_to_200_gib")
     if (
         type(storage_ttl_seconds) is not int
         or not MIN_STORAGE_TTL_SECONDS <= storage_ttl_seconds <= MAX_STORAGE_TTL_SECONDS
@@ -842,6 +853,9 @@ def build_storage_volume_admission(
         "limits": {
             "one_volume_limit": True,
             "runpod_gpu_pod_limit": 0,
+            "requested_volume_gib": volume_size_gib,
+            "minimum_volume_gib": MIN_VOLUME_GIB,
+            "maximum_volume_gib": MAX_VOLUME_GIB,
             "storage_ttl_seconds": storage_ttl_seconds,
             "max_storage_spend_usd": max_storage_spend_usd,
             "builder_ttl_seconds": builder_ttl_seconds,
@@ -934,6 +948,8 @@ def run_storage_model_volume(
     ssh_key_id: int,
     region: str,
     allow_paid: bool,
+    runtime_source_release_image_ref: str = "",
+    carrier_image_ref: str = "",
 ) -> dict[str, Any]:
     output = output_dir.expanduser().resolve()
     root = repo_root.expanduser().resolve()
@@ -947,6 +963,22 @@ def run_storage_model_volume(
         builder_spend = _load(builder_spend_path)
         builder_evidence = _load(builder_evidence_path)
         builder_ttl = int(builder_spend["hard_ttl_seconds"])
+        runtime_bundle_requested = bool(
+            runtime_source_release_image_ref or carrier_image_ref
+        )
+        if bool(runtime_source_release_image_ref) != bool(carrier_image_ref):
+            raise ValueError("storage_runtime_bundle_image_refs_incomplete")
+        if runtime_bundle_requested and volume_size_gib < 120:
+            raise ValueError("storage_runtime_bundle_requires_120_gib_volume")
+        if runtime_bundle_requested and storage_ttl_seconds < max(
+            MIN_RUNTIME_BUNDLE_STORAGE_TTL_SECONDS,
+            builder_ttl
+            + BUILDER_TO_VOLUME_MARGIN_SECONDS
+            + PERSISTENT_CARRIER_WATCHDOG_SECONDS,
+        ):
+            raise ValueError(
+                "storage_runtime_bundle_ttl_does_not_cover_builder_and_campaign"
+            )
         source_commit, source_patch, source_dirty = _source_identity(root)
         prospective_packet = {
             "packet_kind": "model_cache_s3",
@@ -1254,6 +1286,8 @@ def run_storage_model_volume(
             data_center_id=data_center_id,
             dependency_wheelhouse=Path(wheelhouse["wheelhouse_path"]),
             dependency_manifest_path=Path(wheelhouse["manifest_path"]),
+            runtime_source_release_image_ref=runtime_source_release_image_ref,
+            carrier_image_ref=carrier_image_ref,
         )
         if packet["status"] != "ready":
             raise RuntimeError("storage_model_volume_packet_not_ready")
@@ -1286,6 +1320,9 @@ def run_storage_model_volume(
         result_dir = output / "cpu-builder/remote_results"
         canary = _load(result_dir / "external_model_cache_verification.json")
         transport = _load(result_dir / "runpod_s3_model_cache_transport_result.json")
+        remote_execution = _load(
+            result_dir / "model_cache_s3_remote_execution_result.json"
+        )
         if (
             canary.get("status") != "passed"
             or canary.get("provider_volume_id") != volume_id
@@ -1298,6 +1335,67 @@ def run_storage_model_volume(
             raise RuntimeError("storage_model_volume_canary_handoff_invalid")
         write_json(output / "model_cache_verification.json", canary)
         write_json(output / "model_cache_transport_result.json", transport)
+        if runtime_bundle_requested:
+            runtime_bundle = remote_execution.get("runtime_bundle")
+            runtime_bundle = (
+                runtime_bundle if isinstance(runtime_bundle, Mapping) else {}
+            )
+            carrier_admission = {
+                "schema_version": CARRIER_VOLUME_ADMISSION_SCHEMA_VERSION,
+                "status": "verified",
+                "carrier_image_ref": carrier_image_ref,
+                "network_volume": {
+                    "id": volume_id,
+                    "data_center_id": data_center_id,
+                    "size_gib": volume_size_gib,
+                },
+                "runtime_bundle": {
+                    "manifest_schema_version": RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
+                    "source_release_image_ref": runtime_source_release_image_ref,
+                    "root": runtime_bundle.get("runtime_root"),
+                    "archive_path": DEFAULT_RUNTIME_ARCHIVE_PATH,
+                    "manifest_path": DEFAULT_RUNTIME_MANIFEST_PATH,
+                    "archive_sha256": runtime_bundle.get("archive_sha256"),
+                    "manifest_sha256": runtime_bundle.get("manifest_sha256"),
+                },
+                "model_cache": {
+                    "status": "verified",
+                    "root": DEFAULT_MODEL_CACHE_ROOT,
+                    "manifest_sha256": transport.get(
+                        "model_manifest_file_sha256"
+                    ),
+                },
+                "s3_transfer_verification": {
+                    "upload_completed": transport.get("status") == "completed",
+                    "full_redownload_sha256_verified": (
+                        transport.get("verification_method")
+                        == "full_s3_redownload_and_sha256_manifest_verification"
+                        and transport.get("additional_artifact_verification_method")
+                        == "full_s3_redownload_and_sha256"
+                    ),
+                    "provider_volume_id": transport.get("provider_volume_id"),
+                    "data_center_id": transport.get("data_center_id"),
+                },
+                "claim_boundary": (
+                    "Storage preparation and redownload verification only; no RunPod Pod or "
+                    "GPU was created and no policy, WAM, or semantic task success is proven."
+                ),
+                "raw_secret_values_recorded": False,
+            }
+            verified_carrier = verify_carrier_volume_admission(
+                carrier_admission,
+                expected_carrier_image_ref=carrier_image_ref,
+            )
+            if verified_carrier["status"] != "verified":
+                write_json(
+                    output / "carrier_volume_admission.json",
+                    {**carrier_admission, "status": "blocked", "verification": verified_carrier},
+                )
+                raise RuntimeError("storage_carrier_volume_admission_invalid")
+            write_json(
+                output / "carrier_volume_admission.json",
+                {**carrier_admission, "verification": verified_carrier},
+            )
         success = True
     except Exception as exc:  # noqa: BLE001 - whole-volume cleanup below
         error_type = type(exc).__name__
@@ -1460,6 +1558,16 @@ def run_storage_model_volume(
         "data_center_id": data_center_id,
         "model_cache_path": MODEL_CACHE_PATH,
         "model_manifest_digest": builder_result.get("model_manifest_digest"),
+        "runtime_bundle_requested": bool(
+            runtime_source_release_image_ref or carrier_image_ref
+        ),
+        "runtime_source_release_image_ref": runtime_source_release_image_ref or None,
+        "carrier_image_ref": carrier_image_ref or None,
+        "carrier_volume_admission_path": (
+            str(output / "carrier_volume_admission.json")
+            if success and (runtime_source_release_image_ref or carrier_image_ref)
+            else None
+        ),
         "storage_only": True,
         "runpod_gpu_pods_created": 0,
         "gpu_compute_allocated": False,

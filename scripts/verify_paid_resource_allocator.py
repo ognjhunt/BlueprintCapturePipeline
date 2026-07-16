@@ -48,11 +48,13 @@ PRODUCTION_SCAN_EXCLUSIONS = {
 APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
+    "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
     "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
     "src/blueprint_pipeline/paid_resource_allocator.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
+    "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
     (

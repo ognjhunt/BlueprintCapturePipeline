@@ -488,6 +488,54 @@ def test_gpu_canary_dispatches_persistent_host_bake_through_allocator(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_campaign(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(allocator, "run_persistent_carrier_campaign", fake_campaign)
+    out = tmp_path / "persistent"
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--probe-kind", "persistent-policy-wam-loop",
+            "--provider-launch-request", str(out / "request.json"),
+            "--release-evidence", str(out / "release.json"),
+            "--model-cache-evidence", str(out / "models.json"),
+            "--preflight-bundle", str(out / "preflight.json"),
+            "--carrier-volume-admission", str(out / "carrier.json"),
+            "--policy-observation", str(out / "observation.json"),
+            "--persistent-job-dir", str(out / "job"),
+            "--admission-out", str(out / "admission.json"),
+            "--bound-request-out", str(out / "bound.json"),
+            "--adapter-output", str(out / "result.json"),
+            "--pod-name", "blueprint-persistent-exact",
+            "--campaign-budget-ledger", str(out / "budget.json"),
+            "--campaign-initial-spent-usd", "14.557003",
+            "--campaign-initial-used-gpu-seconds", "15624",
+            "--campaign-max-hourly-rate-usd", "0.74",
+            "--authorize-persistent-carrier-campaign",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["execute"] is True
+    budget = observed["campaign_budget"]
+    assert isinstance(budget, dict)
+    assert budget["campaign_stage"] == "persistent_carrier_campaign"
+    assert budget["reservation_gpu_seconds"] == 18_600
+    assert budget["combined_gpu_wall_cap_seconds"] == 36_000
+    assert budget["future_campaign_allowance_gpu_seconds"] == 0
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_gpu_canary_rejects_digitalocean_provider_for_runpod_probe(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

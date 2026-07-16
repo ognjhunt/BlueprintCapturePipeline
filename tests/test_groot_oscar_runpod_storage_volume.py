@@ -73,6 +73,12 @@ def test_storage_volume_admission_accepts_bounded_no_gpu_tuple() -> None:
     assert admission["limits"]["runpod_gpu_pod_limit"] == 0
 
 
+def test_storage_volume_admission_accepts_120_gib_carrier_volume_size() -> None:
+    admission = _admission(volume_size_gib=120)
+    assert admission["status"] == "admitted"
+    assert admission["limits"]["maximum_volume_gib"] == 200
+
+
 def test_storage_volume_admission_rejects_one_hour_and_near_canary_deadlines() -> None:
     one_hour = _admission(storage_ttl_seconds=3600)
     assert "storage_model_volume_ttl_outside_guardrail" in one_hour["blockers"]
@@ -300,6 +306,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
 ) -> None:
     source, _lane_handoff = _retention_source(tmp_path)
     live = {111, 333}
+    retention_seconds = 72 * 60 * 60
 
     class Provider:
         @staticmethod
@@ -331,7 +338,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
         state_path.write_text(
             json.dumps(
                 {
-                    "deadline_epoch": 1000.0 + 7 * 24 * 3600,
+                    "deadline_epoch": 1000.0 + retention_seconds,
                     "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
                     "volume_name": "blueprint-groot-oscar-models-nonce1",
                     "watchdog_nonce": "new-nonce",
@@ -343,7 +350,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
             "armed": True,
             "pid": 333,
             "state_path": str(state_path),
-            "watchdog_deadline_epoch": 1000.0 + 7 * 24 * 3600,
+            "watchdog_deadline_epoch": 1000.0 + retention_seconds,
             "pod_name_prefix": "blueprint-storage-only-no-pod-nonce1",
             "volume_name": "blueprint-groot-oscar-models-nonce1",
             "watchdog_nonce": "new-nonce",
@@ -398,8 +405,9 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
     result = retain_verified_model_cache(
         output_dir=retention_root,
         source_output_dir=source,
-        retention_ttl_seconds=7 * 24 * 3600,
-        storage_hourly_rate_usd=0.004861111111,
+        retention_ttl_seconds=retention_seconds,
+        # RunPod's published under-1-TB rate for a 120 GiB network volume.
+        storage_hourly_rate_usd=120 * 0.07 / (30 * 24),
         max_retention_spend_usd=1.0,
         campaign_spent_to_date_usd=13.0,
         campaign_total_spend_cap_usd=20.0,
@@ -425,7 +433,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
         "content_mutation_policy": "no_writes_after_verification",
         "automatic_delete_at_deadline": True,
     }
-    assert result["maximum_retention_spend_usd"] == pytest.approx(0.816666666648)
+    assert result["maximum_retention_spend_usd"] == pytest.approx(0.84)
     admission = json.loads(
         (retention_root / "bounded_model_cache_retention_admission.json").read_text()
     )
@@ -748,6 +756,27 @@ def test_builder_live_preflight_failure_blocks_before_runpod_volume_post(
         ),
     )
     result = run_storage_model_volume(**_inputs(tmp_path))
+    assert result["status"] == "blocked_before_allocation"
+    assert result["provider_mutation_attempted"] is False
+
+
+def test_runtime_bundle_requires_120_gib_before_runpod_volume_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_preallocation(monkeypatch)
+    monkeypatch.setattr(
+        storage,
+        "_runpod_call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider mutation reached")
+        ),
+    )
+    inputs = _inputs(tmp_path)
+    inputs.update(
+        runtime_source_release_image_ref="docker.io/blueprint/release@sha256:" + "1" * 64,
+        carrier_image_ref="pytorch/pytorch:runtime@sha256:" + "2" * 64,
+    )
+    result = run_storage_model_volume(**inputs)
     assert result["status"] == "blocked_before_allocation"
     assert result["provider_mutation_attempted"] is False
 

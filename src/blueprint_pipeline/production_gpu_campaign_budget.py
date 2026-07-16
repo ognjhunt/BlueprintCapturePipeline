@@ -23,10 +23,11 @@ from .common import utc_now_iso
 
 SCHEMA_VERSION = "production_gpu_campaign_budget.v1"
 AUTHORIZED_SPEND_CAP_USD = 20.0
-AUTHORIZED_GPU_WALL_CAP_SECONDS = 21_000
+AUTHORIZED_GPU_WALL_CAP_SECONDS = 36_000
 # The campaign remains bounded by the unchanged USD 20 total cap.  The higher
-# per-hour ceiling permits the explicitly selected persistent H100 fallback;
-# it is not a separate spend allowance.
+# wall ceiling can contain the reconciled historical usage plus one explicitly
+# authorized 18,600-second persistent non-H100 reservation; it is not a second
+# spend allowance and ordinary canaries retain their lower plan ceilings.
 MAX_HOURLY_RATE_USD = 3.50
 
 

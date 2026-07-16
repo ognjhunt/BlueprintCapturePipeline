@@ -144,7 +144,9 @@ def test_staged_canary_then_campaign_fits_reduced_combined_plan(tmp_path) -> Non
     assert snapshot["remaining_gpu_seconds"] == 81
 
 
-def test_new_21000_second_authority_is_exact_and_not_per_attempt(tmp_path) -> None:
+def test_ordinary_21000_second_plan_and_persistent_authority_are_bounded(
+    tmp_path,
+) -> None:
     ledger = ProductionGpuCampaignBudget(
         tmp_path / "authorized-21000-second-budget.json",
         initial_spent_usd=14.557003,
@@ -169,5 +171,19 @@ def test_new_21000_second_authority_is_exact_and_not_per_attempt(tmp_path) -> No
             tmp_path / "over-authorized-budget.json",
             initial_spent_usd=0,
             initial_used_gpu_seconds=0,
-            combined_gpu_wall_cap_seconds=21_001,
+            combined_gpu_wall_cap_seconds=36_001,
         )
+
+    persistent = ProductionGpuCampaignBudget(
+        tmp_path / "persistent-authorized-budget.json",
+        initial_spent_usd=14.557003,
+        initial_used_gpu_seconds=15_624,
+        combined_gpu_wall_cap_seconds=36_000,
+    )
+    reservation = persistent.reserve(
+        reservation_id="persistent-policy-wam-loop",
+        gpu_seconds=18_600,
+        max_hourly_rate_usd=1.0,
+    )
+    assert reservation["reserved_gpu_seconds"] == 18_600
+    assert persistent.snapshot()["remaining_gpu_seconds"] == 1_776

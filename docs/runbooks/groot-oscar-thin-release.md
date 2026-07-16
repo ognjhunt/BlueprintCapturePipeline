@@ -144,6 +144,39 @@ python -m blueprint_pipeline.paid_resource_allocator model-volume \
   --allow-paid
 ```
 
+For the bounded persistent carrier lane, the same allocator can populate the
+verified model cache and an allowlisted runtime archive onto one fresh 120 GiB
+volume without allocating a GPU. Both images must be immutable digest refs.
+The source release supplies the exact `/opt` runtime roots; the small PyTorch
+image is only the RunPod carrier:
+
+```bash
+python -m blueprint_pipeline.paid_resource_allocator model-volume \
+  --output-dir <persistent-volume-evidence-dir> \
+  --data-center-id '<capacity-verified-s3-dc>' \
+  --volume-size-gib 120 \
+  --runtime-source-release-image-ref '<release>@sha256:<digest>' \
+  --carrier-image-ref 'pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca' \
+  --storage-hourly-rate-usd '<provider-verified-rate>' \
+  --storage-ttl-seconds 28800 \
+  --max-storage-spend-usd '<bounded-eight-hour-volume-cost>' \
+  --builder-evidence <digitalocean-builder-evidence.json> \
+  --builder-spend <digitalocean-builder-spend.json> \
+  --login-private-key <digitalocean-login-private-key> \
+  --host-private-key <pinned-builder-host-private-key> \
+  --ssh-key-id <digitalocean-ssh-key-id> \
+  --allow-paid
+```
+
+Runtime-bearing volumes require at least eight hours of bounded retention and
+must also cover the builder TTL, transfer margin, and the 18,600-second GPU
+watchdog. The allocator pulls both images on the admitted CPU builder, records
+their resolved repo digests, copies only the declared runtime roots from the
+source release, rejects unsafe archive members, uploads the runtime archive and
+manifest beside the model cache through RunPod S3, fully redownload-verifies all
+bytes, and emits `carrier_volume_admission.json`. The GPU lane will not accept a
+plain model-cache result in place of this combined admission.
+
 Use the current provider-confirmed total hourly price for the selected volume
 as `--storage-hourly-rate-usd`; the allocator rejects a TTL whose maximum cost
 exceeds `--max-storage-spend-usd`. The admitted builder evidence and spend
@@ -326,6 +359,43 @@ mode ignores request-supplied commands, hard-bounds the probe to three fresh
 GR00T/SONIC actions, and retains the same budget, handoff, pending-teardown, and
 watchdog contracts. Its PASS is policy-model execution evidence only, not Isaac
 task success or authority to run general paid episodes.
+
+For the exact persistent carrier campaign, arm a fresh 18,600-second watchdog
+and generate a fresh read-only preflight using the carrier volume's ID,
+datacenter, handoff, and the same pod-name prefix. Then inspect this allocator
+command without `--execute` before authorizing the one paid run:
+
+```bash
+python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
+  --probe-kind persistent-policy-wam-loop \
+  --provider-launch-request <provider-launch-request.json> \
+  --release-evidence <groot_oscar_thin_remote_build_result.json> \
+  --model-cache-evidence <model-cache-verification.json> \
+  --carrier-volume-admission <persistent-volume-evidence-dir>/carrier_volume_admission.json \
+  --preflight-bundle <persistent-canary-dir>/runpod_preflight.json \
+  --policy-observation <fresh-policy-observation.json> \
+  --persistent-job-dir <persistent-canary-dir>/job \
+  --admission-out <persistent-canary-dir>/runpod_admission.json \
+  --bound-request-out <persistent-canary-dir>/bound_provider_request.json \
+  --adapter-output <persistent-canary-dir>/persistent_carrier_result.json \
+  --pod-name blueprint-groot-oscar-persistent-<attempt> \
+  --campaign-budget-ledger <durable-campaign-budget.json> \
+  --campaign-initial-spent-usd '<current-reconciled-spend>' \
+  --campaign-initial-used-gpu-seconds '<current-reconciled-gpu-seconds>' \
+  --campaign-total-spend-cap-usd 20.00 \
+  --campaign-wall-cap-seconds 36000 \
+  --campaign-max-hourly-rate-usd '<capacity-verified-non-h100-rate>'
+```
+
+After the dry-run admission and bound request are reviewed, rerun the exact
+command with `--authorize-persistent-carrier-campaign --execute`. This lane
+rejects H100, binds a 240 GiB container disk and the exact 120 GiB volume, and
+reserves one 18,600-second watchdog window against the unchanged USD 20 total
+cap. Completion requires one Pod to produce exactly five fresh policy calls,
+four learned WAM generations, five distinct actions, no replay or resume, and
+21 media files, followed by verified GPU teardown and provider-lane return.
+Those facts prove the technical loop only; semantic task success, physical
+robot readiness, and generated-world rank fidelity remain separate claims.
 
 The launcher refuses to rewrite a tag into an admitted digest or silently pick
 another GPU. On live submission, before the provider adapter is reachable, it

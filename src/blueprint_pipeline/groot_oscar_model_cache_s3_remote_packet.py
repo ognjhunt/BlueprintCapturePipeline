@@ -27,6 +27,7 @@ from .groot_oscar_runpod_s3_model_cache import (
     DEFAULT_REMOTE_PREFIX,
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
 )
+from .groot_oscar_runpod_carrier_volume import MIN_CARRIER_VOLUME_GIB
 
 
 SCHEMA_VERSION = "groot_oscar_model_cache_s3_remote_packet_manifest.v1"
@@ -42,6 +43,7 @@ _CONTEXT_MODULES = (
     "groot_oscar_infrastructure_admission.py",
     "groot_oscar_model_cache.py",
     "groot_oscar_model_cache_s3_remote_executor.py",
+    "groot_oscar_runpod_carrier_volume.py",
     "groot_oscar_runpod_s3_model_cache.py",
     "paid_resource_admission.py",
 )
@@ -106,6 +108,8 @@ def prepare_remote_model_cache_packet(
     data_center_id: str,
     dependency_wheelhouse: str | Path,
     dependency_manifest_path: str | Path,
+    runtime_source_release_image_ref: str = "",
+    carrier_image_ref: str = "",
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Create a fresh archive from an explicit allowlist and locked wheels."""
@@ -298,6 +302,15 @@ def prepare_remote_model_cache_packet(
         "allocation_nonce": allocation_nonce,
         "volume_evidence": dict(volume_evidence),
         "volume_watchdog_handoff": dict(volume_watchdog_handoff),
+        "runtime_bundle_request": (
+            {
+                "enabled": True,
+                "source_release_image_ref": runtime_source_release_image_ref,
+                "carrier_image_ref": carrier_image_ref,
+            }
+            if runtime_source_release_image_ref or carrier_image_ref
+            else {"enabled": False}
+        ),
         "context_manifest_sha256": _sha256(context_manifest_path),
         "dependency_manifest_sha256": _sha256(dependency_manifest_target),
         "dependency_lock_sha256": _sha256(lock_target) if lock_target.is_file() else None,
@@ -309,6 +322,25 @@ def prepare_remote_model_cache_packet(
         ],
         "raw_secret_values_recorded": False,
     }
+    if bool(runtime_source_release_image_ref) != bool(carrier_image_ref):
+        blockers.append("model_cache_packet_runtime_image_refs_incomplete")
+    if (
+        (runtime_source_release_image_ref or carrier_image_ref)
+        and (
+            type(volume_evidence.get("size_bytes")) is not int
+            or int(volume_evidence.get("size_bytes") or 0)
+            < MIN_CARRIER_VOLUME_GIB * 1024**3
+        )
+    ):
+        blockers.append("model_cache_packet_runtime_volume_below_120_gib")
+    for label, value in (
+        ("runtime_source_release", runtime_source_release_image_ref),
+        ("carrier", carrier_image_ref),
+    ):
+        if value:
+            _name, marker, digest = value.rpartition("@sha256:")
+            if not marker or _HEX64.fullmatch(digest) is None:
+                blockers.append(f"model_cache_packet_{label}_image_not_digest_pinned")
     write_json(packet_dir / "packet.json", packet)
     members = [
         packet_dir / "packet.json",
@@ -355,6 +387,9 @@ def prepare_remote_model_cache_packet(
         "fixed_remote_directory": PACKET_DIRNAME,
         "fixed_result_files": packet["result_files"],
         "dependency_wheel_count": len(copied_wheels),
+        "runtime_bundle_requested": packet["runtime_bundle_request"]["enabled"],
+        "runtime_source_release_image_ref": runtime_source_release_image_ref or None,
+        "carrier_image_ref": carrier_image_ref or None,
         "arbitrary_entrypoint_supported": False,
         "raw_secret_values_recorded": False,
     }
@@ -375,6 +410,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-center-id", required=True)
     parser.add_argument("--dependency-wheelhouse", required=True)
     parser.add_argument("--dependency-manifest", required=True)
+    parser.add_argument("--runtime-source-release-image-ref", default="")
+    parser.add_argument("--carrier-image-ref", default="")
     args = parser.parse_args(argv)
     result = prepare_remote_model_cache_packet(
         output_dir=args.output_dir,
@@ -388,6 +425,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         data_center_id=args.data_center_id,
         dependency_wheelhouse=args.dependency_wheelhouse,
         dependency_manifest_path=args.dependency_manifest,
+        runtime_source_release_image_ref=args.runtime_source_release_image_ref,
+        carrier_image_ref=args.carrier_image_ref,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "ready" else 2

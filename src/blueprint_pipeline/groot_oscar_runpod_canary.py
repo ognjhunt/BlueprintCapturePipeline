@@ -219,7 +219,8 @@ def _reserve_campaign_budget(
         combined_plan_seconds = reservation_seconds + future_allowance_seconds
         if config.get("reduced_canary_timeout_acknowledged") is not True:
             raise ValueError("gpu_canary_reduced_timeout_authorization_missing")
-        if config.get("campaign_stage") != "gpu_canary":
+        campaign_stage = str(config.get("campaign_stage") or "")
+        if campaign_stage not in {"gpu_canary", "persistent_carrier_campaign"}:
             raise ValueError("gpu_canary_campaign_stage_invalid")
         if reservation_seconds > int(
             config["maximum_canary_reservation_gpu_seconds"]
@@ -267,7 +268,7 @@ def _reserve_campaign_budget(
         "reserved_at_epoch": time.time(),
         "reservation": reservation,
         "plan": {
-            "campaign_stage": "gpu_canary",
+            "campaign_stage": campaign_stage,
             "canary_reservation_gpu_seconds": reservation_seconds,
             "future_campaign_allowance_gpu_seconds": future_allowance_seconds,
             "combined_plan_gpu_seconds": combined_plan_seconds,
