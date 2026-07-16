@@ -365,8 +365,6 @@ system_path_prefixes = (
 )
 max_invalid_diagnostics = 256
 elf_paths = []
-archived_file_basenames = set()
-archived_elf_basenames = set()
 audit_error_count = 0
 
 def record_walk_error(_exc):
@@ -384,18 +382,14 @@ for root in roots:
     ):
         for filename in filenames:
             candidate = os.path.join(directory, filename)
-            archived_file_basenames.add(filename)
-            is_symlink = os.path.islink(candidate)
+            if os.path.islink(candidate):
+                continue
             try:
                 with open(candidate, "rb") as handle:
-                    is_elf = handle.read(4) == b"\x7fELF"
-                    if is_elf:
-                        archived_elf_basenames.add(filename)
-                    if is_elf and not is_symlink:
+                    if handle.read(4) == b"\x7fELF":
                         elf_paths.append(candidate)
             except OSError:
-                if not is_symlink:
-                    audit_error_count += 1
+                audit_error_count += 1
 
 def inspect(candidate):
     try:
@@ -454,26 +448,14 @@ def inspect(candidate):
         if 0 < len(operand) <= 256 and ".so" in operand and all(
             character in allowed for character in operand
         ):
-            missing_operands.append(
-                (
-                    "ARCHIVED_ELF" if operand in archived_elf_basenames else "SONAME",
-                    operand,
-                )
-            )
+            missing_operands.append(("SONAME", operand))
             continue
         if (
             0 < len(operand) <= 48
             and operand not in {".", ".."}
             and all(character in allowed for character in operand)
         ):
-            missing_operands.append(
-                (
-                    "ARCHIVED_FILE"
-                    if operand in archived_file_basenames
-                    else "DEPENDENCY_HEX",
-                    operand.encode("ascii").hex(),
-                )
-            )
+            missing_operands.append(("DEPENDENCY_HEX", operand.encode("ascii").hex()))
             continue
         basename = os.path.basename(operand)
         normalized = os.path.normpath(operand)
@@ -526,8 +508,6 @@ def inspect(candidate):
 timeout_count = 0
 invalid_missing_count = 0
 invalid_diagnostic_overflow = 0
-archived_internal_elf_resolution_count = 0
-archived_internal_file_resolution_count = 0
 missing_sonames = set()
 missing_dependency_hexes = set()
 missing_system_paths = set()
@@ -543,12 +523,6 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             audit_error_count += 1
             continue
         for kind, value in values:
-            if kind == "ARCHIVED_ELF":
-                archived_internal_elf_resolution_count += 1
-                continue
-            if kind == "ARCHIVED_FILE":
-                archived_internal_file_resolution_count += 1
-                continue
             if kind == "SONAME":
                 missing_sonames.add(value)
                 continue
@@ -575,14 +549,6 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(f"AUDIT_ERROR\t{audit_error_count}\n")
     handle.write(f"INVALID_MISSING\t{invalid_missing_count}\n")
     handle.write(f"INVALID_OVERFLOW\t{invalid_diagnostic_overflow}\n")
-    handle.write(
-        "ARCHIVED_INTERNAL_ELF_RESOLVED\t"
-        f"{archived_internal_elf_resolution_count}\n"
-    )
-    handle.write(
-        "ARCHIVED_INTERNAL_FILE_RESOLVED\t"
-        f"{archived_internal_file_resolution_count}\n"
-    )
     for soname in sorted(missing_sonames):
         handle.write(f"MISSING\t{soname}\n")
     for dependency_hex in sorted(missing_dependency_hexes):
@@ -599,8 +565,6 @@ timeout_count=0
 audit_error_count=0
 invalid_missing_count=0
 invalid_diagnostic_overflow=0
-archived_internal_elf_resolution_count=0
-archived_internal_file_resolution_count=0
 while IFS=$'\t' read -r kind value; do
   case "$kind" in
     COUNT) elf_count="$value" ;;
@@ -608,8 +572,6 @@ while IFS=$'\t' read -r kind value; do
     AUDIT_ERROR) audit_error_count="$value" ;;
     INVALID_MISSING) invalid_missing_count="$value" ;;
     INVALID_OVERFLOW) invalid_diagnostic_overflow="$value" ;;
-    ARCHIVED_INTERNAL_ELF_RESOLVED) archived_internal_elf_resolution_count="$value" ;;
-    ARCHIVED_INTERNAL_FILE_RESOLVED) archived_internal_file_resolution_count="$value" ;;
     MISSING_SYSTEM_PATH)
       system_path="$value"
       soname="${system_path##*/}"
@@ -652,8 +614,6 @@ while IFS=$'\t' read -r kind value; do
 done <"$scan"
 test "$elf_count" -gt 0
 printf 'BLUEPRINT_ELF_AUDIT_COUNT count=%s\n' "$elf_count"
-printf 'BLUEPRINT_ARCHIVED_INTERNAL_ELF_RESOLUTION count=%s\n' "$archived_internal_elf_resolution_count"
-printf 'BLUEPRINT_ARCHIVED_INTERNAL_FILE_RESOLUTION count=%s\n' "$archived_internal_file_resolution_count"
 if [[ "$audit_error_count" -gt 0 ]]; then
   printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_audit_error\n'
   printf 'BLUEPRINT_ELF_AUDIT_ERROR count=%s\n' "$audit_error_count"
@@ -745,8 +705,6 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
     failed_checks: list[str] = []
     checks: list[dict[str, Any]] = []
     archived_elf_file_count = 0
-    archived_internal_elf_resolution_count = 0
-    archived_internal_file_resolution_count = 0
     gpu_driver_deferred_sonames: set[str] = set()
     gpu_driver_deferred_system_paths: set[str] = set()
     for check_name, validation, timeout_seconds in validations:
@@ -787,22 +745,6 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                     )
                     continue
                 archived_elf_file_count = int(match.group(1))
-                internal_elf_match = re.search(
-                    r"BLUEPRINT_ARCHIVED_INTERNAL_ELF_RESOLUTION count=([0-9]+)",
-                    completed.stdout or "",
-                )
-                internal_file_match = re.search(
-                    r"BLUEPRINT_ARCHIVED_INTERNAL_FILE_RESOLUTION count=([0-9]+)",
-                    completed.stdout or "",
-                )
-                if internal_elf_match is not None:
-                    archived_internal_elf_resolution_count = int(
-                        internal_elf_match.group(1)
-                    )
-                if internal_file_match is not None:
-                    archived_internal_file_resolution_count = int(
-                        internal_file_match.group(1)
-                    )
                 invalid_deferred_soname = False
                 invalid_deferred_system_path = False
                 for line in (completed.stdout or "").splitlines():
@@ -878,22 +820,6 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 )
                 if count_match is not None:
                     archived_elf_file_count = int(count_match.group(1))
-                internal_elf_match = re.search(
-                    r"BLUEPRINT_ARCHIVED_INTERNAL_ELF_RESOLUTION count=([0-9]+)",
-                    failure_text,
-                )
-                internal_file_match = re.search(
-                    r"BLUEPRINT_ARCHIVED_INTERNAL_FILE_RESOLUTION count=([0-9]+)",
-                    failure_text,
-                )
-                if internal_elf_match is not None:
-                    archived_internal_elf_resolution_count = int(
-                        internal_elf_match.group(1)
-                    )
-                if internal_file_match is not None:
-                    archived_internal_file_resolution_count = int(
-                        internal_file_match.group(1)
-                    )
             dependency_tokens = _validation_dependency_tokens(exc)
             if dependency_tokens and all(
                 is_nvidia_driver_soname(token) for token in dependency_tokens
@@ -938,12 +864,6 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
         "checks": checks,
         "archived_root_count": len(RUNTIME_ARCHIVE_ROOTS),
         "archived_elf_file_count": archived_elf_file_count,
-        "archived_internal_elf_resolution_count": (
-            archived_internal_elf_resolution_count
-        ),
-        "archived_internal_file_resolution_count": (
-            archived_internal_file_resolution_count
-        ),
         "gpu_driver_deferred_sonames": sorted(gpu_driver_deferred_sonames),
         "gpu_driver_deferred_system_paths": sorted(
             gpu_driver_deferred_system_paths
@@ -956,11 +876,8 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
         ),
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
-            "This validates archived dependency inventory closure, CPU-safe imports, and "
-            "required Isaac extension inventory inside the exact carrier on CPU. Internal "
-            "archive resolution proves an exact-basename ELF or file is present; loader "
-            "reachability is proven only for the separately executed healthchecks. It does "
-            "not prove GPU, "
+            "This validates archived ELF linkage, CPU-safe imports, and required Isaac "
+            "extension inventory inside the exact carrier on CPU. It does not prove GPU, "
             "CUDA-driver, initialized Isaac extensions, Isaac rendering, policy execution, "
             "artifact completion, or semantic task success."
         ),

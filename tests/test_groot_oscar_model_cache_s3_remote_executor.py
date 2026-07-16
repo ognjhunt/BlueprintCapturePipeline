@@ -90,8 +90,6 @@ class FakeDocker:
                     f"{system_path}\n"
                     for system_path in self.deferred_driver_system_paths
                 )
-                + "BLUEPRINT_ARCHIVED_INTERNAL_ELF_RESOLUTION count=0\n"
-                + "BLUEPRINT_ARCHIVED_INTERNAL_FILE_RESOLUTION count=0\n"
                 + "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=42\n"
                 if "elf_count" in command[-1]
                 else "runtime verified\n"
@@ -142,12 +140,6 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["source_and_carrier_registry_digests_verified"] is True
     assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
     assert result["carrier_validation"]["archived_elf_file_count"] == 42
-    assert (
-        result["carrier_validation"]["archived_internal_elf_resolution_count"] == 0
-    )
-    assert (
-        result["carrier_validation"]["archived_internal_file_resolution_count"] == 0
-    )
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
@@ -216,16 +208,10 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "harmless_annotations" in elf_scan
     assert 'missing_operands.append(("SYSTEM_PATH", normalized))' in elf_scan
     assert 'missing_operands.append(("PATH", basename))' in elf_scan
-    assert 'else "DEPENDENCY_HEX"' in elf_scan
+    assert 'missing_operands.append(("DEPENDENCY_HEX"' in elf_scan
     assert "elf_missing_dependency_hex_%s" in elf_scan
     assert "INVALID_HASH" in elf_scan
     assert "safe_library_token_count" in elf_scan
-    assert "archived_file_basenames = set()" in elf_scan
-    assert "archived_elf_basenames = set()" in elf_scan
-    assert '"ARCHIVED_ELF" if operand in archived_elf_basenames' in elf_scan
-    assert 'if operand in archived_file_basenames' in elf_scan
-    assert "BLUEPRINT_ARCHIVED_INTERNAL_ELF_RESOLUTION" in elf_scan
-    assert "BLUEPRINT_ARCHIVED_INTERNAL_FILE_RESOLUTION" in elf_scan
     assert 'f"{digest}_{shape}"' in elf_scan
     assert "elf_missing_system_path_%s" in elf_scan
     assert "elf_missing_path_%s" in elf_scan
@@ -450,8 +436,6 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
                     cmd=command,
                     output=(
                         "BLUEPRINT_ELF_AUDIT_COUNT count=1234\n"
-                        "BLUEPRINT_ARCHIVED_INTERNAL_ELF_RESOLUTION count=17\n"
-                        "BLUEPRINT_ARCHIVED_INTERNAL_FILE_RESOLUTION count=3\n"
                         "BLUEPRINT_VALIDATION_DIAGNOSTIC "
                         "elf_missing_path_libescape.so.2\n"
                         "BLUEPRINT_VALIDATION_DIAGNOSTIC "
@@ -469,8 +453,6 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
 
     evidence = raised.value.evidence
     assert evidence["archived_elf_file_count"] == 1234
-    assert evidence["archived_internal_elf_resolution_count"] == 17
-    assert evidence["archived_internal_file_resolution_count"] == 3
     failed = next(
         row
         for row in evidence["checks"]
@@ -513,16 +495,12 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     audit_root = tmp_path / "audit-root"
     audit_root.mkdir()
     (audit_root / "candidate.so").write_bytes(b"\x7fELFpayload")
-    (audit_root / "libplain.so.1").symlink_to("candidate.so")
-    (audit_root / "libfake.so.7").write_text("not an ELF\n", encoding="utf-8")
-    (audit_root / "missing-runtime").write_text("runtime asset\n", encoding="utf-8")
     bin_root = tmp_path / "bin"
     bin_root.mkdir()
     ldd = bin_root / "ldd"
     ldd.write_text(
         "#!/bin/sh\n"
         "printf '%s\\n' 'libplain.so.1 => not found'\n"
-        "printf '%s\\n' 'libfake.so.7 => not found'\n"
         "printf '%s\\n' '/usr/lib/x86_64-linux-gnu/libcuda.so.1 => not found'\n"
         "printf '%s\\n' '/usr/lib/x/../libcuda.so.1 => not found'\n"
         "printf '%s\\n' '/usr//lib/libnvidia-ml.so.1 => not found'\n"
@@ -549,10 +527,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "COUNT\t1" in rows
     assert "INVALID_MISSING\t7" in rows
     assert "INVALID_OVERFLOW\t0" in rows
-    assert "ARCHIVED_INTERNAL_ELF_RESOLVED\t1" in rows
-    assert "ARCHIVED_INTERNAL_FILE_RESOLVED\t1" in rows
-    assert "MISSING\tlibplain.so.1" not in rows
-    assert "MISSING\tlibfake.so.7" in rows
+    assert "MISSING\tlibplain.so.1" in rows
     assert "MISSING\tlibtrailing.so.1" in rows
     assert "MISSING\tlibfirst.so.1" not in rows
     assert "MISSING\tlibsecond.so.2" not in rows
@@ -565,7 +540,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "MISSING_PATH\tlibcuda.so.1" in rows
     assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
-    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" not in rows
+    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 4
     invalid_diagnostics = [
