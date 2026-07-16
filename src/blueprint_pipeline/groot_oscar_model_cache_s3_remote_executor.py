@@ -305,8 +305,22 @@ def prepare_runtime_bundle(
     build_root: Path = RUNTIME_BUNDLE_BUILD_ROOT,
     runner: Any = subprocess.run,
     generated_at: str | None = None,
+    progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Copy only the release runtime allowlist into a POSIX-preserving archive."""
+
+    progress_evidence = progress if progress is not None else {}
+
+    def record_progress(phase: str, *, allowlisted_root: str = "") -> None:
+        progress_evidence.clear()
+        progress_evidence.update(
+            {
+                "schema_version": "groot_oscar_runtime_bundle_progress.v1",
+                "phase": phase,
+                "allowlisted_root": allowlisted_root or None,
+                "raw_secret_values_recorded": False,
+            }
+        )
 
     if request.get("enabled") is not True:
         return {
@@ -332,9 +346,23 @@ def prepare_runtime_bundle(
     container_id = ""
     preparation_succeeded = False
     try:
-        _pull_and_verify_image(runner, source_ref)
-        _pull_and_verify_image(runner, carrier_ref)
-        created = _run_command(runner, ["docker", "create", source_ref, "true"], timeout=120)
+        record_progress("pulling_source_release")
+        try:
+            _pull_and_verify_image(runner, source_ref)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_source_image_command_failed") from exc
+        record_progress("pulling_carrier")
+        try:
+            _pull_and_verify_image(runner, carrier_ref)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_carrier_image_command_failed") from exc
+        record_progress("creating_source_container")
+        try:
+            created = _run_command(
+                runner, ["docker", "create", source_ref, "true"], timeout=120
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_source_container_create_failed") from exc
         container_id = created.stdout.strip()
         if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
             raise RuntimeError("typed_runtime_bundle_container_id_invalid")
@@ -342,10 +370,22 @@ def prepare_runtime_bundle(
             source_path = "/" + root
             destination = payload_root / str(Path(root).parent)
             ensure_dir(destination)
-            _run_command(
-                runner,
-                ["docker", "cp", f"{container_id}:{source_path}", str(destination) + "/"],
-            )
+            record_progress("copying_allowlisted_root", allowlisted_root=root)
+            try:
+                _run_command(
+                    runner,
+                    [
+                        "docker",
+                        "cp",
+                        f"{container_id}:{source_path}",
+                        str(destination) + "/",
+                    ],
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(
+                    f"typed_runtime_bundle_allowlisted_root_copy_failed:{root}"
+                ) from exc
+        record_progress("validating_payload_tree")
         if not all(
             (payload_root / root).exists() and not (payload_root / root).is_symlink()
             for root in RUNTIME_ARCHIVE_ROOTS
@@ -354,9 +394,14 @@ def prepare_runtime_bundle(
         removed_embedded_model_paths = _remove_embedded_model_payloads(payload_root)
         if not _runtime_payload_tree_safe(payload_root):
             raise RuntimeError("typed_runtime_bundle_payload_tree_unsafe")
-        _validate_runtime_inside_carrier(
-            runner, carrier_ref=carrier_ref, payload_root=payload_root
-        )
+        record_progress("validating_runtime_inside_carrier")
+        try:
+            _validate_runtime_inside_carrier(
+                runner, carrier_ref=carrier_ref, payload_root=payload_root
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("typed_runtime_bundle_carrier_validation_failed") from exc
+        record_progress("archiving_runtime_bundle")
         archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
         with tarfile.open(archive_path, "w:gz", compresslevel=6) as archive:
             for root in RUNTIME_ARCHIVE_ROOTS:
@@ -387,6 +432,7 @@ def prepare_runtime_bundle(
         write_json(manifest_path, manifest)
         shutil.rmtree(build_root)
         preparation_succeeded = True
+        record_progress("completed")
         return {
             "schema_version": "groot_oscar_runtime_bundle_preparation.v1",
             "status": "completed",
@@ -733,6 +779,7 @@ def execute_remote_packet() -> dict[str, Any]:
         "raw_secret_values_recorded": False,
     }
     transport: dict[str, Any] = {}
+    runtime_bundle_progress: dict[str, Any] = {}
     terminal_exists = False
     try:
         ensure_dir(OUTPUT_DIR)
@@ -790,7 +837,9 @@ def execute_remote_packet() -> dict[str, Any]:
         hf_token = _secret(HF_TOKEN_PATH)
         _secret(S3_ACCESS_KEY_PATH)
         _secret(S3_SECRET_KEY_PATH)
-        runtime_bundle = prepare_runtime_bundle(packet["runtime_bundle_request"])
+        runtime_bundle = prepare_runtime_bundle(
+            packet["runtime_bundle_request"], progress=runtime_bundle_progress
+        )
         manifest = prepare_model_cache(RUNTIME_CACHE_ROOT, token=hf_token)
         sonic = _load_object(RUNTIME_CACHE_ROOT / "sonic/config.json")
         if sonic.get("model_name") != str(RUNTIME_COSMOS_MODEL_ROOT):
@@ -857,11 +906,16 @@ def execute_remote_packet() -> dict[str, Any]:
             else None
         )
         if result.get("status") != "blocked":
+            error_code = str(exc)
+            if re.fullmatch(r"typed_[a-z0-9_:-]+", error_code) is None:
+                error_code = "typed_model_cache_remote_execution_unclassified"
             result.update(
                 {
                     "status": "failed",
                     "blockers": ["typed_model_cache_remote_execution_failed"],
                     "error_type": type(exc).__name__,
+                    "error_code": error_code,
+                    "runtime_bundle_progress": dict(runtime_bundle_progress),
                 }
             )
         result.update(

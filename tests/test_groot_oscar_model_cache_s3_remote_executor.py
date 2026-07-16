@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,9 +21,12 @@ CARRIER_REF = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 6
 
 
 class FakeDocker:
-    def __init__(self, *, verify_digest: bool = True) -> None:
+    def __init__(
+        self, *, verify_digest: bool = True, fail_copy_root: str = ""
+    ) -> None:
         self.calls: list[list[str]] = []
         self.verify_digest = verify_digest
+        self.fail_copy_root = fail_copy_root
 
     def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -38,6 +42,12 @@ class FakeDocker:
             return SimpleNamespace(stdout="a" * 64 + "\n")
         if command[1] == "cp":
             source = command[2].split(":", 1)[1]
+            if source == f"/{self.fail_copy_root}":
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                    stderr="credential-like diagnostic must not be persisted",
+                )
             destination = Path(command[3])
             copied = destination / Path(source).name
             (copied / "bin").mkdir(parents=True)
@@ -140,3 +150,33 @@ def test_prepare_runtime_bundle_not_requested_never_calls_docker(tmp_path: Path)
     assert result["status"] == "not_requested"
     assert result["additional_artifacts"] == []
     assert docker.calls == []
+
+
+def test_prepare_runtime_bundle_reports_secret_free_failed_copy_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    failed_root = RUNTIME_ARCHIVE_ROOTS[1]
+    docker = FakeDocker(fail_copy_root=failed_root)
+    progress: dict[str, object] = {}
+
+    with pytest.raises(
+        RuntimeError,
+        match=f"typed_runtime_bundle_allowlisted_root_copy_failed:{failed_root}",
+    ):
+        executor.prepare_runtime_bundle(
+            _request(),
+            runtime_root=tmp_path / "runtime",
+            build_root=tmp_path / "build",
+            runner=docker,
+            progress=progress,
+        )
+
+    assert progress == {
+        "schema_version": "groot_oscar_runtime_bundle_progress.v1",
+        "phase": "copying_allowlisted_root",
+        "allowlisted_root": failed_root,
+        "raw_secret_values_recorded": False,
+    }
+    assert "credential-like" not in json.dumps(progress)
+    assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
