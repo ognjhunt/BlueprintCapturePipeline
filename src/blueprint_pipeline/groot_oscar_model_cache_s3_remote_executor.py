@@ -387,7 +387,9 @@ printf 'BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=%s\n' "$elf_count"
         ),
         (
             "serverless_import",
-            "/opt/runpod-serverless-venv/bin/python -c 'import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker'",
+            "/opt/runpod-serverless-venv/bin/python -m "
+            "blueprint_pipeline.groot_oscar_runpod_serverless_worker "
+            "--verify-serverless-runtime",
             300,
         ),
         (
@@ -668,8 +670,9 @@ def prepare_runtime_bundle(
                 ),
                 (
                     "/opt/runpod-serverless-venv/bin/python",
-                    "-c",
-                    "import runpod; import blueprint_pipeline.groot_oscar_runpod_serverless_worker",
+                    "-m",
+                    "blueprint_pipeline.groot_oscar_runpod_serverless_worker",
+                    "--verify-serverless-runtime",
                 ),
                 (
                     "/isaac-sim/python.sh",

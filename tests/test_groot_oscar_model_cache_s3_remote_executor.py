@@ -165,6 +165,27 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "libcuda.so.*" in elf_scan
     assert any("import diffusers" in script for script in validation_scripts)
     assert any("import carb; import isaacsim" in script for script in validation_scripts)
+    serverless_runs = [
+        call
+        for call in carrier_runs
+        if "blueprint_pipeline.groot_oscar_runpod_serverless_worker" in call[-1]
+    ]
+    assert len(serverless_runs) == 1
+    assert "--verify-serverless-runtime" in serverless_runs[0][-1]
+    assert "import runpod" not in serverless_runs[0][-1]
+    serverless_healthcheck = [
+        argv
+        for argv in manifest["healthcheck_argv"]
+        if "blueprint_pipeline.groot_oscar_runpod_serverless_worker" in argv
+    ]
+    assert serverless_healthcheck == [
+        [
+            "/opt/runpod-serverless-venv/bin/python",
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_serverless_worker",
+            "--verify-serverless-runtime",
+        ]
+    ]
     assert Path(result["archive_path"]).parent == runtime_root
     assert not build_root.exists()
 
