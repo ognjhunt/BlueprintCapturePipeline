@@ -409,16 +409,33 @@ def inspect(candidate):
         if "=> not found" not in line:
             continue
         left = line.split("=> not found", 1)[0].strip()
+        tokens = left.split()
         operand_candidates = []
-        for token in left.split():
+        for index, token in enumerate(tokens):
             if ".so" not in token or len(token) > 512:
                 continue
             if all(character in allowed for character in token) or (
                 "/" in token
                 and all(character in path_allowed for character in token)
             ):
-                operand_candidates.append(token)
-        operand = operand_candidates[0] if len(operand_candidates) == 1 else ""
+                operand_candidates.append((index, token))
+        harmless_annotations = (
+            len(tokens) > 1
+            and all(
+                2 < len(token) <= 128
+                and token.startswith("(")
+                and token.endswith(")")
+                and all(character in allowed for character in token[1:-1])
+                for token in tokens[1:]
+            )
+        )
+        operand = (
+            operand_candidates[0][1]
+            if len(operand_candidates) == 1
+            and operand_candidates[0][0] == 0
+            and (len(tokens) == 1 or harmless_annotations)
+            else ""
+        )
         if 0 < len(operand) <= 256 and ".so" in operand and all(
             character in allowed for character in operand
         ):
