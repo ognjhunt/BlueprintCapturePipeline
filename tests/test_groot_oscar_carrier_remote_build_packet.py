@@ -8,6 +8,9 @@ from blueprint_pipeline.groot_oscar_carrier_remote_build_packet import (
     DEFAULT_BASE_IMAGE,
     prepare_remote_build_packet,
 )
+from blueprint_pipeline.groot_oscar_infrastructure_admission import (
+    validate_carrier_image_archive,
+)
 
 
 def test_carrier_packet_is_clean_source_bound_and_allocator_typed(tmp_path: Path) -> None:
@@ -35,7 +38,9 @@ def test_carrier_packet_is_clean_source_bound_and_allocator_typed(tmp_path: Path
     assert len(result["carrier_dockerfile_sha256"]) == 64
     with tarfile.open(result["tarball_path"], "r:gz") as archive:
         names = archive.getnames()
+    assert names == result["archive_members"]
     assert "groot_oscar_carrier_remote_build/context/Dockerfile" in names
+    assert validate_carrier_image_archive(result) == []
     script = Path(result["run_script_path"]).read_text(encoding="utf-8")
     assert "docker buildx build --platform linux/amd64" in script
     assert "--push" in script

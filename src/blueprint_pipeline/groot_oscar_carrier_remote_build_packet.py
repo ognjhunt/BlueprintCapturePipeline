@@ -36,7 +36,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _remote_script(
+def render_remote_build_script(
     *, image_ref: str, base_image_ref: str, source_commit: str, dockerfile_sha256: str
 ) -> str:
     return f"""#!/usr/bin/env bash
@@ -172,7 +172,7 @@ def prepare_remote_build_packet(
         dockerfile_sha256 = _sha256(destination)
     script = packet / "remote_build_groot_oscar_carrier.sh"
     script.write_text(
-        _remote_script(
+        render_remote_build_script(
             image_ref=image_ref,
             base_image_ref=base_image_ref,
             source_commit=source_commit,
@@ -187,8 +187,25 @@ def prepare_remote_build_packet(
         encoding="utf-8",
     )
     tarball = output / "groot_oscar_carrier_remote_build_packet.tar.gz"
+    archive_paths = (
+        packet / "README.md",
+        context / "Dockerfile",
+        script,
+    )
+    archive_member_sha256 = {
+        path.relative_to(output).as_posix(): _sha256(path) for path in archive_paths
+    }
+    archive_members = sorted(archive_member_sha256)
+    archive_member_manifest_sha256 = hashlib.sha256(
+        json.dumps(archive_member_sha256, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     with tarfile.open(tarball, "w:gz") as archive:
-        archive.add(packet, arcname=PACKET_DIRNAME)
+        for path in archive_paths:
+            archive.add(
+                path,
+                arcname=path.relative_to(output).as_posix(),
+                recursive=False,
+            )
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "packet_kind": "carrier_image",
@@ -198,6 +215,9 @@ def prepare_remote_build_packet(
         "packet_dir": str(packet),
         "tarball_path": str(tarball),
         "tarball_sha256": _sha256(tarball),
+        "archive_members": archive_members,
+        "archive_member_sha256": archive_member_sha256,
+        "archive_member_manifest_sha256": archive_member_manifest_sha256,
         "run_script_path": str(script),
         "carrier_image_ref": image_ref,
         "carrier_base_image_ref": base_image_ref,

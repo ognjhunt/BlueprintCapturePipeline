@@ -42,6 +42,7 @@ from .groot_oscar_infrastructure_admission import (
     build_cpu_build_execution_admission,
     build_digitalocean_cpu_builder_profile_evidence,
     build_live_machine_capability_evidence,
+    validate_carrier_image_archive,
 )
 from .groot_oscar_model_cache_wheelhouse import (
     _wheel_compatible,
@@ -468,6 +469,8 @@ def verify_packet_tarball(packet: Mapping[str, Any]) -> dict[str, Any]:
             blockers.append("digitalocean_builder_packet_tarball_digest_mismatch")
         if packet.get("packet_kind") == "model_cache_s3":
             blockers.extend(_validate_model_cache_archive(path, packet))
+        elif packet.get("packet_kind") == "carrier_image":
+            blockers.extend(validate_carrier_image_archive(packet))
     return {
         "schema_version": "groot_oscar_builder_packet_tarball_verification.v1",
         "status": "verified" if not blockers else "blocked",

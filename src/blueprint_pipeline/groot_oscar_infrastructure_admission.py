@@ -15,12 +15,18 @@ mutation.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import tarfile
 from pathlib import Path
 from typing import Any, Mapping
 
 from .common import write_json
+from .groot_oscar_carrier_remote_build_packet import (
+    PACKET_DIRNAME as CARRIER_PACKET_DIRNAME,
+    render_remote_build_script,
+)
 
 
 # RunPod's create API returned this authoritative network-volume-capable set on
@@ -123,6 +129,92 @@ def _versioned_image_ref(value: Any) -> bool:
         and "@" not in ref
         and not any(char.isspace() for char in ref)
     )
+
+
+def _safe_archive_member(name: str) -> bool:
+    path = Path(name)
+    return bool(name) and not path.is_absolute() and ".." not in path.parts
+
+
+def validate_carrier_image_archive(packet: Mapping[str, Any]) -> list[str]:
+    """Bind the exact carrier archive and executable before paid allocation."""
+
+    blockers: list[str] = []
+    expected_names = sorted(
+        (
+            f"{CARRIER_PACKET_DIRNAME}/README.md",
+            f"{CARRIER_PACKET_DIRNAME}/context/Dockerfile",
+            f"{CARRIER_PACKET_DIRNAME}/remote_build_groot_oscar_carrier.sh",
+        )
+    )
+    declared_names = packet.get("archive_members")
+    declared_names = declared_names if isinstance(declared_names, list) else []
+    declared_digests = packet.get("archive_member_sha256")
+    declared_digests = declared_digests if isinstance(declared_digests, Mapping) else {}
+    if declared_names != expected_names:
+        blockers.append("builder_carrier_archive_member_contract_invalid")
+    if sorted(declared_digests) != expected_names or any(
+        not _HEX64.fullmatch(_string(value)) for value in declared_digests.values()
+    ):
+        blockers.append("builder_carrier_archive_digest_contract_invalid")
+    manifest_digest = hashlib.sha256(
+        json.dumps(dict(declared_digests), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if packet.get("archive_member_manifest_sha256") != manifest_digest:
+        blockers.append("builder_carrier_archive_member_manifest_mismatch")
+
+    path = Path(_string(packet.get("tarball_path"))).expanduser().resolve()
+    declared_tarball = _string(packet.get("tarball_sha256"))
+    if not _HEX64.fullmatch(declared_tarball):
+        blockers.append("builder_carrier_tarball_sha256_invalid")
+    payloads: dict[str, bytes] = {}
+    if not path.is_file():
+        blockers.append("builder_carrier_archive_missing")
+    else:
+        observed_tarball = hashlib.sha256(path.read_bytes()).hexdigest()
+        if observed_tarball != declared_tarball:
+            blockers.append("builder_carrier_archive_tarball_mismatch")
+        try:
+            with tarfile.open(path, "r:gz") as archive:
+                members = archive.getmembers()
+                names = [member.name for member in members]
+                if len(names) != len(set(names)):
+                    blockers.append("builder_carrier_archive_duplicate_member")
+                if any(not _safe_archive_member(name) for name in names):
+                    blockers.append("builder_carrier_archive_unsafe_path")
+                if any(not member.isfile() for member in members):
+                    blockers.append("builder_carrier_archive_nonregular_member")
+                if sorted(names) != expected_names or names != declared_names:
+                    blockers.append("builder_carrier_archive_inventory_mismatch")
+                if not blockers:
+                    for member in members:
+                        stream = archive.extractfile(member)
+                        if stream is None:
+                            blockers.append("builder_carrier_archive_member_unreadable")
+                            continue
+                        payloads[member.name] = stream.read()
+        except (OSError, tarfile.TarError):
+            blockers.append("builder_carrier_archive_unreadable")
+
+    for name, payload in payloads.items():
+        if hashlib.sha256(payload).hexdigest() != declared_digests.get(name):
+            blockers.append("builder_carrier_archive_member_digest_mismatch")
+    dockerfile_name = f"{CARRIER_PACKET_DIRNAME}/context/Dockerfile"
+    script_name = f"{CARRIER_PACKET_DIRNAME}/remote_build_groot_oscar_carrier.sh"
+    dockerfile = payloads.get(dockerfile_name)
+    if dockerfile is not None and hashlib.sha256(dockerfile).hexdigest() != packet.get(
+        "carrier_dockerfile_sha256"
+    ):
+        blockers.append("builder_carrier_archive_dockerfile_binding_mismatch")
+    expected_script = render_remote_build_script(
+        image_ref=_string(packet.get("carrier_image_ref")),
+        base_image_ref=_string(packet.get("carrier_base_image_ref")),
+        source_commit=_string(packet.get("source_commit")),
+        dockerfile_sha256=_string(packet.get("carrier_dockerfile_sha256")),
+    ).encode()
+    if payloads.get(script_name) != expected_script:
+        blockers.append("builder_carrier_archive_script_binding_mismatch")
+    return sorted(set(blockers))
 
 
 def build_live_machine_capability_evidence(
@@ -451,6 +543,9 @@ def build_build_plane_admission(
             blockers.append("builder_carrier_base_image_not_digest_pinned")
         if not _HEX64.fullmatch(_string(packet.get("carrier_dockerfile_sha256"))):
             blockers.append("builder_carrier_dockerfile_sha256_invalid")
+        if not _COMMIT.fullmatch(_string(packet.get("source_commit"))):
+            blockers.append("builder_carrier_source_commit_invalid")
+        blockers.extend(validate_carrier_image_archive(packet))
     if provider in {"runpod", "runpod_pod", "runpod-pod"}:
         blockers.append("runpod_pods_are_serve_plane_not_image_build_plane")
     if expected_purpose is not None and _string(builder.get("purpose")) != expected_purpose:
