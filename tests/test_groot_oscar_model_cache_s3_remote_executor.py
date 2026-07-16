@@ -86,11 +86,11 @@ class FakeDocker:
                     for soname in self.deferred_driver_sonames
                 )
                 + "".join(
-                    "BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH "
-                    f"{system_path}\n"
+                    f"BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH {system_path}\n"
                     for system_path in self.deferred_driver_system_paths
                 )
                 + "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=42\n"
+                + "BLUEPRINT_ELF_ARCHIVED_DEPENDENCY_CLOSURE count=7\n"
                 if "elf_count" in command[-1]
                 else "runtime verified\n"
             )
@@ -121,9 +121,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     monkeypatch.setattr(executor.tarfile, "open", tracked_tarfile_open)
     docker = FakeDocker(
         deferred_driver_sonames=("libnvidia-ml.so.1", "libcuda.so.1"),
-        deferred_driver_system_paths=(
-            "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
-        ),
+        deferred_driver_system_paths=("/usr/lib/x86_64-linux-gnu/libcuda.so.1",),
     )
     runtime_root = tmp_path / "runtime"
     build_root = tmp_path / "build"
@@ -140,6 +138,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["source_and_carrier_registry_digests_verified"] is True
     assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
     assert result["carrier_validation"]["archived_elf_file_count"] == 42
+    assert result["carrier_validation"]["archived_dependency_resolved_count"] == 7
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
@@ -408,9 +407,7 @@ def test_runtime_carrier_validation_preserves_structured_timeout_evidence(
         )
 
     failed = next(
-        row
-        for row in raised.value.evidence["checks"]
-        if row["name"] == "all_archived_elf_linkage"
+        row for row in raised.value.evidence["checks"] if row["name"] == "all_archived_elf_linkage"
     )
     assert failed == {
         "name": "all_archived_elf_linkage",
@@ -453,11 +450,7 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
 
     evidence = raised.value.evidence
     assert evidence["archived_elf_file_count"] == 1234
-    failed = next(
-        row
-        for row in evidence["checks"]
-        if row["name"] == "all_archived_elf_linkage"
-    )
+    failed = next(row for row in evidence["checks"] if row["name"] == "all_archived_elf_linkage")
     assert failed["diagnostic_tokens"] == [
         "elf_missing_path_libescape.so.2",
         "elf_missing_soname_invalid",
@@ -479,22 +472,18 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
         runner=docker,
     )
     elf_scan = next(
-        call[-1]
-        for call in docker.calls
-        if call[1] == "run" and "elf_count" in call[-1]
+        call[-1] for call in docker.calls if call[1] == "run" and "elf_count" in call[-1]
     )
     embedded = elf_scan.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     roots_start = embedded.index("roots = (")
     roots_end = embedded.index("\nallowed = ", roots_start)
-    embedded = (
-        embedded[:roots_start]
-        + "roots = (sys.argv[2],)"
-        + embedded[roots_end:]
-    )
+    embedded = embedded[:roots_start] + "roots = (sys.argv[2],)" + embedded[roots_end:]
 
     audit_root = tmp_path / "audit-root"
     audit_root.mkdir()
     (audit_root / "candidate.so").write_bytes(b"\x7fELFpayload")
+    (audit_root / "libplain.so.1").write_bytes(b"archived dependency")
+    (audit_root / "missing-runtime").write_bytes(b"archived dependency")
     bin_root = tmp_path / "bin"
     bin_root.mkdir()
     ldd = bin_root / "ldd"
@@ -527,20 +516,19 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "COUNT\t1" in rows
     assert "INVALID_MISSING\t7" in rows
     assert "INVALID_OVERFLOW\t0" in rows
-    assert "MISSING\tlibplain.so.1" in rows
+    assert "ARCHIVED_RESOLVED\t2" in rows
+    assert "MISSING\tlibplain.so.1" not in rows
     assert "MISSING\tlibtrailing.so.1" in rows
     assert "MISSING\tlibfirst.so.1" not in rows
     assert "MISSING\tlibsecond.so.2" not in rows
     assert "MISSING\tlibcuda.so.1" not in rows
-    assert (
-        "MISSING_SYSTEM_PATH\t/usr/lib/x86_64-linux-gnu/libcuda.so.1" in rows
-    )
+    assert "MISSING_SYSTEM_PATH\t/usr/lib/x86_64-linux-gnu/libcuda.so.1" in rows
     assert "MISSING_SYSTEM_PATH\t/usr/lib/libcuda.so.1" not in rows
     assert "MISSING_SYSTEM_PATH\t/usr/lib/libnvidia-ml.so.1" not in rows
     assert "MISSING_PATH\tlibcuda.so.1" in rows
     assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
-    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" in rows
+    assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" not in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 4
     invalid_diagnostics = [
@@ -621,12 +609,9 @@ def test_runtime_carrier_import_failure_defers_only_pure_driver_sonames(
 
     assert result["status"] == "completed"
     assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
-    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
-        "libcuda.so.1"
-    ]
+    assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == ["libcuda.so.1"]
     assert any(
-        row["name"] == "oscar_import_matrix"
-        and row["status"] == "deferred_to_gpu_driver_bootstrap"
+        row["name"] == "oscar_import_matrix" and row["status"] == "deferred_to_gpu_driver_bootstrap"
         for row in result["carrier_validation"]["checks"]
     )
 
