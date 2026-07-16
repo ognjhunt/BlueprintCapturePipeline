@@ -355,8 +355,13 @@ def test_groot_oscar_small_carrier_matches_foundation_runtime_link_surface() -> 
     assert "libnvinfer-plugin10=${TENSORRT_VERSION}" in carrier
     assert "libnvonnxparsers10=${TENSORRT_VERSION}" in carrier
     assert "libosmesa6" in carrier
+    assert "libnghttp2-14" in carrier
     assert "libyaml-cpp0.8" in carrier
     assert "libzmq5" in carrier
+    assert "NVIDIA_DRIVER_CAPABILITIES=all" in carrier
+    assert "VK_DRIVER_FILES=/etc/vulkan/icd.d/nvidia_icd.json" in carrier
+    assert "/usr/share/glvnd/egl_vendor.d/10_nvidia.json" in carrier
+    assert "/etc/vulkan/icd.d/nvidia_icd.json" in carrier
     assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in carrier
     assert "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in carrier
 

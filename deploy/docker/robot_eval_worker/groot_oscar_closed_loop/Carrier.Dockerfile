@@ -22,11 +22,22 @@ RUN dpkg -i /tmp/cuda-keyring.deb \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates cuda-cudart-12-6=${CUDA_CUDART_VERSION} ffmpeg gettext-base \
       libatomic1 libegl1 libgl1 libglib2.0-0 libglu1-mesa libglx0 libgomp1 \
+      libnghttp2-14 \
       libnvinfer10=${TENSORRT_VERSION} libnvinfer-plugin10=${TENSORRT_VERSION} \
       libnvonnxparsers10=${TENSORRT_VERSION} libosmesa6 libsm6 libxi6 libxrandr2 \
       libxt6 libyaml-cpp0.8 libzmq5 zlib1g \
-  && rm -rf /var/lib/apt/lists/*
-ENV PYTHONUNBUFFERED=1 \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /usr/share/glvnd/egl_vendor.d /etc/vulkan/icd.d /etc/vulkan/implicit_layer.d \
+  && printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' \
+      > /usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+  && printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_mesa.so.0"}}' \
+      > /usr/share/glvnd/egl_vendor.d/50_mesa.json \
+  && printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3.194"}}' \
+      > /etc/vulkan/icd.d/nvidia_icd.json
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    VK_DRIVER_FILES=/etc/vulkan/icd.d/nvidia_icd.json \
+    PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MUJOCO_GL=osmesa \
     BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8 \
