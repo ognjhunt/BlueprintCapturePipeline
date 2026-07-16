@@ -201,6 +201,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert "ThreadPoolExecutor(max_workers=workers)" in elf_scan
     assert '["ldd", candidate]' in elf_scan
     assert "min(8, os.cpu_count() or 1)" in elf_scan
+    assert "and operand == normalized" in elf_scan
     assert 'missing_operands.append(("SYSTEM_PATH", normalized))' in elf_scan
     assert 'missing_operands.append(("PATH", basename))' in elf_scan
     assert "INVALID_HASH" in elf_scan
@@ -493,6 +494,8 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
         "#!/bin/sh\n"
         "printf '%s\\n' 'libplain.so.1 => not found'\n"
         "printf '%s\\n' '/usr/lib/x86_64-linux-gnu/libcuda.so.1 => not found'\n"
+        "printf '%s\\n' '/usr/lib/x/../libcuda.so.1 => not found'\n"
+        "printf '%s\\n' '/usr//lib/libnvidia-ml.so.1 => not found'\n"
         "printf '%s\\n' '/opt/private/libescape.so.2 => not found'\n"
         "printf '%s\\n' '/opt/private/not-a-library => not found'\n",
         encoding="utf-8",
@@ -509,18 +512,24 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
 
     rows = scan.read_text(encoding="utf-8").splitlines()
     assert "COUNT\t1" in rows
-    assert "INVALID_MISSING\t2" in rows
+    assert "INVALID_MISSING\t4" in rows
     assert "INVALID_OVERFLOW\t0" in rows
     assert "MISSING\tlibplain.so.1" in rows
     assert "MISSING\tlibcuda.so.1" not in rows
     assert (
         "MISSING_SYSTEM_PATH\t/usr/lib/x86_64-linux-gnu/libcuda.so.1" in rows
     )
+    assert "MISSING_SYSTEM_PATH\t/usr/lib/libcuda.so.1" not in rows
+    assert "MISSING_SYSTEM_PATH\t/usr/lib/libnvidia-ml.so.1" not in rows
+    assert "MISSING_PATH\tlibcuda.so.1" in rows
+    assert "MISSING_PATH\tlibnvidia-ml.so.1" in rows
     assert "MISSING_PATH\tlibescape.so.2" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 1
     assert len(invalid_hashes[0].split("\t", 1)[1]) == 16
     assert "/opt/private" not in scan.read_text(encoding="utf-8")
+    assert "/usr/lib/x/../" not in scan.read_text(encoding="utf-8")
+    assert "/usr//lib" not in scan.read_text(encoding="utf-8")
 
 
 def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:

@@ -425,6 +425,7 @@ def inspect(candidate):
         if (
             basename_safe
             and os.path.isabs(operand)
+            and operand == normalized
             and len(normalized) <= 512
             and all(character in path_allowed for character in normalized)
             and any(normalized.startswith(prefix) for prefix in system_path_prefixes)
