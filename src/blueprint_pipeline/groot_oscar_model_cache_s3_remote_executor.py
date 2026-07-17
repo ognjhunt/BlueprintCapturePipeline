@@ -786,6 +786,8 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 "--rm",
                 "--network",
                 "none",
+                "--user",
+                "0:0",
                 *source_env_argv,
                 "--entrypoint",
                 "/bin/bash",
