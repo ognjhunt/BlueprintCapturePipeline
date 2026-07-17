@@ -23,7 +23,7 @@ CARRIER_REF = PERSISTENT_CARRIER_IMAGE_REF
 def test_persistent_carrier_is_exact_compatible_image_digest() -> None:
     assert CARRIER_REF == (
         "docker.io/nijelhunt/blueprint-groot-oscar-carrier@sha256:"
-        "7e1bd59fda79a038f7154b8e2fbebe172c28d2a2995da4fd15a4f5a5d9e0c9a3"
+        "71eb4a0a6bf8fefd13520dc6fb6af420de2580b8701eeddce0e073abcd989fe9"
     )
 
 
