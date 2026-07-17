@@ -379,10 +379,11 @@ for root in roots:
     ):
         for filename in filenames:
             candidate = os.path.join(directory, filename)
+            is_shared_library = ".so" in filename
             if os.path.islink(candidate):
                 try:
                     with open(candidate, "rb") as handle:
-                        if handle.read(4) == b"\x7fELF":
+                        if handle.read(4) == b"\x7fELF" and is_shared_library:
                             archived_library_paths.add(directory)
                 except OSError:
                     pass
@@ -391,7 +392,8 @@ for root in roots:
                 with open(candidate, "rb") as handle:
                     if handle.read(4) == b"\x7fELF":
                         elf_paths.append(candidate)
-                        archived_library_paths.add(directory)
+                        if is_shared_library:
+                            archived_library_paths.add(directory)
             except OSError:
                 audit_error_count += 1
 
@@ -915,7 +917,10 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 timeout=timeout_seconds,
             )
             if check_name == "all_archived_elf_linkage":
-                match = re.search(r"count=([1-9][0-9]*)", completed.stdout or "")
+                match = re.search(
+                    r"BLUEPRINT_ELF_AUDIT_COUNT count=([1-9][0-9]*)",
+                    completed.stdout or "",
+                )
                 library_path_count_match = re.search(
                     r"BLUEPRINT_ELF_ARCHIVED_LIBRARY_PATH_COUNT count=([0-9]+)",
                     completed.stdout or "",
@@ -927,37 +932,62 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                     if line.startswith(path_marker)
                 )
                 allowed_library_roots = tuple(f"/{root}" for root in RUNTIME_ARCHIVE_ROOTS)
-                paths_valid = (
-                    len(candidate_library_paths) == len(set(candidate_library_paths))
-                    and len(candidate_library_paths) <= 4096
-                    and sum(len(path) + 1 for path in candidate_library_paths) <= 131072
-                    and all(
-                        path == posixpath.normpath(path)
-                        and len(path) <= 512
-                        and any(
-                            path == root or path.startswith(root + "/")
-                            for root in allowed_library_roots
-                        )
-                        and all(
-                            character
-                            in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
-                            for character in path
-                        )
-                        for path in candidate_library_paths
-                    )
+                path_markers_unique = len(candidate_library_paths) == len(
+                    set(candidate_library_paths)
                 )
-                if (
-                    match is None
-                    or library_path_count_match is None
-                    or int(library_path_count_match.group(1)) != len(candidate_library_paths)
-                    or not paths_valid
-                ):
+                path_marker_count_bounded = len(candidate_library_paths) <= 4096
+                path_marker_bytes_bounded = (
+                    sum(len(path) + 1 for path in candidate_library_paths) <= 131072
+                )
+                path_markers_safe = all(
+                    path == posixpath.normpath(path)
+                    and len(path) <= 512
+                    and any(
+                        path == root or path.startswith(root + "/")
+                        for root in allowed_library_roots
+                    )
+                    and all(
+                        character
+                        in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
+                        for character in path
+                    )
+                    for path in candidate_library_paths
+                )
+                declared_library_path_count = (
+                    int(library_path_count_match.group(1))
+                    if library_path_count_match is not None
+                    else None
+                )
+                diagnostic_tokens: list[str] = []
+                if match is None:
+                    diagnostic_tokens.append("elf_count_evidence_missing")
+                if library_path_count_match is None:
+                    diagnostic_tokens.append("library_path_count_evidence_missing")
+                elif declared_library_path_count != len(candidate_library_paths):
+                    diagnostic_tokens.append("library_path_count_mismatch")
+                if not path_markers_unique:
+                    diagnostic_tokens.append("library_path_markers_duplicate")
+                if not path_marker_count_bounded:
+                    diagnostic_tokens.append("library_path_count_unbounded")
+                if not path_marker_bytes_bounded:
+                    diagnostic_tokens.append("library_path_bytes_unbounded")
+                if not path_markers_safe:
+                    diagnostic_tokens.append("library_path_marker_invalid")
+                if diagnostic_tokens:
                     failed_checks.append(check_name)
                     checks.append(
                         {
                             "name": check_name,
                             "status": "failed",
-                            "diagnostic_tokens": ["elf_count_evidence_missing"],
+                            "diagnostic_tokens": diagnostic_tokens,
+                            "observed_elf_count": (
+                                int(match.group(1)) if match is not None else None
+                            ),
+                            "declared_library_path_count": declared_library_path_count,
+                            "observed_library_path_marker_count": len(candidate_library_paths),
+                            "observed_library_path_marker_bytes": sum(
+                                len(path) + 1 for path in candidate_library_paths
+                            ),
                         }
                     )
                     continue

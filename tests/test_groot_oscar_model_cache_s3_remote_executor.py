@@ -557,6 +557,9 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     audit_root = tmp_path / "audit-root"
     audit_root.mkdir()
     (audit_root / "candidate.so").write_bytes(b"\x7fELFpayload")
+    executable_root = audit_root / "bin"
+    executable_root.mkdir()
+    (executable_root / "python").write_bytes(b"\x7fELFpayload")
     (audit_root / "libplain.so.1").write_bytes(b"archived dependency")
     (audit_root / "missing-runtime").write_bytes(b"archived dependency")
     alias_root = audit_root / "alias"
@@ -591,12 +594,13 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     )
 
     rows = scan.read_text(encoding="utf-8").splitlines()
-    assert "COUNT\t1" in rows
-    assert "INVALID_MISSING\t7" in rows
+    assert "COUNT\t2" in rows
+    assert "INVALID_MISSING\t14" in rows
     assert "INVALID_OVERFLOW\t0" in rows
     assert "ARCHIVED_LIBRARY_PATH_COUNT\t2" in rows
     assert f"ARCHIVED_LIBRARY_PATH\t{audit_root}" in rows
     assert f"ARCHIVED_LIBRARY_PATH\t{alias_root}" in rows
+    assert f"ARCHIVED_LIBRARY_PATH\t{executable_root}" not in rows
     assert "MISSING\tlibplain.so.1" in rows
     assert "MISSING\tlibtrailing.so.1" in rows
     assert "MISSING\tlibfirst.so.1" not in rows
@@ -624,6 +628,48 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert "/opt/private" not in scan.read_text(encoding="utf-8")
     assert "/usr/lib/x/../" not in scan.read_text(encoding="utf-8")
     assert "/usr//lib" not in scan.read_text(encoding="utf-8")
+
+
+def test_runtime_carrier_validation_reports_library_path_evidence_failure_precisely(
+    tmp_path: Path,
+) -> None:
+    class UnsafeLibraryPathDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and CARRIER_REF in command and "elf_count" in command[-1]:
+                self.calls.append(command)
+                return SimpleNamespace(
+                    stdout=(
+                        "BLUEPRINT_ELF_AUDIT_COUNT count=4345\n"
+                        "BLUEPRINT_ARCHIVED_LIBRARY_PATH /opt/oscar-venv/lib bad\n"
+                        "BLUEPRINT_ELF_ARCHIVED_LIBRARY_PATH_COUNT count=1\n"
+                        "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=4345\n"
+                    )
+                )
+            return super().__call__(argv, **kwargs)
+
+    with pytest.raises(executor.RuntimeCarrierValidationError) as raised:
+        executor._validate_runtime_inside_carrier(
+            UnsafeLibraryPathDocker(),
+            source_ref=SOURCE_REF,
+            carrier_ref=CARRIER_REF,
+            payload_root=tmp_path,
+        )
+
+    failed = next(
+        row for row in raised.value.evidence["checks"] if row["name"] == "all_archived_elf_linkage"
+    )
+    assert failed == {
+        "name": "all_archived_elf_linkage",
+        "status": "failed",
+        "diagnostic_tokens": ["library_path_marker_invalid"],
+        "observed_elf_count": 4345,
+        "declared_library_path_count": 1,
+        "observed_library_path_marker_count": 1,
+        "observed_library_path_marker_bytes": 24,
+    }
+    assert "stdout" not in json.dumps(raised.value.evidence)
+    assert "stderr" not in json.dumps(raised.value.evidence)
 
 
 def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:
