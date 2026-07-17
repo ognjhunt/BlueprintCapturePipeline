@@ -36,6 +36,7 @@ from .groot_oscar_runpod_carrier_volume import (
     RUNTIME_ARCHIVE_ROOTS,
     RUNTIME_CARRIER_ENV,
     build_runtime_bundle_manifest,
+    is_runtime_library_path,
     is_nvidia_driver_soname,
     is_nvidia_driver_system_path,
 )
@@ -931,7 +932,6 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                     for line in (completed.stdout or "").splitlines()
                     if line.startswith(path_marker)
                 )
-                allowed_library_roots = tuple(f"/{root}" for root in RUNTIME_ARCHIVE_ROOTS)
                 path_markers_unique = len(candidate_library_paths) == len(
                     set(candidate_library_paths)
                 )
@@ -940,18 +940,7 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                     sum(len(path) + 1 for path in candidate_library_paths) <= 131072
                 )
                 path_markers_safe = all(
-                    path == posixpath.normpath(path)
-                    and len(path) <= 512
-                    and any(
-                        path == root or path.startswith(root + "/")
-                        for root in allowed_library_roots
-                    )
-                    and all(
-                        character
-                        in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
-                        for character in path
-                    )
-                    for path in candidate_library_paths
+                    is_runtime_library_path(path) for path in candidate_library_paths
                 )
                 declared_library_path_count = (
                     int(library_path_count_match.group(1))
