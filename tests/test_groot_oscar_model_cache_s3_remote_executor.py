@@ -216,6 +216,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
     source_runs = [call for call in docker.calls if call[1] == "run" and SOURCE_REF in call]
     assert len(source_runs) == 1
+    assert source_runs[0][source_runs[0].index("--user") + 1] == "0:0"
     carrier_runs = [call for call in docker.calls if call[1] == "run" and CARRIER_REF in call]
     assert len(carrier_runs) == 7
     assert all("--network" in call for call in carrier_runs)
