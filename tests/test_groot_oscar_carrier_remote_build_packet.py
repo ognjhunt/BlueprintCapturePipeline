@@ -43,6 +43,7 @@ def test_carrier_packet_is_clean_source_bound_and_allocator_typed(tmp_path: Path
     assert validate_carrier_image_archive(result) == []
     script = Path(result["run_script_path"]).read_text(encoding="utf-8")
     assert "docker buildx build --platform linux/amd64" in script
+    assert '--build-arg "ISAAC_CARRIER_BASE=$base_image_ref"' in script
     assert "--push" in script
     assert "groot_oscar_carrier_remote_build_result.v1" in script
     assert "resolved_digest_ref" in script
@@ -68,7 +69,7 @@ def test_carrier_packet_checks_cleanliness_before_writing_inside_repo(
     repo = tmp_path / "repo"
     dockerfile = repo / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Carrier.Dockerfile"
     dockerfile.parent.mkdir(parents=True)
-    dockerfile.write_text("ARG PYTORCH_CARRIER_BASE\nFROM ${PYTORCH_CARRIER_BASE}\n")
+    dockerfile.write_text("ARG ISAAC_CARRIER_BASE\nFROM ${ISAAC_CARRIER_BASE}\n")
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Packet Test"], cwd=repo, check=True)
     subprocess.run(

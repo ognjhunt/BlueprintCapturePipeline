@@ -19,8 +19,8 @@ from .common import ensure_dir, write_json
 SCHEMA_VERSION = "groot_oscar_carrier_remote_build_packet.v1"
 PACKET_DIRNAME = "groot_oscar_carrier_remote_build"
 DEFAULT_BASE_IMAGE = (
-    "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:"
-    "b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca"
+    "nvcr.io/nvidia/isaac-sim:6.0.0@sha256:"
+    "68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d"
 )
 DEFAULT_IMAGE_REF = "docker.io/nijelhunt/blueprint-groot-oscar-carrier:20260716-compatible-v1"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -57,7 +57,7 @@ fi
 test "$(sha256sum "$script_dir/context/Dockerfile" | awk '{{print $1}}')" = "$dockerfile_sha256"
 metadata="$script_dir/carrier_build_metadata.json"
 docker buildx build --platform linux/amd64 --progress plain --metadata-file "$metadata" \
-  --build-arg "PYTORCH_CARRIER_BASE=$base_image_ref" \
+  --build-arg "ISAAC_CARRIER_BASE=$base_image_ref" \
   -f "$script_dir/context/Dockerfile" -t "$image_ref" --push "$script_dir/context"
 digest="$(python3 - "$metadata" <<'PY'
 import json,re,sys
