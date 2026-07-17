@@ -55,6 +55,22 @@ RUNTIME_CARRIER_ENV = {
     "LD_LIBRARY_PATH": RUNTIME_CARRIER_LD_LIBRARY_PATH,
 }
 
+
+def is_runtime_library_path(value: object) -> bool:
+    """Return whether a path is safe for the manifest and colon-delimited loader env."""
+
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return False
+    allowed_roots = tuple(f"/{root}" for root in RUNTIME_ARCHIVE_ROOTS)
+    return (
+        value == posixpath.normpath(value)
+        and any(value == root or value.startswith(root + "/") for root in allowed_roots)
+        and not any(
+            character in ":$" or ord(character) < 32 or ord(character) == 127 for character in value
+        )
+    )
+
+
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _VOLUME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,127}")
 _DATA_CENTER_ID = re.compile(r"[A-Z]{2,8}(?:-[A-Z0-9]+)+")
@@ -81,8 +97,10 @@ def is_nvidia_driver_soname(value: Any) -> bool:
     """Return whether a SONAME is supplied by the NVIDIA host driver injection."""
 
     soname = _string(value)
-    if not soname or len(soname) > 256 or any(
-        character.isspace() or character in "/\\\x00" for character in soname
+    if (
+        not soname
+        or len(soname) > 256
+        or any(character.isspace() or character in "/\\\x00" for character in soname)
     ):
         return False
     exact_stems = (
@@ -94,9 +112,9 @@ def is_nvidia_driver_soname(value: Any) -> bool:
         "libGLESv1_CM_nvidia.so",
         "libGLESv2_nvidia.so",
     )
-    return (
-        soname.startswith("libnvidia-") and ".so" in soname
-    ) or any(soname == stem or soname.startswith(stem + ".") for stem in exact_stems)
+    return (soname.startswith("libnvidia-") and ".so" in soname) or any(
+        soname == stem or soname.startswith(stem + ".") for stem in exact_stems
+    )
 
 
 def is_nvidia_driver_system_path(value: Any) -> bool:
@@ -265,31 +283,18 @@ def build_runtime_bundle_manifest(
             continue
         deferred_system_paths.append(path)
     deferred_system_paths = sorted(set(deferred_system_paths))
-    allowed_runtime_roots = tuple(f"/{root}" for root in RUNTIME_ARCHIVE_ROOTS)
     bounded_runtime_library_paths: list[str] = []
     for value in runtime_library_paths:
         path = _string(value)
-        if not (
-            path
-            and len(path) <= 512
-            and path == posixpath.normpath(path)
-            and any(
-                path == root or path.startswith(root + "/")
-                for root in allowed_runtime_roots
-            )
-            and all(
-                character
-                in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
-                for character in path
-            )
-        ):
+        if not is_runtime_library_path(path):
             blockers.append("runtime_library_path_invalid")
             continue
         bounded_runtime_library_paths.append(path)
     bounded_runtime_library_paths = sorted(set(bounded_runtime_library_paths))
-    if len(bounded_runtime_library_paths) > 4096 or sum(
-        len(path) + 1 for path in bounded_runtime_library_paths
-    ) > 131072:
+    if (
+        len(bounded_runtime_library_paths) > 4096
+        or sum(len(path) + 1 for path in bounded_runtime_library_paths) > 131072
+    ):
         blockers.append("runtime_library_paths_bounds_invalid")
     manifest = {
         "schema_version": RUNTIME_BUNDLE_MANIFEST_SCHEMA_VERSION,
@@ -446,7 +451,9 @@ def runtime_bootstrap_shell_prefix() -> str:
     runtime_exports = "\n".join(
         f"export {key}={shlex.quote(value)}" for key, value in RUNTIME_CARRIER_ENV.items()
     )
-    script = runtime_exports + r"""
+    script = (
+        runtime_exports
+        + r"""
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_STARTED
 mkdir -p "$WORK_DIR/runtime_output"
 export BLUEPRINT_RUNPOD_CARRIER_BOOTSTRAP_RESULT="$WORK_DIR/runtime_output/runpod_carrier_runtime_bootstrap.json"
@@ -470,6 +477,7 @@ import ctypes
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import tarfile
 import posixpath
@@ -515,9 +523,8 @@ try:
                 path == root or path.startswith(root + "/")
                 for root in allowed_runtime_roots
             )
-            and all(
-                character
-                in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_+.-/"
+            and not any(
+                character in ":$" or ord(character) < 32 or ord(character) == 127
                 for character in path
             )
             for path in runtime_library_paths
@@ -622,7 +629,7 @@ try:
     os.environ["LD_LIBRARY_PATH"] = expanded_ld_library_path
     loader_env_path = result_path.parent / "runtime_loader_env.sh"
     loader_env_path.write_text(
-        "export LD_LIBRARY_PATH=" + json.dumps(expanded_ld_library_path) + "\n",
+        "export LD_LIBRARY_PATH=" + shlex.quote(expanded_ld_library_path) + "\n",
         encoding="utf-8",
     )
     for soname in driver_sonames:
@@ -751,4 +758,5 @@ export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar
 export BLUEPRINT_OSCAR_WAM_CHECKPOINT="$BLUEPRINT_MODEL_CACHE_ROOT/oscar"
 echo BLUEPRINT_RUNPOD_CARRIER_RUNTIME_BOOTSTRAP_READY
 """
+    )
     return script

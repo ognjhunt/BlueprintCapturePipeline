@@ -633,7 +633,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
 def test_runtime_carrier_validation_reports_library_path_evidence_failure_precisely(
     tmp_path: Path,
 ) -> None:
-    class UnsafeLibraryPathDocker(FakeDocker):
+    class ColonLibraryPathDocker(FakeDocker):
         def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
             command = list(argv)
             if command[1] == "run" and CARRIER_REF in command and "elf_count" in command[-1]:
@@ -641,7 +641,7 @@ def test_runtime_carrier_validation_reports_library_path_evidence_failure_precis
                 return SimpleNamespace(
                     stdout=(
                         "BLUEPRINT_ELF_AUDIT_COUNT count=4345\n"
-                        "BLUEPRINT_ARCHIVED_LIBRARY_PATH /opt/oscar-venv/lib bad\n"
+                        "BLUEPRINT_ARCHIVED_LIBRARY_PATH /opt/oscar-venv/lib:bad\n"
                         "BLUEPRINT_ELF_ARCHIVED_LIBRARY_PATH_COUNT count=1\n"
                         "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=4345\n"
                     )
@@ -650,7 +650,7 @@ def test_runtime_carrier_validation_reports_library_path_evidence_failure_precis
 
     with pytest.raises(executor.RuntimeCarrierValidationError) as raised:
         executor._validate_runtime_inside_carrier(
-            UnsafeLibraryPathDocker(),
+            ColonLibraryPathDocker(),
             source_ref=SOURCE_REF,
             carrier_ref=CARRIER_REF,
             payload_root=tmp_path,
@@ -670,6 +670,36 @@ def test_runtime_carrier_validation_reports_library_path_evidence_failure_precis
     }
     assert "stdout" not in json.dumps(raised.value.evidence)
     assert "stderr" not in json.dumps(raised.value.evidence)
+
+
+def test_runtime_carrier_validation_accepts_shell_quotable_library_paths(tmp_path: Path) -> None:
+    special_path = "/opt/oscar-venv/lib @vendor/[compat]"
+
+    class ShellQuotableLibraryPathDocker(FakeDocker):
+        def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
+            command = list(argv)
+            if command[1] == "run" and CARRIER_REF in command and "elf_count" in command[-1]:
+                self.calls.append(command)
+                return SimpleNamespace(
+                    stdout=(
+                        "BLUEPRINT_ELF_AUDIT_COUNT count=4345\n"
+                        f"BLUEPRINT_ARCHIVED_LIBRARY_PATH {special_path}\n"
+                        "BLUEPRINT_ELF_ARCHIVED_LIBRARY_PATH_COUNT count=1\n"
+                        "BLUEPRINT_ALL_ARCHIVED_ELF_LINKAGE_OK count=4345\n"
+                    )
+                )
+            return super().__call__(argv, **kwargs)
+
+    evidence = executor._validate_runtime_inside_carrier(
+        ShellQuotableLibraryPathDocker(),
+        source_ref=SOURCE_REF,
+        carrier_ref=CARRIER_REF,
+        payload_root=tmp_path,
+    )
+
+    assert evidence["status"] == "passed"
+    assert evidence["archived_elf_file_count"] == 4345
+    assert evidence["runtime_library_paths"] == [special_path]
 
 
 def test_runtime_carrier_validation_diagnostics_allowlist_only_missing_dependencies() -> None:

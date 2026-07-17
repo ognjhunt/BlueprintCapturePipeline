@@ -16,6 +16,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     canonical_json_sha256,
     is_nvidia_driver_soname,
     is_nvidia_driver_system_path,
+    is_runtime_library_path,
     runtime_bootstrap_shell_prefix,
     verify_carrier_volume_admission,
     verify_runtime_source_release_evidence,
@@ -24,6 +25,22 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
 
 SOURCE_REF = "docker.io/blueprint/release@sha256:" + "1" * 64
 CARRIER_REF = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:" + "2" * 64
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    (
+        ("/opt/oscar-venv/lib @vendor/[compat]", True),
+        ("/isaac-sim/kit/lib[compat]", True),
+        ("/opt/oscar-venv/lib/$ORIGIN", False),
+        ("/opt/oscar-venv/lib:other", False),
+        ("/opt/oscar-venv/lib\nother", False),
+        ("/opt/oscar-venv/../private", False),
+        ("/usr/local/lib", False),
+    ),
+)
+def test_runtime_library_path_accepts_shell_quoted_paths_only(path: str, expected: bool) -> None:
+    assert is_runtime_library_path(path) is expected
 
 
 def _admission() -> dict:
@@ -128,9 +145,7 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
         ),
         generated_at="2026-07-15T12:00:00Z",
         gpu_driver_deferred_sonames=("libnvidia-ml.so.1", "libcuda.so.1"),
-        gpu_driver_deferred_system_paths=(
-            "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
-        ),
+        gpu_driver_deferred_system_paths=("/usr/lib/x86_64-linux-gnu/libcuda.so.1",),
         runtime_library_paths=(
             "/opt/oscar-venv/lib",
             "/isaac-sim/kit/lib",
@@ -195,10 +210,7 @@ def test_runtime_manifest_requires_digest_pinned_source_and_carrier() -> None:
         gpu_driver_deferred_system_paths=("/opt/private/libcuda.so.1",),
     )
     assert blocked_system_path["status"] == "blocked"
-    assert (
-        "runtime_gpu_driver_deferred_system_path_invalid"
-        in blocked_system_path["blockers"]
-    )
+    assert "runtime_gpu_driver_deferred_system_path_invalid" in blocked_system_path["blockers"]
 
 
 @pytest.mark.parametrize(
@@ -307,11 +319,10 @@ def test_runtime_bootstrap_is_hash_gated_path_safe_and_observable() -> None:
     assert "runtime_manifest_library_paths_invalid" in script
     assert 'os.environ["LD_LIBRARY_PATH"] = expanded_ld_library_path' in script
     assert '. "$WORK_DIR/runtime_output/runtime_loader_env.sh"' in script
-    assert 'export PYTHONPATH=/opt/wbc:/opt/OSCAR' in script
+    assert "export PYTHONPATH=/opt/wbc:/opt/OSCAR" in script
     assert (
         "export LD_LIBRARY_PATH=/opt/wbc/gear_sonic_deploy/thirdparty_runtime/lib:"
-        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
-        in script
+        "/opt/onnxruntime/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu" in script
     )
     assert "runtime_archive_member_outside_allowlist" in script
     assert "runtime_archive_link_outside_allowlist" in script
