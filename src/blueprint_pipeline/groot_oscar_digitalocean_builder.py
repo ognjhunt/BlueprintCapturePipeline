@@ -977,6 +977,12 @@ def _ssh_options(*, private_key: Path, known_hosts: Path) -> list[str]:
         f"UserKnownHostsFile={known_hosts}",
         "-o",
         "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=20",
+        "-o",
+        "TCPKeepAlive=yes",
     ]
 
 

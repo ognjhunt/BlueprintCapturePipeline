@@ -13,6 +13,7 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     _delete_with_fail_closed_evidence,
     _list_droplets_by_tag,
     _reconcile_ambiguous_create,
+    _ssh_options,
     build_cloud_init,
     build_droplet_payload,
     known_hosts_line,
@@ -25,6 +26,17 @@ from blueprint_pipeline.groot_oscar_digitalocean_builder import (
     validate_remote_build_results,
     verify_packet_tarball,
 )
+
+
+def test_builder_ssh_options_keep_silent_remote_builds_alive(tmp_path: Path) -> None:
+    options = _ssh_options(
+        private_key=tmp_path / "login-key",
+        known_hosts=tmp_path / "known-hosts",
+    )
+
+    assert "ServerAliveInterval=30" in options
+    assert "ServerAliveCountMax=20" in options
+    assert "TCPKeepAlive=yes" in options
 
 
 def test_builder_inventory_follows_every_tag_filtered_page(monkeypatch) -> None:
