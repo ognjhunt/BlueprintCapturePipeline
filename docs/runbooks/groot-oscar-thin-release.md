@@ -188,6 +188,12 @@ Before upload, the CPU builder scans every ELF file across all declared runtime
 roots for unresolved linkage inside the exact carrier. It also runs GR00T,
 OSCAR, Isaac, and serverless import matrices and records every failed check in
 one compatibility audit instead of stopping at the first missing dependency.
+The same exhaustive scan first records the unresolved-linkage baseline inside
+the exact digest-pinned source release. An unresolved dependency may remain in
+the extracted carrier only when the exact source release already shipped that
+same unresolved name; this inherited baseline is recorded separately and does
+not prove the optional component usable. Any carrier-introduced dependency gap
+still blocks, and all required import and executable checks remain mandatory.
 NVIDIA host-driver SONAMEs such as `libcuda.so.1` are the only deferred linkage
 class. The CPU audit records their exact names and, when `ldd` supplied an
 absolute path under an allowlisted system-driver root, the normalized exact
