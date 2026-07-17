@@ -184,7 +184,20 @@ def build_evaluation_substrate_registry(*, generated_at: str | None = None) -> D
             "adapter_id": "deepinfra_cosmos3_nano_api",
             "provider_command_env": "BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND",
             "api_gate_env": "BLUEPRINT_ALLOW_DEEPINFRA_API_CALLS",
+            # R115: DeepInfra is the DEFAULT hosted provider, not the only one — the
+            # cosmos3 backbone is swappable across providers via the --provider flag on
+            # the command_surface (each provider carries its own api gate env). The
+            # oscar WAM provider command adapter accepts deepinfra/runpod/vast, so name
+            # the default and the supported set here to keep world-model backends
+            # swappable rather than pinning a single hosted provider in the registry.
+            "provider_backend_swappable": True,
+            "default_provider": "deepinfra",
+            "supported_providers": ["deepinfra", "runpod", "vast"],
             "command_surface": (
+                "blueprint-run-oscar-wam-provider-command-adapter "
+                "--provider <deepinfra|runpod|vast> --allow-paid-provider-launch"
+            ),
+            "command_surface_default_provider_example": (
                 "blueprint-run-oscar-wam-provider-command-adapter "
                 "--provider deepinfra --allow-paid-provider-launch"
             ),

@@ -44,6 +44,12 @@ def test_evaluation_substrate_registry_preserves_wam_and_sim_aliases(tmp_path: P
     assert registry["entries"]["cosmos3_wam"]["backbone"] == "Cosmos3-Nano"
     assert registry["entries"]["cosmos3_wam"]["model_id"] == "nvidia/Cosmos3-Nano"
     assert registry["entries"]["cosmos3_wam"]["adapter_id"] == "deepinfra_cosmos3_nano_api"
+    # R115: DeepInfra is the DEFAULT provider; the cosmos3 backbone stays swappable.
+    cosmos3 = registry["entries"]["cosmos3_wam"]
+    assert cosmos3["provider_backend_swappable"] is True
+    assert cosmos3["default_provider"] == "deepinfra"
+    assert set(cosmos3["supported_providers"]) == {"deepinfra", "runpod", "vast"}
+    assert "<deepinfra|runpod|vast>" in cosmos3["command_surface"]
     assert registry["entries"]["classical_sim_mujoco"]["family"] == "classical_simulation"
     assert registry["contract"]["generated_rollouts_are_model_derived_support_artifacts"] is True
     assert registry["contract"]["deterministic_fixture_is_not_learned_model_backend"] is True
