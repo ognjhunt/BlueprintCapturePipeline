@@ -31,6 +31,8 @@ class FakeDocker:
         fail_validation_text: str = "",
         deferred_driver_sonames: tuple[str, ...] = (),
         deferred_driver_system_paths: tuple[str, ...] = (),
+        source_baseline_sonames: tuple[str, ...] = (),
+        source_baseline_dependency_hexes: tuple[str, ...] = (),
     ) -> None:
         self.calls: list[list[str]] = []
         self.verify_digest = verify_digest
@@ -38,6 +40,8 @@ class FakeDocker:
         self.fail_validation_text = fail_validation_text
         self.deferred_driver_sonames = deferred_driver_sonames
         self.deferred_driver_system_paths = deferred_driver_system_paths
+        self.source_baseline_sonames = source_baseline_sonames
+        self.source_baseline_dependency_hexes = source_baseline_dependency_hexes
 
     def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -74,6 +78,27 @@ class FakeDocker:
         if command[1:3] == ["rm", "-f"]:
             return SimpleNamespace(stdout="")
         if command[1] == "run":
+            is_elf_scan = "elf_count" in command[-1]
+            is_source_baseline = SOURCE_REF in command
+            if (
+                is_elf_scan
+                and is_source_baseline
+                and (self.source_baseline_sonames or self.source_baseline_dependency_hexes)
+            ):
+                output = (
+                    "BLUEPRINT_ELF_AUDIT_COUNT count=42\n"
+                    + "".join(f"{soname} => not found\n" for soname in self.source_baseline_sonames)
+                    + "".join(
+                        "BLUEPRINT_VALIDATION_DIAGNOSTIC "
+                        f"elf_missing_dependency_hex_{dependency_hex}\n"
+                        for dependency_hex in self.source_baseline_dependency_hexes
+                    )
+                )
+                raise subprocess.CalledProcessError(
+                    returncode=91,
+                    cmd=command,
+                    output=output,
+                )
             if self.fail_validation_text and self.fail_validation_text in command[-1]:
                 raise subprocess.CalledProcessError(
                     returncode=1,
@@ -88,6 +113,14 @@ class FakeDocker:
                 + "".join(
                     f"BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH {system_path}\n"
                     for system_path in self.deferred_driver_system_paths
+                )
+                + "".join(
+                    f"BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_SONAME {soname}\n"
+                    for soname in self.source_baseline_sonames
+                )
+                + "".join(
+                    f"BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_DEPENDENCY_HEX {dependency_hex}\n"
+                    for dependency_hex in self.source_baseline_dependency_hexes
                 )
                 + "BLUEPRINT_ELF_AUDIT_COUNT count=42\n"
                 + "BLUEPRINT_ARCHIVED_LIBRARY_PATH /opt/oscar-venv/lib\n"
@@ -141,9 +174,7 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert result["carrier_validation"]["status"] == "passed_with_gpu_driver_deferred"
     assert result["carrier_validation"]["archived_elf_file_count"] == 42
     assert result["carrier_validation"]["runtime_library_path_count"] == 1
-    assert result["carrier_validation"]["runtime_library_paths"] == [
-        "/opt/oscar-venv/lib"
-    ]
+    assert result["carrier_validation"]["runtime_library_paths"] == ["/opt/oscar-venv/lib"]
     assert result["carrier_validation"]["gpu_driver_deferred_sonames"] == [
         "libcuda.so.1",
         "libnvidia-ml.so.1",
@@ -183,16 +214,16 @@ def test_prepare_runtime_bundle_copies_allowlist_and_builds_verified_tar(
     assert manifest["runtime_library_paths"] == ["/opt/oscar-venv/lib"]
     assert [call[:2] for call in docker.calls].count(["docker", "pull"]) == 2
     assert docker.calls[-1] == ["docker", "rm", "-f", "a" * 64]
-    carrier_runs = [call for call in docker.calls if call[1] == "run"]
+    source_runs = [call for call in docker.calls if call[1] == "run" and SOURCE_REF in call]
+    assert len(source_runs) == 1
+    carrier_runs = [call for call in docker.calls if call[1] == "run" and CARRIER_REF in call]
     assert len(carrier_runs) == 7
     assert all("--network" in call for call in carrier_runs)
     assert all("none" in call for call in carrier_runs)
     assert all("--env" in call for call in carrier_runs)
-    assert all(SOURCE_REF not in call for call in carrier_runs)
     assert all(CARRIER_REF in call for call in carrier_runs)
     assert all(
-        f"PYTHONPATH={executor.RUNTIME_CARRIER_ENV['PYTHONPATH']}" in call
-        for call in carrier_runs
+        f"PYTHONPATH={executor.RUNTIME_CARRIER_ENV['PYTHONPATH']}" in call for call in carrier_runs
     )
     base_ld_library_path = executor.RUNTIME_CARRIER_ENV["LD_LIBRARY_PATH"]
     assert f"LD_LIBRARY_PATH={base_ld_library_path}" in carrier_runs[0]
@@ -380,8 +411,10 @@ def test_runtime_carrier_validation_collects_all_failures_before_blocking(
     class MultiFailureDocker(FakeDocker):
         def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
             command = list(argv)
-            if command[1] == "run" and (
-                "elf_count" in command[-1] or "import carb; import isaacsim" in command[-1]
+            if (
+                command[1] == "run"
+                and CARRIER_REF in command
+                and ("elf_count" in command[-1] or "import carb; import isaacsim" in command[-1])
             ):
                 self.calls.append(command)
                 raise subprocess.CalledProcessError(returncode=1, cmd=command)
@@ -399,7 +432,7 @@ def test_runtime_carrier_validation_collects_all_failures_before_blocking(
     message = str(raised.value)
     assert "all_archived_elf_linkage" in message
     assert "isaac_bootstrap_import" in message
-    assert sum(call[1] == "run" for call in docker.calls) == 7
+    assert sum(call[1] == "run" for call in docker.calls) == 8
 
 
 def test_runtime_carrier_validation_preserves_structured_timeout_evidence(
@@ -408,7 +441,7 @@ def test_runtime_carrier_validation_preserves_structured_timeout_evidence(
     class TimeoutDocker(FakeDocker):
         def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
             command = list(argv)
-            if command[1] == "run" and "elf_count" in command[-1]:
+            if command[1] == "run" and CARRIER_REF in command and "elf_count" in command[-1]:
                 self.calls.append(command)
                 raise subprocess.TimeoutExpired(command, timeout=900)
             return super().__call__(argv, **kwargs)
@@ -416,6 +449,7 @@ def test_runtime_carrier_validation_preserves_structured_timeout_evidence(
     with pytest.raises(executor.RuntimeCarrierValidationError) as raised:
         executor._validate_runtime_inside_carrier(
             TimeoutDocker(),
+            source_ref=SOURCE_REF,
             carrier_ref=CARRIER_REF,
             payload_root=tmp_path,
         )
@@ -440,7 +474,7 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
     class MissingPathDocker(FakeDocker):
         def __call__(self, argv, **kwargs):  # type: ignore[no-untyped-def]
             command = list(argv)
-            if command[1] == "run" and "elf_count" in command[-1]:
+            if command[1] == "run" and CARRIER_REF in command and "elf_count" in command[-1]:
                 self.calls.append(command)
                 raise subprocess.CalledProcessError(
                     returncode=93,
@@ -458,6 +492,7 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
     with pytest.raises(executor.RuntimeCarrierValidationError) as raised:
         executor._validate_runtime_inside_carrier(
             MissingPathDocker(),
+            source_ref=SOURCE_REF,
             carrier_ref=CARRIER_REF,
             payload_root=tmp_path,
         )
@@ -472,6 +507,30 @@ def test_runtime_carrier_validation_preserves_failed_elf_count_and_safe_path_tok
     ]
     assert "stdout" not in json.dumps(evidence)
     assert "stderr" not in json.dumps(evidence)
+
+
+def test_runtime_carrier_validation_accepts_only_exact_source_baseline_gaps(
+    tmp_path: Path,
+) -> None:
+    dependency_hex = "41634462506f696e74436c6f75644f626a2e7478"
+    docker = FakeDocker(
+        source_baseline_sonames=("libavcodec.so.58",),
+        source_baseline_dependency_hexes=(dependency_hex,),
+    )
+
+    evidence = executor._validate_runtime_inside_carrier(
+        docker,
+        source_ref=SOURCE_REF,
+        carrier_ref=CARRIER_REF,
+        payload_root=tmp_path,
+    )
+
+    assert evidence["status"] == "passed_with_source_baseline_unresolved"
+    assert evidence["source_baseline_archived_elf_file_count"] == 42
+    assert evidence["source_baseline_unresolved_dependency_count"] == 2
+    assert evidence["inherited_source_baseline_unresolved_sonames"] == ["libavcodec.so.58"]
+    assert evidence["inherited_source_baseline_unresolved_dependency_hexes"] == [dependency_hex]
+    assert evidence["carrier_introduced_unresolved_dependency_count"] == 0
 
 
 def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
@@ -551,9 +610,7 @@ def test_embedded_elf_audit_classifies_every_missing_operand_without_raw_paths(
     assert f"MISSING_DEPENDENCY_HEX\t{'missing-runtime'.encode().hex()}" in rows
     invalid_hashes = [row for row in rows if row.startswith("INVALID_HASH\t")]
     assert len(invalid_hashes) == 4
-    invalid_diagnostics = [
-        row.split("\t", 1)[1].split("_", 1) for row in invalid_hashes
-    ]
+    invalid_diagnostics = [row.split("\t", 1)[1].split("_", 1) for row in invalid_hashes]
     assert all(len(digest) == 16 for digest, _shape in invalid_diagnostics)
     assert sorted(shape for _digest, shape in invalid_diagnostics) == sorted(
         [

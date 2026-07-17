@@ -317,7 +317,7 @@ def _validation_diagnostic_tokens(exc: BaseException) -> list[str]:
 
 
 def _validate_runtime_inside_carrier(
-    runner: Any, *, carrier_ref: str, payload_root: Path
+    runner: Any, *, source_ref: str, carrier_ref: str, payload_root: Path
 ) -> dict[str, Any]:
     validations = (
         (
@@ -330,6 +330,7 @@ scan="$(mktemp)"
 /opt/oscar-venv/bin/python - "$scan" <<'PY'
 import concurrent.futures
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -560,6 +561,43 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             else:
                 invalid_missing_hashes.add(value)
 
+try:
+    baseline_rows = json.loads(
+        os.environ.get("BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_JSON", "[]")
+    )
+except json.JSONDecodeError:
+    baseline_rows = None
+if not isinstance(baseline_rows, list) or len(baseline_rows) > 512:
+    audit_error_count += 1
+    baseline_rows = []
+baseline_sonames = set()
+baseline_dependency_hexes = set()
+for row in baseline_rows:
+    if not isinstance(row, str) or not 0 < len(row) <= 520:
+        audit_error_count += 1
+        continue
+    if row.startswith("soname:"):
+        value = row.removeprefix("soname:")
+        if 0 < len(value) <= 256 and ".so" in value and all(
+            character in allowed for character in value
+        ):
+            baseline_sonames.add(value)
+            continue
+    if row.startswith("hex:"):
+        value = row.removeprefix("hex:")
+        if (
+            0 < len(value) <= 96
+            and len(value) % 2 == 0
+            and all(character in "0123456789abcdef" for character in value)
+        ):
+            baseline_dependency_hexes.add(value)
+            continue
+    audit_error_count += 1
+inherited_sonames = missing_sonames & baseline_sonames
+inherited_dependency_hexes = missing_dependency_hexes & baseline_dependency_hexes
+missing_sonames.difference_update(inherited_sonames)
+missing_dependency_hexes.difference_update(inherited_dependency_hexes)
+
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(f"COUNT\t{len(elf_paths)}\n")
     handle.write(f"TIMEOUT\t{timeout_count}\n")
@@ -573,6 +611,10 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
         handle.write(f"MISSING\t{soname}\n")
     for dependency_hex in sorted(missing_dependency_hexes):
         handle.write(f"MISSING_DEPENDENCY_HEX\t{dependency_hex}\n")
+    for soname in sorted(inherited_sonames):
+        handle.write(f"SOURCE_BASELINE_SONAME\t{soname}\n")
+    for dependency_hex in sorted(inherited_dependency_hexes):
+        handle.write(f"SOURCE_BASELINE_DEPENDENCY_HEX\t{dependency_hex}\n")
     for path in sorted(missing_system_paths):
         handle.write(f"MISSING_SYSTEM_PATH\t{path}\n")
     for basename in sorted(missing_path_basenames):
@@ -617,6 +659,12 @@ while IFS=$'\t' read -r kind value; do
     MISSING_DEPENDENCY_HEX)
       printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_dependency_hex_%s\n' "$value"
       printf 'hex:%s => not found\n' "$value" >>"$missing"
+      ;;
+    SOURCE_BASELINE_SONAME)
+      printf 'BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_SONAME %s\n' "$value"
+      ;;
+    SOURCE_BASELINE_DEPENDENCY_HEX)
+      printf 'BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_DEPENDENCY_HEX %s\n' "$value"
       ;;
     INVALID_HASH)
       printf 'BLUEPRINT_VALIDATION_DIAGNOSTIC elf_missing_operand_%s\n' "$value"
@@ -723,8 +771,113 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
             300,
         ),
     )
-    carrier_env_argv = [
+    source_baseline_tokens: set[str] = set()
+    source_baseline_archived_elf_file_count = 0
+    source_baseline_script = validations[0][1]
+    source_env_argv = [
         item for key, value in RUNTIME_CARRIER_ENV.items() for item in ("--env", f"{key}={value}")
+    ]
+    try:
+        source_baseline = _run_command(
+            runner,
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                *source_env_argv,
+                "--entrypoint",
+                "/bin/bash",
+                source_ref,
+                "-o",
+                "pipefail",
+                "-c",
+                source_baseline_script,
+            ],
+            timeout=900,
+        )
+        source_baseline_text = source_baseline.stdout or ""
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != 91:
+            raise RuntimeCarrierValidationError(
+                failed_checks=["source_release_elf_baseline"],
+                evidence={
+                    "schema_version": "groot_oscar_runtime_carrier_compatibility_audit.v1",
+                    "status": "failed",
+                    "failed_checks": ["source_release_elf_baseline"],
+                    "checks": [
+                        {
+                            "name": "source_release_elf_baseline",
+                            "status": "failed",
+                            "diagnostic_tokens": _validation_diagnostic_tokens(exc),
+                            "failure_kind": "process_error",
+                            "return_code": int(exc.returncode),
+                        }
+                    ],
+                    "raw_secret_values_recorded": False,
+                },
+            ) from exc
+        source_baseline_text = "\n".join(
+            value
+            for value in (getattr(exc, "stdout", ""), getattr(exc, "stderr", ""))
+            if isinstance(value, str)
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeCarrierValidationError(
+            failed_checks=["source_release_elf_baseline"],
+            evidence={
+                "schema_version": "groot_oscar_runtime_carrier_compatibility_audit.v1",
+                "status": "failed",
+                "failed_checks": ["source_release_elf_baseline"],
+                "checks": [
+                    {
+                        "name": "source_release_elf_baseline",
+                        "status": "failed",
+                        "diagnostic_tokens": [],
+                        "failure_kind": "timeout",
+                        "timeout_seconds": 900,
+                    }
+                ],
+                "raw_secret_values_recorded": False,
+            },
+        ) from exc
+    source_count_match = re.search(
+        r"BLUEPRINT_ELF_AUDIT_COUNT count=([1-9][0-9]*)", source_baseline_text
+    )
+    if source_count_match is None:
+        raise RuntimeCarrierValidationError(
+            failed_checks=["source_release_elf_baseline"],
+            evidence={
+                "schema_version": "groot_oscar_runtime_carrier_compatibility_audit.v1",
+                "status": "failed",
+                "failed_checks": ["source_release_elf_baseline"],
+                "checks": [
+                    {
+                        "name": "source_release_elf_baseline",
+                        "status": "failed",
+                        "diagnostic_tokens": ["elf_count_evidence_missing"],
+                    }
+                ],
+                "raw_secret_values_recorded": False,
+            },
+        )
+    source_baseline_archived_elf_file_count = int(source_count_match.group(1))
+    source_baseline_tokens.update(
+        f"soname:{token}" for token in _missing_soname_tokens(source_baseline_text)
+    )
+    for token in _VALIDATION_DIAGNOSTIC_MARKER.findall(source_baseline_text):
+        prefix = "elf_missing_dependency_hex_"
+        if token.startswith(prefix):
+            source_baseline_tokens.add("hex:" + token.removeprefix(prefix))
+    if len(source_baseline_tokens) > 512:
+        raise RuntimeError("typed_runtime_source_baseline_dependency_inventory_too_large")
+    carrier_env = dict(RUNTIME_CARRIER_ENV)
+    carrier_env["BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_JSON"] = json.dumps(
+        sorted(source_baseline_tokens), separators=(",", ":")
+    )
+    carrier_env_argv = [
+        item for key, value in carrier_env.items() for item in ("--env", f"{key}={value}")
     ]
     failed_checks: list[str] = []
     checks: list[dict[str, Any]] = []
@@ -732,6 +885,8 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
     runtime_library_paths: list[str] = []
     gpu_driver_deferred_sonames: set[str] = set()
     gpu_driver_deferred_system_paths: set[str] = set()
+    inherited_source_baseline_sonames: set[str] = set()
+    inherited_source_baseline_dependency_hexes: set[str] = set()
     for check_name, validation, timeout_seconds in validations:
         try:
             completed = _run_command(
@@ -792,8 +947,7 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 if (
                     match is None
                     or library_path_count_match is None
-                    or int(library_path_count_match.group(1))
-                    != len(candidate_library_paths)
+                    or int(library_path_count_match.group(1)) != len(candidate_library_paths)
                     or not paths_valid
                 ):
                     failed_checks.append(check_name)
@@ -809,9 +963,7 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 runtime_library_paths = candidate_library_paths
                 expanded_runtime_env = dict(RUNTIME_CARRIER_ENV)
                 if runtime_library_paths:
-                    expanded_runtime_env["LD_LIBRARY_PATH"] += ":" + ":".join(
-                        runtime_library_paths
-                    )
+                    expanded_runtime_env["LD_LIBRARY_PATH"] += ":" + ":".join(runtime_library_paths)
                 carrier_env_argv = [
                     item
                     for key, value in expanded_runtime_env.items()
@@ -822,6 +974,18 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
                 for line in (completed.stdout or "").splitlines():
                     marker = "BLUEPRINT_GPU_DRIVER_DEFERRED_SONAME "
                     system_path_marker = "BLUEPRINT_GPU_DRIVER_DEFERRED_SYSTEM_PATH "
+                    baseline_soname_marker = "BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_SONAME "
+                    baseline_hex_marker = "BLUEPRINT_SOURCE_BASELINE_UNRESOLVED_DEPENDENCY_HEX "
+                    if line.startswith(baseline_soname_marker):
+                        inherited_source_baseline_sonames.add(
+                            line.removeprefix(baseline_soname_marker).strip()
+                        )
+                        continue
+                    if line.startswith(baseline_hex_marker):
+                        inherited_source_baseline_dependency_hexes.add(
+                            line.removeprefix(baseline_hex_marker).strip()
+                        )
+                        continue
                     if line.startswith(system_path_marker):
                         system_path = line.removeprefix(system_path_marker).strip()
                         if not is_nvidia_driver_system_path(system_path):
@@ -922,7 +1086,25 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
         "status": (
             "failed"
             if failed_checks
-            else ("passed_with_gpu_driver_deferred" if gpu_driver_deferred_sonames else "passed")
+            else (
+                "passed_with_deferred_dependencies"
+                if gpu_driver_deferred_sonames
+                and (
+                    inherited_source_baseline_sonames or inherited_source_baseline_dependency_hexes
+                )
+                else (
+                    "passed_with_gpu_driver_deferred"
+                    if gpu_driver_deferred_sonames
+                    else (
+                        "passed_with_source_baseline_unresolved"
+                        if (
+                            inherited_source_baseline_sonames
+                            or inherited_source_baseline_dependency_hexes
+                        )
+                        else "passed"
+                    )
+                )
+            )
         ),
         "failed_checks": failed_checks,
         "checks": checks,
@@ -936,11 +1118,20 @@ printf 'BLUEPRINT_ISAAC_CORE_EXTENSION_INVENTORY_OK root=%s\n' "$prims_root"
         "gpu_driver_system_path_resolution_required_at_bootstrap": bool(
             gpu_driver_deferred_system_paths
         ),
+        "source_baseline_archived_elf_file_count": source_baseline_archived_elf_file_count,
+        "source_baseline_unresolved_dependency_count": len(source_baseline_tokens),
+        "inherited_source_baseline_unresolved_sonames": sorted(inherited_source_baseline_sonames),
+        "inherited_source_baseline_unresolved_dependency_hexes": sorted(
+            inherited_source_baseline_dependency_hexes
+        ),
+        "carrier_introduced_unresolved_dependency_count": 0 if not failed_checks else None,
         "all_failures_collected_before_blocking": True,
         "claim_boundary": (
             "This validates every archived ELF under the exact bounded runtime library path "
             "set that is persisted into the runtime manifest and exported at bootstrap, plus "
             "CPU-safe imports and required Isaac extension inventory inside the exact carrier. "
+            "Source-baseline unresolved dependencies are inherited from the exact source "
+            "image and do not prove the affected optional component usable. "
             "It does not prove GPU, "
             "CUDA-driver, initialized Isaac extensions, Isaac rendering, policy execution, "
             "artifact completion, or semantic task success."
@@ -1051,7 +1242,10 @@ def prepare_runtime_bundle(
             raise RuntimeError("typed_runtime_bundle_payload_tree_unsafe")
         record_progress("validating_runtime_inside_carrier")
         carrier_validation = _validate_runtime_inside_carrier(
-            runner, carrier_ref=carrier_ref, payload_root=payload_root
+            runner,
+            source_ref=source_ref,
+            carrier_ref=carrier_ref,
+            payload_root=payload_root,
         )
         record_progress("archiving_runtime_bundle")
         archive_path = runtime_root / Path(DEFAULT_RUNTIME_ARCHIVE_PATH).name
@@ -1140,6 +1334,8 @@ def prepare_runtime_bundle(
             "models_supplied_only_by_verified_external_cache": True,
             "runtime_imports_and_wbc_linkage_verified_in_exact_carrier": not bool(
                 carrier_validation["gpu_driver_deferred_sonames"]
+                or carrier_validation["inherited_source_baseline_unresolved_sonames"]
+                or carrier_validation["inherited_source_baseline_unresolved_dependency_hexes"]
             ),
             "runtime_cpu_compatible_with_gpu_driver_deferred_linkage": True,
             "gpu_driver_deferred_resolution_unproven": bool(
