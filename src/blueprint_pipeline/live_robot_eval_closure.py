@@ -378,6 +378,118 @@ def _boolish(value: Any) -> bool:
     return _string(value).lower() in {"1", "true", "yes", "on", "passed", "success", "succeeded"}
 
 
+# ---------------------------------------------------------------------------
+# R026: buyer-facing claim ceiling + blocked-claim launch guard.
+#
+# The closure fails closed — simulator_execution_proven / robot_policy_execution_proven
+# / public_claim_upgrade_allowed are False by default. The honest beta deliverable is a
+# sim/review-grade eval, NOT executed live simulation or executed robot policy. These
+# helpers pin the buyer-facing claim ceiling to what the closure can actually prove and
+# let a launch gate fail closed if buyer/report copy asserts a claim above that ceiling.
+# ---------------------------------------------------------------------------
+
+HIGHEST_TRUTHFUL_CLAIM_WHEN_BLOCKED = (
+    "sim_and_review_grade_eval_no_executed_simulation_or_policy"
+)
+HIGHEST_TRUTHFUL_CLAIM_WHEN_PROVEN = "executed_simulation_and_policy_eval"
+
+# Buyer-facing / report phrases that assert a proof the closure has NOT established.
+# Matched case-insensitively as substrings; each maps to the proof-boundary key that
+# would have to be True (together with public_claim_upgrade_allowed) before the phrase
+# is honest for the beta's 100 users.
+_BLOCKED_CLAIM_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "simulator_execution_proven",
+        (
+            "live simulator execution",
+            "live simulation execution",
+            "executed in the simulator",
+            "executed in simulation",
+            "ran the live simulation",
+            "ran live simulation",
+            "live-simulated",
+        ),
+    ),
+    (
+        "robot_policy_execution_proven",
+        (
+            "live policy execution",
+            "executed the policy",
+            "executed the robot policy",
+            "policy was executed",
+            "robot executed the task",
+            "executed policy on a real robot",
+        ),
+    ),
+    (
+        "rank_fidelity_result_proven",
+        (
+            "rank fidelity proven",
+            "rank fidelity validated",
+            "rank fidelity confirmed",
+        ),
+    ),
+)
+
+
+def highest_truthful_claim(claim_boundary: Mapping[str, Any] = CLAIM_BOUNDARY) -> str:
+    """The strongest buyer-facing claim the closure can honestly support (R026).
+
+    Returns the executed-eval ceiling only when simulator + policy execution are proven
+    AND public claim upgrade is allowed; otherwise the sim/review-grade ceiling.
+    """
+    boundary = _mapping(claim_boundary)
+    if (
+        _boolish(boundary.get("simulator_execution_proven"))
+        and _boolish(boundary.get("robot_policy_execution_proven"))
+        and _boolish(boundary.get("public_claim_upgrade_allowed"))
+    ):
+        return HIGHEST_TRUTHFUL_CLAIM_WHEN_PROVEN
+    return HIGHEST_TRUTHFUL_CLAIM_WHEN_BLOCKED
+
+
+def blocked_public_claim_violations(
+    text: Any, claim_boundary: Mapping[str, Any] = CLAIM_BOUNDARY
+) -> List[Dict[str, str]]:
+    """Return buyer-copy phrases that assert a proof the closure has not established.
+
+    A phrase is a violation when it asserts an execution/fidelity proof whose boundary
+    key is False, or when public_claim_upgrade_allowed is False (the beta default) — the
+    mechanism that pins buyer copy to :func:`highest_truthful_claim`.
+    """
+    boundary = _mapping(claim_boundary)
+    haystack = _string(text).lower()
+    if not haystack:
+        return []
+    upgrade_allowed = _boolish(boundary.get("public_claim_upgrade_allowed"))
+    violations: List[Dict[str, str]] = []
+    for proof_key, phrases in _BLOCKED_CLAIM_PHRASES:
+        if _boolish(boundary.get(proof_key)) and upgrade_allowed:
+            continue
+        for phrase in phrases:
+            if phrase in haystack:
+                violations.append({"proof_key": proof_key, "claim_phrase": phrase})
+    return violations
+
+
+def assert_no_blocked_public_claims(
+    copy_documents: Iterable[tuple[str, Any]],
+    claim_boundary: Mapping[str, Any] = CLAIM_BOUNDARY,
+) -> List[Dict[str, str]]:
+    """Aggregate blocked-claim violations across labeled buyer/report copy documents.
+
+    A launch gate must FAIL when this returns a non-empty list: buyer-facing or report
+    copy is asserting live simulator/policy execution (or rank fidelity) while the
+    closure's proof gates are blocked. Returns ``[]`` when all copy sits at or below the
+    closure's highest_truthful_claim.
+    """
+    violations: List[Dict[str, str]] = []
+    for label, text in copy_documents:
+        for violation in blocked_public_claim_violations(text, claim_boundary):
+            violations.append({**violation, "document": _string(label)})
+    return violations
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -4682,6 +4794,13 @@ def build_live_robot_eval_closure_manifest(
         "evidence_sources": evidence_sources,
         "proof_boundary": proof_boundary,
         "claim_boundary": dict(CLAIM_BOUNDARY),
+        # R026: the strongest buyer-facing claim this closure can honestly support,
+        # derived from the runtime proof state (falls back to the fail-closed default).
+        # Buyer/report copy must be pinned to this ceiling; assert_no_blocked_public_claims
+        # fails a launch gate when copy asserts live simulator/policy execution above it.
+        "highest_truthful_claim": highest_truthful_claim(
+            {**dict(CLAIM_BOUNDARY), **_mapping(proof_boundary)}
+        ),
     }
     path = Path(output_path) if output_path else resolved_job_dir / "live_eval_closure_manifest.json"
     ensure_dir(path.parent)
