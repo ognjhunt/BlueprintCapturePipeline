@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -168,6 +169,7 @@ class FakeS3:
         self.multipart_list_kwargs: list[dict[str, object]] = []
         self.upload_configs: list[object] = []
         self.head_calls = 0
+        self.get_calls = 0
 
     def list_buckets(self):  # type: ignore[no-untyped-def]
         return {"Buckets": [{"Name": "volume-1"}]}
@@ -223,11 +225,12 @@ class FakeS3:
         self.abort_calls += 1
         self.visible_multipart_uploads = max(0, self.visible_multipart_uploads - 1)
 
-    def download_file(self, bucket: str, key: str, path: str) -> None:
-        payload = self.objects[(bucket, key)]
-        if self.corrupt_download and key.endswith("config.json"):
+    def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        self.get_calls += 1
+        payload = self.objects[(Bucket, Key)]
+        if self.corrupt_download and Key.endswith("config.json"):
             payload += b"corrupt"
-        Path(path).write_bytes(payload)
+        return {"Body": BytesIO(payload)}
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
         self.head_calls += 1
@@ -925,6 +928,26 @@ def test_corrupt_redownload_fails_closed(tmp_path: Path) -> None:
     assert result["error_type"] == "RuntimeError"
     assert result["gpu_compute_allocated"] is False
     assert result["partial_upload_cleanup_verified"] is True
+
+
+def test_full_redownload_uses_get_object_without_head(tmp_path: Path) -> None:
+    access, secret = _credentials(tmp_path)
+    client = FakeS3()
+    result = upload_and_verify_model_cache(
+        cache_root=_cache(tmp_path),
+        verification_root=tmp_path / "redownload",
+        volume_id="volume-1",
+        data_center_id="US-WA-1",
+        access_key_file=access,
+        secret_key_file=secret,
+        volume_evidence=_volume_evidence(),
+        allocation_nonce=ALLOCATION_NONCE,
+        client=client,
+        paid_resource_admission_grant=_grant(),
+    )
+    assert result["status"] == "completed"
+    assert client.get_calls == result["remote_object_count"]
+    assert client.head_calls == 0
 
 
 @pytest.mark.parametrize(

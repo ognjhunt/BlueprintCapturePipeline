@@ -61,6 +61,27 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stream_get_object_to_file(
+    client: Any,
+    *,
+    volume_id: str,
+    key: str,
+    destination: Path,
+) -> None:
+    """Redownload an object without requiring RunPod's unsupported HEAD API."""
+
+    response = client.get_object(Bucket=volume_id, Key=key)
+    body = response["Body"]
+    try:
+        with destination.open("wb") as handle:
+            for chunk in iter(lambda: body.read(8 * 1024 * 1024), b""):
+                handle.write(chunk)
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+
+
 class _TransportExecutionCapability:
     __slots__ = ("_consumed", "_issuer", "_lock")
 
@@ -863,7 +884,12 @@ def _upload_and_verify_model_cache_impl(
             relative = key.removeprefix(prefix + "/")
             destination = verification / relative
             ensure_dir(destination.parent)
-            s3.download_file(volume, key, str(destination))
+            _stream_get_object_to_file(
+                s3,
+                volume_id=volume,
+                key=key,
+                destination=destination,
+            )
         remote = verify_model_cache(
             verification,
             expected_manifest_digest=str(local["model_manifest_digest"]),
