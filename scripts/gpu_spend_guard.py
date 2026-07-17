@@ -68,8 +68,14 @@ VAST_TERMINAL_STATUSES = frozenset(
 # RunPod desired-states that mean the pod is no longer a live compute allocation.
 RUNPOD_TERMINAL_STATUSES = frozenset({"EXITED", "TERMINATED", "TERMINATING"})
 RUNPOD_STOPPED_STATUSES = frozenset({"STOPPED", "PAUSED"})
-# Keep this local so the standalone guard does not import render-job modules while running as a
-# cost watchdog. Source of truth: isaac_particlefield_render_job.DEFAULT_WARM_CANDIDATES.
+# R107: fail-safe FALLBACK only. Warm-worker protection is derived at runtime from
+# the live ``warm_serve_pod.json`` markers scanned by find_expected_serve_pod_ids
+# (the single source of truth). This static id set is consulted ONLY when no live
+# markers are discoverable at all (e.g. output roots temporarily unavailable), so a
+# transient marker-scan gap cannot make warm pods reapable. It is kept local because
+# the standalone guard must not import render-job modules while running as a cost
+# watchdog; it mirrors isaac_particlefield_render_job.DEFAULT_WARM_CANDIDATES but is
+# no longer an always-on allowlist that silently drifts from live serving state.
 DEFAULT_WARM_CANDIDATE_IDS = frozenset(
     {
         "pwbu7wxsvxpr0x",
@@ -82,6 +88,21 @@ DEFAULT_WARM_CANDIDATE_IDS = frozenset(
         "usjvua1bwlwhyj",
     }
 )
+
+
+def warm_protected_ids(serve_pod_ids: set[str]) -> set[str]:
+    """Warm-worker protection derived from LIVE ``warm_serve_pod.json`` markers.
+
+    Live markers are the single source of truth (R107): when any are discoverable
+    they define exactly which warm pods are protected. Only when the live-marker
+    scan yields nothing at all do we fall back to the last-known static
+    :data:`DEFAULT_WARM_CANDIDATE_IDS`, so a transient scan gap cannot make warm
+    pods reapable. This replaces the previous always-on hardcoded allowlist that
+    drifted from the render module's live warm set.
+    """
+    if serve_pod_ids:
+        return set(serve_pod_ids)
+    return set(DEFAULT_WARM_CANDIDATE_IDS)
 
 
 def _now() -> float:
@@ -540,13 +561,13 @@ def is_reapable(
       ``orphan_booted_max_age_seconds`` (a hard age ceiling; ``0`` disables this
       case, preserving the pre-R056 behavior of never reaping booted pods).
 
-    Protection is fail-safe toward *keep*: warm-candidate ids short-circuit to
-    ``False`` first, and ``protected_ids`` (live owning process + serving warm-serve
-    markers, unioned by :func:`main`) are honored before either reap path — so a
-    healthy warm-serve pod is never reaped even once booted-orphan reaping is on.
+    Protection is fail-safe toward *keep*: ``protected_ids`` (live owning process +
+    live warm-serve markers, unioned by :func:`main` via :func:`warm_protected_ids`,
+    which falls back to the static warm set only when no live markers are found) is
+    honored before either reap path — so a healthy warm-serve pod is never reaped
+    even once booted-orphan reaping is on. Warm protection is no longer a hardcoded
+    id allowlist inside this function (R107); it flows through ``protected_ids``.
     """
-    if inst.provider == "runpod" and inst.id in DEFAULT_WARM_CANDIDATE_IDS:
-        return False
     if inst.id in protected_ids:
         return False
     if not inst.live:
@@ -843,7 +864,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     roots = [Path(p) for p in (args.output_root or default_output_roots())]
     protected = find_protected_pod_ids(roots, process_cmdlines=list_process_cmdlines())
     serve_pods = find_expected_serve_pod_ids(roots)
-    protected = protected | serve_pods
+    protected = protected | warm_protected_ids(serve_pods)
 
     print(
         build_report(

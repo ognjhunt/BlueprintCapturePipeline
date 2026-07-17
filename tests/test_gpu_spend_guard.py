@@ -196,10 +196,22 @@ def test_protected_dud_is_never_reapable() -> None:
     assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids={"pod-owned"}) is False
 
 
-def test_default_warm_candidate_ids_are_never_reapable_without_owner_process() -> None:
+def test_warm_protected_ids_prefers_live_markers_and_falls_back_to_static() -> None:
+    # R107: live warm-serve markers are the single source of truth for warm
+    # protection; the static id set is used ONLY as a fail-safe when the live-marker
+    # scan yields nothing, so a transient scan gap cannot make warm pods reapable.
+    live = {"live-serve-1", "live-serve-2"}
+    assert guard.warm_protected_ids(live) == live
+    assert guard.warm_protected_ids(set()) == set(guard.DEFAULT_WARM_CANDIDATE_IDS)
+
+
+def test_warm_candidate_ids_are_never_reapable_when_in_protected_set() -> None:
+    # Warm protection now flows through protected_ids (main() unions it from
+    # warm_protected_ids) rather than a hardcoded allowlist inside is_reapable.
+    protected = set(guard.DEFAULT_WARM_CANDIDATE_IDS)
     for pod_id in guard.DEFAULT_WARM_CANDIDATE_IDS:
         inst = _runpod_inst(id=pod_id, booted=False, age_seconds=99999.0)
-        assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=set()) is False
+        assert guard.is_reapable(inst, max_boot_seconds=480, protected_ids=protected) is False
 
 
 # ------------------- R056: booted-orphan reap rules (careful) -------------------
@@ -281,13 +293,17 @@ def test_booted_warm_serve_protected_pod_is_never_reaped_even_when_old() -> None
 
 
 def test_booted_warm_candidate_id_is_never_reaped_even_when_old() -> None:
+    # R107: warm protection flows through protected_ids (populated by main() from
+    # live markers, or the static fallback when no live markers exist), so even a
+    # very old booted warm pod is never reaped while it is in the protected set.
+    protected = set(guard.DEFAULT_WARM_CANDIDATE_IDS)
     for pod_id in guard.DEFAULT_WARM_CANDIDATE_IDS:
         inst = _booted_inst(id=pod_id, age_seconds=999_999.0)
         assert (
             guard.is_reapable(
                 inst,
                 max_boot_seconds=480,
-                protected_ids=set(),
+                protected_ids=protected,
                 orphan_booted_max_age_seconds=21_600,
             )
             is False
