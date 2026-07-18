@@ -69,6 +69,7 @@ from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     require_paid_resource_admission,
 )
+from .qualification_control_admission import admit_qualification_control_mutation
 from .single_g1_kitchen_episode_runpod import (
     BUNDLE_SHA256,
     GPU_TYPES,
@@ -3739,6 +3740,7 @@ def _control(
     execute: bool,
     identity_file: str,
     tail_lines: int,
+    admission_out: str | Path | None,
 ) -> dict[str, Any]:
     result_path = Path(adapter_output).expanduser().resolve()
     manifest_path, manifest = _load_private_manifest(session_manifest)
@@ -3863,6 +3865,7 @@ def _control(
     )
     if action == "status" and (
         not bound_connection or not known_hosts_file or endpoint_changed_after_loading
+        or running_endpoint_trust_recovery
     ):
         (
             recovered_connection,
@@ -3939,6 +3942,10 @@ def _control(
         raise ValueError("qualification_session_known_hosts_missing")
     from .gpu_render_providers import run_vast_ssh_control
 
+    if remote_action in {"run", "restart", "stop"}:
+        admit_qualification_control_mutation(
+            admission_out, manifest, inspected, instance_id, remote_action, resolved_component
+        )
     control = run_vast_ssh_control(
         connection,
         action=remote_action,
@@ -4231,11 +4238,7 @@ def run_qualification_session(
             trained_checkpoint_path=trained_checkpoint_path,
         )
     if action == "teardown":
-        return _teardown(
-            session_manifest=session_manifest,
-            adapter_output=adapter_output,
-            execute=execute,
-        )
+        return _teardown(session_manifest=session_manifest, adapter_output=adapter_output, execute=execute)
     if action == "collect":
         return _collect(
             session_manifest=session_manifest,
@@ -4256,11 +4259,7 @@ def run_qualification_session(
             trained_checkpoint_path=trained_checkpoint_path,
         )
     return _control(
-        action=action,
-        component=component,
-        session_manifest=session_manifest,
-        adapter_output=adapter_output,
-        execute=execute,
-        identity_file=identity_file,
-        tail_lines=tail_lines,
+        action=action, component=component, session_manifest=session_manifest,
+        adapter_output=adapter_output, execute=execute, identity_file=identity_file,
+        tail_lines=tail_lines, admission_out=admission_out,
     )

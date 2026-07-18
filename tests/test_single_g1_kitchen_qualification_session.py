@@ -955,10 +955,22 @@ def test_control_revalidates_provider_and_dispatches_only_fixed_component(
     monkeypatch.setattr(qualification, "get_render_provider", lambda _name: Provider())
     monkeypatch.setattr(gpu_render_providers, "run_vast_ssh_control", fake_control)
 
+    with pytest.raises(ValueError, match="qualification_control_admission_out_missing"):
+        qualification.run_qualification_session(
+            action="restart-component",
+            component="controller",
+            session_manifest=manifest_path,
+            adapter_output=tmp_path / "blocked-result.json",
+            execute=True,
+        )
+    assert not observed
+
+    admission_out = tmp_path / "control-admission.json"
     result = qualification.run_qualification_session(
         action="restart-component",
         component="controller",
         session_manifest=manifest_path,
+        admission_out=admission_out,
         adapter_output=tmp_path / "result.json",
         execute=True,
     )
@@ -969,6 +981,11 @@ def test_control_revalidates_provider_and_dispatches_only_fixed_component(
     assert observed["component"] == "gear_sonic_controller"
     assert observed["known_hosts_file"] == str(tmp_path / "vast_ssh_known_hosts")
     assert "command" not in observed
+    admission = json.loads(admission_out.read_text(encoding="utf-8"))
+    assert admission["status"] == "admitted"
+    assert admission["fresh_control_admission"] is True
+    assert admission["action"] == "restart"
+    assert admission["component"] == "gear_sonic_controller"
     persisted = json.loads(manifest_path.read_text())
     assert persisted["continuing_spend"] is True
     assert persisted["last_control"]["component"] == "gear_sonic_controller"
@@ -1168,6 +1185,76 @@ def test_status_recovers_endpoint_change_after_loading_proxy_binding(
     )
 
 
+def test_status_recovers_running_endpoint_with_stale_root_host_key_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ssh_host_key"]["blockers"] = ["vast_ssh_existing_host_key_pin_invalid"]
+    qualification._private_write_json(manifest_path, manifest)
+    pin_path = tmp_path / gpu_render_providers.VAST_SSH_HOST_KEY_FINGERPRINT_NAME
+    qualification._private_write_json(
+        pin_path,
+        {"ssh_host": "ssh6.vast.ai", "ssh_port": 14060},
+    )
+    connection = {
+        "instance_id": "12345",
+        "ssh_host": "203.0.113.4",
+        "ssh_port": 22022,
+        "image_runtype": "ssh_direct",
+        "direct_port_ready": True,
+    }
+
+    class Provider:
+        def inspect(self, _instance_id: str) -> dict:
+            return {
+                "status": "observed",
+                "actual_status": "running",
+                "instance_id": "12345",
+                "name": qualification.NAME_PREFIX_ROOT + "0123456789-pod",
+                **connection,
+            }
+
+    recovered_host_key = {
+        "status": "enrolled",
+        "known_hosts_file": str(tmp_path / "vast_ssh_known_hosts"),
+        "fingerprint_artifact": str(pin_path),
+        "tofu_pinned": True,
+    }
+    wait_calls: list[dict] = []
+
+    def fake_wait(_provider, **kwargs):
+        wait_calls.append(kwargs)
+        return (
+            connection,
+            [{"actual_status": "running"}],
+            recovered_host_key,
+            {"status": "completed", "returncode": 0, "blockers": []},
+        )
+
+    monkeypatch.setattr(qualification, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(qualification, "_wait_for_qualification_attach", fake_wait)
+    monkeypatch.setattr(
+        gpu_render_providers,
+        "run_vast_ssh_control",
+        lambda _connection, **_kwargs: {
+            "status": "completed",
+            "stdout": "action=status component=episode state=stopped pids=",
+            "blockers": [],
+        },
+    )
+
+    result = qualification.run_qualification_session(
+        action="status",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "status.json",
+        execute=True,
+    )
+
+    assert result["status"] == "status_observed_continuing_spend"
+    assert wait_calls[0]["attempt_dir"] == tmp_path / "ssh_attach_running_endpoint"
+
+
 def test_episode_run_records_exact_attempt_and_requires_collection_before_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1210,6 +1297,7 @@ def test_episode_run_records_exact_attempt_and_requires_collection_before_rerun(
     first = qualification.run_qualification_session(
         action="run",
         session_manifest=manifest_path,
+        admission_out=tmp_path / "run-admission.json",
         adapter_output=tmp_path / "run.json",
         execute=True,
     )
@@ -1483,6 +1571,7 @@ def test_collected_terminal_blocked_attempt_allows_exact_next_rerun(
     rerun = qualification.run_qualification_session(
         action="run",
         session_manifest=manifest_path,
+        admission_out=tmp_path / "rerun-admission.json",
         adapter_output=tmp_path / "rerun.json",
         execute=True,
     )
