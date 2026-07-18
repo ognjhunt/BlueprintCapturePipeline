@@ -1053,8 +1053,7 @@ VAST_SSH_CONTROL_ACTIONS = (
 )
 VAST_SSH_CONTROL_COMPONENTS = (
     "bootstrap",
-    "groot_server",
-    "groot_microwave_finetune",
+    "groot_server", "groot_microwave_finetune",
     "gear_sonic_controller",
     "isaac_task_executor",
     "gear_sonic_isaac_dds_bridge",
