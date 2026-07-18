@@ -366,8 +366,12 @@ timeout --signal=TERM --kill-after=15s 180s \
   --output "$STARTUP_DIR/isaac_worker_runtime_preflight.json" \
   --require-nvidia-smi
 FAST_GATE_RC=$?
-BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS="${BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS:-240}" \
-timeout --signal=TERM --kill-after=15s 270s \
+# A40 cold RTX initialization is not reliably below four minutes: attempt 042
+# passed at 239.222s, while attempt 043 hit the old 240s internal deadline by
+# less than one second.  Keep the renderer bounded, but leave enough room for
+# the measured cold-start variance before classifying it as wedged.
+BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS="${BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS:-600}" \
+timeout --signal=TERM --kill-after=15s 630s \
   /isaac-sim/python.sh -m blueprint_pipeline.isaac_review_renderer_canary \
   --output-dir "$STARTUP_DIR/review" \
   --launch-session-id "$BLUEPRINT_LAUNCH_SESSION_ID" \

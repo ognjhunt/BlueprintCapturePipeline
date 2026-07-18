@@ -39,11 +39,11 @@ def test_same_allocation_isaac_startup_gates_are_bounded_and_fail_closed() -> No
         )
     )
     assert (
-        'BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS="${BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS:-240}"'
+        'BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS="${BLUEPRINT_REVIEW_CANARY_TIMEOUT_SECONDS:-600}"'
         in STARTUP_GATES_SCRIPT
     )
     second_timeout = STARTUP_GATES_SCRIPT.index(
-        "timeout --signal=TERM --kill-after=15s 270s"
+        "timeout --signal=TERM --kill-after=15s 630s"
     )
     assert second_timeout < STARTUP_GATES_SCRIPT.index(
         "blueprint_pipeline.isaac_review_renderer_canary"
@@ -56,6 +56,8 @@ def test_same_allocation_isaac_startup_gates_are_bounded_and_fail_closed() -> No
     assert "--require-nvidia-smi" in fast_command
     assert "--require-rtx-render" not in fast_command
     assert "review canary is the rendered-frame authority" in STARTUP_GATES_SCRIPT
+    assert "attempt 042" in STARTUP_GATES_SCRIPT
+    assert "239.222s" in STARTUP_GATES_SCRIPT
 
 
 def test_gear_sonic_readiness_exercises_exact_protocol_v4_action_state_boundary() -> None:
