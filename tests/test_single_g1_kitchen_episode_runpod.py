@@ -857,14 +857,14 @@ def test_qualification_checkpoint_restore_binds_ordered_parts_without_urls_in_ev
     assert "qualification_checkpoint_archive_digest_mismatch" in script
     assert script.index("destination.parent.mkdir") < script.index("tempfile.mkdtemp")
 
-    preflight = single_episode._qualification_checkpoint_preflight_script()
+    preflight = single_episode.qualification_checkpoint_preflight_script()
     assert (
         "export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT="
         + single_episode.REMOTE_FINAL_CHECKPOINT
     ) in preflight
     assert (
         "export BLUEPRINT_GROOT_CHECKPOINT_PREFLIGHT_ARTIFACT="
-        + single_episode.QUALIFICATION_CHECKPOINT_PREFLIGHT_ARTIFACT_PATH
+        "/workspace/closed_loop_out/qualification_checkpoint_preflight.json"
     ) in preflight
     assert "groot_sonic_checkpoint_preflight.v1" in preflight
     assert "pinned_get_backbone_cls_resolved" in preflight

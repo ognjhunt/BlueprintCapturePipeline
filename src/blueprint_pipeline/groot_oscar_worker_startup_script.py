@@ -1,5 +1,7 @@
 """Shell fragments for sealed GR00T+OSCAR worker startup."""
 
+import shlex
+
 GROOT_CHECKPOINT_PREFLIGHT_SCRIPT = r'''
 # The pinned GR00T N1.7 loader selects its backbone from the literal model_name
 # before it loads the nested model.  A plain local path is offline-safe but is
@@ -340,6 +342,27 @@ if [ "$GROOT_CHECKPOINT_PREFLIGHT_RC" -ne 0 ]; then
 fi
 upload_phase groot_checkpoint_preflight_passed
 '''
+
+
+def qualification_checkpoint_preflight_script() -> str:
+    """Normalize the restored microwave fine-tune before server startup.
+
+    The base worker preflights the sealed SONIC checkpoint before the ordered
+    fine-tune archive exists. Re-run that exact loader construction against the
+    restored checkpoint in a subshell so later worker phases retain the sealed
+    checkpoint as their default.
+    """
+
+    checkpoint = "/workspace/microwave_finetune/checkpoint-500"
+    artifact = "/workspace/closed_loop_out/qualification_checkpoint_preflight.json"
+    return f"""
+(
+export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT={shlex.quote(checkpoint)}
+export BLUEPRINT_GROOT_CHECKPOINT_PREFLIGHT_ARTIFACT={shlex.quote(artifact)}
+{GROOT_CHECKPOINT_PREFLIGHT_SCRIPT}
+)
+upload_phase qualification_checkpoint_preflight_passed
+"""
 
 STARTUP_GATES_SCRIPT = r'''
 # Prove the exact kitchen tree, Isaac/GPU runtime imports, and the real review
