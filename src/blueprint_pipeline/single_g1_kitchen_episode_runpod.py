@@ -39,8 +39,9 @@ from .groot_oscar_digitalocean_closed_loop_job import (
     build_launch_spec,
     build_worker_bootstrap_script,
 )
-from .groot_oscar_runpod_watchdog import arm_watchdog, terminate_canary_resources
 from .g1_microwave_groot_finetune_component import REMOTE_FINAL_CHECKPOINT
+from .groot_oscar_runpod_watchdog import arm_watchdog, terminate_canary_resources
+from .groot_oscar_worker_startup_script import GROOT_CHECKPOINT_PREFLIGHT_SCRIPT
 from .isaac_particlefield_render_job import watch_and_collect
 from .oscar_official_release import (
     OFFICIAL_OSCAR_SOURCE_COMMIT,
@@ -175,6 +176,9 @@ QUALIFICATION_CHECKPOINT_RESTORE_SCHEMA_VERSION = (
 )
 QUALIFICATION_CHECKPOINT_RESTORE_REPORT_PATH = (
     "/workspace/closed_loop_out/qualification_checkpoint_restore.json"
+)
+QUALIFICATION_CHECKPOINT_PREFLIGHT_ARTIFACT_PATH = (
+    "/workspace/closed_loop_out/qualification_checkpoint_preflight.json"
 )
 MAX_QUALIFICATION_CHECKPOINT_PARTS = 16
 SINGLE_EPISODE_PROGRESS_PHASES = (
@@ -2712,6 +2716,26 @@ upload_phase qualification_checkpoint_restored
 """
 
 
+def _qualification_checkpoint_preflight_script() -> str:
+    """Normalize and validate the restored fine-tune before server startup.
+
+    The base worker preflights the sealed SONIC checkpoint before the ordered
+    qualification archive is restored. The GR00T server is later redirected to
+    that restored checkpoint, so it needs the same offline selector binding and
+    exact loader construction. Keep the overrides inside a subshell so the
+    sealed checkpoint remains the default for every later worker phase.
+    """
+
+    return f"""
+(
+export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT={shlex.quote(REMOTE_FINAL_CHECKPOINT)}
+export BLUEPRINT_GROOT_CHECKPOINT_PREFLIGHT_ARTIFACT={shlex.quote(QUALIFICATION_CHECKPOINT_PREFLIGHT_ARTIFACT_PATH)}
+{GROOT_CHECKPOINT_PREFLIGHT_SCRIPT}
+)
+upload_phase qualification_checkpoint_preflight_passed
+"""
+
+
 def _resolve_microwave_task_contract(
     *,
     task_contract: Mapping[str, Any],
@@ -3328,6 +3352,7 @@ def _load_single_episode_inputs(
             "/workspace/attempt_input_manifest.json\n"
             + (
                 _qualification_checkpoint_restore_script(restore_evidence)
+                + _qualification_checkpoint_preflight_script()
                 if restore_evidence
                 else ""
             )
