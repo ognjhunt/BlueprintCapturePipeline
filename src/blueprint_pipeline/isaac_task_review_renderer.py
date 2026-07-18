@@ -1418,8 +1418,7 @@ class IsaacTaskReviewRenderer:
             if rgb.shape[:2] != (REVIEW_HEIGHT, REVIEW_WIDTH):
                 raise RuntimeError(f"review_renderer_{role}_resolution_mismatch")
             channel_stddev = [float(value) for value in rgb.std(axis=(0, 1))]
-            if max(channel_stddev, default=0.0) < 1.0:
-                raise RuntimeError(f"review_renderer_{role}_visual_signal_too_low")
+            non_uniform = max(channel_stddev, default=0.0) >= 1.0
             path = self.frames_dir / f"{role}_{step_index:04d}.png"
             self._heartbeat()
             Image.fromarray(rgb).save(path)
@@ -1436,9 +1435,12 @@ class IsaacTaskReviewRenderer:
                     "height": int(rgb.shape[0]),
                     "camera_contract": self.camera_contract(role),
                     "visual_signal": {
-                        "status": "completed",
+                        "status": "completed" if non_uniform else "blocked",
                         "rgb_channel_stddev": channel_stddev,
-                        "non_uniform": True,
+                        "non_uniform": non_uniform,
+                        "blockers": (
+                            [] if non_uniform else [f"review_renderer_{role}_visual_signal_too_low"]
+                        ),
                     },
                 }
             )

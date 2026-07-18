@@ -422,6 +422,10 @@ def test_render_refreshes_live_state_around_updates_and_frame_io(
             data[:, ::2, :3] = (220, 80, 30)
             return data
 
+    class UniformAnnotator:
+        def get_data(self):
+            return np.zeros((480, 640, 4), dtype=np.uint8)
+
     renderer = IsaacTaskReviewRenderer.__new__(IsaacTaskReviewRenderer)
     renderer.app = App()
     renderer.heartbeat_callback = lambda: events.append("heartbeat")
@@ -514,6 +518,16 @@ def test_render_refreshes_live_state_around_updates_and_frame_io(
                 "update",
                 "heartbeat",
             ]
+
+    renderer.annotators["robot_pov"] = UniformAnnotator()
+    degraded = renderer.capture_current(step_index=8)
+    robot_pov = next(row for row in degraded if row["camera_role"] == "robot_pov")
+    assert Path(robot_pov["path"]).is_file()
+    assert robot_pov["visual_signal"]["status"] == "blocked"
+    assert robot_pov["visual_signal"]["non_uniform"] is False
+    assert robot_pov["visual_signal"]["blockers"] == [
+        "review_renderer_robot_pov_visual_signal_too_low"
+    ]
 
 
 def test_follow_live_robot_reauthors_head_pov_from_each_live_pose(

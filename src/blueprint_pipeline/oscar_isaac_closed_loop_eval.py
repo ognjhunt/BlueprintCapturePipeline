@@ -680,18 +680,15 @@ def _validated_post_action_egocentric_frame(
     response: Mapping[str, Any], *, source_step_index: int
 ) -> dict[str, Any]:
     """Select the latest hash-bound head-mounted RGB from an Isaac action."""
-
     raw_rows = response.get("review_frames") or response.get("review_media_artifacts")
-    if not isinstance(raw_rows, Sequence) or isinstance(
-        raw_rows, (str, bytes, bytearray)
-    ):
+    if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
         return {}
     candidates: list[dict[str, Any]] = []
     for value in raw_rows:
         row = _mapping(value)
-        if row.get("camera_role") != "robot_pov":
-            continue
-        if row.get("outer_source_step_index") != int(source_step_index):
+        if row.get("camera_role") != "robot_pov" or row.get(
+            "outer_source_step_index"
+        ) != int(source_step_index):
             continue
         camera = _mapping(row.get("camera_contract"))
         if (
@@ -712,6 +709,7 @@ def _validated_post_action_egocentric_frame(
             raise RuntimeError("post_action_robot_pov_frame_sha256_mismatch")
         if (int(row.get("width") or 0), int(row.get("height") or 0)) != (640, 480):
             raise RuntimeError("post_action_robot_pov_frame_resolution_invalid")
+        visual_signal = _mapping(row.get("visual_signal"))
         candidates.append(
             {
                 "path": str(path),
@@ -724,15 +722,16 @@ def _validated_post_action_egocentric_frame(
                 "gaze_motion_model": "inherits_head_orientation_no_task_reaim",
                 "source_step_index": int(source_step_index),
                 "frame_index": int(row.get("frame_index") or 0),
-                "control_frame_global_index": int(
-                    row.get("control_frame_global_index") or 0
-                ),
+                "control_frame_global_index": int(row.get("control_frame_global_index") or 0),
                 "captured_at_ns": int(row.get("captured_at_ns") or 0),
+                "visual_signal_valid": not visual_signal
+                or visual_signal.get("status") == "completed"
+                and visual_signal.get("non_uniform") is True,
             }
         )
     if not candidates:
         return {}
-    return max(
+    latest = max(
         candidates,
         key=lambda row: (
             row["control_frame_global_index"],
@@ -740,6 +739,7 @@ def _validated_post_action_egocentric_frame(
             row["captured_at_ns"],
         ),
     )
+    return latest if latest.pop("visual_signal_valid") is True else {}
 
 
 def _landmark_has_numeric_evidence(landmark: Mapping[str, Any]) -> bool:

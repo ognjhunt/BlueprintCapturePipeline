@@ -1760,6 +1760,7 @@ def test_post_action_reanchor_selects_latest_live_egocentric_frame(tmp_path: Pat
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "width": 640,
                 "height": 480,
+                "visual_signal": {"status": "completed", "non_uniform": True},
                 "camera_contract": {
                     "viewpoint_mode": "robot_head_mounted_egocentric",
                     "robot_mounted": True,
@@ -1790,6 +1791,17 @@ def test_post_action_reanchor_selects_latest_live_egocentric_frame(tmp_path: Pat
             {"review_frames": frames},
             source_step_index=2,
         )
+
+    frames[-1]["camera_contract"]["viewpoint_mode"] = (
+        "robot_head_mounted_egocentric"
+    )
+    frames[-1]["camera_contract"]["gaze_motion_model"] = (
+        "inherits_head_orientation_no_task_reaim"
+    )
+    frames[-1]["visual_signal"] = {"status": "blocked", "non_uniform": False}
+    assert not L._validated_post_action_egocentric_frame(
+        {"review_frames": frames}, source_step_index=2
+    )
 
     frames[-1]["camera_contract"]["viewpoint_mode"] = (
         "robot_head_mounted_egocentric"

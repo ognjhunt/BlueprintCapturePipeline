@@ -2333,7 +2333,7 @@
             {
               "artifact_id": "SC3-02-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:2f16cb39bfac6743de24089f6c587cfb3a4e2473f659888085186ae4a2295a40",
+              "sha256": "sha256:fcb5b1ea16102bbc936eba64e9003d7f1643962cf85e41a1f2013aaf80eda1b0",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3255,7 +3255,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:2f16cb39bfac6743de24089f6c587cfb3a4e2473f659888085186ae4a2295a40",
+              "sha256": "sha256:fcb5b1ea16102bbc936eba64e9003d7f1643962cf85e41a1f2013aaf80eda1b0",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3271,7 +3271,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:5c60ce78fdc944c5258cea500ac7cb6074c7d122c3af0b7e2c6080659a44d4bc",
+              "sha256": "sha256:26a31dbedceee4c27189ef3eaf066fa63c0a8938635f51011a7470b8a31390a4",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3371,7 +3371,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:2f16cb39bfac6743de24089f6c587cfb3a4e2473f659888085186ae4a2295a40",
+              "sha256": "sha256:fcb5b1ea16102bbc936eba64e9003d7f1643962cf85e41a1f2013aaf80eda1b0",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3387,7 +3387,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:5c60ce78fdc944c5258cea500ac7cb6074c7d122c3af0b7e2c6080659a44d4bc",
+              "sha256": "sha256:26a31dbedceee4c27189ef3eaf066fa63c0a8938635f51011a7470b8a31390a4",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
