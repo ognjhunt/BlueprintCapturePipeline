@@ -1,5 +1,37 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-17
+
+### User-Facing
+
+- Hardened the governed RunPod model-cache path so full post-upload verification
+  re-downloads objects with the volume endpoint's supported streaming `GetObject`
+  API. Verification still hashes the downloaded cache and fails closed on
+  corruption; this is transport-integrity evidence, not model-runtime or episode
+  success (`src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py`).
+
+### Employee-Facing
+
+- Made runtime-carrier library-path manifests accept shell-quotable paths while
+  rejecting delimiter, expansion, control-character, traversal, and
+  out-of-root inputs. The generated loader environment is now shell-quoted before
+  reuse, preserving the fail-closed carrier contract without rejecting valid
+  runtime layouts (`src/blueprint_pipeline/groot_oscar_runpod_carrier_volume.py`,
+  `src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py`).
+- The committed America/Chicago window contains two `origin/main` commits,
+  `201146ea` (PR #128) and `01545646` (PR #129). The reviewed feature checkout
+  is clean and diverges from `origin/main` (`81` checkout-only commits and `39`
+  main-only commits), so no July 17 uncommitted source change is recorded.
+
+### Future-Agent-Facing
+
+- Keep loader-path serialization, cache upload, cache re-download, digest
+  verification, provider allocation, startup readiness, semantic task success,
+  artifact review, and teardown as separate evidence layers. Ignored July 17
+  operational files under `output/single_g1_kitchen_episode_20260716/` are
+  support artifacts, not source changes or standalone proof of a completed
+  episode, deployment, public readiness, or physical-robot execution.
+
 ## 2026-07-15
 
 ### User-Facing
