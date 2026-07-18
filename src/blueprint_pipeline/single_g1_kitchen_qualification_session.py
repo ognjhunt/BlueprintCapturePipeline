@@ -2247,7 +2247,8 @@ def _allocate(
             "provider_bootstrap_sha256": "0" * 64,
             "episode_bootstrap_sha256": "0" * 64,
             "control_script_sha256": "0" * 64,
-            "component_script_sha256s": {},
+            "refresh_installer_sha256": "0" * 64, "component_script_sha256s": {},
+            "overlay_revision": 0, "control_contract_version": CONTROL_CONTRACT_VERSION,
         },
         deadline_epoch=deadline_epoch,
     )
@@ -4255,8 +4256,7 @@ def run_qualification_session(
             episode_bundle=episode_bundle,
             provider_bootstrap_url_file=provider_bootstrap_url_file,
             adapter_output=adapter_output, execute=execute, identity_file=identity_file,
-            training_dataset=training_dataset, trained_checkpoint_path=trained_checkpoint_path,
-            admission_out=admission_out,
+            training_dataset=training_dataset, trained_checkpoint_path=trained_checkpoint_path, admission_out=admission_out,
         )
     return _control(
         action=action, component=component, session_manifest=session_manifest,

@@ -1761,6 +1761,41 @@ def test_refresh_bootstrap_is_two_phase_digest_bound_and_audit_chained(
     assert signed_url not in (tmp_path / "refresh_result.json").read_text()
 
 
+def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Provider:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"unexpected provider access: {name}")
+
+    monkeypatch.setattr(qualification, "get_render_provider", lambda _name: Provider())
+    outputs = {
+        "provider_launch_request": tmp_path / "launch.json",
+        "preflight_bundle": tmp_path / "preflight.json",
+        "admission_out": tmp_path / "admission.json",
+        "bound_request_out": tmp_path / "bound.json",
+        "adapter_output": tmp_path / "result.json",
+    }
+    result = qualification.run_qualification_session(
+        action="allocate",
+        session_manifest=tmp_path / "session.json",
+        episode_bundle=tmp_path / "missing-episode.zip",
+        provider_bundle_url_file=tmp_path / "missing-bundle-url.txt",
+        provider_output_put_url_file=tmp_path / "missing-put-url.txt",
+        provider_output_get_url_file=tmp_path / "missing-get-url.txt",
+        release_evidence=tmp_path / "missing-release.json",
+        execute=True,
+        **outputs,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert all(path.is_file() for path in outputs.values())
+    manifest = json.loads((tmp_path / "session.json").read_text())
+    assert manifest["bootstrap"]["overlay_revision"] == 0
+    assert manifest["bootstrap"]["control_contract_version"] == qualification.CONTROL_CONTRACT_VERSION
+
+
 def test_changed_refresh_payload_forces_restage_before_remote_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

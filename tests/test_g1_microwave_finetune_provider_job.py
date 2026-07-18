@@ -176,6 +176,25 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
         provider.request["prelaunch_spend_guard"]
     )
 
+    blocked_paths = {
+        "admission_out": tmp_path / "blocked-admission.json",
+        "bound_request_out": tmp_path / "blocked-bound.json",
+        "adapter_output": tmp_path / "blocked-result.json",
+    }
+    blocked = job.run_finetune_job(
+        provider_name="runpod",
+        provider_bundle=provider_bundle,
+        object_store_stage_dir=stage,
+        checkpoint_object_store_stage_dir=checkpoint_stage,
+        release_evidence=tmp_path / "missing-release.json",
+        pod_name="",
+        execute=False,
+        **blocked_paths,
+    )
+    assert blocked["status"] == "blocked"
+    assert "finetune_release_evidence_missing_or_invalid" in blocked["blockers"]
+    assert all(path.is_file() for path in blocked_paths.values())
+
 
 def test_output_collector_stops_when_provider_runtime_exits(
     tmp_path: Path, monkeypatch

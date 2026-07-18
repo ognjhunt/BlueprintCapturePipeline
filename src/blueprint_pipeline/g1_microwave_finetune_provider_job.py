@@ -915,9 +915,13 @@ def run_finetune_job(
     all_stage_dirs = [stage_dir, checkpoint_stage_dir, *checkpoint_part_stage_dirs]
     if len(set(all_stage_dirs)) != len(all_stage_dirs):
         blockers.append("finetune_proof_and_checkpoint_output_channels_must_be_distinct")
-    release = _load_mapping(
-        Path(release_evidence).expanduser().resolve(), name="finetune_release_evidence"
-    )
+    try:
+        release = _load_mapping(
+            Path(release_evidence).expanduser().resolve(), name="finetune_release_evidence"
+        )
+    except ValueError as exc:
+        release = {}
+        blockers.append(str(exc))
     if release.get("status") != "completed" or release.get("resolved_digest_ref") != IMAGE_REF:
         blockers.append("g1_microwave_finetune_release_evidence_mismatch")
 
