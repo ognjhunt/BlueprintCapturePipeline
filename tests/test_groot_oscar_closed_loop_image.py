@@ -395,6 +395,8 @@ def test_image_seals_exact_nested_cosmos_backbone_and_disables_network_fallback(
     assert "COSMOS_BACKBONE_REVISION=9ce19a195e423419c349abfc86fd07178b230561" in dockerfile
     assert 'repo_id=os.environ["COSMOS_BACKBONE_REPO"]' in dockerfile
     assert 'revision=os.environ["COSMOS_BACKBONE_REVISION"]' in dockerfile
+    assert 'Path("/opt/blueprint/models/cosmos-reason2-2b")' in dockerfile
+    assert "cosmos_finetune_alias.symlink_to(cosmos_snapshot" in dockerfile
     assert '(cosmos_refs / "main").write_text(cosmos_revision' in dockerfile
     assert 'write_text(cosmos_revision + "\\n"' not in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile

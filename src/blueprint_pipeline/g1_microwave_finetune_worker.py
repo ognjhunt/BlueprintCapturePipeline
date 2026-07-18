@@ -1275,7 +1275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if isinstance(progress, dict):
                 phase = str(progress.get("phase") or phase)
         except (OSError, json.JSONDecodeError):
-            pass
+            pass  # No usable progress artifact; retain the initialization phase.
         _write_json(
             workspace / "g1_microwave_finetune_worker_report.json",
             {

@@ -875,11 +875,8 @@ def run_finetune_job(
         )
         checkpoint_part_put_urls = [checkpoint_put_url]
         checkpoint_part_get_urls = [checkpoint_get_url]
-        checkpoint_part_staging = [checkpoint_staging]
         for index, part_stage_dir in enumerate(checkpoint_part_stage_dirs, start=2):
-            checkpoint_part_staging.append(
-                _staging_evidence(part_stage_dir, bundle_path)
-            )
+            _staging_evidence(part_stage_dir, bundle_path)
             checkpoint_part_put_urls.append(
                 _read_secret_url(
                     part_stage_dir / "provider_output_put_url.txt",
@@ -899,7 +896,6 @@ def run_finetune_job(
         bundle_url = put_url = get_url = checkpoint_put_url = checkpoint_get_url = ""
         checkpoint_part_put_urls = []
         checkpoint_part_get_urls = []
-        checkpoint_part_staging = []
         blockers.append(str(exc))
     all_stage_dirs = [stage_dir, checkpoint_stage_dir, *checkpoint_part_stage_dirs]
     if len(set(all_stage_dirs)) != len(all_stage_dirs):
@@ -1152,7 +1148,7 @@ def run_finetune_job(
                 reason="finetune_provider_launch_returned_without_instance_id",
                 evidence=launch,
             )
-    except BaseException as exc:
+    except BaseException as exc:  # Provider outcome is ambiguous even on caller cancellation.
         mark_pending_teardown_ambiguous(
             pending["path"],
             reason=f"finetune_launch_or_collection_exception:{type(exc).__name__}",

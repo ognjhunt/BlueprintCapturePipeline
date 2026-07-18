@@ -234,7 +234,7 @@ def _terminate_records(
         try:
             signal_process(record.pid, signal.SIGTERM)
         except ProcessLookupError:
-            pass
+            pass  # The owned process exited before SIGTERM was delivered.
     deadline = monotonic() + TERM_GRACE_SECONDS
     remaining = _remaining_records(proc_root, records)
     while remaining and monotonic() < deadline:
@@ -247,7 +247,7 @@ def _terminate_records(
             try:
                 signal_process(record.pid, signal.SIGKILL)
             except ProcessLookupError:
-                pass
+                pass  # The owned process exited before SIGKILL was delivered.
         deadline = monotonic() + KILL_GRACE_SECONDS
         remaining = _remaining_records(proc_root, records)
         while remaining and monotonic() < deadline:

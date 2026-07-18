@@ -330,6 +330,10 @@ cosmos_selector_root.mkdir(parents=True, exist_ok=True)
 for source in cosmos_snapshot.iterdir():
     destination = cosmos_selector_root / source.name
     destination.symlink_to(source, target_is_directory=source.is_dir())
+cosmos_finetune_alias = Path("/opt/blueprint/models/cosmos-reason2-2b")
+cosmos_finetune_alias.symlink_to(cosmos_snapshot, target_is_directory=True)
+if cosmos_finetune_alias.resolve() != cosmos_snapshot:
+    raise RuntimeError("Cosmos fine-tune alias does not resolve to the pinned snapshot")
 cosmos_selector_anchor = cosmos_selector_root / "nvidia/Cosmos-Reason2-2B"
 cosmos_selector_anchor.mkdir(parents=True, exist_ok=True)
 cosmos_local = cosmos_selector_anchor / "../.."

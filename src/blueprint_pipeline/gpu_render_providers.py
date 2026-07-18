@@ -1236,7 +1236,7 @@ def _write_private_ssh_artifact(path: Path, payload: bytes) -> None:
         try:
             temporary.unlink()
         except FileNotFoundError:
-            pass
+            pass  # The atomic replace already consumed the temporary path.
 
 
 def _redact_vast_ssh_output_text(value: Any) -> str:
