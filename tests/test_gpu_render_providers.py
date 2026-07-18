@@ -1732,10 +1732,14 @@ def test_vast_ssh_host_key_enrollment_tofu_pins_attempt_local_artifacts(
 
 
 @pytest.mark.parametrize("control_action", ["tail", "status"])
+@pytest.mark.parametrize(
+    "control_component", ["isaac_task_executor", "groot_microwave_finetune"]
+)
 def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     control_action: str,
+    control_component: str,
 ) -> None:
     connection = {"ssh_host": "203.0.113.8", "ssh_port": 22022}
     public_key = base64.b64encode(b"\x01" * 64).decode("ascii")
@@ -1781,7 +1785,7 @@ def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
     result = run_vast_ssh_control(
         connection,
         action=control_action,
-        component="isaac_task_executor",
+        component=control_component,
         known_hosts_file=enrollment["known_hosts_file"],
         identity_file=identity,
         timeout_seconds=25,
@@ -1830,7 +1834,7 @@ def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
         "/bin/bash",
         VAST_SSH_QUALIFICATION_CONTROL_SCRIPT,
         control_action,
-        "isaac_task_executor",
+        control_component,
         "2000",
     ]
     assert set(VAST_SSH_CONTROL_ACTIONS) == {
@@ -1843,6 +1847,7 @@ def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
         "refresh",
     }
     assert "isaac_task_executor" in VAST_SSH_CONTROL_COMPONENTS
+    assert "groot_microwave_finetune" in VAST_SSH_CONTROL_COMPONENTS
 
     signed_url = "https://objects.example/refresh?signature=local-secret"
     refresh = run_vast_ssh_control(
