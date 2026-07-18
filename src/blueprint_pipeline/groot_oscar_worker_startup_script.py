@@ -105,7 +105,16 @@ try:
             f"expected={expected_repo!r}:observed={original_name!r}"
         )
 
-    processor_config_path = checkpoint / "processor/processor_config.json"
+    # Match the pinned Gr00tPolicy loader exactly. Base checkpoints keep the
+    # processor under ``processor/`` while ``launch_finetune.py`` writes the
+    # numbered checkpoint's processor files at the model root.
+    processor_root = (
+        checkpoint / "processor"
+        if (checkpoint / "processor").is_dir()
+        and not (checkpoint / "processor_config.json").exists()
+        else checkpoint
+    )
+    processor_config_path = processor_root / "processor_config.json"
     processor_config = json.loads(
         processor_config_path.read_text(encoding="utf-8")
     )
@@ -113,6 +122,7 @@ try:
     if not isinstance(processor_kwargs, dict):
         raise RuntimeError("groot_sonic_processor_kwargs_missing")
     payload["checks"]["processor_config_loaded"] = True
+    payload["processor_path"] = str(processor_root)
 
     # Keep the exact upstream token and capitalization in the path string: the
     # pinned get_backbone_cls checks for ``nvidia/Cosmos-Reason2`` literally.
@@ -314,7 +324,7 @@ try:
     payload["nested_processor_class"] = type(processor).__name__
     payload["checks"]["nested_processor_offline_constructible"] = True
     policy_processor = AutoProcessor.from_pretrained(
-        str(checkpoint / "processor"), local_files_only=True
+        str(processor_root), local_files_only=True
     )
     payload["policy_processor_class"] = type(policy_processor).__name__
     payload["checks"]["groot_policy_processor_offline_constructible"] = True

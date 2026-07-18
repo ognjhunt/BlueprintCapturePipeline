@@ -271,6 +271,32 @@ def test_checkpoint_preflight_is_idempotent_across_two_consecutive_runs(
     assert (alias_root / "config.json").resolve() == (model / "config.json").resolve()
 
 
+def test_checkpoint_preflight_accepts_numbered_finetune_root_processor_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_preflight_module_stubs(monkeypatch)
+    checkpoint, model = _checkpoint(tmp_path)
+    root_processor = checkpoint / "processor_config.json"
+    (checkpoint / "processor/processor_config.json").replace(root_processor)
+    (checkpoint / "processor").rmdir()
+    alias_root = tmp_path / "aliases" / "cosmos"
+    artifact = tmp_path / "checkpoint-preflight.json"
+    monkeypatch.setenv("BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT", str(checkpoint))
+    monkeypatch.setenv("BLUEPRINT_GROOT_MODEL_ALIAS_ROOT", str(alias_root))
+    monkeypatch.setenv("BLUEPRINT_GROOT_CHECKPOINT_PREFLIGHT_ARTIFACT", str(artifact))
+
+    assert _run_preflight() == 0
+    result = json.loads(artifact.read_text(encoding="utf-8"))
+    processor = json.loads(root_processor.read_text(encoding="utf-8"))
+    alias_name = str(alias_root.resolve() / "nvidia/Cosmos-Reason2-2B/../..")
+    assert result["status"] == "passed"
+    assert result["processor_path"] == str(checkpoint)
+    assert result["checks"]["groot_policy_processor_offline_constructible"] is True
+    assert processor["processor_kwargs"]["model_name"] == alias_name
+    assert result["resolved_local_model_path"] == str(model.resolve())
+
+
 def test_checkpoint_preflight_rejects_oscar_dependency_target_on_pythonpath(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
