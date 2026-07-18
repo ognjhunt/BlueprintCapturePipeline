@@ -7,12 +7,15 @@
       "src/blueprint_pipeline/groot_oscar_runpod_serverless.py"
     ],
     "require_paid_resource_admission": [
+      "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
       "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
       "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
       "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
       "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
-      "src/blueprint_pipeline/paid_resource_allocator.py"
+      "src/blueprint_pipeline/paid_resource_allocator.py",
+      "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
+      "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py"
     ]
   },
   "surfaces": [
@@ -20,6 +23,21 @@
       "path": "src/blueprint_pipeline/paid_resource_allocator.py",
       "classification": "canonical_allocator",
       "required_markers": ["cpu-build", "model-volume", "gpu-canary"]
+    },
+    {
+      "path": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["require_paid_resource_admission", "run_finetune_job"]
+    },
+    {
+      "path": "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["require_paid_resource_admission", "run_single_episode"]
+    },
+    {
+      "path": "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["require_paid_resource_admission", "run_qualification_session"]
     },
     {
       "path": "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
