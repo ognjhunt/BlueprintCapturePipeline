@@ -9,6 +9,7 @@ artifact family.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -81,6 +82,7 @@ DEFAULT_EARLY_TERMINATION_CONFIDENCE_THRESHOLD = 0.35
 DEFAULT_EXTERNAL_BACKEND_TIMEOUT_SECONDS = 120
 EXTERNAL_BACKEND_ENV_GATE = "BLUEPRINT_ALLOW_WAM_PERCEPTION_HARNESS_EXTERNAL_BACKEND"
 EXTERNAL_BACKEND_COMMAND_ENV = "BLUEPRINT_WAM_PERCEPTION_HARNESS_BACKEND_COMMAND"
+GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND = "generated_rgb_policy_observation"
 
 DERIVED_FIELD_NAMES = (
     "objects",
@@ -482,6 +484,150 @@ def _blocked_backend_result(
     }
 
 
+def _generated_rgb_policy_observation_claim_boundary() -> dict[str, Any]:
+    return {
+        **_claim_boundary(),
+        "generated_rgb_policy_observation_only": True,
+        "generated_rgb_validation_is_not_a_perception_model": True,
+        "sam3_ran": False,
+        "da3_ran": False,
+        "other_perception_model_ran": False,
+        "objects_depth_pose_or_contact_inferred": False,
+        "semantic_task_success_claimed": False,
+        "semantic_task_success_requires_live_isaac_transition": True,
+        "oscar_generation_identity_is_validated_by_upstream_evaluator": True,
+        "this_backend_only_validates_and_binds_the_supplied_generated_rgb": True,
+    }
+
+
+def _run_generated_rgb_policy_observation_backend(
+    *,
+    output_dir: str | Path,
+    generated_at: str,
+    step_index: int,
+    source_generated_frame_path: str | Path | None,
+    source_wam_rollout_id: str | None,
+    transition_id: str | None,
+    source_policy_action: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one evaluator-bound generated RGB frame without running perception."""
+    output = Path(output_dir).expanduser().resolve()
+    ensure_dir(output)
+    request_path = output / (
+        f"wam_generated_rgb_policy_observation_step_{int(step_index):04d}_request.json"
+    )
+    result_path = output / (
+        f"wam_generated_rgb_policy_observation_step_{int(step_index):04d}_result.json"
+    )
+    frame_text = _string(source_generated_frame_path)
+    rollout_id = _string(source_wam_rollout_id)
+    resolved_transition_id = _string(transition_id)
+    blockers: list[str] = []
+    if int(step_index) < 1:
+        blockers.append("generated_rgb_policy_observation_step_index_invalid")
+    if not rollout_id:
+        blockers.append("generated_rgb_policy_observation_wam_rollout_id_missing")
+    if not resolved_transition_id:
+        blockers.append("generated_rgb_policy_observation_transition_id_missing")
+
+    frame_path: Path | None = None
+    source_sha256: str | None = None
+    source_size_bytes: int | None = None
+    frame_quality = _frame_stats(source_generated_frame_path)
+    if not frame_text:
+        blockers.append("generated_rgb_policy_observation_frame_path_missing")
+    else:
+        candidate = Path(frame_text).expanduser()
+        if candidate.is_symlink():
+            blockers.append("generated_rgb_policy_observation_frame_symlink_not_allowed")
+        elif not candidate.is_file():
+            blockers.append("generated_rgb_policy_observation_frame_missing")
+        else:
+            frame_path = candidate.resolve()
+            try:
+                before = frame_path.stat()
+                payload = frame_path.read_bytes()
+                after = frame_path.stat()
+            except OSError:
+                blockers.append("generated_rgb_policy_observation_frame_read_failed")
+            else:
+                source_size_bytes = len(payload)
+                source_sha256 = hashlib.sha256(payload).hexdigest()
+                if not payload:
+                    blockers.append("generated_rgb_policy_observation_frame_empty")
+                if (
+                    before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns
+                    or before.st_size != len(payload)
+                ):
+                    blockers.append(
+                        "generated_rgb_policy_observation_frame_changed_during_validation"
+                    )
+    if not frame_quality.get("readable"):
+        blockers.append("generated_rgb_policy_observation_frame_not_decodable")
+    blockers.extend(_string_list(frame_quality.get("blockers")))
+    blockers = sorted(set(blockers))
+    status = "completed" if not blockers else "blocked"
+    claim_boundary = _generated_rgb_policy_observation_claim_boundary()
+    request = {
+        "schema_version": BACKEND_REQUEST_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "backend_kind": GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
+        "step_index": int(step_index),
+        "source_generated_frame_path": frame_text or None,
+        "source_wam_rollout_id": rollout_id or None,
+        "transition_id": resolved_transition_id or None,
+        "source_policy_action": _jsonable(source_policy_action),
+        "requested_outputs": ["validated_rgb_policy_observation"],
+        "perception_outputs_requested": False,
+        "claim_boundary": claim_boundary,
+    }
+    write_json(request_path, request)
+    validation = {
+        "status": status,
+        "step_index": int(step_index),
+        "source_generated_frame_path": str(frame_path) if frame_path else frame_text or None,
+        "source_generated_frame_sha256": source_sha256,
+        "source_generated_frame_size_bytes": source_size_bytes,
+        "source_wam_rollout_id": rollout_id or None,
+        "transition_id": resolved_transition_id or None,
+        "frame_quality": frame_quality,
+        "exact_file_hash_bound": bool(source_sha256 and not blockers),
+        "policy_observation_rgb_validated": not blockers,
+        "blockers": blockers,
+    }
+    result = {
+        "schema_version": BACKEND_RESULT_SCHEMA_VERSION,
+        "status": status,
+        "backend": {
+            "kind": GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
+            "status": status,
+            "command_path": None,
+            "env_gate": None,
+            "blockers": blockers,
+            "request_path": str(request_path),
+            "result_path": str(result_path),
+            "built_in_generated_rgb_validation_ran": True,
+            "generated_rgb_policy_observation_validated": not blockers,
+            "real_sam_or_depth_model_ran": False,
+            "real_perception_model_ran": False,
+            "sam3_ran": False,
+            "da3_ran": False,
+            "provider_statuses": [],
+            "credentials_persisted": False,
+        },
+        "generated_rgb_validation": validation,
+        "objects": [],
+        "depth_estimates": [],
+        "pose_estimates": [],
+        "contact_likelihood": None,
+        "blockers": blockers,
+        "claim_boundary": claim_boundary,
+    }
+    write_json(result_path, result)
+    return result
+
+
 def _run_external_backend(
     *,
     output_dir: str | Path,
@@ -501,6 +647,16 @@ def _run_external_backend(
     camera_calibration: Mapping[str, Any],
     source_policy_action: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if backend_kind == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND:
+        return _run_generated_rgb_policy_observation_backend(
+            output_dir=output_dir,
+            generated_at=generated_at,
+            step_index=step_index,
+            source_generated_frame_path=source_generated_frame_path,
+            source_wam_rollout_id=source_wam_rollout_id,
+            transition_id=transition_id,
+            source_policy_action=source_policy_action,
+        )
     if backend_kind == "fixture":
         return {
             "schema_version": BACKEND_RESULT_SCHEMA_VERSION,
@@ -1738,12 +1894,16 @@ def build_wam_derived_observation_step(
         source_generated_multiview_frame_paths,
         primary_frame_path=source_generated_frame_path,
     )
-    target, fallback_target = _select_target(
-        object_index=resolved_object_index,
-        eval_ready_task_grounding=resolved_grounding,
-        observation=observation,
-        frame_stats=frame_stats,
-    )
+    generated_rgb_only = backend_kind == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
+    if generated_rgb_only:
+        target, fallback_target = {}, False
+    else:
+        target, fallback_target = _select_target(
+            object_index=resolved_object_index,
+            eval_ready_task_grounding=resolved_grounding,
+            observation=observation,
+            frame_stats=frame_stats,
+        )
     target = {
         **target,
         "object_index_path": _string(observation.get("object_index_path") or visual.get("object_index_path")) or None,
@@ -1791,27 +1951,36 @@ def build_wam_derived_observation_step(
     if backend_kind != "fixture":
         backend_blockers = _string_list(backend_metadata.get("blockers"))
         if _string(backend_metadata.get("status")) == "blocked" and not backend_blockers:
-            backend_blockers.append("external_perception_backend_blocked")
-    objects = _build_object_records(
-        backend_result=backend_result,
-        target=target,
-        fallback_target=fallback_target,
-        frame_stats=frame_stats,
-        previous_steps=previous_steps or [],
-        backend_kind=backend_kind,
-    )
-    depth_estimates = _normalize_backend_depth_estimates(
-        backend_result=backend_result,
-        objects=objects,
-        frame_stats=frame_stats,
-        camera_calibration=calibration,
-    )
-    pose_estimates = _normalize_backend_pose_estimates(
-        backend_result=backend_result,
-        objects=objects,
-        depth_estimates=depth_estimates,
-        camera_calibration=calibration,
-    )
+            backend_blockers.append(
+                "generated_rgb_policy_observation_validation_blocked"
+                if backend_kind == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
+                else "external_perception_backend_blocked"
+            )
+    if generated_rgb_only:
+        objects: list[dict[str, Any]] = []
+        depth_estimates: list[dict[str, Any]] = []
+        pose_estimates: list[dict[str, Any]] = []
+    else:
+        objects = _build_object_records(
+            backend_result=backend_result,
+            target=target,
+            fallback_target=fallback_target,
+            frame_stats=frame_stats,
+            previous_steps=previous_steps or [],
+            backend_kind=backend_kind,
+        )
+        depth_estimates = _normalize_backend_depth_estimates(
+            backend_result=backend_result,
+            objects=objects,
+            frame_stats=frame_stats,
+            camera_calibration=calibration,
+        )
+        pose_estimates = _normalize_backend_pose_estimates(
+            backend_result=backend_result,
+            objects=objects,
+            depth_estimates=depth_estimates,
+            camera_calibration=calibration,
+        )
     robot_state = _robot_state(
         observation=observation,
         action=action,
@@ -1820,31 +1989,100 @@ def build_wam_derived_observation_step(
         camera_calibration=calibration,
         controller_limits=_mapping(controller_limits),
     )
-    contact = _normalize_backend_contact_likelihood(
-        backend_result,
-        fallback=_contact_likelihood(
+    if generated_rgb_only:
+        rgb_validation = _mapping(backend_result.get("generated_rgb_validation"))
+        rgb_validated = bool(
+            rgb_validation.get("policy_observation_rgb_validated")
+            and backend_metadata.get("generated_rgb_policy_observation_validated")
+            and not backend_blockers
+        )
+        contact = {
+            "status": "not_run_rgb_only_policy_observation",
+            "value": None,
+            "confidence": None,
+            "based_on": [],
+            "physical_contact_proven": False,
+            "stable_grasp_proven": False,
+            "claim_boundary": {
+                "contact_inference_was_not_run": True,
+                "semantic_task_success_requires_live_isaac_transition": True,
+            },
+        }
+        external_consistency_status = _external_forward_inverse_consistency_status(
+            _mapping(external_consistency)
+        )
+        checks = {
+            "generated_rgb_policy_observation_validation": {
+                "status": "passed" if rgb_validated else "blocked",
+                "passed": rgb_validated,
+                "source": "built_in_exact_generated_rgb_file_validation",
+                "source_generated_frame_sha256": rgb_validation.get(
+                    "source_generated_frame_sha256"
+                ),
+                "blockers": list(backend_blockers),
+            },
+            "objects_depth_pose_contact_inference": {
+                "status": "not_run_rgb_only_policy_observation",
+                "passed": None,
+                "source": "no_perception_model_requested",
+                "blockers": [],
+            },
+            "multiview_consistent": multiview,
+            "inverse_action_consistency": {
+                "status": "external_scorer_passed"
+                if external_consistency_status["proven"]
+                else "separate_external_scorer_required",
+                "passed": True if external_consistency_status["proven"] else None,
+                "source": "external_wam_episode_consistency_scorer",
+                "external_episode_consistency_scorer_ran": external_consistency_status[
+                    "scorer_ran"
+                ],
+                "forward_inverse_consistency_proven": external_consistency_status["proven"],
+                "harness_does_not_prove_forward_inverse_consistency": True,
+                "blockers": external_consistency_status["blockers"],
+                "claim_boundary": external_consistency_status["claim_boundary"],
+            },
+        }
+        consistency_blockers: list[str] = []
+        uncertainty_reasons = sorted(
+            set(_string_list(frame_stats.get("blockers")) + backend_blockers)
+        )
+        uncertainty = {
+            "overall_confidence": _confidence(frame_stats.get("confidence"), 0.0)
+            if rgb_validated
+            else 0.0,
+            "confidence_threshold": confidence_threshold,
+            "reasons": uncertainty_reasons,
+            "early_termination_recommended": not rgb_validated,
+            "basis": "generated_rgb_file_validation_only",
+            "perception_uncertainty_estimated": False,
+        }
+    else:
+        contact = _normalize_backend_contact_likelihood(
+            backend_result,
+            fallback=_contact_likelihood(
+                action=action,
+                objects=objects,
+                robot_state=robot_state,
+            ),
+        )
+        checks, consistency_blockers = _consistency_checks(
             action=action,
             objects=objects,
+            depth_estimates=depth_estimates,
+            contact_likelihood=contact,
+            previous_steps=previous_steps or [],
+            external_consistency=_mapping(external_consistency),
+            multiview_summary=multiview,
+        )
+        uncertainty = _uncertainty(
+            frame_stats=frame_stats,
+            objects=objects,
+            depth_estimates=depth_estimates,
             robot_state=robot_state,
-        ),
-    )
-    checks, consistency_blockers = _consistency_checks(
-        action=action,
-        objects=objects,
-        depth_estimates=depth_estimates,
-        contact_likelihood=contact,
-        previous_steps=previous_steps or [],
-        external_consistency=_mapping(external_consistency),
-        multiview_summary=multiview,
-    )
-    uncertainty = _uncertainty(
-        frame_stats=frame_stats,
-        objects=objects,
-        depth_estimates=depth_estimates,
-        robot_state=robot_state,
-        consistency_blockers=[*consistency_blockers, *backend_blockers],
-        confidence_threshold=confidence_threshold,
-    )
+            consistency_blockers=[*consistency_blockers, *backend_blockers],
+            confidence_threshold=confidence_threshold,
+        )
     review = _review_acceptance_for_step(review_acceptance, step_index=step_index)
     blockers = [
         *_string_list(frame_stats.get("blockers")),
@@ -1857,13 +2095,18 @@ def build_wam_derived_observation_step(
     if blockers and not frame_stats.get("available"):
         status = "blocked_missing_generated_frame"
     success_scoring_allowed = bool(
-        frame_stats.get("available")
+        not generated_rgb_only
+        and frame_stats.get("available")
         and not uncertainty["early_termination_recommended"]
         and not backend_blockers
         and not consistency_blockers
     )
     success_scoring_review_accepted = bool(review.get("accepted_for_success_scoring"))
-    if uncertainty["early_termination_recommended"] and success_scoring_review_accepted:
+    if (
+        not generated_rgb_only
+        and uncertainty["early_termination_recommended"]
+        and success_scoring_review_accepted
+    ):
         success_scoring_allowed = True
     scoring_allowed = {
         "usable_for_diagnostics": bool(frame_stats.get("available")),
@@ -1874,7 +2117,10 @@ def build_wam_derived_observation_step(
             uncertainty["early_termination_recommended"]
         ),
         "claim_boundary_summary": (
-            "Harness outputs are derived support artifacts from generated media. They can "
+            "This backend validates the exact generated RGB file for policy requery; it "
+            "does not run perception or prove semantic task success."
+            if generated_rgb_only
+            else "Harness outputs are derived support artifacts from generated media. They can "
             "guide diagnostics or policy requery gating, but they are not real sensors, "
             "contact proof, or rank fidelity by themselves."
         ),
@@ -1894,6 +2140,11 @@ def build_wam_derived_observation_step(
         "source_truth": _source_truth(),
         "harness_backend": backend_metadata,
         "backend_result_path": backend_metadata.get("result_path"),
+        "generated_rgb_validation": _jsonable(
+            backend_result.get("generated_rgb_validation")
+        )
+        if generated_rgb_only
+        else None,
         "frame_quality": frame_stats,
         "multiview_observation": multiview,
         "task_grounding": {
@@ -1938,7 +2189,9 @@ def build_wam_derived_observation_step(
         "uncertainty": uncertainty,
         "scoring_allowed": scoring_allowed,
         "blockers": sorted(set(blockers)),
-        "claim_boundary": _claim_boundary(),
+        "claim_boundary": _generated_rgb_policy_observation_claim_boundary()
+        if generated_rgb_only
+        else _claim_boundary(),
     }
 
 
@@ -1991,6 +2244,11 @@ def adapt_policy_observation_for_declared_schema(
         or base.get("camera_frame_path")
         or visual.get("camera_frame_path")
     )
+    generated_rgb_validation = _mapping(derived_step.get("generated_rgb_validation"))
+    generated_rgb_only = (
+        _string(_mapping(derived_step.get("harness_backend")).get("kind"))
+        == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
+    )
     if _supports(fields, "rgb", "camera_frame_path", "visual_observation", "image"):
         adapted["camera_frame_path"] = camera_frame
         adapted["visual_observation"] = {
@@ -1999,6 +2257,21 @@ def adapt_policy_observation_for_declared_schema(
             "camera_frame_path": camera_frame,
             "wam_generated_observation": True,
             "physical_robot_sensor_proof": False,
+            **(
+                {
+                    "generated_rgb_policy_observation_validated": bool(
+                        generated_rgb_validation.get("policy_observation_rgb_validated")
+                    ),
+                    "source_generated_frame_sha256": generated_rgb_validation.get(
+                        "source_generated_frame_sha256"
+                    ),
+                    "sam3_ran": False,
+                    "da3_ran": False,
+                    "perception_model_ran": False,
+                }
+                if generated_rgb_only
+                else {}
+            ),
         }
         supplied.extend(["camera_frame_path", "visual_observation"])
     for key in ("schema_version", "task_id", "task_prompt", "target_object_id"):
@@ -2066,6 +2339,12 @@ def adapt_policy_observation_for_declared_schema(
                 or _supports(fields, "depth", "rgbd", "rgb-d", "depth_estimates")
             ),
             "withheld_fields_remain_available_for_diagnostics": True,
+            "generated_rgb_only_observation_no_perception_model_ran": bool(
+                generated_rgb_only
+            ),
+            "semantic_task_success_requires_live_isaac_transition": bool(
+                generated_rgb_only
+            ),
         },
     }
 

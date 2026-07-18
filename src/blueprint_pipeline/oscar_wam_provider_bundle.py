@@ -179,7 +179,13 @@ def _load_projected_skeleton_trace_rows(trace_path: Path) -> list[dict[str, Any]
 
 def _projected_landmark_pixel(landmark: Mapping[str, Any]) -> tuple[int, int] | None:
     projection = _mapping(landmark.get("image_projection"))
-    if projection.get("available") is not True:
+    finite_offscreen_projection = bool(
+        projection.get("available") is False
+        and projection.get("unavailable_reason") == "outside_live_camera_viewport"
+        and projection.get("u_px") is not None
+        and projection.get("v_px") is not None
+    )
+    if projection.get("available") is not True and not finite_offscreen_projection:
         return None
     try:
         return int(round(float(projection.get("u_px")))), int(round(float(projection.get("v_px"))))
@@ -400,6 +406,7 @@ def _render_projected_skeleton_conditioning_video(
     visible_landmark_counts: list[int] = []
     visible_segment_counts: list[int] = []
     clipped_landmark_counts: list[int] = []
+    offscreen_edge_indicator_counts: list[int] = []
     end_effector_axis_counts: list[int] = []
     for frame_index in range(max(1, int(num_frames))):
         row = rows[min(frame_index, max(len(rows) - 1, 0))] if rows else {}
@@ -414,7 +421,7 @@ def _render_projected_skeleton_conditioning_video(
             fallback_width=width,
             fallback_height=height,
         )
-        by_id = {
+        raw_by_id = {
             _string(landmark.get("landmark_id")): _scale_projected_pixel_to_canvas(
                 _projected_landmark_pixel(landmark),
                 source_width=source_width,
@@ -424,8 +431,94 @@ def _render_projected_skeleton_conditioning_video(
             )
             for landmark in landmarks
         }
+        offscreen_ids = {
+            landmark_id
+            for landmark_id, point in raw_by_id.items()
+            if landmark_id and point is not None and not _inside_canvas(point)
+        }
+        # Preserve the direction of a finite, out-of-viewport controller/FK
+        # projection by clamping it to the corresponding image edge.  This is
+        # an explicit conditioning-only indicator: it does not alter the RGB
+        # observation or claim that the arm was visible in it.
+        by_id = {
+            landmark_id: (
+                (
+                    min(max(point[0], 2), width - 3),
+                    min(max(point[1], 2), height - 3),
+                )
+                if point is not None and landmark_id in offscreen_ids
+                else point
+            )
+            for landmark_id, point in raw_by_id.items()
+        }
+        axis_by_id = dict(by_id)
+        # Official GEAR-SONIC FK names concrete G1 links (for example
+        # ``left_wrist_yaw_link``), while older projected traces used the
+        # abbreviated ``left_wrist``/``left_hand`` ids. Resolve the aliases
+        # from those exact projected links instead of rejecting an otherwise
+        # fully projectable skeleton.
+        for side in ("left", "right"):
+            for alias, candidates in (
+                (
+                    f"{side}_wrist",
+                    (
+                        f"{side}_wrist_yaw_link",
+                        f"{side}_wrist_pitch_link",
+                        f"{side}_wrist_roll_link",
+                    ),
+                ),
+                (
+                    f"{side}_hand",
+                    (
+                        f"{side}_hand_index_0_link",
+                        f"{side}_hand_middle_0_link",
+                        f"{side}_hand_thumb_0_link",
+                    ),
+                ),
+            ):
+                if axis_by_id.get(alias) is None:
+                    axis_by_id[alias] = next(
+                        (by_id.get(candidate) for candidate in candidates if by_id.get(candidate)),
+                        None,
+                    )
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
         segments = row.get("segments") if isinstance(row.get("segments"), Sequence) else []
+        if not segments:
+            segments = []
+            for side in ("left", "right"):
+                chains = (
+                    (
+                        f"{side}_shoulder_pitch_link",
+                        f"{side}_shoulder_roll_link",
+                        f"{side}_shoulder_yaw_link",
+                        f"{side}_elbow_link",
+                        f"{side}_wrist_roll_link",
+                        f"{side}_wrist_pitch_link",
+                        f"{side}_wrist_yaw_link",
+                    ),
+                    (
+                        f"{side}_wrist_yaw_link",
+                        f"{side}_hand_index_0_link",
+                        f"{side}_hand_index_1_link",
+                    ),
+                    (
+                        f"{side}_wrist_yaw_link",
+                        f"{side}_hand_middle_0_link",
+                        f"{side}_hand_middle_1_link",
+                    ),
+                    (
+                        f"{side}_wrist_yaw_link",
+                        f"{side}_hand_thumb_0_link",
+                        f"{side}_hand_thumb_1_link",
+                        f"{side}_hand_thumb_2_link",
+                    ),
+                )
+                for chain in chains:
+                    segments.extend(
+                        {"from": start, "to": end}
+                        for start, end in zip(chain, chain[1:])
+                        if by_id.get(start) is not None and by_id.get(end) is not None
+                    )
         visible_segments = 0
         for segment in segments:
             if not isinstance(segment, Mapping):
@@ -452,17 +545,27 @@ def _render_projected_skeleton_conditioning_video(
             elif "right" in landmark_id:
                 color = (90, 220, 255)
             cv2.circle(canvas, (x, y), max(5, width // 80), color, -1, cv2.LINE_AA)
+            if landmark_id in offscreen_ids:
+                cv2.drawMarker(
+                    canvas,
+                    (x, y),
+                    color,
+                    cv2.MARKER_DIAMOND,
+                    max(10, width // 48),
+                    max(2, width // 240),
+                    cv2.LINE_AA,
+                )
             draw_count += 1
             if _inside_canvas(point):
                 visible_count += 1
-            else:
+            elif landmark_id in offscreen_ids:
                 clipped_count += 1
         axis_count = 0
         for side, color in (("left", (255, 220, 90)), ("right", (90, 220, 255))):
             if _draw_end_effector_axis(
                 canvas,
-                wrist=by_id.get(f"{side}_wrist"),
-                hand=by_id.get(f"{side}_hand"),
+                wrist=axis_by_id.get(f"{side}_wrist"),
+                hand=axis_by_id.get(f"{side}_hand"),
                 color=color,
             ):
                 axis_count += 1
@@ -470,19 +573,25 @@ def _render_projected_skeleton_conditioning_video(
         visible_landmark_counts.append(visible_count)
         visible_segment_counts.append(visible_segments)
         clipped_landmark_counts.append(clipped_count)
+        offscreen_edge_indicator_counts.append(len(offscreen_ids))
         end_effector_axis_counts.append(axis_count)
         writer.write(canvas)
     writer.release()
     projectable_rows = sum(
         1
         for row in rows
-        if int(row.get("projected_landmark_count") or len(row.get("landmarks") or [])) > 0
+        if int(
+            row.get("projected_landmark_count")
+            or len(row.get("landmarks") or row.get("projected_landmarks") or [])
+        )
+        > 0
     )
     max_motion_px = _projected_skeleton_trace_motion_px_max(rows)
     max_landmark_count = max(landmark_draw_counts or [0])
     max_visible_landmark_count = max(visible_landmark_counts or [0])
     max_visible_segment_count = max(visible_segment_counts or [0])
     max_clipped_landmark_count = max(clipped_landmark_counts or [0])
+    max_offscreen_edge_indicator_count = max(offscreen_edge_indicator_counts or [0])
     max_end_effector_axis_count = max(end_effector_axis_counts or [0])
     visual_blockers: list[str] = []
     if max_landmark_count <= 0:
@@ -507,6 +616,13 @@ def _render_projected_skeleton_conditioning_video(
             "projected_g1_skeleton_visible_landmark_draw_count": max_visible_landmark_count,
             "projected_g1_skeleton_visible_segment_count": max_visible_segment_count,
             "projected_g1_skeleton_clipped_landmark_count": max_clipped_landmark_count,
+            "projected_g1_skeleton_offscreen_edge_indicator_count": (
+                max_offscreen_edge_indicator_count
+            ),
+            "offscreen_edge_indicators_used": max_offscreen_edge_indicator_count > 0,
+            "offscreen_edge_indicator_semantics": (
+                "finite_controller_fk_projection_clamped_to_corresponding_viewport_edge"
+            ),
             "projected_g1_skeleton_end_effector_axis_draw_count": max_end_effector_axis_count,
             "projected_g1_skeleton_trace_row_count": len(rows),
             "projected_g1_skeleton_projectable_row_count": projectable_rows,
@@ -526,6 +642,9 @@ def _render_projected_skeleton_conditioning_video(
                 "max_visible_landmark_draw_count": max_visible_landmark_count,
                 "max_visible_segment_count": max_visible_segment_count,
                 "max_clipped_landmark_count": max_clipped_landmark_count,
+                "max_offscreen_edge_indicator_count": (
+                    max_offscreen_edge_indicator_count
+                ),
                 "max_end_effector_axis_draw_count": max_end_effector_axis_count,
             },
         },
@@ -1061,13 +1180,19 @@ def _normalize_oscar_robot_action_prompt(source_prompt: str) -> tuple[str, bool]
         "next robot-scene frames",
     )
     if any(marker in lowered for marker in robot_context_markers):
-        return cleaned, False
-    task_text = cleaned.rstrip(".")
-    return (
-        f"A robot performs the task: {task_text}. "
-        "Continue the first-person robot manipulation video.",
-        True,
+        task_context = cleaned.rstrip(".")
+    else:
+        task_context = f"A robot performs the task: {cleaned.rstrip('.')}"
+    viewpoint_contract = (
+        "Continue the egocentric first-person manipulation video from the "
+        "robot's rigidly head-mounted camera. Keep that same camera viewpoint; "
+        "never switch to an external, overhead, or third-person shot. Do not "
+        "show the robot's head or torso; only its hands or forearms may enter "
+        "from the bottom of the frame."
     )
+    if "rigidly head-mounted camera" in lowered and "never switch" in lowered:
+        return cleaned, False
+    return f"{task_context}. {viewpoint_contract}", True
 
 
 def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:

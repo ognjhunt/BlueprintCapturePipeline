@@ -22,7 +22,10 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import stat
 import subprocess
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -467,6 +470,42 @@ def _runner_result_from_dir(out_dir: Path) -> tuple[dict, str | None]:
     return {}, None
 
 
+def _extract_provider_output_snapshot(data: bytes, parent: Path) -> Path:
+    """Extract one provider object into an isolated, validated snapshot dir."""
+    snapshot = Path(tempfile.mkdtemp(prefix=".provider-output-snapshot-", dir=parent))
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for member in archive.infolist():
+                relative = Path(member.filename)
+                mode = (member.external_attr >> 16) & 0o170000
+                if (
+                    relative.is_absolute()
+                    or ".." in relative.parts
+                    or stat.S_ISLNK(mode)
+                ):
+                    raise ValueError(f"unsafe_provider_output_member:{member.filename}")
+                target = (snapshot / relative).resolve()
+                if os.path.commonpath([str(snapshot.resolve()), str(target)]) != str(
+                    snapshot.resolve()
+                ):
+                    raise ValueError("provider_output_member_escapes_snapshot")
+            archive.extractall(snapshot)
+        return snapshot
+    except BaseException:
+        shutil.rmtree(snapshot, ignore_errors=True)
+        raise
+
+
+def _publish_provider_output_snapshot(snapshot: Path, out_dir: Path) -> None:
+    """Replace the collected tree exactly; never merge it with an older launch."""
+    if out_dir.exists():
+        if out_dir.is_symlink() or not out_dir.is_dir():
+            out_dir.unlink()
+        else:
+            shutil.rmtree(out_dir)
+    shutil.copytree(snapshot, out_dir)
+
+
 def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provider=None,
                       max_seconds: int = 1200, poll: int = 25,
                       stop_on_success: bool = True,
@@ -504,13 +543,25 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             expected_launch_session_id = nonce_path.read_text(encoding="utf-8").strip()
         except Exception:  # noqa: BLE001
             expected_launch_session_id = ""
+    stale_launch_snapshot_count = 0
     while time.time() - t0 < max_seconds:
         time.sleep(poll)
+        snapshot: Path | None = None
         try:
             data = urllib.request.urlopen(get_url, timeout=60).read()
-            zipfile.ZipFile(io.BytesIO(data)).extractall(out_dir)
+            snapshot = _extract_provider_output_snapshot(data, out_dir.parent)
+            boot = _read_json_file(snapshot / "bootstrap.json")
+            if expected_launch_session_id and (
+                boot.get("launch_session_id") != expected_launch_session_id
+            ):
+                stale_launch_snapshot_count += 1
+                continue
+            _publish_provider_output_snapshot(snapshot, out_dir)
         except Exception:  # noqa: BLE001
             continue
+        finally:
+            if snapshot is not None:
+                shutil.rmtree(snapshot, ignore_errors=True)
         last, last_source = _runner_result_from_dir(out_dir)
         boot = _read_json_file(out_dir / "bootstrap.json")
         if boot:
@@ -541,6 +592,8 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             }
             done = False
             break
+        # A launch nonce, when present, was checked before publishing this
+        # snapshot. Only then may a terminal phase end the current watch.
         if boot.get("phase") in {"runner_done", "runner_timeout"}:
             done = True
             break
@@ -563,11 +616,22 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
         # one more fetch so the runner's FINAL upload (result json, skeleton trace, last frames)
         # lands before we delete the pod — the heartbeat that flips to runner_done races teardown.
         time.sleep(min(poll, 15))
+        snapshot = None
         try:
             data = urllib.request.urlopen(get_url, timeout=60).read()
-            zipfile.ZipFile(io.BytesIO(data)).extractall(out_dir)
+            snapshot = _extract_provider_output_snapshot(data, out_dir.parent)
+            refreshed_boot = _read_json_file(snapshot / "bootstrap.json")
+            if expected_launch_session_id and (
+                refreshed_boot.get("launch_session_id") != expected_launch_session_id
+            ):
+                stale_launch_snapshot_count += 1
+            else:
+                _publish_provider_output_snapshot(snapshot, out_dir)
         except Exception:  # noqa: BLE001
             pass
+        finally:
+            if snapshot is not None:
+                shutil.rmtree(snapshot, ignore_errors=True)
         refreshed, refreshed_source = _runner_result_from_dir(out_dir)
         if refreshed:
             last, last_source = refreshed, refreshed_source
@@ -651,6 +715,7 @@ def watch_and_collect(job_dir: Path, out_dir: Path, instance_id: str, *, provide
             "runner_done_observed": runner_done_observed,
             "runner_timeout_observed": runner_timeout_observed,
             "final_result_without_runner_done": done_from_final_result_without_runner_done,
+            "stale_launch_snapshot_count": stale_launch_snapshot_count,
             "provider_snapshot_before_teardown": provider_snapshot_before_teardown,
             "elapsed_seconds": round(time.time() - t0, 1)}
 

@@ -70,7 +70,10 @@ def legacy_worker_proof_rows(
 def _leaf(
     *, root: Path, name: str, payload: Mapping[str, Any], identity: Mapping[str, Any], role: str
 ) -> dict[str, Any]:
-    relative = f"closed_loop_out/proof_leaves/{name}"
+    if root.name == "episode_001" and root.parent.name == "closed_loop_out":
+        relative = f"closed_loop_out/episode_001/proof_leaves/{name}"
+    else:
+        relative = f"closed_loop_out/proof_leaves/{name}"
     return write_attested_leaf(
         payload=payload,
         path=root / "proof_leaves" / name,
@@ -80,13 +83,27 @@ def _leaf(
     )
 
 
-def _row(identity: Mapping[str, Any], leafs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _row(
+    identity: Mapping[str, Any],
+    leafs: Sequence[Mapping[str, Any]],
+    *,
+    verdict_passed: bool = True,
+) -> dict[str, Any]:
     refs = [dict(item) for item in leafs]
+    passed = bool(refs) and verdict_passed
     return {
-        "status": "passed" if refs else "blocked",
+        "status": "passed" if passed else "blocked",
         "identity_binding": dict(identity),
         "leaf_artifacts": refs,
-        "blockers": [] if refs else ["signed_leaf_artifacts_missing"],
+        "blockers": (
+            []
+            if passed
+            else [
+                "signed_leaf_artifacts_missing"
+                if not refs
+                else "signed_leaf_verdict_not_passed"
+            ]
+        ),
     }
 
 
@@ -114,6 +131,12 @@ def emit_worker_proof_rows(
     root = Path(output_dir)
     identity = load_attempt_identity(attempt_input_manifest)
     startup_rows_path = root / "startup_gates" / "startup_proof_rows.json"
+    if (
+        not startup_rows_path.is_file()
+        and root.name == "episode_001"
+        and root.parent.name == "closed_loop_out"
+    ):
+        startup_rows_path = root.parent / "startup_gates" / "startup_proof_rows.json"
     startup_rows: dict[str, Any] = {}
     if startup_rows_path.is_file():
         loaded = json.loads(startup_rows_path.read_text(encoding="utf-8"))
@@ -137,16 +160,37 @@ def emit_worker_proof_rows(
             )
         )
 
+    completion_by_action = {
+        str(row.get("source_action_sha256") or ""): dict(row)
+        for row in task_completion_results
+        if str(row.get("source_action_sha256") or "")
+    }
     controller_leafs: list[dict[str, Any]] = []
+    controller_payloads: list[dict[str, Any]] = []
     for index, raw_path in enumerate(controller_result_paths):
         payload = json.loads(Path(raw_path).read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
             raise ValueError("controller_fk_leaf_not_object")
+        payload = dict(payload)
+        completion = completion_by_action.get(
+            str(payload.get("source_action_sha256") or ""), {}
+        )
+        if "official_controller_action_applied" not in payload:
+            payload["official_controller_action_applied"] = (
+                completion.get("official_controller_action_applied") is True
+            )
+        if completion:
+            payload["persistent_simulator_state_applied"] = (
+                completion.get("persistent_simulator_state_applied") is True
+            )
+            payload["simulator_session_id"] = completion.get("simulator_session_id")
+            payload["stage_id"] = completion.get("stage_id")
+        controller_payloads.append(payload)
         controller_leafs.append(
             _leaf(
                 root=root,
                 name=f"controller_fk_{index:04d}.json",
-                payload=dict(payload),
+                payload=payload,
                 identity=identity,
                 role="controller",
             )
@@ -234,17 +278,49 @@ def emit_worker_proof_rows(
                     role="geometry",
                 )
             )
-        geometry_rows[row_id] = _row(identity, refs)
+        geometry_passed = (
+            payload.get("stance_valid") is True
+            and payload.get("reach_valid") is True
+            and payload.get("facing_valid") is True
+            if row_id == "stance"
+            else payload.get("collision_free") is True
+            and payload.get("clearance_valid") is True
+        )
+        geometry_rows[row_id] = _row(
+            identity, refs, verdict_passed=geometry_passed
+        )
     transition_leafs = [*measurement_leafs, judge_leaf, horizon_leaf]
     return {
         **startup_rows,
         "scene_load": _row(identity, measurement_leafs),
         "target": _row(identity, measurement_leafs),
         **geometry_rows,
-        "controller_fk": _row(identity, [policy_leaf, *controller_leafs]),
-        "persistent_simulator_transition": _row(identity, transition_leafs),
-        "forward_consistency": _row(identity, [consistency_leaf]),
-        "inverse_consistency": _row(identity, [consistency_leaf]),
+        "controller_fk": _row(
+            identity,
+            [policy_leaf, *controller_leafs],
+            verdict_passed=bool(controller_leafs)
+            and all(
+                payload.get("official_controller_action_applied") is True
+                for payload in controller_payloads
+            ),
+        ),
+        "persistent_simulator_transition": _row(
+            identity,
+            transition_leafs,
+            verdict_passed=judge.get("manipulation_success_proven") is True
+            and judge.get("did_target_manipulation_succeed") is True
+            and bool(task_completed),
+        ),
+        "forward_consistency": _row(
+            identity,
+            [consistency_leaf],
+            verdict_passed=consistency_payload["forward_consistency_proven"] is True,
+        ),
+        "inverse_consistency": _row(
+            identity,
+            [consistency_leaf],
+            verdict_passed=consistency_payload["inverse_consistency_proven"] is True,
+        ),
     }
 
 

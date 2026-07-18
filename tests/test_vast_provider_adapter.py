@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
+import shlex
 import subprocess
 import urllib.error
 import zipfile
@@ -30,6 +32,42 @@ from blueprint_pipeline.vast_provider_adapter import (
 
 
 pytestmark = pytest.mark.slow
+
+
+def test_args_log_hold_wraps_terminal_heredoc_and_preserves_probe_rc() -> None:
+    probe = """set -e
+python3 - <<'PY'
+raise SystemExit(7)
+PY
+"""
+    payload = vpa._create_payload(
+        image="image",
+        label="heredoc-probe",
+        launch_mode="args",
+        probe_script=probe,
+        disk_gb=20,
+    )
+    command = shlex.split(payload["args_str"])
+
+    assert command[:2] == ["bash", "-lc"]
+    syntax = subprocess.run(
+        ["bash", "-n", "-c", command[2]],
+        capture_output=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr.decode("utf-8", errors="replace")
+
+    executed = subprocess.run(
+        command,
+        env={**os.environ, "BLUEPRINT_VAST_ARGS_LOG_HOLD_SECONDS": "0"},
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert executed.returncode == 7
+    assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in executed.stdout
+    assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_DONE" in executed.stdout
+    assert "syntax error" not in executed.stderr.lower()
 
 
 def _paid_grant():
@@ -2084,6 +2122,52 @@ def test_vast_adapter_can_require_minimum_gpu_memory() -> None:
     assert selected["gpu_ram_mb"] == 49152
 
 
+def test_vast_adapter_caps_host_total_memory_for_known_4090_model() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "RTX 4090",
+                # Live Vast rows can expose the two-card host total here even
+                # though this ask allocates only one 24 GB GPU.
+                "gpu_ram": 49140,
+                "gpu_frac": 0.5,
+                "num_gpus": 1,
+                "dph_total": 0.40,
+                "driver_version": "590.48.01",
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "RTX 6000Ada",
+                "gpu_ram": 49140,
+                "gpu_frac": 1.0,
+                "num_gpus": 1,
+                "dph_total": 0.60,
+                "driver_version": "580.119.02",
+            },
+        ],
+        max_hourly_rate=1.00,
+        min_gpu_ram_mb=40000,
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["gpu_ram_mb"] == 49140
+    rejected_4090 = vpa._offer_summary(
+        {
+            "id": 1,
+            "gpu_name": "RTX 4090",
+            "gpu_ram": 49140,
+        }
+    )
+    assert rejected_4090["provider_reported_gpu_ram_mb"] == 49140
+    assert rejected_4090["known_model_vram_cap_mb"] == 24576
+    assert rejected_4090["gpu_ram_mb"] == 24576
+    assert rejected_4090["gpu_ram_normalization"] == "known_model_cap_applied"
+
+
 def test_vast_adapter_can_require_minimum_compute_capability() -> None:
     selected = _select_offer(
         [
@@ -2099,7 +2183,7 @@ def test_vast_adapter_can_require_minimum_compute_capability() -> None:
             {
                 "id": 2,
                 "ask_contract_id": 2,
-                "gpu_name": "RTX 4090",
+                "gpu_name": "RTX 6000Ada",
                 "gpu_ram_mb": 49140,
                 "compute_cap": 890,
                 "dph_total": 0.57,

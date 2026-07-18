@@ -225,6 +225,45 @@ def main() -> int:
     payload["oscar_inference_entrypoint_present"] = oscar_entrypoint.is_file()
     if not oscar_entrypoint.is_file():
         blockers.append("oscar_inference_entrypoint_missing")
+    oscar_dynamic_config = None
+    if oscar_entrypoint.is_file():
+        oscar_env = os.environ.copy()
+        oscar_env["PYTHONPATH"] = os.pathsep.join(
+            value for value in (OSCAR_REPO, oscar_env.get("PYTHONPATH", "").strip()) if value
+        )
+        try:
+            oscar_dynamic_config = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import importlib.metadata; "
+                        "import inference.inference_oscar; "
+                        "from worldsim._src.configs.agibot_control.config import make_config; "
+                        "assert importlib.metadata.version('pytest') == '9.1.1'; "
+                        "assert make_config() is not None; "
+                        "print('BLUEPRINT_OSCAR_DYNAMIC_CONFIG_OK')"
+                    ),
+                ],
+                cwd=OSCAR_REPO,
+                env=oscar_env,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            payload["oscar_dynamic_config_error_type"] = type(exc).__name__
+    payload["oscar_dynamic_config_constructible"] = bool(
+        oscar_dynamic_config is not None and oscar_dynamic_config.returncode == 0
+    )
+    if oscar_dynamic_config is not None:
+        payload["oscar_dynamic_config_returncode"] = oscar_dynamic_config.returncode
+        if oscar_dynamic_config.returncode != 0:
+            payload["oscar_dynamic_config_stdout_tail"] = oscar_dynamic_config.stdout[-1000:]
+            payload["oscar_dynamic_config_stderr_tail"] = oscar_dynamic_config.stderr[-2000:]
+    if not payload["oscar_dynamic_config_constructible"]:
+        blockers.append("oscar_inference_dynamic_config_not_importable")
 
     # --- exact Isaac carrier and official G1/WBC assets ---
     isaac_import = subprocess.run(
@@ -257,16 +296,11 @@ def main() -> int:
     wbc_root = Path(WBC_ROOT)
     required_wbc_assets = {
         "robot_model": wbc_root / "gear_sonic_deploy/g1/g1_29dof_with_hand.xml",
-        "runtime_binary": wbc_root
-        / "gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
-        "policy_encoder": wbc_root
-        / "gear_sonic_deploy/policy/release/model_encoder.onnx",
-        "policy_decoder": wbc_root
-        / "gear_sonic_deploy/policy/release/model_decoder.onnx",
-        "observation_config": wbc_root
-        / "gear_sonic_deploy/policy/release/observation_config.yaml",
-        "planner": wbc_root
-        / "gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx",
+        "runtime_binary": wbc_root / "gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
+        "policy_encoder": wbc_root / "gear_sonic_deploy/policy/release/model_encoder.onnx",
+        "policy_decoder": wbc_root / "gear_sonic_deploy/policy/release/model_decoder.onnx",
+        "observation_config": wbc_root / "gear_sonic_deploy/policy/release/observation_config.yaml",
+        "planner": wbc_root / "gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx",
     }
     wbc_asset_checks = {
         label: path.is_file() and path.stat().st_size > 0
@@ -319,13 +353,21 @@ def main() -> int:
                 GROOT_VENV_PYTHON,
                 "-c",
                 (
-                    "import json; from pathlib import Path; "
-                    "from transformers import Qwen3VLProcessor; "
-                    f"cfg=json.loads(Path({SONIC_CHECKPOINT!r}, 'config.json').read_text()); "
-                    "p=Path(cfg['model_name']); "
+                    "import json; from pathlib import Path; import gr00t.model; "
+                    "from gr00t.model.gr00t_n1d7.gr00t_n1d7 import get_backbone_cls; "
+                    "from transformers import AutoConfig, AutoProcessor, Qwen3VLProcessor; "
+                    f"checkpoint=Path({SONIC_CHECKPOINT!r}); "
+                    "cfg=AutoConfig.from_pretrained(str(checkpoint), local_files_only=True, trust_remote_code=True); "
+                    "p=Path(cfg.model_name); "
                     "assert p.is_absolute() and p.is_dir(); "
+                    "processor_cfg=json.loads((checkpoint/'processor/processor_config.json').read_text()); "
+                    "assert processor_cfg['processor_kwargs']['model_name'] == cfg.model_name; "
+                    "backbone_cls=get_backbone_cls(cfg); "
+                    "assert backbone_cls.__name__ == 'Qwen3Backbone'; "
+                    "AutoConfig.from_pretrained(str(p), local_files_only=True, trust_remote_code=True); "
                     "Qwen3VLProcessor.from_pretrained(str(p), local_files_only=True); "
-                    "print('BLUEPRINT_OFFLINE_COSMOS_PROCESSOR_OK')"
+                    "AutoProcessor.from_pretrained(str(checkpoint/'processor'), local_files_only=True); "
+                    "print('BLUEPRINT_OFFLINE_GROOT_SELECTOR_AND_COSMOS_PROCESSOR_OK')"
                 ),
             ],
             capture_output=True,
@@ -334,10 +376,13 @@ def main() -> int:
             check=False,
             env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
         )
+        payload["groot_checkpoint_selector_offline_constructible"] = processor_proc.returncode == 0
         payload["groot_nested_processor_offline_constructible"] = processor_proc.returncode == 0
         if processor_proc.returncode != 0:
             payload["groot_nested_processor_stderr_tail"] = processor_proc.stderr[-1000:]
-            blockers.append("groot_nested_processor_not_offline_constructible")
+            blockers.append(
+                "groot_checkpoint_selector_or_nested_processor_not_offline_constructible"
+            )
     else:
         payload["groot_policy_importable"] = False
         blockers.append("groot_venv_python_missing")

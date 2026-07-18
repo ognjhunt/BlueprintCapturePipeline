@@ -1,9 +1,9 @@
-"""Hermetic test for the per-step policy <-> WAM <-> perception closed loop (no GPU).
+"""Hermetic test for the per-step policy <-> WAM <-> observation closed loop (no GPU).
 
 Validates the loop STRUCTURE the real run depends on: each step the policy acts, a (stubbed)
-WAM generates the next observation, and the perception harness runs on it immediately. The real
-run swaps the stub WAM for per-step OSCAR-2B and the fixture harness backend for real SAM3/DA3,
-along the same code path.
+WAM generates the next observation, and the selected observation backend runs immediately. The
+direct RGB-only run swaps the stub WAM for per-step OSCAR-2B and validates the exact generated
+frame without requiring SAM3 or DA3.
 """
 
 from __future__ import annotations
@@ -12,7 +12,10 @@ import base64
 import hashlib
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -124,6 +127,39 @@ def _attest_task_completion(payload: dict, tmp_path: Path, stem: str) -> dict:
     }
 
 
+def _with_post_action_policy_state(
+    result: dict,
+    context: dict,
+    *,
+    simulator_session_id: str = "isaac-session-test",
+    stage_id: str = "isaac-stage-test",
+) -> dict:
+    step_index = int(context["step_index"])
+    source_action_sha256 = L._canonical_sha256(context["action"])
+    value = float(step_index) / 100.0
+    return {
+        **result,
+        "simulator_session_id": simulator_session_id,
+        "stage_id": stage_id,
+        "source_action_sha256": source_action_sha256,
+        "post_action_policy_state": {
+            **{
+                field: [value] * dimension
+                for field, dimension in L.UNITREE_G1_SONIC_STATE_DIMS.items()
+            },
+            "measurement": {
+                "simulator_session_id": simulator_session_id,
+                "stage_id": stage_id,
+                "source": L.POST_ACTION_POLICY_STATE_SOURCE,
+                "surrogate": False,
+                "source_action_sha256": source_action_sha256,
+                "source_step_index": step_index,
+                "captured_at_ns": str(1_000_000 + step_index),
+            },
+        },
+    }
+
+
 def _write_frame(path: Path, seed: int) -> Path:
     # a non-flat, non-dark frame so the harness frame-quality gate does not reject it
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +170,78 @@ def _write_frame(path: Path, seed: int) -> Path:
             pix[x, y] = ((x * 4 + seed) % 256, (y * 5 + seed) % 256, (x + y + seed) % 256)
     img.save(path)
     return path
+
+
+def _projected_landmark(name: str, x: float, y: float) -> dict:
+    """Controller/FK evidence with a separately attested image projection."""
+    return {
+        "name": name,
+        "landmark_id": name,
+        "x": float(x),
+        "y": float(y),
+        "image_projection": {
+            "available": True,
+            "u_px": 320.0 + float(x) * 100.0,
+            "v_px": 240.0 + float(y) * 100.0,
+        },
+    }
+
+
+def _live_fk_projection_context(tmp_path: Path) -> tuple[Path, dict]:
+    frame = tmp_path / "live_initial_policy_frame.png"
+    Image.new("RGB", (640, 480), (20, 40, 80)).save(frame)
+    context = {
+        "schema_version": L.CONTROLLER_FK_CAMERA_PROJECTION_SCHEMA_VERSION,
+        "status": L.CONTROLLER_FK_CAMERA_PROJECTION_LIVE_STATUS,
+        "attempt_id": "attempt-1",
+        "launch_nonce": "nonce-1",
+        "simulator_session_id": "isaac-session-1",
+        "stage_id": "stage-1",
+        "source_frame_artifact": {
+            "path": str(frame),
+            "sha256": hashlib.sha256(frame.read_bytes()).hexdigest(),
+            "width": 640,
+            "height": 480,
+        },
+        "camera_contract": {
+            "available": True,
+            "projection_token": "perspective",
+            "resolution": [640, 480],
+            "viewpoint_mode": "robot_head_mounted_egocentric",
+            "mount_motion_model": "rigid_head_local_transform",
+            "gaze_motion_model": "inherits_head_orientation_no_task_reaim",
+            "clipping_range_m": [0.05, 50.0],
+            "intrinsics": {
+                "available": True,
+                "image_width": 640,
+                "image_height": 480,
+            },
+        },
+        "standing_cross_simulator_registration": {
+            "status": "pending_official_mujoco_named_link_residual_verification",
+            "surrogate": False,
+        },
+        "coordinate_transform": L.CONTROLLER_FK_CAMERA_PROJECTION_TRANSFORM,
+    }
+    path = tmp_path / "controller_fk_camera_projection_context.json"
+    path.write_text(json.dumps(context), encoding="utf-8")
+    return path, context
+
+
+def test_live_fk_projection_context_requires_renderer_clipping_range(
+    tmp_path: Path,
+) -> None:
+    path, context = _live_fk_projection_context(tmp_path)
+    loaded = L._load_live_controller_fk_camera_projection_context(path)
+    assert loaded["camera_contract"]["clipping_range_m"] == [0.05, 50.0]
+
+    context["camera_contract"].pop("clipping_range_m")
+    path.write_text(json.dumps(context), encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match="controller_fk_camera_projection_context_camera_clipping_range_invalid",
+    ):
+        L._load_live_controller_fk_camera_projection_context(path)
 
 
 def _stub_wam(work: Path):
@@ -540,7 +648,7 @@ Path(os.environ['BLUEPRINT_COSMOS3_CLOSED_LOOP_OUTPUT']).write_text(json.dumps(p
             "controller_id": "controller",
             "controller_sha256": "a" * 64,
             "robot_model_sha256": "b" * 64,
-            "landmarks": [{"name": "wrist", "x": 0.1, "y": 0.0}],
+            "landmarks": [_projected_landmark("wrist", 0.1, 0.0)],
             "generated_robot_state": {
                 "source_action_sha256": action_sha256,
                 "proxy_or_surrogate": False,
@@ -635,9 +743,15 @@ def test_task_completion_command_evaluator_binds_typed_measurement(
                 "}",
                 "artifact = Path.cwd() / 'measurement.json'",
                 "artifact.write_text(json.dumps(measurement))",
+                "source_action_sha256 = hashlib.sha256(json.dumps(request.get('action') or {}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()",
+                f"state_dims = {L.UNITREE_G1_SONIC_STATE_DIMS!r}",
+                "post_state = {name: [0.02] * dim for name, dim in state_dims.items()}",
+                "post_state['measurement'] = {'simulator_session_id': 'isaac-session-1', 'stage_id': 'stage-1',",
+                f"  'source': {L.POST_ACTION_POLICY_STATE_SOURCE!r}, 'surrogate': False,",
+                "  'source_action_sha256': source_action_sha256, 'source_step_index': step, 'captured_at_ns': '1000002'}",
                 "payload = {**measurement, 'status': 'completed', 'tolerance': 0.2, 'passed': True,",
                 "  'episode_initial_value': 0.0, 'step_delta': 0.3, 'episode_delta': 0.3,",
-                "  'source_action_sha256': hashlib.sha256(json.dumps(request.get('action') or {}, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),",
+                "  'source_action_sha256': source_action_sha256, 'post_action_policy_state': post_state,",
                 "  'simulator_session_id': 'isaac-session-1', 'runtime_result_id': f'task-result-{step}',",
                 "  'persistent_simulator_state_applied': True, 'official_controller_action_applied': True,",
                 "  'simulator_backend': 'isaac', 'stage_id': 'stage-1',",
@@ -672,6 +786,19 @@ def test_task_completion_command_evaluator_binds_typed_measurement(
         }
     )
     result = dict(result)
+    command_result = json.loads(
+        (
+            tmp_path
+            / "task_evaluator"
+            / "step_0002"
+            / "task_completion_command_result.json"
+        ).read_text()
+    )
+    assert command_result["status"] == "completed"
+    assert command_result["returncode"] == 0
+    assert command_result["output_present"] is True
+    assert Path(command_result["stdout_log"]).is_file()
+    assert Path(command_result["stderr_log"]).is_file()
     result["evaluator_attestation"] = _attest_task_completion(
         result,
         tmp_path,
@@ -924,9 +1051,10 @@ def test_strict_action_consistency_rejects_boolean_only_scorer_response() -> Non
         },
     )
     assert result["forward_inverse_consistency_proven"] is False
-    assert "wam_consistency_recovered_action_missing_wrong_dim_or_nonfinite" in result[
-        "what_is_needed_to_make_forward_inverse_consistency_true"
-    ]
+    assert (
+        "wam_consistency_recovered_action_missing_wrong_dim_or_nonfinite"
+        in result["what_is_needed_to_make_forward_inverse_consistency_true"]
+    )
     assert result["rollout_checks"][0]["strict_action_aware_contract_passed"] is False
 
 
@@ -1349,6 +1477,44 @@ def test_closed_loop_runs_policy_wam_harness_per_step(tmp_path: Path) -> None:
     assert trace[1]["source_observation_frame"] == trace[0]["wam_generated_frame"]
 
 
+def test_closed_loop_generated_rgb_backend_permits_requery_without_perception_models(
+    tmp_path: Path,
+) -> None:
+    start = _write_frame(tmp_path / "start.png", seed=4)
+    route = [(-4.25, -3.35, 0.79), (-1.0, -1.0, 0.79), (1.75, 1.25, 0.79)]
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=start,
+        route_points=route,
+        wam_generate_next=_stub_wam(tmp_path),
+        steps=2,
+        harness_backend_kind=L.GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
+        allow_external_backend=False,
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "completed", manifest.get("blockers")
+    assert manifest["loop_kind"] == "per_step_policy_wam_generated_rgb_closed_loop"
+    assert manifest["real_perception_backend_used"] is False
+    assert manifest["generated_rgb_policy_observation_backend_used"] is True
+    assert manifest["sam3_da3_or_other_perception_model_ran"] is False
+    assert manifest["proof"]["generated_rgb_policy_observation_validated_steps"] == 2
+    assert manifest["proof"]["no_perception_model_steps"] == 2
+    assert manifest["proof"]["sam3_completed_steps"] == 0
+    assert manifest["proof"]["da3_completed_steps"] == 0
+
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert all(row["generated_rgb_policy_observation_validated"] for row in trace)
+    assert all(row["no_perception_model_ran"] for row in trace)
+    assert all(not row["sam3_completed"] and not row["da3_completed"] for row in trace)
+    assert all(row["policy_adapter_safe_for_policy_requery"] for row in trace)
+
+
 def test_closed_loop_requeries_learned_policy_on_wam_observation(tmp_path: Path) -> None:
     start = _write_frame(tmp_path / "start.png", seed=5)
     route = [(-4.25, -3.35, 0.79), (-1.0, -1.0, 0.79), (1.75, 1.25, 0.79)]
@@ -1384,11 +1550,11 @@ def test_closed_loop_requeries_learned_policy_on_wam_observation(tmp_path: Path)
         projection = L._with_action_conditioning_digests(
             {
                 "landmarks": [
-                    {
-                        "name": "wrist",
-                        "x": float(root_position[0]),
-                        "y": float(root_position[1]),
-                    }
+                    _projected_landmark(
+                        "wrist",
+                        float(root_position[0]),
+                        float(root_position[1]),
+                    )
                 ],
                 "derived_via_controller_fk": True,
                 "source_action_sha256": action_sha256,
@@ -1576,6 +1742,64 @@ def test_clean_frame_reanchoring_feeds_seed_frame_back(tmp_path: Path) -> None:
     assert default["clean_frame_reanchoring"]["enabled"] is False
     assert default["clean_frame_reanchor_event_count"] == 0
     assert default_trace[1]["source_observation_frame"] == default_trace[0]["wam_generated_frame"]
+
+
+def test_post_action_reanchor_selects_latest_live_egocentric_frame(tmp_path: Path) -> None:
+    frames = []
+    for frame_index in (3, 4):
+        path = tmp_path / f"robot_pov_{frame_index:04d}.png"
+        Image.new("RGB", (640, 480), (20 * frame_index, 80, 140)).save(path)
+        frames.append(
+            {
+                "camera_role": "robot_pov",
+                "outer_source_step_index": 2,
+                "frame_index": frame_index,
+                "control_frame_global_index": frame_index * 10,
+                "captured_at_ns": 1_000 + frame_index,
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "width": 640,
+                "height": 480,
+                "camera_contract": {
+                    "viewpoint_mode": "robot_head_mounted_egocentric",
+                    "robot_mounted": True,
+                    "policy_observation_eligible": True,
+                    "mount_motion_model": "rigid_head_local_transform",
+                    "gaze_motion_model": (
+                        "inherits_head_orientation_no_task_reaim"
+                    ),
+                },
+            }
+        )
+
+    selected = L._validated_post_action_egocentric_frame(
+        {"review_frames": frames},
+        source_step_index=2,
+    )
+
+    assert selected["path"].endswith("robot_pov_0004.png")
+    assert selected["control_frame_global_index"] == 40
+    assert selected["viewpoint_mode"] == "robot_head_mounted_egocentric"
+    assert selected["mount_motion_model"] == "rigid_head_local_transform"
+
+    frames[-1]["camera_contract"]["viewpoint_mode"] = (
+        "task_framed_third_person_review"
+    )
+    with pytest.raises(RuntimeError, match="post_action_robot_pov_not_egocentric"):
+        L._validated_post_action_egocentric_frame(
+            {"review_frames": frames},
+            source_step_index=2,
+        )
+
+    frames[-1]["camera_contract"]["viewpoint_mode"] = (
+        "robot_head_mounted_egocentric"
+    )
+    frames[-1]["camera_contract"]["gaze_motion_model"] = "task_target_reaimed"
+    with pytest.raises(RuntimeError, match="post_action_robot_pov_not_egocentric"):
+        L._validated_post_action_egocentric_frame(
+            {"review_frames": frames},
+            source_step_index=2,
+        )
 
 
 def test_closed_loop_emits_in_process_success_evaluator_not_proven_by_default(
@@ -1956,10 +2180,15 @@ def test_oscar_per_step_backend_drives_the_loop(tmp_path: Path) -> None:
         calls.append(dict(request))
         frame = tmp_path / "oscar_out" / f"step_{request['step_index']:04d}.png"
         _write_frame(frame, seed=request["step_index"] * 23 + 5)
+        residency_report = frame.with_name(f"residency_{request['step_index']:04d}.json")
+        residency_report.write_text('{"proof_passed": true}\n', encoding="utf-8")
         return {
             "status": "completed",
             "generated_frame_path": str(frame),
             "generated_video_path": str(frame.with_suffix(".mp4")),
+            "oscar_gpu_residency_report_path": str(residency_report),
+            "oscar_gpu_residency_samples_path": str(residency_report.with_suffix(".jsonl")),
+            "oscar_gpu_residency": {"proof_passed": True},
         }
 
     def _skeleton_for_action(action, step_index):
@@ -1994,6 +2223,163 @@ def test_oscar_per_step_backend_drives_the_loop(tmp_path: Path) -> None:
     assert calls[0]["task_prompt"] == "walk to the sink"
     assert all(c["projected_landmark_count"] == 1 for c in calls)
     assert [c["step_index"] for c in calls] == [1, 2, 3]
+    trace_rows = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert all(row["oscar_gpu_residency"]["proof_passed"] is True for row in trace_rows)
+    assert all(row["oscar_gpu_residency_report_path"] for row in trace_rows)
+
+
+@pytest.mark.parametrize(
+    ("effector_progress_m", "expected_status", "expected_generate_calls"),
+    ((0.001, "blocked", 0), (0.05, "completed", 1)),
+)
+def test_manipulation_effector_progress_gate_precedes_oscar_generation(
+    tmp_path: Path,
+    effector_progress_m: float,
+    expected_status: str,
+    expected_generate_calls: int,
+) -> None:
+    generate_calls = 0
+    action = {"policy_action": "learned", "action_chunk": [0.1, -0.1]}
+    action_sha256 = L._canonical_sha256(action)
+
+    def projector(_action, _step_index):
+        return {
+            "landmarks": [_projected_landmark("right_wrist_yaw_link", 0.1, 0.2)],
+            "derived_via_controller_fk": True,
+            "source_action_sha256": action_sha256,
+            "controller_id": "controller",
+            "controller_sha256": "a" * 64,
+            "robot_model_sha256": "b" * 64,
+            "task_target_world_xyz_m": [0.0, 0.0, 0.0],
+            "controller_fk_sequence": [
+                {
+                    "landmarks": [
+                        {
+                            "name": "right_wrist_yaw_link",
+                            "world_xyz": [0.5, 0.0, 0.0],
+                        }
+                    ]
+                },
+                {
+                    "landmarks": [
+                        {
+                            "name": "right_wrist_yaw_link",
+                            "world_xyz": [0.5 - effector_progress_m, 0.0, 0.0],
+                        }
+                    ]
+                },
+            ],
+            "generated_robot_state": {
+                "source_action_sha256": action_sha256,
+                "proxy_or_surrogate": False,
+                "joint_positions": [0.1, -0.1],
+            },
+        }
+
+    def generate(_request):
+        nonlocal generate_calls
+        generate_calls += 1
+        frame = _write_frame(tmp_path / "generated.png", seed=71)
+        return {"status": "completed", "generated_frame_path": str(frame)}
+
+    backend = L.make_oscar_per_step_wam_backend(
+        oscar_generate=generate,
+        work_dir=tmp_path / "wam",
+        task_prompt="open the microwave door",
+        skeleton_for_action=projector,
+        require_manipulation_effector_progress=True,
+    )
+
+    result = backend(str(_write_frame(tmp_path / "source.png", seed=70)), action, 1, [])
+
+    assert result["status"] == expected_status
+    assert generate_calls == expected_generate_calls
+    report = json.loads(
+        (
+            tmp_path
+            / "wam"
+            / "oscar_step_0001"
+            / "manipulation_effector_progress_report.json"
+        ).read_text()
+    )
+    assert report["capability_gate_passed"] is (expected_status == "completed")
+    if expected_status == "blocked":
+        assert result["blockers"] == [
+            "manipulation_controller_fk_no_meaningful_effector_motion"
+        ]
+
+
+def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_progress(
+    tmp_path: Path,
+) -> None:
+    action = {"policy_action": "learned", "action_chunk": [0.1, -0.1]}
+    action_sha256 = L._canonical_sha256(action)
+    generate_calls = 0
+
+    def projector(_action, _step_index):
+        return {
+            "landmarks": [_projected_landmark("right_wrist_yaw_link", 0.1, 0.2)],
+            "derived_via_controller_fk": True,
+            "source_action_sha256": action_sha256,
+            "controller_id": "controller",
+            "controller_sha256": "a" * 64,
+            "robot_model_sha256": "b" * 64,
+            "task_target_world_xyz_m": [0.0, 0.0, 0.0],
+            "controller_fk_sequence": [
+                {
+                    "landmarks": [
+                        {
+                            "name": "right_wrist_yaw_link",
+                            "world_xyz": [0.5, 0.0, 0.0],
+                        }
+                    ]
+                },
+                {
+                    "landmarks": [
+                        {
+                            "name": "right_wrist_yaw_link",
+                            "world_xyz": [0.8, 0.0, 0.0],
+                        }
+                    ]
+                },
+            ],
+            "generated_robot_state": {
+                "source_action_sha256": action_sha256,
+                "proxy_or_surrogate": False,
+                "joint_positions": [0.1, -0.1],
+            },
+        }
+
+    def generate(_request):
+        nonlocal generate_calls
+        generate_calls += 1
+        frame = _write_frame(tmp_path / "generated.png", seed=73)
+        return {"status": "completed", "generated_frame_path": str(frame)}
+
+    backend = L.make_oscar_per_step_wam_backend(
+        oscar_generate=generate,
+        work_dir=tmp_path / "wam",
+        task_prompt="open the microwave door",
+        skeleton_for_action=projector,
+        require_manipulation_effector_progress=True,
+    )
+
+    result = backend(
+        str(_write_frame(tmp_path / "source.png", seed=72)), action, 1, []
+    )
+
+    assert result["status"] == "completed"
+    assert generate_calls == 1
+    report = result["manipulation_effector_progress_report"]
+    assert report["capability_gate_passed"] is True
+    assert report["motion_capability_passed"] is True
+    assert report["directional_progress_passed"] is False
+    assert report["warnings"] == [
+        "manipulation_controller_fk_motion_not_toward_task_target"
+    ]
 
 
 def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_path: Path) -> None:
@@ -2436,6 +2822,7 @@ def test_build_oscar_inference_argv_mirrors_entrypoint(tmp_path: Path) -> None:
 
 def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> None:
     seen_argv: list[list[str]] = []
+    seen_env: dict[str, str] = {}
 
     class _Done:
         returncode = 0
@@ -2444,6 +2831,7 @@ def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> No
 
     def _fake_run(argv, **kwargs):
         seen_argv.append(list(argv))
+        seen_env.update(kwargs["env"])
         # simulate inference_oscar.py writing the output clip
         out = argv[argv.index("--output") + 1]
         Path(out).write_bytes(b"\x00fakeclip")
@@ -2481,6 +2869,609 @@ def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> No
     assert Path(out["stdout_log_path"]).read_text(encoding="utf-8") == "oscar stdout"
     assert Path(out["stderr_log_path"]).read_text(encoding="utf-8") == "oscar stderr"
     assert "--skeleton-video" in seen_argv[0]  # skeleton conditioning passed to OSCAR
+    assert seen_argv[0][seen_argv[0].index("--prompt") + 1] == (
+        "A robot performs the task: walk to the sink. "
+        "Continue the egocentric first-person manipulation video from the robot's "
+        "rigidly head-mounted camera. Keep that same camera viewpoint; never switch "
+        "to an external, overhead, or third-person shot. Do not show the robot's head "
+        "or torso; only its hands or forearms may enter from the bottom of the frame."
+    )
+    assert seen_env.get("BLUEPRINT_OSCAR_CUDNN_LIB_DIR") is None
+
+
+def test_local_oscar_gpu_residency_proves_simultaneous_four_role_ancestry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for env_name, pid in (
+        ("GROOT_PID", 100),
+        ("GEAR_SONIC_PID", 200),
+        ("ISAAC_TASK_PID", 300),
+    ):
+        monkeypatch.setenv(env_name, str(pid))
+
+    parent_by_pid = {101: 100, 201: 200, 301: 300, 401: 400}
+
+    class Done:
+        def __init__(self, stdout: str, *, returncode: int = 0, stderr: str = "") -> None:
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
+
+    def fake_nvidia_smi(argv, **_kwargs):
+        if any(str(arg).startswith("--query-gpu=") for arg in argv):
+            return Done("0, GPU-a, 24576, 12288, 12288\n")
+        return Done(
+            "\n".join(
+                (
+                    "GPU-a, 101, groot-server, 4096",
+                    "GPU-a, 201, gear-controller, 1024",
+                    "GPU-a, 301, isaac-sim, 6144",
+                    "GPU-a, 401, oscar-worker, 4096",
+                )
+            )
+            + "\n"
+        )
+
+    class FakePopen:
+        pid = 400
+        returncode = 0
+
+        def __init__(self, argv, **_kwargs) -> None:
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"video")
+
+        def communicate(self, timeout=None):
+            # Let the sampler take its immediate first snapshot; no 0.75s interval wait is needed.
+            time.sleep(0.05)
+            return "oscar stdout", ""
+
+    def extract(_video: Path, out_dir: Path) -> Path:
+        return _write_frame(out_dir / "next.png", seed=17)
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/OSCAR",
+        checkpoint="/opt/blueprint/ckpts/oscar",
+        run=lambda *_args, **_kwargs: pytest.fail("blocking run path must not be used"),
+        popen=FakePopen,
+        gpu_query_run=fake_nvidia_smi,
+        gpu_parent_pid=lambda pid: parent_by_pid.get(pid),
+        extract_next_frame=extract,
+    )
+    result = generate(
+        {
+            "step_index": 1,
+            "output_dir": str(tmp_path / "oscar_step_0001"),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave",
+            "num_frames": 8,
+            "seed": 1,
+        }
+    )
+
+    assert result["status"] == "completed"
+    report_path = Path(result["oscar_gpu_residency_report_path"])
+    samples_path = Path(result["oscar_gpu_residency_samples_path"])
+    assert report_path.is_file()
+    assert samples_path.is_file()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["proof_passed"] is True
+    assert report["same_gpu_uuids"] == ["GPU-a"]
+    assert report["peak_gpu_memory_used_mib"] == 12288.0
+    assert report["minimum_gpu_memory_free_mib"] == 12288.0
+    sample = json.loads(samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert sample["roles_by_gpu_uuid"]["GPU-a"] == [
+        "gear_sonic",
+        "groot",
+        "isaac_task",
+        "oscar",
+    ]
+
+
+def test_local_oscar_subprocess_communicate_uses_provider_timeout_and_completes(
+    tmp_path: Path,
+) -> None:
+    communicate_timeouts: list[float | None] = []
+    popen_kwargs: dict[str, object] = {}
+
+    class Done:
+        returncode = 1
+        stdout = ""
+        stderr = "nvidia-smi unavailable in unit test"
+
+    class FakePopen:
+        pid = 400
+        returncode = 0
+
+        def __init__(self, argv, **kwargs) -> None:
+            popen_kwargs.update(kwargs)
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"video")
+
+        def communicate(self, timeout=None):
+            communicate_timeouts.append(timeout)
+            time.sleep(0.05)
+            return "oscar stdout", "oscar stderr"
+
+        def terminate(self) -> None:
+            pytest.fail("a normally completed OSCAR process must not be terminated")
+
+        def kill(self) -> None:
+            pytest.fail("a normally completed OSCAR process must not be killed")
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/OSCAR",
+        checkpoint="/opt/blueprint/ckpts/oscar",
+        timeout_seconds=12.5,
+        run=lambda *_args, **_kwargs: pytest.fail("blocking run path must not be used"),
+        popen=FakePopen,
+        gpu_query_run=lambda *_args, **_kwargs: Done(),
+        extract_next_frame=lambda _video, out_dir: _write_frame(
+            out_dir / "next.png", seed=31
+        ),
+    )
+
+    result = generate(
+        {
+            "step_index": 2,
+            "output_dir": str(tmp_path / "oscar_step_0002"),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave",
+            "num_frames": 8,
+            "seed": 2,
+        }
+    )
+
+    assert result["status"] == "completed"
+    assert communicate_timeouts == [12.5]
+    assert popen_kwargs["start_new_session"] is True
+
+
+def test_local_oscar_subprocess_timeout_terminates_then_kills_and_finalizes_sampler(
+    tmp_path: Path,
+) -> None:
+    communicate_timeouts: list[float | None] = []
+    terminated = False
+    killed = False
+    extracted = False
+    process_group_signals: list[tuple[int, int]] = []
+    process_group_present = True
+    popen_kwargs: dict[str, object] = {}
+
+    class Done:
+        returncode = 1
+        stdout = ""
+        stderr = "nvidia-smi unavailable in unit test"
+
+    class FakePopen:
+        pid = 400
+        returncode = None
+
+        def __init__(self, argv, **kwargs) -> None:
+            popen_kwargs.update(kwargs)
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"partial-video")
+
+        def communicate(self, timeout=None):
+            communicate_timeouts.append(timeout)
+            if len(communicate_timeouts) == 1:
+                raise subprocess.TimeoutExpired(
+                    "oscar",
+                    timeout,
+                    output="initial stdout",
+                    stderr="initial stderr",
+                )
+            if len(communicate_timeouts) == 2:
+                assert process_group_signals == [(400, signal.SIGTERM)]
+                raise subprocess.TimeoutExpired(
+                    "oscar",
+                    timeout,
+                    output="terminated stdout",
+                    stderr="terminated stderr",
+                )
+            assert process_group_signals == [
+                (400, signal.SIGTERM),
+                (400, signal.SIGKILL),
+            ]
+            self.returncode = -9
+            return "killed stdout", "killed stderr"
+
+        def terminate(self) -> None:
+            nonlocal terminated
+            terminated = True
+            pytest.fail("timeout cleanup must signal the owned process group, not its parent")
+
+        def kill(self) -> None:
+            nonlocal killed
+            killed = True
+            pytest.fail("timeout cleanup must signal the owned process group, not its parent")
+
+    def signal_owned_group(process_group_id: int, signal_number: int) -> None:
+        nonlocal process_group_present
+        process_group_signals.append((process_group_id, signal_number))
+        if signal_number == signal.SIGKILL:
+            process_group_present = False
+
+    def must_not_extract(_video: Path, _out_dir: Path) -> None:
+        nonlocal extracted
+        extracted = True
+        raise AssertionError("timed-out OSCAR output must not be used as a WAM observation")
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/OSCAR",
+        checkpoint="/opt/blueprint/ckpts/oscar",
+        timeout_seconds=3.0,
+        run=lambda *_args, **_kwargs: pytest.fail("blocking run path must not be used"),
+        popen=FakePopen,
+        process_group_signal=signal_owned_group,
+        process_group_absent=lambda process_group_id: (
+            process_group_id == 400 and not process_group_present
+        ),
+        termination_grace_seconds=0.1,
+        gpu_query_run=lambda *_args, **_kwargs: Done(),
+        extract_next_frame=must_not_extract,
+    )
+
+    result = generate(
+        {
+            "step_index": 2,
+            "output_dir": str(tmp_path / "oscar_step_0002"),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave",
+            "num_frames": 8,
+            "seed": 2,
+        }
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["oscar_per_step_inference_timeout"]
+    assert result["generated_frame_path"] == ""
+    assert result["oscar_subprocess_timed_out"] is True
+    assert result["oscar_subprocess_timeout_seconds"] == 3.0
+    assert result["oscar_subprocess_timeout_cleanup_failed"] is False
+    assert terminated is False
+    assert killed is False
+    assert extracted is False
+    assert communicate_timeouts == [3.0, 0.1, 0.1]
+    assert popen_kwargs["start_new_session"] is True
+    assert process_group_signals == [(400, signal.SIGTERM), (400, signal.SIGKILL)]
+    assert result["oscar_subprocess_process_group_id"] == 400
+    assert result["oscar_subprocess_process_group_term_sent"] is True
+    assert result["oscar_subprocess_process_group_kill_sent"] is True
+    assert result["oscar_subprocess_process_group_absent_verified"] is True
+    assert Path(result["oscar_gpu_residency_report_path"]).is_file()
+    assert Path(result["oscar_gpu_residency_samples_path"]).is_file()
+    assert Path(result["stdout_log_path"]).read_text(encoding="utf-8") == "killed stdout"
+    stderr = Path(result["stderr_log_path"]).read_text(encoding="utf-8")
+    assert "killed stderr" in stderr
+    assert "OSCAR inference timed out after 3.000 seconds." in stderr
+
+
+def test_local_oscar_timeout_kills_owned_group_descendant_without_orphan(
+    tmp_path: Path,
+) -> None:
+    child_pid_path = tmp_path / "torchrun-child.pid"
+    helper_path = tmp_path / "fake_torchrun.py"
+    helper_path.write_text(
+        "\n".join(
+            (
+                "import signal",
+                "import subprocess",
+                "import sys",
+                "import time",
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+                "child = subprocess.Popen([",
+                "    sys.executable, '-c',",
+                "    'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)',",
+                "])",
+                "open(sys.argv[1], 'w', encoding='utf-8').write(str(child.pid))",
+                "time.sleep(60)",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    launched_processes: list[subprocess.Popen[str]] = []
+
+    def launch_fake_torchrun(_argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        kwargs["cwd"] = str(tmp_path)
+        process = subprocess.Popen(
+            [sys.executable, str(helper_path), str(child_pid_path)],
+            **kwargs,
+        )
+        launched_processes.append(process)
+        return process
+
+    class Done:
+        returncode = 1
+        stdout = ""
+        stderr = "nvidia-smi unavailable in unit test"
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo=tmp_path,
+        checkpoint=tmp_path / "checkpoint",
+        timeout_seconds=1.0,
+        termination_grace_seconds=0.5,
+        run=lambda *_args, **_kwargs: pytest.fail("blocking run path must not be used"),
+        popen=launch_fake_torchrun,
+        gpu_query_run=lambda *_args, **_kwargs: Done(),
+        extract_next_frame=lambda *_args, **_kwargs: pytest.fail(
+            "timed-out OSCAR output must not be extracted"
+        ),
+    )
+
+    result = generate(
+        {
+            "step_index": 2,
+            "output_dir": str(tmp_path / "oscar_step_0002"),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave",
+            "num_frames": 8,
+            "seed": 2,
+        }
+    )
+
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+    def child_is_live() -> bool:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    deadline = time.monotonic() + 3.0
+    while child_is_live() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    orphan_was_live = child_is_live()
+    if orphan_was_live:
+        os.kill(child_pid, signal.SIGKILL)
+
+    assert result["blockers"] == ["oscar_per_step_inference_timeout"]
+    assert result["oscar_subprocess_timeout_cleanup_failed"] is False
+    assert result["oscar_subprocess_process_group_id"] == launched_processes[0].pid
+    assert result["oscar_subprocess_process_group_term_sent"] is True
+    assert result["oscar_subprocess_process_group_kill_sent"] is True
+    assert result["oscar_subprocess_process_group_absent_verified"] is True
+    assert launched_processes[0].poll() == -signal.SIGKILL
+    assert orphan_was_live is False
+
+
+def test_oscar_gpu_residency_rejects_roles_seen_only_sequentially() -> None:
+    roots = {"groot": 100, "gear_sonic": 200, "isaac_task": 300, "oscar": 400}
+    parent_by_pid = {101: 100, 201: 200, 301: 300, 401: 400}
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def snapshot(compute_rows: str, sample_index: int) -> dict[str, object]:
+        def fake_query(argv, **_kwargs):
+            if any(str(arg).startswith("--query-gpu=") for arg in argv):
+                return Done("0, GPU-a, 24576, 8000, 16576\n")
+            return Done(compute_rows)
+
+        return L.collect_oscar_gpu_residency_sample(
+            query_run=fake_query,
+            role_root_pids=roots,
+            parent_pid=lambda pid: parent_by_pid.get(pid),
+            sample_index=sample_index,
+        )
+
+    samples = [
+        snapshot("GPU-a, 101, groot, 4000\nGPU-a, 201, gear, 1000\n", 0),
+        snapshot("GPU-a, 301, isaac, 6000\nGPU-a, 401, oscar, 4000\n", 1),
+    ]
+    report = L.summarize_oscar_gpu_residency_samples(samples, role_root_pids=roots)
+
+    assert report["proof_passed"] is False
+    assert report["simultaneous_sample_count"] == 0
+    assert "required_roles_not_simultaneously_resident_on_same_gpu" in report["blockers"]
+
+
+@pytest.mark.parametrize("failure_kind", ["query", "uuid"])
+def test_oscar_gpu_residency_rejects_query_or_uuid_failure(failure_kind: str) -> None:
+    roots = {"groot": 100, "gear_sonic": 200, "isaac_task": 300, "oscar": 400}
+
+    class Done:
+        def __init__(self, stdout: str, *, returncode: int = 0, stderr: str = "") -> None:
+            self.stdout = stdout
+            self.returncode = returncode
+            self.stderr = stderr
+
+    def fake_query(argv, **_kwargs):
+        gpu_query = any(str(arg).startswith("--query-gpu=") for arg in argv)
+        if gpu_query and failure_kind == "query":
+            return Done("", returncode=1, stderr="nvidia-smi query failed")
+        if gpu_query:
+            return Done("0, GPU-a, 24576, 12000, 12576\n")
+        app_uuid = "GPU-b" if failure_kind == "uuid" else "GPU-a"
+        return Done(
+            "\n".join(f"{app_uuid}, {pid}, {role}, 1024" for role, pid in roots.items()) + "\n"
+        )
+
+    sample = L.collect_oscar_gpu_residency_sample(
+        query_run=fake_query,
+        role_root_pids=roots,
+        parent_pid=lambda _pid: None,
+    )
+    report = L.summarize_oscar_gpu_residency_samples([sample], role_root_pids=roots)
+
+    assert report["proof_passed"] is False
+    if failure_kind == "query":
+        assert report["nvidia_smi_query_failure_detected"] is True
+    else:
+        assert report["gpu_uuid_failure_detected"] is True
+
+
+def test_oscar_gpu_residency_classifies_cuda_oom_and_nvidia_xid() -> None:
+    roots = {"groot": 100, "gear_sonic": 200, "isaac_task": 300, "oscar": 400}
+    sample = {
+        "sample_index": 0,
+        "blockers": [],
+        "simultaneous_required_roles_gpu_uuids": ["GPU-a"],
+        "roles_by_gpu_uuid": {"GPU-a": list(roots)},
+        "gpus": [
+            {
+                "uuid": "GPU-a",
+                "memory_used_mib": 23000.0,
+                "memory_free_mib": 1576.0,
+            }
+        ],
+    }
+    report = L.summarize_oscar_gpu_residency_samples(
+        [sample],
+        role_root_pids=roots,
+        runtime_diagnostics="CUDA out of memory\nNVRM: Xid 31, pid=400",
+    )
+
+    assert report["proof_passed"] is False
+    assert report["cuda_oom_detected"] is True
+    assert report["nvidia_xid_detected"] is True
+    assert "cuda_out_of_memory_detected" in report["blockers"]
+    assert "nvidia_xid_detected" in report["blockers"]
+
+
+def test_first_real_oscar_transition_fails_closed_without_four_role_residency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for env_name, pid in (
+        ("GROOT_PID", 100),
+        ("GEAR_SONIC_PID", 200),
+        ("ISAAC_TASK_PID", 300),
+    ):
+        monkeypatch.setenv(env_name, str(pid))
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def fake_nvidia_smi(argv, **_kwargs):
+        if any(str(arg).startswith("--query-gpu=") for arg in argv):
+            return Done("0, GPU-a, 24576, 12000, 12576\n")
+        # OSCAR is deliberately absent; seeing all roles across the wider run is not enough.
+        return Done("GPU-a, 100, groot, 4096\nGPU-a, 200, gear, 1024\nGPU-a, 300, isaac, 6144\n")
+
+    class FakePopen:
+        pid = 400
+        returncode = 0
+
+        def __init__(self, argv, **_kwargs) -> None:
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"video")
+
+        def communicate(self, timeout=None):
+            time.sleep(0.05)
+            return "", ""
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/OSCAR",
+        checkpoint="/opt/blueprint/ckpts/oscar",
+        run=lambda *_args, **_kwargs: pytest.fail("blocking run path must not be used"),
+        popen=FakePopen,
+        gpu_query_run=fake_nvidia_smi,
+        gpu_parent_pid=lambda _pid: None,
+        extract_next_frame=lambda _video, _out_dir: pytest.fail(
+            "a blocked first transition must not extract a frame"
+        ),
+    )
+    result = generate(
+        {
+            "step_index": 1,
+            "output_dir": str(tmp_path / "oscar_step_0001"),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave",
+            "num_frames": 8,
+            "seed": 1,
+        }
+    )
+
+    assert result["status"] == "blocked"
+    assert "oscar_first_transition_gpu_residency_proof_absent" in result["blockers"]
+    assert result["oscar_gpu_residency"]["proof_passed"] is False
+    assert (
+        "required_roles_not_simultaneously_resident_on_same_gpu"
+        in result["oscar_gpu_residency"]["blockers"]
+    )
+
+
+def test_local_oscar_subprocess_prepends_attempt_bound_cudnn_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cudnn_lib = tmp_path / "venv" / "nvidia" / "cudnn" / "lib"
+    cudnn_lib.mkdir(parents=True)
+    (cudnn_lib / "libcudnn_graph.so.9").write_bytes(b"ELF")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_CUDNN_LIB_DIR", str(cudnn_lib))
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/existing/runtime")
+    observed: dict[str, str] = {}
+
+    class Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        observed.update(kwargs["env"])
+        Path(argv[argv.index("--output") + 1]).write_bytes(b"video")
+        return Done()
+
+    def extract(_video: Path, out_dir: Path) -> Path:
+        return _write_frame(out_dir / "next.png", seed=13)
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/OSCAR",
+        checkpoint="/opt/blueprint/ckpts/oscar",
+        run=fake_run,
+        extract_next_frame=extract,
+    )
+    result = generate(
+        {
+            "output_dir": str(tmp_path / "output"),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave",
+            "num_frames": 8,
+            "seed": 1,
+        }
+    )
+
+    assert result["status"] == "completed"
+    assert observed["LD_LIBRARY_PATH"] == f"{cudnn_lib}:/existing/runtime"
+
+
+def test_local_oscar_subprocess_blocks_before_launch_on_missing_cudnn_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_OSCAR_CUDNN_LIB_DIR", str(tmp_path / "missing-cudnn"))
+    launched = False
+
+    def must_not_run(_argv, **_kwargs):
+        nonlocal launched
+        launched = True
+        raise AssertionError("OSCAR must not launch with an invalid cuDNN runtime")
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/OSCAR",
+        checkpoint="/opt/blueprint/ckpts/oscar",
+        run=must_not_run,
+        extract_next_frame=lambda _video, _out_dir: None,
+    )
+    result = generate(
+        {
+            "output_dir": str(tmp_path / "output"),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave",
+            "num_frames": 8,
+            "seed": 1,
+        }
+    )
+
+    assert launched is False
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["oscar_cudnn_runtime_directory_invalid"]
 
 
 def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> None:
@@ -2511,6 +3502,39 @@ def test_local_oscar_subprocess_generate_blocks_on_nonzero(tmp_path: Path) -> No
         Path(out["stderr_log_path"]).read_text(encoding="utf-8")
         == "error: --skeleton-video required"
     )
+
+
+def test_local_oscar_skips_inference_when_projected_skeleton_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    inference_called = False
+
+    def _must_not_run(argv, **kwargs):
+        nonlocal inference_called
+        inference_called = True
+        raise AssertionError("OSCAR inference must not run without projected conditioning")
+
+    gen = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/OSCAR",
+        checkpoint="/opt/blueprint/ckpts/oscar",
+        run=_must_not_run,
+        build_skeleton_video=lambda landmarks, out_dir: None,
+        extract_next_frame=lambda video, out_dir: None,
+    )
+    out = gen(
+        {
+            "output_dir": str(tmp_path),
+            "reference_frame_path": "/frames/current.png",
+            "task_prompt": "open the microwave door",
+            "num_frames": 81,
+            "seed": 1001,
+            "skeleton_landmarks": [{"name": "wrist", "x": 0.1, "y": 0.0}],
+        }
+    )
+
+    assert inference_called is False
+    assert out["status"] == "blocked"
+    assert out["blockers"] == ["oscar_per_step_projected_skeleton_conditioning_unavailable"]
 
 
 def test_extract_next_observation_selects_earliest_usable_future_frame(tmp_path: Path) -> None:
@@ -3462,13 +4486,171 @@ def test_cli_default_num_frames_is_standard_oscar_clip_length() -> None:
     finally:
         argparse.ArgumentParser.parse_args = real_parse
     assert parser_actions.get("num_frames") == 81
+    assert parser_actions.get("groot_sonic_execution_frame_count") == 1
+    assert parser_actions.get("no_progress_patience_steps") == 3
+
+
+def test_cli_forwards_explicit_groot_sonic_execution_frame_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import groot_sonic_policy_endpoint as endpoint_module
+
+    frame = tmp_path / "initial.png"
+    frame.write_bytes(b"frame")
+    route = tmp_path / "route.json"
+    route.write_text('{"route_points": [[0, 0, 0], [1, 0, 0]]}', encoding="utf-8")
+    initial_state = tmp_path / "initial-state.json"
+    initial_state.write_text('{"attempt_bound_state": true}', encoding="utf-8")
+    captured: dict[str, object] = {}
+    endpoint_sentinel = object()
+
+    monkeypatch.setattr(
+        L,
+        "materialize_projected_skeleton_trace_from_seed_geometry",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        L,
+        "build_closed_loop_wam_backend_readiness",
+        lambda **kwargs: {"status": "ready", "blockers": []},
+    )
+    for name in (
+        "build_closed_loop_seed_conditioning_preflight",
+        "build_closed_loop_provider_input_contract_preflight",
+        "build_closed_loop_short_visual_sanity_launch_plan",
+        "build_closed_loop_short_rollout_sanity_gate",
+    ):
+        monkeypatch.setattr(L, name, lambda **kwargs: {"status": "ready", "blockers": []})
+    monkeypatch.setattr(
+        L,
+        "make_local_oscar_subprocess_generate",
+        lambda **kwargs: lambda request: {"status": "completed"},
+    )
+    monkeypatch.setattr(
+        L,
+        "make_oscar_per_step_wam_backend",
+        lambda **kwargs: lambda request: {"status": "completed"},
+    )
+
+    def _capture_endpoint(**kwargs):
+        captured.update(kwargs)
+        return endpoint_sentinel
+
+    monkeypatch.setattr(
+        endpoint_module,
+        "make_groot_sonic_zmq_policy_endpoint",
+        _capture_endpoint,
+    )
+    monkeypatch.setattr(
+        L,
+        "run_oscar_isaac_closed_loop",
+        lambda **kwargs: (
+            captured.update({"wired_policy_endpoint": kwargs["policy_endpoint"]})
+            or {"status": "completed", "steps_executed": 1}
+        ),
+    )
+
+    assert (
+        L.main(
+            [
+                "--start-frame",
+                str(frame),
+                "--route-file",
+                str(route),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--groot-sonic-policy-server-url",
+                "tcp://127.0.0.1:5550",
+                "--groot-policy-initial-state",
+                str(initial_state),
+                "--groot-sonic-execution-frame-count",
+                "40",
+                "--action-skeleton-command",
+                "controller-fk",
+            ]
+        )
+        == 0
+    )
+    assert captured["execution_frame_count"] == 40
+    assert captured["policy_server_url"] == "tcp://127.0.0.1:5550"
+    assert captured["wired_policy_endpoint"] is endpoint_sentinel
+
+
+def test_cli_local_oscar_uses_the_current_oscar_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sealed image does not put /opt/oscar-venv/bin on PATH."""
+    frame = tmp_path / "initial.png"
+    frame.write_bytes(b"frame")
+    route = tmp_path / "route.json"
+    route.write_text('{"route_points": [[0, 0, 0], [1, 0, 0]]}', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        L,
+        "materialize_projected_skeleton_trace_from_seed_geometry",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        L,
+        "build_closed_loop_wam_backend_readiness",
+        lambda **kwargs: {"status": "ready", "blockers": []},
+    )
+    for name in (
+        "build_closed_loop_seed_conditioning_preflight",
+        "build_closed_loop_provider_input_contract_preflight",
+        "build_closed_loop_short_visual_sanity_launch_plan",
+        "build_closed_loop_short_rollout_sanity_gate",
+    ):
+        monkeypatch.setattr(L, name, lambda **kwargs: {"status": "ready", "blockers": []})
+
+    def _capture_local_oscar(**kwargs):
+        captured.update(kwargs)
+        return lambda request: {"status": "completed"}
+
+    monkeypatch.setattr(L, "make_local_oscar_subprocess_generate", _capture_local_oscar)
+    monkeypatch.setattr(
+        L,
+        "make_oscar_per_step_wam_backend",
+        lambda **kwargs: lambda request: {"status": "completed"},
+    )
+    monkeypatch.setattr(
+        L,
+        "run_oscar_isaac_closed_loop",
+        lambda **kwargs: {"status": "completed", "steps_executed": 1},
+    )
+
+    assert (
+        L.main(
+            [
+                "--start-frame",
+                str(frame),
+                "--route-file",
+                str(route),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--oscar-repo",
+                "/opt/OSCAR",
+                "--checkpoint",
+                "/opt/blueprint/ckpts/oscar",
+                "--provider-timeout-seconds",
+                "12.5",
+            ]
+        )
+        == 0
+    )
+    assert captured["python"] == sys.executable
+    assert captured["timeout_seconds"] == 12.5
 
 
 def _write_clip(path, frames):
     import cv2
     import numpy as np
 
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (64, 48))
+    height, width = frames[0].shape[:2]
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (width, height)
+    )
     for frame in frames:
         writer.write(np.ascontiguousarray(frame))
     writer.release()
@@ -3499,6 +4681,49 @@ def test_generated_clip_coherence_measures_drift(tmp_path):
 
     missing = L.generated_clip_coherence(tmp_path / "nope.mp4")
     assert missing["status"] == "not_measured"
+
+
+def test_generated_clip_coherence_rejects_correlated_artifact_soup(tmp_path):
+    """Attempt 032 stayed globally correlated while local structure collapsed."""
+
+    pytest.importorskip("cv2")
+    import cv2
+    import numpy as np
+
+    height, width = 240, 320
+    y, x = np.mgrid[:height, :width]
+    seed = np.stack(
+        (
+            (x * 255 // width),
+            (y * 255 // height),
+            ((x + y) * 255 // (width + height)),
+        ),
+        axis=2,
+    ).astype(np.uint8)
+    rng = np.random.default_rng(32)
+    corrupted = []
+    for index in range(4):
+        noise = rng.integers(0, 256, size=seed.shape, dtype=np.uint8)
+        checker = (((x // 3 + y // 3 + index) % 2) * 255).astype(np.uint8)
+        checker_rgb = np.repeat(checker[:, :, None], 3, axis=2)
+        frame = cv2.addWeighted(seed, 0.58, noise, 0.22, 0.0)
+        frame = cv2.addWeighted(frame, 0.82, checker_rgb, 0.18, 0.0)
+        corrupted.append(frame)
+    clip = tmp_path / "correlated-artifact-soup.mp4"
+    _write_clip(clip, [seed, *corrupted])
+
+    result = L.generated_clip_coherence(clip)
+
+    assert result["status"] == "measured"
+    assert result["first_frame_correlation"] > 0.5
+    assert result["coherent_horizon_frames"] == 1
+    assert result["early_frame_artifact_detected"] is True
+    assert (
+        result["first_frame_patch_correlation_median"]
+        < result["patch_correlation_floor"]
+        or result["first_frame_laplacian_variance_ratio"]
+        > result["maximum_laplacian_variance_ratio"]
+    )
 
 
 def test_closed_loop_blocks_on_incoherent_generated_clip(tmp_path):
@@ -3607,6 +4832,45 @@ def _route_walking_wam(tmp_path):
     return wam
 
 
+def _controller_fk_wam(tmp_path, events=None):
+    def wam(frame, action, step, history):
+        if events is not None:
+            events.append(f"wam{step}")
+        generated = tmp_path / f"controller_fk_gen_{step}.png"
+        _write_frame(generated, 70 + step)
+        action_sha256 = L._canonical_sha256(action)
+        action_values = action.get("action_chunk") or [float(step), -float(step)]
+        projection = L._with_action_conditioning_digests(
+            {
+                "landmarks": [
+                    _projected_landmark(
+                        "right_wrist",
+                        float(action_values[0]),
+                        float(action_values[1]),
+                    )
+                ],
+                "derived_via_controller_fk": True,
+                "source_action_sha256": action_sha256,
+                "controller_id": "unit-test-controller",
+                "controller_sha256": "a" * 64,
+                "robot_model_sha256": "b" * 64,
+                "generated_robot_state": {
+                    "source_action_sha256": action_sha256,
+                    "proxy_or_surrogate": False,
+                    "joint_positions": [float(value) for value in action_values],
+                },
+            }
+        )
+        return {
+            "status": "completed",
+            "generated_frame_path": str(generated),
+            "skeleton_conditioning": projection,
+            "generated_robot_state": projection["generated_robot_state"],
+        }
+
+    return wam
+
+
 def test_episode_ends_when_task_target_reached(tmp_path):
     # Short route: the deterministic walk reaches the target well before the
     # steps cap, so the episode should terminate early with the task reason.
@@ -3649,6 +4913,16 @@ def test_manipulation_does_not_terminate_on_robot_root_proximity(tmp_path):
 
 
 def test_manipulation_terminates_only_on_registered_observable_transition(tmp_path):
+    endpoint_steps: list[int] = []
+
+    def policy_endpoint(observation, history, step_index):
+        endpoint_steps.append(step_index)
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.1 * step_index, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
     evidence = tmp_path / "door-state-transition.json"
     evidence.write_text(
         json.dumps(
@@ -3685,6 +4959,7 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
             "passed": passed,
             "evidence_artifacts": [evidence_ref],
         }
+        result = _with_post_action_policy_state(result, context)
         result["evaluator_attestation"] = _attest_task_completion(
             result,
             tmp_path,
@@ -3696,8 +4971,9 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
         output_dir=tmp_path / "manipulation_transition_out",
         start_frame_path=_write_frame(tmp_path / "manipulation_transition_seed.png", 9),
         route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
-        wam_generate_next=_route_walking_wam(tmp_path),
+        wam_generate_next=_controller_fk_wam(tmp_path),
         steps=5,
+        policy_endpoint=policy_endpoint,
         stop_on_task_completion=True,
         perception_target_prompts=["open the refrigerator"],
         task_success_contract={
@@ -3725,6 +5001,380 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
     transition = manifest["proof"]["registered_task_completion_transition"]
     assert transition["registered_transition_passed"] is True
     assert transition["validated_evidence_artifacts"][0]["sha256"] == evidence_ref["sha256"]
+    assert endpoint_steps == [0, 1, 2]
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace[1]["requery_status"] == ("completed_terminal_observation_not_executed")
+    assert trace[1]["terminal_observation_policy_requery"] is True
+    assert trace[1]["terminal_observation_policy_action_execution_status"] == (
+        "not_executed_semantic_terminal"
+    )
+
+
+def test_manipulation_stall_watchdog_terminates_without_claiming_success(tmp_path):
+    def policy_endpoint(observation, history, step_index):
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.0, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    def evaluator(context):
+        step_index = int(context["step_index"])
+        evidence = tmp_path / f"stalled-door-state-{step_index}.json"
+        measurement = {
+            "schema_version": "task_transition_measurement.v1",
+            "criterion_id": "door_articulation_angle",
+            "observable_transition": "door_angle_rad_increased",
+            "before_value": 0.0,
+            "after_value": 0.0,
+            "unit": "radian",
+            "source_step_index": step_index,
+        }
+        evidence.write_text(json.dumps(measurement) + "\n", encoding="utf-8")
+        result = {
+            "status": "completed",
+            **{key: value for key, value in measurement.items() if key != "schema_version"},
+            "episode_initial_value": 0.0,
+            "tolerance": 0.2,
+            "passed": False,
+            "evidence_artifacts": [
+                {
+                    "path": str(evidence),
+                    "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+                }
+            ],
+        }
+        result = _with_post_action_policy_state(result, context)
+        result["evaluator_attestation"] = _attest_task_completion(
+            result,
+            tmp_path,
+            f"stalled-door-step-{step_index}",
+        )
+        return result
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "manipulation_stall_out",
+        start_frame_path=_write_frame(tmp_path / "manipulation_stall_seed.png", 9),
+        route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
+        wam_generate_next=_controller_fk_wam(tmp_path),
+        steps=12,
+        policy_endpoint=policy_endpoint,
+        stop_on_task_completion=True,
+        stop_on_no_progress=True,
+        no_progress_patience_steps=3,
+        perception_target_prompts=["open the refrigerator"],
+        task_success_contract={
+            "task_kind": "manipulation",
+            "criteria": [
+                {
+                    "criterion_id": "door_articulation_angle",
+                    "observable_transition": "door_angle_rad_increased",
+                    "comparison": "increase_at_least",
+                    "tolerance": 0.2,
+                    "unit": "radian",
+                }
+            ],
+        },
+        task_completion_evaluator=evaluator,
+    )
+
+    termination = manifest["episode_termination"]
+    assert termination["reason"] == "no_task_progress_at_step_4"
+    assert termination["steps_executed"] == 4
+    assert termination["stop_on_no_progress"] is True
+    assert termination["task_completed_early"] is False
+    assert manifest["manipulation_success_proven"] is False
+    assert "online_task_no_progress_at_step_4" in manifest["blockers"]
+    assert termination["task_progress_history"][-1]["terminal_now"] is True
+
+
+def test_one_action_semantic_terminal_requeries_wam_observation_without_execution(
+    tmp_path,
+):
+    endpoint_calls: list[dict] = []
+    evaluator_steps: list[int] = []
+
+    def policy_endpoint(observation, history, step_index):
+        endpoint_calls.append(
+            {
+                "step_index": step_index,
+                "camera_frame_path": observation.get("camera_frame_path"),
+                "history_length": len(history),
+            }
+        )
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.1 * step_index, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    evidence = tmp_path / "step-one-door-state-transition.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "task_transition_measurement.v1",
+                "criterion_id": "door_articulation_angle",
+                "observable_transition": "door_angle_rad_increased",
+                "before_value": 0.0,
+                "after_value": 0.3,
+                "unit": "radian",
+                "source_step_index": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence_ref = {
+        "path": str(evidence),
+        "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+    }
+
+    def evaluator(context):
+        evaluator_steps.append(context["step_index"])
+        result = _with_post_action_policy_state(
+            {
+                "status": "completed",
+                "criterion_id": "door_articulation_angle",
+                "observable_transition": "door_angle_rad_increased",
+                "before_value": 0.0,
+                "after_value": 0.3,
+                "episode_initial_value": 0.0,
+                "tolerance": 0.2,
+                "unit": "radian",
+                "source_step_index": context["step_index"],
+                "passed": True,
+                "evidence_artifacts": [evidence_ref],
+            },
+            context,
+        )
+        result["evaluator_attestation"] = _attest_task_completion(
+            result,
+            tmp_path,
+            "step-one-door",
+        )
+        return result
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "step_one_semantic_terminal",
+        start_frame_path=_write_frame(tmp_path / "step_one_seed.png", 31),
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=_controller_fk_wam(tmp_path),
+        steps=5,
+        min_steps=1,
+        policy_endpoint=policy_endpoint,
+        stop_on_task_completion=True,
+        perception_target_prompts=["open the microwave door"],
+        task_success_contract={
+            "task_kind": "manipulation",
+            "criteria": [
+                {
+                    "criterion_id": "door_articulation_angle",
+                    "observable_transition": "door_angle_rad_increased",
+                    "comparison": "increase_at_least",
+                    "tolerance": 0.2,
+                    "unit": "radian",
+                }
+            ],
+        },
+        task_completion_evaluator=evaluator,
+    )
+
+    assert manifest["status"] == "completed", manifest["blockers"]
+    assert manifest["steps_executed"] == 1
+    assert manifest["episode_termination"]["task_completed_early"] is True
+    assert evaluator_steps == [1]
+    assert [call["step_index"] for call in endpoint_calls] == [0, 1]
+    assert endpoint_calls[1]["history_length"] == 1
+
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(trace) == 1
+    assert endpoint_calls[1]["camera_frame_path"] == trace[0]["wam_generated_frame"]
+    assert trace[0]["policy_requeried_on_wam_observation"] is True
+    assert trace[0]["requery_status"] == ("completed_terminal_observation_not_executed")
+    assert trace[0]["safe_for_policy_requery"] is False
+    assert trace[0]["safe_for_terminal_observation_requery"] is True
+    assert trace[0]["terminal_observation_policy_requery"] is True
+    assert trace[0]["terminal_observation_policy_action_execution_status"] == (
+        "not_executed_semantic_terminal"
+    )
+    assert len(trace[0]["terminal_observation_policy_requery_action_sha256"]) == 64
+
+    proof = manifest["proof"]
+    assert proof["isaac_policy_actions_recorded"] == 1
+    assert proof["learned_policy_requery_count"] == 2
+    assert proof["terminal_observation_policy_requery_count"] == 1
+    assert proof["terminal_observation_policy_requery_proven"] is True
+    assert proof["policy_endpoint_requery_contract_proven"] is True
+    assert proof["policy_observes_wam_generated_next_observation"] is True
+    assert proof["action_derived_skeleton_conditioned_steps"] == 1
+    assert proof["fresh_actions_all_controller_fk_conditioned"] is True
+    assert proof["fresh_action_conditioning_differentiation_proven"] is False
+    assert proof["fresh_action_conditioning_differentiation_applicable"] is False
+    assert proof["fresh_action_conditioning_differentiation_requirement_satisfied"] is True
+    assert proof["fresh_action_conditioning_differentiation_status"] == (
+        "not_applicable_single_executed_action_semantic_terminal"
+    )
+
+
+def test_persistent_isaac_apply_precedes_requery_and_supplies_live_state(tmp_path):
+    events: list[str] = []
+    requery_observations: list[dict] = []
+    applied_action_sha256s: list[str] = []
+
+    def policy_endpoint(observation, history, step_index):
+        events.append(f"policy{step_index}")
+        requery_observations.append(dict(observation))
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.2 * step_index, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    def evaluator(context):
+        events.append(f"apply{context['step_index']}")
+        applied_action_sha256s.append(L._canonical_sha256(context["action"]))
+        return _with_post_action_policy_state(
+            {
+                "status": "completed",
+                "source_step_index": context["step_index"],
+                "passed": False,
+            },
+            context,
+        )
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "apply_before_requery",
+        start_frame_path=_write_frame(tmp_path / "apply_before_requery_seed.png", 14),
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=_controller_fk_wam(tmp_path, events),
+        steps=2,
+        policy_endpoint=policy_endpoint,
+        task_success_contract={"task_kind": "navigation_smoke"},
+        task_completion_evaluator=evaluator,
+    )
+
+    assert events == ["policy0", "wam1", "apply1", "policy1", "wam2", "apply2"]
+    live_observation = requery_observations[1]
+    assert live_observation["unitree_g1_sonic_state_source"] == (L.POST_ACTION_POLICY_STATE_SOURCE)
+    assert live_observation["unitree_g1_sonic_state"]["left_leg"] == [0.01] * 6
+    assert live_observation["unitree_g1_sonic_state_metadata"] == {
+        "complete": True,
+        "surrogate": False,
+        "measured_proprio_available": True,
+        "simulator_session_id": "isaac-session-test",
+        "stage_id": "isaac-stage-test",
+        "source_action_sha256": applied_action_sha256s[0],
+        "source_step_index": 1,
+        "captured_at_ns": "1000001",
+    }
+    assert (
+        live_observation["controller_fk_generated_robot_state"]
+        != (live_observation["unitree_g1_sonic_state"])
+    )
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace[0]["post_action_policy_state_validated"] is True
+    assert trace[0]["requery_status"] == "completed"
+
+
+def test_unsafe_live_stance_dynamically_terminates_before_policy_requery(tmp_path):
+    endpoint_steps: list[int] = []
+
+    def policy_endpoint(_observation, _history, step_index):
+        endpoint_steps.append(step_index)
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.0, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    def evaluator(context):
+        result = _with_post_action_policy_state(
+            {
+                "status": "completed",
+                "source_step_index": context["step_index"],
+                "passed": False,
+            },
+            context,
+        )
+        result["post_action_policy_state"]["projected_gravity"] = [0.82, 0.0, -0.31]
+        return result
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "unsafe_stance",
+        start_frame_path=_write_frame(tmp_path / "unsafe_stance_seed.png", 73),
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=_controller_fk_wam(tmp_path),
+        steps=48,
+        policy_endpoint=policy_endpoint,
+        task_success_contract={"task_kind": "navigation_smoke"},
+        task_completion_evaluator=evaluator,
+        stop_on_unsafe_stance=True,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["steps_executed"] == 1
+    assert endpoint_steps == [0]
+    assert manifest["episode_termination"]["reason"] == "unsafe_stance_detected_at_step_1"
+    assert manifest["episode_termination"]["unsafe_stance_detected"] is True
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace[0]["requery_status"] == "skipped_unsafe_stance"
+    assert trace[0]["post_action_stance_report"]["status"] == "unsafe"
+
+
+def test_malformed_post_action_state_blocks_without_requery(tmp_path):
+    endpoint_steps: list[int] = []
+
+    def policy_endpoint(observation, history, step_index):
+        endpoint_steps.append(step_index)
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.1 * step_index, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    def evaluator(context):
+        result = _with_post_action_policy_state(
+            {"status": "completed", "source_step_index": context["step_index"]},
+            context,
+        )
+        result["post_action_policy_state"]["left_leg"] = [0.0] * 5
+        return result
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "malformed_post_action_state",
+        start_frame_path=_write_frame(tmp_path / "malformed_post_action_seed.png", 15),
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=_controller_fk_wam(tmp_path),
+        steps=3,
+        policy_endpoint=policy_endpoint,
+        task_success_contract={"task_kind": "navigation_smoke"},
+        task_completion_evaluator=evaluator,
+    )
+
+    assert endpoint_steps == [0]
+    assert manifest["status"] == "blocked"
+    assert any(
+        "post_action_policy_state_left_leg_dimension_5_expected_6" in blocker
+        for blocker in manifest["blockers"]
+    )
+    trace = [
+        json.loads(line)
+        for line in Path(manifest["trace_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace[0]["post_action_policy_state_validated"] is False
+    assert trace[0]["requery_status"] == "skipped_task_completion_evaluation_failed"
 
 
 def test_task_transition_measurement_artifact_must_bind_exact_content(tmp_path):
@@ -3782,7 +5432,15 @@ def test_task_transition_measurement_artifact_must_bind_exact_content(tmp_path):
             expected_source_step_index=2,
         )
 
-    assert validate(base_measurement, name="valid")["registered_transition_passed"] is True
+    valid = validate(base_measurement, name="valid")
+    assert valid["registered_transition_passed"] is True
+    revalidated = L._validate_task_completion_transition(
+        completion_result=valid,
+        task_success_contract=contract,
+        expected_source_step_index=2,
+    )
+    assert revalidated["registered_transition_passed"] is True
+    assert revalidated["evaluator_attestation_validation"]["status"] == "validated"
     for field, bad_value in (
         ("criterion_id", "different_criterion"),
         ("observable_transition", "different_transition"),
@@ -3804,6 +5462,67 @@ def test_task_transition_measurement_artifact_must_bind_exact_content(tmp_path):
     untyped = validate({"before": 0.0, "after": 0.3}, name="untyped")
     assert untyped["registered_transition_passed"] is False
     assert "task_transition_measurement_schema_invalid:0" in untyped["validation_blockers"]
+
+
+def test_task_transition_revalidation_preserves_live_service_signed_optional_fields(tmp_path):
+    contract = {
+        "task_kind": "manipulation",
+        "criteria": [
+            {
+                "criterion_id": "door_articulation_angle",
+                "observable_transition": "door_angle_rad_increased",
+                "comparison": "increase_at_least",
+                "tolerance": 0.2,
+                "unit": "radian",
+                "articulation_prim_path": "/World/Door",
+            }
+        ],
+    }
+    measurement = {
+        "schema_version": "task_transition_measurement.v1",
+        "criterion_id": "door_articulation_angle",
+        "observable_transition": "door_angle_rad_increased",
+        "comparison": "increase_at_least",
+        "articulation_prim_path": "/World/Door",
+        "before_value": 0.0,
+        "after_value": 0.3,
+        "episode_initial_value": 0.0,
+        "tolerance": 0.2,
+        "unit": "radian",
+        "source_step_index": 2,
+        "passed": True,
+    }
+    evidence_path = tmp_path / "live-service-measurement.json"
+    evidence_path.write_text(json.dumps(measurement) + "\n", encoding="utf-8")
+    result = {
+        **measurement,
+        "status": "completed",
+        "evidence_artifacts": [
+            {
+                "path": str(evidence_path),
+                "sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+            }
+        ],
+    }
+    result["evaluator_attestation"] = _attest_task_completion(
+        result,
+        tmp_path,
+        "live-service-signed-optional-fields",
+    )
+
+    validated = L._validate_task_completion_transition(
+        completion_result=result,
+        task_success_contract=contract,
+        expected_source_step_index=2,
+    )
+    assert validated["registered_transition_passed"] is True
+    revalidated = L._validate_task_completion_transition(
+        completion_result=validated,
+        task_success_contract=contract,
+        expected_source_step_index=2,
+    )
+    assert revalidated["registered_transition_passed"] is True
+    assert revalidated["evaluator_attestation_validation"]["status"] == "validated"
 
 
 def test_manipulation_rejects_unregistered_or_unhashed_transition_evidence(tmp_path):
@@ -3869,7 +5588,7 @@ def test_action_conditioning_rejects_proxy_and_binds_fresh_action_identity():
     action_sha = L._canonical_sha256(action)
     projection = L._with_action_conditioning_digests(
         {
-            "landmarks": [{"name": "wrist", "x": 0.1, "y": 0.0}],
+            "landmarks": [_projected_landmark("wrist", 0.1, 0.0)],
             "derived_via_controller_fk": True,
             "source_action_sha256": action_sha,
             "controller_id": "unitree-g1-controller-v1",
@@ -3917,7 +5636,99 @@ def test_action_conditioning_rejects_proxy_and_binds_fresh_action_identity():
     )
     assert "fresh_action_skeleton_landmark_id_missing:0" in empty_blockers
     assert "fresh_action_skeleton_landmark_numeric_evidence_missing:0" in empty_blockers
+    assert "fresh_action_skeleton_landmark_pixel_projection_missing_or_invalid:0" in empty_blockers
     assert "generated_robot_state_numeric_evidence_missing" in empty_blockers
+
+    raw_fk_only = L._with_action_conditioning_digests(
+        {
+            **projection,
+            "landmarks": [{"name": "wrist", "x": 0.1, "y": 0.0, "z": 0.8}],
+        }
+    )
+    raw_fk_blockers = L._action_conditioning_blockers(
+        action=action,
+        wam_output={
+            "skeleton_conditioning": raw_fk_only,
+            "generated_robot_state": raw_fk_only["generated_robot_state"],
+        },
+    )
+    assert "fresh_action_skeleton_landmark_pixel_projection_missing_or_invalid:0" in raw_fk_blockers
+
+    offscreen_projection = L._with_action_conditioning_digests(
+        {
+            **projection,
+            "landmarks": [
+                {
+                    "name": "wrist",
+                    "x": 0.1,
+                    "y": 0.0,
+                    "z": 0.8,
+                    "image_projection": {
+                        "available": False,
+                        "unavailable_reason": "outside_live_camera_viewport",
+                        "u_px": 320.0,
+                        "v_px": 650.0,
+                    },
+                }
+            ],
+        }
+    )
+    assert L._action_conditioning_blockers(
+        action=action,
+        wam_output={
+            "skeleton_conditioning": offscreen_projection,
+            "generated_robot_state": offscreen_projection["generated_robot_state"],
+        },
+    ) == []
+
+
+def test_policy_endpoint_action_record_preserves_selected_sonic_control_metadata():
+    """The GR00T -> loop composition must not drop fields required by GEAR.
+
+    A live SONIC response is a 40-frame horizon, but the policy boundary emits
+    exactly one 78-value frame for receding-horizon controller execution. The
+    loop preserves its units/timing and the full-horizon digest metadata.
+    """
+
+    selected = [float(index) / 1000.0 for index in range(78)]
+    units = ["latent"] * 64 + ["rad"] * 14
+    timing = {
+        "control_hz": 50.0,
+        "sample_period_seconds": 0.02,
+        "selected_horizon_frame_index": 0,
+        "source_horizon_frame_count": 40,
+    }
+    horizon = {
+        "schema_version": "unitree_g1_sonic_action_horizon.v1",
+        "frame_count": 40,
+        "frame_dimension": 78,
+        "full_dimension": 3120,
+        "source_fieldwise_horizon_sha256": "a" * 64,
+        "selected_frame_sha256": "b" * 64,
+        "selected_frame_index": 0,
+        "selection_mode": "fresh_receding_horizon_first_frame",
+    }
+    endpoint_action = {
+        "policy_action": "UNITREE_G1_SONIC",
+        "root_position": [0.1, 0.2, 0.79],
+        "sonic_action_chunk": selected,
+        "action_units": units,
+        "action_timing": timing,
+        "action_horizon": horizon,
+    }
+
+    action = L._action_record_from_policy_endpoint(
+        base_action={"root_position": [0.0, 0.0, 0.79]},
+        endpoint_action=endpoint_action,
+        requery_source_step_index=0,
+        source_observation_kind="initial_real_observation",
+    )
+
+    assert action["sonic_action_chunk"] == selected
+    assert action["action_units"] == units
+    assert action["action_timing"] == timing
+    assert action["action_horizon"] == horizon
+    assert action["learned_policy_endpoint_action"] == endpoint_action
 
 
 def test_controller_fk_skeleton_command_binds_exact_action_and_state(tmp_path):
@@ -3947,7 +5758,20 @@ payload = {
     'robot_model_sha256': robot_model_sha256,
     'controller_code_artifact': {'path': str(controller_code), 'sha256': controller_sha256},
     'robot_model_artifact': {'path': str(robot_model), 'sha256': robot_model_sha256},
-    'landmarks': [{'name':'wrist','x':action[0],'y':action[1]}],
+    'camera_projection_context_sha256': 'c' * 64,
+    'camera_source_frame_sha256': 'd' * 64,
+    'cross_simulator_registration': {'status': 'passed', 'surrogate': False},
+    'landmarks': [{
+        'name': 'wrist',
+        'landmark_id': 'wrist',
+        'x': action[0],
+        'y': action[1],
+        'image_projection': {
+            'available': True,
+            'u_px': 320.0 + action[0] * 100.0,
+            'v_px': 240.0 + action[1] * 100.0,
+        },
+    }],
     'generated_robot_state': {
         'source_action_sha256': request['source_action_sha256'],
         'proxy_or_surrogate': False,
@@ -3967,6 +5791,9 @@ signed_result = {
     'robot_model_artifact': payload['robot_model_artifact'],
     'derived_via_controller_fk': True,
     'landmarks': payload['landmarks'],
+    'camera_projection_context_sha256': payload['camera_projection_context_sha256'],
+    'camera_source_frame_sha256': payload['camera_source_frame_sha256'],
+    'cross_simulator_registration': payload['cross_simulator_registration'],
     'generated_robot_state': payload['generated_robot_state'],
 }
 payload['executor_attestation'] = build_sc3_runtime_attestation(
@@ -3996,6 +5823,31 @@ json.dump(payload, open(os.environ['BLUEPRINT_CONTROLLER_FK_OUTPUT'], 'w'))
         projector(action, 1)
 
 
+def test_controller_fk_skeleton_nonzero_persists_process_diagnostics(tmp_path):
+    command = tmp_path / "controller_fk_failure.py"
+    command.write_text(
+        "import sys\nprint('fk stdout marker')\nprint('fk stderr marker', file=sys.stderr)\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    work_dir = tmp_path / "controller_fk_failure"
+    projector = L.make_controller_fk_skeleton_projector(
+        command=f"{sys.executable} {command}",
+        work_dir=work_dir,
+    )
+
+    with pytest.raises(RuntimeError, match="controller_fk_skeleton_command_nonzero:7"):
+        projector({"policy_action": "UNITREE_G1_SONIC", "action_chunk": [0.1] * 78}, 1)
+
+    step_dir = work_dir / "step_0001"
+    result = json.loads((step_dir / "controller_fk_command_result.json").read_text())
+    assert result["schema_version"] == "controller_fk_command_result.v1"
+    assert result["returncode"] == 7
+    assert result["output_present"] is False
+    assert Path(result["stdout_log"]).read_text() == "fk stdout marker\n"
+    assert Path(result["stderr_log"]).read_text() == "fk stderr marker\n"
+
+
 def test_per_step_backend_uses_distinct_fresh_action_skeletons(tmp_path):
     captured = []
 
@@ -4004,7 +5856,7 @@ def test_per_step_backend_uses_distinct_fresh_action_skeletons(tmp_path):
         action_sha = L._canonical_sha256(action)
         return {
             "landmarks": [
-                {"name": "wrist", "x": float(value), "y": float(step_index)} for value in chunk
+                _projected_landmark("wrist", float(value), float(step_index)) for value in chunk
             ],
             "derived_via_controller_fk": True,
             "source_action_sha256": action_sha,
@@ -4065,11 +5917,11 @@ def test_strict_closed_loop_requires_action_differentiated_fk_evidence(
         action_sha = L._canonical_sha256(action)
         return {
             "landmarks": [
-                {
-                    "name": "wrist",
-                    "x": float(evidence_chunk[0]),
-                    "y": float(evidence_chunk[1]),
-                }
+                _projected_landmark(
+                    "wrist",
+                    float(evidence_chunk[0]),
+                    float(evidence_chunk[1]),
+                )
             ],
             "derived_via_controller_fk": True,
             "source_action_sha256": action_sha,
@@ -4118,6 +5970,13 @@ def test_strict_closed_loop_requires_action_differentiated_fk_evidence(
     assert manifest["status"] == expected_status
     assert manifest["proof"]["fresh_action_conditioning_differentiation_proven"] is (
         distinct_evidence
+    )
+    assert manifest["proof"]["fresh_action_conditioning_differentiation_applicable"] is True
+    assert manifest["proof"][
+        "fresh_action_conditioning_differentiation_requirement_satisfied"
+    ] is bool(distinct_evidence)
+    assert manifest["proof"]["fresh_action_conditioning_differentiation_status"] == (
+        "proven" if distinct_evidence else "not_proven"
     )
     if not distinct_evidence:
         assert any(
@@ -4291,17 +6150,11 @@ def test_transition_verdict_uses_episode_baseline_not_step_pair(tmp_path):
             expected_source_step_index=step,
         )
 
-    first = validate(
-        step=0, before=0.0, after=0.2, initial=0.0, passed=False, name="step0"
-    )
+    first = validate(step=0, before=0.0, after=0.2, initial=0.0, passed=False, name="step0")
     assert first["registered_transition_passed"] is False
-    assert "task_transition_reported_verdict_mismatch" not in first[
-        "validation_blockers"
-    ]
+    assert "task_transition_reported_verdict_mismatch" not in first["validation_blockers"]
 
-    second = validate(
-        step=1, before=0.2, after=0.4, initial=0.0, passed=True, name="step1"
-    )
+    second = validate(step=1, before=0.2, after=0.4, initial=0.0, passed=True, name="step1")
     assert second["registered_transition_passed"] is True
 
     step_pair_only = validate(
@@ -4314,7 +6167,4 @@ def test_transition_verdict_uses_episode_baseline_not_step_pair(tmp_path):
         episode_fields=False,
     )
     assert step_pair_only["registered_transition_passed"] is False
-    assert any(
-        "episode_initial_value" in item
-        for item in step_pair_only["validation_blockers"]
-    )
+    assert any("episode_initial_value" in item for item in step_pair_only["validation_blockers"])

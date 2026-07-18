@@ -273,40 +273,122 @@ def _action_field(action: Mapping[str, Any], key: str) -> Any:
     return action.get(f"action.{key}")
 
 
+SONIC_MOTION_TOKEN_DIM = 64
+SONIC_HAND_DIM = 7
+SONIC_CONTROL_FRAME_DIM = SONIC_MOTION_TOKEN_DIM + 2 * SONIC_HAND_DIM
+SONIC_ACTION_SEQUENCE_SCHEMA_VERSION = "unitree_g1_sonic_action_sequence.v1"
+
+
+def _sonic_horizon_frames(value: Any, *, width: int, name: str) -> np.ndarray:
+    """Return one row per predicted control frame without losing field shape."""
+
+    try:
+        array = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"blocked_{name}_not_numeric") from exc
+    if array.ndim < 1 or array.size == 0 or array.shape[-1] != width:
+        raise ValueError(f"blocked_{name}_shape_invalid")
+    frames = array.reshape(-1, width)
+    if not np.isfinite(frames).all():
+        raise ValueError(f"blocked_{name}_nonfinite")
+    return frames
+
+
 def _normalize_policy_server_action(action: Mapping[str, Any]) -> dict[str, Any] | None:
     motion_token = _action_field(action, "motion_token")
     left_hand = _action_field(action, "left_hand_joints")
     right_hand = _action_field(action, "right_hand_joints")
     if motion_token is None and left_hand is None and right_hand is None:
         return None
-    action_chunk: list[float] = []
-    action_units: list[str] = []
-    for field_name, value in (
-        ("motion_token", motion_token),
-        ("left_hand_joints", left_hand),
-        ("right_hand_joints", right_hand),
-    ):
-        if value is not None:
-            flattened = np.asarray(value, dtype=np.float32).reshape(-1).tolist()
-            action_chunk.extend(flattened)
-            action_units.extend(
-                ["latent" if field_name == "motion_token" else "rad"] * len(flattened)
-            )
-    fields = sorted(
-        key
-        for key, value in (
-            ("motion_token", motion_token),
-            ("left_hand_joints", left_hand),
-            ("right_hand_joints", right_hand),
-        )
-        if value is not None
+    if motion_token is None or left_hand is None or right_hand is None:
+        raise ValueError("blocked_incomplete_unitree_g1_sonic_control_fields")
+
+    motion_frames = _sonic_horizon_frames(
+        motion_token,
+        width=SONIC_MOTION_TOKEN_DIM,
+        name="unitree_g1_sonic_motion_token",
     )
+    left_frames = _sonic_horizon_frames(
+        left_hand,
+        width=SONIC_HAND_DIM,
+        name="unitree_g1_sonic_left_hand",
+    )
+    right_frames = _sonic_horizon_frames(
+        right_hand,
+        width=SONIC_HAND_DIM,
+        name="unitree_g1_sonic_right_hand",
+    )
+    frame_count = int(motion_frames.shape[0])
+    if int(left_frames.shape[0]) != frame_count or int(right_frames.shape[0]) != frame_count:
+        raise ValueError("blocked_unitree_g1_sonic_horizon_frame_count_mismatch")
+
+    # Assemble frames while the three model outputs still retain their field
+    # boundaries.  ``action_chunk`` remains frame zero for compatibility with
+    # existing receding-horizon callers, while ``sonic_action_sequence`` binds
+    # every model-produced frame for callers that explicitly opt into bounded
+    # horizon execution.  The former field-wise flattening (all motion, then
+    # all left, then all right) made a 40-frame result look like one corrupt
+    # 3,120-value controller command.
+    execution_frames = np.concatenate(
+        (motion_frames, left_frames, right_frames), axis=1
+    ).astype(np.float32)
+    selected_frame_index = 0
+    selected = execution_frames[selected_frame_index]
+    action_chunk = selected.tolist()
+    execution_frame_values = execution_frames.tolist()
+    action_units = ["latent"] * SONIC_MOTION_TOKEN_DIM + ["rad"] * (2 * SONIC_HAND_DIM)
+    horizon_fields = {
+        "motion_token": motion_frames.tolist(),
+        "left_hand_joints": left_frames.tolist(),
+        "right_hand_joints": right_frames.tolist(),
+    }
+    full_horizon_sha256 = hashlib.sha256(
+        json.dumps(horizon_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    selected_frame_sha256 = hashlib.sha256(
+        json.dumps(action_chunk, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    execution_frames_sha256 = hashlib.sha256(
+        json.dumps(execution_frame_values, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    fields = ["left_hand_joints", "motion_token", "right_hand_joints"]
     normalized: dict[str, Any] = {
         "action_type": "unitree_g1_sonic_latent_action_chunk",
         "action_chunk": action_chunk,
-        "action_dimension": len(action_chunk),
+        "action_dimension": SONIC_CONTROL_FRAME_DIM,
         "action_units": action_units,
-        "action_timing": {"control_hz": 50.0, "sample_period_seconds": 0.02},
+        "action_timing": {
+            "control_hz": 50.0,
+            "sample_period_seconds": 0.02,
+            "selected_horizon_frame_index": selected_frame_index,
+            "source_horizon_frame_count": frame_count,
+        },
+        "action_horizon": {
+            "schema_version": "unitree_g1_sonic_action_horizon.v1",
+            "frame_count": frame_count,
+            "frame_dimension": SONIC_CONTROL_FRAME_DIM,
+            "full_dimension": frame_count * SONIC_CONTROL_FRAME_DIM,
+            "source_field_shapes": {
+                "motion_token": list(np.asarray(motion_token).shape),
+                "left_hand_joints": list(np.asarray(left_hand).shape),
+                "right_hand_joints": list(np.asarray(right_hand).shape),
+            },
+            "source_fieldwise_horizon_sha256": full_horizon_sha256,
+            "combined_control_frames_sha256": execution_frames_sha256,
+            "selected_frame_index": selected_frame_index,
+            "selected_frame_sha256": selected_frame_sha256,
+            "selection_mode": "fresh_receding_horizon_first_frame",
+        },
+        "sonic_action_sequence": {
+            "schema_version": SONIC_ACTION_SEQUENCE_SCHEMA_VERSION,
+            "frame_count": frame_count,
+            "frame_dimension": SONIC_CONTROL_FRAME_DIM,
+            "control_hz": 50.0,
+            "sample_period_seconds": 0.02,
+            "frames": execution_frame_values,
+            "frames_sha256": execution_frames_sha256,
+            "source_fieldwise_horizon_sha256": full_horizon_sha256,
+        },
         "unitree_groot_n17_sonic_action_payload_present": True,
         "unitree_groot_n17_sonic_action_chunk_present": True,
         "unitree_g1_sonic_control_fields": fields,
@@ -320,11 +402,7 @@ def _normalize_policy_server_action(action: Mapping[str, Any]) -> dict[str, Any]
         hand_targets["right_hand_joints"] = _jsonable(right_hand)
     if hand_targets:
         normalized["hand_targets"] = hand_targets
-    if not action_chunk:
-        return None
-    normalized["action_values_sha256"] = hashlib.sha256(
-        json.dumps(action_chunk, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    normalized["action_values_sha256"] = selected_frame_sha256
     return normalized
 
 
@@ -497,7 +575,20 @@ def run_policy_server_command(
         )
 
     action_mapping = _mapping(action)
-    normalized_action = _normalize_policy_server_action(action_mapping)
+    try:
+        normalized_action = _normalize_policy_server_action(action_mapping)
+    except (TypeError, ValueError) as exc:
+        return (
+            _blocked_payload(
+                blockers=[str(exc)],
+                server_url=resolved_url,
+                frame_path=frame_path,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            | {"policy_server_action_keys": sorted(str(key) for key in action_mapping)},
+            2,
+        )
     if normalized_action is None:
         return (
             _blocked_payload(

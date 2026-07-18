@@ -1,6 +1,8 @@
 # Shared OSCAR + GR00T client environment.  One torch/CUDA stack is installed
 # in the foundation image; dependency resolution must pass `pip check` before
 # the image is publishable.
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
 mujoco
 pillow
 pyzmq
@@ -8,3 +10,6 @@ msgpack
 msgpack-numpy
 imageio
 huggingface_hub
+# OSCAR's UMT5 module imports pytest at runtime while make_config constructs
+# the inference-only config graph. Keep it in the sealed/runtime closure.
+pytest>=8.0.0

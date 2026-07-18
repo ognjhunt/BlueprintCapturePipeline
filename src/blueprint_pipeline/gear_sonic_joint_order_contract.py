@@ -80,6 +80,29 @@ PROTOCOL_V4_FULL_JOINT_ORDER: tuple[str, ...] = (
 )
 
 
+def controller_frame_sequence_start(
+    *,
+    outer_step_index: int,
+    source_horizon_frame_count: int,
+    explicit_horizon: bool,
+) -> int:
+    """Return the monotonic protocol-v4 frame number for one outer step.
+
+    Explicit model horizons occupy a fixed source-horizon-sized range so a
+    later receding-horizon query can never reuse or move behind a prior
+    controller token. Legacy one-frame calls and readiness probes retain their
+    historical outer-step index.
+    """
+
+    step = int(outer_step_index)
+    if not explicit_horizon or step < 1:
+        return step
+    source_count = int(source_horizon_frame_count)
+    if source_count < 1:
+        raise ValueError("controller_source_horizon_frame_count_invalid")
+    return (step - 1) * source_count + 1
+
+
 def compute_mapping_digest(
     *,
     schema_version: str,

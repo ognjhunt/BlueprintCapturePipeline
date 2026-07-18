@@ -58,6 +58,14 @@ def test_baseline_build_and_verify_roundtrip():
     assert _verify(baseline) == []
 
 
+def test_baseline_digest_binds_exact_task_contract_artifact() -> None:
+    baseline = _baseline(task_contract_artifact_sha256="a" * 64)
+
+    assert baseline["task_contract_artifact_sha256"] == "a" * 64
+    tampered = {**baseline, "task_contract_artifact_sha256": "b" * 64}
+    assert "task_episode_baseline_digest_mismatch" in _verify(tampered)
+
+
 def test_baseline_build_rejects_missing_binding_field():
     with pytest.raises(ValueError, match="task_episode_baseline_field_missing:attempt_id"):
         _baseline(attempt_id="")

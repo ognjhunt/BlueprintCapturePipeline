@@ -13,9 +13,10 @@ Providers:
 * ``runpod`` — REST pods. Warm-host restart first (cheapest, no image pull), else cold
   on-demand create.
 * ``vast`` — search offers (RT-capable GPU, under hourly rate) -> create an instance from
-  the chosen ask -> ``args`` onstart running the same bootstrap. Reuses the proven Vast
-  API mechanics in :mod:`blueprint_pipeline.vast_provider_adapter` so offer selection and
-  request shaping live in one place.
+  the chosen ask -> default ``args`` bootstrap or opt-in ``ssh_direct`` qualification
+  session. Reuses the proven Vast API mechanics in
+  :mod:`blueprint_pipeline.vast_provider_adapter` so offer selection and request shaping
+  live in one place.
 * ``digitalocean`` — explicitly configured GPU Droplet.
 * ``gcp`` — explicitly configured Compute Engine GPU VM.
 * ``aws`` — explicitly configured EC2 GPU VM.
@@ -28,10 +29,18 @@ Secrets are file-based under ``~/.blueprint-secrets`` and never logged.
 """
 from __future__ import annotations
 
+import base64
+import gzip
+import hashlib
+import ipaddress
 import json
 import math
+import os
+import re
+import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,7 +100,7 @@ class RenderLaunchSpec:
     and output PUT url (``BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL``), so every
     provider just forwards it. ``bootstrap_argv`` is the bash command
     (``["-lc", <script>]``): RunPod uses it verbatim as ``dockerStartCmd``; Vast runs the
-    script body as its ``args`` onstart.
+    script body through its selected args/onstart launch seam.
     """
 
     name: str
@@ -118,6 +127,10 @@ class RenderLaunchSpec:
     # compute GPUs can be valid model-inference workers without satisfying the
     # RT-core contract for Isaac RTX review media.
     requires_rtx: bool = True
+    # Vast keeps the historical args request shape by default. Appended after
+    # every pre-existing field so positional construction remains compatible.
+    # Qualification sessions may opt into ssh_direct for a direct SSH endpoint.
+    vast_launch_mode: str = "args"
 
     @property
     def bootstrap_script(self) -> str:
@@ -369,6 +382,45 @@ def _render_prelaunch_guard_blockers(
             *_string_list(guard.get("blockers")),
         ]
     return []
+
+
+def _redact_provider_error_body(
+    body: str, *, request_env: Mapping[str, Any]
+) -> str:
+    """Keep a bounded diagnostic without persisting signed request values."""
+
+    sanitized = str(body or "")
+    secret_values = sorted(
+        {
+            str(value)
+            for key, value in request_env.items()
+            if isinstance(value, str)
+            and value
+            and (
+                value.lower().startswith(("https://", "http://"))
+                or any(
+                    marker in str(key).upper()
+                    for marker in ("SIGNED", "_URL", "_URI", "TOKEN", "SECRET")
+                )
+            )
+        },
+        key=len,
+        reverse=True,
+    )
+    for value in secret_values:
+        sanitized = sanitized.replace(value, "[REDACTED_ENV_VALUE]")
+    sanitized = re.sub(
+        r"https?://[^\s\"'<>\\]+",
+        "[REDACTED_URL]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        r"(?i)(?:x-amz-[a-z0-9-]+|signature|sig|token)=([^&\s\"'<>\\]+)",
+        lambda match: match.group(0).split("=", 1)[0] + "=[REDACTED]",
+        sanitized,
+    )
+    return sanitized[:300]
 
 
 class RunPodRenderProvider(GpuRenderProvider):
@@ -837,13 +889,65 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "raw_provider_response_recorded": False,
             }
         runtime = body.get("runtime")
+        runtime_source = "rest" if isinstance(runtime, Mapping) else "unavailable"
+        runtime_probe_http: int | None = None
+        # The RunPod REST pod payload can omit ``runtime`` for a live no-port
+        # pod.  GraphQL is the provider's documented runtime/uptime/GPU-metric
+        # surface, so use it as the read-only fallback before declaring a pod
+        # pre-runtime.  Keep only bounded telemetry; never persist env or ports.
+        if not isinstance(runtime, Mapping) and s == 200:
+            query = f"""
+            query BlueprintPodRuntime {{
+              pod(input: {{podId: {json.dumps(str(instance_id))}}}) {{
+                runtime {{
+                  uptimeInSeconds
+                  gpus {{ gpuUtilPercent memoryUtilPercent }}
+                  container {{ cpuPercent memoryPercent }}
+                }}
+              }}
+            }}
+            """
+            runtime_probe_http, runtime_payload = _runpod_graphql_call(
+                query, key=key, timeout=30
+            )
+            graphql_runtime = _mapping(
+                _mapping(_mapping(runtime_payload).get("data")).get("pod")
+            ).get("runtime")
+            if isinstance(graphql_runtime, Mapping):
+                runtime = dict(graphql_runtime)
+                runtime_source = "graphql"
+        runtime_map = _mapping(runtime)
+        runtime_present = isinstance(runtime, Mapping)
+        runtime_uptime_seconds = runtime_map.get("uptimeInSeconds")
+        graphql_runtime_ready = bool(
+            isinstance(runtime_uptime_seconds, (int, float))
+            and not isinstance(runtime_uptime_seconds, bool)
+            and float(runtime_uptime_seconds) >= 0.0
+        )
+        runtime_ready = bool(
+            runtime_present
+            and (runtime_source != "graphql" or graphql_runtime_ready)
+        )
+        gpu_rows = [
+            _mapping(row)
+            for row in runtime_map.get("gpus", [])
+            if isinstance(row, Mapping)
+        ]
         public_ip = str(body.get("publicIp") or "").strip()
         return {
             "status": "observed" if s == 200 else "unavailable",
             "http": s,
             "instance_id": instance_id,
             "desiredStatus": body.get("desiredStatus"),
-            "runtime_present": runtime is not None,
+            "runtime_present": runtime_present,
+            "runtime_ready": runtime_ready,
+            "runtime_source": runtime_source,
+            "runtime_probe_http": runtime_probe_http,
+            "runtime_uptime_seconds": runtime_uptime_seconds,
+            "gpu_util_percent": [row.get("gpuUtilPercent") for row in gpu_rows],
+            "gpu_memory_util_percent": [
+                row.get("memoryUtilPercent") for row in gpu_rows
+            ],
             "public_ip_present": bool(public_ip),
             "machineId": body.get("machineId"),
             "costPerHr": body.get("costPerHr"),
@@ -937,8 +1041,776 @@ class RunPodRenderProvider(GpuRenderProvider):
 
 # ----------------------------- Vast.ai -----------------------------
 
+VAST_RENDER_LAUNCH_MODES = ("args", "ssh_direct")
+VAST_SSH_CONTROL_ACTIONS = (
+    "status",
+    "tail",
+    "gpu-status",
+    "run",
+    "restart",
+    "stop",
+    "refresh",
+)
+VAST_SSH_CONTROL_COMPONENTS = (
+    "bootstrap",
+    "groot_server",
+    "gear_sonic_controller",
+    "isaac_task_executor",
+    "gear_sonic_isaac_dds_bridge",
+    "episode",
+)
+VAST_SSH_QUALIFICATION_CONTROL_SCRIPT = (
+    "/workspace/runtime_overlay/blueprint_qualification_control.sh"
+)
+VAST_SSH_KNOWN_HOSTS_NAME = "vast_ssh_known_hosts"
+VAST_SSH_HOST_KEY_FINGERPRINT_NAME = "vast_ssh_host_key_fingerprint.json"
+VAST_SSH_MAX_OUTPUT_BYTES = 16_384
+VAST_SSH_OUTPUT_TRUNCATION_MARKER = (
+    "[VAST_SSH_OUTPUT_TRUNCATED: oldest redacted bytes omitted; "
+    "newest output follows]\n"
+)
+
+
+def _sanitized_vast_ssh_host(value: Any) -> str | None:
+    candidate = str(value or "").strip()
+    if (
+        not candidate
+        or len(candidate) > 253
+        or candidate.startswith("-")
+        or candidate != str(value or "")
+    ):
+        return None
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        pass
+    if not re.fullmatch(
+        r"(?=.{1,253}\Z)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?",
+        candidate,
+    ):
+        return None
+    return candidate.lower()
+
+
+def _sanitized_vast_public_ip(value: Any) -> str | None:
+    candidate = str(value or "").strip()
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return None
+
+
+def _sanitized_vast_port(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65_535 else None
+
+
+def _sanitized_vast_runtype(value: Any) -> str | None:
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > 64:
+        return None
+    return candidate if re.fullmatch(r"[A-Za-z0-9_.-]+", candidate) else None
+
+
+def _sanitized_vast_direct_ports(value: Any) -> list[dict[str, Any]]:
+    """Reduce provider port mappings to numeric, non-secret endpoint facts."""
+
+    if not isinstance(value, Mapping):
+        return []
+    sanitized: list[dict[str, Any]] = []
+    for raw_container_port, raw_entries in sorted(
+        value.items(), key=lambda item: str(item[0])
+    ):
+        match = re.fullmatch(r"(\d{1,5})(?:/(tcp|udp))?", str(raw_container_port))
+        if not match:
+            continue
+        container_port = _sanitized_vast_port(match.group(1))
+        if container_port is None:
+            continue
+        entries = raw_entries if isinstance(raw_entries, list) else [raw_entries]
+        for raw_entry in entries[:16]:
+            entry = _mapping(raw_entry)
+            host_port = _sanitized_vast_port(
+                entry.get("HostPort")
+                or entry.get("host_port")
+                or entry.get("public_port")
+                or entry.get("port")
+                or (raw_entry if not entry else None)
+            )
+            if host_port is None:
+                continue
+            row = {
+                "container_port": container_port,
+                "host_port": host_port,
+                "protocol": match.group(2) or "tcp",
+            }
+            if row not in sanitized:
+                sanitized.append(row)
+            if len(sanitized) >= 64:
+                return sanitized
+    return sanitized
+
+
+def _vast_ssh_connection_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    public_ipaddr = _sanitized_vast_public_ip(row.get("public_ipaddr"))
+    direct_ports = _sanitized_vast_direct_ports(
+        row.get("ports") or row.get("port_mappings")
+    )
+    ssh_mapping = next(
+        (
+            item
+            for item in direct_ports
+            if item["container_port"] == 22 and item["protocol"] == "tcp"
+        ),
+        None,
+    )
+    provider_ssh_host = _sanitized_vast_ssh_host(row.get("ssh_host"))
+    provider_ssh_port = _sanitized_vast_port(row.get("ssh_port"))
+    # Vast can publish its proxy endpoint before (or without) forwarding an SSH
+    # banner while the API-bound public-IP port mapping is already usable.  A
+    # complete 22/tcp mapping is the more direct provider fact, so prefer that
+    # pair and retain the proxy only as the fallback when no mapping exists.
+    if public_ipaddr and ssh_mapping is not None:
+        ssh_host = public_ipaddr
+        ssh_port = int(ssh_mapping["host_port"])
+        ssh_endpoint_source = "provider_public_ip_port_22_mapping"
+    else:
+        ssh_host = provider_ssh_host or public_ipaddr
+        ssh_port = provider_ssh_port
+        ssh_endpoint_source = "provider_ssh_proxy"
+    raw_count = row.get("direct_port_count")
+    try:
+        direct_port_count = max(0, int(raw_count))
+    except (TypeError, ValueError):
+        direct_port_count = len(direct_ports)
+    direct_port_ready = bool(ssh_host and ssh_port)
+    return {
+        "ssh_host": ssh_host,
+        "ssh_port": ssh_port,
+        "ssh_endpoint_source": ssh_endpoint_source,
+        "public_ipaddr": public_ipaddr,
+        "image_runtype": _sanitized_vast_runtype(
+            row.get("image_runtype") or row.get("runtype")
+        ),
+        "direct_port_count": direct_port_count,
+        "direct_port_ready": direct_port_ready,
+        "direct_port_metadata": {
+            "ssh_endpoint_present": direct_port_ready,
+            "mapped_ports": direct_ports,
+            "raw_provider_response_recorded": False,
+        },
+    }
+
+
+def _private_ssh_artifact_is_valid(path: Path) -> bool:
+    try:
+        return (
+            not path.is_symlink()
+            and path.is_file()
+            and path.stat().st_mode & 0o777 == 0o600
+            and path.stat().st_size > 0
+        )
+    except OSError:
+        return False
+
+
+def _write_private_ssh_artifact(path: Path, payload: bytes) -> None:
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _redact_vast_ssh_output_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value or "")
+    text = re.sub(
+        r"-----BEGIN [^-]*(?:PRIVATE|SECRET)[^-]*-----.*?"
+        r"-----END [^-]*(?:PRIVATE|SECRET)[^-]*-----",
+        "[REDACTED_SECRET_BLOCK]",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(
+        r"https?://[^\s\"'<>\\]+",
+        "[REDACTED_URL]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?im)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|SIGNED_URL)"
+        r"[A-Z0-9_]*)(\s*[:=]\s*)([^\s]+)",
+        r"\1\2[REDACTED]",
+        text,
+    )
+    return text
+
+
+def _redact_vast_ssh_output(value: Any) -> str:
+    text = _redact_vast_ssh_output_text(value)
+    encoded = text.encode("utf-8", errors="replace")[:VAST_SSH_MAX_OUTPUT_BYTES]
+    return encoded.decode("utf-8", errors="replace")
+
+
+def _latest_redacted_vast_ssh_output(
+    value: Any,
+) -> tuple[str, dict[str, Any]]:
+    """Return the newest bounded redacted output and explicit truncation facts.
+
+    Redaction deliberately happens before the suffix is selected. This keeps a
+    credential that straddles the retained-output boundary from being exposed
+    as a partial, no-longer-matchable secret.
+    """
+
+    redacted = _redact_vast_ssh_output_text(value)
+    encoded = redacted.encode("utf-8", errors="replace")
+    redacted_bytes = len(encoded)
+    truncated = redacted_bytes > VAST_SSH_MAX_OUTPUT_BYTES
+    marker = VAST_SSH_OUTPUT_TRUNCATION_MARKER.encode("ascii")
+    retained = encoded
+    if truncated:
+        retained = encoded[-(VAST_SSH_MAX_OUTPUT_BYTES - len(marker)) :]
+        # The source is valid UTF-8, but an arbitrary byte suffix can begin in
+        # the middle of a multibyte code point. Drop only those leading
+        # continuation bytes so the newest complete characters remain intact.
+        while retained and retained[0] & 0xC0 == 0x80:
+            retained = retained[1:]
+        rendered = marker + retained
+    else:
+        rendered = retained
+    output = rendered.decode("utf-8", errors="strict")
+    return output, {
+        "truncated": truncated,
+        "retention": "newest" if truncated else "complete",
+        "redacted_bytes_before_truncation": redacted_bytes,
+        "retained_redacted_bytes": len(retained),
+        "omitted_redacted_bytes": redacted_bytes - len(retained),
+        "returned_bytes": len(rendered),
+        "max_returned_bytes": VAST_SSH_MAX_OUTPUT_BYTES,
+        "marker_present": truncated,
+    }
+
+
+def _latest_redacted_vast_ssh_output_fields(
+    *, stdout: Any, stderr: Any
+) -> dict[str, Any]:
+    redacted_stdout, stdout_truncation = _latest_redacted_vast_ssh_output(stdout)
+    redacted_stderr, stderr_truncation = _latest_redacted_vast_ssh_output(stderr)
+    return {
+        "stdout": redacted_stdout,
+        "stderr": redacted_stderr,
+        "stdout_truncation": stdout_truncation,
+        "stderr_truncation": stderr_truncation,
+    }
+
+
+def _vast_ssh_endpoint(connection: Mapping[str, Any]) -> tuple[str, int] | None:
+    host = _sanitized_vast_ssh_host(connection.get("ssh_host"))
+    port = _sanitized_vast_port(connection.get("ssh_port"))
+    return (host, port) if host and port else None
+
+
+def enroll_vast_ssh_host_key(
+    connection: Mapping[str, Any],
+    *,
+    attempt_dir: str | Path,
+    timeout_seconds: float = 15.0,
+) -> dict[str, Any]:
+    """TOFU-enroll one Vast direct endpoint into attempt-local strict SSH trust."""
+
+    endpoint = _vast_ssh_endpoint(connection)
+    if endpoint is None:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_direct_endpoint_invalid"],
+            "raw_provider_response_recorded": False,
+        }
+    host, port = endpoint
+    try:
+        timeout = min(60.0, max(1.0, float(timeout_seconds)))
+    except (TypeError, ValueError):
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_host_key_scan_timeout_invalid"],
+            "raw_provider_response_recorded": False,
+        }
+    root = Path(attempt_dir).expanduser()
+    if root.is_symlink():
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_attempt_dir_symlink_forbidden"],
+            "raw_provider_response_recorded": False,
+        }
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_attempt_dir_unavailable"],
+            "error_type": type(exc).__name__,
+            "raw_provider_response_recorded": False,
+        }
+    known_hosts = root / VAST_SSH_KNOWN_HOSTS_NAME
+    fingerprint_path = root / VAST_SSH_HOST_KEY_FINGERPRINT_NAME
+    if (
+        known_hosts.exists()
+        or known_hosts.is_symlink()
+        or fingerprint_path.exists()
+        or fingerprint_path.is_symlink()
+    ):
+        try:
+            artifact = json.loads(fingerprint_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - fail closed on malformed trust evidence
+            artifact = {}
+        known_hosts_sha256 = (
+            hashlib.sha256(known_hosts.read_bytes()).hexdigest()
+            if _private_ssh_artifact_is_valid(known_hosts)
+            else ""
+        )
+        if (
+            _private_ssh_artifact_is_valid(fingerprint_path)
+            and artifact.get("ssh_host") == host
+            and artifact.get("ssh_port") == port
+            and artifact.get("known_hosts_sha256") == known_hosts_sha256
+        ):
+            return {
+                "status": "enrolled",
+                "ssh_host": host,
+                "ssh_port": port,
+                "known_hosts_file": str(known_hosts),
+                "fingerprint_artifact": str(fingerprint_path),
+                "known_hosts_sha256": known_hosts_sha256,
+                "already_enrolled": True,
+                "tofu_pinned": True,
+                "raw_provider_response_recorded": False,
+            }
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_existing_host_key_pin_invalid"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "raw_provider_response_recorded": False,
+        }
+    command = [
+        "ssh-keyscan",
+        "-p",
+        str(port),
+        "-T",
+        str(max(1, int(math.ceil(timeout)))),
+        "-t",
+        "ed25519,ecdsa,rsa",
+        host,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_host_key_scan_timeout"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "stderr": _redact_vast_ssh_output(exc.stderr),
+            "raw_provider_response_recorded": False,
+        }
+    returncode = int(getattr(completed, "returncode", 1))
+    if returncode != 0:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_host_key_scan_failed"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "returncode": returncode,
+            "stderr": _redact_vast_ssh_output(getattr(completed, "stderr", b"")),
+            "raw_provider_response_recorded": False,
+        }
+    allowed_host_tokens = {host, f"[{host}]:{port}"}
+    allowed_key_types = {
+        "ssh-ed25519",
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp521",
+        "ssh-rsa",
+    }
+    pinned_lines: list[str] = []
+    fingerprints: list[dict[str, str]] = []
+    stdout = (
+        getattr(completed, "stdout", b"").decode("utf-8", errors="replace")
+        if isinstance(getattr(completed, "stdout", b""), bytes)
+        else str(getattr(completed, "stdout", "") or "")
+    )
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if (
+            len(fields) != 3
+            or fields[0] not in allowed_host_tokens
+            or fields[1] not in allowed_key_types
+        ):
+            continue
+        try:
+            decoded_key = base64.b64decode(fields[2], validate=True)
+        except Exception:  # noqa: BLE001 - malformed scanner row is ignored
+            continue
+        if len(decoded_key) < 32 or len(decoded_key) > 16_384:
+            continue
+        normalized = " ".join(fields)
+        if normalized in pinned_lines:
+            continue
+        pinned_lines.append(normalized)
+        fingerprint = base64.b64encode(hashlib.sha256(decoded_key).digest()).decode(
+            "ascii"
+        ).rstrip("=")
+        fingerprints.append(
+            {"key_type": fields[1], "sha256_fingerprint": f"SHA256:{fingerprint}"}
+        )
+    if not pinned_lines:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_host_key_scan_returned_no_valid_keys"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "stderr": _redact_vast_ssh_output(getattr(completed, "stderr", b"")),
+            "raw_provider_response_recorded": False,
+        }
+    known_hosts_payload = ("\n".join(sorted(pinned_lines)) + "\n").encode("utf-8")
+    known_hosts_sha256 = hashlib.sha256(known_hosts_payload).hexdigest()
+    fingerprint_artifact = {
+        "schema_version": "vast_ssh_host_key_fingerprint.v1",
+        "status": "tofu_pinned",
+        "ssh_host": host,
+        "ssh_port": port,
+        "known_hosts_file": str(known_hosts),
+        "known_hosts_sha256": known_hosts_sha256,
+        "fingerprints": sorted(
+            fingerprints, key=lambda item: (item["key_type"], item["sha256_fingerprint"])
+        ),
+        "strict_host_key_checking_required": True,
+        "trust_model": "trust_on_first_use",
+        "raw_provider_response_recorded": False,
+    }
+    try:
+        _write_private_ssh_artifact(known_hosts, known_hosts_payload)
+        _write_private_ssh_artifact(
+            fingerprint_path,
+            (json.dumps(fingerprint_artifact, indent=2, sort_keys=True) + "\n").encode(
+                "utf-8"
+            ),
+        )
+    except OSError as exc:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_host_key_pin_write_failed"],
+            "error_type": type(exc).__name__,
+            "ssh_host": host,
+            "ssh_port": port,
+            "raw_provider_response_recorded": False,
+        }
+    return {
+        "status": "enrolled",
+        "ssh_host": host,
+        "ssh_port": port,
+        "known_hosts_file": str(known_hosts),
+        "fingerprint_artifact": str(fingerprint_path),
+        "known_hosts_sha256": known_hosts_sha256,
+        "already_enrolled": False,
+        "tofu_pinned": True,
+        "raw_provider_response_recorded": False,
+    }
+
+
+def _validated_vast_known_hosts_pin(
+    path: str | Path, *, host: str, port: int
+) -> tuple[Path, str] | None:
+    known_hosts = Path(path).expanduser()
+    fingerprint_path = known_hosts.with_name(VAST_SSH_HOST_KEY_FINGERPRINT_NAME)
+    if (
+        known_hosts.name != VAST_SSH_KNOWN_HOSTS_NAME
+        or not _private_ssh_artifact_is_valid(known_hosts)
+        or not _private_ssh_artifact_is_valid(fingerprint_path)
+    ):
+        return None
+    try:
+        artifact = json.loads(fingerprint_path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(known_hosts.read_bytes()).hexdigest()
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        artifact.get("status") != "tofu_pinned"
+        or artifact.get("ssh_host") != host
+        or artifact.get("ssh_port") != port
+        or artifact.get("known_hosts_sha256") != digest
+    ):
+        return None
+    return known_hosts.resolve(strict=True), digest
+
+
+def run_vast_ssh_control(
+    connection: Mapping[str, Any],
+    *,
+    action: str,
+    component: str,
+    known_hosts_file: str | Path,
+    identity_file: str | Path = "~/.ssh/id_ed25519",
+    timeout_seconds: float = 30.0,
+    tail_lines: int = 200,
+    refresh_request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one enumerated qualification control action over pinned Vast SSH."""
+
+    if action not in VAST_SSH_CONTROL_ACTIONS:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_control_action_not_allowed"],
+            "raw_remote_output_recorded": False,
+        }
+    if component not in VAST_SSH_CONTROL_COMPONENTS:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_control_component_not_allowed"],
+            "raw_remote_output_recorded": False,
+        }
+    refresh_input: bytes | None = None
+    if action == "refresh":
+        request = dict(refresh_request or {})
+        required_keys = {
+            "schema_version",
+            "signed_get_url",
+            "refresh_payload_sha256",
+            "target_revision",
+            "immutable_binding",
+        }
+        url = str(request.get("signed_get_url") or "")
+        parsed_url = urllib.parse.urlsplit(url)
+        immutable = request.get("immutable_binding")
+        if (
+            component != "bootstrap"
+            or set(request) != required_keys
+            or parsed_url.scheme != "https"
+            or not parsed_url.netloc
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or bool(parsed_url.fragment)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(request.get("refresh_payload_sha256") or "")
+            )
+            or not isinstance(request.get("target_revision"), int)
+            or int(request.get("target_revision") or 0) < 2
+            or not isinstance(immutable, Mapping)
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["vast_ssh_refresh_request_invalid"],
+                "raw_remote_output_recorded": False,
+            }
+        refresh_input = (json.dumps(request, sort_keys=True) + "\n").encode("utf-8")
+        if len(refresh_input) > 64 * 1024:
+            return {
+                "status": "blocked",
+                "blockers": ["vast_ssh_refresh_request_too_large"],
+                "raw_remote_output_recorded": False,
+            }
+    elif refresh_request is not None:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_refresh_request_for_non_refresh_action"],
+            "raw_remote_output_recorded": False,
+        }
+    endpoint = _vast_ssh_endpoint(connection)
+    if endpoint is None:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_direct_endpoint_invalid"],
+            "raw_remote_output_recorded": False,
+        }
+    host, port = endpoint
+    pin = _validated_vast_known_hosts_pin(known_hosts_file, host=host, port=port)
+    if pin is None:
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_known_hosts_pin_invalid"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "raw_remote_output_recorded": False,
+        }
+    known_hosts, known_hosts_sha256 = pin
+    identity = Path(identity_file).expanduser()
+    try:
+        identity_mode = identity.stat().st_mode & 0o777
+    except OSError:
+        identity_mode = -1
+    if (
+        identity.is_symlink()
+        or not identity.is_file()
+        or identity_mode < 0
+        or identity_mode & 0o077
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_identity_file_missing_or_insecure"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "raw_remote_output_recorded": False,
+        }
+    try:
+        timeout = min(300.0, max(1.0, float(timeout_seconds)))
+    except (TypeError, ValueError):
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_control_timeout_invalid"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "raw_remote_output_recorded": False,
+        }
+    try:
+        bounded_tail_lines = min(2_000, max(1, int(tail_lines)))
+    except (TypeError, ValueError):
+        bounded_tail_lines = 200
+    command = [
+        "ssh",
+        "-i",
+        str(identity.resolve(strict=True)),
+        "-p",
+        str(port),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={known_hosts}",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        f"ConnectTimeout={max(1, int(math.ceil(timeout)))}",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "--",
+        f"root@{host}",
+        "/bin/bash",
+        VAST_SSH_QUALIFICATION_CONTROL_SCRIPT,
+        action,
+        component,
+        str(bounded_tail_lines),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            input=refresh_input,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output_fields = _latest_redacted_vast_ssh_output_fields(
+            stdout=exc.stdout,
+            stderr=exc.stderr,
+        )
+        return {
+            "status": "blocked",
+            "blockers": ["vast_ssh_control_timeout"],
+            "ssh_host": host,
+            "ssh_port": port,
+            "action": action,
+            "component": component,
+            **output_fields,
+            "known_hosts_sha256": known_hosts_sha256,
+            "raw_remote_output_recorded": False,
+        }
+    returncode = int(getattr(completed, "returncode", 1))
+    output_fields = _latest_redacted_vast_ssh_output_fields(
+        stdout=getattr(completed, "stdout", b""),
+        stderr=getattr(completed, "stderr", b""),
+    )
+    return {
+        "status": "completed" if returncode == 0 else "blocked",
+        "blockers": [] if returncode == 0 else ["vast_ssh_control_failed"],
+        "ssh_host": host,
+        "ssh_port": port,
+        "action": action,
+        "component": component,
+        "returncode": returncode,
+        **output_fields,
+        "known_hosts_sha256": known_hosts_sha256,
+        "strict_host_key_checking": True,
+        "batch_mode": True,
+        "remote_command_contract": "fixed_qualification_control_script.v1",
+        "refresh_request_transmitted_via_stdin": action == "refresh",
+        "raw_remote_output_recorded": False,
+    }
+
 class VastRenderProvider(GpuRenderProvider):
     name = "vast"
+
+    _BOOTSTRAP_GZIP_BASE64_ENV = "BLUEPRINT_VAST_BOOTSTRAP_GZIP_BASE64"
+    _BOOTSTRAP_SHA256_ENV = "BLUEPRINT_VAST_BOOTSTRAP_SHA256"
+
+    @staticmethod
+    def _args_probe_script(script: str) -> tuple[str, str, dict[str, str]]:
+        """Keep Vast's args command below its 16,384-character API ceiling."""
+        if len(script) <= 12_000:
+            return script, "plain", {}
+        encoded = base64.b64encode(
+            gzip.compress(script.encode("utf-8"), compresslevel=9, mtime=0)
+        ).decode("ascii")
+        inline_launcher = (
+            "python3 -c 'import base64,gzip,os;"
+            f's=gzip.decompress(base64.b64decode("{encoded}")).decode();'
+            'os.execv("/bin/bash",["bash","-lc",s])\''
+        )
+        if len(inline_launcher) <= 12_000:
+            return inline_launcher, "gzip_base64", {}
+
+        # Real episode bootstraps can remain larger than Vast's args ceiling even
+        # after compression. Vast already accepts the launch environment separately
+        # from args (the same path carries signed URLs and hash-pinned overlays), so
+        # place the compressed bytes there and keep args to a small digest-verifying
+        # decoder. The child removes both transport values before execing bash.
+        digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        payload_env = VastRenderProvider._BOOTSTRAP_GZIP_BASE64_ENV
+        digest_env = VastRenderProvider._BOOTSTRAP_SHA256_ENV
+        env_launcher = (
+            "python3 -c 'import base64,gzip,hashlib,os,sys;"
+            f'b=gzip.decompress(base64.b64decode(os.environ.pop("{payload_env}")));'
+            f'e=os.environ.pop("{digest_env}");'
+            'sys.exit("vast_bootstrap_sha256_mismatch") '
+            'if hashlib.sha256(b).hexdigest()!=e else None;'
+            's=b.decode();os.execv("/bin/bash",["bash","-lc",s])\''
+        )
+        return env_launcher, "gzip_base64_env", {
+            payload_env: encoded,
+            digest_env: digest,
+        }
 
     def _key(self) -> str | None:
         return _read_secret("vast_api_key")
@@ -955,11 +1827,41 @@ class VastRenderProvider(GpuRenderProvider):
             VAST_API_BASE, _create_payload, _search_payload,
         )
         search_payload = _search_payload(limit=100, max_hourly_rate=spec.max_hourly_rate_usd)
+        launch_mode = str(spec.vast_launch_mode or "").strip().lower()
+        if launch_mode not in VAST_RENDER_LAUNCH_MODES:
+            raise ValueError(f"vast_render_launch_mode_unsupported:{launch_mode}")
+        if launch_mode == "args":
+            probe_script, script_transport, bootstrap_env = self._args_probe_script(
+                spec.bootstrap_script
+            )
+        else:
+            probe_script = spec.bootstrap_script
+            script_transport = "onstart_plain"
+            bootstrap_env = {}
+        launch_env = {**dict(spec.env), **bootstrap_env}
         create_payload = _create_payload(
-            image=spec.image, label=spec.name, launch_mode="args",
-            probe_script=spec.bootstrap_script, disk_gb=spec.container_disk_gb,
-            env=dict(spec.env),
+            image=spec.image, label=spec.name, launch_mode=launch_mode,
+            probe_script=probe_script, disk_gb=spec.container_disk_gb,
+            env=launch_env,
         )
+        # Vast's args runtype preserves the image ENTRYPOINT unless ``onstart``
+        # is supplied as an override.  The sealed Isaac image defaults to the
+        # Isaac launcher, so forwarding only args starts Isaac with our shell
+        # text as its arguments and never reaches Blueprint.  Match Vast's CLI
+        # ``--entrypoint bash --args -lc ...`` request shape explicitly.
+        entrypoint_override = None
+        if launch_mode == "args":
+            if list(spec.entrypoint) != ["bash"]:
+                raise ValueError("vast_entrypoint_must_be_single_bash")
+            create_payload["onstart"] = "bash"
+            args_str = str(create_payload.get("args_str") or "")
+            if not args_str.startswith("bash "):
+                raise ValueError("vast_bash_args_shape_invalid")
+            create_payload["args_str"] = args_str.removeprefix("bash ")
+            if len(str(create_payload.get("args_str") or "")) > 16_384:
+                raise ValueError("vast_startup_args_exceed_provider_limit")
+            entrypoint_override = "bash"
+        require_direct_port = launch_mode == "ssh_direct"
         return {
             "provider": "vast",
             "api_base": VAST_API_BASE,
@@ -970,6 +1872,156 @@ class VastRenderProvider(GpuRenderProvider):
             "image": spec.image, "disk": spec.container_disk_gb,
             "min_gpu_ram_mb": spec.min_gpu_ram_mb,
             "max_hourly_rate_usd": spec.max_hourly_rate_usd,
+            "requires_rtx": spec.requires_rtx,
+            "vast_launch_mode": launch_mode,
+            "require_direct_port": require_direct_port,
+            "bootstrap_transport": script_transport,
+            "bootstrap_transport_env_keys": sorted(bootstrap_env),
+            "entrypoint_override": entrypoint_override,
+            "bootstrap_source_length": len(spec.bootstrap_script),
+            "provider_args_length": len(str(create_payload.get("args_str") or "")),
+            "provider_onstart_length": len(str(create_payload.get("onstart") or "")),
+        }
+
+    def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
+        """Read-only Vast offer search with the launch selector's exact filters.
+
+        Vast exposes marketplace search through ``POST /bundles/`` even though
+        that endpoint does not allocate or otherwise mutate a provider resource.
+        Only sanitized offer summaries are returned; the API key and raw offer
+        payloads never leave this method.
+        """
+        key = self._key()
+        if not key:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["vast_api_key_missing"],
+                "reservation_proven": False,
+                "raw_provider_response_recorded": False,
+            }
+        from .vast_provider_adapter import (
+            _api_json,
+            _offers_from_response,
+            _search_payload,
+            _select_offer,
+        )
+
+        req = _mapping(request)
+        max_rate = _positive_float(req.get("max_hourly_rate_usd")) or 5.0
+        min_ram = _positive_int(req.get("min_gpu_ram_mb")) or 0
+        min_reliability = _positive_float(req.get("min_reliability")) or 0.0
+        require_known_driver = (
+            req.get("require_known_supported_isaac_driver") is True
+        )
+        require_avx = req.get("require_avx") is True
+        require_direct_port = req.get("require_direct_port") is True
+        preferred_gpu_keywords = _string_list(req.get("preferred_gpu_keywords"))
+        search_payload = _mapping(req.get("search_payload")) or _search_payload(
+            limit=100,
+            max_hourly_rate=max_rate,
+        )
+        if require_avx:
+            # Ask Vast to narrow the catalog, then independently enforce the
+            # capability on the returned offers below. The client-side check is
+            # authoritative if the marketplace ignores or misapplies a filter.
+            search_payload = {**search_payload, "has_avx": {"eq": True}}
+        try:
+            status, response = _api_json(
+                method="POST",
+                path="/bundles/",
+                api_key=key,
+                payload=search_payload,
+                timeout_seconds=45,
+            )
+        except urllib.error.HTTPError as exc:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["vast_capacity_probe_failed"],
+                "http": exc.code,
+                "reservation_proven": False,
+                "raw_provider_response_recorded": False,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["vast_capacity_probe_failed"],
+                "error_type": type(exc).__name__,
+                "reservation_proven": False,
+                "raw_provider_response_recorded": False,
+            }
+        if not 200 <= int(status or 0) < 300:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "blockers": ["vast_capacity_probe_failed"],
+                "http": status,
+                "reservation_proven": False,
+                "raw_provider_response_recorded": False,
+            }
+
+        offers = _offers_from_response(response)
+        selection_kwargs = {
+            "max_hourly_rate": max_rate,
+            "min_gpu_ram_mb": min_ram,
+            "require_avx": require_avx,
+            "require_known_supported_isaac_driver": require_known_driver,
+            "min_reliability": min_reliability,
+            "require_direct_port": require_direct_port,
+            "preferred_gpu_keywords": preferred_gpu_keywords,
+        }
+        selected = _select_offer(offers, **selection_kwargs)
+        viable: list[dict[str, Any]] = []
+        for offer in offers:
+            summary = _select_offer([offer], **selection_kwargs)
+            if not summary:
+                continue
+            viable.append(
+                {
+                    **summary,
+                    "gpu_type_id": summary.get("gpu_name"),
+                    "on_demand_price_usd_per_hour": summary.get(
+                        "hourly_rate_usd"
+                    ),
+                    "capacity_confidence": "advisory",
+                    "reservation_proven": False,
+                }
+            )
+        selected_id = str(_mapping(selected).get("ask_contract_id") or "")
+        viable.sort(
+            key=lambda row: (
+                str(row.get("ask_contract_id") or "") != selected_id,
+                float(row.get("hourly_rate_usd") or math.inf),
+            )
+        )
+        return {
+            "status": "available" if selected else "blocked",
+            "provider": self.name,
+            "http": status,
+            "blockers": [] if selected else ["vast_offer_capacity_unavailable"],
+            "offer_count": len(offers),
+            "viable_gpu_types": viable,
+            "selected_offer": viable[0] if viable else None,
+            "selection_policy": {
+                "max_hourly_rate_usd": max_rate,
+                "min_gpu_ram_mb": min_ram,
+                "min_reliability": min_reliability,
+                "require_avx": require_avx,
+                "require_known_supported_isaac_driver": require_known_driver,
+                "require_direct_port": require_direct_port,
+                "preferred_gpu_keywords": preferred_gpu_keywords,
+            },
+            "reservation_proven": False,
+            "capacity_confidence": "advisory" if selected else "unavailable",
+            "authoritative_capacity_source": "provider_create_response",
+            "raw_provider_response_recorded": False,
+            "claim_boundary": (
+                "This is a read-only Vast marketplace snapshot. It does not "
+                "reserve capacity and proves nothing about instance creation, "
+                "image startup, episode execution, or task success."
+            ),
         }
 
     def launch(
@@ -1004,12 +2056,27 @@ class VastRenderProvider(GpuRenderProvider):
                 or None,
             }
         from .vast_provider_adapter import (
-            _api_json, _offers_from_response, _select_offer,
+            _api_json, _offer_id, _offers_from_response, _select_offer,
         )
         attempts: list[dict] = []
         search_payload = request.get("search_payload") or {}
         max_rate = float(request.get("max_hourly_rate_usd") or 2.0)
         min_ram = int(request.get("min_gpu_ram_mb") or 0)
+        min_reliability = _positive_float(request.get("min_reliability")) or 0.0
+        require_avx = request.get("require_avx") is True
+        launch_mode = str(request.get("vast_launch_mode") or "args")
+        require_direct_port = (
+            request.get("require_direct_port") is True
+            or launch_mode == "ssh_direct"
+        )
+        require_known_driver = (
+            request.get("require_known_supported_isaac_driver") is True
+        )
+        preferred_gpu_keywords = _string_list(
+            request.get("preferred_gpu_keywords")
+        )
+        if require_avx:
+            search_payload = {**search_payload, "has_avx": {"eq": True}}
         try:
             s, resp = _api_json(method="POST", path="/bundles/", api_key=key,
                                 payload=search_payload, timeout_seconds=45)
@@ -1017,7 +2084,13 @@ class VastRenderProvider(GpuRenderProvider):
             return {"status": "blocked", "blockers": ["vast_offer_search_failed"],
                     "error": repr(e)[:200]}
         offers = _offers_from_response(resp)
-        attempts.append({"offer_search_status": s, "offer_count": len(offers)})
+        attempts.append(
+            {
+                "offer_search_status": s,
+                "offer_count": len(offers),
+                "require_avx": require_avx,
+            }
+        )
         create_payload = request.get("create_payload") or {}
         # Offers go stale between search and create (bundle staging can take minutes),
         # and a stale ask 400s. Walk up to 3 candidate offers before giving up so one
@@ -1025,23 +2098,49 @@ class VastRenderProvider(GpuRenderProvider):
         remaining = list(offers)
         last_blocker = "no_vast_offer_matching_rate_and_gpu_memory"
         for _try in range(3):
-            offer = _select_offer(remaining, max_hourly_rate=max_rate, min_gpu_ram_mb=min_ram)
+            offer = _select_offer(
+                remaining,
+                max_hourly_rate=max_rate,
+                min_gpu_ram_mb=min_ram,
+                require_avx=require_avx,
+                require_known_supported_isaac_driver=require_known_driver,
+                min_reliability=min_reliability,
+                require_direct_port=require_direct_port,
+                preferred_gpu_keywords=preferred_gpu_keywords,
+            )
             if not offer:
                 break
-            remaining = [o for o in remaining if o is not offer]
             ask_id = offer.get("ask_contract_id")
+            # ``_select_offer`` returns a sanitized summary, not the original
+            # offer mapping. Remove by provider ask id so a stale ask cannot be
+            # selected repeatedly.
+            remaining = [
+                candidate
+                for candidate in remaining
+                if (
+                    _offer_id(candidate)
+                    if _offer_id(candidate) is not None
+                    else candidate.get("ask_contract_id") or candidate.get("id")
+                )
+                != ask_id
+            ]
             try:
                 cs, cresp = _api_json(method="PUT", path=f"/asks/{ask_id}/", api_key=key,
                                       payload=create_payload, timeout_seconds=45)
             except urllib.error.HTTPError as e:
                 body = ""
                 try:
-                    body = (e.read() or b"")[:300].decode("utf-8", "replace")
+                    raw_body = (e.read() or b"")[:4096].decode("utf-8", "replace")
+                    body = _redact_provider_error_body(
+                        raw_body,
+                        request_env=_mapping(create_payload.get("env")),
+                    )
                 except Exception:  # noqa: BLE001
                     pass
                 attempts.append({"create_http_status": e.code, "ask_id": ask_id,
                                  "create_error_body": body,
-                                 "gpu_name": offer.get("gpu_name")})
+                                 "gpu_name": offer.get("gpu_name"),
+                                 "has_avx": offer.get("has_avx")})
                 if e.code not in {400, 404, 409, 422}:
                     return {
                         "status": "blocked",
@@ -1069,12 +2168,14 @@ class VastRenderProvider(GpuRenderProvider):
                         break
             attempts.append({"create_status": cs, "instance_id": iid,
                              "gpu_name": offer.get("gpu_name"),
+                             "has_avx": offer.get("has_avx"),
                              "hourly_rate_usd": offer.get("hourly_rate_usd")})
             if iid:
                 started_id_record = _record_started_id(
                     job_dir / "started_vast_instance_id.txt", iid
                 )
                 return {"status": "launched", "instance_id": iid, "mode": "vast_on_demand",
+                        "vast_launch_mode": launch_mode,
                         "attempts": attempts, "started_id_record": started_id_record}
             if cs not in {400, 404, 409, 422}:
                 return {
@@ -1089,6 +2190,254 @@ class VastRenderProvider(GpuRenderProvider):
             "blockers": [last_blocker],
             "attempts": attempts,
             "allocation_created": False,
+        }
+
+    def inspect(self, instance_id: str) -> dict:
+        """Read one Vast instance without exposing its runtime secrets."""
+        normalized_id = _normalize_provider_instance_id(
+            instance_id, numeric_only=True
+        )
+        if normalized_id is None:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "instance_id": instance_id,
+                "blockers": ["vast_instance_id_invalid"],
+                "api_confirmed": False,
+                "raw_provider_response_recorded": False,
+            }
+        key = self._key()
+        if not key:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "instance_id": normalized_id,
+                "blockers": ["vast_api_key_missing"],
+                "api_confirmed": False,
+                "raw_provider_response_recorded": False,
+            }
+        from .vast_provider_adapter import (
+            _api_json,
+            _instance_list_rows,
+            _instance_status,
+            _sanitized_instance_row,
+        )
+
+        try:
+            status, response = _api_json(
+                method="GET",
+                path=f"/instances/{normalized_id}/",
+                api_key=key,
+                timeout_seconds=30,
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code in {404, 410}:
+                return {
+                    "status": "absent",
+                    "provider": self.name,
+                    "http": exc.code,
+                    "instance_id": normalized_id,
+                    "provider_absence_confirmed": True,
+                    "api_confirmed": True,
+                    "raw_provider_response_recorded": False,
+                }
+            return {
+                "status": "unavailable",
+                "provider": self.name,
+                "http": exc.code,
+                "instance_id": normalized_id,
+                "api_confirmed": False,
+                "raw_provider_response_recorded": False,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "unavailable",
+                "provider": self.name,
+                "instance_id": normalized_id,
+                "error_type": type(exc).__name__,
+                "api_confirmed": False,
+                "raw_provider_response_recorded": False,
+            }
+        if status in {404, 410}:
+            return {
+                "status": "absent",
+                "provider": self.name,
+                "http": status,
+                "instance_id": normalized_id,
+                "provider_absence_confirmed": True,
+                "api_confirmed": True,
+                "raw_provider_response_recorded": False,
+            }
+        nested_instance = _mapping(response.get("instances"))
+        # A show-instance response commonly wraps one instance mapping under
+        # ``instances`` and that mapping can itself contain nested mappings
+        # such as ``env``. Prefer its identity/status keys over interpreting
+        # those nested values as a mapping keyed by instance id.
+        rows = (
+            [nested_instance]
+            if nested_instance
+            and any(
+                key in nested_instance
+                for key in (
+                    "id",
+                    "instance_id",
+                    "contract_id",
+                    "actual_status",
+                    "cur_state",
+                    "status",
+                    "intended_status",
+                )
+            )
+            else _instance_list_rows(response)
+        )
+        if status != 200 or not rows:
+            return {
+                "status": "unavailable",
+                "provider": self.name,
+                "http": status,
+                "instance_id": normalized_id,
+                "api_confirmed": False,
+                "raw_provider_response_recorded": False,
+            }
+        row = rows[0]
+        sanitized = _sanitized_instance_row(row)
+        provider_status = _instance_status(row).lower()
+        connection = _vast_ssh_connection_metadata(row)
+        return {
+            "status": "observed",
+            "provider": self.name,
+            "http": status,
+            "instance_id": normalized_id,
+            # ``paid_lane_guard.provider_state_from_inspect`` consumes this
+            # provider-neutral field for post-DELETE verification.
+            "desiredStatus": provider_status,
+            "actual_status": sanitized.get("actual_status"),
+            "cur_state": sanitized.get("cur_state"),
+            "intended_status": sanitized.get("intended_status"),
+            "machine_id": sanitized.get("machine_id"),
+            "has_avx": sanitized.get("has_avx"),
+            "gpu_name": sanitized.get("gpu_name"),
+            "cost_per_hour": sanitized.get("dph_total"),
+            "name": row.get("label") or row.get("name"),
+            **connection,
+            "api_confirmed": True,
+            "provider_absence_confirmed": False,
+            "raw_provider_response_recorded": False,
+        }
+
+    def billable_inventory(self, *, name_prefix: str) -> dict:
+        """Return API-confirmed non-terminal Vast instances for one label prefix."""
+        observed_at_epoch = time.time()
+        prefix = str(name_prefix or "")
+        key = self._key()
+        if not key:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": prefix,
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "observed_at_epoch": observed_at_epoch,
+                "blockers": ["vast_api_key_missing"],
+                "raw_provider_response_recorded": False,
+            }
+        from .vast_provider_adapter import (
+            _active_instance_rows_from_payload,
+            _api_json,
+            _instance_list_rows,
+        )
+
+        try:
+            status, response = _api_json(
+                method="GET",
+                path="/instances/",
+                api_key=key,
+                timeout_seconds=30,
+            )
+        except urllib.error.HTTPError as exc:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": prefix,
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "observed_at_epoch": observed_at_epoch,
+                "blockers": ["vast_billable_inventory_failed"],
+                "http": exc.code,
+                "raw_provider_response_recorded": False,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": prefix,
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "observed_at_epoch": observed_at_epoch,
+                "blockers": ["vast_billable_inventory_failed"],
+                "error_type": type(exc).__name__,
+                "raw_provider_response_recorded": False,
+            }
+        if status != 200:
+            return {
+                "status": "blocked",
+                "provider": self.name,
+                "name_prefix": prefix,
+                "live_resource_count": None,
+                "resources": [],
+                "api_confirmed": False,
+                "observed_at_epoch": observed_at_epoch,
+                "blockers": ["vast_billable_inventory_failed"],
+                "http": status,
+                "raw_provider_response_recorded": False,
+            }
+
+        names_by_id: dict[str, str] = {}
+        for raw_row in _instance_list_rows(response):
+            raw_id = _normalize_provider_instance_id(
+                raw_row.get("id")
+                or raw_row.get("instance_id")
+                or raw_row.get("contract_id"),
+                numeric_only=True,
+            )
+            if raw_id:
+                names_by_id[raw_id] = str(
+                    raw_row.get("label") or raw_row.get("name") or ""
+                )
+        resources: list[dict[str, Any]] = []
+        for row in _active_instance_rows_from_payload(response):
+            resource_id = _normalize_provider_instance_id(
+                row.get("id"), numeric_only=True
+            )
+            name = names_by_id.get(resource_id or "", "")
+            if prefix and not name.startswith(prefix):
+                continue
+            resources.append(
+                {
+                    "instance_id": resource_id,
+                    "name": name,
+                    "provider_status": row.get("raw_status_normalized"),
+                    "actual_status": row.get("actual_status"),
+                    "cur_state": row.get("cur_state"),
+                    "intended_status": row.get("intended_status"),
+                    "machine_id": row.get("machine_id"),
+                    "gpu_name": row.get("gpu_name"),
+                    "cost_per_hour": row.get("dph_total"),
+                }
+            )
+        return {
+            "status": "observed",
+            "provider": self.name,
+            "name_prefix": prefix,
+            "live_resource_count": len(resources),
+            "resources": resources,
+            "api_confirmed": True,
+            "observed_at_epoch": observed_at_epoch,
+            "http": status,
+            "raw_provider_response_recorded": False,
         }
 
     def stop(self, instance_id: str) -> dict:

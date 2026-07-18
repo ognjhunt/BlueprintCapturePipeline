@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import subprocess
+import time
 import zipfile
 from pathlib import Path
 
@@ -1333,12 +1335,75 @@ def test_worker_bootstrap_runs_healthcheck_groot_and_task_adaptive_closed_loop()
     assert "--oscar-height 240" not in script
     assert ".replace(" not in script
     assert '"Content-Type: application/zip"' in script
+    assert 'terminal_phase = phase in {"runner_done", "runner_timeout"}' in script
+    assert "max_attempts = 5 if terminal_phase else 1" in script
+    assert '"--connect-timeout", "30", "--max-time", "300"' in script
+    assert "if uploaded.returncode == 0:" in script
+    assert "raise SystemExit(75)" in script
+    assert (
+        'if [ "$1" = "runner_done" ] || [ "$1" = "runner_timeout" ]; then\n'
+        '    BLUEPRINT_BOOTSTRAP_PHASE="$1" python /workspace/upload_progress.py\n'
+    ) in script
+    assert (
+        'BLUEPRINT_BOOTSTRAP_PHASE="$1" python /workspace/upload_progress.py || true'
+        in script
+    )
     assert "SECRET_ROOT=/workspace/.runtime-secrets" in script
     assert "/run/blueprint-secrets" not in script
     assert "export GROOT_PID GEAR_SONIC_PID ISAAC_TASK_PID" in script
     assert "groot_policy_server_exited_before_ready" in script
     assert "official_gear_sonic_controller_exited_before_ready" in script
     assert "persistent_isaac_task_executor_exited_before_ready" in script
+
+
+@pytest.mark.parametrize(
+    ("return_codes", "expected_calls", "expected_exit"),
+    [
+        ([7, 0], 2, None),
+        ([7, 7, 7, 7, 7], 5, 75),
+    ],
+)
+def test_terminal_output_upload_retries_and_fails_closed_when_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    return_codes: list[int],
+    expected_calls: int,
+    expected_exit: int | None,
+) -> None:
+    script = J.build_worker_bootstrap_script(_active_plan())
+    source = script.split("cat > /workspace/upload_progress.py <<'PY'\n", 1)[1].split(
+        "\nPY\n\ncat > /workspace/write_result.py",
+        1,
+    )[0]
+    source = source.replace(
+        'workspace = Path("/workspace")',
+        f"workspace = Path({str(tmp_path)!r})",
+    )
+    (tmp_path / "out").mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run(command, *, check):  # noqa: ANN001
+        assert check is False
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, return_codes[len(calls) - 1])
+
+    monkeypatch.setenv("BLUEPRINT_BOOTSTRAP_PHASE", "runner_done")
+    monkeypatch.setenv(
+        "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL",
+        "https://objects.example/output?redacted-signature",
+    )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    if expected_exit is None:
+        exec(compile(source, "upload_progress.py", "exec"), {})
+    else:
+        with pytest.raises(SystemExit) as exc_info:
+            exec(compile(source, "upload_progress.py", "exec"), {})
+        assert exc_info.value.code == expected_exit
+
+    assert len(calls) == expected_calls
+    assert all("--connect-timeout" in command and "--max-time" in command for command in calls)
 
 
 def test_paid_missing_budget_blocks_before_capacity_preflight_or_staging(

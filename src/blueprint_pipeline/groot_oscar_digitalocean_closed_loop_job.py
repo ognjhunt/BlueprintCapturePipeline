@@ -56,6 +56,7 @@ from .groot_oscar_closed_loop_image import (
 )
 from .groot_oscar_worker_startup_script import (
     GEAR_SONIC_READY_SCRIPT,
+    GROOT_CHECKPOINT_PREFLIGHT_SCRIPT,
     STARTUP_GATES_SCRIPT,
 )
 from .isaac_particlefield_render_job import stage_bundle, watch_and_collect
@@ -1464,12 +1465,14 @@ include = [
     workspace / "sealed_launch_plan.json",
     workspace / "seed_provenance.json",
     workspace / "initial_policy_frame.png",
+    workspace / "controller_fk_camera_projection_context.json",
     workspace / "route.json",
     workspace / "task_prompt.txt",
     workspace / "groot_oscar_image_healthcheck.json",
     workspace / "groot_oscar_image_healthcheck.stderr.log",
     workspace / "groot_server.log",
     workspace / "gear_sonic_controller.log",
+    workspace / "gear_sonic_isaac_dds_bridge.log",
     workspace / "isaac_task_executor.log",
     workspace / "initial_g1_sonic_state.json",
     workspace / "runtime_ephemeral_trust.json",
@@ -1487,8 +1490,25 @@ with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             if path.is_file():
                 zf.write(path, path.relative_to(workspace).as_posix())
 put_url = os.environ.get("BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL", "")
-if put_url:
-    subprocess.run(["curl", "-fsS", "-X", "PUT", "-H", "Content-Type: application/zip", "--upload-file", str(zip_path), put_url], check=False)
+if not put_url:
+    raise SystemExit("worker_output_put_url_missing")
+terminal_phase = phase in {{"runner_done", "runner_timeout"}}
+max_attempts = 5 if terminal_phase else 1
+for attempt in range(1, max_attempts + 1):
+    uploaded = subprocess.run(
+        [
+            "curl", "-fsS", "--connect-timeout", "30", "--max-time", "300",
+            "-X", "PUT", "-H", "Content-Type: application/zip",
+            "--upload-file", str(zip_path), put_url,
+        ],
+        check=False,
+    )
+    if uploaded.returncode == 0:
+        break
+    if attempt < max_attempts:
+        time.sleep(min(2 ** attempt, 16))
+else:
+    raise SystemExit(75)
 PY
 
 cat > /workspace/write_result.py <<'PY'
@@ -1530,7 +1550,11 @@ Path("/workspace/isaac_runtime_result.json").write_text(json.dumps(result, inden
 PY
 
 upload_phase() {{
-  BLUEPRINT_BOOTSTRAP_PHASE="$1" python /workspace/upload_progress.py || true
+  if [ "$1" = "runner_done" ] || [ "$1" = "runner_timeout" ]; then
+    BLUEPRINT_BOOTSTRAP_PHASE="$1" python /workspace/upload_progress.py
+  else
+    BLUEPRINT_BOOTSTRAP_PHASE="$1" python /workspace/upload_progress.py || true
+  fi
 }}
 
 upload_phase container_bash_started
@@ -1592,6 +1616,7 @@ python -m blueprint_pipeline.runtime_ephemeral_trust \
   --public-manifest /workspace/runtime_ephemeral_trust.json \
   --attempt-input-manifest /workspace/attempt_input_manifest.json
 source "$SECRET_ROOT/trust_env.sh"
+{GROOT_CHECKPOINT_PREFLIGHT_SCRIPT}
 {STARTUP_GATES_SCRIPT}
 
 set +e
@@ -1658,7 +1683,7 @@ upload_phase groot_server_ready
 
 set +e
 python - <<'PY'
-import json, os, time, urllib.request
+import hashlib, json, os, socket, time
 from pathlib import Path
 deadline = time.time() + 900
 while time.time() < deadline:
@@ -1666,12 +1691,67 @@ while time.time() < deadline:
         raise SystemExit('persistent_isaac_task_executor_exited_before_ready')
     if Path('/workspace/initial_g1_sonic_state.json').is_file():
         try:
-            payload = json.loads(Path('/workspace/initial_g1_sonic_state.json').read_text())
-            if payload.get('measurement', {{}}).get('surrogate') is False:
+            state = json.loads(Path('/workspace/initial_g1_sonic_state.json').read_text())
+            measurement = state.get('measurement', {{}})
+            if measurement.get('surrogate') is not False:
+                time.sleep(0.2)
+                continue
+            context_name = os.environ.get(
+                'BLUEPRINT_CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT', ''
+            ).strip()
+            if not context_name:
+                time.sleep(0.2)
+                continue
+            context_path = Path(context_name).resolve()
+            evidence_path = Path(
+                '/workspace/closed_loop_out/isaac_task_state/initial_policy_observation.json'
+            )
+            context_bytes = context_path.read_bytes()
+            context = json.loads(context_bytes)
+            evidence = json.loads(evidence_path.read_text())
+            attempt = json.loads(
+                Path('/workspace/attempt_input_manifest.json').read_text()
+            )
+            frame_ref = context.get('source_frame_artifact', {{}})
+            frame_path = Path(str(frame_ref.get('path') or '')).resolve()
+            frame_bytes = frame_path.read_bytes()
+            context_sha = hashlib.sha256(context_bytes).hexdigest()
+            frame_sha = hashlib.sha256(frame_bytes).hexdigest()
+            identity_matches = (
+                bool(measurement.get('simulator_session_id'))
+                and bool(measurement.get('stage_id'))
+                and context.get('simulator_session_id') == measurement.get('simulator_session_id')
+                and context.get('stage_id') == measurement.get('stage_id')
+                and context.get('attempt_id') == attempt.get('attempt_id')
+                and context.get('launch_nonce') == attempt.get('launch_nonce')
+                and evidence.get('simulator_session_id') == measurement.get('simulator_session_id')
+                and evidence.get('stage_id') == measurement.get('stage_id')
+            )
+            artifact_matches = (
+                context.get('status') == 'captured_from_live_persistent_isaac_session'
+                and evidence.get('status') == 'completed'
+                and frame_path == Path('/workspace/initial_policy_frame.png').resolve()
+                and not frame_path.is_symlink()
+                and frame_ref.get('sha256') == frame_sha
+                and frame_ref.get('width') == 640
+                and frame_ref.get('height') == 480
+                and evidence.get('source_frame_artifact', {{}}).get('sha256') == frame_sha
+                and evidence.get('camera_projection_context_artifact', {{}}).get('sha256') == context_sha
+                and context.get('claim_boundary', {{}}).get('bundled_seed_frame_reused') is False
+            )
+            registration = context.get('standing_cross_simulator_registration', {{}})
+            registration_ready = (
+                registration.get('status')
+                == 'pending_official_mujoco_named_link_residual_verification'
+                and registration.get('surrogate') is False
+            )
+            with socket.create_connection(('127.0.0.1', 8765), timeout=1):
+                pass
+            if identity_matches and artifact_matches and registration_ready:
                 break
         except Exception:
             pass
-    time.sleep(5)
+    time.sleep(0.2)
 else:
     raise SystemExit('persistent_isaac_task_executor_not_ready')
 PY

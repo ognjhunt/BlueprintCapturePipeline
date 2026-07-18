@@ -35,9 +35,11 @@ class _FakePolicyClient:
         _FakePolicyClient.last_observation = observation
         return (
             {
-                "action.motion_token": np.array([[0.1, 0.2]], dtype=np.float32),
-                "left_hand_joints": np.arange(7, dtype=np.float32),
-                "right_hand_joints": np.arange(7, dtype=np.float32) + 10,
+                "action.motion_token": np.arange(64, dtype=np.float32).reshape(1, 1, 64),
+                "left_hand_joints": np.arange(7, dtype=np.float32).reshape(1, 1, 7),
+                "right_hand_joints": (np.arange(7, dtype=np.float32) + 10).reshape(
+                    1, 1, 7
+                ),
             },
             {"server_secret_token": "do-not-write"},
         )
@@ -81,7 +83,15 @@ def test_policy_server_command_builds_sonic_observation_and_normalizes_action(
         "motion_token",
         "right_hand_joints",
     ]
-    assert len(response["action"]["action_chunk"]) == 16
+    assert len(response["action"]["action_chunk"]) == 78
+    assert response["action"]["action_chunk"][:64] == [float(index) for index in range(64)]
+    assert response["action"]["action_chunk"][64:71] == [
+        float(index) for index in range(7)
+    ]
+    assert response["action"]["action_chunk"][71:] == [
+        float(index + 10) for index in range(7)
+    ]
+    assert response["action"]["action_units"] == ["latent"] * 64 + ["rad"] * 14
     assert response["policy_server_info_redacted"]["server_secret_token"] == "<redacted>"
     assert response["claim_boundary"]["generated_world_rank_fidelity_result_proven"] is False
     assert response["claim_boundary"]["generated_world_policy_evaluation_scope_proven"] is False
@@ -94,6 +104,56 @@ def test_policy_server_command_builds_sonic_observation_and_normalizes_action(
     assert groot_observation["language"]["annotation.human.task_description"] == [
         ["push the light object"]
     ]
+
+
+def test_normalizer_selects_one_frame_before_fieldwise_horizon_flattening() -> None:
+    motion = np.arange(40 * 64, dtype=np.float32).reshape(1, 40, 64)
+    left = (10_000 + np.arange(40 * 7, dtype=np.float32)).reshape(1, 40, 7)
+    right = (20_000 + np.arange(40 * 7, dtype=np.float32)).reshape(1, 40, 7)
+
+    normalized = command._normalize_policy_server_action(
+        {
+            "motion_token": motion,
+            "left_hand_joints": left,
+            "right_hand_joints": right,
+        }
+    )
+
+    assert normalized is not None
+    expected = np.concatenate((motion[0, 0], left[0, 0], right[0, 0])).tolist()
+    former_fieldwise_prefix = np.concatenate(
+        (motion.reshape(-1), left.reshape(-1), right.reshape(-1))
+    )[:78].tolist()
+    assert normalized["action_chunk"] == expected
+    assert normalized["action_chunk"] != former_fieldwise_prefix
+    assert normalized["action_units"] == ["latent"] * 64 + ["rad"] * 14
+    assert normalized["action_timing"] == {
+        "control_hz": 50.0,
+        "sample_period_seconds": 0.02,
+        "selected_horizon_frame_index": 0,
+        "source_horizon_frame_count": 40,
+    }
+    horizon = normalized["action_horizon"]
+    assert horizon["frame_count"] == 40
+    assert horizon["frame_dimension"] == 78
+    assert horizon["full_dimension"] == 3120
+    assert horizon["source_field_shapes"] == {
+        "motion_token": [1, 40, 64],
+        "left_hand_joints": [1, 40, 7],
+        "right_hand_joints": [1, 40, 7],
+    }
+    assert horizon["selected_frame_sha256"] == normalized["action_values_sha256"]
+    sequence = normalized["sonic_action_sequence"]
+    expected_frames = np.concatenate((motion[0], left[0], right[0]), axis=1).tolist()
+    assert sequence["schema_version"] == "unitree_g1_sonic_action_sequence.v1"
+    assert sequence["frame_count"] == 40
+    assert sequence["frame_dimension"] == 78
+    assert sequence["frames"] == expected_frames
+    assert sequence["frames"][0] == expected
+    assert sequence["frames"][39] == np.concatenate(
+        (motion[0, 39], left[0, 39], right[0, 39])
+    ).tolist()
+    assert horizon["combined_control_frames_sha256"] == sequence["frames_sha256"]
 
 
 def test_policy_server_command_blocks_on_missing_sonic_state(tmp_path) -> None:
@@ -173,10 +233,7 @@ def test_policy_server_command_blocks_empty_sonic_action_chunk(tmp_path) -> None
 
     assert exit_code == 2
     assert response["status"] == "blocked"
-    assert (
-        "blocked_gr00t_policy_server_response_missing_unitree_g1_sonic_action"
-        in response["blockers"]
-    )
+    assert "blocked_incomplete_unitree_g1_sonic_control_fields" in response["blockers"]
 
 
 def test_policy_server_command_blocks_when_server_dependency_or_server_fails(

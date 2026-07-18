@@ -26,6 +26,44 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_filter_requirements_fails_closed_when_official_source_file_is_missing(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "filter.py"
+    script.write_text(image_module.filter_requirements_script_text(), encoding="utf-8")
+    target = tmp_path / "filtered.txt"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "missing.txt"), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "OSCAR requirements source missing" in completed.stderr
+    assert not target.exists()
+
+
+def test_filter_requirements_keeps_oscar_dependencies_and_excludes_torch(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "filter.py"
+    script.write_text(image_module.filter_requirements_script_text(), encoding="utf-8")
+    source = tmp_path / "requirements_minimal.txt"
+    source.write_text("torch==2.10.0\neinops==0.8.1\n", encoding="utf-8")
+    target = tmp_path / "filtered.txt"
+
+    subprocess.run(
+        [sys.executable, str(script), str(source), str(target)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert target.read_text(encoding="utf-8") == "einops==0.8.1\n"
+
+
 def test_oscar_wam_gpu_image_context_writes_cuda128_shim_contract(
     tmp_path: Path,
 ) -> None:
@@ -37,18 +75,14 @@ def test_oscar_wam_gpu_image_context_writes_cuda128_shim_contract(
 
     assert manifest["status"] == "ready_for_image_build"
     assert manifest["configured_image_ref_is_versioned"] is True
-    dockerfile = Path(str(manifest["artifact_paths"]["dockerfile"])).read_text(
-        encoding="utf-8"
-    )
+    dockerfile = Path(str(manifest["artifact_paths"]["dockerfile"])).read_text(encoding="utf-8")
     assert "nvidia/cuda:12.8.0-devel-ubuntu22.04" in dockerfile
     assert "FROM --platform=linux/amd64" in dockerfile
     assert "https://download.pytorch.org/whl/cu128" in dockerfile
     assert "torch==2.10.0" in dockerfile
     assert "torchvision==0.25.0" in dockerfile
     assert "nvidia-cudnn-cu12" in dockerfile
-    requirements = Path(str(manifest["artifact_paths"]["requirements"])).read_text(
-        encoding="utf-8"
-    )
+    requirements = Path(str(manifest["artifact_paths"]["requirements"])).read_text(encoding="utf-8")
     assert "nvidia-ml-py" in requirements
     assert "loguru" in requirements
     assert "matplotlib" in requirements
@@ -106,28 +140,22 @@ def test_oscar_wam_gpu_image_context_writes_cuda128_shim_contract(
     assert "matplotlib" in healthcheck
     assert "megatron.core" in healthcheck
     assert '"pytest": "pytest"' in healthcheck
-    assert '{label}_not_importable' in healthcheck
+    assert "{label}_not_importable" in healthcheck
     assert "worldsim_runtime_imports" in healthcheck
 
     persisted = _read_json(tmp_path / "image-context" / "oscar_wam_gpu_image_manifest.json")
     assert persisted["truth_boundary"]["no_raw_tokens_or_hashes_written"] is True
     assert persisted["registry_auth"]["docker_pat_file"]["path_redacted"] is True
     assert "path" not in persisted["registry_auth"]["docker_pat_file"]
-    assert persisted["registry_auth"]["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
+    assert (
+        persisted["registry_auth"]["secret_artifact_policy"]["local_secret_file_paths_recorded"]
+        is False
+    )
     assert persisted["platform"] == "linux/amd64"
     assert persisted["oscar_source_ref"] == OFFICIAL_OSCAR_SOURCE_COMMIT
-    assert (
-        persisted["official_oscar_release"]["source_ref_pinned_to_reviewed_commit"]
-        is True
-    )
-    assert (
-        persisted["official_checked_image"]["digest_ref"]
-        == OFFICIAL_OSCAR_WAM_IMAGE_REF
-    )
-    assert (
-        persisted["official_checked_image"]["index_digest"]
-        == OFFICIAL_OSCAR_WAM_IMAGE_DIGEST
-    )
+    assert persisted["official_oscar_release"]["source_ref_pinned_to_reviewed_commit"] is True
+    assert persisted["official_checked_image"]["digest_ref"] == OFFICIAL_OSCAR_WAM_IMAGE_REF
+    assert persisted["official_checked_image"]["index_digest"] == OFFICIAL_OSCAR_WAM_IMAGE_DIGEST
     assert persisted["runtime_contract"]["model_checkpoint_baked_into_image"] is False
     assert persisted["runtime_contract"]["raw_credentials_baked_into_image"] is False
     build_script = Path(str(manifest["artifact_paths"]["build_command"])).read_text(
@@ -179,9 +207,7 @@ def test_gpu_image_transformer_engine_shim_rope_matches_te_split_half_semantics(
 
         assert importlib.metadata.version("transformer-engine") == "2.0.0"
         tensor = torch.arange(36, dtype=torch.float32).reshape(1, 3, 2, 6) / 10.0
-        freqs = torch.linspace(0.01, 0.24, steps=12, dtype=torch.float32).reshape(
-            3, 1, 1, 4
-        )
+        freqs = torch.linspace(0.01, 0.24, steps=12, dtype=torch.float32).reshape(3, 1, 1, 4)
 
         assert torch.allclose(
             apply_rotary_pos_emb(tensor, freqs, tensor_format="bshd", fused=True),
@@ -224,9 +250,7 @@ def test_oscar_wam_gpu_image_real_transformer_engine_mode(tmp_path: Path) -> Non
     assert manifest["transformer_engine_strategy"] == (
         "real_transformer_engine_pip_no_build_isolation"
     )
-    dockerfile = Path(str(manifest["artifact_paths"]["dockerfile"])).read_text(
-        encoding="utf-8"
-    )
+    dockerfile = Path(str(manifest["artifact_paths"]["dockerfile"])).read_text(encoding="utf-8")
     assert "BLUEPRINT_TRANSFORMER_ENGINE_MODE=real" in dockerfile
     assert "NVTE_FRAMEWORK=pytorch" in dockerfile
     assert "--no-build-isolation" in dockerfile

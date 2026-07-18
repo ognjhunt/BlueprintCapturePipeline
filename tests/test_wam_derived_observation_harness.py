@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import types
@@ -17,6 +18,7 @@ from PIL import Image, ImageDraw
 
 from blueprint_pipeline import wam_real_provider_validation_probe as real_probe
 from blueprint_pipeline.wam_derived_observation_harness import (
+    GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
     build_wam_derived_observation_step,
     run_wam_derived_observation_harness_step,
 )
@@ -95,6 +97,96 @@ def _observation(frame: Path) -> dict[str, Any]:
         "unitree_g1_sonic_state": {"left_hand": [0.0, 0.1]},
         "safety_limits": {"max_joint_delta": 0.2},
     }
+
+
+def test_generated_rgb_policy_observation_validates_exact_frame_without_perception(
+    tmp_path: Path,
+) -> None:
+    frame = _write_frame(tmp_path / "fresh_oscar_step_0001.png")
+    expected_sha256 = hashlib.sha256(frame.read_bytes()).hexdigest()
+
+    result = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "harness",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_wam_rollout_id="oscar_isaac_closed_loop_step_0001",
+        transition_id="oscar_isaac_transition_0001",
+        source_policy_action={"action_type": "manipulation", "policy_action": [0.1]},
+        current_policy_observation=_observation(frame),
+        backend_kind=GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
+        backend_command=["command-that-must-not-run"],
+        allow_external_backend=False,
+        policy_id="groot_sonic_rgb_only",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    step = result["step_record"]
+    backend = step["harness_backend"]
+    validation = step["generated_rgb_validation"]
+    assert step["status"] == "completed"
+    assert backend["kind"] == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
+    assert backend["built_in_generated_rgb_validation_ran"] is True
+    assert backend["generated_rgb_policy_observation_validated"] is True
+    assert backend["real_sam_or_depth_model_ran"] is False
+    assert backend["real_perception_model_ran"] is False
+    assert backend["sam3_ran"] is False
+    assert backend["da3_ran"] is False
+    assert backend["provider_statuses"] == []
+    assert validation["source_generated_frame_sha256"] == expected_sha256
+    assert validation["source_generated_frame_size_bytes"] == frame.stat().st_size
+    assert validation["exact_file_hash_bound"] is True
+    assert validation["source_wam_rollout_id"] == "oscar_isaac_closed_loop_step_0001"
+    assert validation["transition_id"] == "oscar_isaac_transition_0001"
+    assert step["objects"] == []
+    assert step["depth_estimates"] == []
+    assert step["pose_estimates"] == []
+    assert step["contact_likelihood"]["status"] == (
+        "not_run_rgb_only_policy_observation"
+    )
+    assert step["scoring_allowed"]["usable_for_policy_requery"] is True
+    assert step["scoring_allowed"]["usable_for_success_scoring"] is False
+    assert step["claim_boundary"]["semantic_task_success_claimed"] is False
+    assert "fixture" not in json.dumps(step, sort_keys=True).lower()
+
+    adapter = result["policy_adapter_report"]
+    adapted_visual = adapter["adapted_policy_observation"]["visual_observation"]
+    assert adapter["safe_for_policy_requery"] is True
+    assert adapted_visual["source_generated_frame_sha256"] == expected_sha256
+    assert adapted_visual["generated_rgb_policy_observation_validated"] is True
+    assert adapted_visual["perception_model_ran"] is False
+    assert Path(backend["request_path"]).is_file()
+    assert Path(backend["result_path"]).is_file()
+
+
+def test_generated_rgb_policy_observation_blocks_unreadable_frame(
+    tmp_path: Path,
+) -> None:
+    frame = tmp_path / "fresh_oscar_step_0001.png"
+    frame.write_bytes(b"not-an-image")
+
+    result = run_wam_derived_observation_harness_step(
+        output_dir=tmp_path / "harness",
+        generated_at="now",
+        step_index=1,
+        source_generated_frame_path=frame,
+        source_wam_rollout_id="oscar_isaac_closed_loop_step_0001",
+        transition_id="oscar_isaac_transition_0001",
+        source_policy_action={"action_type": "manipulation"},
+        current_policy_observation=_observation(frame),
+        backend_kind=GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
+        allow_external_backend=False,
+        policy_id="groot_sonic_rgb_only",
+        declared_policy_observation_schema={"rgb_only": True},
+    )
+
+    step = result["step_record"]
+    assert step["status"] == "blocked_reliability"
+    assert "generated_rgb_policy_observation_frame_not_decodable" in step["blockers"]
+    assert step["objects"] == []
+    assert step["depth_estimates"] == []
+    assert step["pose_estimates"] == []
+    assert result["policy_adapter_report"]["safe_for_policy_requery"] is False
 
 
 def test_harness_emits_derived_observation_artifacts_and_boundaries(tmp_path: Path) -> None:

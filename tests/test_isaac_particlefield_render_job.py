@@ -288,6 +288,116 @@ def test_watch_and_collect_treats_same_phase_marker_changes_as_progress(
     assert result["teardown_reason"] == "runner_done_terminated_no_warm_reuse"
 
 
+def test_watch_and_collect_ignores_stale_terminal_snapshot_until_nonce_matches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip")
+    (job_dir / "launch_session_nonce.txt").write_text("launch-current")
+    stale = _zip_bytes(
+        {
+            "bootstrap.json": json.dumps(
+                {"phase": "runner_done", "launch_session_id": "launch-stale"}
+            ),
+            "isaac_runtime_result.json": json.dumps({"status": "completed"}),
+            "stale-only.txt": "must never publish",
+        }
+    )
+    current = _zip_bytes(
+        {
+            "bootstrap.json": json.dumps(
+                {"phase": "runner_done", "launch_session_id": "launch-current"}
+            ),
+            "isaac_runtime_result.json": json.dumps({"status": "completed"}),
+            "current-only.txt": "current",
+        }
+    )
+    payloads = [stale, current, current]
+    read_count = {"value": 0}
+
+    class _Response:
+        def read(self) -> bytes:
+            index = min(read_count["value"], len(payloads) - 1)
+            read_count["value"] += 1
+            return payloads[index]
+
+    now = 0.0
+
+    def _time() -> float:
+        return now
+
+    def _sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(render_job.time, "time", _time)
+    monkeypatch.setattr(render_job.time, "sleep", _sleep)
+    monkeypatch.setattr(render_job.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+
+    out_dir = tmp_path / "out"
+    result = render_job.watch_and_collect(
+        job_dir,
+        out_dir,
+        "pod-current",
+        provider=_CollectProvider(),
+        max_seconds=10,
+        poll=1,
+    )
+
+    assert result["status"] == "completed"
+    assert result["last_bootstrap"]["launch_session_id"] == "launch-current"
+    assert result["stale_launch_snapshot_count"] == 1
+    assert read_count["value"] == 3
+    assert (out_dir / "current-only.txt").is_file()
+    assert not (out_dir / "stale-only.txt").exists()
+
+
+def test_watch_and_collect_replaces_preexisting_output_instead_of_merging(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip")
+    (job_dir / "launch_session_nonce.txt").write_text("launch-current")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "isaac_runtime_result.json").write_text(
+        json.dumps({"status": "completed", "source": "old-launch"})
+    )
+    payload = _zip_bytes(
+        {
+            "bootstrap.json": json.dumps(
+                {"phase": "runner_done", "launch_session_id": "launch-current"}
+            ),
+            "runner_console.log": "current launch reached terminal upload\n",
+        }
+    )
+
+    class _Response:
+        def read(self) -> bytes:
+            return payload
+
+    monkeypatch.setattr(render_job.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(render_job.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+
+    result = render_job.watch_and_collect(
+        job_dir,
+        out_dir,
+        "pod-current-no-result",
+        provider=_CollectProvider(),
+        max_seconds=10,
+        poll=1,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["runner_result"] == {}
+    assert not (out_dir / "isaac_runtime_result.json").exists()
+    assert "current launch" in result["runner_console_tail"]
+
+
 # ---------------------------------------------------------------------------
 # Provider reliability manifest integration (paid path, hermetic fakes).
 # ---------------------------------------------------------------------------

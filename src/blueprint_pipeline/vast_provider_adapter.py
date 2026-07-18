@@ -33,6 +33,7 @@ from typing import Any, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .logging_utils import log_event
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
@@ -268,6 +269,23 @@ def _number(value: Any) -> float | None:
             return float(value)
         except ValueError:
             return None
+    return None
+
+
+def _normalized_binary_capability(value: Any) -> bool | None:
+    """Normalize provider 0/1 capability fields without treating unknown as false."""
+    if isinstance(value, bool):
+        return value
+    number = _number(value)
+    if number == 1:
+        return True
+    if number == 0:
+        return False
+    text = _string(value).strip().lower()
+    if text in {"true", "yes"}:
+        return True
+    if text in {"false", "no"}:
+        return False
     return None
 
 
@@ -1203,6 +1221,33 @@ def _gpu_name(offer: Mapping[str, Any]) -> str:
     )
 
 
+def _normalized_gpu_model_key(value: Any) -> str:
+    """Normalize provider/vendor spelling without weakening model identity."""
+
+    text = _string(value).upper()
+    for vendor_token in ("NVIDIA", "GEFORCE"):
+        text = re.sub(rf"\b{vendor_token}\b", "", text)
+    return re.sub(r"[^A-Z0-9]+", "", text)
+
+
+def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
+    """Return the measured/model VRAM cap for an exact normalized GPU model.
+
+    Vast can report host-total ``gpu_ram`` on a one-GPU slice.  The model cap
+    prevents a 24 GB RTX 4090 on a multi-GPU host from masquerading as a 48 GB
+    card while preserving provider-reported memory for models not yet in the
+    authoritative hardware registry.
+    """
+
+    model_key = _normalized_gpu_model_key(gpu_name)
+    if not model_key:
+        return None
+    for known_name, vram_gb in KNOWN_GPU_VRAM_GB.items():
+        if _normalized_gpu_model_key(known_name) == model_key:
+            return int(round(float(vram_gb) * 1024))
+    return None
+
+
 def _is_disallowed_for_isaac(gpu_name: str) -> bool:
     upper = gpu_name.upper()
     return any(item in upper for item in DISALLOWED_ISAAC_GPU_KEYWORDS)
@@ -1240,6 +1285,22 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
     driver = _driver_version(offer)
     driver_status = _isaac_driver_support_status(driver)
     compute_cap = offer.get("compute_cap")
+    provider_reported_gpu_ram_mb = _number(
+        offer.get("gpu_ram")
+        or offer.get("gpu_totalram")
+        or offer.get("gpu_ram_mb")
+    )
+    known_model_vram_cap_mb = _known_gpu_vram_cap_mb(gpu)
+    effective_gpu_ram_mb = (
+        min(int(provider_reported_gpu_ram_mb), known_model_vram_cap_mb)
+        if provider_reported_gpu_ram_mb is not None
+        and known_model_vram_cap_mb is not None
+        else (
+            int(provider_reported_gpu_ram_mb)
+            if provider_reported_gpu_ram_mb is not None
+            else known_model_vram_cap_mb
+        )
+    )
     return {
         "ask_contract_id": _offer_id(offer),
         "gpu_name": gpu,
@@ -1251,9 +1312,24 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
         "cuda_max_good": offer.get("cuda_max_good"),
         "compute_cap": compute_cap,
         "compute_cap_normalized": _normalized_compute_cap(compute_cap),
-        "gpu_ram_mb": offer.get("gpu_ram")
-        or offer.get("gpu_totalram")
-        or offer.get("gpu_ram_mb"),
+        "gpu_ram_mb": effective_gpu_ram_mb,
+        "provider_reported_gpu_ram_mb": (
+            int(provider_reported_gpu_ram_mb)
+            if provider_reported_gpu_ram_mb is not None
+            else None
+        ),
+        "known_model_vram_cap_mb": known_model_vram_cap_mb,
+        "gpu_ram_normalization": (
+            "known_model_cap_applied"
+            if known_model_vram_cap_mb is not None
+            and provider_reported_gpu_ram_mb is not None
+            and int(provider_reported_gpu_ram_mb) > known_model_vram_cap_mb
+            else (
+                "known_model_cap_not_needed"
+                if known_model_vram_cap_mb is not None
+                else "provider_reported_model_not_registered"
+            )
+        ),
         "num_gpus": offer.get("num_gpus"),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
@@ -1261,6 +1337,7 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
         "direct_port_count": offer.get("direct_port_count"),
         "geolocation": offer.get("geolocation"),
         "machine_id": offer.get("machine_id"),
+        "has_avx": _normalized_binary_capability(offer.get("has_avx")),
         "isaac_rt_candidate": _is_isaac_rt_candidate(gpu),
         "disallowed_for_isaac_rendering": _is_disallowed_for_isaac(gpu),
     }
@@ -1294,6 +1371,11 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "compute_cap": offer.get("compute_cap"),
         "compute_cap_normalized": offer.get("compute_cap_normalized"),
         "gpu_ram_mb": offer.get("gpu_ram_mb"),
+        "provider_reported_gpu_ram_mb": offer.get(
+            "provider_reported_gpu_ram_mb"
+        ),
+        "known_model_vram_cap_mb": offer.get("known_model_vram_cap_mb"),
+        "gpu_ram_normalization": offer.get("gpu_ram_normalization"),
         "num_gpus": offer.get("num_gpus"),
         "reliability": offer.get("reliability"),
         "verified": offer.get("verified"),
@@ -1301,6 +1383,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "direct_port_count": offer.get("direct_port_count"),
         "geolocation": _safe_slug(offer.get("geolocation")),
         "machine_id": int(machine_id) if machine_id is not None else None,
+        "has_avx": _normalized_binary_capability(offer.get("has_avx")),
         "isaac_rt_candidate": bool(offer.get("isaac_rt_candidate")),
         "disallowed_for_isaac_rendering": bool(
             offer.get("disallowed_for_isaac_rendering")
@@ -1477,6 +1560,7 @@ def _select_offer(
     min_compute_cap: int = 0,
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
+    require_avx: bool = False,
     require_known_supported_isaac_driver: bool = False,
     min_reliability: float = 0.0,
     require_direct_port: bool = False,
@@ -1512,6 +1596,7 @@ def _select_offer(
             not allowed
             or int(_number(item.get("machine_id")) or -1) in allowed
         )
+        and (not require_avx or item.get("has_avx") is True)
     ]
     if require_known_supported_isaac_driver:
         candidates = [
@@ -2738,13 +2823,21 @@ def _create_payload(
         # Keep the container alive briefly after emitting markers; otherwise
         # request_logs can race an already-exited args container and return
         # "No such container" with no useful stdout.
+        # Run the probe in a subshell while the outer wrapper has errexit off.
+        # This captures failures even when the probe enables ``set -e``.  A
+        # newline before ``)`` also keeps a terminal heredoc delimiter valid;
+        # appending ``;`` directly after it produces a leading-semicolon syntax
+        # error in ``bash -c``.
         wrapped_script = (
-            f"{probe_script}; "
-            "script_rc=$?; "
-            "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED; "
-            f"sleep ${{BLUEPRINT_VAST_ARGS_LOG_HOLD_SECONDS:-{DEFAULT_ARGS_LOG_HOLD_SECONDS}}}; "
-            "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_DONE; "
-            "exit $script_rc"
+            "set +e\n"
+            "(\n"
+            f"{probe_script.rstrip()}\n"
+            ")\n"
+            "script_rc=$?\n"
+            "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED\n"
+            f"sleep ${{BLUEPRINT_VAST_ARGS_LOG_HOLD_SECONDS:-{DEFAULT_ARGS_LOG_HOLD_SECONDS}}}\n"
+            "echo BLUEPRINT_VAST_ARGS_LOG_HOLD_DONE\n"
+            'exit "$script_rc"'
         )
         payload["args_str"] = "bash -lc " + shlex.quote(wrapped_script)
     else:
@@ -3262,6 +3355,7 @@ def _sanitized_instance_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id") or row.get("instance_id") or row.get("contract_id"),
         "machine_id": row.get("machine_id"),
+        "has_avx": _normalized_binary_capability(row.get("has_avx")),
         "gpu_name": row.get("gpu_name") or row.get("gpu_display_name") or row.get("gpu_names"),
         "actual_status": row.get("actual_status"),
         "cur_state": row.get("cur_state"),
