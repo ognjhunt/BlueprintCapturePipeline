@@ -435,6 +435,16 @@ def test_resume_checkpoint_transfer_uses_existing_parts_without_runpod(
         lambda _manifest: {
             "instance_id": "vast-123",
             "resource_name": "qualification-receiver",
+            "_admission_manifest": {
+                "continuing_spend": True,
+                "watchdog_deadline_epoch": job.time.time() + 3600,
+                "resource_name": "qualification-receiver",
+            },
+            "_admission_inspection": {
+                "status": "observed",
+                "instance_id": "vast-123",
+                "name": "qualification-receiver",
+            },
         },
     )
 
@@ -444,6 +454,18 @@ def test_resume_checkpoint_transfer_uses_existing_parts_without_runpod(
 
     monkeypatch.setattr(job, "_collect_checkpoint", fake_collect_checkpoint)
     output = tmp_path / "resume.json"
+    dry_run = job.resume_checkpoint_transfer_to_vast(
+        provider_bundle=tmp_path / "bundle.zip",
+        checkpoint_object_store_stage_dirs=[tmp_path / "part-001"],
+        worker_report_path=report,
+        checkpoint_vast_session_manifest=tmp_path / "session.json",
+        admission_out=None,
+        adapter_output=output,
+        execute=False,
+    )
+    assert dry_run["status"] == "blocked"
+    assert not captured
+
     result = job.resume_checkpoint_transfer_to_vast(
         provider_bundle=tmp_path / "bundle.zip",
         checkpoint_object_store_stage_dirs=[
@@ -453,13 +475,18 @@ def test_resume_checkpoint_transfer_uses_existing_parts_without_runpod(
         ],
         worker_report_path=report,
         checkpoint_vast_session_manifest=tmp_path / "session.json",
+        admission_out=tmp_path / "resume-admission.json",
         adapter_output=output,
+        execute=True,
     )
 
     assert result["status"] == "completed"
     assert result["runpod_allocation_performed"] is False
     assert result["checkpoint_retraining_performed"] is False
     assert result["claim_boundary"]["checkpoint_installed_on_vast"] is True
+    admission = json.loads((tmp_path / "resume-admission.json").read_text())
+    assert admission["action"] == "install-checkpoint"
+    assert admission["component"] == "groot_microwave_finetune"
     assert len(captured["get_urls"]) == 3
     assert captured["vast_target"]["instance_id"] == "vast-123"
     assert json.loads(output.read_text())["status"] == "completed"
@@ -490,7 +517,10 @@ def test_main_exposes_checkpoint_resume_without_runpod(
             str(tmp_path / "session.json"),
             "--adapter-output",
             str(output),
+            "--admission-out",
+            str(tmp_path / "resume-admission.json"),
             "--resume-checkpoint-to-vast",
+            "--execute",
         ]
     )
 
@@ -505,6 +535,8 @@ def test_main_exposes_checkpoint_resume_without_runpod(
         tmp_path / "session.json"
     )
     assert captured["adapter_output"] == str(output)
+    assert captured["admission_out"] == str(tmp_path / "resume-admission.json")
+    assert captured["execute"] is True
 
 
 def test_remote_checkpoint_receiver_accepts_legacy_numbered_final() -> None:

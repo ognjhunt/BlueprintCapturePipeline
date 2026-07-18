@@ -2559,6 +2559,7 @@ def _refresh_bootstrap(
     identity_file: str,
     training_dataset: str | Path | None,
     trained_checkpoint_path: str | Path | None,
+    admission_out: str | Path | None,
 ) -> dict[str, Any]:
     result_path = Path(adapter_output).expanduser().resolve()
     manifest_path, manifest = _load_private_manifest(session_manifest)
@@ -2683,6 +2684,7 @@ def _refresh_bootstrap(
         raise ValueError("qualification_session_known_hosts_missing")
     from .gpu_render_providers import run_vast_ssh_control
 
+    admit_qualification_control_mutation(admission_out, manifest, inspected, instance_id, "refresh", "bootstrap")
     immutable_before = _qualification_immutable_binding_from_manifest(manifest)
     control = run_vast_ssh_control(
         connection,
@@ -4252,11 +4254,9 @@ def run_qualification_session(
             session_manifest=session_manifest,
             episode_bundle=episode_bundle,
             provider_bootstrap_url_file=provider_bootstrap_url_file,
-            adapter_output=adapter_output,
-            execute=execute,
-            identity_file=identity_file,
-            training_dataset=training_dataset,
-            trained_checkpoint_path=trained_checkpoint_path,
+            adapter_output=adapter_output, execute=execute, identity_file=identity_file,
+            training_dataset=training_dataset, trained_checkpoint_path=trained_checkpoint_path,
+            admission_out=admission_out,
         )
     return _control(
         action=action, component=component, session_manifest=session_manifest,

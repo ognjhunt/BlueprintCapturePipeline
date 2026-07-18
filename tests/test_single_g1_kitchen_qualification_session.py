@@ -1706,6 +1706,7 @@ def test_refresh_bootstrap_is_two_phase_digest_bound_and_audit_chained(
         action="refresh-bootstrap",
         session_manifest=manifest_path,
         episode_bundle=tmp_path / "episode.zip",
+        admission_out=tmp_path / "refresh-admission.json",
         adapter_output=tmp_path / "refresh_result.json",
         execute=True,
     )
@@ -1723,6 +1724,9 @@ def test_refresh_bootstrap_is_two_phase_digest_bound_and_audit_chained(
     assert staged["provider_mutations_performed"] == 0
     assert refreshed["status"] == "bootstrap_refreshed_continuing_spend"
     assert refreshed["provider_mutations_performed"] == 1
+    admission = json.loads((tmp_path / "refresh-admission.json").read_text())
+    assert admission["action"] == "refresh"
+    assert admission["component"] == "bootstrap"
     assert refreshed["control_script_unchanged"] is True
     assert observed["action"] == "refresh"
     assert observed["component"] == "bootstrap"

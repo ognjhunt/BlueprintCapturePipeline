@@ -17,7 +17,9 @@ from .paid_resource_admission import (
 )
 
 
-MUTATING_CONTROL_ACTIONS = frozenset({"run", "restart", "stop"})
+MUTATING_CONTROL_ACTIONS = frozenset(
+    {"install-checkpoint", "refresh", "restart", "run", "stop"}
+)
 
 
 def admit_qualification_control_mutation(

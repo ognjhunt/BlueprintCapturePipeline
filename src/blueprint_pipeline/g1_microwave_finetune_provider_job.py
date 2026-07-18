@@ -43,6 +43,7 @@ from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     require_paid_resource_admission,
 )
+from .qualification_control_admission import admit_qualification_control_mutation
 
 
 SCHEMA_VERSION = "g1_microwave_finetune_provider_job.v1"
@@ -542,6 +543,8 @@ def _load_vast_checkpoint_target(session_manifest: str | Path) -> dict[str, Any]
         "known_hosts_file": str(known_hosts),
         "identity_file": str(Path("~/.ssh/id_ed25519").expanduser().resolve()),
         "checkpoint_path": REMOTE_FINAL_CHECKPOINT,
+        "_admission_manifest": manifest,
+        "_admission_inspection": inspected,
     }
 
 
@@ -737,7 +740,9 @@ def resume_checkpoint_transfer_to_vast(
     checkpoint_object_store_stage_dirs: Sequence[str | Path],
     worker_report_path: str | Path,
     checkpoint_vast_session_manifest: str | Path,
+    admission_out: str | Path | None,
     adapter_output: str | Path,
+    execute: bool = False,
 ) -> dict[str, Any]:
     """Install an already-qualified object-store checkpoint on live Vast."""
 
@@ -782,7 +787,17 @@ def resume_checkpoint_transfer_to_vast(
         "status": "not_attempted",
         "blockers": ["g1_microwave_finetune_checkpoint_resume_not_ready"],
     }
+    if not execute:
+        blockers.append("g1_microwave_finetune_checkpoint_resume_execute_required")
     if not blockers:
+        admit_qualification_control_mutation(
+            admission_out,
+            target["_admission_manifest"],
+            target["_admission_inspection"],
+            str(target["instance_id"]),
+            "install-checkpoint",
+            "groot_microwave_finetune",
+        )
         collection = _collect_checkpoint(
             get_urls=get_urls,
             output_dir=result_path.parent / "resumed_checkpoint",
@@ -1282,6 +1297,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "at least one --checkpoint-object-store-part-stage-dir is "
                     "required with --resume-checkpoint-to-vast"
                 )
+            if not args.execute or not args.admission_out:
+                parser.error(
+                    "--execute and --admission-out are required with "
+                    "--resume-checkpoint-to-vast"
+                )
             result = resume_checkpoint_transfer_to_vast(
                 provider_bundle=args.provider_bundle,
                 checkpoint_object_store_stage_dirs=(
@@ -1291,7 +1311,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint_vast_session_manifest=(
                     args.checkpoint_vast_session_manifest
                 ),
+                admission_out=args.admission_out,
                 adapter_output=args.adapter_output,
+                execute=args.execute,
             )
         else:
             required = {
