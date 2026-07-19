@@ -894,6 +894,11 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     assert "attempt_sequence=%s attempt_nonce_sha256=%s" in control
     assert "BLUEPRINT_QUALIFICATION_ATTEMPT_NONCE_SHA256" in control
     assert control.index("prepare_episode_attempt") < control.index('nohup "$selected"')
+    attempt_line = next(
+        line for line in control.splitlines() if "then prepare_episode_attempt" in line
+    )
+    assert '"$1" = episode' in attempt_line and '"$1" = bootstrap' in attempt_line
+    assert "groot_microwave_finetune" not in attempt_line
     assert "/bin/bash -c" not in control
     control_syntax = subprocess.run(
         ["bash", "-n"], input=control.encode(), capture_output=True, check=False

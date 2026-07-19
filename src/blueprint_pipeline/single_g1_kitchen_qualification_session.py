@@ -1277,7 +1277,7 @@ start_component() {{
   if [ -n "$(live_pids "$1" | head -n 1)" ]; then
     echo qualification_component_already_running >&2; exit 66
   fi
-  if [ "$1" = episode ] || [ "$1" = bootstrap ] || [ "$1" = groot_microwave_finetune ]; then prepare_episode_attempt; fi
+  if [ "$1" = episode ] || [ "$1" = bootstrap ]; then prepare_episode_attempt; fi
   selected=$(script_path "$1")
   log=$(log_path "$1")
   if [ "$1" = episode ] || [ "$1" = bootstrap ]; then
