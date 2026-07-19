@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import tempfile
 import time
 from typing import Any, Mapping, Sequence
 import zipfile
@@ -139,34 +140,45 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def safe_extract_dataset(archive: Path, destination: Path) -> Path:
     """Extract a regular-file-only dataset tar without traversal or links."""
 
-    destination.mkdir(parents=True, exist_ok=True)
-    root = destination.resolve()
-    with tarfile.open(archive, "r:gz") as handle:
-        members = handle.getmembers()
-        if not members:
-            raise ValueError("g1_microwave_finetune_dataset_archive_empty")
-        for member in members:
-            target = (root / member.name).resolve()
-            if root != target and root not in target.parents:
-                raise ValueError("g1_microwave_finetune_dataset_path_traversal")
-            if member.issym() or member.islnk() or member.isdev():
-                raise ValueError("g1_microwave_finetune_dataset_unsafe_member")
-        handle.extractall(root, members=members, filter="data")
-    dataset = root / EXPECTED_DATASET_DIR
-    required = (
-        "data/chunk-000/episode_000000.parquet",
-        "meta/info.json",
-        "meta/modality.json",
-        "meta/stats.json",
-        "videos/chunk-000/observation.images.ego_view/episode_000000.mp4",
-        "groot_n17_finetune_preflight.json",
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = Path(
+        tempfile.mkdtemp(prefix=f".{destination.name}-extract-", dir=destination.parent)
     )
-    missing = [name for name in required if not (dataset / name).is_file()]
-    if missing:
-        raise ValueError(
-            "g1_microwave_finetune_dataset_members_missing:" + ",".join(missing)
+    try:
+        root = snapshot.resolve()
+        with tarfile.open(archive, "r:gz") as handle:
+            members = handle.getmembers()
+            if not members:
+                raise ValueError("g1_microwave_finetune_dataset_archive_empty")
+            for member in members:
+                target = (root / member.name).resolve()
+                if root != target and root not in target.parents:
+                    raise ValueError("g1_microwave_finetune_dataset_path_traversal")
+                if member.issym() or member.islnk() or member.isdev():
+                    raise ValueError("g1_microwave_finetune_dataset_unsafe_member")
+            handle.extractall(root, members=members, filter="data")
+        dataset = root / EXPECTED_DATASET_DIR
+        required = (
+            "data/chunk-000/episode_000000.parquet",
+            "meta/info.json",
+            "meta/modality.json",
+            "meta/stats.json",
+            "videos/chunk-000/observation.images.ego_view/episode_000000.mp4",
+            "groot_n17_finetune_preflight.json",
         )
-    return dataset
+        missing = [name for name in required if not (dataset / name).is_file()]
+        if missing:
+            raise ValueError(
+                "g1_microwave_finetune_dataset_members_missing:" + ",".join(missing)
+            )
+        if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+            raise ValueError("g1_microwave_finetune_dataset_destination_unsafe")
+        if destination.exists():
+            shutil.rmtree(destination)
+        os.replace(snapshot, destination)
+        return destination.resolve() / EXPECTED_DATASET_DIR
+    finally:
+        shutil.rmtree(snapshot, ignore_errors=True)
 
 
 def sealed_checkpoint_inventory(checkpoint: Path = SEALED_SONIC_CHECKPOINT) -> dict[str, Any]:

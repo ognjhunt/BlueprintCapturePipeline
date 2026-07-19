@@ -59,6 +59,35 @@ def test_safe_extract_requires_native_dataset_members(tmp_path: Path) -> None:
         worker.safe_extract_dataset(archive, tmp_path / "out")
 
 
+def test_safe_extract_replaces_retained_dataset_directory(tmp_path: Path) -> None:
+    archive = tmp_path / "dataset.tar.gz"
+    required = (
+        "data/chunk-000/episode_000000.parquet",
+        "meta/info.json",
+        "meta/modality.json",
+        "meta/stats.json",
+        "videos/chunk-000/observation.images.ego_view/episode_000000.mp4",
+        "groot_n17_finetune_preflight.json",
+    )
+    with tarfile.open(archive, "w:gz") as handle:
+        for name in required:
+            payload = b"current"
+            info = tarfile.TarInfo(f"{worker.EXPECTED_DATASET_DIR}/{name}")
+            info.size = len(payload)
+            handle.addfile(info, io.BytesIO(payload))
+
+    destination = tmp_path / "out"
+    stale = destination / worker.EXPECTED_DATASET_DIR / "data/stale.parquet"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale")
+
+    dataset = worker.safe_extract_dataset(archive, destination)
+
+    assert dataset == destination / worker.EXPECTED_DATASET_DIR
+    assert not stale.exists()
+    assert (dataset / required[0]).read_bytes() == b"current"
+
+
 def test_resolve_trained_checkpoint_requires_one_complete_model(tmp_path: Path) -> None:
     output = tmp_path / "output"
     checkpoint = output / "checkpoint-500"
