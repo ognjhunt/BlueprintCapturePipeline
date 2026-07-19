@@ -1560,6 +1560,10 @@ def test_build_launch_spec_carries_image_inputs_and_gpu_sizing(tmp_path: Path) -
     assert "isaac_worker_runtime_preflight" in bootstrap
     assert "isaac_review_renderer_canary" in bootstrap
     assert "same_allocation_startup_gates_failed" in bootstrap
+    assert (
+        "os.environ.get('BLUEPRINT_CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT',\n"
+        "                '/workspace/controller_fk_camera_projection_context.json',"
+    ) in bootstrap
     assert base64.b64decode(spec.env["BLUEPRINT_INITIAL_POLICY_FRAME_B64"]) == b"fake-png-bytes"
     decoded_route = json.loads(base64.b64decode(spec.env["BLUEPRINT_ROUTE_JSON_B64"]))
     assert decoded_route == route_payload

@@ -258,6 +258,44 @@ def test_output_collector_stops_when_provider_runtime_exits(
     ]
 
 
+def test_output_collector_treats_running_vast_instance_as_started(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class RunningVastProvider:
+        calls = 0
+
+        def inspect(self, instance_id):
+            assert instance_id == "vast-1"
+            self.calls += 1
+            if self.calls == 1:
+                return {"status": "observed", "actual_status": "running", "cur_state": "running"}
+            return {"status": "observed", "desiredStatus": "EXITED"}
+
+    def missing_output(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://objects.example/output", 404, "missing", {}, None
+        )
+
+    provider = RunningVastProvider()
+    monkeypatch.setattr(job.urllib.request, "urlopen", missing_output)
+    monkeypatch.setattr(job, "POLL_SECONDS", 0)
+    monkeypatch.setattr(job, "STARTUP_TIMEOUT_SECONDS", 0)
+
+    result = job._collect_output(
+        get_url="https://objects.example/output",
+        output_dir=tmp_path / "collected",
+        max_seconds=60,
+        provider=provider,
+        instance_id="vast-1",
+    )
+
+    assert provider.calls == 2
+    assert result["runtime_seen"] is True
+    assert result["blockers"] == [
+        "g1_microwave_finetune_provider_runtime_terminated_before_output"
+    ]
+
+
 def test_output_collector_rejects_oversized_download(tmp_path: Path, monkeypatch) -> None:
     class Response(io.BytesIO):
         status = 200

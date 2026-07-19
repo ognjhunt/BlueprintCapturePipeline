@@ -66,6 +66,7 @@ POLL_SECONDS = 30
 STARTUP_TIMEOUT_SECONDS = 2_400
 MIN_GPU_RAM_MB = 40_000
 TERMINAL_PROVIDER_STATUSES = {"EXITED", "STOPPED", "TERMINATED", "FAILED", "DEAD"}
+RUNNING_PROVIDER_STATUSES = {"ACTIVE", "RUNNING"}
 MAX_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024 * 1024
 MAX_CHECKPOINT_ARCHIVE_MEMBERS = 20_000
 MAX_LOCAL_CHECKPOINT_COLLECTION_BYTES = 4 * 1024 * 1024 * 1024
@@ -719,6 +720,13 @@ def _collect_output(
                 runtime_ready = observed.get("runtime_ready")
                 if runtime_ready is None:
                     runtime_ready = observed.get("runtime_present")
+                provider_states = {
+                    str(observed.get(key) or "").upper()
+                    for key in ("desiredStatus", "actual_status", "cur_state")
+                }
+                runtime_ready = runtime_ready is True or bool(
+                    provider_states & RUNNING_PROVIDER_STATUSES
+                )
                 runtime_seen = bool(runtime_seen or runtime_ready is True)
                 provider_status = str(observed.get("desiredStatus") or "").upper()
                 if observed.get("error") or provider_status in TERMINAL_PROVIDER_STATUSES:

@@ -1696,8 +1696,8 @@ while time.time() < deadline:
             if measurement.get('surrogate') is not False:
                 time.sleep(0.2)
                 continue
-            context_name = os.environ.get(
-                'BLUEPRINT_CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT', ''
+            context_name = os.environ.get('BLUEPRINT_CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT',
+                '/workspace/controller_fk_camera_projection_context.json',
             ).strip()
             if not context_name:
                 time.sleep(0.2)
