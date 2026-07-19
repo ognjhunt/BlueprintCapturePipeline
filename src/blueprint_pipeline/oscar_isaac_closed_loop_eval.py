@@ -6271,11 +6271,7 @@ def run_oscar_isaac_closed_loop(
     status = "completed" if trace_rows and not blockers else "blocked"
     feed_forward_verified = all(
         trace_rows[index]["source_observation_frame"]
-        == trace_rows[index - 1]["wam_generated_frame"]
-        or (
-            bool(trace_rows[index - 1].get("clean_frame_reanchor_applied"))
-            and trace_rows[index]["source_observation_frame"] == initial_clean_frame
-        )
+        == trace_rows[index - 1]["next_policy_observation_frame"]
         for index in range(1, len(trace_rows))
     )
     proof = {

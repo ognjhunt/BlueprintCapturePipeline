@@ -4958,6 +4958,10 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
 
     def evaluator(context):
         passed = context["step_index"] == 2
+        live_frame = _write_frame(
+            tmp_path / f"live-post-action-{context['step_index']}.png",
+            90 + context["step_index"],
+        )
         result = {
             "status": "completed",
             "criterion_id": "door_articulation_angle",
@@ -4972,6 +4976,7 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
             "evidence_artifacts": [evidence_ref],
         }
         result = _with_post_action_policy_state(result, context)
+        result["post_action_egocentric_frame"] = {"path": str(live_frame)}
         result["evaluator_attestation"] = _attest_task_completion(
             result,
             tmp_path,
@@ -5001,6 +5006,7 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
             ],
         },
         task_completion_evaluator=evaluator,
+        clean_frame_reanchor_interval=1,
     )
 
     termination = manifest["episode_termination"]
@@ -5023,6 +5029,10 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
     assert trace[1]["terminal_observation_policy_action_execution_status"] == (
         "not_executed_semantic_terminal"
     )
+    assert trace[1]["source_observation_frame"] == str(
+        tmp_path / "live-post-action-1.png"
+    )
+    assert manifest["proof"]["feed_forward_verified"] is True
 
 
 def test_manipulation_stall_watchdog_terminates_without_claiming_success(tmp_path):
