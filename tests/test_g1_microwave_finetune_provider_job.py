@@ -9,6 +9,8 @@ import tarfile
 import urllib.error
 import zipfile
 
+import pytest
+
 from blueprint_pipeline import g1_microwave_finetune_provider_bundle as bundle_module
 from blueprint_pipeline import g1_microwave_finetune_provider_job as job
 
@@ -91,6 +93,7 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
                 "bundle_path": str(provider_bundle),
                 "bundle_size_bytes": provider_bundle.stat().st_size,
                 "signed_output_round_trip": {"status": "passed"},
+                "output_url_object_binding_sha256": "a" * 64,
                 "raw_secret_values_recorded": False,
             }
         ),
@@ -195,6 +198,29 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
     assert "finetune_release_evidence_missing_or_invalid" in blocked["blockers"]
     assert all(path.is_file() for path in blocked_paths.values())
 
+    checkpoint_manifest = checkpoint_stage / "wam_provider_object_store_staging_manifest.json"
+    colliding = json.loads(checkpoint_manifest.read_text(encoding="utf-8"))
+    colliding["output_url_object_binding_sha256"] = "a" * 64
+    checkpoint_manifest.write_text(json.dumps(colliding), encoding="utf-8")
+    collision_result_path = tmp_path / "collision-result.json"
+    collision = job.run_finetune_job(
+        provider_name="runpod",
+        provider_bundle=provider_bundle,
+        object_store_stage_dir=stage,
+        checkpoint_object_store_stage_dir=checkpoint_stage,
+        release_evidence=release,
+        admission_out=tmp_path / "collision-admission.json",
+        bound_request_out=tmp_path / "collision-bound.json",
+        adapter_output=collision_result_path,
+        pod_name="",
+        execute=False,
+    )
+    assert collision["status"] == "blocked"
+    assert "finetune_proof_and_checkpoint_output_channels_must_be_distinct" in (
+        collision["blockers"]
+    )
+    assert json.loads(collision_result_path.read_text(encoding="utf-8")) == collision
+
 
 def test_output_collector_stops_when_provider_runtime_exits(
     tmp_path: Path, monkeypatch
@@ -230,6 +256,54 @@ def test_output_collector_stops_when_provider_runtime_exits(
     assert result["blockers"] == [
         "g1_microwave_finetune_provider_runtime_terminated_before_output"
     ]
+
+
+def test_output_collector_rejects_oversized_download(tmp_path: Path, monkeypatch) -> None:
+    class Response(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    monkeypatch.setattr(job, "MAX_OUTPUT_ARCHIVE_BYTES", 3)
+    monkeypatch.setattr(
+        job.urllib.request, "urlopen", lambda *args, **kwargs: Response(b"oversized")
+    )
+
+    result = job._collect_output(
+        get_url="https://objects.example/output",
+        output_dir=tmp_path / "collected",
+        max_seconds=60,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "g1_microwave_finetune_output_not_collected_before_deadline"
+    ]
+    assert not (tmp_path / "g1_microwave_finetune_output.zip.tmp").exists()
+
+
+def test_output_extractor_enforces_member_and_expansion_limits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive_path = tmp_path / "output.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("g1_microwave_finetune_worker_report.json", "{}")
+        archive.writestr("payload.bin", b"data")
+
+    monkeypatch.setattr(job, "MAX_OUTPUT_ARCHIVE_MEMBERS", 1)
+    with pytest.raises(ValueError, match="finetune_output_archive_member_count_invalid"):
+        job._safe_extract_output(archive_path, tmp_path / "member-limited")
+
+    monkeypatch.setattr(job, "MAX_OUTPUT_ARCHIVE_MEMBERS", 10)
+    monkeypatch.setattr(job, "MAX_OUTPUT_UNCOMPRESSED_BYTES", 3)
+    with pytest.raises(
+        ValueError, match="finetune_output_archive_uncompressed_size_invalid"
+    ):
+        job._safe_extract_output(archive_path, tmp_path / "size-limited")
 
 
 def test_checkpoint_collector_verifies_binding_and_extracts_one_model(

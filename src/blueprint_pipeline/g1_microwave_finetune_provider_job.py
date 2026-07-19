@@ -69,6 +69,9 @@ TERMINAL_PROVIDER_STATUSES = {"EXITED", "STOPPED", "TERMINATED", "FAILED", "DEAD
 MAX_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024 * 1024
 MAX_CHECKPOINT_ARCHIVE_MEMBERS = 20_000
 MAX_LOCAL_CHECKPOINT_COLLECTION_BYTES = 4 * 1024 * 1024 * 1024
+MAX_OUTPUT_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_OUTPUT_ARCHIVE_MEMBERS = 100_000
+MAX_OUTPUT_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
 VAST_CHECKPOINT_PYTHON = "/opt/gr00t-venv/bin/python"
 
 
@@ -115,11 +118,14 @@ def _staging_evidence(stage_dir: Path, bundle_path: Path) -> dict[str, Any]:
         name="finetune_object_store_staging_manifest",
     )
     round_trip = manifest.get("signed_output_round_trip") or {}
+    output_binding = str(manifest.get("output_url_object_binding_sha256") or "").lower()
     if (
         manifest.get("status") != "completed"
         or Path(str(manifest.get("bundle_path") or "")).resolve() != bundle_path.resolve()
         or int(manifest.get("bundle_size_bytes") or -1) != bundle_path.stat().st_size
         or round_trip.get("status") != "passed"
+        or len(output_binding) != 64
+        or any(character not in "0123456789abcdef" for character in output_binding)
         or manifest.get("raw_secret_values_recorded") is not False
     ):
         raise ValueError("finetune_object_store_staging_not_qualified")
@@ -130,17 +136,23 @@ def _safe_extract_output(archive_path: Path, destination: Path) -> Path:
     snapshot = Path(tempfile.mkdtemp(prefix=".finetune-output-", dir=destination.parent))
     try:
         with zipfile.ZipFile(archive_path) as archive:
-            for member in archive.infolist():
+            members = archive.infolist()
+            if not members or len(members) > MAX_OUTPUT_ARCHIVE_MEMBERS:
+                raise ValueError("finetune_output_archive_member_count_invalid")
+            total_size = 0
+            for member in members:
                 relative = Path(member.filename)
                 target = (snapshot / relative).resolve()
-                if relative.is_absolute() or ".." in relative.parts or snapshot.resolve() not in (
-                    target,
-                    *target.parents,
+                if relative.is_absolute() or ".." in relative.parts or not target.is_relative_to(
+                    snapshot.resolve()
                 ):
                     raise ValueError("finetune_output_archive_member_unsafe")
                 mode = (member.external_attr >> 16) & 0o170000
                 if mode == 0o120000:
                     raise ValueError("finetune_output_archive_link_forbidden")
+                total_size += int(member.file_size)
+                if total_size > MAX_OUTPUT_UNCOMPRESSED_BYTES:
+                    raise ValueError("finetune_output_archive_uncompressed_size_invalid")
             archive.extractall(snapshot)
         _load_mapping(
             snapshot / "g1_microwave_finetune_worker_report.json",
@@ -667,7 +679,15 @@ def _collect_output(
                 "wb"
             ) as handle:
                 last_http = int(response.status)
-                shutil.copyfileobj(response, handle, length=1024 * 1024)
+                copied = 0
+                while True:
+                    chunk = response.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > MAX_OUTPUT_ARCHIVE_BYTES:
+                        raise ValueError("finetune_output_archive_download_size_invalid")
+                    handle.write(chunk)
             os.replace(temporary, archive_path)
             extracted = _safe_extract_output(archive_path, output_dir)
             report = _load_mapping(
@@ -860,6 +880,7 @@ def run_finetune_job(
     ]
     blockers: list[str] = []
     checkpoint_vast_target: dict[str, Any] = {}
+    checkpoint_part_staging: list[dict[str, Any]] = []
     if checkpoint_vast_session_manifest not in {None, ""}:
         try:
             checkpoint_vast_target = _load_vast_checkpoint_target(
@@ -880,6 +901,7 @@ def run_finetune_job(
             stage_dir / "provider_output_get_url.txt", name="finetune_provider_output_get_url"
         )
         checkpoint_staging = _staging_evidence(checkpoint_stage_dir, bundle_path)
+        checkpoint_part_staging = [checkpoint_staging]
         checkpoint_put_url = _read_secret_url(
             checkpoint_stage_dir / "provider_output_put_url.txt",
             name="finetune_checkpoint_output_put_url",
@@ -891,7 +913,7 @@ def run_finetune_job(
         checkpoint_part_put_urls = [checkpoint_put_url]
         checkpoint_part_get_urls = [checkpoint_get_url]
         for index, part_stage_dir in enumerate(checkpoint_part_stage_dirs, start=2):
-            _staging_evidence(part_stage_dir, bundle_path)
+            checkpoint_part_staging.append(_staging_evidence(part_stage_dir, bundle_path))
             checkpoint_part_put_urls.append(
                 _read_secret_url(
                     part_stage_dir / "provider_output_put_url.txt",
@@ -911,9 +933,16 @@ def run_finetune_job(
         bundle_url = put_url = get_url = checkpoint_put_url = checkpoint_get_url = ""
         checkpoint_part_put_urls = []
         checkpoint_part_get_urls = []
+        checkpoint_part_staging = []
         blockers.append(str(exc))
     all_stage_dirs = [stage_dir, checkpoint_stage_dir, *checkpoint_part_stage_dirs]
     if len(set(all_stage_dirs)) != len(all_stage_dirs):
+        blockers.append("finetune_proof_and_checkpoint_output_channels_must_be_distinct")
+    output_bindings = [
+        str(manifest.get("output_url_object_binding_sha256") or "").lower()
+        for manifest in [staging, *checkpoint_part_staging]
+    ]
+    if output_bindings and len(set(output_bindings)) != len(output_bindings):
         blockers.append("finetune_proof_and_checkpoint_output_channels_must_be_distinct")
     try:
         release = _load_mapping(
