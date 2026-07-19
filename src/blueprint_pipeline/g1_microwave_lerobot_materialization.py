@@ -90,6 +90,11 @@ def _load_exact_exporter(gear_root: Path, lerobot_root: Path) -> tuple[Any, Any]
     return exporter_module.Gr00tDataExporter, exporter_module.TypedLeRobotDataset
 
 
+def _video_sample_indices(frame_count: int) -> list[int]:
+    last = frame_count - 1
+    return sorted({0, min(100, last), min(125, last), last})
+
+
 def materialize_lerobot_dataset(
     *,
     seed_dir: str | Path,
@@ -214,7 +219,7 @@ def materialize_lerobot_dataset(
         video_backend="pyav",
     )
     video_samples: list[dict[str, Any]] = []
-    for index in (0, 100, 125, frame_count - 1):
+    for index in _video_sample_indices(frame_count):
         sample = video_dataset[index]
         image = sample["observation.images.ego_view"]
         row = {

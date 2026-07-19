@@ -12,6 +12,7 @@ results are rejected fail-closed and FK targets are applied by joint name.
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import math
@@ -539,6 +540,24 @@ def _token_matches(observed: Any, motion_token: Sequence[float]) -> bool:
     )
 
 
+def _controller_timestamp(value: Any) -> Decimal | None:
+    try:
+        timestamp = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return timestamp if timestamp.is_finite() else None
+
+
+def _controller_frame_matches(value: Any, expected: int) -> bool:
+    if not isinstance(value, (str, bytes)) and isinstance(value, Sequence):
+        value = value[0] if len(value) == 1 else None
+    try:
+        numeric = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return False
+    return numeric.is_finite() and numeric == expected
+
+
 def _well_formed_controller_state(value: Any) -> bool:
     """Return whether a ``g1_debug`` row proves the controller is in CONTROL.
 
@@ -692,6 +711,7 @@ def _zmq_pubsub_horizon_roundtrip(
     motion_tokens: Sequence[Sequence[float]],
     left_hands: Sequence[Sequence[float]],
     right_hands: Sequence[Sequence[float]],
+    frame_indices: Sequence[int],
     planner_start_command_message: bytes,
     stream_command_message: bytes,
     control_hz: float,
@@ -717,6 +737,7 @@ def _zmq_pubsub_horizon_roundtrip(
         or len(motion_tokens) != frame_count
         or len(left_hands) != frame_count
         or len(right_hands) != frame_count
+        or len(frame_indices) != frame_count
     ):
         raise ValueError("official_gear_sonic_horizon_transport_shape_invalid")
     if not math.isfinite(control_hz) or control_hz <= 0.0:
@@ -756,6 +777,9 @@ def _zmq_pubsub_horizon_roundtrip(
                 continue
             state = msgpack.unpackb(raw[len(state_topic) :], raw=False)
             if isinstance(state, Mapping) and _well_formed_controller_state(state):
+                last_controller_timestamp = _controller_timestamp(
+                    state.get("ros_timestamp")
+                )
                 break
         else:
             raise TimeoutError("official_gear_sonic_control_mode_entry_timeout")
@@ -788,6 +812,15 @@ def _zmq_pubsub_horizon_roundtrip(
                 state = msgpack.unpackb(raw[len(state_topic) :], raw=False)
                 if not isinstance(state, Mapping):
                     continue
+                current_timestamp = _controller_timestamp(state.get("ros_timestamp"))
+                if not _controller_frame_matches(
+                    state.get("frame_index"), frame_indices[index]
+                ) and (
+                    current_timestamp is None
+                    or last_controller_timestamp is None
+                    or current_timestamp <= last_controller_timestamp
+                ):
+                    continue
                 if not _token_matches(state.get("token_state"), motion_tokens[index]):
                     continue
                 if not _token_matches(
@@ -801,6 +834,11 @@ def _zmq_pubsub_horizon_roundtrip(
                     send_time - sequence_start
                 )
                 results.append(row)
+                if current_timestamp is not None and (
+                    last_controller_timestamp is None
+                    or current_timestamp > last_controller_timestamp
+                ):
+                    last_controller_timestamp = current_timestamp
                 break
             else:
                 raise TimeoutError(
@@ -867,6 +905,7 @@ def _zmq_roundtrip(
             motion_tokens=tokens,
             left_hands=left_targets,
             right_hands=right_targets,
+            frame_indices=[frame_index + index for index in range(len(frames))],
             planner_start_command_message=planner_start,
             stream_command_message=stream,
             control_hz=control_hz,

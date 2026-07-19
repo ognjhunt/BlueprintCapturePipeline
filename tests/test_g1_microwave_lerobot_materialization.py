@@ -35,3 +35,10 @@ def test_pinned_materialization_versions_are_exact() -> None:
         "a445d9c9da6bea99a8972daa4fe1fdd053d711d2"
     )
     assert materialize.PINNED_DATASETS_VERSION == "3.6.0"
+
+
+def test_video_sample_indices_are_bounded_for_short_seeds() -> None:
+    assert materialize._video_sample_indices(2) == [0, 1]
+    assert materialize._video_sample_indices(50) == [0, 49]
+    assert materialize._video_sample_indices(110) == [0, 100, 109]
+    assert materialize._video_sample_indices(176) == [0, 100, 125, 175]

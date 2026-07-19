@@ -672,6 +672,17 @@ def test_explicit_controller_frame_ranges_are_monotonic_across_outer_steps() -> 
     ) == 7
 
 
+def test_horizon_freshness_rejects_a_buffered_prior_echo() -> None:
+    prior = executor._controller_timestamp(123)
+
+    assert prior is not None
+    assert not executor._controller_frame_matches(None, 82)
+    assert executor._controller_timestamp(123) <= prior
+    assert executor._controller_timestamp(124) > prior
+    assert executor._controller_frame_matches([82], 82)
+    assert not executor._controller_frame_matches([81], 82)
+
+
 def test_executor_rejects_mutated_explicit_horizon_before_transport(wbc_env) -> None:
     frames = [[0.0] * 78, [1.0] * 78]
     action = {

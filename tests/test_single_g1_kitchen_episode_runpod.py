@@ -1918,6 +1918,23 @@ def test_direct_episode_owner_is_opened_before_launch_bound_and_closed_by_teardo
     assert settled["owner"]["provider_absence_confirmed"] is True
 
 
+def test_launch_interruptions_continue_to_canonical_blocked_result() -> None:
+    source = inspect.getsource(single_episode.run_single_episode)
+    tree = ast.parse(source)
+    handlers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ExceptHandler)
+        and isinstance(node.type, ast.Name)
+        and node.type.id == "BaseException"
+    ]
+
+    assert len(handlers) == 1
+    assert not any(isinstance(node, ast.Raise) for node in ast.walk(handlers[0]))
+    assert "single_episode_launch_or_watch_interrupted" in source
+    assert "write_json(result_path, result)" in source
+
+
 def test_direct_episode_owner_keeps_ambiguous_no_id_obligation_open(
     tmp_path: Path,
 ) -> None:

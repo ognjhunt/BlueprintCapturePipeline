@@ -4229,17 +4229,17 @@ def run_single_episode(
                 progress_stall_phases=SINGLE_EPISODE_PROGRESS_PHASES,
             )
     except BaseException as exc:
-        # Preserve a crash/interruption as allocation-ambiguous only when the
-        # launcher did not already return and bind an exact id.  Teardown below
-        # still performs the name/attempt-scoped provider reconciliation.
         if not launch.get("instance_id"):
             launch = {
                 **launch,
                 "status": launch.get("status") or "launch_or_watch_interrupted",
-                "allocation_outcome_ambiguous": True,
-                "error_type": type(exc).__name__,
+                "allocation_outcome_ambiguous": True, "error_type": type(exc).__name__,
             }
-        raise
+        watch = {
+            "status": "blocked",
+            "error_type": type(exc).__name__,
+            "blockers": ["single_episode_launch_or_watch_interrupted"],
+        }
     finally:
         teardown = terminate_canary_resources(
             provider=provider,
