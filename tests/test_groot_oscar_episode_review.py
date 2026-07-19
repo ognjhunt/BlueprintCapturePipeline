@@ -268,7 +268,15 @@ def test_review_builder_trims_predictions_to_executed_controller_prefixes(
             for index, clip in enumerate(clips, start=1)
         ],
     )
-    _write_isaac_execution_evidence(episode_dir, step_count=2)
+    state_dir = _write_isaac_execution_evidence(episode_dir, step_count=2)
+    for step_index in (1, 2):
+        measurement_path = state_dir / f"task_measurement_{step_index:04d}.json"
+        measurement = json.loads(measurement_path.read_text(encoding="utf-8"))
+        measurement["controller_execution_contract"] = {
+            "declared_execution_duration_seconds": 0.8
+        }
+        measurement["controller_horizon_fully_executed"] = False
+        measurement_path.write_text(json.dumps(measurement), encoding="utf-8")
     calls: list[list[str]] = []
 
     def fake_run(command):  # noqa: ANN001

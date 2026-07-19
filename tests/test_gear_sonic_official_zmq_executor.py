@@ -559,8 +559,12 @@ def test_executor_sends_78d_sonic_action_to_official_protocol_and_uses_fk(
 
     assert len(calls) == 1
     assert len(calls[0]["motion_token"]) == 64
-    assert calls[0]["left_hand"] == action["sonic_action_chunk"][64:71]
-    assert calls[0]["right_hand"] == action["sonic_action_chunk"][71:78]
+    assert calls[0]["left_hand"] == pytest.approx(
+        [0.68, 0.69, 0.70, 0.64, 0.65, 0.66, 0.67]
+    )
+    assert calls[0]["right_hand"] == pytest.approx(
+        [0.75, 0.76, 0.77, 0.71, 0.72, 0.73, 0.74]
+    )
     assert result["status"] == "completed"
     assert result["proprioceptive_state"]["official_controller_protocol"] == 4
     assert result["joint_order_schema_version"] == contract.JOINT_ORDER_SCHEMA_VERSION
@@ -619,7 +623,9 @@ def test_executor_streams_explicit_horizon_once_and_returns_every_fk_frame(
     )
 
     assert len(calls) == 1
-    assert calls[0]["action_frames"] == frames
+    assert calls[0]["action_frames"] == [
+        executor._protocol_v4_action_frame(frame) for frame in frames
+    ]
     assert calls[0]["control_hz"] == 50.0
     rows = result["controller_fk_sequence"]
     assert len(rows) == 3
@@ -639,6 +645,10 @@ def test_executor_streams_explicit_horizon_once_and_returns_every_fk_frame(
     assert execution["source_horizon_frame_count"] == 40
     assert execution["control_hz"] == 50.0
     assert execution["input_action_frames_sha256"] == executor._canonical(frames)
+    assert execution["protocol_v4_action_frames_sha256"] == executor._canonical(
+        calls[0]["action_frames"]
+    )
+    assert execution["sonic_to_protocol_v4_hand_indices"] == [4, 5, 6, 0, 1, 2, 3]
 
 
 def test_explicit_controller_frame_ranges_are_monotonic_across_outer_steps() -> None:
@@ -925,5 +935,6 @@ def test_executor_accepts_matching_hand_echo(wbc_env) -> None:
 
     result = _execute(_request(action), transport=matching, fk_solver=_fake_fk)
     assert result["status"] == "completed"
-    assert result["joint_positions"][29:36] == action["sonic_action_chunk"][64:71]
-    assert result["joint_positions"][36:43] == action["sonic_action_chunk"][71:78]
+    protocol_frame = executor._protocol_v4_action_frame(action["sonic_action_chunk"])
+    assert result["joint_positions"][29:36] == protocol_frame[64:71]
+    assert result["joint_positions"][36:43] == protocol_frame[71:78]

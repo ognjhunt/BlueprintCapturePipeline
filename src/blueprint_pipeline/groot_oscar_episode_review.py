@@ -206,36 +206,37 @@ def _executed_prefix_durations(
             continue
 
         duration: float | None = None
-        contract = measurement.get("controller_execution_contract")
-        if isinstance(contract, Mapping):
-            try:
-                declared_duration = float(
-                    contract.get("declared_execution_duration_seconds")
-                )
-            except (TypeError, ValueError):
-                declared_duration = 0.0
-            if math.isfinite(declared_duration) and declared_duration > 0:
-                duration = declared_duration
+        controller_measurements = measurement.get("controller_frame_measurements")
+        measurement_evidence_present = "controller_frame_measurements" in measurement
+        if isinstance(controller_measurements, list) and controller_measurements:
+            frame_deltas: list[float] = []
+            for row in controller_measurements:
+                if not isinstance(row, Mapping):
+                    frame_deltas = []
+                    break
+                try:
+                    delta = float(row.get("simulation_time_delta_seconds"))
+                except (TypeError, ValueError):
+                    frame_deltas = []
+                    break
+                if not math.isfinite(delta) or delta <= 0:
+                    frame_deltas = []
+                    break
+                frame_deltas.append(delta)
+            if frame_deltas:
+                duration = sum(frame_deltas)
 
-        if duration is None:
-            controller_measurements = measurement.get("controller_frame_measurements")
-            if isinstance(controller_measurements, list) and controller_measurements:
-                frame_deltas: list[float] = []
-                for row in controller_measurements:
-                    if not isinstance(row, Mapping):
-                        frame_deltas = []
-                        break
-                    try:
-                        delta = float(row.get("simulation_time_delta_seconds"))
-                    except (TypeError, ValueError):
-                        frame_deltas = []
-                        break
-                    if not math.isfinite(delta) or delta <= 0:
-                        frame_deltas = []
-                        break
-                    frame_deltas.append(delta)
-                if frame_deltas:
-                    duration = sum(frame_deltas)
+        if duration is None and not measurement_evidence_present:
+            contract = measurement.get("controller_execution_contract")
+            if isinstance(contract, Mapping):
+                try:
+                    declared_duration = float(
+                        contract.get("declared_execution_duration_seconds")
+                    )
+                except (TypeError, ValueError):
+                    declared_duration = 0.0
+                if math.isfinite(declared_duration) and declared_duration > 0:
+                    duration = declared_duration
 
         if duration is None:
             blockers.append(

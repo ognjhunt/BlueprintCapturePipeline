@@ -49,6 +49,7 @@ MOTION_TOKEN_DIM = 64
 HAND_DIM = 7
 BODY_DIM = len(PROTOCOL_V4_BODY_JOINT_NAMES)
 ACTION_DIM = MOTION_TOKEN_DIM + 2 * HAND_DIM
+SONIC_TO_PROTOCOL_V4_HAND_INDICES = (4, 5, 6, 0, 1, 2, 3)
 STATE_TOPIC = b"g1_debug"
 CONTROLLER_ACTION_SEQUENCE_SCHEMA_VERSION = "gear_sonic_controller_action_sequence.v1"
 CAMERA_PROJECTION_SCHEMA_VERSION = "controller_fk_camera_projection_context.v1"
@@ -139,6 +140,16 @@ def _finite_vector(value: Any, *, size: int, name: str) -> list[float]:
     if len(result) != size or not all(math.isfinite(item) for item in result):
         raise ValueError(f"{name}_dimension_or_value_invalid")
     return result
+
+
+def _protocol_v4_action_frame(value: Any) -> list[float]:
+    frame = _finite_vector(value, size=ACTION_DIM, name="unitree_g1_sonic_action_frame")
+    left = frame[MOTION_TOKEN_DIM : MOTION_TOKEN_DIM + HAND_DIM]
+    right = frame[MOTION_TOKEN_DIM + HAND_DIM :]
+    reorder = SONIC_TO_PROTOCOL_V4_HAND_INDICES
+    return frame[:MOTION_TOKEN_DIM] + [left[index] for index in reorder] + [
+        right[index] for index in reorder
+    ]
 
 
 def _validated_action_frames(
@@ -1025,6 +1036,7 @@ def execute(
     if _canonical(action) != expected_sha:
         raise ValueError("official_gear_sonic_request_action_sha256_mismatch")
     action_frames, action_sequence_contract = _validated_action_frames(action)
+    protocol_frames = [_protocol_v4_action_frame(frame) for frame in action_frames]
     control_hz = float(action_sequence_contract["control_hz"])
     explicit_horizon = isinstance(action.get("controller_action"), Mapping)
     controller_frame_start = controller_frame_sequence_start(
@@ -1034,7 +1046,7 @@ def execute(
         ),
         explicit_horizon=explicit_horizon,
     )
-    first = action_frames[0]
+    first = protocol_frames[0]
     transport_started = time.monotonic()
     transport_result = transport(
         motion_token=first[:MOTION_TOKEN_DIM],
@@ -1043,7 +1055,7 @@ def execute(
         frame_index=controller_frame_start,
         timeout_seconds=120.0,
         **(
-            {"action_frames": action_frames, "control_hz": control_hz}
+            {"action_frames": protocol_frames, "control_hz": control_hz}
             if len(action_frames) > 1
             else {}
         ),
@@ -1118,10 +1130,12 @@ def execute(
         else None
     )
     controller_fk_sequence: list[dict[str, Any]] = []
-    for horizon_index, (frame, state) in enumerate(zip(action_frames, states)):
-        motion = frame[:MOTION_TOKEN_DIM]
-        left = frame[MOTION_TOKEN_DIM : MOTION_TOKEN_DIM + HAND_DIM]
-        right = frame[MOTION_TOKEN_DIM + HAND_DIM :]
+    for horizon_index, (frame, protocol_frame, state) in enumerate(
+        zip(action_frames, protocol_frames, states)
+    ):
+        motion = protocol_frame[:MOTION_TOKEN_DIM]
+        left = protocol_frame[MOTION_TOKEN_DIM : MOTION_TOKEN_DIM + HAND_DIM]
+        right = protocol_frame[MOTION_TOKEN_DIM + HAND_DIM :]
         controller_motion = _finite_vector(
             state.get("token_state"),
             size=MOTION_TOKEN_DIM,
@@ -1240,6 +1254,10 @@ def execute(
             True if send_timing_measured else None
         ),
         "input_action_frames_sha256": action_sequence_contract["frames_sha256"],
+        "protocol_v4_action_frames_sha256": _canonical(protocol_frames),
+        "sonic_to_protocol_v4_hand_indices": list(
+            SONIC_TO_PROTOCOL_V4_HAND_INDICES
+        ),
         "source_action_frames_sha256": action_sequence_contract[
             "source_frames_sha256"
         ],
