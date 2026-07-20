@@ -232,6 +232,38 @@ def test_terraform_keeps_firestore_latency_alert_without_phantom_captures_indexe
     assert "Blueprint-WebApp firestore.indexes.json" in latency_alert
 
 
+def test_terraform_gpu_warm_pool_defaults_stay_scale_to_zero():
+    # SCALE2-06: warm pools are a deliberate owner decision, not a default.
+    # One warm GPU instance is ~$1,825/month at the $2.5/GPU-hr planning rate
+    # (73% of the $2,500 spend-review threshold); current volume is >10x
+    # below the ~20 invocations/hour breakeven. See
+    # docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md.
+    text = TERRAFORM_MAIN.read_text(encoding="utf-8")
+
+    for variable in (
+        "privacy_sam3_min_instances",
+        "privacy_vip_min_instances",
+        "privacy_deepprivacy2_min_instances",
+        "video_to_world_min_instances",
+    ):
+        block = _terraform_resource_body_for_variable(text, variable)
+        assert "default     = 0" in block, f"{variable} must default to scale-to-zero"
+        assert "<= 2" in block, f"{variable} must stay capped at 2 warm instances"
+
+    for key in ("sam3", "vip", "deepprivacy2", "video_to_world"):
+        assert f"min_instance_count = local.privacy_runner_min_instances.{key}" in text
+    # No GPU service may hardcode an always-warm floor.
+    assert "min_instance_count = 1" not in text
+    assert "min_instance_count = 2" not in text
+
+
+def _terraform_resource_body_for_variable(text: str, name: str) -> str:
+    marker = f'variable "{name}"'
+    start = text.index(marker)
+    end = text.index("\nvariable ", start + 1) if "\nvariable " in text[start + 1 :] else len(text)
+    return text[start:end]
+
+
 def test_terraform_privacy_runners_are_private_and_invoked_by_named_principals():
     text = TERRAFORM_MAIN.read_text(encoding="utf-8")
 

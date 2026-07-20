@@ -38,6 +38,15 @@ privacy_sam3_max_instances         = 3
 privacy_vip_max_instances          = 2
 privacy_deepprivacy2_max_instances = 2
 video_to_world_max_instances       = 2
+
+# GPU warm-pool floors (SCALE2-06). Keep 0 (scale-to-zero): one warm GPU
+# instance costs ~$1,825/month at the $2.5/GPU-hr planning rate, and current
+# volume is >10x below the ~20 invocations/hour warm-pool breakeven. See
+# docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md before changing.
+privacy_sam3_min_instances         = 0
+privacy_vip_min_instances          = 0
+privacy_deepprivacy2_min_instances = 0
+video_to_world_min_instances       = 0
 gpu_runner_billable_instance_time_alert_threshold = 1.0
 additional_privacy_runner_invoker_members = []
 

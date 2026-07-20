@@ -249,6 +249,26 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
     if hotspot_policy.get("soak_report_observation_field") != "firestore_latency_observation":
         raise AssertionError("Firestore hotspot policy must name the soak report observation field")
 
+    warm_pool = runtime_capacity.get("gpu_warm_pool_policy", {})
+    if warm_pool.get("schema_version") != "blueprint.gpu_warm_pool_policy.v1":
+        raise AssertionError("runtime capacity must include the GPU warm-pool policy")
+    if warm_pool.get("decision") != "stay_scale_to_zero_at_beta_volume":
+        raise AssertionError(
+            "GPU warm-pool decision changed: re-run docs/GPU_WARM_POOL_ECONOMICS math with "
+            "measured gpu_model_load durations and update this validator in the same change"
+        )
+    if warm_pool.get("min_instances_default") != 0:
+        raise AssertionError("GPU warm-pool default must stay scale-to-zero unless the analysis doc is revised")
+    if warm_pool.get("planning_gpu_rate_usd_per_hour") != 2.5:
+        raise AssertionError("GPU warm-pool policy must pin the $2.5/GPU-hr planning rate")
+    if warm_pool.get("terraform_min_instance_variables") != [
+        "privacy_sam3_min_instances",
+        "privacy_vip_min_instances",
+        "privacy_deepprivacy2_min_instances",
+        "video_to_world_min_instances",
+    ]:
+        raise AssertionError("GPU warm-pool policy must name the per-service Terraform min-instance variables")
+
     lifecycle_ref = model.get("storage_lifecycle", {})
     if lifecycle_ref.get("policy_file") != "deploy/storage/primary-capture-bucket-lifecycle.json":
         raise AssertionError("capacity model must point to the primary capture bucket lifecycle file")
@@ -463,6 +483,14 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
             'resource "google_billing_budget" "gpu_fleet_beta"',
             '"billingbudgets.googleapis.com"',
             'units         = tostring(var.gpu_fleet_billing_budget_usd)',
+            'variable "privacy_sam3_min_instances"',
+            'variable "privacy_vip_min_instances"',
+            'variable "privacy_deepprivacy2_min_instances"',
+            'variable "video_to_world_min_instances"',
+            "min_instance_count = local.privacy_runner_min_instances.sam3",
+            "min_instance_count = local.privacy_runner_min_instances.vip",
+            "min_instance_count = local.privacy_runner_min_instances.deepprivacy2",
+            "min_instance_count = local.privacy_runner_min_instances.video_to_world",
         ],
     )
     # SCALE2-07: the four `captures_*` Firestore indexes targeted a collection
@@ -483,6 +511,10 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
             "max_concurrent_jobs = 25",
             "pipeline_queue_depth_alert_threshold = 50",
             'pipeline_queue_depth_alert_duration  = "300s"',
+            "privacy_sam3_min_instances         = 0",
+            "privacy_vip_min_instances          = 0",
+            "privacy_deepprivacy2_min_instances = 0",
+            "video_to_world_min_instances       = 0",
             "billing_account_id",
             f"gpu_fleet_billing_budget_usd          = {EXPECTED_COHORT_HARD_STOP_USD}",
         ],

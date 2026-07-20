@@ -120,7 +120,19 @@ def _install_fake_cv2(monkeypatch: pytest.MonkeyPatch, *, frames: list[np.ndarra
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _reset_model_runtime_cache():
+    # SCALE2-06: loaded model runtimes are cached in-process for warm
+    # instances; tests that swap fake backends need a clean cache.
+    psr._MODEL_RUNTIME_CACHE.clear()
+    yield
+    psr._MODEL_RUNTIME_CACHE.clear()
+
+
 def _install_fake_sam3(monkeypatch: pytest.MonkeyPatch, *, output: object, model_error: bool = False):
+    # Each installed fake is a new model world; drop any runtime cached from
+    # a previous fake so the scenario under test actually loads this one.
+    psr._MODEL_RUNTIME_CACHE.clear()
     sam3_pkg = ModuleType("sam3")
     sam3_model_pkg = ModuleType("sam3.model")
     processor_mod = ModuleType("sam3.model.sam3_image_processor")

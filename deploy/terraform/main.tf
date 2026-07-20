@@ -202,6 +202,59 @@ variable "video_to_world_max_instances" {
   }
 }
 
+# GPU warm-pool controls (SCALE2-06). Defaults stay 0 (scale-to-zero): at the
+# beta invocation rate (~300 captures/month) the modeled cold-start tax is
+# ~$150/month across all four GPU services, while a single always-warm GPU
+# instance costs ~$1,825/month at the $2.5/GPU-hr planning rate — 73% of the
+# whole $2,500/month provider-spend review threshold. Flip a service to a
+# warm pool only after its measured sustained invocation rate approaches the
+# ~20 invocations/hour breakeven documented in
+# docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md, and review the spend thresholds
+# in the same change.
+variable "privacy_sam3_min_instances" {
+  description = "Warm (always-on) sam3-detect GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.privacy_sam3_min_instances >= 0 && var.privacy_sam3_min_instances <= 2
+    error_message = "privacy_sam3_min_instances must be between 0 and 2."
+  }
+}
+
+variable "privacy_vip_min_instances" {
+  description = "Warm (always-on) vip-inpaint GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.privacy_vip_min_instances >= 0 && var.privacy_vip_min_instances <= 2
+    error_message = "privacy_vip_min_instances must be between 0 and 2."
+  }
+}
+
+variable "privacy_deepprivacy2_min_instances" {
+  description = "Warm (always-on) deepprivacy2-anonymize GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.privacy_deepprivacy2_min_instances >= 0 && var.privacy_deepprivacy2_min_instances <= 2
+    error_message = "privacy_deepprivacy2_min_instances must be between 0 and 2."
+  }
+}
+
+variable "video_to_world_min_instances" {
+  description = "Warm (always-on) video-to-world GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.video_to_world_min_instances >= 0 && var.video_to_world_min_instances <= 2
+    error_message = "video_to_world_min_instances must be between 0 and 2."
+  }
+}
+
 variable "gpu_runner_billable_instance_time_alert_threshold" {
   description = "Per-runner Cloud Run billable instance time rate threshold in instance-seconds per second before alerting."
   type        = number
@@ -438,6 +491,14 @@ locals {
     vip            = min(var.privacy_vip_max_instances, var.max_concurrent_jobs)
     deepprivacy2   = min(var.privacy_deepprivacy2_max_instances, var.max_concurrent_jobs)
     video_to_world = min(var.video_to_world_max_instances, var.max_concurrent_jobs)
+  }
+  # Warm-pool floors are bounded by the per-service max so a min > max can
+  # never be produced by variable drift (SCALE2-06).
+  privacy_runner_min_instances = {
+    sam3           = min(var.privacy_sam3_min_instances, local.privacy_runner_max_instances.sam3)
+    vip            = min(var.privacy_vip_min_instances, local.privacy_runner_max_instances.vip)
+    deepprivacy2   = min(var.privacy_deepprivacy2_min_instances, local.privacy_runner_max_instances.deepprivacy2)
+    video_to_world = min(var.video_to_world_min_instances, local.privacy_runner_max_instances.video_to_world)
   }
   privacy_runner_monitoring_service_filter = join(" OR ", [
     for service in values(local.privacy_runner_service_names) :
@@ -1120,7 +1181,7 @@ resource "google_cloud_run_v2_service" "privacy_sam3" {
     timeout                          = "3600s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.sam3
       max_instance_count = local.privacy_runner_max_instances.sam3
     }
 
@@ -1210,7 +1271,7 @@ resource "google_cloud_run_v2_service" "privacy_vip" {
     timeout                          = "7200s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.vip
       max_instance_count = local.privacy_runner_max_instances.vip
     }
 
@@ -1305,7 +1366,7 @@ resource "google_cloud_run_v2_service" "privacy_deepprivacy2" {
     timeout                          = "7200s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.deepprivacy2
       max_instance_count = local.privacy_runner_max_instances.deepprivacy2
     }
 
@@ -1395,7 +1456,7 @@ resource "google_cloud_run_v2_service" "video_to_world" {
     timeout                          = "7200s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.video_to_world
       max_instance_count = local.privacy_runner_max_instances.video_to_world
     }
 

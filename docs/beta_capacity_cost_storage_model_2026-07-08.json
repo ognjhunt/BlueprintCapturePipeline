@@ -138,6 +138,27 @@
       "p99_alert_duration_seconds": 300,
       "soak_report_observation_field": "firestore_latency_observation"
     },
+    "gpu_warm_pool_policy": {
+      "schema_version": "blueprint.gpu_warm_pool_policy.v1",
+      "decision": "stay_scale_to_zero_at_beta_volume",
+      "analysis_doc": "docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md",
+      "min_instances_default": 0,
+      "planning_gpu_rate_usd_per_hour": 2.5,
+      "idle_warm_instance_cost_usd_per_month": 1825,
+      "modeled_cold_start_minutes_per_invocation": 3,
+      "breakeven_sustained_invocations_per_hour_per_service": 20,
+      "beta_modeled_invocations_per_hour_per_service": 0.4,
+      "cold_start_tax_reduction": "in-process model runtime cache + gpu_model_load timing events (src/blueprint_pipeline/privacy_service_runtime.py)",
+      "terraform_min_instance_variables": [
+        "privacy_sam3_min_instances",
+        "privacy_vip_min_instances",
+        "privacy_deepprivacy2_min_instances",
+        "video_to_world_min_instances"
+      ],
+      "revisit_trigger": "sustained per-service invocation rate >= 10/hour, a live/interactive latency SLO, GPU pricing change, or measured cold-start tax >= $500/month",
+      "threshold_review_requirement": "Any min_instances > 0 flip must be paired with a review of the $2,500/$5,000 provider-spend thresholds: one warm instance alone is ~73% of the review threshold.",
+      "claim_boundary": "Modeled from the $2.5/GPU-hr planning rate and an assumed 3-minute cold start; the owner must sanity-check invocation rates and measured gpu_model_load durations against real metrics before flipping any min-instances variable."
+    },
     "validated_by": "scripts/validate_beta_capacity_storage.py"
   },
   "storage_lifecycle": {
