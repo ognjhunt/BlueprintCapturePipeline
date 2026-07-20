@@ -4133,7 +4133,7 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-03",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:2f92523131eb2c2da1f20789a12729cf05314055a90c08569075a392ce9409e7",
+              "sha256": "sha256:f3088c6321b946fff7a0e2460ad91dd6b85ba11fa56730adcb27c8bd2d8486cf",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9697,7 +9697,7 @@
             {
               "artifact_id": "SC3-16-AC-01-EV-02",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:2f92523131eb2c2da1f20789a12729cf05314055a90c08569075a392ce9409e7",
+              "sha256": "sha256:f3088c6321b946fff7a0e2460ad91dd6b85ba11fa56730adcb27c8bd2d8486cf",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10277,7 +10277,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-03",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:2f92523131eb2c2da1f20789a12729cf05314055a90c08569075a392ce9409e7",
+              "sha256": "sha256:f3088c6321b946fff7a0e2460ad91dd6b85ba11fa56730adcb27c8bd2d8486cf",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13686,7 +13686,7 @@
             {
               "artifact_id": "EVID-01-AC-01-EV-02",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:2f92523131eb2c2da1f20789a12729cf05314055a90c08569075a392ce9409e7",
+              "sha256": "sha256:f3088c6321b946fff7a0e2460ad91dd6b85ba11fa56730adcb27c8bd2d8486cf",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
