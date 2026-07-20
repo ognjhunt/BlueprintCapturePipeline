@@ -36,6 +36,21 @@ LANE_RESUME_DISABLED_ENV = "BLUEPRINT_LANE_RESUME_DISABLED"
 # Shared with run_e2e: identical derivation and schema id so both resume layers
 # agree on what "same capture input" means.
 CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION = "run_e2e_capture_input_fingerprint.v1"
+LANE_LEDGER_FINGERPRINT_SCHEMA_VERSION = "capture_lane_input_fingerprint.v1"
+# Descriptor metadata keys the pipeline itself writes back into
+# capture_descriptor.json mid-run (qualification.py canonical-package /
+# worldlabs writes). The lane-ledger fingerprint must exclude them: they change
+# between the first run and a Cloud Tasks/Cloud Run retry, and hashing them
+# would make every marker mismatch exactly in the retry scenario this ledger
+# exists for. Genuine input changes (raw manifest, requested outputs, any other
+# descriptor field) still change the fingerprint.
+PIPELINE_WRITTEN_DESCRIPTOR_METADATA_KEYS = frozenset(
+    {
+        "canonical_site_package_uri",
+        "provider_adapter_inputs",
+        "worldlabs_request_manifest_uri",
+    }
+)
 
 
 def lane_resume_disabled() -> bool:
@@ -107,6 +122,85 @@ def capture_input_fingerprint(
     ]
     payload = {
         "schema_version": CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION,
+        "sources": sources,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {**payload, "fingerprint_sha256": sha256(encoded).hexdigest()}
+
+
+def _normalized_descriptor_source(
+    *,
+    capture_root: Path,
+    descriptor_path: Path,
+) -> dict[str, Any]:
+    """Descriptor fingerprint source with pipeline-written metadata excluded.
+
+    Falls back to the raw file-hash source when the descriptor is not valid
+    JSON (nothing to normalize in that case).
+    """
+
+    try:
+        payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = None
+    if not isinstance(payload, Mapping):
+        return _capture_input_fingerprint_source(
+            capture_root=capture_root,
+            role="capture_descriptor",
+            path=descriptor_path,
+        )
+    normalized = dict(payload)
+    metadata = normalized.get("metadata")
+    if isinstance(metadata, Mapping):
+        normalized["metadata"] = {
+            key: value
+            for key, value in metadata.items()
+            if key not in PIPELINE_WRITTEN_DESCRIPTOR_METADATA_KEYS
+        }
+    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
+    relative_path = (
+        descriptor_path.relative_to(capture_root)
+        if descriptor_path.is_relative_to(capture_root)
+        else descriptor_path
+    )
+    return {
+        "role": "capture_descriptor_normalized",
+        "relative_path": str(relative_path),
+        "exists": True,
+        "excluded_metadata_keys": sorted(PIPELINE_WRITTEN_DESCRIPTOR_METADATA_KEYS),
+        "sha256": sha256(encoded.encode("utf-8")).hexdigest(),
+    }
+
+
+def lane_ledger_input_fingerprint(
+    *,
+    capture_root: Path,
+    descriptor_path: Path,
+    raw_root: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Retry-stable capture input fingerprint for the lane ledger.
+
+    Same shape as :func:`capture_input_fingerprint` but the descriptor source
+    is normalized to exclude the metadata keys qualification writes back into
+    the descriptor mid-run, so markers recorded during the first run still
+    match when a Cloud Tasks/Cloud Run retry recomputes the fingerprint from
+    the mutated descriptor.
+    """
+
+    resolved_raw_root = raw_root if raw_root is not None else capture_root / "raw"
+    sources = [
+        _normalized_descriptor_source(
+            capture_root=capture_root,
+            descriptor_path=descriptor_path,
+        ),
+        _capture_input_fingerprint_source(
+            capture_root=capture_root,
+            role="raw_manifest",
+            path=resolved_raw_root / "manifest.json",
+        ),
+    ]
+    payload = {
+        "schema_version": LANE_LEDGER_FINGERPRINT_SCHEMA_VERSION,
         "sources": sources,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

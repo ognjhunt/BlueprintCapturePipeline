@@ -1487,8 +1487,7 @@ def _build_delivery_artifacts(
                 "prefixes": ["scenes/", "targets/"],
                 "nearline_after_days": 30,
                 "coldline_after_days": 90,
-                "archive_after_days": 365,
-                "delete_after_days": None,
+                "archive_after_days": 365, "delete_after_days": None,
                 "enforcement_layer": "gcs_bucket_lifecycle",
             },
             "temporary_processing": {

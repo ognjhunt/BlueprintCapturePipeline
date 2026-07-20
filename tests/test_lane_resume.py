@@ -7,6 +7,7 @@ from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_
 from blueprint_pipeline.lane_resume import (
     LANE_LEDGER_SCHEMA_VERSION,
     capture_input_fingerprint,
+    lane_ledger_input_fingerprint,
     lane_marker_path,
     lane_resume_disabled,
     read_completed_lane_result,
@@ -248,3 +249,64 @@ def test_orchestrator_changed_input_reruns_lanes(monkeypatch, tmp_path: Path) ->
         config=PipelineConfig(gcs_root=tmp_path),
     )
     assert calls == {"qualification": 2, "evaluation_prep": 2}
+
+
+def test_lane_ledger_fingerprint_survives_pipeline_descriptor_writes(tmp_path: Path) -> None:
+    """Qualification writes canonical/provider/worldlabs metadata back into the
+    descriptor mid-run (qualification.py canonical-package + worldlabs writes);
+    the lane-ledger fingerprint must not change or retries would never resume."""
+    capture_root = _capture_root(tmp_path)
+    descriptor_path = _write_capture_inputs(
+        capture_root,
+        descriptor_body=json.dumps(
+            {"capture_id": "capture-1", "metadata": {"requested_outputs": ["site_package"]}}
+        ),
+    )
+
+    before = lane_ledger_input_fingerprint(
+        capture_root=capture_root, descriptor_path=descriptor_path
+    )
+    assert before["schema_version"] == "capture_lane_input_fingerprint.v1"
+
+    payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    payload["metadata"]["canonical_site_package_uri"] = "gs://bucket/pipeline/pkg.json"
+    payload["metadata"]["provider_adapter_inputs"] = {"world_labs_marble": "gs://x"}
+    payload["metadata"]["worldlabs_request_manifest_uri"] = "gs://bucket/pipeline/wl.json"
+    descriptor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    after = lane_ledger_input_fingerprint(
+        capture_root=capture_root, descriptor_path=descriptor_path
+    )
+    assert after["fingerprint_sha256"] == before["fingerprint_sha256"]
+
+    payload["metadata"]["requested_outputs"] = ["site_package", "task_eval"]
+    descriptor_path.write_text(json.dumps(payload), encoding="utf-8")
+    changed = lane_ledger_input_fingerprint(
+        capture_root=capture_root, descriptor_path=descriptor_path
+    )
+    assert changed["fingerprint_sha256"] != before["fingerprint_sha256"]
+
+
+def test_lane_ledger_fingerprint_tracks_raw_manifest_and_invalid_descriptor(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    descriptor_path = _write_capture_inputs(capture_root)
+
+    first = lane_ledger_input_fingerprint(
+        capture_root=capture_root, descriptor_path=descriptor_path
+    )
+    (capture_root / "raw" / "manifest.json").write_text(
+        '{"files": ["frame_0001.jpg"]}', encoding="utf-8"
+    )
+    changed = lane_ledger_input_fingerprint(
+        capture_root=capture_root, descriptor_path=descriptor_path
+    )
+    assert changed["fingerprint_sha256"] != first["fingerprint_sha256"]
+
+    descriptor_path.write_text("not json", encoding="utf-8")
+    fallback = lane_ledger_input_fingerprint(
+        capture_root=capture_root, descriptor_path=descriptor_path
+    )
+    roles = [source["role"] for source in fallback["sources"]]
+    assert roles == ["capture_descriptor", "raw_manifest"]
