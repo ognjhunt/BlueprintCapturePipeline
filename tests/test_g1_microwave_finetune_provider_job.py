@@ -21,6 +21,7 @@ class _FakeProvider:
     def __init__(self) -> None:
         self.request = None
         self.resources: list[dict[str, object]] = []
+        self.launch_called = False
 
     def build_request(self, spec, job_dir):
         assert spec.requires_rtx is False
@@ -47,6 +48,10 @@ class _FakeProvider:
                 {"display_name": "A40", "on_demand_price_usd_per_hour": 0.44}
             ],
         }
+
+    def launch(self, *_args, **_kwargs):
+        self.launch_called = True
+        raise AssertionError("provider launch reached without current spend lock")
 
 
 def _dataset_archive(tmp_path: Path) -> Path:
@@ -197,6 +202,26 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
     }
     assert result["bound_request"]["prelaunch_spend_guard"] == (
         provider.request["prelaunch_spend_guard"]
+    )
+
+    execute_without_lock = job.run_finetune_job(
+        provider_name="runpod",
+        provider_bundle=provider_bundle,
+        object_store_stage_dir=stage,
+        checkpoint_object_store_stage_dir=checkpoint_stage,
+        release_evidence=release,
+        admission_out=tmp_path / "execute-admission.json",
+        bound_request_out=tmp_path / "execute-bound.json",
+        adapter_output=tmp_path / "execute-result.json",
+        pod_name="",
+        execute=True,
+    )
+    assert execute_without_lock["status"] == "blocked"
+    assert execute_without_lock["provider_mutations_performed"] == 0
+    assert provider.launch_called is False
+    assert any(
+        blocker.startswith("qualification_pre_spend:spend_admission:")
+        for blocker in execute_without_lock["blockers"]
     )
 
     blocked_paths = {

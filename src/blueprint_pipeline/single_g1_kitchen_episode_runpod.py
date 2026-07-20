@@ -64,6 +64,7 @@ from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     require_paid_resource_admission,
 )
+from .single_g1_kitchen_qualification_admission import qualification_pre_spend_preflight
 from .wam_derived_observation_harness import (
     GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
 )
@@ -75,12 +76,8 @@ from .wam_provider_object_store import (
 
 
 SCHEMA_VERSION = "single_g1_kitchen_episode_runpod.v1"
-MANIPULATION_POLICY_TASK_COMPATIBILITY_SCHEMA_VERSION = (
-    "single_g1_kitchen_manipulation_policy_task_compatibility.v2"
-)
-MANIPULATION_POLICY_TASK_COMPATIBILITY_BLOCKER = (
-    "single_episode_manipulation_policy_task_compatibility_unproven"
-)
+MANIPULATION_POLICY_TASK_COMPATIBILITY_SCHEMA_VERSION = "single_g1_kitchen_manipulation_policy_task_compatibility.v2"
+MANIPULATION_POLICY_TASK_COMPATIBILITY_BLOCKER = "single_episode_manipulation_policy_task_compatibility_unproven"
 DIRECT_OWNER_SCHEMA_VERSION = "single_g1_kitchen_episode_direct_owner.v1"
 DIRECT_OWNER_NAME = "single_episode_direct_owner.json"
 DIRECT_OWNER_LANE = "single_g1_kitchen_episode"
@@ -4020,6 +4017,12 @@ def run_single_episode(
             blockers.append(f"single_episode_prelaunch_{resolved_provider_name}_inventory_not_zero")
         if capacity.get("status") != "available" or not viable:
             blockers.append("single_episode_48gb_rtx_capacity_unavailable")
+        pre_spend_preflight, pre_spend_blockers = qualification_pre_spend_preflight(
+            root=root, capacity=capacity, pre_inventory=pre_inventory,
+            image_ref=IMAGE_REF, execute=execute, provider=resolved_provider_name,
+        )
+        blockers.extend(pre_spend_blockers)
+        request["pre_spend_preflight"] = pre_spend_preflight
         request["prelaunch_spend_guard"] = {
             "required_before_provider_launch": True,
             "can_launch": not blockers,
@@ -4030,8 +4033,7 @@ def run_single_episode(
         }
 
     reported_blockers = list(blockers)
-    if bootstrap_staging_required:
-        reported_blockers.append("single_episode_bootstrap_staging_required")
+    reported_blockers += ["single_episode_bootstrap_staging_required"] if bootstrap_staging_required else []
     preflight = {
         "schema_version": "single_g1_kitchen_episode_preflight.v1",
         "status": (
@@ -4184,9 +4186,6 @@ def run_single_episode(
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    # This is the last non-provider mutation before launch. If arming the hard
-    # watchdog fails, no dangling pending record is created; if this write
-    # fails, provider.launch is never reached.
     direct_ownership = _open_direct_episode_owner(
         root=root,
         provider_name=resolved_provider_name,

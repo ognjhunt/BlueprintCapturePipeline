@@ -44,6 +44,7 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .qualification_control_admission import admit_qualification_control_mutation
+from .single_g1_kitchen_qualification_admission import qualification_pre_spend_preflight
 from .wam_provider_object_store import signed_output_object_binding_sha256
 
 
@@ -1178,6 +1179,19 @@ def run_finetune_job(
             blockers.append("g1_microwave_finetune_prelaunch_inventory_not_zero")
         if capacity.get("status") != "available" or not viable:
             blockers.append("g1_microwave_finetune_40gb_capacity_unavailable")
+        pre_spend_preflight, pre_spend_blockers = qualification_pre_spend_preflight(
+            root=root,
+            capacity=capacity,
+            pre_inventory={
+                "api_confirmed": inventory_scope.get("status") == "passed",
+                "live_resource_count": inventory_scope.get("other_live_resource_count"),
+            },
+            image_ref=IMAGE_REF,
+            execute=execute,
+            provider=resolved_provider,
+        )
+        blockers.extend(pre_spend_blockers)
+        request["pre_spend_preflight"] = pre_spend_preflight
         request["prelaunch_spend_guard"] = {
             "schema_version": "g1_microwave_finetune_prelaunch_spend_guard.v1",
             "required_before_provider_launch": True,

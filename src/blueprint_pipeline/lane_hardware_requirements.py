@@ -29,6 +29,7 @@ KNOWN_GPU_VRAM_GB: dict[str, float] = {
     "NVIDIA GeForce RTX 4080": 16.0,
     "NVIDIA RTX A5000": 24.0,
     "NVIDIA RTX A6000": 48.0,
+    "NVIDIA A40": 48.0,
     "NVIDIA L40S": 48.0,
     "NVIDIA A100 80GB PCIe": 80.0,
     "NVIDIA A100-SXM4-80GB": 80.0,

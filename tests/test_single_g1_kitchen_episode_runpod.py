@@ -223,6 +223,103 @@ def test_unqualified_manipulation_policy_blocks_before_inventory_capacity_or_lau
     assert result["preflight"]["pre_inventory"] == {}
 
 
+def test_execute_without_current_spend_lock_blocks_before_episode_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = {
+        "plan": {
+            "env": {},
+            "groot_server_command": ["/opt/gr00t/server"],
+            "gear_sonic_controller_command": ["/opt/wbc/deploy.sh", "sim"],
+            "isaac_task_executor_command": ["/isaac-sim/python.sh", "executor.py"],
+        },
+        "route": {"route": []},
+        "seed": {"seed": 1001},
+        "start_frame": b"exact-frame",
+        "bootstrap_script": "upload_phase inputs_ready\n",
+        "runtime_package_overlay_xz_base64": "runtime-overlay",
+        "isaac_runtime_backend_overlay_gzip_base64": "backend-overlay",
+        "runtime_package_overlay_sha256": "1" * 64,
+        "runtime_package_overlay_source_sha256s": {},
+        "bundle_sha256": single_episode.BUNDLE_SHA256,
+        "manipulation_policy_task_compatibility": {
+            "status": "qualified",
+            "blockers": [],
+        },
+    }
+    launch_called = False
+
+    class Provider:
+        def build_request(self, _spec, _root):
+            return {}
+
+        def billable_inventory(self, *, name_prefix: str):
+            assert name_prefix == ""
+            return {
+                "status": "observed",
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+        def capacity_preflight(self, _request):
+            selected = {
+                "display_name": "RTX A6000",
+                "gpu_ram_mb": 48_000,
+                "on_demand_price_usd_per_hour": 0.5,
+            }
+            return {"status": "available", "viable_gpu_types": [selected]}
+
+        def launch(self, *_args, **_kwargs):
+            nonlocal launch_called
+            launch_called = True
+            raise AssertionError("provider launch reached without current spend lock")
+
+    monkeypatch.setattr(single_episode, "_load_single_episode_inputs", lambda _path: inputs)
+    monkeypatch.setattr(single_episode, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        single_episode,
+        "_require_signed_output_staging_proof",
+        lambda **_kwargs: {"status": "passed", "blockers": []},
+    )
+    for name in (
+        "BLUEPRINT_LAUNCH_PROOF_MODE",
+        "BLUEPRINT_REQUIRE_PAID_SPEND_ADMISSION_LOCK",
+        "BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    secret_url = tmp_path / "signed-url.txt"
+    secret_url.write_text("https://objects.example/episode.zip?signature=test")
+    secret_url.chmod(0o600)
+    release = tmp_path / "release.json"
+    release.write_text(json.dumps({"resolved_digest_ref": single_episode.IMAGE_REF}))
+
+    result = single_episode.run_single_episode(
+        provider_name="runpod",
+        episode_bundle=tmp_path / "episode.zip",
+        provider_bundle_url_file=secret_url,
+        provider_output_put_url_file=secret_url,
+        provider_output_get_url_file=secret_url,
+        release_evidence=release,
+        provider_launch_request=tmp_path / "provider-request.json",
+        preflight_bundle=tmp_path / "preflight.json",
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "result.json",
+        pod_name="",
+        execute=True,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert launch_called is False
+    assert any(
+        blocker.startswith("qualification_pre_spend:spend_admission:")
+        for blocker in result["blockers"]
+    )
+
+
 def test_vast_remote_bootstrap_materializes_exact_overlay_bound_artifact(
     tmp_path: Path,
 ) -> None:

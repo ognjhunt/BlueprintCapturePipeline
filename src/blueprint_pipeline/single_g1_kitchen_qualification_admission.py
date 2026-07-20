@@ -32,6 +32,7 @@ def qualification_pre_spend_preflight(
     pre_inventory: Mapping[str, Any],
     image_ref: str,
     execute: bool,
+    provider: str = "vast",
 ) -> tuple[dict[str, Any], list[str]]:
     """Bind an execute request to capacity, hardware, inventory, and spend lock."""
 
@@ -40,7 +41,12 @@ def qualification_pre_spend_preflight(
         viable = capacity.get("viable_gpu_types")
         if isinstance(viable, list) and viable and isinstance(viable[0], Mapping):
             selected = dict(viable[0])
-    gpu_name = str(selected.get("gpu_name") or selected.get("gpu_type_id") or "").strip()
+    gpu_name = str(
+        selected.get("gpu_name")
+        or selected.get("gpu_type_id")
+        or selected.get("display_name")
+        or ""
+    ).strip()
     gpu_type_id = gpu_name if gpu_name.startswith("NVIDIA ") else f"NVIDIA {gpu_name}"
     try:
         vram_gb = float(selected.get("gpu_ram_mb")) / 1000.0
@@ -63,7 +69,7 @@ def qualification_pre_spend_preflight(
     try:
         preflight = require_pre_spend_preflight(
             lane=PRE_SPEND_HARDWARE_LANE,
-            provider="vast",
+            provider=provider,
             credential_present=pre_inventory.get("api_confirmed") is True,
             capacity_evidence={
                 "available": capacity_available,
