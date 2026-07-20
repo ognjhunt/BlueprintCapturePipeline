@@ -202,6 +202,59 @@ variable "video_to_world_max_instances" {
   }
 }
 
+# GPU warm-pool controls (SCALE2-06). Defaults stay 0 (scale-to-zero): at the
+# beta invocation rate (~300 captures/month) the modeled cold-start tax is
+# ~$150/month across all four GPU services, while a single always-warm GPU
+# instance costs ~$1,825/month at the $2.5/GPU-hr planning rate — 73% of the
+# whole $2,500/month provider-spend review threshold. Flip a service to a
+# warm pool only after its measured sustained invocation rate approaches the
+# ~20 invocations/hour breakeven documented in
+# docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md, and review the spend thresholds
+# in the same change.
+variable "privacy_sam3_min_instances" {
+  description = "Warm (always-on) sam3-detect GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.privacy_sam3_min_instances >= 0 && var.privacy_sam3_min_instances <= 2
+    error_message = "privacy_sam3_min_instances must be between 0 and 2."
+  }
+}
+
+variable "privacy_vip_min_instances" {
+  description = "Warm (always-on) vip-inpaint GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.privacy_vip_min_instances >= 0 && var.privacy_vip_min_instances <= 2
+    error_message = "privacy_vip_min_instances must be between 0 and 2."
+  }
+}
+
+variable "privacy_deepprivacy2_min_instances" {
+  description = "Warm (always-on) deepprivacy2-anonymize GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.privacy_deepprivacy2_min_instances >= 0 && var.privacy_deepprivacy2_min_instances <= 2
+    error_message = "privacy_deepprivacy2_min_instances must be between 0 and 2."
+  }
+}
+
+variable "video_to_world_min_instances" {
+  description = "Warm (always-on) video-to-world GPU instances. Keep 0 until the measured invocation rate crosses the warm-pool breakeven; each warm instance costs ~$1,825/month at the planning rate."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.video_to_world_min_instances >= 0 && var.video_to_world_min_instances <= 2
+    error_message = "video_to_world_min_instances must be between 0 and 2."
+  }
+}
+
 variable "gpu_runner_billable_instance_time_alert_threshold" {
   description = "Per-runner Cloud Run billable instance time rate threshold in instance-seconds per second before alerting."
   type        = number
@@ -438,6 +491,14 @@ locals {
     vip            = min(var.privacy_vip_max_instances, var.max_concurrent_jobs)
     deepprivacy2   = min(var.privacy_deepprivacy2_max_instances, var.max_concurrent_jobs)
     video_to_world = min(var.video_to_world_max_instances, var.max_concurrent_jobs)
+  }
+  # Warm-pool floors are bounded by the per-service max so a min > max can
+  # never be produced by variable drift (SCALE2-06).
+  privacy_runner_min_instances = {
+    sam3           = min(var.privacy_sam3_min_instances, local.privacy_runner_max_instances.sam3)
+    vip            = min(var.privacy_vip_min_instances, local.privacy_runner_max_instances.vip)
+    deepprivacy2   = min(var.privacy_deepprivacy2_min_instances, local.privacy_runner_max_instances.deepprivacy2)
+    video_to_world = min(var.video_to_world_min_instances, local.privacy_runner_max_instances.video_to_world)
   }
   privacy_runner_monitoring_service_filter = join(" OR ", [
     for service in values(local.privacy_runner_service_names) :
@@ -1120,7 +1181,7 @@ resource "google_cloud_run_v2_service" "privacy_sam3" {
     timeout                          = "3600s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.sam3
       max_instance_count = local.privacy_runner_max_instances.sam3
     }
 
@@ -1210,7 +1271,7 @@ resource "google_cloud_run_v2_service" "privacy_vip" {
     timeout                          = "7200s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.vip
       max_instance_count = local.privacy_runner_max_instances.vip
     }
 
@@ -1305,7 +1366,7 @@ resource "google_cloud_run_v2_service" "privacy_deepprivacy2" {
     timeout                          = "7200s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.deepprivacy2
       max_instance_count = local.privacy_runner_max_instances.deepprivacy2
     }
 
@@ -1395,7 +1456,7 @@ resource "google_cloud_run_v2_service" "video_to_world" {
     timeout                          = "7200s"
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = local.privacy_runner_min_instances.video_to_world
       max_instance_count = local.privacy_runner_max_instances.video_to_world
     }
 
@@ -1634,78 +1695,15 @@ resource "google_firestore_database" "default" {
   ]
 }
 
-# Firestore indexes for captures collection. The legacy createdAt composites
-# stay for current readers; sharded companions are the scale-up path once
-# writers populate createdAtShard and readers aggregate per-shard queries.
-resource "google_firestore_index" "captures_status" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "status"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "ASCENDING"
-  }
-}
-
-resource "google_firestore_index" "captures_user" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "creatorId"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "DESCENDING"
-  }
-}
-
-resource "google_firestore_index" "captures_status_created_at_shard" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "status"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAtShard"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "ASCENDING"
-  }
-}
-
-resource "google_firestore_index" "captures_user_created_at_shard" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "creatorId"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAtShard"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "DESCENDING"
-  }
-}
+# Firestore capture-record indexes were removed here (SCALE2-07): all four
+# `captures_*` composites were declared against a literal `captures`
+# collection that no code in any repo has ever written. The real
+# capture-record collection is `creatorCaptures`, owned and written by
+# Blueprint-WebApp; its composite indexes (including the createdAtShard
+# scale-up companions) live in that repo's firestore.indexes.json and deploy
+# via `firebase deploy --only firestore:indexes`. This repo's Terraform keeps
+# the shared Firestore database + latency alerting only; it must not maintain
+# indexes for WebApp-owned collections.
 
 # =============================================================================
 # Monitoring and Alerting
@@ -1819,7 +1817,7 @@ resource "google_monitoring_alert_policy" "firestore_request_latency" {
   }
 
   documentation {
-    content   = "Firestore p99 request latency exceeds 250ms for 5 minutes. During beta soak or scale-up, inspect captures.createdAt composite indexes, Key Visualizer index heatmaps, write rate, and sharded createdAtShard migration readiness before admitting more capture traffic."
+    content   = "Firestore p99 request latency exceeds 250ms for 5 minutes. During beta soak or scale-up, inspect the creatorCaptures created_at composite indexes (declared in Blueprint-WebApp firestore.indexes.json), Key Visualizer index heatmaps, write rate, and sharded createdAtShard migration readiness before admitting more capture traffic."
     mime_type = "text/markdown"
   }
 }

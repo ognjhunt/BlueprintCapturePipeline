@@ -105,30 +105,60 @@
     "gpu_runner_capacity_policy": "per_service_spend_caps_below_dispatch_concurrency",
     "large_video_ingest_topic": "blueprint-large-video-ingest",
     "firestore_created_at_hotspot_policy": {
-      "schema_version": "blueprint.firestore_created_at_hotspot_policy.v1",
-      "collection": "captures",
+      "schema_version": "blueprint.firestore_created_at_hotspot_policy.v2",
+      "collection": "creatorCaptures",
+      "index_owner_repo": "Blueprint-WebApp",
+      "index_manifest": "Blueprint-WebApp/firestore.indexes.json",
       "status": "beta_monitor_and_scale_up_migration_path_declared",
-      "claim_boundary": "This declares Terraform indexes, alerting, and soak-report evidence fields. It is not live Firestore latency proof and does not prove WebApp or Capture writers populate createdAtShard.",
-      "legacy_indexes_retained_for_current_readers": [
+      "claim_boundary": "This declares webapp-owned index manifest entries, pipeline alerting, and soak-report evidence fields. It is not live Firestore latency proof and does not prove readers already fan out per-shard queries.",
+      "v1_correction": "v1 pinned four pipeline Terraform indexes on a literal `captures` collection that no repo has ever written. Those phantom resources are deleted; the real capture-record collection is creatorCaptures, written by Blueprint-WebApp (server/routes/creator.ts), whose writer has populated createdAtShard since scaling round 1.",
+      "removed_phantom_terraform_indexes": [
         "google_firestore_index.captures_status",
-        "google_firestore_index.captures_user"
-      ],
-      "scale_up_sharded_indexes": [
+        "google_firestore_index.captures_user",
         "google_firestore_index.captures_status_created_at_shard",
         "google_firestore_index.captures_user_created_at_shard"
       ],
+      "legacy_indexes_retained_for_current_readers": [
+        "creatorCaptures: creator_id ASC, created_at DESC"
+      ],
+      "scale_up_sharded_indexes": [
+        "creatorCaptures: creator_id ASC, createdAtShard ASC, created_at DESC",
+        "creatorCaptures: status ASC, createdAtShard ASC, created_at ASC"
+      ],
       "shard_field": "createdAtShard",
       "shard_count": 16,
-      "shard_derivation": "int(sha256(utf8(capture_id)).hexdigest(), 16) % shard_count",
-      "writer_requirement_before_scale_up": "Populate createdAtShard with the deterministic capture-id hash shard (sha256(capture_id) mod 16) before routing high-volume createdAt queries through sharded indexes. Blueprint-WebApp creator capture registration writes this field on new capture records; backfill of pre-existing records is a separate migration.",
-      "reader_requirement_before_scale_up": "Aggregate per-shard createdAt result sets before removing the legacy createdAt composites.",
-      "legacy_index_removal_requirement": "After sharded writer and reader migration is proven, remove composite indexes that still route high-rate captures queries directly through monotonically increasing createdAt.",
+      "shard_derivation": "int(hashlib.sha256(capture_id.encode()).hexdigest(), 16) % shard_count",
+      "writer": "Blueprint-WebApp server/routes/creator.ts capture registration via server/utils/captureShard.ts",
+      "writer_note": "Blueprint-WebApp creator capture registration writes createdAtShard on new capture records; backfill of pre-existing records is a separate migration.",
+      "reader_requirement_before_scale_up": "Aggregate per-shard created_at result sets before removing the legacy created_at composite.",
+      "legacy_index_removal_requirement": "After sharded reader migration is proven, remove composites that still route high-rate creatorCaptures queries directly through monotonically increasing created_at.",
       "beta_without_sharding_max_write_rate_per_second": 500,
       "monitoring_alert_policy": "google_monitoring_alert_policy.firestore_request_latency",
       "latency_metric": "serviceruntime.googleapis.com/api/request_latencies",
       "p99_alert_threshold_seconds": 0.25,
       "p99_alert_duration_seconds": 300,
       "soak_report_observation_field": "firestore_latency_observation"
+    },
+    "gpu_warm_pool_policy": {
+      "schema_version": "blueprint.gpu_warm_pool_policy.v1",
+      "decision": "stay_scale_to_zero_at_beta_volume",
+      "analysis_doc": "docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md",
+      "min_instances_default": 0,
+      "planning_gpu_rate_usd_per_hour": 2.5,
+      "idle_warm_instance_cost_usd_per_month": 1825,
+      "modeled_cold_start_minutes_per_invocation": 3,
+      "breakeven_sustained_invocations_per_hour_per_service": 20,
+      "beta_modeled_invocations_per_hour_per_service": 0.4,
+      "cold_start_tax_reduction": "in-process model runtime cache + gpu_model_load timing events (src/blueprint_pipeline/privacy_service_runtime.py)",
+      "terraform_min_instance_variables": [
+        "privacy_sam3_min_instances",
+        "privacy_vip_min_instances",
+        "privacy_deepprivacy2_min_instances",
+        "video_to_world_min_instances"
+      ],
+      "revisit_trigger": "sustained per-service invocation rate >= 10/hour, a live/interactive latency SLO, GPU pricing change, or measured cold-start tax >= $500/month",
+      "threshold_review_requirement": "Any min_instances > 0 flip must be paired with a review of the $2,500/$5,000 provider-spend thresholds: one warm instance alone is ~73% of the review threshold.",
+      "claim_boundary": "Modeled from the $2.5/GPU-hr planning rate and an assumed 3-minute cold start; the owner must sanity-check invocation rates and measured gpu_model_load durations against real metrics before flipping any min-instances variable."
     },
     "validated_by": "scripts/validate_beta_capacity_storage.py"
   },

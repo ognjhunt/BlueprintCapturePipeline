@@ -108,7 +108,7 @@ def _install_fake_cv2(monkeypatch: pytest.MonkeyPatch, *, frames: list[np.ndarra
     fake.IMREAD_UNCHANGED = -1
     fake.INPAINT_TELEA = 1
     capture_frames = frames if frames is not None else [np.zeros((3, 4, 3), dtype=np.uint8)]
-    fake.VideoCapture = lambda _path: _FakeCapture(capture_frames, opened=opened)
+    fake.VideoCapture = lambda _path, **_kwargs: _FakeCapture(capture_frames, opened=opened)
     fake.VideoWriter = lambda path, *_args: _FakeWriter(path, opened=writer_opened)
     fake.VideoWriter_fourcc = lambda *_args: 0
     fake.cvtColor = lambda frame, _code: frame
@@ -120,7 +120,19 @@ def _install_fake_cv2(monkeypatch: pytest.MonkeyPatch, *, frames: list[np.ndarra
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _reset_model_runtime_cache():
+    # SCALE2-06: loaded model runtimes are cached in-process for warm
+    # instances; tests that swap fake backends need a clean cache.
+    psr._MODEL_RUNTIME_CACHE.clear()
+    yield
+    psr._MODEL_RUNTIME_CACHE.clear()
+
+
 def _install_fake_sam3(monkeypatch: pytest.MonkeyPatch, *, output: object, model_error: bool = False):
+    # Each installed fake is a new model world; drop any runtime cached from
+    # a previous fake so the scenario under test actually loads this one.
+    psr._MODEL_RUNTIME_CACHE.clear()
     sam3_pkg = ModuleType("sam3")
     sam3_model_pkg = ModuleType("sam3.model")
     processor_mod = ModuleType("sam3.model.sam3_image_processor")
@@ -346,7 +358,7 @@ def test_privacy_runtime_sam3_and_depth_backends(
 
     _install_fake_cv2(monkeypatch, frames=[np.zeros((3, 4, 3), dtype=np.uint8)])
     _install_fake_geometry_da3(monkeypatch, depth=np.ones((3, 4), dtype=np.float32))
-    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path: (SimpleNamespace(), ["warn"]))
+    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (SimpleNamespace(), ["warn"]))
     depth_result = psr._run_depth_anything_backend(
         input_video=video,
         depth_dir=tmp_path / "depth",
@@ -356,14 +368,14 @@ def test_privacy_runtime_sam3_and_depth_backends(
     assert depth_result["status"] == "succeeded"
     assert depth_result["frame_count"] == 1
     assert Path(depth_result["depth_artifacts"][0]["path"]).is_file()
-    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path: (None, ["missing"]))
+    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (None, ["missing"]))
     assert psr._run_depth_anything_backend(input_video=video, depth_dir=tmp_path / "depth-missing", confidence_dir=tmp_path / "conf-missing", depth_anything_model_path="")["warnings"] == ["missing"]
     _install_fake_cv2(monkeypatch, opened=False)
-    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path: (SimpleNamespace(), []))
+    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (SimpleNamespace(), []))
     assert psr._run_depth_anything_backend(input_video=video, depth_dir=tmp_path / "depth-video-fail", confidence_dir=tmp_path / "conf-video-fail", depth_anything_model_path="")["reason"].startswith("video_open_failed")
     _install_fake_cv2(monkeypatch, frames=[np.zeros((3, 4, 3), dtype=np.uint8)])
     _install_fake_geometry_da3(monkeypatch, depth=None)
-    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path: (SimpleNamespace(), []))
+    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (SimpleNamespace(), []))
     assert psr._run_depth_anything_backend(input_video=video, depth_dir=tmp_path / "depth-infer-fail", confidence_dir=tmp_path / "conf-infer-fail", depth_anything_model_path="")["reason"] == "depth_anything_inference_failed"
     _install_fake_cv2(monkeypatch, frames=[])
     assert psr._run_depth_anything_backend(input_video=video, depth_dir=tmp_path / "depth-empty", confidence_dir=tmp_path / "conf-empty", depth_anything_model_path="")["reason"] == "video_empty"
@@ -475,7 +487,7 @@ def test_privacy_runtime_depth_maps_vip_and_deepprivacy(
         vip_model_path="",
         depth_anything_model_path="",
     )["reason"] == "depth_anything_runtime_unavailable"
-    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: None), []))
+    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: None), []))
     _install_fake_cv2(monkeypatch, frames=[np.zeros((3, 4, 3), dtype=np.uint8)])
     assert psr._run_vip_backend(
         input_video=video,
@@ -490,7 +502,7 @@ def test_privacy_runtime_depth_maps_vip_and_deepprivacy(
         depth_anything_model_path="",
     )["reason"] == "depth_anything_inference_failed"
     _install_fake_cv2(monkeypatch, opened=False)
-    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: np.ones((3, 4), dtype=np.float32)), []))
+    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: np.ones((3, 4), dtype=np.float32)), []))
     assert psr._run_vip_backend(
         input_video=video,
         masks_dir=masks_dir,
@@ -532,7 +544,7 @@ def test_privacy_runtime_depth_maps_vip_and_deepprivacy(
         return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(psr.subprocess, "run", run_dp2)
-    monkeypatch.setattr(psr, "_ffprobe_duration", lambda _path: 2.5)
+    monkeypatch.setattr(psr, "_ffprobe_duration", lambda _path, **_kwargs: 2.5)
     succeeded = psr._run_deepprivacy2_backend(input_video=video, output_video=tmp_path / "dp2-ok.mov", deepprivacy2_model_path="model")
     assert succeeded["status"] == "succeeded"
     assert succeeded["face_anonymized_segments"] == ["0.0-2.5"]
@@ -680,7 +692,7 @@ def test_privacy_runtime_remaining_branch_edges(
     masks_dir = tmp_path / "vip-masks"
     _write(masks_dir / "frame_000001.png", b"mask-late")
     _install_fake_cv2(monkeypatch, frames=[np.zeros((3, 4, 3), dtype=np.uint8), np.zeros((3, 4, 3), dtype=np.uint8)])
-    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: np.ones((3, 4), dtype=np.float32)), []))
+    monkeypatch.setattr(psr, "_load_depth_anything_runtime", lambda _path, **_kwargs: (SimpleNamespace(_blueprint_infer_depth=lambda _runtime, _rgb: np.ones((3, 4), dtype=np.float32)), []))
     monkeypatch.setattr(psr, "_merge_audio_if_possible", lambda source_video, video_only_path, output_video: _write(output_video, b"vip"))
     vip_missing_first_mask = psr._run_vip_backend(
         input_video=video,

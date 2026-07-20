@@ -955,7 +955,7 @@ print_summary() {
     echo "  1. Upload a video to gs://${STORAGE_BUCKET}/scenes/{scene_id}/..."
     echo "  2. Monitor the Cloud Function logs for trigger"
     echo "  3. Check Cloud Run Jobs for processing status"
-    echo "  4. Query Firestore 'captures' collection for results"
+    echo "  4. Check webapp sync / capture status for results (capture records live in the WebApp-owned 'creatorCaptures' collection)"
     echo ""
 }
 

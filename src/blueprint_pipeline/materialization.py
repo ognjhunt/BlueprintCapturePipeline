@@ -2078,7 +2078,12 @@ def build_capture_bundle_records(
             "capture_not_ready:raw_bundle_quarantined:raw_bundle_changed_during_materialization"
         )
 
-    if write_frames_index:
+    if write_frames_index and not frames_path.is_file():
+        # Fallback index for captures that never went through extract-frames.
+        # Never clobber an existing index: extract-frames writes the rich
+        # per-frame index (and, for packed captures, the frames_index.v2
+        # archive linkage — see frames_layout.py) that downstream readers
+        # depend on.
         ensure_dir(frames_dir)
         write_text(frames_path, json.dumps(frame_index_payload) + "\n")
 

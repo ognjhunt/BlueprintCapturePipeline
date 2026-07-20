@@ -39,8 +39,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 from urllib import request as urllib_request
 
 from .common import (
@@ -55,6 +56,64 @@ from .logging_utils import log_event
 
 
 logger = logging.getLogger(__name__)
+
+
+# ── Warm-instance model cache + load timing (SCALE2-06) ──────────────────────
+#
+# Model weights were previously (re)loaded inside every request, so even a
+# warm Cloud Run instance (min_instance_count > 0) paid the full load on each
+# invocation — making a warm pool pointless for the in-process backends. The
+# cache below keeps loaded runtimes for the life of the instance
+# (max_instance_request_concurrency = 1, so no cross-request contention), and
+# every load emits a `gpu_model_load` event with its measured duration so the
+# warm-pool economics doc (docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md) can be
+# checked against real numbers instead of the modeled 3-minute assumption.
+# The cache is deliberately backend-agnostic (keyed by runner kind + weights
+# identity): no model-specific behavior leaks out of the loader callables.
+_MODEL_RUNTIME_CACHE: Dict[tuple[str, str], Any] = {}
+
+
+def _model_cache_enabled() -> bool:
+    return str(os.getenv("PRIVACY_RUNNER_MODEL_CACHE") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _timed_model_load(kind: str, cache_key: str, loader: Callable[[], Any]) -> Any:
+    """Load (or reuse) a model runtime, logging a `gpu_model_load` event.
+
+    ``loader`` exceptions propagate to the caller unchanged; failures are
+    never cached.
+    """
+
+    key = (kind, cache_key)
+    if _model_cache_enabled() and key in _MODEL_RUNTIME_CACHE:
+        log_event(
+            logger,
+            logging.INFO,
+            "gpu_model_load",
+            runner_kind=kind,
+            cached=True,
+            duration_seconds=0.0,
+        )
+        return _MODEL_RUNTIME_CACHE[key]
+    start = time.monotonic()
+    loaded = loader()
+    duration_seconds = round(time.monotonic() - start, 3)
+    log_event(
+        logger,
+        logging.INFO,
+        "gpu_model_load",
+        runner_kind=kind,
+        cached=False,
+        duration_seconds=duration_seconds,
+    )
+    if _model_cache_enabled():
+        _MODEL_RUNTIME_CACHE[key] = loaded
+    return loaded
 
 
 def _gcs_root() -> Path:
@@ -277,17 +336,53 @@ def _frames_with_suffix(directory: Optional[Path], suffixes: Iterable[str]) -> l
     return sorted(path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in wanted)
 
 
-def _load_depth_anything_runtime(model_path: str) -> tuple[Optional[Any], list[str]]:
+def _load_depth_anything_runtime(
+    model_path: str,
+    cache_key: Optional[str] = None,
+) -> tuple[Optional[Any], list[str]]:
     from .geometry_da3 import _infer_depth_with_runtime, _load_da3_runtime
 
     os.environ.setdefault("DA3_MODEL_NAME", str(os.getenv("DA3_MODEL_NAME") or "da3metric-large"))
     if model_path:
         os.environ["DA3_MODEL_PATH"] = model_path
-    runtime, warnings = _load_da3_runtime("depth_anything")
+
+    def _load() -> tuple[Optional[Any], list[str]]:
+        return _load_da3_runtime("depth_anything")
+
+    # A failed load returns (None, warnings); _timed_model_load must not cache
+    # it, so unwrap and only route successes through the cache.
+    # Cache key must be the ORIGINAL model reference (body/env URI), not the
+    # per-request materialized temp path — otherwise warm instances miss the
+    # cache on every request and accumulate duplicate runtimes.
+    stable_key = cache_key or model_path or str(os.getenv("DA3_MODEL_PATH") or "default")
+    key = ("depth_anything", stable_key)
+    if _model_cache_enabled() and key in _MODEL_RUNTIME_CACHE:
+        runtime, warnings = _MODEL_RUNTIME_CACHE[key]
+        log_event(
+            logger,
+            logging.INFO,
+            "gpu_model_load",
+            runner_kind="depth_anything",
+            cached=True,
+            duration_seconds=0.0,
+        )
+    else:
+        start = time.monotonic()
+        runtime, warnings = _load()
+        log_event(
+            logger,
+            logging.INFO,
+            "gpu_model_load",
+            runner_kind="depth_anything",
+            cached=False,
+            duration_seconds=round(time.monotonic() - start, 3),
+        )
+        if runtime is not None and _model_cache_enabled():
+            _MODEL_RUNTIME_CACHE[key] = (runtime, list(warnings))
     if runtime is None:
         return None, warnings
     runtime._blueprint_infer_depth = _infer_depth_with_runtime  # type: ignore[attr-defined]
-    return runtime, warnings
+    return runtime, list(warnings)
 
 
 def _ffprobe_duration(video_path: Path) -> float:
@@ -324,6 +419,7 @@ def _run_sam3_backend(
     prompt: str,
     stage_name: str,
     weights_path: str,
+    weights_cache_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         import cv2  # type: ignore[import-not-found]
@@ -344,12 +440,21 @@ def _run_sam3_backend(
     for old_mask in masks_dir.glob("*.png"):
         old_mask.unlink()
 
-    try:
+    def _load_sam3_processor() -> Any:
         model = build_sam3_image_model(
             checkpoint_path=weights_path or None,
             load_from_HF=not bool(weights_path),
         )
-        processor = Sam3Processor(model)
+        return Sam3Processor(model)
+
+    try:
+        processor = _timed_model_load(
+            "sam3",
+            # Stable model identity (original body/env reference), never the
+            # per-request materialized temp path.
+            weights_cache_key or weights_path or "hf-default",
+            _load_sam3_processor,
+        )
     except Exception as exc:
         return {
             "status": "failed",
@@ -461,6 +566,7 @@ def _run_depth_anything_backend(
     depth_dir: Path,
     confidence_dir: Path,
     depth_anything_model_path: str,
+    depth_anything_cache_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         import cv2  # type: ignore[import-not-found]
@@ -473,7 +579,9 @@ def _run_depth_anything_backend(
             "detail": str(exc),
         }
 
-    runtime, warnings = _load_depth_anything_runtime(depth_anything_model_path)
+    runtime, warnings = _load_depth_anything_runtime(
+        depth_anything_model_path, cache_key=depth_anything_cache_key
+    )
     if runtime is None:
         return {
             "status": "failed",
@@ -681,6 +789,7 @@ def _run_vip_backend(
     precomputed_confidence_frames: Optional[Mapping[int, Path]],
     vip_model_path: str,
     depth_anything_model_path: str,
+    depth_anything_cache_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     del vip_model_path
     try:
@@ -708,7 +817,9 @@ def _run_vip_backend(
             depth_warnings = []
             use_precomputed_depth = True
         else:
-            depth_runtime, depth_warnings = _load_depth_anything_runtime(depth_anything_model_path)
+            depth_runtime, depth_warnings = _load_depth_anything_runtime(
+                depth_anything_model_path, cache_key=depth_anything_cache_key
+            )
             if depth_runtime is None:
                 return {
                     "status": "failed",
@@ -850,6 +961,10 @@ def _run_deepprivacy2_backend(
         str(output_video),
         "--track",
     ]
+    # Subprocess backend: model load happens inside anonymize.py, so per-load
+    # timing is not separable here. The whole-execution duration still bounds
+    # the cold-start tax for the warm-pool economics analysis (SCALE2-06).
+    backend_start = time.monotonic()
     proc = subprocess.run(
         command,
         cwd=str(repo_dir),
@@ -857,6 +972,15 @@ def _run_deepprivacy2_backend(
         text=True,
         check=False,
         env=env,
+    )
+    log_event(
+        logger,
+        logging.INFO,
+        "gpu_backend_execution",
+        runner_kind="deepprivacy2",
+        duration_seconds=round(time.monotonic() - backend_start, 3),
+        returncode=proc.returncode,
+        model_load_embedded=True,
     )
     if proc.returncode != 0 or not output_video.is_file():
         return {
@@ -922,8 +1046,11 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 masks_dir = _json_path(outputs_dir, "masks")
             except Exception:
                 masks_dir = outputs_dir / "masks"
+            sam3_weights_ref = _string(
+                body.get("sam3_weights_path") or os.getenv("SAM3_WEIGHTS_PATH")
+            )
             weights_path = _materialize_model_path(
-                _string(body.get("sam3_weights_path") or os.getenv("SAM3_WEIGHTS_PATH")),
+                sam3_weights_ref,
                 working_dir=inputs_dir,
                 default_name="sam3.pt",
             )
@@ -933,6 +1060,7 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 prompt=_string(body.get("prompt")) or "person",
                 stage_name=_string(body.get("stage_name")),
                 weights_path=weights_path,
+                weights_cache_key=sam3_weights_ref or "hf-default",
             )
             if _string(result.get("status")).lower() == "succeeded":
                 mask_paths = _copy_directory_to_uri(masks_dir, _string(body.get("masks_prefix_uri")))
@@ -950,11 +1078,15 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
             )
 
         if runner_kind == "vip":
+            depth_anything_ref = _string(
+                body.get("depth_anything_model_path") or os.getenv("DEPTH_ANYTHING_MODEL_PATH")
+            )
             depth_anything_model_path = _materialize_model_path(
-                _string(body.get("depth_anything_model_path") or os.getenv("DEPTH_ANYTHING_MODEL_PATH")),
+                depth_anything_ref,
                 working_dir=inputs_dir,
                 default_name="depth_anything_model",
             )
+            depth_anything_cache_key = depth_anything_ref or "default"
             if parse_bool(body.get("depth_generation_only"), default=False):
                 depth_dir = outputs_dir / "depth"
                 confidence_dir = outputs_dir / "confidence"
@@ -963,6 +1095,7 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                     depth_dir=depth_dir,
                     confidence_dir=confidence_dir,
                     depth_anything_model_path=depth_anything_model_path,
+                    depth_anything_cache_key=depth_anything_cache_key,
                 )
                 if _string(result.get("status")).lower() == "succeeded":
                     depth_destination = _string(body.get("depth_output_prefix_uri")) or _string(
@@ -1118,6 +1251,7 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 ),
                 vip_model_path=vip_model_path,
                 depth_anything_model_path=depth_anything_model_path,
+                depth_anything_cache_key=depth_anything_cache_key,
             )
             if _string(result.get("status")).lower() == "succeeded":
                 output_video_uri = _string(body.get("output_video_uri"))

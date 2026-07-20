@@ -205,42 +205,63 @@ def test_terraform_queue_depth_alert_uses_beta_backpressure_thresholds():
     assert "per-user intake pressure" in body
 
 
-def test_terraform_declares_firestore_created_at_hotspot_scaleup_path():
+def test_terraform_keeps_firestore_latency_alert_without_phantom_captures_indexes():
+    # SCALE2-07: the four `captures_*` index resources targeted a literal
+    # `captures` collection that no repo has ever written. The real
+    # capture-record collection is creatorCaptures, whose composites (including
+    # the createdAtShard scale-up companions) are owned by
+    # Blueprint-WebApp/firestore.indexes.json. This repo keeps only the shared
+    # database and the latency alerting.
     text = TERRAFORM_MAIN.read_text(encoding="utf-8")
-    status_shard = _terraform_resource_body(
-        text,
-        "google_firestore_index",
-        "captures_status_created_at_shard",
-    )
-    user_shard = _terraform_resource_body(
-        text,
-        "google_firestore_index",
-        "captures_user_created_at_shard",
-    )
     latency_alert = _terraform_resource_body(
         text,
         "google_monitoring_alert_policy",
         "firestore_request_latency",
     )
 
-    assert 'resource "google_firestore_index" "captures_status"' in text
-    assert 'resource "google_firestore_index" "captures_user"' in text
-    assert (
-        status_shard.index('field_path = "status"')
-        < status_shard.index('field_path = "createdAtShard"')
-        < status_shard.index('field_path = "createdAt"')
-    )
-    assert 'order      = "ASCENDING"' in status_shard
-    assert (
-        user_shard.index('field_path = "creatorId"')
-        < user_shard.index('field_path = "createdAtShard"')
-        < user_shard.index('field_path = "createdAt"')
-    )
-    assert 'order      = "DESCENDING"' in user_shard
+    assert 'resource "google_firestore_index" "captures_status"' not in text
+    assert 'resource "google_firestore_index" "captures_user"' not in text
+    assert 'resource "google_firestore_index" "captures_status_created_at_shard"' not in text
+    assert 'resource "google_firestore_index" "captures_user_created_at_shard"' not in text
+    assert 'collection = "captures"' not in text
+
     assert "serviceruntime.googleapis.com/api/request_latencies" in latency_alert
     assert "resource.service == 'firestore.googleapis.com'" in latency_alert
     assert "| condition val() > 0.25 's'" in latency_alert
-    assert "captures.createdAt composite indexes" in latency_alert
+    assert "creatorCaptures created_at composite indexes" in latency_alert
+    assert "Blueprint-WebApp firestore.indexes.json" in latency_alert
+
+
+def test_terraform_gpu_warm_pool_defaults_stay_scale_to_zero():
+    # SCALE2-06: warm pools are a deliberate owner decision, not a default.
+    # One warm GPU instance is ~$1,825/month at the $2.5/GPU-hr planning rate
+    # (73% of the $2,500 spend-review threshold); current volume is >10x
+    # below the ~20 invocations/hour breakeven. See
+    # docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md.
+    text = TERRAFORM_MAIN.read_text(encoding="utf-8")
+
+    for variable in (
+        "privacy_sam3_min_instances",
+        "privacy_vip_min_instances",
+        "privacy_deepprivacy2_min_instances",
+        "video_to_world_min_instances",
+    ):
+        block = _terraform_resource_body_for_variable(text, variable)
+        assert "default     = 0" in block, f"{variable} must default to scale-to-zero"
+        assert "<= 2" in block, f"{variable} must stay capped at 2 warm instances"
+
+    for key in ("sam3", "vip", "deepprivacy2", "video_to_world"):
+        assert f"min_instance_count = local.privacy_runner_min_instances.{key}" in text
+    # No GPU service may hardcode an always-warm floor.
+    assert "min_instance_count = 1" not in text
+    assert "min_instance_count = 2" not in text
+
+
+def _terraform_resource_body_for_variable(text: str, name: str) -> str:
+    marker = f'variable "{name}"'
+    start = text.index(marker)
+    end = text.index("\nvariable ", start + 1) if "\nvariable " in text[start + 1 :] else len(text)
+    return text[start:end]
 
 
 def test_terraform_privacy_runners_are_private_and_invoked_by_named_principals():

@@ -159,31 +159,50 @@ it or it has been copied into a current operator evidence bundle. This local
 cache policy does not prove GCS lifecycle, legal deletion, or live provider
 result validity.
 
+## Buyer Delivery Egress (SCALE2-04)
+
+Buyer delivery downloads are direct GCS signed URLs today (~$0.12/GiB at
+~1 GiB/delivery). A Cloud CDN design — CDN-rate egress (~$0.04–0.08/GiB) +
+edge caching, entitlement gating unchanged — is validated and feature-flagged
+(`BLUEPRINT_DELIVERY_CDN_ENABLED`, default off, GCS fallback preserved) in
+`docs/BUYER_DELIVERY_CDN_DESIGN_2026-07-20.md`, which carries the full cost
+table (~$1,229/mo direct vs ~$430–1,000/mo CDN at 10k deliveries/month).
+Provisioning the CDN backend (LB, hostname, signing key) is an owner
+decision executed via a separate reviewed Terraform change; until then the
+direct-GCS path and cost line stand.
+
 ## Firestore CreatedAt Hotspot Guard
 
-The `captures` collection still has the legacy `status + createdAt` and
-`creatorId + createdAt` composite indexes for current readers. The beta model
-treats monotonic `createdAt` index hotspotting as a monitored scale-up risk at
-100-user volume, while declaring the migration path before higher write rates:
+Corrected in scaling round 2 (SCALE2-07): earlier revisions of this model
+declared four Terraform composite indexes on a literal `captures` collection
+that no code in any Blueprint repo has ever written. Those phantom resources
+are deleted from `deploy/terraform/main.tf`. The real capture-record
+collection is `creatorCaptures`, owned and written by Blueprint-WebApp
+(`server/routes/creator.ts`), whose registration writer has populated the
+`createdAtShard` hotspot-guard field since scaling round 1
+(`server/utils/captureShard.ts`, sha256(capture_id) mod 16). The matching
+composite indexes now live where the collection's owner deploys them —
+`Blueprint-WebApp/firestore.indexes.json`:
 
 | Contract | Value |
 | --- | --- |
-| Shard field | `createdAtShard` |
-| Shard count / derivation | `16`; deterministic `int(sha256(capture_id), 16) % 16` (neither the Terraform indexes nor earlier docs pinned a count, so 16 is the canonical choice) |
-| Sharded Terraform indexes | `google_firestore_index.captures_status_created_at_shard`, `google_firestore_index.captures_user_created_at_shard` |
-| Runtime alert | `google_monitoring_alert_policy.firestore_request_latency` |
+| Collection | `creatorCaptures` (Blueprint-WebApp owned) |
+| Shard field | `createdAtShard` (16-way, sha256 full-digest mod) |
+| Current-reader composite | `creator_id ASC, created_at DESC` |
+| Sharded scale-up composites | `creator_id ASC, createdAtShard ASC, created_at DESC`; `status ASC, createdAtShard ASC, created_at ASC` |
+| Index manifest | `Blueprint-WebApp/firestore.indexes.json` |
+| Runtime alert (this repo) | `google_monitoring_alert_policy.firestore_request_latency` |
 | Firestore latency metric | `serviceruntime.googleapis.com/api/request_latencies` |
 | Alert threshold | p99 above `0.25s` for `300s` |
 | Soak report field | `firestore_latency_observation` |
 
-Before scaling beyond the beta model, capture writers must populate
-`createdAtShard` with the deterministic capture-id hash shard above, readers
-must aggregate per-shard `createdAt` results, and the remaining high-rate
-legacy `createdAt` composites must be removed after that migration is proven.
-Blueprint-WebApp creator capture registration now writes `createdAtShard` on
-new capture records (`server/utils/captureShard.ts`); pre-existing records are
-unsharded until a separate backfill migration runs. The checked-in indexes and
-alert are not live Firestore latency proof.
+Before scaling beyond the beta model, readers must aggregate per-shard
+`created_at` results before any removal of the legacy composite.
+Blueprint-WebApp creator capture registration writes `createdAtShard` on new
+capture records (`server/utils/captureShard.ts`); pre-existing records are
+unsharded until a separate backfill migration runs. The checked-in index
+manifest and alert are not live Firestore latency proof and do not prove
+readers already fan out per-shard queries.
 
 ## Verification
 

@@ -13,10 +13,13 @@ persisted ``gs://`` package URI.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import hmac
 import mimetypes
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
@@ -34,6 +37,68 @@ BUYER_USER_ID_ENV = "BLUEPRINT_PACKAGE_DELIVERY_BUYER_USER_ID"
 SIGNED_URLS_ENV = "BLUEPRINT_PACKAGE_DELIVERY_SIGNED_URLS"
 SIGNED_URL_TTL_SECONDS_ENV = "BLUEPRINT_PACKAGE_DELIVERY_SIGNED_URL_TTL_SECONDS"
 DEFAULT_SIGNED_URL_TTL_SECONDS = 15 * 60
+
+# ── Cloud CDN delivery (SCALE2-04, feature-flagged; default off) ─────────────
+# Design + rollout: docs/BUYER_DELIVERY_CDN_DESIGN_2026-07-20.md. Cloud CDN
+# signed URLs are a DIFFERENT mechanism from GCS signed URLs: HMAC-SHA1 over
+# the full URL with a symmetric key registered on the CDN backend bucket,
+# base64url-encoded, passed as ?Expires=&KeyName=&Signature=. Entitlement
+# checks stay upstream (webapp) exactly as with GCS signed URLs; the CDN only
+# verifies the signature. Signing failures fall back to direct GCS signed
+# URLs so enabling the flag can never break delivery.
+CDN_ENABLED_ENV = "BLUEPRINT_DELIVERY_CDN_ENABLED"
+CDN_BASE_URL_ENV = "BLUEPRINT_DELIVERY_CDN_BASE_URL"
+CDN_KEY_NAME_ENV = "BLUEPRINT_DELIVERY_CDN_KEY_NAME"
+CDN_KEY_FILE_ENV = "BLUEPRINT_DELIVERY_CDN_KEY_FILE"
+DEFAULT_CDN_KEY_FILE = "~/.blueprint-secrets/cdn_url_signing_key"
+
+
+def _cdn_delivery_config() -> Dict[str, Any] | None:
+    """Resolve the CDN signing config, or None when disabled/incomplete.
+
+    Fail closed but quietly: an incomplete config means CDN mode is treated
+    as off (direct GCS signed URLs), never a crash on the delivery path.
+    The key file contains the base64url ("web-safe base64") key exactly as
+    registered with `gcloud compute backend-buckets add-signed-url-key`.
+    """
+
+    if not _truthy(os.getenv(CDN_ENABLED_ENV)):
+        return None
+    base_url = _string(os.getenv(CDN_BASE_URL_ENV)).rstrip("/")
+    key_name = _string(os.getenv(CDN_KEY_NAME_ENV))
+    key_file = Path(
+        os.path.expanduser(_string(os.getenv(CDN_KEY_FILE_ENV)) or DEFAULT_CDN_KEY_FILE)
+    )
+    if not base_url.startswith("https://") or not key_name or not key_file.is_file():
+        return None
+    try:
+        key_bytes = base64.urlsafe_b64decode(key_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return None
+    if not key_bytes:
+        return None
+    return {"base_url": base_url, "key_name": key_name, "key_bytes": key_bytes}
+
+
+def _generate_cdn_signed_url(
+    *,
+    base_url: str,
+    object_name: str,
+    key_name: str,
+    key_bytes: bytes,
+    ttl_seconds: int,
+    now_epoch: int | None = None,
+) -> str:
+    """Cloud CDN signed URL: base64url(HMAC-SHA1(key, url-with-Expires-and-KeyName))."""
+
+    expires = int(now_epoch if now_epoch is not None else time.time()) + int(ttl_seconds)
+    url = f"{base_url.rstrip('/')}/{object_name.lstrip('/')}"
+    separator = "&" if "?" in url else "?"
+    to_sign = f"{url}{separator}Expires={expires}&KeyName={key_name}"
+    signature = base64.urlsafe_b64encode(
+        hmac.new(key_bytes, to_sign.encode("utf-8"), hashlib.sha1).digest()
+    ).decode("utf-8")
+    return f"{to_sign}&Signature={signature}"
 
 
 def _string(value: Any) -> str:
@@ -177,6 +242,7 @@ def _upload_delivery_bundle_to_gcs(
     target_prefix = f"{prefix.rstrip('/')}/{output_dir.name}"
     client = storage_client or _load_storage_client()
     bucket = client.bucket(bucket_name)
+    cdn_config = _cdn_delivery_config()
     uploaded_objects: List[Dict[str, Any]] = []
     signed_urls: List[str] = []
     signed_url_errors: List[Dict[str, str]] = []
@@ -184,6 +250,10 @@ def _upload_delivery_bundle_to_gcs(
         relative = source.relative_to(bundle_dir)
         object_name = f"{target_prefix}/{relative.as_posix()}"
         blob = bucket.blob(object_name)
+        # Delivery prefixes are never overwritten in place, so packed objects
+        # are safe to cache aggressively at the CDN edge (see design doc).
+        if cdn_config is not None:
+            blob.cache_control = "public, max-age=86400, immutable"
         blob.upload_from_filename(str(source), content_type=_content_type(source))
         gcs_uri = f"gs://{bucket_name}/{object_name}"
         uploaded = {
@@ -194,13 +264,31 @@ def _upload_delivery_bundle_to_gcs(
             "sha256": _sha256(source),
         }
         if sign_urls:
-            try:
-                url = _generate_signed_url(blob, ttl_seconds=signed_url_ttl_seconds)
-            except Exception as exc:  # pragma: no cover - provider-specific auth failure.
-                signed_url_errors.append(
-                    {"gcs_uri": gcs_uri, "error": f"{type(exc).__name__}: {exc}"}
-                )
-            else:
+            url: str | None = None
+            if cdn_config is not None:
+                try:
+                    url = _generate_cdn_signed_url(
+                        base_url=cdn_config["base_url"],
+                        object_name=object_name,
+                        key_name=cdn_config["key_name"],
+                        key_bytes=cdn_config["key_bytes"],
+                        ttl_seconds=signed_url_ttl_seconds,
+                    )
+                    uploaded["signed_url_scheme"] = "cloud_cdn"
+                except Exception as exc:  # pragma: no cover - defensive fallback.
+                    signed_url_errors.append(
+                        {"gcs_uri": gcs_uri, "error": f"cdn:{type(exc).__name__}: {exc}"}
+                    )
+                    url = None
+            if url is None:
+                try:
+                    url = _generate_signed_url(blob, ttl_seconds=signed_url_ttl_seconds)
+                    uploaded["signed_url_scheme"] = "gcs"
+                except Exception as exc:  # pragma: no cover - provider-specific auth failure.
+                    signed_url_errors.append(
+                        {"gcs_uri": gcs_uri, "error": f"{type(exc).__name__}: {exc}"}
+                    )
+            if url is not None:
                 signed_urls.append(url)
                 uploaded["signed_url_generated"] = True
         uploaded_objects.append(uploaded)
