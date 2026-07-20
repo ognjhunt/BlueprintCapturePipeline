@@ -2082,7 +2082,7 @@ class VastRenderProvider(GpuRenderProvider):
                                 payload=search_payload, timeout_seconds=45)
         except Exception as e:  # noqa: BLE001
             return {"status": "blocked", "blockers": ["vast_offer_search_failed"],
-                    "error": repr(e)[:200]}
+                    "error": repr(e)[:200], "allocation_created": False, "spend_occurred": False}
         offers = _offers_from_response(resp)
         attempts.append(
             {

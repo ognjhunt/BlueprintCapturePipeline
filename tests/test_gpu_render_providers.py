@@ -1361,6 +1361,32 @@ def test_vast_launch_blocks_without_prelaunch_guard_before_provider_call(
     assert calls == []
 
 
+def test_vast_offer_search_failure_is_definitive_no_allocation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        calls.append((method, path))
+        raise TimeoutError("marketplace unavailable before create")
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    provider = VastRenderProvider()
+    request = _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+
+    result = provider.launch(tmp_path, request)
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["vast_offer_search_failed"]
+    assert result["allocation_created"] is False
+    assert result["spend_occurred"] is False
+    assert calls == [("POST", "/bundles/")]
+    assert not (tmp_path / "started_vast_instance_id.txt").exists()
+
+
 def test_vast_stop_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
     res = VastRenderProvider().stop("12345")
