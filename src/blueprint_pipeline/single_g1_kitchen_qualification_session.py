@@ -45,7 +45,6 @@ from .gpu_render_providers import (
     get_render_provider,
 )
 from .groot_oscar_digitalocean_closed_loop_job import build_launch_spec
-from .groot_oscar_digitalocean_job_inputs import runtime_contract_for_pre_spend
 from .groot_oscar_runpod_watchdog import arm_watchdog, terminate_canary_resources
 from .groot_oscar_episode_review import _collect_isaac_execution_frames
 from .g1_microwave_groot_finetune_component import (
@@ -60,16 +59,12 @@ from .g1_kitchen_proof_row_validation import (
 )
 from .isaac_particlefield_render_job import _extract_provider_output_snapshot
 from .paid_lane_guard import (
-    PreSpendPreflightBlocked,
     bind_pending_teardown_instance,
     cancel_pending_teardown,
     close_pending_teardown,
-    image_contract_from_ref,
     mark_pending_teardown_ambiguous,
     open_pending_teardown,
-    require_pre_spend_preflight,
 )
-from .lane_hardware_requirements import build_lane_hardware_contract
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     require_paid_resource_admission,
@@ -102,6 +97,10 @@ from .single_g1_kitchen_episode_runpod import (
 )
 from .safe_outbound_http import presigned_transfer_policy
 from .safe_outbound_http import request as safe_http_request
+from .single_g1_kitchen_qualification_admission import (
+    qualification_pre_spend_preflight,
+    write_standard_artifacts,
+)
 
 
 SCHEMA_VERSION = "single_g1_kitchen_qualification_session.v1"
@@ -167,15 +166,7 @@ COLLECTIONS_DIR_NAME = "qualification_collections"
 SSH_READY_TIMEOUT_SECONDS = 600
 SSH_READY_POLL_SECONDS = 5
 LANE = "single_g1_kitchen_qualification"
-PRE_SPEND_HARDWARE_LANE = "kitchen_g1_groot_sonic_eval"
 NAME_PREFIX_ROOT = "blueprint-groot-oscar-canary-qualification-"
-PRE_SPEND_PROGRESS_STALL_PHASES = (
-    "container_bash_started",
-    "inputs_ready",
-    "healthcheck_passed",
-    "groot_server_ready",
-    "isaac_task_executor_ready",
-)
 
 
 def qualification_gate_matrix() -> list[dict[str, Any]]:
@@ -2031,78 +2022,6 @@ def _manifest_base(
     }
 
 
-def _write_standard_artifacts(
-    *,
-    provider_launch_request: str | Path,
-    preflight_bundle: str | Path,
-    admission_out: str | Path,
-    bound_request_out: str | Path,
-    bound: Mapping[str, Any],
-    preflight: Mapping[str, Any],
-    admission: Mapping[str, Any],
-) -> None:
-    write_json(Path(provider_launch_request), dict(bound))
-    write_json(Path(preflight_bundle), dict(preflight))
-    write_json(Path(admission_out), dict(admission))
-    write_json(Path(bound_request_out), dict(bound))
-
-
-def _qualification_pre_spend_preflight(
-    *,
-    root: Path,
-    capacity: Mapping[str, Any],
-    pre_inventory: Mapping[str, Any],
-    execute: bool,
-) -> dict[str, Any]:
-    selected = dict(capacity.get("selected_offer") or {})
-    if not selected:
-        viable = capacity.get("viable_gpu_types")
-        if isinstance(viable, list) and viable and isinstance(viable[0], Mapping):
-            selected = dict(viable[0])
-    gpu_name = str(selected.get("gpu_name") or selected.get("gpu_type_id") or "").strip()
-    gpu_type_id = gpu_name if gpu_name.startswith("NVIDIA ") else f"NVIDIA {gpu_name}"
-    raw_vram_mb = selected.get("gpu_ram_mb")
-    try:
-        vram_gb = float(raw_vram_mb) / 1000.0
-    except (TypeError, ValueError):
-        vram_gb = None
-    hardware_contract = build_lane_hardware_contract(
-        lane=PRE_SPEND_HARDWARE_LANE,
-        gpu_type_id=gpu_type_id or None,
-        vram_gb=vram_gb,
-        disk_gb=220.0,
-    )
-    capacity_available = capacity.get("status") == "available" and bool(selected)
-    inventory_zero = (
-        pre_inventory.get("api_confirmed") is True
-        and pre_inventory.get("live_resource_count") == 0
-    )
-    # Passing an explicit empty mapping on execute makes the production spend
-    # lock mandatory while still allowing a no-spend dry run to materialize its
-    # exact request. The chokepoint loads the configured lock path, if present,
-    # and otherwise fails closed before the provider launch grant can be issued.
-    spend_lock_requirement = {} if execute else None
-    return require_pre_spend_preflight(
-        lane=PRE_SPEND_HARDWARE_LANE,
-        provider="vast",
-        credential_present=pre_inventory.get("api_confirmed") is True,
-        capacity_evidence={
-            "available": capacity_available,
-            "offer_count": capacity.get("offer_count"),
-            "detail": gpu_name or "qualification_48gb_rtx_capacity_unavailable",
-            "selected_offer": selected or None,
-        },
-        image_contract=image_contract_from_ref(IMAGE_REF),
-        runtime_contract=runtime_contract_for_pre_spend(
-            PRE_SPEND_PROGRESS_STALL_PHASES
-        ),
-        spend_gate_open=capacity_available and inventory_zero,
-        record_dir=root,
-        hardware_contract=hardware_contract,
-        spend_admission_lock=spend_lock_requirement,
-    )
-
-
 def _allocate(
     *,
     session_manifest: str | Path,
@@ -2220,10 +2139,7 @@ def _allocate(
     request: dict[str, Any] = {}
     capacity: dict[str, Any] = {}
     pre_inventory: dict[str, Any] = {}
-    pre_spend_preflight: dict[str, Any] = {
-        "status": "not_evaluated",
-        "blockers": ["qualification_inputs_not_ready_for_pre_spend_preflight"],
-    }
+    pre_spend_preflight: dict[str, Any] = {"status": "not_evaluated", "blockers": ["qualification_inputs_not_ready_for_pre_spend_preflight"]}
     nonce_artifact: dict[str, Any] = {}
     if inputs and not blockers and not bootstrap_staging_required:
         for name, value in (
@@ -2295,19 +2211,13 @@ def _allocate(
             blockers.append("qualification_prelaunch_vast_inventory_not_zero")
         if capacity.get("status") != "available" or not viable:
             blockers.append("qualification_48gb_rtx_capacity_unavailable")
-        try:
-            pre_spend_preflight = _qualification_pre_spend_preflight(
-                root=root,
-                capacity=capacity,
-                pre_inventory=pre_inventory,
-                execute=execute,
-            )
-        except PreSpendPreflightBlocked as exc:
-            pre_spend_preflight = exc.preflight
-            blockers.extend(
-                f"qualification_pre_spend:{item}"
-                for item in pre_spend_preflight.get("blockers") or []
-            )
+        pre_spend_preflight, pre_spend_blockers = qualification_pre_spend_preflight(
+            root=root, capacity=capacity,
+            pre_inventory=pre_inventory,
+            image_ref=IMAGE_REF,
+            execute=execute,
+        )
+        blockers.extend(pre_spend_blockers)
         request["pre_spend_preflight"] = pre_spend_preflight
         request["prelaunch_spend_guard"] = {
             "required_before_provider_launch": True,
@@ -2402,7 +2312,7 @@ def _allocate(
         "blockers": reported_blockers,
         "raw_secret_values_recorded": False,
     }
-    _write_standard_artifacts(
+    write_standard_artifacts(
         provider_launch_request=provider_launch_request,
         preflight_bundle=preflight_bundle,
         admission_out=admission_out,
