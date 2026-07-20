@@ -74,6 +74,44 @@ and they do not rewrite capture, rights, privacy, provenance, or canonical
 package truth. They are not required for `preview_simulation` success, which
 currently means the World Labs preview path only.
 
+## Frames Sub-Layout (`frames_index.v1` / `frames_index.v2`)
+
+Extracted frames live under:
+
+`scenes/<scene_id>/captures/<capture_id>/frames/`
+
+with `frames/index.jsonl` carrying one entry per frame (`frame_id`,
+`t_video_sec`, optional `arkit_pose` / `arkit_frame` linkage) in both
+versions. The keyframe object and the `capture_bridge_handoff.v1` message
+shape are identical in both versions; this revision is scoped to the frames
+sub-layout only.
+
+**v1 (legacy, per-object).** One GCS object per extracted JPEG
+(`frames/000001.jpg`, …). Implied by the absence of a
+`frames/packing_manifest.json` and of per-entry `archive` fields.
+
+**v2 (packed, SCALE2-03).** Frames are packed into deterministic USTAR
+archives `frames/frames_NNN.tar` (default 200 frames per archive; ~900
+objects per 3-minute capture become ~6). The layout is declared explicitly:
+
+- `frames/packing_manifest.json`:
+  `{ "schema_version": "frames_index.v2", "packaging": "tar",
+     "frames_per_archive": N, "frame_count": M,
+     "archives": [{ "archive": "frames_000.tar", "member_count": … }] }`
+- each `index.jsonl` entry additionally carries
+  `"packaging": "tar"`, `"archive": "frames_NNN.tar"`,
+  `"archive_member": "<frame_id>.jpg"`.
+
+Readers must go through `blueprint_pipeline.frames_layout`
+(`load_frames_layout` / `iter_frame_payloads`), which supports both versions
+transparently and fails closed on unknown `schema_version` / `packaging`
+values or packed entries missing archive linkage.
+
+Producer rollout: `BlueprintCapture` `cloud/extract-frames` emits v2 only
+when `BLUEPRINT_EXTRACT_FRAMES_PACKING_ENABLED=1`; the flag stays off until
+this repo's reader is deployed, then flips on. Legacy v1 captures remain
+readable indefinitely.
+
 ## Presentation Bundle Contract
 
 `presentation_bundle.json` is the concrete non-authoritative presentation artifact. It must remain grounded in canonical and scene-memory inputs and carries:
