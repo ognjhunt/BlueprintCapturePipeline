@@ -596,6 +596,8 @@ def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> N
     res = RunPodRenderProvider().launch(tmp_path, {"imageName": "x"}, cold=True)
     assert res["status"] == "blocked"
     assert "runpod_api_key_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
 
 
 def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
@@ -621,6 +623,8 @@ def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
 
     assert res["status"] == "blocked"
     assert "runpod_render_prelaunch_spend_guard_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
     assert calls == []
 
 
@@ -1329,6 +1333,8 @@ def test_vast_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> Non
     res = VastRenderProvider().launch(tmp_path, {"search_payload": {}}, cold=False)
     assert res["status"] == "blocked"
     assert "vast_api_key_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
 
 
 def test_vast_launch_blocks_without_prelaunch_guard_before_provider_call(
@@ -1350,6 +1356,8 @@ def test_vast_launch_blocks_without_prelaunch_guard_before_provider_call(
 
     assert res["status"] == "blocked"
     assert "vast_render_prelaunch_spend_guard_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
     assert calls == []
 
 
