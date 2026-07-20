@@ -9,9 +9,10 @@ GROOT_CHECKPOINT_PREFLIGHT_SCRIPT = r'''
 # alias, rewrite only this ephemeral container's SONIC config, and exercise the
 # exact selector plus nested processor construction before starting the server.
 GROOT_CHECKPOINT_PREFLIGHT_ARTIFACT=/workspace/closed_loop_out/groot_sonic_checkpoint_preflight.json
+GROOT_VENV_PYTHON="${BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON:-/opt/gr00t-venv/bin/python}"
 set +e
 PYTHONPATH="${BLUEPRINT_GROOT_RUNTIME_PYTHONPATH:-${PYTHONPATH:-}}" \
-  /opt/gr00t/.venv/bin/python - <<'PY'
+  "$GROOT_VENV_PYTHON" - <<'PY'
 import json
 import os
 import sys
@@ -46,8 +47,15 @@ payload = {
     },
 }
 try:
+    configured_python = Path(
+        os.environ.get(
+            "BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON",
+            "/opt/gr00t-venv/bin/python",
+        )
+    ).resolve()
     expected_venv_root = Path(
-        os.environ.get("BLUEPRINT_GROOT_VENV_ROOT", "/opt/gr00t/.venv")
+        os.environ.get("BLUEPRINT_GROOT_VENV_ROOT")
+        or configured_python.parent.parent
     ).resolve()
     oscar_dependency_target = Path(
         os.environ.get(

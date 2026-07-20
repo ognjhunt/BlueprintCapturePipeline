@@ -279,7 +279,7 @@ OSCAR_RUNTIME_DEPENDENCY_LOCK_PATH = "/workspace/oscar_runtime_requirements_foun
 OSCAR_RUNTIME_DEPENDENCY_TARGET = "/workspace/oscar_runtime_deps"
 GROOT_RUNTIME_PYTHONPATH_ENV = "BLUEPRINT_GROOT_RUNTIME_PYTHONPATH"
 GROOT_VENV_ROOT_ENV = "BLUEPRINT_GROOT_VENV_ROOT"
-GROOT_VENV_ROOT = "/opt/gr00t/.venv"
+GROOT_VENV_ROOT = "/opt/gr00t-venv"
 OSCAR_RUNTIME_DEPENDENCY_TARGET_ENV = (
     "BLUEPRINT_OSCAR_RUNTIME_DEPENDENCY_TARGET"
 )
@@ -1818,7 +1818,7 @@ groot_clean_probe_source = (
 )
 try:
     groot_clean_completed = subprocess.run(
-        ["/opt/gr00t/.venv/bin/python", "-c", groot_clean_probe_source],
+        [os.environ.get("BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON", "/opt/gr00t-venv/bin/python"), "-c", groot_clean_probe_source],
         cwd="/opt/gr00t",
         env=groot_clean_env,
         capture_output=True,
@@ -1851,7 +1851,7 @@ checks["groot_clean_import_modules_outside_oscar_dependency_target"] = bool(
 checks["groot_clean_accelerate_resolved_from_groot_venv"] = bool(
     groot_clean_import_module_paths.get("accelerate")
     and Path(groot_clean_import_module_paths["accelerate"]).is_relative_to(
-        Path("/opt/gr00t/.venv").resolve()
+        Path(os.environ["BLUEPRINT_GROOT_VENV_ROOT"]).resolve()
     )
 )
 for check_name in (

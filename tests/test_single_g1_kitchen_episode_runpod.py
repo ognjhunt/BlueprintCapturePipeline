@@ -327,7 +327,8 @@ def test_oscar_runtime_dependency_repair_binds_full_hashed_writable_closure() ->
     assert '[oscar_python, "-c", pytest_fresh_probe_source]' in script
     assert 'pytest_fresh_env["PYTHONPATH"]' in script
     assert 'groot_clean_env["PYTHONPATH"]' in script
-    assert '["/opt/gr00t/.venv/bin/python", "-c", groot_clean_probe_source]' in script
+    assert 'os.environ.get("BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON"' in script
+    assert '"/opt/gr00t-venv/bin/python"' in script
     assert "import gr00t.model" in script
     assert "from gr00t.model.gr00t_n1d7.gr00t_n1d7 import get_backbone_cls" in script
     assert script.index('"import gr00t.model\\n"') < script.index(
@@ -1288,6 +1289,7 @@ def test_single_episode_bootstrap_requires_live_isaac_frame_and_camera_context(
     assert inputs["plan"]["env"][single_episode.GROOT_VENV_ROOT_ENV] == (
         single_episode.GROOT_VENV_ROOT
     )
+    assert single_episode.GROOT_VENV_ROOT == "/opt/gr00t-venv"
     assert inputs["plan"]["env"][
         single_episode.OSCAR_RUNTIME_DEPENDENCY_TARGET_ENV
     ] == single_episode.OSCAR_RUNTIME_DEPENDENCY_TARGET

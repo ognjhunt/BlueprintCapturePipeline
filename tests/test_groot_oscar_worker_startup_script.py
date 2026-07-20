@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -15,10 +16,29 @@ from blueprint_pipeline.groot_oscar_worker_startup_script import (
 
 
 def _preflight_python() -> str:
-    marker = "/opt/gr00t/.venv/bin/python - <<'PY'\n"
+    marker = '"$GROOT_VENV_PYTHON" - <<\'PY\'\n'
     assert marker in GROOT_CHECKPOINT_PREFLIGHT_SCRIPT
     source = GROOT_CHECKPOINT_PREFLIGHT_SCRIPT.split(marker, 1)[1]
     return source.split("\nPY\n", 1)[0]
+
+
+def test_checkpoint_preflight_uses_configured_thin_release_interpreter() -> None:
+    assert (
+        'GROOT_VENV_PYTHON="${BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON:-/opt/gr00t-venv/bin/python}"'
+        in GROOT_CHECKPOINT_PREFLIGHT_SCRIPT
+    )
+    assert "/opt/gr00t/.venv/bin/python" not in GROOT_CHECKPOINT_PREFLIGHT_SCRIPT
+    source = _preflight_python()
+    assert '"BLUEPRINT_GROOT_OSCAR_GROOT_VENV_PYTHON"' in source
+    assert '"/opt/gr00t-venv/bin/python"' in source
+    completed = subprocess.run(
+        ["bash", "-n"],
+        input=GROOT_CHECKPOINT_PREFLIGHT_SCRIPT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def _gear_sonic_ready_python() -> str:
