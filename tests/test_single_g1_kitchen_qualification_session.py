@@ -2217,6 +2217,8 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert staging["status"] == "bootstrap_staging_required"
     assert result["status"] == "dry_run_bound"
     assert result["provider_mutations_performed"] == 0
+    assert result["pre_spend_preflight"]["status"] == "PASS"
+    assert result["pre_spend_preflight"]["spend_admission_lock"]["required"] is False
     assert observed["spec"].vast_launch_mode == "ssh_direct"
     assert observed["spec"].env[qualification.VAST_BOOTSTRAP_URL_ENV].startswith("https://")
     assert len(observed["spec"].env[qualification.VAST_BOOTSTRAP_SHA256_ENV]) == 64
@@ -2232,6 +2234,110 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert manifest["continuing_spend"] is False
     assert manifest["bootstrap"]["arbitrary_remote_command_allowed"] is False
     assert manifest_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_called = False
+
+    class Provider:
+        def build_request(self, spec, _root):
+            return {
+                "provider": "vast",
+                "bootstrap_transport": "onstart_plain",
+                "create_payload": {"runtype": spec.vast_launch_mode},
+            }
+
+        def billable_inventory(self, *, name_prefix: str):
+            assert name_prefix == ""
+            return {
+                "status": "observed",
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+        def capacity_preflight(self, _request):
+            selected = {
+                "on_demand_price_usd_per_hour": 0.5,
+                "gpu_name": "L40S",
+                "gpu_ram_mb": 48_000,
+            }
+            return {
+                "status": "available",
+                "selected_offer": selected,
+                "viable_gpu_types": [selected],
+            }
+
+        def launch(self, *_args, **_kwargs):
+            nonlocal launch_called
+            launch_called = True
+            raise AssertionError("provider launch reached without current spend lock")
+
+    monkeypatch.setattr(
+        qualification, "_load_single_episode_inputs", lambda _path: _minimal_inputs()
+    )
+    monkeypatch.setattr(qualification, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        qualification,
+        "_require_signed_output_staging_proof",
+        lambda **_kwargs: {
+            "status": "passed",
+            "raw_signed_urls_recorded": False,
+        },
+    )
+    for name in (
+        "BLUEPRINT_LAUNCH_PROOF_MODE",
+        "BLUEPRINT_REQUIRE_PAID_SPEND_ADMISSION_LOCK",
+        "BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    secret_url = tmp_path / "signed_url.txt"
+    secret_url.write_text("https://objects.example/artifact?signature=secret")
+    secret_url.chmod(0o600)
+    release = tmp_path / "release.json"
+    release.write_text(json.dumps({"resolved_digest_ref": qualification.IMAGE_REF}))
+    manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
+    common = dict(
+        action="allocate",
+        session_manifest=manifest_path,
+        provider_name="vast",
+        episode_bundle=tmp_path / "episode.zip",
+        provider_bundle_url_file=secret_url,
+        provider_output_put_url_file=secret_url,
+        provider_output_get_url_file=secret_url,
+        release_evidence=release,
+        provider_launch_request=tmp_path / "provider_request.json",
+        preflight_bundle=tmp_path / "preflight.json",
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "result.json",
+        pod_name="ignored-unbound-name",
+    )
+    staged = qualification.run_qualification_session(
+        **common,
+        provider_bootstrap_url_file=None,
+        execute=False,
+    )
+    result = qualification.run_qualification_session(
+        **common,
+        provider_bootstrap_url_file=secret_url,
+        execute=True,
+    )
+
+    assert staged["status"] == "bootstrap_staging_required"
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert launch_called is False
+    pre_spend = result["pre_spend_preflight"]
+    assert pre_spend["status"] == "FAIL"
+    assert pre_spend["spend_admission_lock"]["required"] is True
+    assert any(
+        blocker.startswith("spend_admission:spend_admission_lock_")
+        for blocker in pre_spend["blockers"]
+    )
 
 
 def test_qualification_allocate_fails_before_provider_on_missing_output_staging_proof(
