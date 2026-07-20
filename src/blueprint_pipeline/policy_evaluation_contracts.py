@@ -210,7 +210,7 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
         if evaluator_model_family:
             evaluator_model_families.add(str(evaluator_model_family))
         matched_bindings[key][policy_id] = {
-            "evaluator_profile_id": str(row.get("evaluator_profile_id") or ""),
+            "evaluator_profile_id": str(evaluator_profile_id or ""),
             "evaluator_backend_id": str(evaluator_backend_id or ""),
             "evaluator_model_family": str(evaluator_model_family or ""),
             **{

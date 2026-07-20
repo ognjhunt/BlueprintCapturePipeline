@@ -553,12 +553,14 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
         "camera_projection_sha256": _digest(8002),
         "skeleton_conditioning_sha256": _digest(8003),
     }
-    for design_row, result_row in zip(
-        candidate["evaluation_design"]["rows"], candidate["episode_results"]
+    for row_index, (design_row, result_row) in enumerate(
+        zip(candidate["evaluation_design"]["rows"], candidate["episode_results"])
     ):
         design_row.update(
             {
-                "evaluator_profile_id": padded_profile_id,
+                "evaluator_profile_id": (
+                    padded_profile_id if row_index % 2 else "oscar_roboarena_v2"
+                ),
                 **profile_digests,
                 "official_runtime_contract_status": "validated",
                 "fk_status": "passed",
@@ -568,13 +570,14 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
         )
         result_row.update(
             {
-                "evaluator_profile_id": padded_profile_id,
+                "evaluator_profile_id": "oscar_roboarena_v2",
                 **profile_digests,
             }
         )
 
-    # Admission and final ranking must select the same profile even when an
-    # upstream serializer has not yet trimmed surrounding whitespace.
+    # Admission and final ranking must select the same profile even when
+    # serializers disagree about surrounding whitespace between matched
+    # policies or between a design row and its episode result.
     assert build_decision_grade_ranking(candidate)["status"] == "decision_grade"
 
     candidate["episode_results"][0].pop("fk_result_sha256")

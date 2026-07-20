@@ -206,10 +206,11 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         if row.get("fallback_policy_used") is not False:
             blockers.append(f"episode_result_fallback_policy_not_blocked:{row_index}")
         design_row = design_rows_by_key.get(result_key, {})
-        evaluator_profile_id = str(row.get("evaluator_profile_id") or "")
+        evaluator_profile_id = str(row.get("evaluator_profile_id") or "").strip()
+        design_evaluator_profile_id = str(design_row.get("evaluator_profile_id") or "").strip()
         if not evaluator_profile_id:
             blockers.append(f"episode_result_evaluator_profile_missing:{row_index}")
-        elif evaluator_profile_id != str(design_row.get("evaluator_profile_id") or ""):
+        elif evaluator_profile_id != design_evaluator_profile_id:
             blockers.append(f"episode_result_evaluator_profile_mismatch:{row_index}")
         design_backend = (
             design_row.get("evaluator_backend")
