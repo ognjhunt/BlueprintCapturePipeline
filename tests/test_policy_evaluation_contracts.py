@@ -10,6 +10,7 @@ from blueprint_pipeline.policy_evaluation_contracts import (
     validate_policy_evaluation_design,
 )
 from blueprint_pipeline.evaluator_evidence_profiles import (
+    COMMON_DIGEST_FIELDS,
     EVALUATOR_EVIDENCE_PROFILES,
     validate_evaluator_evidence,
 )
@@ -355,16 +356,7 @@ def _ranking_request() -> dict:
                 "evaluator_outcome_status": "valid",
                 "fixture_or_proxy_model_output_used": False,
                 "fallback_policy_used": False,
-                "commanded_action_chunk_sha256": row["commanded_action_chunk_sha256"],
-                "evaluator_profile_manifest_sha256": row["evaluator_profile_manifest_sha256"],
-                "evaluator_backend_manifest_sha256": row["evaluator_backend_manifest_sha256"],
-                "evaluator_checkpoint_sha256": row["evaluator_checkpoint_sha256"],
-                "evaluator_request_sha256": row["evaluator_request_sha256"],
-                "model_output_sha256": row["model_output_sha256"],
-                "next_policy_query_sha256": row["next_policy_query_sha256"],
-                "action_control_suite_sha256": row["action_control_suite_sha256"],
-                "criterion_result_sha256": row["criterion_result_sha256"],
-                "authoritative_manifest_sha256": row["authoritative_manifest_sha256"],
+                **{field: row[field] for field in COMMON_DIGEST_FIELDS},
                 "criterion_results": [
                     {
                         "criterion_id": "door-angle",
@@ -505,6 +497,8 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
     row["artifact_freshness_status"] = "stale"
     row["fallback_policy_used"] = True
     row["model_output_sha256"] = "sha256:not-a-digest"
+    row["provider_execution_sha256"] = "sha256:" + _digest(99999)
+    row.pop("policy_runtime_output_sha256")
     row["criterion_results"][0]["evidence_refs"] = [{"sha256": "forged"}]
 
     result = build_decision_grade_ranking(candidate)
@@ -513,6 +507,10 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
     assert "episode_result_artifact_not_current:0" in result["blockers"]
     assert "episode_result_fallback_policy_not_blocked:0" in result["blockers"]
     assert "episode_result_chain_digest_missing:0:model_output_sha256" in result["blockers"]
+    assert "episode_result_chain_digest_mismatch:0:provider_execution_sha256" in result["blockers"]
+    assert (
+        "episode_result_chain_digest_missing:0:policy_runtime_output_sha256" in result["blockers"]
+    )
     assert "criterion_evidence_digest_invalid:0:0" in result["blockers"]
 
 
