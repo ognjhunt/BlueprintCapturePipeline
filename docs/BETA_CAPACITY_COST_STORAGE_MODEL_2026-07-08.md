@@ -161,26 +161,33 @@ result validity.
 
 ## Firestore CreatedAt Hotspot Guard
 
-The `captures` collection still has the legacy `status + createdAt` and
-`creatorId + createdAt` composite indexes for current readers. The beta model
-treats monotonic `createdAt` index hotspotting as a monitored scale-up risk at
-100-user volume, while declaring the migration path before higher write rates:
+Corrected in scaling round 2 (SCALE2-07): earlier revisions of this model
+declared four Terraform composite indexes on a literal `captures` collection
+that no code in any Blueprint repo has ever written. Those phantom resources
+are deleted from `deploy/terraform/main.tf`. The real capture-record
+collection is `creatorCaptures`, owned and written by Blueprint-WebApp
+(`server/routes/creator.ts`), whose registration writer has populated the
+`createdAtShard` hotspot-guard field since scaling round 1
+(`server/utils/captureShard.ts`, sha256(capture_id) mod 16). The matching
+composite indexes now live where the collection's owner deploys them —
+`Blueprint-WebApp/firestore.indexes.json`:
 
 | Contract | Value |
 | --- | --- |
-| Shard field | `createdAtShard` |
-| Sharded Terraform indexes | `google_firestore_index.captures_status_created_at_shard`, `google_firestore_index.captures_user_created_at_shard` |
-| Runtime alert | `google_monitoring_alert_policy.firestore_request_latency` |
+| Collection | `creatorCaptures` (Blueprint-WebApp owned) |
+| Shard field | `createdAtShard` (16-way, sha256 full-digest mod) |
+| Current-reader composite | `creator_id ASC, created_at DESC` |
+| Sharded scale-up composites | `creator_id ASC, createdAtShard ASC, created_at DESC`; `status ASC, createdAtShard ASC, created_at ASC` |
+| Index manifest | `Blueprint-WebApp/firestore.indexes.json` |
+| Runtime alert (this repo) | `google_monitoring_alert_policy.firestore_request_latency` |
 | Firestore latency metric | `serviceruntime.googleapis.com/api/request_latencies` |
 | Alert threshold | p99 above `0.25s` for `300s` |
 | Soak report field | `firestore_latency_observation` |
 
-Before scaling beyond the beta model, capture writers must populate
-`createdAtShard` with a bounded random or hashed shard value, readers must
-aggregate per-shard `createdAt` results, and the remaining high-rate legacy
-`createdAt` composites must be removed after that migration is proven. The
-checked-in indexes and alert are not live Firestore latency proof and do not
-prove WebApp or Capture writers already populate `createdAtShard`.
+Before scaling beyond the beta model, readers must aggregate per-shard
+`created_at` results before any removal of the legacy composite. The
+checked-in index manifest and alert are not live Firestore latency proof and
+do not prove readers already fan out per-shard queries.
 
 ## Verification
 

@@ -1634,78 +1634,15 @@ resource "google_firestore_database" "default" {
   ]
 }
 
-# Firestore indexes for captures collection. The legacy createdAt composites
-# stay for current readers; sharded companions are the scale-up path once
-# writers populate createdAtShard and readers aggregate per-shard queries.
-resource "google_firestore_index" "captures_status" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "status"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "ASCENDING"
-  }
-}
-
-resource "google_firestore_index" "captures_user" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "creatorId"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "DESCENDING"
-  }
-}
-
-resource "google_firestore_index" "captures_status_created_at_shard" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "status"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAtShard"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "ASCENDING"
-  }
-}
-
-resource "google_firestore_index" "captures_user_created_at_shard" {
-  collection = "captures"
-  database   = google_firestore_database.default.name
-
-  fields {
-    field_path = "creatorId"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAtShard"
-    order      = "ASCENDING"
-  }
-
-  fields {
-    field_path = "createdAt"
-    order      = "DESCENDING"
-  }
-}
+# Firestore capture-record indexes were removed here (SCALE2-07): all four
+# `captures_*` composites were declared against a literal `captures`
+# collection that no code in any repo has ever written. The real
+# capture-record collection is `creatorCaptures`, owned and written by
+# Blueprint-WebApp; its composite indexes (including the createdAtShard
+# scale-up companions) live in that repo's firestore.indexes.json and deploy
+# via `firebase deploy --only firestore:indexes`. This repo's Terraform keeps
+# the shared Firestore database + latency alerting only; it must not maintain
+# indexes for WebApp-owned collections.
 
 # =============================================================================
 # Monitoring and Alerting
@@ -1819,7 +1756,7 @@ resource "google_monitoring_alert_policy" "firestore_request_latency" {
   }
 
   documentation {
-    content   = "Firestore p99 request latency exceeds 250ms for 5 minutes. During beta soak or scale-up, inspect captures.createdAt composite indexes, Key Visualizer index heatmaps, write rate, and sharded createdAtShard migration readiness before admitting more capture traffic."
+    content   = "Firestore p99 request latency exceeds 250ms for 5 minutes. During beta soak or scale-up, inspect the creatorCaptures created_at composite indexes (declared in Blueprint-WebApp firestore.indexes.json), Key Visualizer index heatmaps, write rate, and sharded createdAtShard migration readiness before admitting more capture traffic."
     mime_type = "text/markdown"
   }
 }

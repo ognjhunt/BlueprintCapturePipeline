@@ -91,6 +91,13 @@ def _require_text(path: Path, required: list[str]) -> None:
             raise AssertionError(f"{path} is missing required text: {needle}")
 
 
+def _forbid_text(path: Path, forbidden: list[str]) -> None:
+    text = path.read_text(encoding="utf-8")
+    for needle in forbidden:
+        if needle in text:
+            raise AssertionError(f"{path} contains forbidden text: {needle}")
+
+
 def _validate_capture_swift_constants(path: Path) -> None:
     if not path.exists():
         return
@@ -207,20 +214,26 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
     if runtime_capacity.get("large_video_ingest_topic") != EXPECTED_LARGE_VIDEO_INGEST_TOPIC:
         raise AssertionError("runtime capacity must name the large-video ingest topic")
     hotspot_policy = runtime_capacity.get("firestore_created_at_hotspot_policy", {})
-    if hotspot_policy.get("schema_version") != "blueprint.firestore_created_at_hotspot_policy.v1":
-        raise AssertionError("runtime capacity must include the Firestore createdAt hotspot policy")
-    if hotspot_policy.get("collection") != "captures":
-        raise AssertionError("Firestore hotspot policy must cover the captures collection")
+    if hotspot_policy.get("schema_version") != "blueprint.firestore_created_at_hotspot_policy.v2":
+        raise AssertionError("runtime capacity must include the v2 Firestore createdAt hotspot policy")
+    if hotspot_policy.get("collection") != "creatorCaptures":
+        raise AssertionError(
+            "Firestore hotspot policy must cover the creatorCaptures collection "
+            "(the literal `captures` collection was a v1 phantom nothing writes)"
+        )
+    if hotspot_policy.get("index_manifest") != "Blueprint-WebApp/firestore.indexes.json":
+        raise AssertionError("Firestore hotspot policy must name the webapp-owned index manifest")
     if hotspot_policy.get("shard_field") != EXPECTED_FIRESTORE_CREATED_AT_SHARD_FIELD:
         raise AssertionError("Firestore hotspot policy must pin the createdAt shard field")
+    if hotspot_policy.get("shard_count") != 16:
+        raise AssertionError("Firestore hotspot policy must pin the canonical 16-way shard count")
     if hotspot_policy.get("scale_up_sharded_indexes") != [
-        "google_firestore_index.captures_status_created_at_shard",
-        "google_firestore_index.captures_user_created_at_shard",
+        "creatorCaptures: creator_id ASC, createdAtShard ASC, created_at DESC",
+        "creatorCaptures: status ASC, createdAtShard ASC, created_at ASC",
     ]:
-        raise AssertionError("Firestore hotspot policy must pin the sharded Terraform indexes")
+        raise AssertionError("Firestore hotspot policy must pin the creatorCaptures sharded composites")
     if hotspot_policy.get("legacy_indexes_retained_for_current_readers") != [
-        "google_firestore_index.captures_status",
-        "google_firestore_index.captures_user",
+        "creatorCaptures: creator_id ASC, created_at DESC",
     ]:
         raise AssertionError("Firestore hotspot policy must keep current-reader legacy indexes explicit")
     if hotspot_policy.get("beta_without_sharding_max_write_rate_per_second") != 500:
@@ -440,9 +453,6 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
             'default     = "300s"',
             "threshold_value = var.pipeline_queue_depth_alert_threshold",
             "duration        = var.pipeline_queue_depth_alert_duration",
-            'resource "google_firestore_index" "captures_status_created_at_shard"',
-            'resource "google_firestore_index" "captures_user_created_at_shard"',
-            EXPECTED_FIRESTORE_CREATED_AT_SHARD_FIELD,
             'resource "google_monitoring_alert_policy" "firestore_request_latency"',
             EXPECTED_FIRESTORE_LATENCY_METRIC,
             "| condition val() > 0.25 's'",
@@ -453,6 +463,18 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
             'resource "google_billing_budget" "gpu_fleet_beta"',
             '"billingbudgets.googleapis.com"',
             'units         = tostring(var.gpu_fleet_billing_budget_usd)',
+        ],
+    )
+    # SCALE2-07: the four `captures_*` Firestore indexes targeted a collection
+    # nothing writes; the real creatorCaptures composites are declared in
+    # Blueprint-WebApp/firestore.indexes.json. Keep the phantoms from returning.
+    _forbid_text(
+        terraform_path,
+        [
+            'resource "google_firestore_index" "captures_status"',
+            'resource "google_firestore_index" "captures_user"',
+            'resource "google_firestore_index" "captures_status_created_at_shard"',
+            'resource "google_firestore_index" "captures_user_created_at_shard"',
         ],
     )
     _require_text(

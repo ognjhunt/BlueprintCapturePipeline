@@ -105,22 +105,32 @@
     "gpu_runner_capacity_policy": "per_service_spend_caps_below_dispatch_concurrency",
     "large_video_ingest_topic": "blueprint-large-video-ingest",
     "firestore_created_at_hotspot_policy": {
-      "schema_version": "blueprint.firestore_created_at_hotspot_policy.v1",
-      "collection": "captures",
+      "schema_version": "blueprint.firestore_created_at_hotspot_policy.v2",
+      "collection": "creatorCaptures",
+      "index_owner_repo": "Blueprint-WebApp",
+      "index_manifest": "Blueprint-WebApp/firestore.indexes.json",
       "status": "beta_monitor_and_scale_up_migration_path_declared",
-      "claim_boundary": "This declares Terraform indexes, alerting, and soak-report evidence fields. It is not live Firestore latency proof and does not prove WebApp or Capture writers populate createdAtShard.",
-      "legacy_indexes_retained_for_current_readers": [
+      "claim_boundary": "This declares webapp-owned index manifest entries, pipeline alerting, and soak-report evidence fields. It is not live Firestore latency proof and does not prove readers already fan out per-shard queries.",
+      "v1_correction": "v1 pinned four pipeline Terraform indexes on a literal `captures` collection that no repo has ever written. Those phantom resources are deleted; the real capture-record collection is creatorCaptures, written by Blueprint-WebApp (server/routes/creator.ts), whose writer has populated createdAtShard since scaling round 1.",
+      "removed_phantom_terraform_indexes": [
         "google_firestore_index.captures_status",
-        "google_firestore_index.captures_user"
-      ],
-      "scale_up_sharded_indexes": [
+        "google_firestore_index.captures_user",
         "google_firestore_index.captures_status_created_at_shard",
         "google_firestore_index.captures_user_created_at_shard"
       ],
+      "legacy_indexes_retained_for_current_readers": [
+        "creatorCaptures: creator_id ASC, created_at DESC"
+      ],
+      "scale_up_sharded_indexes": [
+        "creatorCaptures: creator_id ASC, createdAtShard ASC, created_at DESC",
+        "creatorCaptures: status ASC, createdAtShard ASC, created_at ASC"
+      ],
       "shard_field": "createdAtShard",
-      "writer_requirement_before_scale_up": "Populate createdAtShard with a bounded random or hashed shard value before routing high-volume createdAt queries through sharded indexes.",
-      "reader_requirement_before_scale_up": "Aggregate per-shard createdAt result sets before removing the legacy createdAt composites.",
-      "legacy_index_removal_requirement": "After sharded writer and reader migration is proven, remove composite indexes that still route high-rate captures queries directly through monotonically increasing createdAt.",
+      "shard_count": 16,
+      "shard_derivation": "int(hashlib.sha256(capture_id.encode()).hexdigest(), 16) % shard_count",
+      "writer": "Blueprint-WebApp server/routes/creator.ts capture registration via server/utils/captureShard.ts",
+      "reader_requirement_before_scale_up": "Aggregate per-shard created_at result sets before removing the legacy created_at composite.",
+      "legacy_index_removal_requirement": "After sharded reader migration is proven, remove composites that still route high-rate creatorCaptures queries directly through monotonically increasing created_at.",
       "beta_without_sharding_max_write_rate_per_second": 500,
       "monitoring_alert_policy": "google_monitoring_alert_policy.firestore_request_latency",
       "latency_metric": "serviceruntime.googleapis.com/api/request_latencies",

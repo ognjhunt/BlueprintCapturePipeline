@@ -111,8 +111,8 @@ def _firestore_hotspot_policy(model: dict[str, Any]) -> dict[str, Any]:
     if policy:
         return dict(policy)
     return {
-        "schema_version": "blueprint.firestore_created_at_hotspot_policy.v1",
-        "collection": "captures",
+        "schema_version": "blueprint.firestore_created_at_hotspot_policy.v2",
+        "collection": "creatorCaptures",
         "shard_field": "createdAtShard",
         "monitoring_alert_policy": "google_monitoring_alert_policy.firestore_request_latency",
         "latency_metric": "serviceruntime.googleapis.com/api/request_latencies",
