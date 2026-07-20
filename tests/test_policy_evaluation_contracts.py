@@ -1,0 +1,345 @@
+from __future__ import annotations
+
+from copy import deepcopy
+
+from blueprint_pipeline.policy_evaluation_contracts import (
+    MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION,
+    POLICY_ADAPTER_SCHEMA_VERSION,
+    POLICY_EVALUATION_DESIGN_SCHEMA_VERSION,
+    validate_policy_adapter_manifest,
+    validate_policy_evaluation_design,
+)
+from blueprint_pipeline.decision_grade_ranking import (
+    BOOTSTRAP_METHOD,
+    BOOTSTRAP_REPLICATES,
+    SCHEMA_VERSION as RANKING_REQUEST_SCHEMA_VERSION,
+    build_decision_grade_ranking,
+)
+
+
+def _digest(index: int) -> str:
+    return f"{index:064x}"
+
+
+def _policy(index: int) -> dict:
+    return {
+        "schema_version": POLICY_ADAPTER_SCHEMA_VERSION,
+        "policy_id": f"policy-{index}",
+        "checkpoint_id": f"checkpoint-{index}",
+        "policy_family": "groot" if index == 0 else f"family-{index}",
+        "embodiment_id": "unitree-g1" if index == 0 else f"robot-{index}",
+        "version": "1.0.0",
+        "policy_sha256": _digest(100 + index),
+        "checkpoint_sha256": _digest(200 + index),
+        "adapter_code_sha256": _digest(300 + index),
+        "embodiment_manifest_sha256": _digest(400 + index),
+        "qualification_fixture": "g1_kitchen" if index == 0 else None,
+        "action_contract": {
+            "dimension": 2,
+            "units": ["rad", "rad"],
+            "bounds": [
+                {"minimum": -1.0, "maximum": 1.0},
+                {"minimum": -1.0, "maximum": 1.0},
+            ],
+            "control_rate_hz": 50.0,
+            "timestamp_semantics": "monotonic_chunk_start_and_per_sample_offsets",
+            "normalization_manifest_sha256": _digest(500 + index),
+            "missing_action_behavior": "block",
+            "out_of_bounds_behavior": "block",
+        },
+    }
+
+
+def _design() -> dict:
+    policies = [_policy(index) for index in range(7)]
+    rows = []
+    for policy_index, policy in enumerate(policies):
+        for seed in range(MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION):
+            rows.append(
+                {
+                    "policy_id": policy["policy_id"],
+                    "site_id": "site-1",
+                    "task_id": "open-door",
+                    "condition_id": "condition-1",
+                    "seed": seed,
+                    "observation_sha256": _digest(600 + seed),
+                    "commanded_action_chunk_sha256": _digest(
+                        800 + policy_index * 100 + seed
+                    ),
+                    "policy_runtime_output_sha256": _digest(
+                        1600 + policy_index * 100 + seed
+                    ),
+                    "initial_condition_sha256": _digest(600 + seed),
+                    "skeleton_conditioning_sha256": _digest(
+                        2300 + policy_index * 100 + seed
+                    ),
+                    "oscar_checkpoint_sha256": _digest(2600),
+                    "model_output_sha256": _digest(2700 + policy_index * 100 + seed),
+                    "provider_execution_sha256": _digest(
+                        3500 + policy_index * 100 + seed
+                    ),
+                    "next_policy_query_sha256": _digest(
+                        4300 + policy_index * 100 + seed
+                    ),
+                    "action_control_suite_sha256": _digest(
+                        5100 + policy_index * 100 + seed
+                    ),
+                    "evaluator_profile_id": "oscar_official_v2",
+                    "fresh_official_oscar_model_execution_proven": True,
+                    "fresh_oscar_provider_model_run_steps": 1,
+                    "action_control_suite_status": "passed",
+                    "missing_action": False,
+                    "zero_action_substitute_used": False,
+                    "scripted_target_motion_used": False,
+                    "fallback_policy_used": False,
+                    "fixture_or_proxy_model_output_used": False,
+                    "policy_specific_scenario_change_used": False,
+                    "hidden_shared_state_used": False,
+                }
+            )
+    return {
+        "schema_version": POLICY_EVALUATION_DESIGN_SCHEMA_VERSION,
+        "policies": policies,
+        "rows": rows,
+        "hidden_shared_state_prohibited": True,
+        "policy_specific_scenario_changes_prohibited": True,
+        "minimum_matched_replicates_per_policy_condition": (
+            MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION
+        ),
+        "direct_sc3_comparison_requested": False,
+    }
+
+
+def test_policy_adapter_requires_exact_action_semantics() -> None:
+    assert validate_policy_adapter_manifest(_policy(0))["status"] == "validated"
+
+    invalid = _policy(0)
+    invalid["action_contract"]["units"] = ["rad"]
+    invalid["action_contract"]["missing_action_behavior"] = "zero_fill"
+    result = validate_policy_adapter_manifest(invalid)
+
+    assert result["status"] == "blocked"
+    assert "policy_action_units_missing_or_dimension_mismatch" in result["blockers"]
+    assert "policy_missing_action_behavior_must_block" in result["blockers"]
+
+
+def test_generic_policy_design_admits_seven_independent_matched_policies() -> None:
+    result = validate_policy_evaluation_design(_design())
+
+    assert result["status"] == "decision_grade"
+    assert result["policy_count"] == 7
+    assert result["independent_checkpoint_count"] == 7
+    assert result["g1_kitchen_fixture_present"] is True
+    assert result["g1_kitchen_is_product_architecture"] is False
+
+
+def test_policy_design_rejects_asymmetric_cells_and_fallback_injection() -> None:
+    candidate = _design()
+    candidate["rows"].pop()
+    candidate["rows"][0]["fallback_policy_used"] = True
+
+    result = validate_policy_evaluation_design(candidate)
+
+    assert result["status"] == "blocked"
+    assert any(blocker.startswith("asymmetric_matched_cell_coverage:") for blocker in result["blockers"])
+    assert (
+        "decision_grade_row_forbidden_or_unproven:0:fallback_policy_used"
+        in result["blockers"]
+    )
+
+
+def test_policy_design_requires_fresh_oscar_chain_and_passed_controls() -> None:
+    candidate = _design()
+    row = candidate["rows"][0]
+    row["fresh_oscar_provider_model_run_steps"] = 0
+    row["fresh_official_oscar_model_execution_proven"] = False
+    row["action_control_suite_status"] = "blocked"
+    row.pop("next_policy_query_sha256")
+
+    result = validate_policy_evaluation_design(candidate)
+
+    assert result["status"] == "blocked"
+    assert "evaluation_row_fresh_oscar_execution_not_proven:0" in result["blockers"]
+    assert "evaluation_row_fresh_oscar_model_steps_invalid:0" in result["blockers"]
+    assert "evaluation_row_action_control_suite_not_passed:0" in result["blockers"]
+    assert (
+        "evaluation_row_digest_missing_or_invalid:0:next_policy_query_sha256"
+        in result["blockers"]
+    )
+
+
+def test_direct_sc3_comparison_requires_36_or_37_replicates() -> None:
+    candidate = deepcopy(_design())
+    candidate["direct_sc3_comparison_requested"] = True
+
+    result = validate_policy_evaluation_design(candidate)
+
+    assert result["decision_grade_eligible"] is False
+    assert "direct_sc3_comparison_requires_36_or_37_matched_replicates" in result[
+        "blockers"
+    ]
+
+
+def _ranking_request() -> dict:
+    design = _design()
+    episode_results = []
+    for row in design["rows"]:
+        policy_index = int(row["policy_id"].split("-")[-1])
+        success = row["seed"] < 14 + (policy_index % 3)
+        episode_results.append(
+            {
+                "policy_id": row["policy_id"],
+                "site_id": row["site_id"],
+                "task_id": row["task_id"],
+                "condition_id": row["condition_id"],
+                "seed": row["seed"],
+                "full_ordered_episode_evidence": True,
+                "episode_evidence_sha256": "sha256:" + _digest(3000 + row["seed"]),
+                "artifact_freshness_status": "current",
+                "fresh_official_oscar_model_execution_proven": True,
+                "fixture_or_proxy_model_output_used": False,
+                "fallback_policy_used": False,
+                "commanded_action_chunk_sha256": row["commanded_action_chunk_sha256"],
+                "model_output_sha256": row["model_output_sha256"],
+                "next_policy_query_sha256": row["next_policy_query_sha256"],
+                "action_control_suite_sha256": row["action_control_suite_sha256"],
+                "criterion_results": [
+                    {
+                        "criterion_id": "door-angle",
+                        "outcome": "success" if success else "failure",
+                        "confidence": 0.95,
+                        "label_blinded_and_randomized": True,
+                        "evidence_refs": [{"sha256": "sha256:" + _digest(4000 + row["seed"])}],
+                        "failure_taxonomy": [] if success else ["criterion_not_reached"],
+                    }
+                ],
+            }
+        )
+    preferences = [
+        {
+            "policy_a": f"policy-{index}",
+            "policy_b": f"policy-{index + 1}",
+            "outcome": "policy_b",
+            "label_blinded_and_randomized": True,
+            "evidence_refs": [{"sha256": "sha256:" + _digest(6000 + index)}],
+        }
+        for index in range(6)
+    ]
+    return {
+        "schema_version": RANKING_REQUEST_SCHEMA_VERSION,
+        "evaluation_design": design,
+        "minimum_calibrated_judge_confidence": 0.8,
+        "judge_calibration_set_sha256": "sha256:" + _digest(5000),
+        "judge_calibration_status": "accepted",
+        "label_authority_independent_of_policy_and_model": True,
+        "episode_results": episode_results,
+        "pairwise_preferences": preferences,
+        "bootstrap": {
+            "method": BOOTSTRAP_METHOD,
+            "seed": 1729,
+            "replicate_count": BOOTSTRAP_REPLICATES,
+        },
+        "ood_axis_results": [
+            {
+                "axis": axis,
+                "coverage": 0.9,
+                "abstention_rate": 0.1,
+                "sample_count": 20,
+                "coverage_95_ci": [0.8, 0.97],
+                "abstention_95_ci": [0.03, 0.2],
+                "failure_taxonomy": {"criterion_not_reached": 2},
+                "split_manifest_sha256": "sha256:" + _digest(7000 + index),
+            }
+            for index, axis in enumerate(
+                ("site", "task", "embodiment", "viewpoint", "appearance")
+            )
+        ],
+        "accepted_external_anchor_rows": [],
+    }
+
+
+def test_decision_grade_ranking_keeps_correlation_unmeasured_without_real_anchors() -> None:
+    result = build_decision_grade_ranking(_ranking_request())
+
+    assert result["status"] == "decision_grade"
+    assert result["bradley_terry"]["graph_connected"] is True
+    assert len(result["bradley_terry"]["ranking"]) == 7
+    assert result["bootstrap"]["replicate_count"] == 10_000
+    assert result["bootstrap"]["matched_cells_resampled_jointly_across_policies"] is True
+    assert result["correlation_status"] == "correlation_not_measured"
+    assert result["pearson"] is None
+    assert result["spearman"] is None
+    assert result["mmrv"] is None
+
+
+def test_decision_grade_ranking_rejects_low_confidence_silent_failure_and_disconnected_graph() -> None:
+    candidate = _ranking_request()
+    candidate["episode_results"][0]["criterion_results"][0]["confidence"] = 0.2
+    candidate["episode_results"][0]["criterion_results"][0]["outcome"] = "failure"
+    candidate["pairwise_preferences"] = candidate["pairwise_preferences"][:1]
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "low_confidence_criterion_must_abstain:0:0" in result["blockers"]
+    assert "bradley_terry_preference_graph_not_connected" in result["blockers"]
+
+
+def test_decision_grade_ranking_rejects_weak_ood_reporting() -> None:
+    candidate = _ranking_request()
+    candidate["ood_axis_results"][0].pop("coverage_95_ci")
+    candidate["ood_axis_results"][0]["failure_taxonomy"] = []
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "ood_axis_coverage_ci_missing_or_invalid:0" in result["blockers"]
+    assert "ood_axis_failure_taxonomy_missing:0" in result["blockers"]
+
+
+def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> None:
+    candidate = _ranking_request()
+    row = candidate["episode_results"][0]
+    row["artifact_freshness_status"] = "stale"
+    row["fallback_policy_used"] = True
+    row["model_output_sha256"] = "sha256:not-a-digest"
+    row["criterion_results"][0]["evidence_refs"] = [{"sha256": "forged"}]
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "episode_result_artifact_not_current:0" in result["blockers"]
+    assert "episode_result_fallback_policy_not_blocked:0" in result["blockers"]
+    assert "episode_result_chain_digest_missing:0:model_output_sha256" in result["blockers"]
+    assert "criterion_evidence_digest_invalid:0:0" in result["blockers"]
+
+
+def test_decision_grade_ranking_is_invariant_to_registered_row_permutation() -> None:
+    original = _ranking_request()
+    permuted = deepcopy(original)
+    permuted["evaluation_design"]["rows"].reverse()
+    permuted["episode_results"].reverse()
+    permuted["pairwise_preferences"].reverse()
+
+    first = build_decision_grade_ranking(original)
+    second = build_decision_grade_ranking(permuted)
+
+    assert first["status"] == second["status"] == "decision_grade"
+    assert first["policy_scorecards"] == second["policy_scorecards"]
+    assert first["bradley_terry"] == second["bradley_terry"]
+
+
+def test_decision_grade_ranking_retains_all_equal_ties_as_equal_ability() -> None:
+    candidate = _ranking_request()
+    candidate["pairwise_preferences"] = [
+        {
+            **row,
+            "outcome": "tie",
+        }
+        for row in candidate["pairwise_preferences"]
+    ]
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "decision_grade"
+    assert {row["ability"] for row in result["bradley_terry"]["ranking"]} == {1.0}

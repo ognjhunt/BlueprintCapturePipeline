@@ -1909,11 +1909,53 @@ def test_closed_loop_generated_video_success_label_is_sim_only_and_required(
     _configure_success_label_calibration(tmp_path, monkeypatch)
     monkeypatch.setattr(L, "visual_smoke_generated_rollouts_for_review", _passed_visual_smoke)
 
+    base_wam = _stub_wam_with_video(tmp_path)
+
+    def policy_endpoint(_observation, _history, step_index):
+        return {
+            "policy_action": "learned_policy_action",
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+            "action_units": ["rad", "rad"],
+            "action_timing": {
+                "control_hz": 50.0,
+                "sample_period_seconds": 0.02,
+            },
+            "not_a_learned_robot_policy_action": False,
+            "out_of_distribution_action_projection": False,
+        }
+
+    def action_conditioned_wam(current_frame, action, step_index, history):
+        output = base_wam(current_frame, action, step_index, history)
+        action_sha256 = L._canonical_sha256(action)
+        chunk = action["action_chunk"]
+        projection = L._with_action_conditioning_digests(
+            {
+                "landmarks": [
+                    _projected_landmark("wrist", float(chunk[0]), float(chunk[1]))
+                ],
+                "derived_via_controller_fk": True,
+                "source_action_sha256": action_sha256,
+                "controller_id": "test-controller",
+                "controller_sha256": "a" * 64,
+                "robot_model_sha256": "b" * 64,
+                "generated_robot_state": {
+                    "source_action_sha256": action_sha256,
+                    "proxy_or_surrogate": False,
+                    "joint_positions": list(chunk),
+                },
+            }
+        )
+        return {
+            **output,
+            "skeleton_conditioning": projection,
+            "generated_robot_state": projection["generated_robot_state"],
+        }
+
     manifest = L.run_oscar_isaac_closed_loop(
         output_dir=tmp_path / "loop",
         start_frame_path=start,
         route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
-        wam_generate_next=_stub_wam_with_video(tmp_path),
+        wam_generate_next=action_conditioned_wam,
         steps=2,
         harness_backend_kind="fixture",
         generated_at="now",
@@ -1924,6 +1966,7 @@ def test_closed_loop_generated_video_success_label_is_sim_only_and_required(
         wam_success_label_command=f"{sys.executable} {success_command}",
         allow_wam_success_labeling=True,
         require_generated_video_success_label=True,
+        policy_endpoint=policy_endpoint,
         wam_consistency_timeout_seconds=5.0,
         wam_success_label_timeout_seconds=5.0,
     )
@@ -2004,6 +2047,16 @@ def test_closed_loop_required_forward_inverse_consistency_blocks_without_scorer(
     assert manifest["status"] == "blocked"
     assert manifest["forward_inverse_consistency_proven"] is False
     assert "forward_inverse_consistency_not_proven" in manifest["blockers"]
+    assert len(manifest["wam_episode_consistency_request_paths"]) == 1
+    request = json.loads(
+        Path(manifest["wam_episode_consistency_request_paths"][0]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert request["status"] == "blocked_strict_action_contract"
+    assert request["strict_action_aware_consistency"]["request_validation_blockers"] == [
+        "strict_action_consistency_exact_commanded_action_chunk_missing",
+    ]
 
 
 def test_closed_loop_episode_consistency_failure_early_terminates_feed_forward(
@@ -2038,6 +2091,12 @@ def test_closed_loop_episode_consistency_failure_early_terminates_feed_forward(
         for blocker in manifest["blockers"]
     )
     assert manifest["manipulation_success_proven"] is False
+    checks = json.loads(
+        Path(manifest["wam_consistency_checks_paths"][0]).read_text(encoding="utf-8")
+    )
+    assert checks["scorer_outcome"] == "protocol_failure"
+    assert checks["model_abstained"] is False
+    assert checks["infrastructure_failure"] is False
 
     trace = [
         json.loads(line)
@@ -2047,6 +2106,59 @@ def test_closed_loop_episode_consistency_failure_early_terminates_feed_forward(
     assert len(trace) == 1
     assert trace[0]["wam_episode_consistency_early_termination_recommended"] is True
     assert "wam_consistency_inverse_not_proven" in trace[0]["wam_episode_consistency_blockers"]
+
+
+@pytest.mark.parametrize(
+    ("command_body", "expected_outcome"),
+    [
+        ("raise SystemExit(3)\n", "infrastructure_failure"),
+        (
+            """
+import json
+import os
+from pathlib import Path
+Path(os.environ["BLUEPRINT_WAM_CONSISTENCY_OUTPUT"]).write_text(
+    json.dumps({"status": "abstained", "rollout_checks": []}),
+    encoding="utf-8",
+)
+""".strip()
+            + "\n",
+            "model_abstention",
+        ),
+    ],
+)
+def test_episode_consistency_classifies_model_abstention_separately_from_infrastructure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command_body: str,
+    expected_outcome: str,
+) -> None:
+    command = tmp_path / f"{expected_outcome}.py"
+    command.write_text(command_body, encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING", "true")
+    monkeypatch.setattr(L, "visual_smoke_generated_rollouts_for_review", _passed_visual_smoke)
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "loop",
+        start_frame_path=_write_frame(tmp_path / "start.png", seed=15),
+        route_points=[(0.0, 0.0, 0.79), (1.0, 0.0, 0.79)],
+        wam_generate_next=_stub_wam_with_video(tmp_path),
+        steps=1,
+        harness_backend_kind="fixture",
+        generated_at="now",
+        wam_consistency_command=f"{sys.executable} {command}",
+        allow_wam_consistency_scoring=True,
+        wam_consistency_timeout_seconds=5.0,
+    )
+
+    checks = json.loads(
+        Path(manifest["wam_consistency_checks_paths"][0]).read_text(encoding="utf-8")
+    )
+    assert checks["scorer_outcome"] == expected_outcome
+    assert checks["model_abstained"] is (expected_outcome == "model_abstention")
+    assert checks["infrastructure_failure"] is (
+        expected_outcome == "infrastructure_failure"
+    )
 
 
 def test_isaac_manipulation_success_evaluator_requires_registered_transition(
@@ -6079,6 +6191,42 @@ def test_success_review_manifest_blocks_missing_or_noncontiguous_step_clips(tmp_
     assert artifacts["rollouts"] == []
     assert "closed_loop_step_video_file_missing:2" in artifacts["blockers"]
     assert "closed_loop_episode_order_not_verified" in artifacts["blockers"]
+
+
+def test_generated_episode_completion_cannot_override_blocked_authoritative_manifest(
+    tmp_path,
+):
+    clip = tmp_path / "step-1.mp4"
+    clip.write_bytes(b"model-derived-review-clip")
+    artifacts = L._closed_loop_generated_episode_artifacts(
+        output_dir=tmp_path / "blocked-authoritative",
+        generated_at="now",
+        trace_rows=[{"step_index": 1, "wam_generated_video": str(clip)}],
+        initial_frame_path="initial.png",
+        policy_id="p",
+        task_prompts=["open the door"],
+        target=[0.0, 0.0, 0.0],
+    )
+    assert artifacts["status"] == "completed"
+
+    bound = L._bind_generated_episode_to_authoritative_loop_status(
+        artifacts,
+        authoritative_status="blocked",
+    )
+    results = json.loads(Path(bound["results_path"]).read_text(encoding="utf-8"))
+
+    assert bound["status"] == "blocked_by_authoritative_closed_loop_manifest"
+    assert bound["media_assembly_status"] == "completed"
+    assert bound["decision_grade_eligible"] is False
+    assert results["status"] == "blocked_by_authoritative_closed_loop_manifest"
+    assert results["media_assembly_status"] == "completed"
+    assert results["authoritative_closed_loop_manifest_status"] == "blocked"
+    assert (
+        results["claim_boundary"][
+            "generated_episode_status_cannot_override_authoritative_manifest"
+        ]
+        is True
+    )
 
 
 def test_episode_runs_full_cap_without_stop_flag(tmp_path):

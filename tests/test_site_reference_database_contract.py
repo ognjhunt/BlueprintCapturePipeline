@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.site_reference_database import (
+    EVALUATION_SITE_ADMISSION_SCHEMA_VERSION,
     SITE_REFERENCE_DATABASE_SCHEMA_VERSION,
     WEBAPP_PROJECTION_SCHEMA_VERSION,
     SiteReferenceContractError,
@@ -17,6 +18,7 @@ from blueprint_pipeline.site_reference_database import (
     build_site_reference_summary_projection,
     validate_site_reference_manifest,
     validate_site_reference_record,
+    validate_evaluation_site_admission,
 )
 
 
@@ -81,6 +83,158 @@ def _record() -> dict[str, object]:
         "captured_at": "2026-05-15T00:00:00+00:00",
         "indexed_at": "2026-05-15T00:00:01+00:00",
     }
+
+
+def _evaluation_admission() -> dict[str, object]:
+    digest = "a" * 64
+    return {
+        "schema_version": EVALUATION_SITE_ADMISSION_SCHEMA_VERSION,
+        "importer_kind": "scaniverse_assisted_import",
+        "immutable_source_identity": {
+            "site_id": "held-out-site",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "source_bundle_id": "bundle-1",
+            "capture_sha256": digest,
+            "source_bundle_sha256": digest,
+            "manifest_sha256": digest,
+        },
+        "rights_privacy_provenance": {
+            "consent_active": True,
+            "rights_verified": True,
+            "privacy_review_passed": True,
+            "provenance_verified": True,
+            "commercial_sim_evaluation_allowed": True,
+            "rights_manifest_sha256": digest,
+        },
+        "metric_coordinate_contract": {
+            "scale_status": "verified_metric",
+            "length_unit": "m",
+            "up_axis": "+Z",
+            "gravity_m_s2": [0.0, 0.0, -9.81],
+            "coordinate_frame_manifest_sha256": digest,
+            "uncertainty": {
+                "scale_sigma": 0.001,
+                "translation_sigma_m": 0.002,
+                "rotation_sigma_deg": 0.1,
+            },
+        },
+        "camera_time_calibration": {
+            "intrinsics_calibrated": True,
+            "extrinsics_calibrated": True,
+            "timestamps_synchronized": True,
+            "reprojection_check_passed": True,
+            "reprojection_rmse_px": 0.4,
+            "maximum_reprojection_rmse_px": 1.0,
+            "calibration_manifest_sha256": digest,
+        },
+        "static_robot_evaluation_viewpoints": [
+            {
+                "viewpoint_id": "vp-1",
+                "camera_profile_id": "camera-1",
+                "robot_profile_id": "robot-1",
+                "derived_from_moving_scan": True,
+                "status": "calibrated_static_viewpoint",
+                "pose_sha256": digest,
+            }
+        ],
+        "robot_camera_embodiment": {
+            "robot_profile_sha256": digest,
+            "camera_profile_sha256": digest,
+            "embodiment_manifest_sha256": digest,
+        },
+        "task_scene_grounding": {
+            "scene_identity": "scene-1",
+            "task_objects": [{"object_id": "door"}],
+            "articulated_parts": [{"part_id": "door-hinge"}],
+            "target_zones": [{"zone_id": "open-angle"}],
+            "grounding_manifest_sha256": digest,
+        },
+        "task_contracts": [
+            {
+                "task_id": "open-door",
+                "criterion_id": "door-angle",
+                "evidence_type": "articulation_state",
+                "tolerance": 0.2,
+                "tolerance_unit": "radian",
+                "evaluator_mapping": "isaac.articulation_transition.v1",
+            }
+        ],
+        "truth_layers": {
+            "visual_geometry": {"status": "verified"},
+            "collision": {"status": "verified", "evidence_sha256": digest},
+            "contact": {"status": "verified", "evidence_sha256": digest},
+            "dynamics": {"status": "verified", "evidence_sha256": digest},
+        },
+        "deduplication": {
+            "status": "passed",
+            "site_dedup_id": "site-dedup-1",
+            "task_dedup_id": "task-dedup-1",
+            "trajectory_dedup_id": "trajectory-dedup-1",
+            "dedup_report_sha256": digest,
+        },
+        "frozen_splits": {
+            "locked_before_evaluation": True,
+            "split_manifest_sha256": digest,
+            "train_sites": ["train-site"],
+            "dev_sites": ["dev-site"],
+            "held_out_sites": ["held-out-site"],
+        },
+        "ood_abstention": {
+            "abstention_enabled": True,
+            "axes": [{"axis": "site"}, {"axis": "task"}, {"axis": "embodiment"}],
+        },
+    }
+
+
+def test_evaluation_site_admission_derives_readiness_across_all_truth_layers() -> None:
+    result = validate_evaluation_site_admission(_evaluation_admission())
+
+    assert result["status"] == "evaluation_ready"
+    assert result["scaniverse_assisted_import"] is True
+    assert result["claim_boundary"]["assisted_import_is_not_evaluation_readiness"] is True
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_blocker"),
+    [
+        (
+            lambda value: value["metric_coordinate_contract"].update(
+                {"scale_status": "review_only"}
+            ),
+            "metric_scale_not_verified_in_meters",
+        ),
+        (
+            lambda value: value["camera_time_calibration"].update(
+                {"reprojection_rmse_px": 4.0}
+            ),
+            "camera_reprojection_error_missing_or_above_limit",
+        ),
+        (
+            lambda value: value["truth_layers"]["collision"].update(
+                {"status": "review_only"}
+            ),
+            "collision_truth_not_verified",
+        ),
+        (
+            lambda value: value["frozen_splits"].update(
+                {"train_sites": ["held-out-site"]}
+            ),
+            "site_split_overlap_detected",
+        ),
+    ],
+)
+def test_assisted_import_cannot_self_declare_evaluation_readiness(
+    mutation,
+    expected_blocker: str,
+) -> None:
+    candidate = _evaluation_admission()
+    mutation(candidate)
+
+    result = validate_evaluation_site_admission(candidate)
+
+    assert result["status"] == "blocked"
+    assert expected_blocker in result["blockers"]
 
 
 def test_site_reference_record_contract_requires_lineage_and_camera_fields() -> None:

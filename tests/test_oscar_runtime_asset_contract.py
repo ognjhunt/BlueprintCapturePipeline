@@ -83,6 +83,56 @@ def test_contract_pins_exact_oscar_dcp_bytes_and_digest() -> None:
     assert len(payload["contract_digest"]) == 71
 
 
+def _runtime_license_admission() -> dict:
+    return {
+        "schema_version": contract.RUNTIME_LICENSE_ADMISSION_SCHEMA_VERSION,
+        "components": [
+            {
+                **component,
+                "commercial_use_verified": True,
+                "license_text_sha256": "a" * 64,
+                "license_source_url": "https://example.test/license",
+            }
+            for component in contract.OSCAR_RUNTIME_LICENSE_COMPONENTS
+        ],
+        "conditioning_assets": {
+            "site_evaluation_admission_status": "evaluation_ready",
+            "customer_capture_commercial_use_verified": True,
+            "official_benchmark_assets_used": False,
+            "rights_manifest_sha256": "b" * 64,
+        },
+        "independent_license_review": {
+            "status": "accepted",
+            "reviewer_independent_of_runtime_owner": True,
+            "reviewed_at": "2026-07-20T00:00:00Z",
+            "evidence_sha256": "c" * 64,
+        },
+    }
+
+
+def test_oscar_runtime_license_admission_separates_benchmark_asset_rights() -> None:
+    result = contract.validate_oscar_runtime_license_admission(_runtime_license_admission())
+
+    assert result["status"] == "validated"
+    assert result["commercial_execution_allowed"] is True
+    assert result["official_benchmark_assets_are_separate_from_runtime_components"] is True
+
+
+def test_oscar_runtime_license_admission_blocks_bundled_assets_and_unreviewed_use() -> None:
+    manifest = _runtime_license_admission()
+    manifest["conditioning_assets"]["official_benchmark_assets_used"] = True
+    manifest["independent_license_review"]["status"] = "pending"
+
+    result = contract.validate_oscar_runtime_license_admission(manifest)
+
+    assert result["status"] == "blocked"
+    assert (
+        "oscar_official_benchmark_assets_prohibited_without_separate_rights"
+        in result["blockers"]
+    )
+    assert "oscar_runtime_independent_license_review_not_accepted" in result["blockers"]
+
+
 def test_runtime_paths_and_export_contract_are_confined_and_offline(
     tmp_path: Path,
 ) -> None:

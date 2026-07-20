@@ -1,18 +1,9 @@
-"""Per-step closed-loop eval: policy <-> OSCAR-2B WAM <-> SAM3/DA3 perception harness.
+"""Per-step policy <-> OSCAR WAM <-> perception closed-loop evaluation.
 
-This is the true MuJoCo-parity loop (mujoco_g1_wam_vla_policy_endpoint_eval lines 4513-4559)
-applied to the Isaac G1 lane, instead of the one-shot batch OSCAR clip the provider lane
-generates. Each step:
-
-  1. the policy emits an action (the deterministic G1 walk-to-target controller),
-  2. the WAM generates the NEXT observation conditioned on that action (pluggable backend:
-     a local stub for hermetic tests, real OSCAR-2B per-step for the GPU run),
-  3. the SAM3/DA3 perception harness analyses that generated frame right away
-     (run_wam_derived_observation_harness_step, real backend on GPU or fixture locally),
-  4. the derived observations feed forward into the next step.
-
-The WAM generation and the harness backend are both injected, so the loop structure can be
-validated end-to-end with zero GPU spend and the same code path then runs the real backends.
+Each policy action conditions the next generated observation, the perception
+harness analyzes that frame, and its derived observation feeds the next step.
+Injected WAM and perception backends keep hermetic and real-model runs on the
+same structural path without treating either as semantic task proof.
 """
 
 from __future__ import annotations
@@ -43,6 +34,9 @@ from .closed_loop_consistency_scoring import (
 from .g1_kitchen_worker_proof_emission import (
     emit_rows_from_closed_loop_state,
     legacy_worker_proof_rows,
+)
+from .generated_episode_authority import (
+    bind_generated_episode_to_authoritative_loop_status as _bind_generated_episode_to_authoritative_loop_status,
 )
 from .sc3_fidelity_contracts import (
     SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256_ENV,
@@ -5360,9 +5354,12 @@ def run_oscar_isaac_closed_loop(
     action_conditioning_evidence_rows: list[dict[str, Any]] = []
     current_generated_robot_state: dict[str, Any] = {}
     consistency_results: list[dict[str, Any]] = []
-    consistency_requested = _wam_episode_consistency_requested(
-        explicit_command=wam_consistency_command,
-        allow_wam_consistency_scoring=allow_wam_consistency_scoring,
+    consistency_requested = bool(
+        require_forward_inverse_consistency
+        or _wam_episode_consistency_requested(
+            explicit_command=wam_consistency_command,
+            allow_wam_consistency_scoring=allow_wam_consistency_scoring,
+        )
     )
 
     # The sealed manipulation path must query GR00T on the initial real frame.
@@ -6269,6 +6266,10 @@ def run_oscar_isaac_closed_loop(
     if stop_on_task_completion and manipulation_task and not proven_task_completion_transition:
         blockers.append("registered_manipulation_task_transition_not_proven")
     status = "completed" if trace_rows and not blockers else "blocked"
+    generated_episode_artifacts = _bind_generated_episode_to_authoritative_loop_status(
+        generated_episode_artifacts,
+        authoritative_status=status,
+    )
     feed_forward_verified = all(
         trace_rows[index]["source_observation_frame"]
         == trace_rows[index - 1]["next_policy_observation_frame"]

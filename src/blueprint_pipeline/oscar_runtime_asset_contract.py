@@ -26,6 +26,7 @@ from typing import Any, Mapping, Sequence
 ASSET_CONTRACT_SCHEMA_VERSION = "oscar_runtime_asset_contract.v1"
 ASSET_EVIDENCE_SCHEMA_VERSION = "oscar_runtime_asset_evidence.v1"
 OFFLINE_PREFLIGHT_SCHEMA_VERSION = "oscar_runtime_asset_offline_preflight.v1"
+RUNTIME_LICENSE_ADMISSION_SCHEMA_VERSION = "oscar_runtime_license_admission.v1"
 
 DEFAULT_RUNTIME_MODEL_CACHE_ROOT = Path("/workspace/runtime_model_cache")
 DEFAULT_OSCAR_CHECKPOINT_ROOT = Path("/opt/blueprint/ckpts/oscar")
@@ -43,8 +44,98 @@ WAN_VAE_REPO_ID = "Wan-AI/Wan2.1-T2V-1.3B"
 WAN_VAE_REVISION = "37ec512624d61f7aa208f7ea8140a131f93afc9a"
 WAN_VAE_FILENAME = "Wan2.1_VAE.pth"
 
+OSCAR_RUNTIME_LICENSE_COMPONENTS: tuple[dict[str, str], ...] = (
+    {
+        "component_id": "oscar_source",
+        "source_id": OSCAR_SOURCE_REPO_ID,
+        "revision": OSCAR_SOURCE_REVISION,
+        "declared_license": "Apache-2.0",
+    },
+    {
+        "component_id": "oscar_checkpoint",
+        "source_id": OSCAR_CHECKPOINT_REPO_ID,
+        "revision": OSCAR_CHECKPOINT_REVISION,
+        "declared_license": "Apache-2.0",
+    },
+    {
+        "component_id": "cosmos_reason1_text_encoder",
+        "source_id": REASON1_REPO_ID,
+        "revision": REASON1_REVISION,
+        "declared_license": "NVIDIA-Open-Model-License",
+    },
+    {
+        "component_id": "wan21_vae",
+        "source_id": WAN_VAE_REPO_ID,
+        "revision": WAN_VAE_REVISION,
+        "declared_license": "Apache-2.0",
+    },
+)
+
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _IMMUTABLE_REVISION_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def validate_oscar_runtime_license_admission(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Fail closed on commercial runtime and conditioning-asset rights.
+
+    The model/code licenses do not silently authorize the bundled benchmark
+    videos. Customer capture rights and benchmark-asset rights are evaluated as
+    separate inputs.
+    """
+
+    blockers: list[str] = []
+    if manifest.get("schema_version") != RUNTIME_LICENSE_ADMISSION_SCHEMA_VERSION:
+        blockers.append("oscar_runtime_license_schema_missing_or_unsupported")
+    components = manifest.get("components")
+    component_rows = (
+        [dict(row) for row in components if isinstance(row, Mapping)]
+        if isinstance(components, Sequence) and not isinstance(components, (str, bytes))
+        else []
+    )
+    by_id = {str(row.get("component_id") or ""): row for row in component_rows}
+    if len(by_id) != len(OSCAR_RUNTIME_LICENSE_COMPONENTS):
+        blockers.append("oscar_runtime_license_component_registry_mismatch")
+    for expected in OSCAR_RUNTIME_LICENSE_COMPONENTS:
+        component_id = expected["component_id"]
+        row = by_id.get(component_id, {})
+        for field in ("source_id", "revision", "declared_license"):
+            if row.get(field) != expected[field]:
+                blockers.append(f"oscar_runtime_license_{component_id}_{field}_mismatch")
+        if row.get("commercial_use_verified") is not True:
+            blockers.append(f"oscar_runtime_license_{component_id}_commercial_use_unverified")
+        if not _SHA256_RE.fullmatch(str(row.get("license_text_sha256") or "")):
+            blockers.append(f"oscar_runtime_license_{component_id}_license_digest_invalid")
+        if not str(row.get("license_source_url") or "").startswith("https://"):
+            blockers.append(f"oscar_runtime_license_{component_id}_license_source_missing")
+
+    conditioning = manifest.get("conditioning_assets")
+    conditioning = dict(conditioning) if isinstance(conditioning, Mapping) else {}
+    if conditioning.get("site_evaluation_admission_status") != "evaluation_ready":
+        blockers.append("oscar_conditioning_site_not_evaluation_ready")
+    if conditioning.get("customer_capture_commercial_use_verified") is not True:
+        blockers.append("oscar_conditioning_customer_capture_commercial_use_unverified")
+    if conditioning.get("official_benchmark_assets_used") is not False:
+        blockers.append("oscar_official_benchmark_assets_prohibited_without_separate_rights")
+    if not _SHA256_RE.fullmatch(str(conditioning.get("rights_manifest_sha256") or "")):
+        blockers.append("oscar_conditioning_rights_manifest_digest_invalid")
+
+    review = manifest.get("independent_license_review")
+    review = dict(review) if isinstance(review, Mapping) else {}
+    if not (
+        review.get("status") == "accepted"
+        and review.get("reviewer_independent_of_runtime_owner") is True
+        and str(review.get("reviewed_at") or "")
+        and _SHA256_RE.fullmatch(str(review.get("evidence_sha256") or ""))
+    ):
+        blockers.append("oscar_runtime_independent_license_review_not_accepted")
+    blockers = sorted(set(blockers))
+    return {
+        "schema_version": "oscar_runtime_license_admission_validation.v1",
+        "status": "validated" if not blockers else "blocked",
+        "commercial_execution_allowed": not blockers,
+        "official_benchmark_assets_are_separate_from_runtime_components": True,
+        "blockers": blockers,
+    }
 
 
 @dataclass(frozen=True)
