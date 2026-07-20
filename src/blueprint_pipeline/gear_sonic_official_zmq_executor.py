@@ -569,6 +569,26 @@ def _controller_frame_matches(value: Any, expected: int) -> bool:
     return numeric.is_finite() and numeric == expected
 
 
+def _controller_state_matches_expected_frame(
+    state: Mapping[str, Any],
+    *,
+    expected_frame_index: int,
+    current_timestamp: Decimal | None,
+    last_controller_timestamp: Decimal | None,
+) -> bool:
+    """Match an explicit frame exactly, falling back to freshness only if absent."""
+
+    if "frame_index" in state:
+        return _controller_frame_matches(
+            state.get("frame_index"), expected_frame_index
+        )
+    return (
+        current_timestamp is not None
+        and last_controller_timestamp is not None
+        and current_timestamp > last_controller_timestamp
+    )
+
+
 def _well_formed_controller_state(value: Any) -> bool:
     """Return whether a ``g1_debug`` row proves the controller is in CONTROL.
 
@@ -824,12 +844,11 @@ def _zmq_pubsub_horizon_roundtrip(
                 if not isinstance(state, Mapping):
                     continue
                 current_timestamp = _controller_timestamp(state.get("ros_timestamp"))
-                if not _controller_frame_matches(
-                    state.get("frame_index"), frame_indices[index]
-                ) and (
-                    current_timestamp is None
-                    or last_controller_timestamp is None
-                    or current_timestamp <= last_controller_timestamp
+                if not _controller_state_matches_expected_frame(
+                    state,
+                    expected_frame_index=frame_indices[index],
+                    current_timestamp=current_timestamp,
+                    last_controller_timestamp=last_controller_timestamp,
                 ):
                     continue
                 if not _token_matches(state.get("token_state"), motion_tokens[index]):

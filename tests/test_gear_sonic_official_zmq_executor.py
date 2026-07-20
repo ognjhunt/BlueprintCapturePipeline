@@ -693,6 +693,52 @@ def test_horizon_freshness_rejects_a_buffered_prior_echo() -> None:
     assert not executor._controller_frame_matches([81], 82)
 
 
+def test_horizon_rejects_mismatched_explicit_frame_despite_fresh_timestamp() -> None:
+    prior = executor._controller_timestamp(123)
+    current = executor._controller_timestamp(124)
+
+    assert prior is not None
+    assert current is not None
+    assert not executor._controller_state_matches_expected_frame(
+        {"frame_index": 81},
+        expected_frame_index=82,
+        current_timestamp=current,
+        last_controller_timestamp=prior,
+    )
+    assert executor._controller_state_matches_expected_frame(
+        {"frame_index": [82]},
+        expected_frame_index=82,
+        current_timestamp=prior,
+        last_controller_timestamp=prior,
+    )
+
+
+def test_horizon_uses_timestamp_freshness_only_without_frame_index() -> None:
+    prior = executor._controller_timestamp(123)
+    current = executor._controller_timestamp(124)
+
+    assert prior is not None
+    assert current is not None
+    assert executor._controller_state_matches_expected_frame(
+        {},
+        expected_frame_index=82,
+        current_timestamp=current,
+        last_controller_timestamp=prior,
+    )
+    assert not executor._controller_state_matches_expected_frame(
+        {"frame_index": None},
+        expected_frame_index=82,
+        current_timestamp=current,
+        last_controller_timestamp=prior,
+    )
+    assert not executor._controller_state_matches_expected_frame(
+        {},
+        expected_frame_index=82,
+        current_timestamp=prior,
+        last_controller_timestamp=prior,
+    )
+
+
 def test_executor_rejects_mutated_explicit_horizon_before_transport(wbc_env) -> None:
     frames = [[0.0] * 78, [1.0] * 78]
     action = {
