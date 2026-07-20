@@ -80,6 +80,21 @@ def test_ambiguous_launch_state_is_preserved_for_teardown_settlement(
     }
 
 
+@pytest.mark.parametrize(
+    ("launch", "expected"),
+    [
+        ({"allocation_created": False, "spend_occurred": False}, False),
+        ({"allocation_created": False}, False),
+        ({"allocation_outcome_ambiguous": True, "spend_occurred": None}, True),
+        ({}, True),
+    ],
+)
+def test_launch_without_instance_only_retains_uncertain_outcomes(
+    launch: dict[str, object], expected: bool
+) -> None:
+    assert job._launch_without_instance_is_ambiguous(launch) is expected
+
+
 def _dataset_archive(tmp_path: Path) -> Path:
     root = tmp_path / "microwave_owned_lerobot_v21_20260717"
     root.mkdir()

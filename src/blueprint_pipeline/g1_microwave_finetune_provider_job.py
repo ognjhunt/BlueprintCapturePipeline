@@ -1001,6 +1001,12 @@ def resume_checkpoint_transfer_to_vast(
     return result
 
 
+def _launch_without_instance_is_ambiguous(launch: Mapping[str, Any]) -> bool:
+    """Distinguish an uncertain create from an explicit no-allocation result."""
+
+    return launch.get("allocation_created") is not False
+
+
 def run_finetune_job(
     *,
     provider_name: str,
@@ -1391,11 +1397,12 @@ def run_finetune_job(
                     ),
                 )
         else:
-            _preserve_ambiguous_launch(
-                pending["path"],
-                launch,
-                reason="finetune_provider_launch_returned_without_instance_id",
-            )
+            if _launch_without_instance_is_ambiguous(launch):
+                _preserve_ambiguous_launch(
+                    pending["path"],
+                    launch,
+                    reason="finetune_provider_launch_returned_without_instance_id",
+                )
     except BaseException as exc:  # Provider outcome is ambiguous even on caller cancellation.
         _preserve_ambiguous_launch(
             pending["path"],
