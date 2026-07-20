@@ -1,11 +1,11 @@
 {
-  "schema_version": "blueprint.public_launch_sc3_quality_gap_ledger.v2",
+  "schema_version": "blueprint.public_launch_sc3_quality_gap_ledger.v3",
   "ledger_id": "public-launch-sc3-quality-2026-07-09",
   "generated_at": "2026-07-10T13:01:59+00:00",
   "updated_at": "2026-07-10T13:13:27+00:00",
   "source_audit": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
   "source_audit_sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
-  "evidence_mapping_sha256": "sha256:f0f07a721e4ab15b290b4b42e2bdbc177f85f7b6d29c96be6b3861d2b3b6c011",
+  "evidence_mapping_sha256": "sha256:e2b94f149b21cf7cc32a848f838ad19be4a6afc51c8043a0ce9684c50acec778",
   "authoritative_for_current_status": true,
   "status_definitions": {
     "open": "No complete, current exit-criteria proof is recorded.",
@@ -22,15 +22,15 @@
     "gap_aggregation": "reopened wins; otherwise all closed => closed; any partial or closed => partial; otherwise open."
   },
   "status_counts": {
-    "open": 16,
-    "partial": 91,
+    "open": 13,
+    "partial": 94,
     "closed": 0,
     "reopened": 0,
     "total": 107
   },
   "criteria_counts": {
-    "open": 16,
-    "partial": 91,
+    "open": 13,
+    "partial": 94,
     "closed": 0,
     "reopened": 0,
     "total": 107
@@ -352,7 +352,7 @@
             {
               "artifact_id": "REL-01-AC-01-EV-02",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -414,13 +414,33 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: fresh clone, `git archive`, local canonical environment, CI fast lane, and CI full lane all pass the exact same test collection with no required ignored files.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: fresh clone, `git archive`, local canonical environment, CI fast lane, and CI full lane all pass the exact same test collection with no required ignored files.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-02",
@@ -513,13 +533,31 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: a test branch cannot merge with either check red; direct push and force push are denied; an audited break-glass path is independently approved and time bounded.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: a test branch cannot merge with either check red; direct push and force push are denied; an audited break-glass path is independently approved and time bounded.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-03",
@@ -635,13 +673,33 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: red CI, blocked SC3 inputs, missing restore drill, stale artifact, wrong commit, dependency-policy failure, or failed provider canary each forces a nonzero gate and an explicit blocker.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: red CI, blocked SC3 inputs, missing restore drill, stale artifact, wrong commit, dependency-policy failure, or failed provider canary each forces a nonzero gate and an explicit blocker.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-04",
@@ -751,13 +809,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: every public/buyer surface includes source, metric, sample/unit, scope/split, and “not a Blueprint measurement” until a locked independent Blueprint study exists.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: every public/buyer surface includes source, metric, sample/unit, scope/split, and “not a Blueprint measurement” until a locked independent Blueprint study exists.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-05",
@@ -840,7 +916,7 @@
             {
               "artifact_id": "REL-05-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -886,13 +962,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: zero known critical/high runtime vulnerabilities or documented, time-bounded exceptions with compensating controls; image and Python SBOMs match the deployed digest.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: zero known critical/high runtime vulnerabilities or documented, time-bounded exceptions with compensating controls; image and Python SBOMs match the deployed digest.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-01",
@@ -1021,13 +1115,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: tamper, missing hash, malformed sidecar, incomplete upload, absolute path, `..`, and symlink fixtures produce typed quarantine and zero derived writes.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: tamper, missing hash, malformed sidecar, incomplete upload, absolute path, `..`, and symlink fixtures produce typed quarantine and zero derived writes.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-02",
@@ -1156,13 +1268,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: raw tree and digest are byte-identical before/after every stage and rerun.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: raw tree and digest are byte-identical before/after every stage and rerun.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-03",
@@ -1241,11 +1371,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "DATA-03-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/site_reference_database.py",
+              "sha256": "sha256:fe7e879ee666e39f6d3f1b000898816d69f853baa0bd4f6500b11a5d890a54f0",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "DATA-03-AC-01-EV-04",
+              "path": "tests/test_site_reference_database_contract.py",
+              "sha256": "sha256:3566443ddd4a7da0799c145ca0da8545ea2ffe6733207eb00a469d6ab2aac679",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_geometry_stage.py",
+            "command": "python -m pytest -q tests/test_geometry_stage.py tests/test_site_reference_database_contract.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -1261,7 +1423,9 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "DATA-03-AC-01-EV-01",
-              "DATA-03-AC-01-EV-02"
+              "DATA-03-AC-01-EV-02",
+              "DATA-03-AC-01-EV-03",
+              "DATA-03-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -1274,13 +1438,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: empty, corrupt, NaN, wrong-shaped, unitless, missing, or misaligned geometry yields zero verified coverage and blocks readiness; calibrated fixtures meet explicit error bounds.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: empty, corrupt, NaN, wrong-shaped, unitless, missing, or misaligned geometry yields zero verified coverage and blocks readiness; calibrated fixtures meet explicit error bounds.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-04",
@@ -1359,11 +1541,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "DATA-04-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/site_reference_database.py",
+              "sha256": "sha256:fe7e879ee666e39f6d3f1b000898816d69f853baa0bd4f6500b11a5d890a54f0",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "DATA-04-AC-01-EV-04",
+              "path": "tests/test_site_reference_database_contract.py",
+              "sha256": "sha256:3566443ddd4a7da0799c145ca0da8545ea2ffe6733207eb00a469d6ab2aac679",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_object_geometry_stage_coverage_edges.py",
+            "command": "python -m pytest -q tests/test_object_geometry_stage_coverage_edges.py tests/test_site_reference_database_contract.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -1379,7 +1593,9 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "DATA-04-AC-01-EV-01",
-              "DATA-04-AC-01-EV-02"
+              "DATA-04-AC-01-EV-02",
+              "DATA-04-AC-01-EV-03",
+              "DATA-04-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -1392,13 +1608,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: a 2D-only detection cannot produce metric placement or physics-ready status; known-depth/multiview fixtures meet translation, extent, and reprojection thresholds.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: a 2D-only detection cannot produce metric placement or physics-ready status; known-depth/multiview fixtures meet translation, extent, and reprojection thresholds.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-05",
@@ -1525,13 +1759,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: distinct state/action/time fixture round-trips exactly; missing state/action/time or wrong width blocks native status; repeated state is never counted as multiple measurements.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: distinct state/action/time fixture round-trips exactly; missing state/action/time or wrong width blocks native status; repeated state is never counted as multiple measurements.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-06",
@@ -1660,13 +1910,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: recursive artifact scan finds no raw path/URI in scene memory, site world, launch bundle, PTDP, delivery, or buyer output.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: recursive artifact scan finds no raw path/URI in scene memory, site world, launch bundle, PTDP, delivery, or buyer output.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-07",
@@ -1793,13 +2059,25 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: missing, unknown, string-false, expired, scope-mismatched, and revoked consent each block with a distinct typed reason.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: missing, unknown, string-false, expired, scope-mismatched, and revoked consent each block with a distinct typed reason.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+      }
     },
     {
       "id": "DATA-08",
@@ -1909,13 +2187,25 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: archive contains final readout/manifest/delivery/access files; every member except a defined self-referential root signature is indexed; there are no extras/missing hashes.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: archive contains final readout/manifest/delivery/access files; every member except a defined self-referential root signature is indexed; there are no extras/missing hashes.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+      }
     },
     {
       "id": "DATA-09",
@@ -2044,13 +2334,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: changed rights/input rerun contains no prior member/status; synthetic-to-blocked geometry exposes no current tensor and preserves lineage that synthetic data existed.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: changed rights/input rerun contains no prior member/status; synthetic-to-blocked geometry exposes no current tensor and preserves lineage that synthetic data existed.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-10",
@@ -2162,13 +2468,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: missing canonical stage or self-attested substitute blocks high-quality/native status; rejected clips never enter exports.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: missing canonical stage or self-attested substitute blocks high-quality/native status; rejected clips never enter exports.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-01",
@@ -2278,13 +2602,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: unrelated, reordered, sign-flipped, and scaled actions fail at the correct chunk; generic moving rectangles/noise cannot prove consistency; golden vectors reproduce the published formula.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: unrelated, reordered, sign-flipped, and scaled actions fail at the correct chunk; generic moving rectangles/noise cannot prove consistency; golden vectors reproduce the published formula.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-02",
@@ -2332,8 +2674,8 @@
           "evidence_artifacts": [
             {
               "artifact_id": "SC3-02-AC-01-EV-01",
-              "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:4172057c19741daa9cc353454bd1b9582a77d2fba16eed35b0164685c4e12e26",
+              "path": "src/blueprint_pipeline/closed_loop_consistency_scoring.py",
+              "sha256": "sha256:d1b9d73694618ad8651129bc3a30a063af488a4e2a55a702fdcebfc2196554eb",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2348,8 +2690,40 @@
             },
             {
               "artifact_id": "SC3-02-AC-01-EV-02",
-              "path": "tests/test_sc3_fidelity_contracts.py",
-              "sha256": "sha256:d60c2c0f0a09bd2e78a264f91b451168f67404fa2d9007fe767a400b1f074b49",
+              "path": "src/blueprint_pipeline/generated_episode_authority.py",
+              "sha256": "sha256:e057737bac4c501216dbeb54f51140381cb4cfb185f063bf38a4095f7b593c6f",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-02-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
+              "sha256": "sha256:dca614c29d0ecf50e6b4662ad1aed4cda0b0dc0598c2991d200dc71d7d4670e5",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-02-AC-01-EV-04",
+              "path": "tests/test_oscar_isaac_closed_loop_eval.py",
+              "sha256": "sha256:933b447b8a099b6bb5f3367e742dae07835ddea3bcf3f13e10a0f51607edf9a8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2365,7 +2739,7 @@
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_sc3_fidelity_contracts.py",
+            "command": "python -m pytest -q -m '' tests/test_oscar_isaac_closed_loop_eval.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -2381,7 +2755,9 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "SC3-02-AC-01-EV-01",
-              "SC3-02-AC-01-EV-02"
+              "SC3-02-AC-01-EV-02",
+              "SC3-02-AC-01-EV-03",
+              "SC3-02-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -2394,13 +2770,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: boolean-only, missing checksum/action, missing threshold, and forged-evidence responses fail; infra error and model abstention have separate states.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: boolean-only, missing checksum/action, missing threshold, and forged-evidence responses fail; infra error and model abstention have separate states.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-03",
@@ -2447,7 +2841,7 @@
             {
               "artifact_id": "SC3-03-AC-01-EV-01",
               "path": "src/blueprint_pipeline/sc3_fidelity_contracts.py",
-              "sha256": "sha256:1b4e9478a769beab07a3a6c8c593b0723fca4c92b6c4bf7b7f23ee6af296a66c",
+              "sha256": "sha256:f7cdccf26d2040bb50a5c8107f0275280be0c6c4834f233fcd05ccdcbdbdd004",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2508,13 +2902,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: hand-calculated and reference vectors match for ties, near-ties, one large inversion, and multiple inversions.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: hand-calculated and reference vectors match for ties, near-ties, one large inversion, and multiple inversions.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-04",
@@ -2561,7 +2971,7 @@
             {
               "artifact_id": "SC3-04-AC-01-EV-01",
               "path": "src/blueprint_pipeline/sc3_fidelity_contracts.py",
-              "sha256": "sha256:1b4e9478a769beab07a3a6c8c593b0723fca4c92b6c4bf7b7f23ee6af296a66c",
+              "sha256": "sha256:f7cdccf26d2040bb50a5c8107f0275280be0c6c4834f233fcd05ccdcbdbdd004",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2622,13 +3032,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: two-policy/four-anchor data remains diagnostic and can never unlock a public claim even at `r=1.0`.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: two-policy/four-anchor data remains diagnostic and can never unlock a public claim even at `r=1.0`.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-05",
@@ -2675,7 +3101,7 @@
             {
               "artifact_id": "SC3-05-AC-01-EV-01",
               "path": "src/blueprint_pipeline/sc3_fidelity_contracts.py",
-              "sha256": "sha256:1b4e9478a769beab07a3a6c8c593b0723fca4c92b6c4bf7b7f23ee6af296a66c",
+              "sha256": "sha256:f7cdccf26d2040bb50a5c8107f0275280be0c6c4834f233fcd05ccdcbdbdd004",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2736,13 +3162,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: a constructed Simpson-reversal fixture is detected and yields distinct declared macro/micro values.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: a constructed Simpson-reversal fixture is detected and yields distinct declared macro/micro values.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-06",
@@ -2789,7 +3231,7 @@
             {
               "artifact_id": "SC3-06-AC-01-EV-01",
               "path": "src/blueprint_pipeline/sc3_fidelity_contracts.py",
-              "sha256": "sha256:1b4e9478a769beab07a3a6c8c593b0723fca4c92b6c4bf7b7f23ee6af296a66c",
+              "sha256": "sha256:f7cdccf26d2040bb50a5c8107f0275280be0c6c4834f233fcd05ccdcbdbdd004",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2850,13 +3292,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: permutation invariance, simulated coverage validation, preserved cluster IDs, and stable intervals at a preregistered replicate count (for example ≥10,000).",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: permutation invariance, simulated coverage validation, preserved cluster IDs, and stable intervals at a preregistered replicate count (for example ≥10,000).",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-07",
@@ -2966,13 +3424,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: missing/low/negative Pearson, excessive MMRV, wide CI, wrong split, or insufficient cells cannot enable a public claim.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: missing/low/negative Pearson, excessive MMRV, wide CI, wrong split, or insufficient cells cannot enable a public claim.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-08",
@@ -3051,11 +3525,75 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "SC3-08-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/oscar_action_control_contracts.py",
+              "sha256": "sha256:04d60507155dcf710a732c6f5f44a9ea124cb80768f10bcc0572e91ede540d88",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-08-AC-01-EV-04",
+              "path": "src/blueprint_pipeline/policy_evaluation_contracts.py",
+              "sha256": "sha256:08f811eb4ce881a08414c50561c3ab869d2bbea726a329eb1223a3a798535e2d",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-08-AC-01-EV-05",
+              "path": "tests/test_oscar_action_control_contracts.py",
+              "sha256": "sha256:c5f4d251ec315b022f5830fa26258e577230cf908193b942209d5a810800d1ac",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-08-AC-01-EV-06",
+              "path": "tests/test_policy_evaluation_contracts.py",
+              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_action_normalization.py",
+            "command": "python -m pytest -q tests/test_action_normalization.py tests/test_oscar_action_control_contracts.py tests/test_policy_evaluation_contracts.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -3071,7 +3609,11 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "SC3-08-AC-01-EV-01",
-              "SC3-08-AC-01-EV-02"
+              "SC3-08-AC-01-EV-02",
+              "SC3-08-AC-01-EV-03",
+              "SC3-08-AC-01-EV-04",
+              "SC3-08-AC-01-EV-05",
+              "SC3-08-AC-01-EV-06"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -3084,13 +3626,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: no-action, 6D, wrong-unit, missing-time, NaN, out-of-range, or invalid zero-variance streams fail closed.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: no-action, 6D, wrong-unit, missing-time, NaN, out-of-range, or invalid zero-variance streams fail closed.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-09",
@@ -3200,13 +3760,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: evaluator request snapshot includes observation/action identities and content; action-only perturbation changes conditioning; unconditioned endpoint cannot populate policy-eval artifacts.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: evaluator request snapshot includes observation/action identities and content; action-only perturbation changes conditioning; unconditioned endpoint cannot populate policy-eval artifacts.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-10",
@@ -3255,7 +3833,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:4172057c19741daa9cc353454bd1b9582a77d2fba16eed35b0164685c4e12e26",
+              "sha256": "sha256:dca614c29d0ecf50e6b4662ad1aed4cda0b0dc0598c2991d200dc71d7d4670e5",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3271,7 +3849,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:48601243815577d8385e90237f40316d93517fd3e102b85e14aa6034f3f23ff3",
+              "sha256": "sha256:933b447b8a099b6bb5f3367e742dae07835ddea3bcf3f13e10a0f51607edf9a8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3287,7 +3865,7 @@
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_oscar_isaac_closed_loop_eval.py",
+            "command": "python -m pytest -q -m '' tests/test_oscar_isaac_closed_loop_eval.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -3316,13 +3894,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: zero/positive/negative/reordered chunks yield corresponding distinct skeletons; `not_a_learned_robot_policy_action=true` blocks evaluator completion.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: zero/positive/negative/reordered chunks yield corresponding distinct skeletons; `not_a_learned_robot_policy_action=true` blocks evaluator completion.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-11",
@@ -3371,7 +3967,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:4172057c19741daa9cc353454bd1b9582a77d2fba16eed35b0164685c4e12e26",
+              "sha256": "sha256:dca614c29d0ecf50e6b4662ad1aed4cda0b0dc0598c2991d200dc71d7d4670e5",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3387,7 +3983,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:48601243815577d8385e90237f40316d93517fd3e102b85e14aa6034f3f23ff3",
+              "sha256": "sha256:933b447b8a099b6bb5f3367e742dae07835ddea3bcf3f13e10a0f51607edf9a8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3403,7 +3999,7 @@
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_oscar_isaac_closed_loop_eval.py",
+            "command": "python -m pytest -q -m '' tests/test_oscar_isaac_closed_loop_eval.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -3432,13 +4028,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: approaching a target never completes a manipulation task; registered state transition and tolerance are required.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: approaching a target never completes a manipulation task; registered state transition and tolerance are required.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-12",
@@ -3515,11 +4129,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "SC3-12-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/decision_grade_ranking.py",
+              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-12-AC-01-EV-04",
+              "path": "tests/test_policy_evaluation_contracts.py",
+              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_oscar_cosmos_wam_evaluator.py",
+            "command": "python -m pytest -q tests/test_oscar_cosmos_wam_evaluator.py tests/test_policy_evaluation_contracts.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -3535,7 +4181,9 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "SC3-12-AC-01-EV-01",
-              "SC3-12-AC-01-EV-02"
+              "SC3-12-AC-01-EV-02",
+              "SC3-12-AC-01-EV-03",
+              "SC3-12-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -3548,13 +4196,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: low confidence abstains; missing subcriteria cannot pass; earlier transient failure remains visible; full episode ordering is verified.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: low confidence abstains; missing subcriteria cannot pass; earlier transient failure remains visible; full episode ordering is verified.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-01",
@@ -3683,13 +4349,33 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: anonymous=401, cross-tenant=403; traversal/absolute/symlink/encoded/confusable IDs cannot escape; unsafe flags cannot be set by public payload; WebSocket replay/cross-tenant tests fail.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: anonymous=401, cross-tenant=403; traversal/absolute/symlink/encoded/confusable IDs cannot escape; unsafe flags cannot be set by public payload; WebSocket replay/cross-tenant tests fail.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-02",
@@ -3816,13 +4502,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: traversal, prefix confusion, symlink, absolute, oversized, and malicious object-name fixtures fail before external write/read.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: traversal, prefix confusion, symlink, absolute, oversized, and malicious object-name fixtures fail before external write/read.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-03",
@@ -3936,13 +4640,33 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: duplicate delivery executes once; active/expired lease behavior is correct; blocked/transient results are not acked success; crash/restart yields one artifact/charge.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: duplicate delivery executes once; active/expired lease behavior is correct; blocked/transient results are not acked success; crash/restart yields one artifact/charge.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-04",
@@ -4056,13 +4780,33 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: blocked request is nonzero/retryable/unprocessed and succeeds after dependency restoration.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: blocked request is nonzero/retryable/unprocessed and succeeds after dependency restoration.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-05",
@@ -4193,13 +4937,33 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: metadata, redirect/private, rebinding, tar symlink/hardlink, bomb, huge member count, and interrupted download tests fail safely.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: metadata, redirect/private, rebinding, tar symlink/hardlink, bomb, huge member count, and interrupted download tests fail safely.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-06",
@@ -4328,13 +5092,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: metadata/localhost/RFC1918/redirect/rebinding/oversized/wrong-type/slow-stream fixtures fail closed.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: metadata/localhost/RFC1918/redirect/rebinding/oversized/wrong-type/slow-stream fixtures fail closed.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-07",
@@ -4442,13 +5224,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: 401/timeout is red; owned DO orphan is deleted and absence verified; stale marker expires; failed delete remains red.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: 401/timeout is red; owned DO orphan is deleted and absence verified; stale marker expires; failed delete remains red.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-08",
@@ -4558,13 +5356,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: first provider submits then stalls, is verified terminated, and second runs; no artifact=no winner; crafted names cannot escape log/result directories.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: first provider submits then stalls, is verified terminated, and second runs; no artifact=no winner; crafted names cannot escape log/result directories.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-09",
@@ -4689,13 +5505,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: clean-project deploy creates all required services and references readback URIs; removal of one dependency hard-fails with no complete manifest.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: clean-project deploy creates all required services and references readback URIs; removal of one dependency hard-fails with no complete manifest.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-10",
@@ -4803,13 +5635,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: fake URL, wrong workflow/SHA, reduced suite, red conclusion, dirty tree, remote divergence, and tag/digest mismatch all block.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: fake URL, wrong workflow/SHA, reduced suite, red conclusion, dirty tree, remote divergence, and tag/digest mismatch all block.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-11",
@@ -4934,13 +5782,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: secret scanner finds none in repo/state/log/process args; blank secret blocks plan; deployed canary authenticates; concurrent state is locked.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: secret scanner finds none in repo/state/log/process args; blank secret blocks plan; deployed canary authenticates; concurrent state is locked.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-06",
@@ -5021,7 +5885,7 @@
             {
               "artifact_id": "REL-06-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5067,13 +5931,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Track the lock; use `uv sync --frozen`; verify lock/pyproject consistency. A fresh build on two clean machines must resolve identical artifacts/hashes.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Track the lock; use `uv sync --frozen`; verify lock/pyproject consistency. A fresh build on two clean machines must resolve identical artifacts/hashes.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-07",
@@ -5198,13 +6080,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Add separate mandatory lint/type/SAST/dependency/package/container jobs with tuned baselines. New high findings and coverage regressions block; suppressions require owner, reason, and expiry.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Add separate mandatory lint/type/SAST/dependency/package/container jobs with tuned baselines. New high findings and coverage regressions block; suppressions require owner, reason, and expiry.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-08",
@@ -5329,13 +6227,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Either narrow supported Python to 3.12 or add a compatibility matrix for 3.10–3.12 while retaining 3.12 as canonical release evidence. All advertised interpreters must install and run an agreed compatibility suite.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Either narrow supported Python to 3.12 or add a compatibility matrix for 3.10–3.12 while retaining 3.12 as canonical release evidence. All advertised interpreters must install and run an agreed compatibility suite.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-09",
@@ -5416,7 +6330,7 @@
             {
               "artifact_id": "REL-09-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5462,13 +6376,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Align runtime interpreter, copy required metadata, pin model revision/digest, run nonroot/read-only, define valid Compose targets, and build/smoke every production/dev image in CI. `docker compose config/build` and health/canary must pass in a clean checkout.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Align runtime interpreter, copy required metadata, pin model revision/digest, run nonroot/read-only, define valid Compose targets, and build/smoke every production/dev image in CI. `docker compose config/build` and health/canary must pass in a clean checkout.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-10",
@@ -5549,7 +6481,7 @@
             {
               "artifact_id": "REL-10-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5595,13 +6527,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Pin actions to commit SHAs, images to digests, source/model revisions to immutable hashes; generate CycloneDX/SPDX SBOM, sign images/provenance, enable dependency/security tooling and CodeQL or equivalent. Deployed digest must verify signature and SBOM.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Pin actions to commit SHAs, images to digests, source/model revisions to immutable hashes; generate CycloneDX/SPDX SBOM, sign images/provenance, enable dependency/security tooling and CodeQL or equivalent. Deployed digest must verify signature and SBOM.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-11",
@@ -5696,7 +6646,7 @@
             {
               "artifact_id": "REL-11-AC-01-EV-04",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5743,13 +6693,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Add the actual approved license, vulnerability-reporting policy, supported-version policy, and ownership; move to SPDX license expression. Package wheel must contain correct license metadata/files.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Add the actual approved license, vulnerability-reporting policy, supported-version policy, and ownership; move to SPDX license expression. Package wheel must contain correct license metadata/files.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-12",
@@ -5874,13 +6840,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Move operational evidence to an access-controlled artifact store or a clearly versioned/redacted fixture subset; add retention, schema, SHA/freshness, and disclosure checks. Source tree must contain no personal absolute paths or stale artifacts usable as current proof.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Move operational evidence to an access-controlled artifact store or a clearly versioned/redacted fixture subset; add retention, schema, SHA/freshness, and disclosure checks. Source tree must contain no personal absolute paths or stale artifacts usable as current proof.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-13",
@@ -5961,7 +6943,7 @@
             {
               "artifact_id": "REL-13-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -6007,13 +6989,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Define mandatory CPU, container, GPU-canary, Pub/Sub emulator/integration, and native LeRobot lanes. A skipped critical capability must appear as a blocker for the scope that depends on it, not silent green.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Define mandatory CPU, container, GPU-canary, Pub/Sub emulator/integration, and native LeRobot lanes. A skipped critical capability must appear as a blocker for the scope that depends on it, not silent green.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-14",
@@ -6060,7 +7060,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:c039dc1774701761b942e73b6ee670a5e097218659cbff284e3e6391e7700344",
+              "sha256": "sha256:be3332dd6a7e7953f27754b05d29b2a4c363076856aff1fff76d4b4a3124d94f",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -6138,13 +7138,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Establish module budgets and extract shared state machines, metric implementations, validators, and claim decisions behind typed schemas. Require characterization tests before splits and prohibit new duplicated claim logic.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Establish module budgets and extract shared state machines, metric implementations, validators, and claim decisions behind typed schemas. Require characterization tests before splits and prohibit new duplicated claim logic.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "REL-15",
@@ -6223,7 +7239,7 @@
             {
               "artifact_id": "REL-15-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -6269,13 +7285,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Remove free-form shell input or validate constrained choices and pass safe argv; canonical release evidence must bind the exact collected test IDs/count. Shell metacharacters and `-k`/path reduction cannot qualify.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Remove free-form shell input or validate constrained choices and pass safe argv; canonical release evidence must bind the exact collected test IDs/count. Shell metacharacters and `-k`/path reduction cannot qualify.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-11",
@@ -6385,13 +7417,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Require a production SigLIP/DINO-class encoder, multiple keyframes, SE(3)-relative/aligned trajectories, and exclude/review unverifiable clips. Translated/rotated duplicates must cluster; missing evidence cannot pass production dedup.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Require a production SigLIP/DINO-class encoder, multiple keyframes, SE(3)-relative/aligned trajectories, and exclude/review unverifiable clips. Translated/rotated duplicates must cluster; missing evidence cannot pass production dedup.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-12",
@@ -6503,13 +7551,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Define stream timebase ID/unit/origin, monotonic sequence, canonical IDs, one-to-one joins, duplicate/drop ledger, and p50/p95/max per modality. Mixed ms/s, epochs, duplicates, and nonmonotonic fixtures must block.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Define stream timebase ID/unit/origin, monotonic sequence, canonical IDs, one-to-one joins, duplicate/drop ledger, and p50/p95/max per modality. Mixed ms/s, epochs, duplicates, and nonmonotonic fixtures must block.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-13",
@@ -6586,11 +7652,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "DATA-13-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/site_reference_database.py",
+              "sha256": "sha256:fe7e879ee666e39f6d3f1b000898816d69f853baa0bd4f6500b11a5d890a54f0",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "DATA-13-AC-01-EV-04",
+              "path": "tests/test_site_reference_database_contract.py",
+              "sha256": "sha256:3566443ddd4a7da0799c145ca0da8545ea2ffe6733207eb00a469d6ab2aac679",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_camera_geometry_validation.py",
+            "command": "python -m pytest -q tests/test_camera_geometry_validation.py tests/test_site_reference_database_contract.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -6606,7 +7704,9 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "DATA-13-AC-01-EV-01",
-              "DATA-13-AC-01-EV-02"
+              "DATA-13-AC-01-EV-02",
+              "DATA-13-AC-01-EV-03",
+              "DATA-13-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -6619,13 +7719,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: One validator for FOV/principal point/resolution, SE(3) determinant/orthonormality/last row, units/frames, and reprojection error. NaN, absurd FOV, reflection/shear, missing extrinsics, or frame mismatch blocks projection-ready status.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: One validator for FOV/principal point/resolution, SE(3) determinant/orthonormality/last row, units/frames, and reprojection error. NaN, absurd FOV, reflection/shear, missing extrinsics, or frame mismatch blocks projection-ready status.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-14",
@@ -6735,13 +7853,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Parse URDF/MJCF; validate joint names/order/limits/units; solve every aligned step; transform through calibrated frames; gate visibility/continuity. A reference sequence must reproduce known landmarks; wrong order/transform/time blocks.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Parse URDF/MJCF; validate joint names/order/limits/units; solve every aligned step; transform through calibrated frames; gate visibility/continuity. A reference sequence must reproduce known landmarks; wrong order/transform/time blocks.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-15",
@@ -6851,13 +7987,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Add post-curation grounded captioning over hashed sampled frames with model/prompt/version; strict JSON Schema, vocabulary, object/task ID checks, retry/exclusion. Unsupported geometry/task claims and missing captions block premium/high-quality package status.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Add post-curation grounded captioning over hashed sampled frames with model/prompt/version; strict JSON Schema, vocabulary, object/task ID checks, retry/exclusion. Unsupported geometry/task claims and missing captions block premium/high-quality package status.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-16",
@@ -6967,13 +8119,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Buyer-grade runs require a versioned task contract: target, source/destination or transition, evidence, metric, tolerance, evaluator mapping. Auto-generated tasks stay support-only; ambiguous/missing grounding blocks.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Buyer-grade runs require a versioned task contract: target, source/destination or transition, evidence, metric, tolerance, evaluator mapping. Auto-generated tasks stay support-only; ambiguous/missing grounding blocks.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-17",
@@ -7100,13 +8270,25 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Separate raw hypothesis and accepted training-eligible ledgers; require review status, evidence, failed-attempt coverage, and provenance. Pending/nonreviewable labels never enter native training export; a reviewed zero attestation is required for zero.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Separate raw hypothesis and accepted training-eligible ledgers; require review status, evidence, failed-attempt coverage, and provenance. Pending/nonreviewable labels never enter native training export; a reviewed zero attestation is required for zero.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+      }
     },
     {
       "id": "DATA-18",
@@ -7216,13 +8398,25 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Permit canonical contained roots only; reject symlinks/escape; probe actual media, extension, size/duration, digest lineage. `/etc/passwd`, `..`, symlink, renamed text, corrupt, and oversized inputs must block before copy.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Permit canonical contained roots only; reject symlinks/escape; probe actual media, extension, size/duration, digest lineage. `/etc/passwd`, `..`, symlink, renamed text, corrupt, and oversized inputs must block before copy.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+      }
     },
     {
       "id": "DATA-19",
@@ -7349,13 +8543,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Same-filesystem temp, flush/fsync, atomic replace, directory fsync where needed, run lease/CAS, final commit marker. Kill-at-write leaves old complete or no new committed state; concurrent runs never mix.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Same-filesystem temp, flush/fsync, atomic replace, directory fsync where needed, run lease/CAS, final commit marker. Kill-at-write leaves old complete or no new committed state; concurrent runs never mix.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-20",
@@ -7465,13 +8675,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Derive seed from input digest, validate full SE(3), deterministic tie-breaks, output transform fingerprint. Repeated runs are byte-stable and malformed transforms block.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Derive seed from input digest, validate full SE(3), deterministic tie-breaks, output transform fingerprint. Repeated runs are byte-stable and malformed transforms block.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-21",
@@ -7581,13 +8807,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Compute one canonical typed decision and project all surfaces. Property-based fixtures across source types must agree exactly.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Compute one canonical typed decision and project all surfaces. Property-based fixtures across source types must agree exactly.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-22",
@@ -7712,13 +8956,25 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Streaming/bounded processing, ANN index, content dedup/object references, disk quota/preflight, resumable manifests, cancellation/backpressure. Maximum-size workload must meet explicit memory/disk/time SLOs without duplicate retry artifacts.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Streaming/bounded processing, ANN index, content dedup/object references, disk quota/preflight, resumable manifests, cancellation/backpressure. Maximum-size workload must meet explicit memory/disk/time SLOs without duplicate retry artifacts.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "ptdp_or_paid_feature_not_enabled"
+      }
     },
     {
       "id": "DATA-23",
@@ -7767,7 +9023,7 @@
             {
               "artifact_id": "DATA-23-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_wam_provider_bundle.py",
-              "sha256": "sha256:c35ac5dceed6fd4bce587525e73f003a6dcbcac1364eaf34d4b2845cbddf4903",
+              "sha256": "sha256:841816bc0ab832976b646d67dbdc3291b164a2d8c90cfe08165f2aa1f2cca822",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7783,7 +9039,7 @@
             {
               "artifact_id": "DATA-23-AC-01-EV-02",
               "path": "tests/test_oscar_wam_provider_bundle.py",
-              "sha256": "sha256:240b0f14a80e9d0a9a2f235f6f1d93189eff768643e3f52bb670ee6e66c32abb",
+              "sha256": "sha256:321bba9aae43f9bca854e023de5ab3379fc361169ea7f7411c29a182991f1e41",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7828,13 +9084,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Replace with JSON/text, pin checkpoint/asset digests, and validate before inference. No pickle deserialization; changed digest blocks.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Replace with JSON/text, pin checkpoint/asset digests, and validate before inference. No pickle deserialization; changed digest blocks.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "DATA-24",
@@ -7944,13 +9218,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Only approved immutable revisions/digests; isolate remote-code models in nonroot/no-network sandbox or remove trust; signature/license scan. Unapproved revision cannot execute or access worker secrets/network.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Only approved immutable revisions/digests; isolate remote-code models in nonroot/no-network sandbox or remove trust; signature/license scan. Unapproved revision cannot execute or access worker secrets/network.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-13",
@@ -8058,13 +9350,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Schema for camera IDs, shared timestamps/skew, intrinsics/extrinsics, simultaneous indices; joint generation plus correspondence/occlusion/re-entry checks. Duplicate/unrelated/unsynchronized/swapped cameras must fail.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Schema for camera IDs, shared timestamps/skew, intrinsics/extrinsics, simultaneous indices; joint generation plus correspondence/occlusion/re-entry checks. Duplicate/unrelated/unsynchronized/swapped cameras must fail.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-14",
@@ -8172,13 +9480,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Executable action/prediction/retention/requery contract with control rate and trace. Assert 25 proposed, 24 supplied/predicted, 16 retained/executed, remainder discarded, correct requery timestamp.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Executable action/prediction/retention/requery contract with control rate and trace. Assert 25 proposed, 24 supplied/predicted, 16 retained/executed, remainder discarded, correct requery timestamp.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-15",
@@ -8225,7 +9549,7 @@
             {
               "artifact_id": "SC3-15-AC-01-EV-01",
               "path": "src/blueprint_pipeline/sc3_fidelity_contracts.py",
-              "sha256": "sha256:1b4e9478a769beab07a3a6c8c593b0723fca4c92b6c4bf7b7f23ee6af296a66c",
+              "sha256": "sha256:f7cdccf26d2040bb50a5c8107f0275280be0c6c4834f233fcd05ccdcbdbdd004",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8241,7 +9565,7 @@
             {
               "artifact_id": "SC3-15-AC-01-EV-02",
               "path": "tests/test_sc3_fidelity_contracts.py",
-              "sha256": "sha256:d60c2c0f0a09bd2e78a264f91b451168f67404fa2d9007fe767a400b1f074b49",
+              "sha256": "sha256:cd5e210113b295c987bed4538bd451caab4af4bc19ff8c664c47a925e637c642",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8286,13 +9610,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Require checkpoint-attested training dataset/split/objective hashes and golden functional probes for each mode. Base checkpoint without SC3 fine-tuning remains aspirational.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Require checkpoint-attested training dataset/split/objective hashes and golden functional probes for each mode. Base checkpoint without SC3 fine-tuning remains aspirational.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-16",
@@ -8340,8 +9680,8 @@
           "evidence_artifacts": [
             {
               "artifact_id": "SC3-16-AC-01-EV-01",
-              "path": "src/blueprint_pipeline/wam_fixture_evaluator.py",
-              "sha256": "sha256:6e22a55a1b73190f24dbbd7bf3fc12fad9d211f211acbc1aedf26e7ef8f4ad2a",
+              "path": "src/blueprint_pipeline/policy_evaluation_contracts.py",
+              "sha256": "sha256:08f811eb4ce881a08414c50561c3ab869d2bbea726a329eb1223a3a798535e2d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8356,8 +9696,24 @@
             },
             {
               "artifact_id": "SC3-16-AC-01-EV-02",
-              "path": "tests/test_wam_fixture_evaluator.py",
-              "sha256": "sha256:93cc22083c55edad773fe5da54804b05d7b757d4cc8de4c422d8f0f4a2a03715",
+              "path": "src/blueprint_pipeline/decision_grade_ranking.py",
+              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-16-AC-01-EV-03",
+              "path": "tests/test_policy_evaluation_contracts.py",
+              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8373,7 +9729,7 @@
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_wam_fixture_evaluator.py",
+            "command": "python -m pytest -q tests/test_policy_evaluation_contracts.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -8389,7 +9745,8 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "SC3-16-AC-01-EV-01",
-              "SC3-16-AC-01-EV-02"
+              "SC3-16-AC-01-EV-02",
+              "SC3-16-AC-01-EV-03"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -8402,13 +9759,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Explicit replicate/seed dimension; ≥20 trials per policy×condition for decisions and preferably ~36–37 matched for SC3-comparison claims; interval/posterior winner logic and multiplicity control. One-trial 100% vs 0% is inconclusive.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Explicit replicate/seed dimension; ≥20 trials per policy×condition for decisions and preferably ~36–37 matched for SC3-comparison claims; interval/posterior winner logic and multiplicity control. One-trial 100% vs 0% is inconclusive.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-17",
@@ -8516,13 +9891,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Grouped train/dev/one-time locked test by site/scene/task/object/source trajectory/policy lineage; hash/freeze splits and dedup quarantine. Single run cannot promote; search cannot access locked-test outcomes.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Grouped train/dev/one-time locked test by site/scene/task/object/source trajectory/policy lineage; hash/freeze splits and dedup quarantine. Single run cannot promote; search cannot access locked-test outcomes.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-18",
@@ -8649,13 +10040,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Schema-bind actual field, make ties inconclusive, clip/validate actions, use multiple seeds and empirical accepted ground truth. All-equal scores fail discrimination.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Schema-bind actual field, make ties inconclusive, clip/validate actions, use multiple seeds and empirical accepted ground truth. All-equal scores fail discrimination.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-19",
@@ -8765,13 +10174,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Recompute from validated joined rows and actual hashed files; finite/range/N/provenance checks; split `protocol_defined`, `runtime_ready`, and `claim_ready`. NaN/forged numbers/empty objects/duplicate cameras fail; zero remains zero.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Recompute from validated joined rows and actual hashed files; finite/range/N/provenance checks; split `protocol_defined`, `runtime_ready`, and `claim_ready`. NaN/forged numbers/empty objects/duplicate cameras fail; zero remains zero.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-20",
@@ -8818,7 +10245,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-01",
               "path": "src/blueprint_pipeline/sc3_fidelity_contracts.py",
-              "sha256": "sha256:1b4e9478a769beab07a3a6c8c593b0723fca4c92b6c4bf7b7f23ee6af296a66c",
+              "sha256": "sha256:f7cdccf26d2040bb50a5c8107f0275280be0c6c4834f233fcd05ccdcbdbdd004",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8834,7 +10261,39 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-02",
               "path": "tests/test_sc3_fidelity_contracts.py",
-              "sha256": "sha256:d60c2c0f0a09bd2e78a264f91b451168f67404fa2d9007fe767a400b1f074b49",
+              "sha256": "sha256:cd5e210113b295c987bed4538bd451caab4af4bc19ff8c664c47a925e637c642",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-20-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/decision_grade_ranking.py",
+              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-20-AC-01-EV-04",
+              "path": "tests/test_policy_evaluation_contracts.py",
+              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8850,7 +10309,7 @@
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_sc3_fidelity_contracts.py",
+            "command": "python -m pytest -q tests/test_policy_evaluation_contracts.py tests/test_sc3_fidelity_contracts.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -8866,7 +10325,9 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "SC3-20-AC-01-EV-01",
-              "SC3-20-AC-01-EV-02"
+              "SC3-20-AC-01-EV-02",
+              "SC3-20-AC-01-EV-03",
+              "SC3-20-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -8879,13 +10340,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Frozen OOD axes with leave-one-group tests and per-axis correlation/MMRV/error/abstention. No pooled OOD headline may hide a failed axis.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Frozen OOD axes with leave-one-group tests and per-axis correlation/MMRV/error/abstention. No pooled OOD headline may hide a failed axis.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-21",
@@ -8995,18 +10472,36 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Separate benchmark cards, model/protocol/label/sample units and names; rename to `success_rate_difference_pp`. Claims linter prevents metric transfer.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Separate benchmark cards, model/protocol/label/sample units and names; rename to `success_rate_difference_pp`. Claims linter prevents metric transfer.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "SC3-22",
-      "status": "open",
-      "derived_status": "open",
+      "status": "partial",
+      "derived_status": "partial",
       "scopes": [
         "SC3"
       ],
@@ -9023,7 +10518,7 @@
           },
           "acceptance_text": "Treat as external proof, not code-complete status. Execute the study in the final wave below and publish raw per-cell results, N, CIs, failures, abstention and exact digests.",
           "acceptance_text_sha256": "sha256:d798e3daffc5330c5260119c7a18fbc19db2ef4579d6421e82a476b76ea52c1c",
-          "derived_status": "open",
+          "derived_status": "partial",
           "prior_status": null,
           "scopes": [
             "SC3"
@@ -9033,7 +10528,7 @@
           "freshness": {
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "fresh_until": "2026-08-09T13:01:59+00:00",
-            "status": "missing_closure_evidence"
+            "status": "current_unbound"
           },
           "binding": {
             "repository": "BlueprintCapturePipeline",
@@ -9047,25 +10542,89 @@
           "evidence_artifacts": [
             {
               "artifact_id": "SC3-22-AC-01-EV-01",
-              "path": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
-              "sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
-              "role": "gap_definition",
+              "path": "docs/external_anchor_candidate_registry_2026-07-20.json",
+              "sha256": "sha256:3a94a8bd81b4d0ba50816858a53e7f64781f6451653e55827292d376dc642354",
+              "role": "candidate_registry",
               "authoritative": true,
               "authority": "repository_worktree_digest",
-              "supports_remediation": false,
+              "supports_remediation": true,
               "supports_closure": false,
               "generated_at": "2026-07-10T13:01:59+00:00",
               "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
               "fresh_until": "2026-08-09T13:01:59+00:00",
-              "freshness_status": "definition_only",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-22-AC-01-EV-02",
+              "path": "src/blueprint_pipeline/external_study_protocols.py",
+              "sha256": "sha256:4ecfb237117a8c3dbaf9fbabe8542ffb668a28859e5465b962e3fdd271f9119b",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-22-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/sc3_fidelity_contracts.py",
+              "sha256": "sha256:f7cdccf26d2040bb50a5c8107f0275280be0c6c4834f233fcd05ccdcbdbdd004",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-22-AC-01-EV-04",
+              "path": "tests/test_external_anchor_candidate_registry.py",
+              "sha256": "sha256:962939c712cde294357c6e1e3e2d9ecac1dd0c2b6bb4412ff0b2cc625ac982b9",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-22-AC-01-EV-05",
+              "path": "tests/test_sc3_fidelity_contracts.py",
+              "sha256": "sha256:cd5e210113b295c987bed4538bd451caab4af4bc19ff8c664c47a925e637c642",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
             }
           ],
           "command_result": {
-            "applicable": false,
-            "command": null,
-            "status": "not_applicable",
+            "applicable": true,
+            "command": "python -m pytest -q tests/test_external_anchor_candidate_registry.py tests/test_sc3_fidelity_contracts.py",
+            "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
             "output_artifact": null,
@@ -9079,7 +10638,11 @@
             "status": "not_proven",
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
-              "SC3-22-AC-01-EV-01"
+              "SC3-22-AC-01-EV-01",
+              "SC3-22-AC-01-EV-02",
+              "SC3-22-AC-01-EV-03",
+              "SC3-22-AC-01-EV-04",
+              "SC3-22-AC-01-EV-05"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -9092,13 +10655,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Treat as external proof, not code-complete status. Execute the study in the final wave below and publish raw per-cell results, N, CIs, failures, abstention and exact digests.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": false,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": "external_correlation_claim_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Treat as external proof, not code-complete status. Execute the study in the final wave below and publish raw per-cell results, N, CIs, failures, abstention and exact digests.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": false,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": "external_correlation_claim_not_enabled"
+      }
     },
     {
       "id": "RUN-12",
@@ -9225,13 +10804,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Server-generated canonical IDs, containment, immutable request fingerprint, atomic claim, mismatch rejection, per-attempt dirs. Traversal/collision/concurrent/mismatch fixtures cannot overwrite or mix.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Server-generated canonical IDs, containment, immutable request fingerprint, atomic claim, mismatch rejection, per-attempt dirs. Traversal/collision/concurrent/mismatch fixtures cannot overwrite or mix.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-13",
@@ -9339,13 +10936,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Shared atomic nonce/idempotency store with TTL, scoped client identity, bounded skew. Replay is rejected across two processes and restart.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Shared atomic nonce/idempotency store with TTL, scoped client identity, bounded skew. Replay is rejected across two processes and restart.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-14",
@@ -9453,13 +11066,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Map authenticated tenant/site IDs to server roots; never accept raw roots; scoped service identity. Tenant A cannot name tenant B root with valid tenant-A signature.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Map authenticated tenant/site IDs to server roots; never accept raw roots; scoped service identity. Tenant A cannot name tenant B root with valid tenant-A signature.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-15",
@@ -9584,13 +11213,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Body/depth, rate, concurrency and storage quotas; sanitized health; fixed argv/systemd activation. Test 413/429/503; health has no paths; payload cannot alter command parsing.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Body/depth, rate, concurrency and storage quotas; sanitized health; fixed argv/systemd activation. Test 413/429/503; health has no paths; payload cannot alter command parsing.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-16",
@@ -9698,13 +11343,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Isolated process group, provider ID persisted immediately, cleanup in `finally`, provider absence verified. Timeout leaves no child/resource/spend.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Isolated process group, provider ID persisted immediately, cleanup in `finally`, provider absence verified. Timeout leaves no child/resource/spend.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-17",
@@ -9829,13 +11490,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Object-per-job durable queue/broker, server idempotency keys, canonical IDs/containment. Concurrent producers/restart lose no jobs; duplicate is idempotent; crafted ID cannot escape.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Object-per-job durable queue/broker, server idempotency keys, canonical IDs/containment. Concurrent producers/restart lose no jobs; duplicate is idempotent; crafted ID cannot escape.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-18",
@@ -9962,13 +11639,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Production startup requires private IAM identity or nonempty token, constant-time compare, bounded request. Anonymous denied and blank auth prevents startup.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Production startup requires private IAM identity or nonempty token, constant-time compare, bounded request. Anonymous denied and blank auth prevents startup.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-19",
@@ -10076,13 +11771,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Dedicated users, least privilege, `ProtectSystem/Home`, `ReadWritePaths`, capability/address-family/resource limits, private modes. Meet a documented `systemd-analyze security` target.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Dedicated users, least privilege, `ProtectSystem/Home`, `ReadWritePaths`, capability/address-family/resource limits, private modes. Meet a documented `systemd-analyze security` target.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-20",
@@ -10190,13 +11901,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Atomic temp/fsync/replace plus CAS/version for mutable ledgers. Fault-injection leaves prior or complete new JSON only.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Atomic temp/fsync/replace plus CAS/version for mutable ledgers. Fault-injection leaves prior or complete new JSON only.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-21",
@@ -10304,13 +12031,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Use sum/delta over 5m and live-test notification. Six failures page; four do not.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Use sum/delta over 5m and live-test notification. Six failures page; four do not.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-22",
@@ -10418,13 +12161,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Remove EU for beta or complete transfer terms/controls and enforce residency as policy-as-code. A US-only test must fail if non-US resources/routes exist.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Remove EU for beta or complete transfer terms/controls and enforce residency as policy-as-code. A US-only test must fail if non-US resources/routes exist.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-23",
@@ -10549,13 +12308,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Admission lock, controlled drain/teardown, billing reconciliation, audited override. Threshold crossing must stop new paid work and page.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Admission lock, controlled drain/teardown, billing reconciliation, audited override. Threshold crossing must stop new paid work and page.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "RUN-24",
@@ -10680,13 +12455,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Choose one source of truth; disable the other; generate topology/evidence from cloud readback. Drift detection must fail launch when declared and live resources differ.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Choose one source of truth; disable the other; generate topology/evidence from cloud readback. Drift detection must fail launch when declared and live resources differ.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-01",
@@ -10781,7 +12572,7 @@
             {
               "artifact_id": "P2-01-AC-01-EV-04",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10828,13 +12619,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Declare one authoritative dependency graph/lock and generate compatibility exports from it. CI verifies no drift.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Declare one authoritative dependency graph/lock and generate compatibility exports from it. CI verifies no drift.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-02",
@@ -10913,7 +12720,7 @@
             {
               "artifact_id": "P2-02-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10959,13 +12766,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Track the lock and test a deliberate lock-only change triggers all required lanes.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Track the lock and test a deliberate lock-only change triggers all required lanes.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-03",
@@ -11060,7 +12883,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-04",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11107,13 +12930,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Complete PEP 621 metadata with SPDX and license files; wheel/sdist metadata audit passes without deprecation warnings.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Complete PEP 621 metadata with SPDX and license files; wheel/sdist metadata audit passes without deprecation warnings.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-04",
@@ -11204,13 +13043,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Maintain one current gap ledger with `open/partial/closed/reopened`, commit/evidence, scope, and supersession links. Stale audits get a prominent superseded banner.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Maintain one current gap ledger with `open/partial/closed/reopened`, commit/evidence, scope, and supersession links. Stale audits get a prominent superseded banner.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-05",
@@ -11291,7 +13146,7 @@
             {
               "artifact_id": "P2-05-AC-01-EV-03",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11337,13 +13192,31 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Copy release evidence to immutable retention keyed by SHA/image digest; define retention/legal policy and checksum/signature. A past release remains independently reproducible after Actions expiry.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Copy release evidence to immutable retention keyed by SHA/image digest; define retention/legal policy and checksum/signature. A past release remains independently reproducible after Actions expiry.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-06",
@@ -11390,7 +13263,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:5cd2a99d2c3c79cfc108023659612a210a4f5d4670d85e7f23923e017d774272",
+              "sha256": "sha256:d3454fb072cd1bb9f43a8ac1aeca2a4dbe2b9938bddc767bf2dca773cdc82c61",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11468,13 +13341,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Triage by reachability; fix confirmed; baseline false positives with owner/reason/expiry. New high/medium findings block until reviewed.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Triage by reachability; fix confirmed; baseline false positives with owner/reason/expiry. New high/medium findings block until reviewed.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-07",
@@ -11537,7 +13426,7 @@
             {
               "artifact_id": "P2-07-AC-01-EV-02",
               "path": "tests/test_release_engineering_contracts.py",
-              "sha256": "sha256:136c905246ec054923a427828ac4fc3a2dc42b5bc385715b5c373793e4ed81de",
+              "sha256": "sha256:c43b807fbd1d006c3bbb03169dc1ace5097b57ecc5349d58b931035b21070e98",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11582,13 +13471,29 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Bind loopback by default, require token, remove root, align storage paths/quotas, and mark dev-only. Automated Compose security/smoke test passes.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Bind loopback by default, require token, remove root, align storage paths/quotas, and mark dev-only. Automated Compose security/smoke test passes.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "P2-08",
@@ -11696,18 +13601,34 @@
           "remaining_work": [
             "Complete every still-unproven clause in the authored criterion: Remove eager package-import side effects and isolate module entry points. Canonical full-suite and `python -m` smoke runs must complete without these warnings or double initialization.",
             "Bind passing proof to an actual repository commit and release artifact before closure."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Complete every still-unproven clause in the authored criterion: Remove eager package-import side effects and isolate module entry points. Canonical full-suite and `python -m` smoke runs must complete without these warnings or double initialization.",
         "Bind passing proof to an actual repository commit and release artifact before closure."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-01",
-      "status": "open",
-      "derived_status": "open",
+      "status": "partial",
+      "derived_status": "partial",
       "scopes": [
         "SC3"
       ],
@@ -11724,7 +13645,7 @@
           },
           "acceptance_text": "Frozen study with ≥7 independent checkpoints/policies, explicit criteria, matched conditions/replicates, locked InD/OOD test, raw per-cell outputs, human-label protocol, correct Pearson/Spearman/MMRV, hierarchical CIs, abstention/coverage and exact model/code/data digests.",
           "acceptance_text_sha256": "sha256:62ef0c98e58c10b30ecea258873ee2002df4164422859ea3d5cbb8cb9cb9dfed",
-          "derived_status": "open",
+          "derived_status": "partial",
           "prior_status": null,
           "scopes": [
             "SC3"
@@ -11734,7 +13655,7 @@
           "freshness": {
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "fresh_until": "2026-08-09T13:01:59+00:00",
-            "status": "missing_closure_evidence"
+            "status": "current_unbound"
           },
           "binding": {
             "repository": "BlueprintCapturePipeline",
@@ -11748,25 +13669,73 @@
           "evidence_artifacts": [
             {
               "artifact_id": "EVID-01-AC-01-EV-01",
-              "path": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
-              "sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
-              "role": "gap_definition",
+              "path": "docs/external_anchor_candidate_registry_2026-07-20.json",
+              "sha256": "sha256:3a94a8bd81b4d0ba50816858a53e7f64781f6451653e55827292d376dc642354",
+              "role": "candidate_registry",
               "authoritative": true,
               "authority": "repository_worktree_digest",
-              "supports_remediation": false,
+              "supports_remediation": true,
               "supports_closure": false,
               "generated_at": "2026-07-10T13:01:59+00:00",
               "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
               "fresh_until": "2026-08-09T13:01:59+00:00",
-              "freshness_status": "definition_only",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "EVID-01-AC-01-EV-02",
+              "path": "src/blueprint_pipeline/decision_grade_ranking.py",
+              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "EVID-01-AC-01-EV-03",
+              "path": "tests/test_external_anchor_candidate_registry.py",
+              "sha256": "sha256:962939c712cde294357c6e1e3e2d9ecac1dd0c2b6bb4412ff0b2cc625ac982b9",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "EVID-01-AC-01-EV-04",
+              "path": "tests/test_policy_evaluation_contracts.py",
+              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
             }
           ],
           "command_result": {
-            "applicable": false,
-            "command": null,
-            "status": "not_applicable",
+            "applicable": true,
+            "command": "python -m pytest -q tests/test_external_anchor_candidate_registry.py tests/test_policy_evaluation_contracts.py",
+            "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
             "output_artifact": null,
@@ -11780,7 +13749,10 @@
             "status": "not_proven",
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
-              "EVID-01-AC-01-EV-01"
+              "EVID-01-AC-01-EV-01",
+              "EVID-01-AC-01-EV-02",
+              "EVID-01-AC-01-EV-03",
+              "EVID-01-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -11793,13 +13765,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Frozen study with ≥7 independent checkpoints/policies, explicit criteria, matched conditions/replicates, locked InD/OOD test, raw per-cell outputs, human-label protocol, correct Pearson/Spearman/MMRV, hierarchical CIs, abstention/coverage and exact model/code/data digests.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": false,
+            "basis": [
+              "enabled_scope:SC3"
+            ],
+            "nonblocking_reason": "external_correlation_claim_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Frozen study with ≥7 independent checkpoints/policies, explicit criteria, matched conditions/replicates, locked InD/OOD test, raw per-cell outputs, human-label protocol, correct Pearson/Spearman/MMRV, hierarchical CIs, abstention/coverage and exact model/code/data digests.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": false,
+        "basis": [
+          "enabled_scope:SC3"
+        ],
+        "nonblocking_reason": "external_correlation_claim_not_enabled"
+      }
     },
     {
       "id": "EVID-02",
@@ -11892,13 +13880,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: At least one clean, current, audited end-to-end run for each public capture source, with every intermediate digest and no manual file injection.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: At least one clean, current, audited end-to-end run for each public capture source, with every intermediate digest and no manual file injection.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-03",
@@ -11991,13 +13995,31 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Authenticated canary on the exact image/digest with SAM3, depth, pose, action-conditioned WAM, policy endpoint, validated terminal artifacts, semantic label, and teardown/spend proof.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:SIM",
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Authenticated canary on the exact image/digest with SAM3, depth, pose, action-conditioned WAM, policy endpoint, validated terminal artifacts, semantic label, and teardown/spend proof.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:SIM",
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-04",
@@ -12090,13 +14112,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Frozen representative privacy corpus, face/person/screen/plate classes as applicable, recall/precision/error review, human escalation threshold, and raw-to-derived leakage scan.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:BASE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Frozen representative privacy corpus, face/person/screen/plate classes as applicable, recall/precision/error review, human escalation threshold, and raw-to-derived leakage scan.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:BASE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-05",
@@ -12187,13 +14225,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Live lifecycle/backup/PITR readback plus restore drill measuring RPO/RTO, checksum equality, permissions, audit trail, deletion/legal-hold propagation, and named owner.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Live lifecycle/backup/PITR readback plus restore drill measuring RPO/RTO, checksum equality, permissions, audit trail, deletion/legal-hold propagation, and named owner.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-06",
@@ -12284,13 +14338,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Representative payload mix, queue/Firestore/storage/provider latency, error/retry/duplicate rate, memory/disk, cold starts, package duration, spend, teardown, and SLO pass/fail under sustained load.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Representative payload mix, queue/Firestore/storage/provider latency, error/retry/duplicate rate, memory/disk, cold starts, package duration, spend, teardown, and SLO pass/fail under sustained load.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-07",
@@ -12381,13 +14451,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Paging-channel test, stalled-job alert, DLQ replay, worker crash/recovery, credential revocation, provider outage/failover, orphan cleanup, rollback, and named on-call/communications record.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Paging-channel test, stalled-job alert, DLQ replay, worker crash/recovery, credential revocation, provider outage/failover, orphan cleanup, rollback, and named on-call/communications record.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-08",
@@ -12478,13 +14564,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Cloud readback showing exact regions, lifecycle, access logging, backup, encryption, service accounts, egress, and no resource outside allowed policy; drift check attached to release.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Cloud readback showing exact regions, lifecycle, access logging, backup, encryption, service accounts, egress, and no resource outside allowed policy; drift check attached to release.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-09",
@@ -12575,13 +14677,25 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Live-mode payment and payout settlement, webhook/ledger reconciliation, connected-account readiness, provider decision, failed-payment/payout drill, and named finance review owner.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "payments_and_payouts_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Live-mode payment and payout settlement, webhook/ledger reconciliation, connected-account readiness, provider decision, failed-payment/payout drill, and named finance review owner.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "payments_and_payouts_not_enabled"
+      }
     },
     {
       "id": "EVID-10",
@@ -12672,18 +14786,34 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Authenticated buyer session with purchase/job/package ID continuity, least-privilege short-lived URL, checksum verification, expiry/revocation/cross-tenant negative tests, and access audit log.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_feature:buyer_delivery_and_rights"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Authenticated buyer session with purchase/job/package ID continuity, least-privilege short-lived URL, checksum verification, expiry/revocation/cross-tenant negative tests, and access audit log.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_feature:buyer_delivery_and_rights"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-11",
-      "status": "open",
-      "derived_status": "open",
+      "status": "partial",
+      "derived_status": "partial",
       "scopes": [
         "PAID"
       ],
@@ -12700,7 +14830,7 @@
           },
           "acceptance_text": "Signed current consent/rights posture, use-class mapping, DPA/subprocessors, US-only or transfer terms, retention/deletion/DSAR/takedown procedure, and counsel/privacy owner signoff.",
           "acceptance_text_sha256": "sha256:ba214a680f8dbceb301a93c6b13e2cef433840cfd3fd9754dbc5e0581999214d",
-          "derived_status": "open",
+          "derived_status": "partial",
           "prior_status": null,
           "scopes": [
             "PAID"
@@ -12710,7 +14840,7 @@
           "freshness": {
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "fresh_until": "2026-08-09T13:01:59+00:00",
-            "status": "missing_closure_evidence"
+            "status": "current_unbound"
           },
           "binding": {
             "repository": "BlueprintCapturePipeline",
@@ -12737,12 +14867,60 @@
               "freshness_status": "definition_only",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "EVID-11-AC-01-EV-02",
+              "path": "src/blueprint_pipeline/oscar_runtime_asset_contract.py",
+              "sha256": "sha256:94ff6a9fb1477f6f29aa537d59d452b742c3a80a512258ae18ce24cf1e57b0ac",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "EVID-11-AC-01-EV-03",
+              "path": "docs/external_anchor_candidate_registry_2026-07-20.json",
+              "sha256": "sha256:3a94a8bd81b4d0ba50816858a53e7f64781f6451653e55827292d376dc642354",
+              "role": "candidate_registry",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "EVID-11-AC-01-EV-04",
+              "path": "tests/test_oscar_runtime_asset_contract.py",
+              "sha256": "sha256:45d45ff580f8c02933a8c46593d6814ac24b50d4437209d092631751a712be95",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
-            "applicable": false,
-            "command": null,
-            "status": "not_applicable",
+            "applicable": true,
+            "command": "python -m pytest -q tests/test_oscar_runtime_asset_contract.py",
+            "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
             "output_artifact": null,
@@ -12756,7 +14934,10 @@
             "status": "not_proven",
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
-              "EVID-11-AC-01-EV-01"
+              "EVID-11-AC-01-EV-01",
+              "EVID-11-AC-01-EV-02",
+              "EVID-11-AC-01-EV-03",
+              "EVID-11-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -12769,13 +14950,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Signed current consent/rights posture, use-class mapping, DPA/subprocessors, US-only or transfer terms, retention/deletion/DSAR/takedown procedure, and counsel/privacy owner signoff.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_feature:buyer_delivery_and_rights"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Signed current consent/rights posture, use-class mapping, DPA/subprocessors, US-only or transfer terms, retention/deletion/DSAR/takedown procedure, and counsel/privacy owner signoff.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_feature:buyer_delivery_and_rights"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-12",
@@ -12866,13 +15063,25 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Screen recording and backend trace for each public device/source. Keep unproven glasses/Android paths internal rather than blocking an iPhone-only scope.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "unsupported_device_lanes_not_marketed"
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Screen recording and backend trace for each public device/source. Keep unproven glasses/Android paths internal rather than blocking an iPhone-only scope.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "unsupported_device_lanes_not_marketed"
+      }
     },
     {
       "id": "EVID-13",
@@ -12963,13 +15172,29 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: One IaC apply, immutable image digests, actual service URI/IAM readback, authenticated health/canary, monitoring, rollback, and clean teardown evidence.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": true,
+            "blocking": true,
+            "basis": [
+              "enabled_scope:LIVE"
+            ],
+            "nonblocking_reason": null
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: One IaC apply, immutable image digests, actual service URI/IAM readback, authenticated health/canary, monitoring, rollback, and clean teardown evidence.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": true,
+        "blocking": true,
+        "basis": [
+          "enabled_scope:LIVE"
+        ],
+        "nonblocking_reason": null
+      }
     },
     {
       "id": "EVID-14",
@@ -13064,14 +15289,62 @@
           "remaining_work": [
             "Obtain authoritative external or manual proof for the authored criterion: Required only if making that claim: controlled real-robot trials, task/state criteria, safety/risk review, operator approvals, incident/stop behavior, and owner-system evidence. It is not a sim-only launch blocker.",
             "Bind that proof to an actual repository commit and release artifact before changing status."
-          ]
+          ],
+          "launch_scope": {
+            "scoped": false,
+            "blocking": false,
+            "basis": [],
+            "nonblocking_reason": "physical_robot_claim_not_enabled"
+          }
         }
       ],
       "remaining_work": [
         "Obtain authoritative external or manual proof for the authored criterion: Required only if making that claim: controlled real-robot trials, task/state criteria, safety/risk review, operator approvals, incident/stop behavior, and owner-system evidence. It is not a sim-only launch blocker.",
         "Bind that proof to an actual repository commit and release artifact before changing status."
-      ]
+      ],
+      "launch_scope": {
+        "scoped": false,
+        "blocking": false,
+        "basis": [],
+        "nonblocking_reason": "physical_robot_claim_not_enabled"
+      }
     }
   ],
-  "remediation_status_document": "docs/PUBLIC_LAUNCH_SC3_REMEDIATION_STATUS_2026-07-09.md"
+  "remediation_status_document": "docs/PUBLIC_LAUNCH_SC3_REMEDIATION_STATUS_2026-07-09.md",
+  "launch_scope_policy": {
+    "profile_id": "sim_policy_comparison_with_live_buyer_delivery.v1",
+    "enabled_scope_labels": [
+      "BASE",
+      "SIM",
+      "SC3",
+      "LIVE"
+    ],
+    "enabled_paid_gap_ids": [
+      "EVID-10",
+      "EVID-11"
+    ],
+    "disabled_unmarketed_features": [
+      "ptdp",
+      "payments",
+      "payouts",
+      "unsupported_devices",
+      "physical_robot"
+    ],
+    "conditional_nonblocking_gap_ids": [
+      "SC3-22",
+      "EVID-01"
+    ],
+    "correlation_claim_mode": "correlation_not_measured"
+  },
+  "launch_scope_counts": {
+    "scoped": 99,
+    "blocking": 97,
+    "nonblocking": 10,
+    "blocking_status_counts": {
+      "open": 10,
+      "partial": 87,
+      "closed": 0,
+      "reopened": 0
+    }
+  }
 }

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -15,9 +18,18 @@ from .secret_artifact_policy import (
     redacted_secret_file_status,
     secret_path_disclosure_policy,
 )
+from .safe_outbound_http import (
+    SafeOutboundHttpError,
+    presigned_transfer_policy,
+    request as safe_http_request,
+)
 
 
 SCHEMA_VERSION = "wam_provider_object_store_staging.v1"
+SIGNED_OUTPUT_ROUND_TRIP_SCHEMA_VERSION = "wam_signed_output_round_trip.v1"
+SIGNED_OUTPUT_SENTINEL_BYTES = 96
+SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS = 30
+SIGNED_OUTPUT_MAX_RESPONSE_BYTES = 64 * 1024
 DEFAULT_ACCESS_KEY_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_access_key_id",
     "~/.blueprint-secrets/runpod_s3_access_key",
@@ -119,6 +131,8 @@ def _file_status(path: Path, *, label: str, value_present: bool = False) -> dict
         "present": is_file,
         "mode": mode,
         "mode_is_0600": mode == "0o600",
+        "size_bytes": path.stat().st_size if is_file else 0,
+        "mtime_ns": path.stat().st_mtime_ns if is_file else None,
         "value_present": value_present,
         "raw_secret_values_recorded": False,
     }
@@ -217,6 +231,218 @@ def _write_sensitive_file(path: Path, value: str, *, label: str) -> dict[str, An
     path.write_text(value.rstrip() + "\n", encoding="utf-8")
     path.chmod(0o600)
     return _file_status(path, label=label, value_present=bool(value))
+
+
+def signed_output_object_binding_sha256(put_url: str, get_url: str) -> str:
+    """Hash the non-secret origin/path identity shared by one PUT/GET pair."""
+
+    identities: list[str] = []
+    for label, value in (("put", put_url), ("get", get_url)):
+        parsed = urlparse(str(value or ""))
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError(f"signed_output_{label}_url_invalid")
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError(f"signed_output_{label}_url_invalid") from exc
+        identity = (
+            parsed.scheme.lower(),
+            parsed.hostname.lower(),
+            port or 443,
+            parsed.path,
+        )
+        identities.append(json.dumps(identity, separators=(",", ":")))
+    if identities[0] != identities[1]:
+        raise ValueError("signed_output_put_get_object_identity_mismatch")
+    return hashlib.sha256(identities[0].encode("utf-8")).hexdigest()
+
+
+def _safe_transfer_exception(exc: Exception) -> dict[str, Any]:
+    """Return diagnostics that cannot contain a presigned URL or query."""
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return {"error_type": type(exc).__name__, "http_status_code": int(exc.code)}
+    if isinstance(exc, urllib.error.URLError):
+        return {
+            "error_type": type(exc).__name__,
+            "reason_type": type(exc.reason).__name__,
+        }
+    if isinstance(exc, SafeOutboundHttpError):
+        return {
+            "error_type": type(exc).__name__,
+            "policy_error_code": str(exc).partition(":")[0],
+        }
+    return {"error_type": type(exc).__name__}
+
+
+def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, Any]:
+    """Prove an S3 object is absent without recording its key."""
+
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        response = _mapping(getattr(exc, "response", None))
+        metadata = _mapping(response.get("ResponseMetadata"))
+        error = _mapping(response.get("Error"))
+        status = metadata.get("HTTPStatusCode")
+        code = _string(error.get("Code"))
+        if status == 404 or code.lower() in {"404", "nosuchkey", "notfound"}:
+            return {
+                "status": "passed",
+                "absence_confirmed": True,
+                "http_status_code": 404,
+                "raw_secret_values_recorded": False,
+            }
+        return {
+            "status": "blocked",
+            "absence_confirmed": False,
+            **_safe_transfer_exception(exc),
+            "raw_secret_values_recorded": False,
+        }
+    return {
+        "status": "blocked",
+        "absence_confirmed": False,
+        "object_still_present": True,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _signed_output_round_trip_preflight(
+    client: Any,
+    *,
+    bucket: str,
+    sentinel_key: str,
+    expiration_seconds: int,
+) -> dict[str, Any]:
+    """Exercise a distinct signed PUT/GET object and prove its deletion."""
+
+    sentinel = b"blueprint-signed-output-preflight-v1\n" + secrets.token_bytes(
+        SIGNED_OUTPUT_SENTINEL_BYTES
+    )
+    sentinel_sha256 = hashlib.sha256(sentinel).hexdigest()
+    key_sha256 = hashlib.sha256(sentinel_key.encode("utf-8")).hexdigest()
+    blockers: list[str] = []
+    put_probe: dict[str, Any] = {"status": "not_run"}
+    get_probe: dict[str, Any] = {"status": "not_run"}
+    cleanup: dict[str, Any] = {"status": "not_run", "absence_confirmed": False}
+    try:
+        put_url = client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": sentinel_key,
+                "ContentType": "application/octet-stream",
+            },
+            ExpiresIn=int(expiration_seconds),
+            HttpMethod="PUT",
+        )
+        get_url = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": sentinel_key},
+            ExpiresIn=int(expiration_seconds),
+            HttpMethod="GET",
+        )
+        signed_output_object_binding_sha256(put_url, get_url)
+        put_response = safe_http_request(
+            put_url,
+            method="PUT",
+            data=sentinel,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout_seconds=SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS,
+            max_response_bytes=SIGNED_OUTPUT_MAX_RESPONSE_BYTES,
+            policy=presigned_transfer_policy(
+                put_url,
+                max_response_bytes=SIGNED_OUTPUT_MAX_RESPONSE_BYTES,
+            ),
+        )
+        put_status = int(put_response.status)
+        put_probe = {
+            "status": "passed" if 200 <= put_status < 300 else "blocked",
+            "http_status_code": put_status,
+            "sentinel_size_bytes": len(sentinel),
+        }
+        if put_probe["status"] != "passed":
+            blockers.append("signed_output_sentinel_put_failed")
+        else:
+            get_response = safe_http_request(
+                get_url,
+                method="GET",
+                timeout_seconds=SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS,
+                max_response_bytes=len(sentinel) + 1,
+                policy=presigned_transfer_policy(
+                    get_url,
+                    max_response_bytes=len(sentinel) + 1,
+                ),
+            )
+            received_sha256 = hashlib.sha256(get_response.body).hexdigest()
+            exact = get_response.body == sentinel and received_sha256 == sentinel_sha256
+            get_probe = {
+                "status": "passed" if int(get_response.status) == 200 and exact else "blocked",
+                "http_status_code": int(get_response.status),
+                "received_size_bytes": len(get_response.body),
+                "received_sha256": received_sha256,
+                "exact_bytes_and_sha256": exact,
+            }
+            if get_probe["status"] != "passed":
+                blockers.append("signed_output_sentinel_get_mismatch")
+    except Exception as exc:
+        failed_phase = "get" if put_probe.get("status") == "passed" else "put"
+        if failed_phase == "put":
+            put_probe = {"status": "blocked", **_safe_transfer_exception(exc)}
+            blockers.append("signed_output_sentinel_put_failed")
+        else:
+            get_probe = {"status": "blocked", **_safe_transfer_exception(exc)}
+            blockers.append("signed_output_sentinel_get_failed")
+    finally:
+        try:
+            delete_response = client.delete_object(Bucket=bucket, Key=sentinel_key)
+            response_metadata = _mapping(_mapping(delete_response).get("ResponseMetadata"))
+            delete_status = int(response_metadata.get("HTTPStatusCode") or 204)
+            if not 200 <= delete_status < 300:
+                cleanup = {
+                    "status": "blocked",
+                    "delete_http_status_code": delete_status,
+                    "absence_confirmed": False,
+                }
+            else:
+                cleanup = {
+                    **_s3_absence_confirmed(
+                        client,
+                        bucket=bucket,
+                        key=sentinel_key,
+                    ),
+                    "delete_http_status_code": delete_status,
+                }
+        except Exception as exc:
+            cleanup = {
+                "status": "blocked",
+                "absence_confirmed": False,
+                **_safe_transfer_exception(exc),
+            }
+        if cleanup.get("status") != "passed" or cleanup.get("absence_confirmed") is not True:
+            blockers.append("signed_output_sentinel_cleanup_unverified")
+
+    unique_blockers = sorted(set(blockers))
+    return {
+        "schema_version": SIGNED_OUTPUT_ROUND_TRIP_SCHEMA_VERSION,
+        "status": "passed" if not unique_blockers else "blocked",
+        "sentinel_key_sha256": key_sha256,
+        "sentinel_sha256": sentinel_sha256,
+        "sentinel_size_bytes": len(sentinel),
+        "put": put_probe,
+        "get": get_probe,
+        "cleanup": cleanup,
+        "actual_output_key_was_not_used": True,
+        "blockers": unique_blockers,
+        "raw_signed_urls_recorded": False,
+        "raw_secret_values_recorded": False,
+    }
 
 
 def stage_wam_provider_bundle_object_store(
@@ -323,13 +549,27 @@ def stage_wam_provider_bundle_object_store(
     bundle_key = ""
     output_key = ""
     upload_detail: dict[str, Any] = {"status": "not_run"}
+    output_key_absence: dict[str, Any] = {
+        "status": "not_run",
+        "absence_confirmed": False,
+    }
+    signed_output_round_trip: dict[str, Any] = {
+        "schema_version": SIGNED_OUTPUT_ROUND_TRIP_SCHEMA_VERSION,
+        "status": "not_run",
+        "blockers": [],
+        "raw_signed_urls_recorded": False,
+        "raw_secret_values_recorded": False,
+    }
+    output_url_object_binding_sha256 = ""
     if not blockers:
         assert boto3 is not None
         assert Config is not None
         safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
         job_key = _job_key_component(resolved_job_dir)
+        run_nonce = secrets.token_hex(16)
         bundle_key = f"{safe_prefix}/{job_key}/{resolved_bundle.name}"
-        output_key = f"{safe_prefix}/{job_key}/runpod_provider_runtime_output.zip"
+        output_key = f"{safe_prefix}/{job_key}/runpod_provider_runtime_output_{run_nonce}.zip"
+        sentinel_key = f"{safe_prefix}/{job_key}/preflight/signed_output_round_trip_{run_nonce}.bin"
         client_kwargs: dict[str, Any] = {
             "aws_access_key_id": access_key,
             "aws_secret_access_key": secret_key,
@@ -340,40 +580,57 @@ def stage_wam_provider_bundle_object_store(
             client_kwargs["endpoint_url"] = endpoint
         try:
             client = boto3.client("s3", **client_kwargs)
-            # A fresh run must not inherit a prior run's output object at this key. The output key
-            # is not run-unique, so without this the poll's GET returns a stale pre-existing object
-            # instantly and falsely reports a completed fresh model run (observed: a per-step
-            # provider run grabbed a 128x128 placeholder in 0.72s while the real worker never ran).
-            # Clear any stale output so the GET 404s until THIS run's worker uploads its result.
-            try:
-                client.delete_object(Bucket=bucket_value, Key=output_key)
-            except Exception:  # pragma: no cover - best-effort cleanup, never blocks staging
-                pass
             client.upload_file(str(resolved_bundle), bucket_value, bundle_key)
+            # The paid worker output key is run-unique and must be absent before
+            # its GET URL is handed to a poller.  This prevents a stale object
+            # from being consumed as a fresh episode result.
+            output_key_absence = _s3_absence_confirmed(
+                client,
+                bucket=bucket_value,
+                key=output_key,
+            )
+            if output_key_absence.get("status") != "passed":
+                blockers.append("fresh_output_key_absence_unverified")
+
+            # Exercise the same presign/HTTP path on a distinct sentinel key.
+            # The sentinel is always deleted and absence-confirmed; the actual
+            # worker output key is never populated by this preflight.
+            signed_output_round_trip = _signed_output_round_trip_preflight(
+                client,
+                bucket=bucket_value,
+                sentinel_key=sentinel_key,
+                expiration_seconds=int(expiration_seconds),
+            )
+            blockers.extend(signed_output_round_trip.get("blockers") or [])
             bundle_url = client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": bucket_value, "Key": bundle_key},
                 ExpiresIn=int(expiration_seconds),
                 HttpMethod="GET",
             )
-            output_put_url = client.generate_presigned_url(
-                "put_object",
-                Params={
-                    "Bucket": bucket_value,
-                    "Key": output_key,
-                    "ContentType": "application/zip",
-                },
-                ExpiresIn=int(expiration_seconds),
-                HttpMethod="PUT",
-            )
-            output_get_url = client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": bucket_value, "Key": output_key},
-                ExpiresIn=int(expiration_seconds),
-                HttpMethod="GET",
-            )
+            if not blockers:
+                output_put_url = client.generate_presigned_url(
+                    "put_object",
+                    Params={
+                        "Bucket": bucket_value,
+                        "Key": output_key,
+                        "ContentType": "application/zip",
+                    },
+                    ExpiresIn=int(expiration_seconds),
+                    HttpMethod="PUT",
+                )
+                output_get_url = client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": bucket_value, "Key": output_key},
+                    ExpiresIn=int(expiration_seconds),
+                    HttpMethod="GET",
+                )
+                output_url_object_binding_sha256 = signed_output_object_binding_sha256(
+                    output_put_url,
+                    output_get_url,
+                )
             upload_detail = {
-                "status": "completed",
+                "status": "completed" if not blockers else "blocked",
                 "bucket_configured": True,
                 "endpoint_configured": bool(endpoint),
                 "region": region_value,
@@ -410,7 +667,11 @@ def stage_wam_provider_bundle_object_store(
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated,
-        "status": "completed" if bundle_url and output_put_url and not blockers else "blocked",
+        "status": (
+            "completed"
+            if bundle_url and output_put_url and output_get_url and not blockers
+            else "blocked"
+        ),
         "job_dir": str(resolved_job_dir),
         "bundle_path": str(resolved_bundle),
         "bundle_present": resolved_bundle.is_file(),
@@ -428,6 +689,10 @@ def stage_wam_provider_bundle_object_store(
         },
         "presigned_url_expiry": expiry_metadata,
         "upload_detail": upload_detail,
+        "signed_output_round_trip": signed_output_round_trip,
+        "fresh_output_key_absence": output_key_absence,
+        "output_key_run_unique": bool(output_key),
+        "output_url_object_binding_sha256": (output_url_object_binding_sha256 or None),
         "bundle_key": bundle_key or None,
         "output_key": output_key or None,
         "provider_bundle_url_file": bundle_url_file_status,
@@ -461,6 +726,184 @@ def stage_wam_provider_bundle_object_store(
     return manifest
 
 
+def refresh_wam_provider_output_get_url(
+    *,
+    job_dir: str | Path,
+    access_key_id_file: str | Path | None = None,
+    secret_access_key_file: str | Path | None = None,
+    endpoint_url: str = "",
+    endpoint_url_file: str | Path | None = None,
+    bucket: str = "",
+    bucket_file: str | Path | None = None,
+    region: str = "",
+    region_file: str | Path | None = None,
+    expiration_seconds: int = 6 * 24 * 60 * 60,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Refresh read access to an existing staged output without mutating it."""
+
+    generated = generated_at or utc_now_iso()
+    resolved_job_dir = Path(job_dir).expanduser().resolve()
+    manifest_path = resolved_job_dir / "wam_provider_object_store_staging_manifest.json"
+    blockers: list[str] = []
+    try:
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = dict(value) if isinstance(value, Mapping) else {}
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    output_key = _string(manifest.get("output_key"))
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or manifest.get("status") != "completed"
+        or not output_key
+    ):
+        blockers.append("wam_provider_output_refresh_staging_manifest_invalid")
+
+    access_key, access_meta = _read_first_file(
+        explicit_path=access_key_id_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
+        default_paths=DEFAULT_ACCESS_KEY_FILES,
+        label="object_store_access_key_id",
+    )
+    secret_key, secret_meta = _read_first_file(
+        explicit_path=secret_access_key_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
+        default_paths=DEFAULT_SECRET_KEY_FILES,
+        label="object_store_secret_access_key",
+    )
+    endpoint, endpoint_meta = _read_first_file(
+        explicit_path=endpoint_url_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
+        default_paths=DEFAULT_ENDPOINT_FILES,
+        label="object_store_endpoint_url",
+        allow_env_value=True,
+    )
+    if endpoint_url:
+        endpoint = endpoint_url
+    bucket_value, bucket_meta = _read_first_file(
+        explicit_path=bucket_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
+        default_paths=DEFAULT_BUCKET_FILES,
+        label="object_store_bucket",
+        allow_env_value=True,
+    )
+    if bucket:
+        bucket_value = bucket
+    region_value, region_meta = _read_first_file(
+        explicit_path=region_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
+        default_paths=DEFAULT_REGION_FILES,
+        label="object_store_region",
+        allow_env_value=True,
+    )
+    if region:
+        region_value = region
+    region_value = region_value or "us-east-1"
+    if not access_key:
+        blockers.append("missing_object_store_access_key_id_file")
+    if not secret_key:
+        blockers.append("missing_object_store_secret_access_key_file")
+    if not bucket_value:
+        blockers.append("missing_object_store_bucket_or_network_volume_id_file")
+    if not 60 <= int(expiration_seconds) <= 7 * 24 * 60 * 60:
+        blockers.append("wam_provider_output_refresh_expiration_invalid")
+
+    refreshed_url = ""
+    object_size = -1
+    try:
+        import boto3  # type: ignore[import-not-found]
+        from botocore.client import Config  # type: ignore[import-not-found]
+    except Exception as exc:  # pragma: no cover - environment dependent
+        boto3 = None  # type: ignore[assignment]
+        Config = None  # type: ignore[assignment]
+        blockers.append(f"boto3_or_botocore_unavailable:{type(exc).__name__}")
+    if not blockers:
+        assert boto3 is not None
+        assert Config is not None
+        client_kwargs: dict[str, Any] = {
+            "aws_access_key_id": access_key,
+            "aws_secret_access_key": secret_key,
+            "region_name": region_value,
+            "config": Config(signature_version="s3v4"),
+        }
+        if endpoint:
+            client_kwargs["endpoint_url"] = endpoint
+        try:
+            client = boto3.client("s3", **client_kwargs)
+            observed = _mapping(client.head_object(Bucket=bucket_value, Key=output_key))
+            object_size = int(observed.get("ContentLength") or -1)
+            if object_size <= 0:
+                raise ValueError("staged_output_object_size_invalid")
+            refreshed_url = client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket_value, "Key": output_key},
+                ExpiresIn=int(expiration_seconds),
+                HttpMethod="GET",
+            )
+            put_url = (resolved_job_dir / "provider_output_put_url.txt").read_text(
+                encoding="utf-8"
+            ).strip()
+            signed_output_object_binding_sha256(put_url, refreshed_url)
+        except Exception as exc:
+            blockers.append(
+                f"wam_provider_output_refresh_failed:{type(exc).__name__}"
+            )
+            refreshed_url = ""
+
+    expiry = _presigned_url_expiry_metadata(generated, int(expiration_seconds))
+    url_path = resolved_job_dir / "provider_output_get_url.txt"
+    url_status = (
+        _write_sensitive_file(
+            url_path,
+            refreshed_url,
+            label="provider_output_get_url",
+        )
+        if refreshed_url and not blockers
+        else _file_status(url_path, label="provider_output_get_url")
+    )
+    result = {
+        "schema_version": "wam_provider_output_get_refresh.v1",
+        "status": "completed" if refreshed_url and not blockers else "blocked",
+        "generated_at": generated,
+        "job_dir": str(resolved_job_dir),
+        "object_size_bytes": object_size if object_size > 0 else None,
+        "presigned_url_expiry": expiry,
+        "provider_output_get_url_file": url_status,
+        "provider_output_get_url_redacted": (
+            _redact_url(refreshed_url) if refreshed_url else None
+        ),
+        "object_store": {
+            "access_key_id": access_meta,
+            "secret_access_key": secret_meta,
+            "endpoint_url": endpoint_meta,
+            "bucket": bucket_meta,
+            "region": region_meta,
+        },
+        "output_object_mutated": False,
+        "raw_signed_urls_recorded": False,
+        "raw_secret_values_recorded": False,
+        "blockers": sorted(set(blockers)),
+    }
+    if result["status"] == "completed":
+        manifest["provider_output_get_url_file"] = url_status
+        manifest["provider_output_get_url_redacted"] = _redact_url(refreshed_url)
+        manifest["output_get_url_refresh"] = {
+            "schema_version": result["schema_version"],
+            "status": "completed",
+            "generated_at": generated,
+            "object_size_bytes": object_size,
+            "presigned_url_expiry": expiry,
+            "output_object_mutated": False,
+            "raw_signed_urls_recorded": False,
+        }
+        write_json(manifest_path, manifest)
+    write_json(
+        resolved_job_dir / "wam_provider_object_store_get_refresh.json",
+        result,
+    )
+    return result
+
+
 def presign_warm_inbox_channel(
     job_dir: str | Path,
     *,
@@ -477,12 +920,8 @@ def presign_warm_inbox_channel(
     resolved_job_dir = Path(job_dir)
     resolved_job_dir.mkdir(parents=True, exist_ok=True)
     generated = utc_now_iso()
-    broker_url_source_text = os.getenv(
-        "BLUEPRINT_WARM_RENDER_BROKER_BASE_URL_FILE", ""
-    ).strip()
-    broker_token_source_text = os.getenv(
-        "BLUEPRINT_WARM_RENDER_BROKER_TOKEN_FILE", ""
-    ).strip()
+    broker_url_source_text = os.getenv("BLUEPRINT_WARM_RENDER_BROKER_BASE_URL_FILE", "").strip()
+    broker_token_source_text = os.getenv("BLUEPRINT_WARM_RENDER_BROKER_TOKEN_FILE", "").strip()
     broker_url_source = Path(broker_url_source_text).expanduser()
     broker_token_source = Path(broker_token_source_text).expanduser()
     blockers: list[str] = []
@@ -551,7 +990,8 @@ def presign_warm_inbox_channel(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-dir", required=True)
-    parser.add_argument("--bundle-path", required=True)
+    parser.add_argument("--bundle-path")
+    parser.add_argument("--refresh-output-get-url", action="store_true")
     parser.add_argument("--access-key-id-file")
     parser.add_argument("--secret-access-key-file")
     parser.add_argument("--endpoint-url", default="")
@@ -563,20 +1003,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--key-prefix", default="blueprint/wam-provider")
     parser.add_argument("--expiration-seconds", type=int, default=12 * 60 * 60)
     args = parser.parse_args(argv)
-    manifest = stage_wam_provider_bundle_object_store(
-        job_dir=args.job_dir,
-        bundle_path=args.bundle_path,
-        access_key_id_file=args.access_key_id_file,
-        secret_access_key_file=args.secret_access_key_file,
-        endpoint_url=args.endpoint_url,
-        endpoint_url_file=args.endpoint_url_file,
-        bucket=args.bucket,
-        bucket_file=args.bucket_file,
-        region=args.region,
-        region_file=args.region_file,
-        key_prefix=args.key_prefix,
-        expiration_seconds=args.expiration_seconds,
-    )
+    common = {
+        "job_dir": args.job_dir,
+        "access_key_id_file": args.access_key_id_file,
+        "secret_access_key_file": args.secret_access_key_file,
+        "endpoint_url": args.endpoint_url,
+        "endpoint_url_file": args.endpoint_url_file,
+        "bucket": args.bucket,
+        "bucket_file": args.bucket_file,
+        "region": args.region,
+        "region_file": args.region_file,
+        "expiration_seconds": args.expiration_seconds,
+    }
+    if args.refresh_output_get_url:
+        manifest = refresh_wam_provider_output_get_url(**common)
+    else:
+        if not args.bundle_path:
+            parser.error("--bundle-path is required unless --refresh-output-get-url is set")
+        manifest = stage_wam_provider_bundle_object_store(
+            **common,
+            bundle_path=args.bundle_path,
+            key_prefix=args.key_prefix,
+        )
     print(json.dumps(_mapping(manifest), sort_keys=True))
     return 0 if manifest.get("status") == "completed" else 1
 

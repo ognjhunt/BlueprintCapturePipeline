@@ -374,10 +374,11 @@ def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
     requirement_lines = [
         line for line in lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)
     ]
-    assert len(requirement_lines) >= 100
+    assert len(requirement_lines) == 121
     assert lock.count("--hash=sha256:") >= len(requirement_lines)
     assert "torch==2.10.0+cu128" in lock
     assert "torchvision==0.25.0+cu128" in lock
+    assert "pytest==9.1.1" in lock
     assert "mujoco==" in lock
     assert "msgpack-numpy==0.4.8" in lock
     assert (
@@ -388,11 +389,23 @@ def test_oscar_foundation_lock_is_exact_and_hash_checked() -> None:
         ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
         "requirements_robot_runtime.txt"
     ).read_bytes()
+    runtime_requirements_text = runtime_requirements.decode("utf-8")
+    assert "torch==2.10.0+cu128" in runtime_requirements_text
+    assert "torchvision==0.25.0+cu128" in runtime_requirements_text
+    assert "pytest>=8.0.0" in runtime_requirements_text
     assert (
         "# blueprint-input-sha256 requirements-robot-runtime "
         + hashlib.sha256(runtime_requirements).hexdigest()
         in lock
     )
+    runbook = (ROOT / "docs/runbooks/groot-oscar-thin-release.md").read_text(encoding="utf-8")
+    assert (
+        "cp deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_oscar_foundation.lock" in runbook
+    )
+    assert "--constraints /tmp/requirements_oscar_foundation.previous.lock" in runbook
+    assert "--index-url https://download.pytorch.org/whl/cu128" in runbook
+    assert "--extra-index-url https://pypi.org/simple" in runbook
 
 
 def test_groot_oscar_checkpoint_ownership_is_established_in_producing_layer() -> None:

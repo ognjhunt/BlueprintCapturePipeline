@@ -1,0 +1,125 @@
+{
+  "schema_version": "external_anchor_candidate_registry.v1",
+  "retrieved_at": "2026-07-20T00:00:00-05:00",
+  "claim_boundary": {
+    "blueprint_collects_real_world_task_outcomes": false,
+    "blueprint_real_world_ordering_correlation_status": "correlation_not_measured",
+    "paper_metrics_are_inherited": false,
+    "sc3_0_929_semantics": "paper_reported_closed_loop_pearson_ranking_fidelity_not_accuracy_or_task_success",
+    "oscar_0_852_semantics": "paper_reported_pearson_correlation_not_a_blueprint_measurement"
+  },
+  "candidates": [
+    {
+      "candidate_id": "sc3_eval_v3_published_artifacts",
+      "benchmark_family": "sc3_eval",
+      "paper": {
+        "arxiv_id": "2606.18610v3",
+        "pdf_sha256": "db070a6808cdd1352fe0aabc156e7aa5aa1062f0781e885ecd760ccf0afdfb45",
+        "url": "https://arxiv.org/pdf/2606.18610v3"
+      },
+      "project_url": "https://weichengtseng.github.io/sc3-eval/",
+      "immutable_source_revision": null,
+      "raw_per_cell_outcomes_available": false,
+      "raw_policy_actions_available": false,
+      "code_available": false,
+      "dataset_license_declared": false,
+      "commercial_use_scope_verified": false,
+      "frozen_final_split_available": false,
+      "independently_accepted": false,
+      "status": "blocked_candidate",
+      "blockers": [
+        "raw_per_cell_outcomes_not_published_at_reviewed_sources",
+        "raw_policy_actions_not_published_at_reviewed_sources",
+        "code_and_dataset_revision_not_published_at_reviewed_sources",
+        "dataset_license_and_commercial_use_scope_unverified",
+        "independent_acceptance_missing"
+      ]
+    },
+    {
+      "candidate_id": "oscar_policy_rollout_2026_06_16",
+      "benchmark_family": "oscar_roboarena",
+      "paper": {
+        "arxiv_id": "2606.04463v2",
+        "pdf_sha256": "44c78bd87169ab5abc5c04c6e103c003e7a3d834e75ba778e30edde1714c83ff",
+        "url": "https://arxiv.org/pdf/2606.04463v2"
+      },
+      "dataset_url": "https://huggingface.co/datasets/zywu2115/OSCAR_policy_rollout",
+      "dataset_revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+      "published_video_count": 441,
+      "published_session_count": 63,
+      "published_policy_count": 7,
+      "raw_per_cell_outcomes_available": false,
+      "raw_judge_labels_available": false,
+      "raw_policy_actions_available": false,
+      "dataset_license_declared": false,
+      "commercial_use_scope_verified": false,
+      "independently_accepted": false,
+      "status": "blocked_candidate",
+      "blockers": [
+        "paired_videos_are_not_raw_outcome_cells",
+        "raw_judge_labels_not_published",
+        "raw_policy_actions_not_published",
+        "dataset_card_has_no_declared_license",
+        "independent_acceptance_missing"
+      ]
+    },
+    {
+      "candidate_id": "roboarena_data_dump_2026_07_17",
+      "benchmark_family": "roboarena",
+      "dataset_url": "https://huggingface.co/datasets/RoboArena/DataDump_07-17-2026",
+      "dataset_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+      "declared_license": "MIT",
+      "snapshot_statistics": {
+        "evaluation_sessions": 3883,
+        "policy_episodes": 10783,
+        "mp4_videos": 27148,
+        "npz_action_proprioception_files": 10783,
+        "session_metadata_files": 3883
+      },
+      "raw_per_session_outcomes_available": true,
+      "raw_pairwise_preferences_available": true,
+      "raw_action_proprioception_files_available": true,
+      "exact_policy_checkpoint_digests_available": false,
+      "matched_blueprint_predictions_available": false,
+      "frozen_blueprint_train_dev_final_split_available": false,
+      "direct_identifiers_observed_in_session_metadata": true,
+      "privacy_and_consent_scope_verified": false,
+      "commercial_use_scope_verified": false,
+      "independently_accepted": false,
+      "status": "blocked_candidate_pending_privacy_split_and_matching",
+      "blockers": [
+        "direct_evaluator_names_or_email_addresses_present_in_reviewed_metadata",
+        "privacy_consent_and_commercial_scope_not_independently_verified",
+        "policy_checkpoint_digests_missing_from_top_level_index",
+        "blueprint_predictions_not_matched_to_raw_outcome_cells",
+        "final_evaluation_split_not_preregistered_or_locked",
+        "independent_acceptance_missing"
+      ]
+    }
+  ],
+  "oscar_runtime_license_inventory": {
+    "source": {
+      "id": "wuzy2115/oscar-public",
+      "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+      "declared_license": "Apache-2.0"
+    },
+    "checkpoint": {
+      "id": "zywu2115/OSCAR-2B",
+      "revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+      "declared_license": "Apache-2.0"
+    },
+    "text_encoder": {
+      "id": "nvidia/Cosmos-Reason1-7B",
+      "revision": "3210bec0495fdc7a8d3dbb8d58da5711eab4b423",
+      "declared_license": "NVIDIA-Open-Model-License"
+    },
+    "vae": {
+      "id": "Wan-AI/Wan2.1-T2V-1.3B",
+      "revision": "37ec512624d61f7aa208f7ea8140a131f93afc9a",
+      "declared_license": "Apache-2.0"
+    },
+    "official_benchmark_assets_commercial_use_verified": false,
+    "runtime_admission": "blocked_pending_independent_license_review_and_customer_site_rights",
+    "official_benchmark_assets_may_be_used_for_commercial_decision_rows": false
+  }
+}

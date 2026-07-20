@@ -99,11 +99,80 @@ not a generic VLA endpoint. The currently modeled G1 candidates are
 `unitree_groot_n17_sonic_policy`, `unitree_lerobot_policy`,
 `unitree_unifolm_vla_policy`, and `unitree_unifolm_wma_policy`.
 
-`unitree_groot_n17_sonic_policy` is the preferred next investigation lane for
-real G1 manipulation/action chunks: Isaac-GR00T N1.7 provides the VLA policy
-candidate, and GR00T-WholeBodyControl / SONIC provides the G1 whole-body action
-space and Sim2Sim bridge. It is still blocked until the configured command
-returns real Unitree G1/SONIC arm/hand/gripper or 78D SONIC action chunks.
+`unitree_groot_n17_sonic_policy` is the preferred G1 manipulation lane:
+Isaac-GR00T N1.7 provides the VLA policy, and GR00T-WholeBodyControl / SONIC
+provides the G1 whole-body action space and Sim2Sim bridge. The official VLA
+workflow still requires collecting demonstrations for the target task and
+fine-tuning a `UNITREE_G1_SONIC` checkpoint before deployment. A base or
+unrelated fine-tune that emits structurally valid 78D SONIC horizons is not
+therefore qualified for an arbitrary manipulation task.
+
+The July 17 microwave-door run proved that distinction. The configured
+`LucaFrat/groot-bs16` checkpoint loaded, returned 40-frame 78D horizons, and
+executed through the live Isaac/SONIC bridge, but its best wrist progress
+toward the microwave target was only about 1.6 mm and the observed door-angle
+change was at most about 0.009 radians, far below the 0.35-radian registered
+transition. The checkpoint's public dataset metadata does not
+declare a microwave-door task: its only declared task is “grab the bag, turn
+180 degrees and drop the bag.” That is an exact task mismatch, not merely
+missing metadata. The run is controller/runtime evidence, not
+microwave-manipulation success.
+
+A public 200-episode, 640×480 egocentric G1 digital-twin dataset does declare a
+microwave workflow (open the door, place a can, close the door), and a sampled
+episode has coherent task motion through terminal reward. It is useful
+candidate data, not a deployable SONIC policy. Its action schema is 43D raw G1
+joint positions plus end-effector poses; the official `UNITREE_G1_SONIC`
+fine-tuning path instead requires 64D `action.motion_token` values produced by
+the SONIC encoder plus 7D left- and 7D right-hand actions. The dataset also has
+no declared license or model checkpoint and is a different synthetic scene.
+The official 50 MB GEAR-SONIC encoder does make the mechanical action
+conversion feasible: the 29 body joints can be reordered into IsaacLab order,
+encoded from 10 future frames sampled at stride five, and concatenated with
+the source dataset's two seven-joint hand targets to produce the required 78D
+action. A local sample converted all 481 frames to finite, changing 64D motion
+tokens. NVIDIA's current `UNITREE_G1_SONIC` modality registration confirms that
+fine-tuning reads only the seven joint-state groups plus projected gravity,
+the three action groups above, the ego view, and the task annotation. The
+source already supplies every one of those fields except projected gravity and
+motion tokens.
+
+The source omits root pose, however, so identity root anchors and constant
+`[0, 0, -1]` projected gravity require an explicit fixed-base/upright
+attestation. A replay check against one recorded episode from the known bag
+dataset also showed that encoding executed `action.wbc` joint targets with an
+identity root does not reproduce its recorded token stream (mean absolute
+token difference about 0.101; zero exact rows out of 713). That is expected
+because SONIC tokens encode the reference motion, not merely the controller's
+executed joint command, but it means the mechanical conversion is a candidate
+reference-motion construction rather than demonstrated equivalence to the
+official collector. Converted actions remain training inputs, not a trained
+checkpoint. An exact fine-tune, open-loop trajectory check, and
+registered-transition qualification are still required before paid episode
+admission.
+
+A broader public-checkpoint audit did not find an exact ready-to-run Unitree
+G1 microwave policy for this lane. Apache-tagged Unitree G1 pi0.5 policies do
+exist for opening an oven or a generic door, but they require 26D direct
+upper-body actions and three or four fixed high/wrist cameras. They are not
+the 78D SONIC interface, are not trained on this microwave scene, and do not
+consume the required head-mounted ego view. Public models named for a
+microwave were also inspected, but those used a different single-arm/mobile
+embodiment or GR1 rather than Unitree G1. A public N1.7 SONIC checkpoint with
+no model card or task/dataset provenance remains inadmissible under the same
+fail-closed task-compatibility gate. Similar task names are not enough to
+claim embodiment, camera, action, or task compatibility.
+
+Paid manipulation admission must now carry a hash-bound task-compatibility
+declaration for the exact checkpoint revision, embodiment, code-reviewed
+training dataset revision and task provenance, requested task id, and a passed
+Isaac registered-transition qualification artifact. A launch plan cannot
+override the reviewed checkpoint provenance by declaring a different training
+task. Missing or mismatched evidence blocks with
+`single_episode_manipulation_policy_task_compatibility_unproven` before
+provider inventory, capacity lookup, or allocation. Live execution also
+requires measurable end-effector progress toward the task target before OSCAR
+generation; visually plausible WAM motion cannot replace that physical gate.
 
 `openvla_policy` is a generic comparison candidate only. It is not a G1
 dexterous-hand policy and should not be selected as the default policy path for

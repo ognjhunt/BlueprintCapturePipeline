@@ -120,7 +120,7 @@ def requirements_text() -> str:
 
 
 def filter_requirements_script_text() -> str:
-    return r'''#!/usr/bin/env python3
+    return r"""#!/usr/bin/env python3
 from __future__ import annotations
 
 import re
@@ -129,6 +129,8 @@ from pathlib import Path
 
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
+if not source.is_file():
+    raise SystemExit(f"OSCAR requirements source missing: {source}")
 skip = {
     "torch",
     "torchvision",
@@ -137,19 +139,18 @@ skip = {
     "transformer_engine",
 }
 lines: list[str] = []
-if source.is_file():
-    for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            lines.append(line)
-            continue
-        match = re.match(r"([A-Za-z0-9_.-]+)", stripped)
-        package = (match.group(1) if match else "").lower().replace("_", "-")
-        if package in skip:
-            continue
+for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
         lines.append(line)
+        continue
+    match = re.match(r"([A-Za-z0-9_.-]+)", stripped)
+    package = (match.group(1) if match else "").lower().replace("_", "-")
+    if package in skip:
+        continue
+    lines.append(line)
 target.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-'''
+"""
 
 
 def transformer_engine_shim_script_text() -> str:
@@ -792,7 +793,7 @@ print("BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_SHIM_WRITTEN")
 
 
 def image_healthcheck_text() -> str:
-    return r'''#!/usr/bin/env python3
+    return r"""#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -977,7 +978,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-'''
+"""
 
 
 def dockerfile_text(
@@ -1099,9 +1100,11 @@ def build_oscar_wam_gpu_image_context(
         )
     root = _repo_root()
     generated = generated_at or utc_now_iso()
-    output = Path(
-        job_dir or root / "robot_eval_jobs" / f"oscar_wam_gpu_image_{_timestamp()}"
-    ).expanduser().resolve()
+    output = (
+        Path(job_dir or root / "robot_eval_jobs" / f"oscar_wam_gpu_image_{_timestamp()}")
+        .expanduser()
+        .resolve()
+    )
     ensure_dir(output)
     configured_image_ref = (
         _string(image_ref)
@@ -1141,18 +1144,14 @@ def build_oscar_wam_gpu_image_context(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
-        f"docker build --platform {platform} -f \"$SCRIPT_DIR/{DEFAULT_CONTEXT_FILENAME}\" "
-        f"-t \"${{{IMAGE_REF_ENV}}}\" \"$SCRIPT_DIR\"\n"
+        f'docker build --platform {platform} -f "$SCRIPT_DIR/{DEFAULT_CONTEXT_FILENAME}" '
+        f'-t "${{{IMAGE_REF_ENV}}}" "$SCRIPT_DIR"\n'
     )
-    push_command = (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        f"docker push \"${{{IMAGE_REF_ENV}}}\"\n"
-    )
+    push_command = f'#!/usr/bin/env bash\nset -euo pipefail\ndocker push "${{{IMAGE_REF_ENV}}}"\n'
     run_healthcheck_command = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        f"docker run --rm --gpus all \"${{{IMAGE_REF_ENV}}}\" "
+        f'docker run --rm --gpus all "${{{IMAGE_REF_ENV}}}" '
         "python3 /opt/blueprint/oscar_wam_image_healthcheck.py --require-cuda\n"
     )
     build_command_path.write_text(build_command, encoding="utf-8")
@@ -1172,7 +1171,9 @@ def build_oscar_wam_gpu_image_context(
             "DOCKER_USERNAME_FILE",
             "~/.blueprint-secrets/docker_username",
         ),
-        "docker_pat_file": _secret_file_status("DOCKER_PAT_FILE", "~/.blueprint-secrets/docker_pat"),
+        "docker_pat_file": _secret_file_status(
+            "DOCKER_PAT_FILE", "~/.blueprint-secrets/docker_pat"
+        ),
         "digitalocean_api_token_file": _secret_file_status(
             "DIGITALOCEAN_API_TOKEN_FILE",
             "~/.blueprint-secrets/digitalocean_api_token",
@@ -1221,9 +1222,7 @@ def build_oscar_wam_gpu_image_context(
         "runtime_contract": {
             "sets_BLUEPRINT_OSCAR_WAM_SOURCE_ROOT": "/opt/oscar-public",
             "sets_BLUEPRINT_OSCAR_WAM_SKIP_RUNTIME_PIP_INSTALL": True,
-            "sets_BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY": (
-                "torch_sdpa_compat_shim"
-            ),
+            "sets_BLUEPRINT_OSCAR_WAM_TRANSFORMER_ENGINE_STRATEGY": ("torch_sdpa_compat_shim"),
             "model_checkpoint_baked_into_image": False,
             "raw_credentials_baked_into_image": False,
             "provider_bundle_still_supplies_rollout_inputs": True,
@@ -1245,7 +1244,7 @@ def build_oscar_wam_gpu_image_context(
             "run_gpu_healthcheck": f"{run_healthcheck_command_path}",
             "vast_usage": (
                 "blueprint-run-vast-provider-adapter ... "
-                f"--provider-bundle-kind wam --public-image \"${{{IMAGE_REF_ENV}}}\""
+                f'--provider-bundle-kind wam --public-image "${{{IMAGE_REF_ENV}}}"'
             ),
         },
         "registry_auth": docker_auth,

@@ -7,9 +7,12 @@ fail-closed no-spend guards, and provider-parameterized teardown.
 from __future__ import annotations
 
 import base64
+import gzip
+import hashlib
 import io
 import json
 import re
+import subprocess
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -20,9 +23,16 @@ from blueprint_pipeline.gpu_render_providers import (
     DigitalOceanRenderProvider,
     RenderLaunchSpec,
     RunPodRenderProvider,
+    VAST_SSH_CONTROL_ACTIONS,
+    VAST_SSH_CONTROL_COMPONENTS,
+    VAST_SSH_OUTPUT_TRUNCATION_MARKER,
+    VAST_SSH_QUALIFICATION_CONTROL_SCRIPT,
     VastRenderProvider,
+    _vast_ssh_connection_metadata,
+    enroll_vast_ssh_host_key,
     get_render_provider,
     list_render_providers,
+    run_vast_ssh_control,
     validate_runpod_restart_storage_contract,
 )
 from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
@@ -1113,37 +1123,205 @@ def test_runpod_inspect_redacts_and_marks_pre_runtime(monkeypatch) -> None:
 
     monkeypatch.setattr(RunPodRenderProvider, "_key", fake_key)
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        lambda query, *, key, timeout=60: (200, {"data": {"pod": {"runtime": None}}}),
+    )
 
     res = RunPodRenderProvider().inspect("pod-1")
 
     assert res["status"] == "observed"
     assert res["runtime_present"] is False
+    assert res["runtime_ready"] is False
+    assert res["runtime_source"] == "unavailable"
+    assert res["runtime_probe_http"] == 200
     assert res["public_ip_present"] is False
     assert res["machineId"] == "machine-a"
     assert res["raw_provider_response_recorded"] is False
     assert "env" not in res and "dockerStartCmd" not in res
 
 
+def test_runpod_inspect_uses_graphql_runtime_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda method, path, body, *, key, timeout=90: (
+            200,
+            {
+                "id": "pod-1",
+                "desiredStatus": "RUNNING",
+                "machineId": "machine-a",
+                "env": {"SIGNED_URL": "must-not-escape"},
+            },
+        ),
+    )
+
+    def graphql(query, *, key, timeout=60):
+        assert 'podId: "pod-1"' in query
+        assert key == "rp-key"
+        return 200, {
+            "data": {
+                "pod": {
+                    "runtime": {
+                        "uptimeInSeconds": 17,
+                        "gpus": [
+                            {"gpuUtilPercent": 83, "memoryUtilPercent": 61}
+                        ],
+                        "container": {"cpuPercent": 12, "memoryPercent": 4},
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call", graphql
+    )
+
+    result = RunPodRenderProvider().inspect("pod-1")
+
+    assert result["runtime_present"] is True
+    assert result["runtime_ready"] is True
+    assert result["runtime_source"] == "graphql"
+    assert result["runtime_uptime_seconds"] == 17
+    assert result["gpu_util_percent"] == [83]
+    assert result["gpu_memory_util_percent"] == [61]
+    assert "env" not in result
+
+
+def test_runpod_inspect_negative_graphql_uptime_is_not_runtime_ready(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_call",
+        lambda method, path, body, *, key, timeout=90: (
+            200,
+            {"id": "pod-1", "desiredStatus": "RUNNING"},
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call",
+        lambda query, *, key, timeout=60: (
+            200,
+            {
+                "data": {
+                    "pod": {
+                        "runtime": {
+                            "uptimeInSeconds": -7,
+                            "gpus": [
+                                {"gpuUtilPercent": 0, "memoryUtilPercent": 0}
+                            ],
+                        }
+                    }
+                }
+            },
+        ),
+    )
+
+    result = RunPodRenderProvider().inspect("pod-1")
+
+    assert result["runtime_present"] is True
+    assert result["runtime_ready"] is False
+    assert result["runtime_uptime_seconds"] == -7
+
+
 # ----------------------------- Vast translation -----------------------------
 
 def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
-    req = VastRenderProvider().build_request(_spec(), tmp_path)
+    spec = _spec()
+    req = VastRenderProvider().build_request(spec, tmp_path)
     # offer search filters to a single rentable on-demand GPU under the hourly rate
     sp = req["search_payload"]
     assert sp["type"] == "on-demand"
     assert sp["rentable"] == {"eq": True}
     assert sp["num_gpus"] == {"eq": 1}
     assert sp["dph_total"]["lte"] == pytest.approx(5.0)
-    # create-instance body: args mode runs our bootstrap via bash, env carries the signed urls
+    # Args mode must override the Isaac image ENTRYPOINT, then pass only bash args.
     cp = req["create_payload"]
     assert cp["image"] == "img:tag"
     assert cp["disk"] == req["disk"] >= 120
     assert cp["runtype"] == "args"
     assert cp["target_state"] == "running"
-    assert cp["args_str"].startswith("bash -lc")
+    assert cp["onstart"] == "bash"
+    assert cp["args_str"].startswith("-lc")
+    assert not cp["args_str"].startswith("bash ")
     assert "container_bash_started" in cp["args_str"]
     assert cp["env"]["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith("sig=B")
     assert req["create_endpoint"] == "PUT /asks/{ask_contract_id}/"
+    assert req["entrypoint_override"] == "bash"
+    assert spec.vast_launch_mode == "args"
+    assert list(RenderLaunchSpec.__dataclass_fields__)[-1] == "vast_launch_mode"
+    assert req["vast_launch_mode"] == "args"
+    assert req["require_direct_port"] is False
+
+
+def test_vast_build_request_ssh_direct_uses_exact_onstart_without_args_rewrite(
+    tmp_path: Path,
+) -> None:
+    spec = _spec(vast_launch_mode="ssh_direct", entrypoint=["sealed-entrypoint"])
+
+    req = VastRenderProvider().build_request(spec, tmp_path)
+
+    payload = req["create_payload"]
+    assert payload["runtype"] == "ssh_direct"
+    assert payload["onstart"] == spec.bootstrap_script
+    assert "args_str" not in payload
+    assert req["vast_launch_mode"] == "ssh_direct"
+    assert req["require_direct_port"] is True
+    assert req["entrypoint_override"] is None
+    assert req["bootstrap_transport"] == "onstart_plain"
+    assert req["provider_args_length"] == 0
+    assert req["provider_onstart_length"] == len(spec.bootstrap_script)
+
+
+def test_vast_build_request_rejects_unknown_launch_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="vast_render_launch_mode_unsupported"):
+        VastRenderProvider().build_request(
+            _spec(vast_launch_mode="interactive_shell"), tmp_path
+        )
+
+
+def test_vast_build_request_compresses_large_bootstrap_below_api_limit(
+    tmp_path: Path,
+) -> None:
+    spec = _spec()
+    marker = "BLUEPRINT_SINGLE_EPISODE_BOOTSTRAP_MARKER"
+    script = "set -euo pipefail\n" + ("echo staged-input\n" * 1200) + marker
+    spec.bootstrap_argv = ["-lc", script]
+
+    req = VastRenderProvider().build_request(spec, tmp_path)
+
+    assert req["bootstrap_transport"] == "gzip_base64"
+    assert req["bootstrap_source_length"] == len(script)
+    assert req["provider_args_length"] < 16_384
+    assert len(req["create_payload"]["args_str"]) == req["provider_args_length"]
+
+
+def test_vast_build_request_moves_oversize_compressed_bootstrap_to_env(
+    tmp_path: Path,
+) -> None:
+    spec = _spec()
+    script = "set -euo pipefail\n" + "".join(
+        f"# {hashlib.sha256(str(index).encode()).hexdigest()}\n"
+        for index in range(1_500)
+    )
+    spec.bootstrap_argv = ["-lc", script]
+
+    req = VastRenderProvider().build_request(spec, tmp_path)
+
+    payload_env = "BLUEPRINT_VAST_BOOTSTRAP_GZIP_BASE64"
+    digest_env = "BLUEPRINT_VAST_BOOTSTRAP_SHA256"
+    create_payload = req["create_payload"]
+    encoded = create_payload["env"][payload_env]
+    decoded = gzip.decompress(base64.b64decode(encoded)).decode()
+    assert decoded == script
+    assert create_payload["env"][digest_env] == hashlib.sha256(
+        script.encode()
+    ).hexdigest()
+    assert req["bootstrap_transport"] == "gzip_base64_env"
+    assert req["bootstrap_transport_env_keys"] == sorted([digest_env, payload_env])
+    assert req["provider_args_length"] < 16_384
+    assert encoded not in create_payload["args_str"]
 
 
 def test_vast_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
@@ -1266,6 +1444,583 @@ def test_vast_teardown_404_is_already_gone_success(monkeypatch) -> None:
     }
 
 
+def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        calls.append((method, path))
+        assert api_key == "vast-secret"
+        assert payload["rentable"] == {"eq": True}
+        assert payload["has_avx"] == {"eq": True}
+        return 200, {
+            "offers": [
+                {
+                    "ask_contract_id": 11,
+                    "gpu_name": "L40S",
+                    "gpu_ram": 48000,
+                    "dph_total": 0.99,
+                    "driver_version": "550.54.15",
+                    "reliability": 0.995,
+                    "machine_id": 101,
+                    "has_avx": 1,
+                    "jupyter_token": "provider-runtime-secret",
+                },
+                {
+                    "ask_contract_id": 12,
+                    "gpu_name": "RTX A6000",
+                    "gpu_ram": 48000,
+                    "dph_total": 0.70,
+                    "driver_version": "550.54.15",
+                    "reliability": 0.999,
+                    "machine_id": 54812,
+                    "has_avx": 0,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    provider = VastRenderProvider()
+    request = provider.build_request(_spec(), Path("/unused"))
+    request.update(
+        {
+            "min_gpu_ram_mb": 40000,
+            "min_reliability": 0.99,
+            "require_avx": True,
+            "require_known_supported_isaac_driver": True,
+            "preferred_gpu_keywords": ["L40S"],
+        }
+    )
+
+    result = provider.capacity_preflight(request)
+
+    assert calls == [("POST", "/bundles/")]
+    assert result["status"] == "available"
+    assert result["reservation_proven"] is False
+    assert result["selected_offer"]["gpu_type_id"] == "L40S"
+    assert result["selected_offer"]["on_demand_price_usd_per_hour"] == 0.99
+    assert result["selected_offer"]["has_avx"] is True
+    assert all(
+        offer["machine_id"] != 54812 for offer in result["viable_gpu_types"]
+    )
+    assert len(result["viable_gpu_types"]) == 1
+    assert result["selection_policy"] == {
+        "max_hourly_rate_usd": 5.0,
+        "min_gpu_ram_mb": 40000,
+        "min_reliability": 0.99,
+        "require_avx": True,
+        "require_known_supported_isaac_driver": True,
+        "require_direct_port": False,
+        "preferred_gpu_keywords": ["L40S"],
+    }
+    serialized = json.dumps(result)
+    assert "vast-secret" not in serialized
+    assert "provider-runtime-secret" not in serialized
+    assert "jupyter_token" not in serialized
+
+
+def test_vast_ssh_direct_capacity_requires_offer_with_direct_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_api_json(**_kwargs):
+        return 200, {
+            "offers": [
+                {
+                    "ask_contract_id": 10,
+                    "gpu_name": "L40S",
+                    "gpu_ram": 48_000,
+                    "dph_total": 0.80,
+                    "direct_port_count": 0,
+                },
+                {
+                    "ask_contract_id": 11,
+                    "gpu_name": "L40S",
+                    "gpu_ram": 48_000,
+                    "dph_total": 0.90,
+                    "direct_port_count": 2,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    request = VastRenderProvider().build_request(
+        _spec(vast_launch_mode="ssh_direct"), Path("/unused")
+    )
+
+    result = VastRenderProvider().capacity_preflight(request)
+
+    assert result["status"] == "available"
+    assert result["selection_policy"]["require_direct_port"] is True
+    assert result["selected_offer"]["ask_contract_id"] == 11
+    assert [item["ask_contract_id"] for item in result["viable_gpu_types"]] == [11]
+
+
+def test_vast_inspect_is_get_only_sanitized_and_404_proves_absence(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def observed_api_json(*, method, path, api_key, payload=None, timeout_seconds=30):
+        calls.append((method, path))
+        assert api_key == "vast-secret"
+        assert payload is None
+        return 200, {
+            "instances": {
+                "id": 123,
+                "label": "blueprint-single-episode-abc",
+                "actual_status": "running",
+                "cur_state": "running",
+                "gpu_name": "L40S",
+                "machine_id": 55,
+                "has_avx": 1,
+                "dph_total": 0.99,
+                "ssh_host": "ssh5.vast.ai",
+                "ssh_port": 22022,
+                "public_ipaddr": "203.0.113.8",
+                "image_runtype": "ssh_direct",
+                "direct_port_count": 3,
+                "ports": {
+                    "22/tcp": [
+                        {
+                            "HostIp": "203.0.113.8",
+                            "HostPort": "22022",
+                            "token": "must-not-surface",
+                        }
+                    ],
+                    "not-a-port": {"secret": "must-not-surface"},
+                },
+                "jupyter_token": "provider-runtime-secret",
+                "env": {"SIGNED_URL": "signed-secret"},
+            }
+        }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", observed_api_json
+    )
+    result = VastRenderProvider().inspect("123")
+
+    assert calls == [("GET", "/instances/123/")]
+    assert result["status"] == "observed"
+    assert result["desiredStatus"] == "running"
+    assert result["has_avx"] is True
+    assert result["api_confirmed"] is True
+    assert result["ssh_host"] == "203.0.113.8"
+    assert result["ssh_port"] == 22022
+    assert result["ssh_endpoint_source"] == "provider_public_ip_port_22_mapping"
+    assert result["public_ipaddr"] == "203.0.113.8"
+    assert result["image_runtype"] == "ssh_direct"
+    assert result["direct_port_count"] == 3
+    assert result["direct_port_ready"] is True
+    assert result["direct_port_metadata"] == {
+        "ssh_endpoint_present": True,
+        "mapped_ports": [
+            {"container_port": 22, "host_port": 22022, "protocol": "tcp"}
+        ],
+        "raw_provider_response_recorded": False,
+    }
+    serialized = json.dumps(result)
+    assert "provider-runtime-secret" not in serialized
+    assert "signed-secret" not in serialized
+    assert "jupyter_token" not in serialized
+    assert "must-not-surface" not in serialized
+
+    proxy_only = _vast_ssh_connection_metadata(
+        {
+            "ssh_host": "ssh5.vast.ai",
+            "ssh_port": 22023,
+            "public_ipaddr": "203.0.113.8",
+            "ports": {},
+        }
+    )
+    assert proxy_only["ssh_host"] == "ssh5.vast.ai"
+    assert proxy_only["ssh_port"] == 22023
+    assert proxy_only["ssh_endpoint_source"] == "provider_ssh_proxy"
+
+    def absent_api_json(**_kwargs):
+        raise urllib.error.HTTPError(
+            "https://console.vast.ai/api/v0/instances/123/",
+            404,
+            "not found",
+            None,
+            io.BytesIO(b'{"secret":"must-not-surface"}'),
+        )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", absent_api_json
+    )
+    absent = VastRenderProvider().inspect("123")
+    assert absent["status"] == "absent"
+    assert absent["http"] == 404
+    assert absent["provider_absence_confirmed"] is True
+    assert absent["api_confirmed"] is True
+    assert "must-not-surface" not in json.dumps(absent)
+
+
+def test_vast_ssh_host_key_enrollment_tofu_pins_attempt_local_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connection = {"ssh_host": "ssh5.vast.ai", "ssh_port": 22022}
+    public_key = base64.b64encode(b"\x00" * 64).decode("ascii")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        assert command[0] == "ssh-keyscan"
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["timeout"] == 12.0
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                f"# scanner comment\n[ssh5.vast.ai]:22022 ssh-ed25519 {public_key}\n"
+            ).encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers.subprocess.run", fake_run
+    )
+
+    enrolled = enroll_vast_ssh_host_key(
+        connection, attempt_dir=tmp_path, timeout_seconds=12
+    )
+
+    assert enrolled["status"] == "enrolled"
+    assert enrolled["tofu_pinned"] is True
+    assert enrolled["already_enrolled"] is False
+    known_hosts = Path(enrolled["known_hosts_file"])
+    fingerprint = Path(enrolled["fingerprint_artifact"])
+    assert known_hosts.parent == tmp_path.resolve()
+    assert known_hosts.stat().st_mode & 0o777 == 0o600
+    assert fingerprint.stat().st_mode & 0o777 == 0o600
+    artifact = json.loads(fingerprint.read_text(encoding="utf-8"))
+    assert artifact["status"] == "tofu_pinned"
+    assert artifact["trust_model"] == "trust_on_first_use"
+    assert artifact["ssh_host"] == "ssh5.vast.ai"
+    assert artifact["ssh_port"] == 22022
+    assert artifact["known_hosts_sha256"] == hashlib.sha256(
+        known_hosts.read_bytes()
+    ).hexdigest()
+    assert artifact["fingerprints"][0]["sha256_fingerprint"].startswith("SHA256:")
+    assert calls[0] == [
+        "ssh-keyscan",
+        "-p",
+        "22022",
+        "-T",
+        "12",
+        "-t",
+        "ed25519,ecdsa,rsa",
+        "ssh5.vast.ai",
+    ]
+
+    reenrolled = enroll_vast_ssh_host_key(
+        connection, attempt_dir=tmp_path, timeout_seconds=12
+    )
+    assert reenrolled["status"] == "enrolled"
+    assert reenrolled["already_enrolled"] is True
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("control_action", ["tail", "status"])
+@pytest.mark.parametrize(
+    "control_component", ["isaac_task_executor", "groot_microwave_finetune"]
+)
+def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    control_action: str,
+    control_component: str,
+) -> None:
+    connection = {"ssh_host": "203.0.113.8", "ssh_port": 22022}
+    public_key = base64.b64encode(b"\x01" * 64).decode("ascii")
+    subprocess_calls: list[list[str]] = []
+    subprocess_kwargs: list[dict] = []
+
+    def fake_run(command, **kwargs):
+        subprocess_calls.append(command)
+        subprocess_kwargs.append(kwargs)
+        if command[0] == "ssh-keyscan":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    f"[203.0.113.8]:22022 ssh-ed25519 {public_key}\n"
+                ).encode(),
+                stderr=b"",
+            )
+        assert command[0] == "ssh"
+        assert kwargs["timeout"] == 25.0
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                b"OLDEST_DIAGNOSTIC_MUST_BE_OMITTED\n"
+                + b"x" * 20_000
+                + b"\nTOKEN=remote-secret\n"
+                + b"download=https://objects.example/file?sig=remote-secret\n"
+                + b"LATEST_DIAGNOSTIC_MUST_BE_RETAINED\n"
+            ),
+            stderr=b"PASSWORD: another-secret\n",
+        )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.gpu_render_providers.subprocess.run", fake_run
+    )
+    enrollment = enroll_vast_ssh_host_key(connection, attempt_dir=tmp_path)
+    assert enrollment["status"] == "enrolled"
+    identity = tmp_path / "id_ed25519"
+    identity.write_text("test-private-key", encoding="utf-8")
+    identity.chmod(0o600)
+
+    result = run_vast_ssh_control(
+        connection,
+        action=control_action,
+        component=control_component,
+        known_hosts_file=enrollment["known_hosts_file"],
+        identity_file=identity,
+        timeout_seconds=25,
+        tail_lines=999_999,
+    )
+
+    assert result["status"] == "completed"
+    assert result["strict_host_key_checking"] is True
+    assert result["batch_mode"] is True
+    assert "remote-secret" not in result["stdout"]
+    assert "another-secret" not in result["stderr"]
+    assert "[REDACTED]" in result["stdout"]
+    assert "[REDACTED_URL]" in result["stdout"]
+    assert "OLDEST_DIAGNOSTIC_MUST_BE_OMITTED" not in result["stdout"]
+    assert "LATEST_DIAGNOSTIC_MUST_BE_RETAINED" in result["stdout"]
+    assert result["stdout"].startswith(VAST_SSH_OUTPUT_TRUNCATION_MARKER)
+    assert len(result["stdout"].encode()) <= 16_384
+    stdout_truncation = result["stdout_truncation"]
+    assert stdout_truncation["truncated"] is True
+    assert stdout_truncation["retention"] == "newest"
+    assert stdout_truncation["omitted_redacted_bytes"] > 0
+    assert (
+        stdout_truncation["retained_redacted_bytes"]
+        + stdout_truncation["omitted_redacted_bytes"]
+        == stdout_truncation["redacted_bytes_before_truncation"]
+    )
+    assert stdout_truncation["returned_bytes"] == 16_384
+    assert stdout_truncation["max_returned_bytes"] == 16_384
+    assert stdout_truncation["marker_present"] is True
+    assert result["stderr_truncation"] == {
+        "truncated": False,
+        "retention": "complete",
+        "redacted_bytes_before_truncation": 21,
+        "retained_redacted_bytes": 21,
+        "omitted_redacted_bytes": 0,
+        "returned_bytes": 21,
+        "max_returned_bytes": 16_384,
+        "marker_present": False,
+    }
+    ssh_command = subprocess_calls[-1]
+    assert "BatchMode=yes" in ssh_command
+    assert "StrictHostKeyChecking=yes" in ssh_command
+    assert "GlobalKnownHostsFile=/dev/null" in ssh_command
+    assert any(item.startswith("UserKnownHostsFile=") for item in ssh_command)
+    assert ssh_command[-5:] == [
+        "/bin/bash",
+        VAST_SSH_QUALIFICATION_CONTROL_SCRIPT,
+        control_action,
+        control_component,
+        "2000",
+    ]
+    assert set(VAST_SSH_CONTROL_ACTIONS) == {
+        "status",
+        "tail",
+        "gpu-status",
+        "run",
+        "restart",
+        "stop",
+        "refresh",
+    }
+    assert "isaac_task_executor" in VAST_SSH_CONTROL_COMPONENTS
+    assert "groot_microwave_finetune" in VAST_SSH_CONTROL_COMPONENTS
+
+    signed_url = "https://objects.example/refresh?signature=local-secret"
+    refresh = run_vast_ssh_control(
+        connection,
+        action="refresh",
+        component="bootstrap",
+        known_hosts_file=enrollment["known_hosts_file"],
+        identity_file=identity,
+        timeout_seconds=25,
+        refresh_request={
+            "schema_version": "single_g1_kitchen_qualification_refresh_request.v1",
+            "signed_get_url": signed_url,
+            "refresh_payload_sha256": "a" * 64,
+            "target_revision": 2,
+            "immutable_binding": {"control_script_sha256": "b" * 64},
+        },
+    )
+    assert refresh["status"] == "completed"
+    assert refresh["refresh_request_transmitted_via_stdin"] is True
+    refresh_command = subprocess_calls[-1]
+    assert refresh_command[-3:] == ["refresh", "bootstrap", "200"]
+    assert signed_url not in " ".join(refresh_command)
+    assert signed_url.encode() in subprocess_kwargs[-1]["input"]
+    assert signed_url not in json.dumps(refresh)
+
+    call_count = len(subprocess_calls)
+    invalid = run_vast_ssh_control(
+        connection,
+        action="shell",
+        component="isaac_task_executor",
+        known_hosts_file=enrollment["known_hosts_file"],
+        identity_file=identity,
+    )
+    assert invalid["status"] == "blocked"
+    assert invalid["blockers"] == ["vast_ssh_control_action_not_allowed"]
+    assert len(subprocess_calls) == call_count
+
+    Path(enrollment["known_hosts_file"]).write_text(
+        "tampered-host-key\n", encoding="utf-8"
+    )
+    Path(enrollment["known_hosts_file"]).chmod(0o600)
+    tampered = run_vast_ssh_control(
+        connection,
+        action="status",
+        component="bootstrap",
+        known_hosts_file=enrollment["known_hosts_file"],
+        identity_file=identity,
+    )
+    assert tampered["status"] == "blocked"
+    assert tampered["blockers"] == ["vast_ssh_known_hosts_pin_invalid"]
+    assert len(subprocess_calls) == call_count
+
+
+def test_vast_billable_inventory_is_get_only_prefix_scoped_and_sanitized(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=30):
+        calls.append((method, path))
+        assert api_key == "vast-secret"
+        assert payload is None
+        return 200, {
+            "instances": [
+                {
+                    "id": 123,
+                    "label": "blueprint-single-episode-live",
+                    "actual_status": "running",
+                    "gpu_name": "L40S",
+                    "dph_total": 0.99,
+                    "jupyter_token": "provider-runtime-secret",
+                },
+                {
+                    "id": 124,
+                    "label": "blueprint-single-episode-finished",
+                    "actual_status": "exited",
+                    "gpu_name": "L40S",
+                },
+                {
+                    "id": 125,
+                    "label": "unrelated-live-instance",
+                    "actual_status": "running",
+                    "gpu_name": "L40S",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    result = VastRenderProvider().billable_inventory(
+        name_prefix="blueprint-single-episode-"
+    )
+
+    assert calls == [("GET", "/instances/")]
+    assert result["status"] == "observed"
+    assert result["api_confirmed"] is True
+    assert result["live_resource_count"] == 1
+    assert result["resources"] == [
+        {
+            "instance_id": "123",
+            "name": "blueprint-single-episode-live",
+            "provider_status": "running",
+            "actual_status": "running",
+            "cur_state": None,
+            "intended_status": None,
+            "machine_id": None,
+            "gpu_name": "L40S",
+            "cost_per_hour": 0.99,
+        }
+    ]
+    assert "provider-runtime-secret" not in json.dumps(result)
+
+
+def test_vast_launch_forwards_episode_offer_selection_policy(
+    monkeypatch, tmp_path: Path
+) -> None:
+    selection_calls: list[dict[str, object]] = []
+    offer = {
+        "ask_contract_id": 17,
+        "gpu_name": "L40S",
+        "hourly_rate_usd": 0.99,
+        "has_avx": True,
+    }
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        if method == "POST" and path == "/bundles/":
+            assert payload["has_avx"] == {"eq": True}
+            return 200, {"offers": [offer]}
+        if method == "PUT" and path == "/asks/17/":
+            return 200, {"new_contract": 222}
+        raise AssertionError((method, path))
+
+    def fake_select(offers, **kwargs):
+        selection_calls.append(dict(kwargs))
+        return offer if offers else None
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._select_offer", fake_select
+    )
+    provider = VastRenderProvider()
+    request = _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+    request.update(
+        {
+            "min_reliability": 0.99,
+            "require_avx": True,
+            "require_known_supported_isaac_driver": True,
+            "preferred_gpu_keywords": ["L40S"],
+        }
+    )
+
+    result = provider.launch(tmp_path, request)
+
+    assert result["status"] == "launched"
+    assert result["instance_id"] == "222"
+    assert selection_calls == [
+        {
+            "max_hourly_rate": 5.0,
+            "min_gpu_ram_mb": 24000,
+            "require_avx": True,
+            "require_known_supported_isaac_driver": True,
+            "min_reliability": 0.99,
+            "require_direct_port": False,
+            "preferred_gpu_keywords": ["L40S"],
+        }
+    ]
+
+
 # ----------------------------- availability reflects secrets -----------------------------
 
 def test_availability_reflects_secret_presence(tmp_path: Path, monkeypatch) -> None:
@@ -1279,6 +2034,7 @@ def test_availability_reflects_secret_presence(tmp_path: Path, monkeypatch) -> N
 
 
 # ----------------------------- teardown is provider-parameterized -----------------------------
+
 
 def test_watch_and_collect_tears_down_via_provider(tmp_path: Path) -> None:
     from blueprint_pipeline.isaac_particlefield_render_job import watch_and_collect
@@ -1456,7 +2212,7 @@ def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Pat
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("bootstrap.json", json.dumps({"phase": "runner_done", "rc": 0}))
-        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({
+        zf.writestr("isaac_runtime_result.json", json.dumps({
             "status": "blocked",
             "blockers": ["placement_validation_failed"],
         }))
@@ -1676,7 +2432,7 @@ def test_watch_and_collect_terminates_current_final_result_without_runner_done(
             "phase": "runner_starting",
             "launch_session_id": "launch-123",
         }))
-        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({
+        zf.writestr("isaac_runtime_result.json", json.dumps({
             "status": "blocked",
             "scenarios_executed": 0,
             "blockers": ["isaac_runner_exception_before_scenario_outcome"],
@@ -1796,7 +2552,11 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
         if method == "PUT" and path == "/asks/ask-stale/":
             raise urllib.error.HTTPError(
                 "https://vast/asks/ask-stale/", 400, "Bad Request", None,
-                io.BytesIO(b'{"success": false, "msg": "ask expired"}'))
+                io.BytesIO(
+                    b'{"success": false, "msg": "ask expired", '
+                    b'"echo": "https://spaces.example/bundle.zip?sig=A", '
+                    b'"query": "signature=do-not-record"}'
+                ))
         if method == "PUT" and path == "/asks/ask-fresh/":
             return 200, {"new_contract": 777}
         raise AssertionError((method, path))
@@ -1820,6 +2580,10 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
     assert res["instance_id"] == "777"
     create_errors = [a for a in res.get("attempts", []) if a.get("create_http_status") == 400]
     assert create_errors and "ask expired" in str(create_errors[0].get("create_error_body"))
+    recorded_error = str(create_errors[0].get("create_error_body"))
+    assert "spaces.example" not in recorded_error
+    assert "sig=A" not in recorded_error
+    assert "do-not-record" not in recorded_error
 
 
 @pytest.mark.parametrize("failure_kind", ["timeout", "http_500", "success_without_id"])

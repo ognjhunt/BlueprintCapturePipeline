@@ -56,6 +56,7 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && grep -qx 'Tag: py3-none-manylinux2010_x86_64' "${decord_wheel}" \
   && /opt/oscar-venv/bin/python -m pip check \
   && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import inference.inference_oscar" \
+  && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import importlib.metadata; from worldsim._src.configs.agibot_control.config import make_config; assert importlib.metadata.version('pytest') == '9.1.1'; assert make_config() is not None" \
   && uv venv /opt/gr00t-venv --python 3.10 --seed \
   && VIRTUAL_ENV=/opt/gr00t-venv uv sync --project /tmp/gr00t --active --no-dev --frozen --no-install-project \
   && VIRTUAL_ENV=/opt/gr00t-venv uv pip install --no-deps /tmp/gr00t \

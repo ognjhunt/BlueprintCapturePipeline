@@ -47,6 +47,14 @@ def _command_message() -> bytes:
     return b"command" + msgpack.packb({"start": True, "stop": False, "planner": False})
 
 
+def _planner_start_message() -> bytes:
+    return b"command" + msgpack.packb({"start": True, "stop": False, "planner": True})
+
+
+def _stream_message() -> bytes:
+    return b"command" + msgpack.packb({"start": False, "stop": False, "planner": False})
+
+
 def _state_payload(token: list[float]) -> dict:
     return {
         "token_state": token,
@@ -79,6 +87,7 @@ class _FakeController(threading.Thread):
         join_delay_seconds: float = 0.0,
         stale_tokens: list[list[float]] | None = None,
         mutate_state=None,
+        require_planner_start: bool = False,
     ) -> None:
         super().__init__(daemon=True)
         self.action_endpoint = action_endpoint
@@ -86,7 +95,9 @@ class _FakeController(threading.Thread):
         self.join_delay_seconds = join_delay_seconds
         self.stale_tokens = stale_tokens or []
         self.mutate_state = mutate_state
+        self.require_planner_start = require_planner_start
         self.received_poses: list[dict] = []
+        self.received_commands: list[dict] = []
         self.stop_event = threading.Event()
 
     def run(self) -> None:  # pragma: no cover - thread body exercised via tests
@@ -107,7 +118,28 @@ class _FakeController(threading.Thread):
                 if sub not in events:
                     continue
                 raw = sub.recv()
+                if raw.startswith(b"command"):
+                    command = msgpack.unpackb(raw[len(b"command") :], raw=False)
+                    self.received_commands.append(command)
+                    if command.get("start") and command.get("planner"):
+                        # The real pinned controller exposes g1_debug only
+                        # after the PLANNER start command enters CONTROL.
+                        pub.send(
+                            b"g1_debug"
+                            + msgpack.packb(_state_payload([0.0] * 64))
+                        )
+                    continue
                 if not raw.startswith(b"pose"):
+                    continue
+                if self.require_planner_start and not any(
+                    command.get("start") and command.get("planner")
+                    for command in self.received_commands
+                ):
+                    continue
+                if self.require_planner_start and not any(
+                    not command.get("start") and not command.get("planner")
+                    for command in self.received_commands
+                ):
                     continue
                 pose = msgpack.unpackb(raw[len(b"pose") :], raw=False)
                 self.received_poses.append(pose)
@@ -139,6 +171,21 @@ def _roundtrip(token: list[float], *, action_port: int, state_port: int, timeout
     )
 
 
+def _sequenced_roundtrip(
+    token: list[float], *, action_port: int, state_port: int, timeout: float = 10.0
+):
+    return executor._zmq_pubsub_roundtrip(
+        pose_message=_pose_message(token),
+        planner_start_command_message=_planner_start_message(),
+        stream_command_message=_stream_message(),
+        motion_token=token,
+        timeout_seconds=timeout,
+        action_endpoint=f"tcp://127.0.0.1:{action_port}",
+        state_endpoint=f"tcp://127.0.0.1:{state_port}",
+        slow_joiner_grace_seconds=0.05,
+    )
+
+
 def test_roundtrip_binds_action_pub_and_connects_state_sub() -> None:
     action_port, state_port = _free_port(), _free_port()
     controller = _FakeController(
@@ -153,6 +200,36 @@ def test_roundtrip_binds_action_pub_and_connects_state_sub() -> None:
         # The controller received the pose through the executor-bound endpoint.
         assert controller.received_poses
         assert controller.received_poses[0]["token_state"] == pytest.approx(token)
+    finally:
+        controller.stop()
+
+
+def test_roundtrip_enters_planner_control_before_streaming_pose() -> None:
+    action_port, state_port = _free_port(), _free_port()
+    controller = _FakeController(
+        action_endpoint=f"tcp://127.0.0.1:{action_port}",
+        state_port=state_port,
+        require_planner_start=True,
+    )
+    controller.start()
+    try:
+        token = [0.375] * 64
+        state = _sequenced_roundtrip(
+            token, action_port=action_port, state_port=state_port
+        )
+        assert state["token_state"] == pytest.approx(token)
+        planner_index = next(
+            index
+            for index, command in enumerate(controller.received_commands)
+            if command["start"] and command["planner"]
+        )
+        stream_index = next(
+            index
+            for index, command in enumerate(controller.received_commands)
+            if not command["start"] and not command["planner"]
+        )
+        assert planner_index < stream_index
+        assert controller.received_poses
     finally:
         controller.stop()
 

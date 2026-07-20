@@ -20,7 +20,7 @@ ID_PATTERN = re.compile(r"^(?:REL|DATA|SC3|RUN|P2|EVID)-\d{2}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 APPROVED_CRITERION_EVIDENCE_MAP_SHA256 = (
-    "sha256:f0f07a721e4ab15b290b4b42e2bdbc177f85f7b6d29c96be6b3861d2b3b6c011"
+    "sha256:e2b94f149b21cf7cc32a848f838ad19be4a6afc51c8043a0ce9684c50acec778"
 )
 ALLOWED_STATUSES = {"open", "partial", "closed", "reopened"}
 ALLOWED_SCOPES = {"BASE", "SIM", "PTDP", "SC3", "PAID", "LIVE", "PHYSICAL"}
@@ -81,6 +81,56 @@ COMMAND_ATTESTATION_POLICY = {
         "No cryptographically verified command attestation is bound in this worktree ledger."
     ),
 }
+LAUNCH_SCOPE_POLICY = {
+    "profile_id": "sim_policy_comparison_with_live_buyer_delivery.v1",
+    "enabled_scope_labels": ["BASE", "SIM", "SC3", "LIVE"],
+    "enabled_paid_gap_ids": ["EVID-10", "EVID-11"],
+    "disabled_unmarketed_features": [
+        "ptdp",
+        "payments",
+        "payouts",
+        "unsupported_devices",
+        "physical_robot",
+    ],
+    "conditional_nonblocking_gap_ids": ["SC3-22", "EVID-01"],
+    "correlation_claim_mode": "correlation_not_measured",
+}
+
+
+def _expected_launch_scope(gap_id: str, scopes: list[str]) -> dict[str, Any]:
+    enabled_labels = set(LAUNCH_SCOPE_POLICY["enabled_scope_labels"])
+    basis = [f"enabled_scope:{scope}" for scope in scopes if scope in enabled_labels]
+    if gap_id in set(LAUNCH_SCOPE_POLICY["enabled_paid_gap_ids"]):
+        basis.append("enabled_feature:buyer_delivery_and_rights")
+    scoped = bool(basis)
+    if gap_id in set(LAUNCH_SCOPE_POLICY["conditional_nonblocking_gap_ids"]):
+        return {
+            "scoped": True,
+            "blocking": False,
+            "basis": basis,
+            "nonblocking_reason": "external_correlation_claim_not_enabled",
+        }
+    if scoped:
+        return {
+            "scoped": True,
+            "blocking": True,
+            "basis": basis,
+            "nonblocking_reason": None,
+        }
+    if gap_id == "EVID-14":
+        reason = "physical_robot_claim_not_enabled"
+    elif gap_id == "EVID-09":
+        reason = "payments_and_payouts_not_enabled"
+    elif gap_id == "EVID-12":
+        reason = "unsupported_device_lanes_not_marketed"
+    else:
+        reason = "ptdp_or_paid_feature_not_enabled"
+    return {
+        "scoped": False,
+        "blocking": False,
+        "basis": [],
+        "nonblocking_reason": reason,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -582,6 +632,8 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
         "freshness_policy",
         "closure_authority_policy",
         "command_attestation_policy",
+        "launch_scope_policy",
+        "launch_scope_counts",
         "claim_boundary",
         "control_artifacts",
         "supersedes",
@@ -592,7 +644,7 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
     }
     if set(ledger) != expected_top_fields:
         errors.append("ledger_fields_invalid")
-    if ledger.get("schema_version") != "blueprint.public_launch_sc3_quality_gap_ledger.v2":
+    if ledger.get("schema_version") != "blueprint.public_launch_sc3_quality_gap_ledger.v3":
         errors.append("ledger_schema_invalid")
     if ledger.get("ledger_id") != "public-launch-sc3-quality-2026-07-09":
         errors.append("ledger_id_invalid")
@@ -681,6 +733,8 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
         closure_policy = CLOSURE_AUTHORITY_POLICY
     if ledger.get("command_attestation_policy") != COMMAND_ATTESTATION_POLICY:
         errors.append("command_attestation_policy_not_fail_closed")
+    if ledger.get("launch_scope_policy") != LAUNCH_SCOPE_POLICY:
+        errors.append("launch_scope_policy_invalid")
     claim_boundary = ledger.get("claim_boundary")
     if not isinstance(claim_boundary, Mapping) or set(claim_boundary) != CLAIM_BOUNDARY_TRUE_FIELDS:
         errors.append("claim_boundary_invalid")
@@ -808,6 +862,7 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
             "derived_status",
             "scopes",
             "nonblocking_for_scopes",
+            "launch_scope",
             "commit",
             "release_id",
             "criteria",
@@ -829,6 +884,9 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
             errors.append(f"{prefix}:gap_nonblocking_scopes_invalid")
         if set(raw_gap.get("scopes") or []) & set(raw_gap.get("nonblocking_for_scopes") or []):
             errors.append(f"{prefix}:blocking_and_nonblocking_scopes_overlap")
+        expected_launch_scope = _expected_launch_scope(gap_id, list(raw_gap.get("scopes") or []))
+        if raw_gap.get("launch_scope") != expected_launch_scope:
+            errors.append(f"{prefix}:launch_scope_mismatch")
         commit = raw_gap.get("commit")
         release_id = raw_gap.get("release_id")
         if commit is not None and COMMIT_PATTERN.fullmatch(str(commit)) is None:
@@ -859,6 +917,7 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
                 "prior_status",
                 "scopes",
                 "nonblocking_for_scopes",
+                "launch_scope",
                 "generated_at",
                 "freshness",
                 "binding",
@@ -881,6 +940,8 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
                 errors.append(f"{criterion_prefix}:criterion_scopes_mismatch")
             if criterion.get("nonblocking_for_scopes") != raw_gap.get("nonblocking_for_scopes"):
                 errors.append(f"{criterion_prefix}:criterion_nonblocking_scopes_mismatch")
+            if criterion.get("launch_scope") != raw_gap.get("launch_scope"):
+                errors.append(f"{criterion_prefix}:criterion_launch_scope_mismatch")
             source = criterion.get("source")
             if not isinstance(source, Mapping) or set(source) != {
                 "audit_path",
@@ -1133,8 +1194,18 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
             expected_applicable = bool(test_paths)
             command_result = criterion.get("command_result")
             if isinstance(command_result, Mapping):
+                marker_override = (
+                    " -m ''"
+                    if "tests/test_oscar_isaac_closed_loop_eval.py" in test_paths
+                    else ""
+                )
                 expected_command = (
-                    "python -m pytest -q " + " ".join(test_paths) if expected_applicable else None
+                    "python -m pytest -q"
+                    + marker_override
+                    + " "
+                    + " ".join(test_paths)
+                    if expected_applicable
+                    else None
                 )
                 if command_result.get("applicable") is not expected_applicable:
                     errors.append(f"{criterion_prefix}:command_applicability_mismatch")
@@ -1273,6 +1344,29 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
         errors.append("status_counts_mismatch")
     if ledger.get("criteria_counts") != expected_criterion_counts:
         errors.append("criteria_counts_mismatch")
+    launch_scoped = [
+        gap for gap in gaps if isinstance(gap, Mapping) and gap.get("launch_scope", {}).get("scoped")
+    ]
+    launch_blocking = [
+        gap
+        for gap in launch_scoped
+        if isinstance(gap.get("launch_scope"), Mapping)
+        and gap["launch_scope"].get("blocking") is True
+    ]
+    launch_status_counts = Counter(str(gap.get("derived_status")) for gap in launch_blocking)
+    expected_launch_counts = {
+        "scoped": len(launch_scoped),
+        "blocking": len(launch_blocking),
+        "nonblocking": len(gaps) - len(launch_blocking),
+        "blocking_status_counts": {
+            "open": launch_status_counts["open"],
+            "partial": launch_status_counts["partial"],
+            "closed": launch_status_counts["closed"],
+            "reopened": launch_status_counts["reopened"],
+        },
+    }
+    if ledger.get("launch_scope_counts") != expected_launch_counts:
+        errors.append("launch_scope_counts_mismatch")
     return sorted(set(errors))
 
 
@@ -1285,8 +1379,8 @@ def test_current_gap_ledger_maps_all_107_acceptance_criteria_and_derives_status(
     assert _validate_ledger(ledger) == []
     assert ledger["evidence_mapping_sha256"] == (APPROVED_CRITERION_EVIDENCE_MAP_SHA256)
     assert ledger["status_counts"] == {
-        "open": 16,
-        "partial": 91,
+        "open": 13,
+        "partial": 94,
         "closed": 0,
         "reopened": 0,
         "total": 107,
@@ -1491,20 +1585,31 @@ def test_p2_04_has_independent_evidence_and_no_exemption() -> None:
     assert ledger["claim_boundary"]["ledger_is_not_its_own_closure_evidence"] is True
 
 
-def test_external_manual_and_physical_rows_remain_honestly_open() -> None:
+def test_external_manual_and_physical_rows_remain_honestly_unclosed() -> None:
     ledger = _load_ledger()
     gaps = {gap["id"]: gap for gap in ledger["gaps"]}
 
-    assert all(gaps[f"EVID-{index:02d}"]["status"] == "open" for index in range(1, 15))
-    assert gaps["SC3-22"]["status"] == "open"
+    partial_external = {"SC3-22", "EVID-01", "EVID-11"}
+    assert all(gaps[gap_id]["status"] == "partial" for gap_id in partial_external)
+    open_external = {
+        "REL-02",
+        *(f"EVID-{index:02d}" for index in range(2, 11)),
+        *(f"EVID-{index:02d}" for index in range(12, 15)),
+    }
+    assert all(gaps[gap_id]["status"] == "open" for gap_id in open_external)
     assert gaps["REL-02"]["status"] == "open"
-    for gap_id in ["REL-02", "SC3-22", *(f"EVID-{index:02d}" for index in range(1, 15))]:
+    for gap_id in sorted(partial_external | open_external):
         criterion = gaps[gap_id]["criteria"][0]
         assert criterion["acceptance_check"]["status"] == "not_proven"
-        assert not any(
-            artifact["supports_remediation"] for artifact in criterion["evidence_artifacts"]
-        )
         assert criterion["remaining_work"]
+        assert criterion["derived_status"] != "closed"
+    for gap_id in open_external:
+        assert not any(
+            artifact["supports_remediation"]
+            for artifact in gaps[gap_id]["criteria"][0]["evidence_artifacts"]
+        )
+    assert gaps["SC3-22"]["launch_scope"]["blocking"] is False
+    assert gaps["EVID-01"]["launch_scope"]["blocking"] is False
     assert gaps["EVID-14"]["scopes"] == ["PHYSICAL"]
     assert gaps["EVID-14"]["nonblocking_for_scopes"] == ["SIM"]
     assert ledger["claim_boundary"]["physical_evidence_is_nonblocking_for_sim_only"] is True
@@ -1519,17 +1624,19 @@ def test_remediation_status_matches_criterion_ledger_without_claiming_full_green
         "docs/PUBLIC_LAUNCH_SC3_REMEDIATION_STATUS_2026-07-09.md"
     )
     assert "107 authored acceptance criteria" in normalized
-    assert "91 rows and criteria are `partial`" in normalized
-    assert "16 rows and criteria remain `open`" in normalized
+    assert "94 rows and criteria are `partial`" in normalized
+    assert "13 rows and criteria remain `open`" in normalized
     assert "No row or criterion is `closed`" in normalized
     assert "all 107 `commit` and `release_id` bindings remain `null`" in normalized
-    assert "239 criterion-evidence records covering 152" in normalized
-    assert "223 cover 151 independent remediation artifacts" in normalized
-    assert "16 are definition-only references" in normalized
-    assert "all 91 are `not_recorded`" in normalized
-    assert "the other 16 are `not_applicable`" in normalized
-    assert "Recorded command attestations are disabled in v2" in normalized
-    assert "Closure derivation is disabled in this v2 snapshot" in normalized
+    assert "266 criterion-evidence records covering 164" in normalized
+    assert "252 are remediation records" in normalized
+    assert "14 are definition-only" in normalized
+    assert "all 94 are `not_recorded`" in normalized
+    assert "the other 13 are `not_applicable`" in normalized
+    assert "Recorded command attestations are disabled in v3" in normalized
+    assert "Closure derivation is disabled in this v3 snapshot" in normalized
+    assert "99 criteria are launch-scoped" in normalized
+    assert "97 are launch-blocking" in normalized
     assert "P2-04 has no self-evidence exemption" in normalized
     p2_04 = next(gap for gap in ledger["gaps"] if gap["id"] == "P2-04")
     p2_digest = p2_04["criteria"][0]["evidence_artifacts"][0]["sha256"]

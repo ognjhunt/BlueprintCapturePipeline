@@ -332,7 +332,6 @@ def _verdict_transition(payloads: Sequence[Mapping[str, Any]]) -> list[str]:
             "simulator_session_id": measurement.get("simulator_session_id"),
             "stage_id": measurement.get("stage_id"),
             "articulation_prim_path": measurement.get("articulation_prim_path"),
-            "task_contract_sha256": identity.get("task_contract_sha256"),
         }
         if not baseline or any(
             str(baseline.get(field) or "") != str(value or "")
@@ -347,11 +346,18 @@ def _verdict_transition(payloads: Sequence[Mapping[str, Any]]) -> list[str]:
                 articulation_prim_path=str(
                     measurement.get("articulation_prim_path") or ""
                 ),
-                task_contract_sha256=str(identity.get("task_contract_sha256") or ""),
+                task_contract_sha256=str(baseline.get("task_contract_sha256") or ""),
                 attempt_id=str(identity.get("attempt_id") or ""),
                 launch_nonce=str(identity.get("launch_nonce") or ""),
             )
         )
+        artifact_digest = str(
+            baseline.get("task_contract_artifact_sha256")
+            or baseline.get("task_contract_sha256")
+            or ""
+        )
+        if artifact_digest != str(identity.get("task_contract_sha256") or ""):
+            blockers.append("task_episode_baseline_task_contract_artifact_mismatch")
         if not _mapping(measurement.get("episode_baseline_attestation")):
             blockers.append("task_episode_baseline_attestation_missing")
     judges = _payloads_of(payloads, "isaac_manipulation_success_evaluator_results.v1")
@@ -504,11 +510,19 @@ def transition_terminal_horizon(
     return horizons[0] if len(horizons) == 1 else None
 
 
-def _cross_row_blockers(rows: Mapping[str, Mapping[str, Any]]) -> list[str]:
+def _cross_row_blockers(
+    rows: Mapping[str, Mapping[str, Any]],
+    *,
+    verified_payloads_by_row: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> list[str]:
     def payloads(row_id: str, schema: str) -> list[dict[str, Any]]:
-        evidence = _mapping(_mapping(rows.get(row_id)).get("evidence"))
+        if verified_payloads_by_row is not None:
+            verified_payloads = _sequence(verified_payloads_by_row.get(row_id))
+        else:
+            evidence = _mapping(_mapping(rows.get(row_id)).get("evidence"))
+            verified_payloads = _sequence(evidence.get("verified_leaf_payloads"))
         return _payloads_of(
-            [_mapping(item) for item in _sequence(evidence.get("verified_leaf_payloads"))],
+            [_mapping(item) for item in verified_payloads],
             schema,
         )
 
@@ -586,6 +600,7 @@ def validate_worker_proof_rows(
     else:
         top_blockers.append("collected_worker_manifest_missing")
     rows: dict[str, dict[str, Any]] = {}
+    verified_payloads_by_row: dict[str, list[dict[str, Any]]] = {}
     for row_id, spec in WORKER_PROOF_ROW_SPECS.items():
         raw = _mapping(_mapping(worker_rows).get(row_id))
         blockers: list[str] = list(top_blockers)
@@ -612,6 +627,11 @@ def validate_worker_proof_rows(
             blockers.extend(leaf_blockers)
             if payload is not None:
                 payloads.append(payload)
+        # Cross-row binding checks must use every cryptographically verified leaf,
+        # even when a row's semantic verdict is blocked (for example, a truthful
+        # manipulation-success=false judge).  Public row evidence remains empty for
+        # blocked rows so callers cannot mistake verified bytes for a passed verdict.
+        verified_payloads_by_row[row_id] = payloads
         blockers.extend(_ROW_VERDICTS[row_id](payloads))
         status = "passed" if not blockers else "blocked"
         if str(raw.get("status") or "") == "passed" and status == "blocked":
@@ -633,7 +653,9 @@ def validate_worker_proof_rows(
                 if item.get("path")
             ],
         }
-    cross_blockers = _cross_row_blockers(rows)
+    cross_blockers = _cross_row_blockers(
+        rows, verified_payloads_by_row=verified_payloads_by_row
+    )
     if cross_blockers:
         for row_id in (
             "controller_fk",

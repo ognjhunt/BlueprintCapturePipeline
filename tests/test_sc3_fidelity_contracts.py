@@ -1332,3 +1332,39 @@ def test_benchmark_names_and_external_study_remain_separate() -> None:
     assert malformed_counts["status"] == "external_proof_required"
     assert "external_sc3_study_policy_checkpoint_count_lt_7" in malformed_counts["blockers"]
     assert "external_sc3_study_has_no_accepted_anchors" in malformed_counts["blockers"]
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "benchmark_family"),
+    [
+        ("oscar_roboarena_v2", "oscar_roboarena"),
+        ("generic_evaluator_bounded_v1", "generic_evaluator_bounded"),
+    ],
+)
+def test_external_study_profiles_do_not_impose_sc3_only_runtime_requirements(
+    profile_id: str,
+    benchmark_family: str,
+) -> None:
+    result = validate_external_study(
+        {
+            "protocol_profile": profile_id,
+            "benchmark_family": benchmark_family,
+        }
+    )
+
+    assert result["protocol_profile"] == profile_id
+    assert result["benchmark_family"] == benchmark_family
+    assert "external_sc3_study_three_view_checkpoint_run_missing" not in result["blockers"]
+    assert "external_sc3_study_inverse_threshold_missing" not in result["blockers"]
+    assert "external_study_requires_independent_manual_acceptance" in result["blockers"]
+    assert (
+        "external_study_rights_commercial_use_scope_verified_not_proven"
+        in result["blockers"]
+    )
+
+
+def test_external_study_rejects_unknown_protocol_profile() -> None:
+    result = validate_external_study({"protocol_profile": "paper-name-only"})
+
+    assert result["status"] == "external_proof_required"
+    assert result["blockers"] == ["external_study_protocol_profile_unsupported"]

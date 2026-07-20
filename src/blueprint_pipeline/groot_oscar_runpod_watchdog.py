@@ -1,4 +1,8 @@
-"""Independent name-bound hard-TTL watchdog for the GR00T + OSCAR canary."""
+"""Independent name-bound hard-TTL watchdog for the GR00T + OSCAR canary.
+
+The historical module name and evidence filename are retained for compatibility,
+but the watchdog can guard either a RunPod pod or a Vast instance.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ import argparse
 import json
 import math
 import os
+import stat
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -15,10 +20,284 @@ from .gpu_render_providers import get_render_provider
 
 SCHEMA_VERSION = "groot_oscar_runpod_canary_watchdog.v1"
 EVIDENCE_NAME = "groot_oscar_runpod_canary_watchdog.json"
+SUPPORTED_PROVIDERS = ("runpod", "vast")
+VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
+
+
+def _provider_name(value: Any) -> str:
+    name = str(value or "runpod").strip().lower()
+    if name not in SUPPORTED_PROVIDERS:
+        raise ValueError(f"watchdog_provider_unsupported:{name}")
+    return name
+
+
+def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, Any]:
+    """Return active Vast instances whose launch labels match ``name_prefix``.
+
+    ``VastRenderProvider.stop`` already destroys an instance, but its generic
+    base-class inventory method cannot prove name-scoped absence.  Keep this
+    small read-only adapter in the independent watchdog so a Vast allocation is
+    not left without a hard-TTL owner.  An active row without a label is
+    ambiguous and therefore blocks an absence claim instead of being ignored.
+    """
+
+    key_reader = getattr(provider, "_key", None)
+    api_key = key_reader() if callable(key_reader) else None
+    if not api_key:
+        return {
+            "status": "blocked",
+            "provider": "vast",
+            "name_prefix": str(name_prefix),
+            "live_resource_count": None,
+            "resources": [],
+            "api_confirmed": False,
+            "blockers": ["vast_api_key_missing"],
+            "raw_provider_response_recorded": False,
+        }
+    try:
+        from .vast_provider_adapter import (
+            VAST_TERMINAL_INSTANCE_STATUSES,
+            _api_json,
+            _instance_list_rows,
+            _instance_status,
+        )
+
+        http_status, payload = _api_json(
+            method="GET",
+            path="/instances/",
+            api_key=api_key,
+            timeout_seconds=30,
+        )
+    except Exception as exc:  # noqa: BLE001 - evidence stays secret-safe
+        return {
+            "status": "blocked",
+            "provider": "vast",
+            "name_prefix": str(name_prefix),
+            "live_resource_count": None,
+            "resources": [],
+            "api_confirmed": False,
+            "blockers": ["vast_billable_inventory_failed"],
+            "error_type": type(exc).__name__,
+            "raw_provider_response_recorded": False,
+        }
+    if not 200 <= int(http_status) < 300 or not isinstance(payload, Mapping):
+        return {
+            "status": "blocked",
+            "provider": "vast",
+            "name_prefix": str(name_prefix),
+            "live_resource_count": None,
+            "resources": [],
+            "api_confirmed": False,
+            "blockers": ["vast_billable_inventory_failed"],
+            "http": http_status,
+            "raw_provider_response_recorded": False,
+        }
+
+    prefix = str(name_prefix or "")
+    terminal_statuses = {str(item).lower() for item in VAST_TERMINAL_INSTANCE_STATUSES}
+    resources: list[dict[str, Any]] = []
+    ambiguous_live_rows = 0
+    for row in _instance_list_rows(payload):
+        status = str(_instance_status(row) or "").strip().lower()
+        if status in terminal_statuses:
+            continue
+        label = str(row.get("label") or "").strip()
+        if not label:
+            ambiguous_live_rows += 1
+            continue
+        if prefix and not label.startswith(prefix):
+            continue
+        resources.append(
+            {
+                "instance_id": str(
+                    row.get("id")
+                    or row.get("instance_id")
+                    or row.get("contract_id")
+                    or ""
+                ),
+                "name": label,
+                "status": status or None,
+                "gpu_name": row.get("gpu_name") or row.get("gpu_display_name"),
+                "cost_per_hour": row.get("dph_total")
+                or row.get("price_per_hour"),
+            }
+        )
+    if ambiguous_live_rows:
+        return {
+            "status": "blocked",
+            "provider": "vast",
+            "name_prefix": prefix,
+            "live_resource_count": None,
+            "resources": resources,
+            "api_confirmed": False,
+            "ambiguous_live_resource_count": ambiguous_live_rows,
+            "blockers": ["vast_active_instance_label_missing"],
+            "http": http_status,
+            "raw_provider_response_recorded": False,
+        }
+    return {
+        "status": "observed",
+        "provider": "vast",
+        "name_prefix": prefix,
+        "live_resource_count": len(resources),
+        "resources": resources,
+        "api_confirmed": True,
+        "http": http_status,
+        "raw_provider_response_recorded": False,
+    }
+
+
+def _billable_inventory(
+    *, provider: Any, provider_name: str, name_prefix: str
+) -> dict[str, Any]:
+    if provider_name == "vast":
+        return _vast_billable_inventory(provider=provider, name_prefix=name_prefix)
+    return provider.billable_inventory(name_prefix=name_prefix)
+
+
+def _recorded_vast_instance(
+    *, armed: Mapping[str, Any], pod_name_prefix: str
+) -> dict[str, Any]:
+    """Read the one Vast id owned by this watchdog's attempt directory.
+
+    Vast's list API intentionally excludes terminal rows.  A contract can
+    therefore disappear from billable inventory after its workload exits but
+    before ``DELETE /instances/{id}/`` destroys the contract.  The launcher's
+    attempt-local started-id file is the durable ownership record for closing
+    that gap.  Only the exact file under the armed watchdog directory is
+    accepted, and its armed name prefix must match the teardown scope.
+    """
+
+    root_value = str(armed.get("watchdog_out_dir") or "").strip()
+    if not root_value:
+        return {"status": "not_recorded", "required": False}
+    root = Path(root_value).expanduser().resolve()
+    path = root / VAST_STARTED_INSTANCE_ID_NAME
+    try:
+        file_stat = path.lstat()
+    except FileNotFoundError:
+        return {
+            "status": "not_recorded",
+            "required": False,
+            "path": str(path),
+        }
+    except OSError as exc:
+        return {
+            "status": "blocked",
+            "required": True,
+            "path": str(path),
+            "blockers": ["vast_started_instance_id_unreadable"],
+            "error_type": type(exc).__name__,
+        }
+
+    armed_prefix = str(armed.get("pod_name_prefix") or "").strip()
+    if armed_prefix != pod_name_prefix:
+        return {
+            "status": "blocked",
+            "required": True,
+            "path": str(path),
+            "blockers": ["vast_started_instance_id_scope_mismatch"],
+        }
+    if path.is_symlink() or not stat.S_ISREG(file_stat.st_mode):
+        return {
+            "status": "blocked",
+            "required": True,
+            "path": str(path),
+            "blockers": ["vast_started_instance_id_unsafe_file"],
+        }
+    if file_stat.st_size > 64:
+        return {
+            "status": "blocked",
+            "required": True,
+            "path": str(path),
+            "blockers": ["vast_started_instance_id_invalid"],
+        }
+    try:
+        instance_id = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        return {
+            "status": "blocked",
+            "required": True,
+            "path": str(path),
+            "blockers": ["vast_started_instance_id_unreadable"],
+            "error_type": type(exc).__name__,
+        }
+    if (
+        not instance_id
+        or not instance_id.isascii()
+        or not instance_id.isdigit()
+        or int(instance_id) <= 0
+    ):
+        return {
+            "status": "blocked",
+            "required": True,
+            "path": str(path),
+            "blockers": ["vast_started_instance_id_invalid"],
+        }
+    return {
+        "status": "recorded",
+        "required": True,
+        "path": str(path),
+        "instance_id": instance_id,
+        "scope_confirmed": True,
+        "pod_name_prefix": pod_name_prefix,
+    }
+
+
+def _safe_vast_inspect_evidence(value: Any) -> dict[str, Any]:
+    row = value if isinstance(value, Mapping) else {}
+    allowed = (
+        "status",
+        "provider",
+        "http",
+        "instance_id",
+        "api_confirmed",
+        "provider_absence_confirmed",
+        "desiredStatus",
+        "actual_status",
+        "cur_state",
+        "intended_status",
+        "name",
+        "error_type",
+        "blockers",
+    )
+    return {key: row[key] for key in allowed if key in row}
+
+
+def _vast_instance_absence_proven(value: Mapping[str, Any], instance_id: str) -> bool:
+    observed_id = str(value.get("instance_id") or "").strip()
+    return bool(
+        value.get("api_confirmed") is True
+        and value.get("provider_absence_confirmed") is True
+        and value.get("status") == "absent"
+        and (not observed_id or observed_id == instance_id)
+    )
+
+
+def _vast_instance_presence_proven(value: Mapping[str, Any], instance_id: str) -> bool:
+    observed_id = str(value.get("instance_id") or "").strip()
+    return bool(
+        value.get("api_confirmed") is True
+        and value.get("status") == "observed"
+        and (not observed_id or observed_id == instance_id)
+    )
+
+
+def _vast_delete_absence_proven(value: Mapping[str, Any]) -> bool:
+    return bool(
+        value.get("status") in {"stopped", "terminated"}
+        and value.get("already_gone") is True
+        and value.get("http") in {404, 410}
+    )
 
 
 def arm_watchdog(
-    *, out_dir: str | Path, pod_name_prefix: str, deadline_epoch: float, pid: int | None = None
+    *,
+    out_dir: str | Path,
+    pod_name_prefix: str,
+    deadline_epoch: float,
+    pid: int | None = None,
+    provider_name: str = "runpod",
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -26,6 +305,7 @@ def arm_watchdog(
         raise ValueError("watchdog_pod_name_prefix_not_canary_scoped")
     if float(deadline_epoch) <= time.time() + 60:
         raise ValueError("watchdog_deadline_must_be_more_than_60_seconds_future")
+    resolved_provider = _provider_name(provider_name)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "status": "armed",
@@ -33,8 +313,11 @@ def arm_watchdog(
         "pid": int(pid if pid is not None else os.getpid()),
         "armed_at": utc_now_iso(),
         "deadline_epoch": float(deadline_epoch),
+        "provider": resolved_provider,
         "pod_name_prefix": pod_name_prefix,
         "watchdog_out_dir": str(root),
+        "provider_mutation_trigger": "hard_deadline_only",
+        "pre_deadline_provider_mutation_allowed": False,
         "provider_mutations_performed": 0,
         "raw_secret_values_recorded": False,
     }
@@ -43,26 +326,69 @@ def arm_watchdog(
 
 
 def terminate_canary_resources(
-    *, provider: Any, pod_name_prefix: str, armed: Mapping[str, Any]
+    *,
+    provider: Any,
+    pod_name_prefix: str,
+    armed: Mapping[str, Any],
+    provider_name: str | None = None,
 ) -> dict[str, Any]:
+    resolved_provider = _provider_name(
+        provider_name or armed.get("provider") or getattr(provider, "name", None)
+    )
+    recorded_vast_instance = (
+        _recorded_vast_instance(
+            armed=armed,
+            pod_name_prefix=pod_name_prefix,
+        )
+        if resolved_provider == "vast"
+        else None
+    )
     try:
-        inventory = provider.billable_inventory(name_prefix=pod_name_prefix)
+        inventory = _billable_inventory(
+            provider=provider,
+            provider_name=resolved_provider,
+            name_prefix=pod_name_prefix,
+        )
     except Exception as exc:  # noqa: BLE001 - persist terminal watchdog uncertainty
-        return {
-            **dict(armed),
-            "status": "teardown_unverified",
-            "completed_at": utc_now_iso(),
-            "initial_inventory": {"api_confirmed": False},
-            "terminations": [],
-            "final_inventory": {"api_confirmed": False},
-            "provider_absence_confirmed": False,
-            "provider_mutations_performed": 0,
-            "teardown_error_type": type(exc).__name__,
-            "raw_secret_values_recorded": False,
+        if resolved_provider != "vast":
+            return {
+                **dict(armed),
+                "status": "teardown_unverified",
+                "completed_at": utc_now_iso(),
+                "initial_inventory": {"api_confirmed": False},
+                "terminations": [],
+                "final_inventory": {"api_confirmed": False},
+                "provider_absence_confirmed": False,
+                "provider_mutations_performed": 0,
+                "teardown_error_type": type(exc).__name__,
+                "raw_secret_values_recorded": False,
+            }
+        # The attempt-local Vast id is sufficient authority to attempt exact-id
+        # destruction even when the name-scoped inventory endpoint is down.
+        # Absence still fails closed unless the final inventory also recovers.
+        inventory = {
+            "status": "blocked",
+            "provider": "vast",
+            "name_prefix": pod_name_prefix,
+            "live_resource_count": None,
+            "resources": [],
+            "api_confirmed": False,
+            "blockers": ["vast_billable_inventory_failed"],
+            "error_type": type(exc).__name__,
         }
     resources = inventory.get("resources")
     resources = resources if isinstance(resources, list) else []
     terminations: list[dict[str, Any]] = []
+    recorded_vast_instance_id = ""
+    if (
+        isinstance(recorded_vast_instance, Mapping)
+        and recorded_vast_instance.get("status") == "recorded"
+    ):
+        recorded_vast_instance_id = str(
+            recorded_vast_instance.get("instance_id") or ""
+        ).strip()
+    recorded_delete_proven = False
+    terminated_ids: list[str] = []
     for row in resources:
         row = row if isinstance(row, Mapping) else {}
         instance_id = str(row.get("instance_id") or row.get("id") or "").strip()
@@ -76,18 +402,119 @@ def terminate_canary_resources(
                 "status": "teardown_unverified",
                 "error_type": type(exc).__name__,
             }
-        terminations.append({"instance_id": instance_id, **dict(result)})
+        termination = {"instance_id": instance_id, **dict(result)}
+        if instance_id == recorded_vast_instance_id:
+            termination["ownership_source"] = VAST_STARTED_INSTANCE_ID_NAME
+            recorded_delete_proven = (
+                recorded_delete_proven
+                or _vast_delete_absence_proven(termination)
+            )
+        terminations.append(termination)
+        terminated_ids.append(instance_id)
+    if (
+        recorded_vast_instance_id
+        and recorded_vast_instance_id not in terminated_ids
+    ):
+        try:
+            result = provider.terminate(recorded_vast_instance_id)
+        except Exception as exc:  # noqa: BLE001 - exact-id cleanup still gets verified
+            result = {
+                "status": "teardown_unverified",
+                "error_type": type(exc).__name__,
+            }
+        termination = {
+            "instance_id": recorded_vast_instance_id,
+            **dict(result),
+            "ownership_source": VAST_STARTED_INSTANCE_ID_NAME,
+        }
+        recorded_delete_proven = _vast_delete_absence_proven(termination)
+        terminations.append(termination)
+
+    recorded_vast_verification: dict[str, Any] | None = None
+    if recorded_vast_instance_id:
+        inspect_attempts: list[dict[str, Any]] = []
+        recorded_absent = False
+        # One exact-id GET after the first DELETE is the primary proof. If the
+        # provider still reports a terminal row (or the GET is inconclusive),
+        # repeat DELETE once and inspect again. A DELETE 404/410 with
+        # ``already_gone`` is equivalent exact-contract absence proof.
+        for inspect_number in (1, 2):
+            try:
+                inspected = provider.inspect(recorded_vast_instance_id)
+            except Exception as exc:  # noqa: BLE001 - retain secret-safe evidence
+                inspected = {
+                    "status": "unavailable",
+                    "instance_id": recorded_vast_instance_id,
+                    "api_confirmed": False,
+                    "error_type": type(exc).__name__,
+                }
+            safe_inspected = _safe_vast_inspect_evidence(inspected)
+            safe_inspected["attempt"] = inspect_number
+            inspect_attempts.append(safe_inspected)
+            if _vast_instance_absence_proven(
+                safe_inspected, recorded_vast_instance_id
+            ):
+                recorded_absent = True
+                break
+            if _vast_instance_presence_proven(
+                safe_inspected, recorded_vast_instance_id
+            ):
+                # A later exact-id GET overrides an earlier DELETE 404/410.
+                recorded_delete_proven = False
+            if inspect_number == 1:
+                try:
+                    repeated = provider.terminate(recorded_vast_instance_id)
+                except Exception as exc:  # noqa: BLE001 - still inspect afterward
+                    repeated = {
+                        "status": "teardown_unverified",
+                        "error_type": type(exc).__name__,
+                    }
+                repeated_termination = {
+                    "instance_id": recorded_vast_instance_id,
+                    **dict(repeated),
+                    "ownership_source": VAST_STARTED_INSTANCE_ID_NAME,
+                    "attempt": 2,
+                }
+                terminations.append(repeated_termination)
+                if _vast_delete_absence_proven(repeated_termination):
+                    recorded_delete_proven = True
+        recorded_absent = recorded_absent or recorded_delete_proven
+        recorded_vast_verification = {
+            "status": "absent" if recorded_absent else "teardown_unverified",
+            "instance_id": recorded_vast_instance_id,
+            "provider_absence_confirmed": recorded_absent,
+            "inspect_attempts": inspect_attempts,
+            "delete_absence_proven": recorded_delete_proven,
+        }
+    elif (
+        isinstance(recorded_vast_instance, Mapping)
+        and recorded_vast_instance.get("status") == "blocked"
+    ):
+        recorded_vast_verification = {
+            "status": "teardown_unverified",
+            "provider_absence_confirmed": False,
+            "blockers": list(recorded_vast_instance.get("blockers") or []),
+        }
     try:
-        final_inventory = provider.billable_inventory(name_prefix=pod_name_prefix)
+        final_inventory = _billable_inventory(
+            provider=provider,
+            provider_name=resolved_provider,
+            name_prefix=pod_name_prefix,
+        )
         final_error_type = None
     except Exception as exc:  # noqa: BLE001 - persist terminal watchdog uncertainty
         final_inventory = {"api_confirmed": False}
         final_error_type = type(exc).__name__
-    absent = bool(
+    inventory_absent = bool(
         final_inventory.get("api_confirmed") is True
         and final_inventory.get("live_resource_count") == 0
     )
-    return {
+    recorded_vast_absent = bool(
+        recorded_vast_verification is None
+        or recorded_vast_verification.get("provider_absence_confirmed") is True
+    )
+    absent = inventory_absent and recorded_vast_absent
+    result = {
         **dict(armed),
         "status": "provider_terminal" if absent else "teardown_unverified",
         "completed_at": utc_now_iso(),
@@ -99,6 +526,10 @@ def terminate_canary_resources(
         "teardown_error_type": final_error_type,
         "raw_secret_values_recorded": False,
     }
+    if resolved_provider == "vast":
+        result["recorded_vast_instance"] = recorded_vast_instance
+        result["recorded_vast_instance_teardown"] = recorded_vast_verification
+    return result
 
 
 def run_watchdog(
@@ -106,20 +537,23 @@ def run_watchdog(
     out_dir: str | Path,
     pod_name_prefix: str,
     deadline_epoch: float,
+    provider_name: str = "runpod",
     provider_factory: Callable[[str], Any] = get_render_provider,
     clock: Callable[[], float] = time.time,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
+    resolved_provider = _provider_name(provider_name)
     armed = arm_watchdog(
         out_dir=root,
         pod_name_prefix=pod_name_prefix,
         deadline_epoch=deadline_epoch,
+        provider_name=resolved_provider,
     )
     while clock() < deadline_epoch:
         sleeper(min(10.0, max(0.0, deadline_epoch - clock())))
     try:
-        provider = provider_factory("runpod")
+        provider = provider_factory(resolved_provider)
     except Exception as exc:  # noqa: BLE001 - evidence must survive provider init failure
         result = {
             **dict(armed),
@@ -135,6 +569,7 @@ def run_watchdog(
             provider=provider,
             pod_name_prefix=pod_name_prefix,
             armed=armed,
+            provider_name=resolved_provider,
         )
     receipt_path = root / "provider_lane_handoff_receipt.json"
     receipt: dict[str, Any] = {}
@@ -175,7 +610,7 @@ def run_watchdog(
             pending_valid = bool(
                 isinstance(pending_record, Mapping)
                 and pending_record.get("status") == "open"
-                and pending_record.get("provider") == "runpod"
+                and pending_record.get("provider") == resolved_provider
                 and pending_record.get("lane")
                 == (
                     "runpod_wam_async"
@@ -298,11 +733,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--pod-name-prefix", required=True)
     parser.add_argument("--deadline-epoch", type=float, required=True)
+    parser.add_argument("--provider", choices=SUPPORTED_PROVIDERS, default="runpod")
     args = parser.parse_args(argv)
     result = run_watchdog(
         out_dir=args.out_dir,
         pod_name_prefix=args.pod_name_prefix,
         deadline_epoch=args.deadline_epoch,
+        provider_name=args.provider,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "provider_terminal" else 2

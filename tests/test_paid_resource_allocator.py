@@ -577,6 +577,184 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_canary_forwards_finetune_qualification_identity_file(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_finetune(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(
+        allocator,
+        "run_g1_microwave_finetune_job",
+        fake_run_finetune,
+    )
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.G1_MICROWAVE_FINETUNE_PROBE_KIND,
+            "--finetune-provider-bundle",
+            "finetune-bundle.json",
+            "--finetune-object-store-stage-dir",
+            "input-stage",
+            "--finetune-checkpoint-object-store-stage-dir",
+            "checkpoint-stage",
+            "--finetune-checkpoint-vast-session-manifest",
+            "qualification-session.json",
+            "--qualification-identity-file",
+            "operator-key",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "finetune-pod",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["qualification_identity_file"] == "operator-key"
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_canary_dispatches_one_single_kitchen_episode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_single_episode(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_single_episode", fake_run_single_episode)
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "runpod",
+            "--probe-kind",
+            "single-kitchen-episode",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "single-episode-pod",
+            "--episode-bundle",
+            "episode.zip",
+            "--provider-bundle-url-file",
+            "bundle-url.txt",
+            "--provider-output-put-url-file",
+            "output-put-url.txt",
+            "--provider-output-get-url-file",
+            "output-get-url.txt",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed == {
+        "provider_name": "runpod",
+        "episode_bundle": "episode.zip",
+        "provider_bundle_url_file": "bundle-url.txt",
+        "provider_output_put_url_file": "output-put-url.txt",
+        "provider_output_get_url_file": "output-get-url.txt",
+        "provider_bootstrap_url_file": None,
+        "release_evidence": "release.json",
+        "provider_launch_request": "request.json",
+        "preflight_bundle": "preflight.json",
+        "admission_out": "admission.json",
+        "bound_request_out": "bound.json",
+        "adapter_output": "adapter.json",
+        "pod_name": "single-episode-pod",
+        "execute": True,
+        "qualification_checkpoint_report": None,
+        "qualification_checkpoint_part_stage_dirs": (),
+    }
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_canary_dispatches_single_kitchen_episode_to_vast(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_single_episode(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_single_episode", fake_run_single_episode)
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            "single-kitchen-episode",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "single-episode-vast",
+            "--episode-bundle",
+            "episode.zip",
+            "--provider-bundle-url-file",
+            "bundle-url.txt",
+            "--provider-output-put-url-file",
+            "output-put-url.txt",
+            "--provider-output-get-url-file",
+            "output-get-url.txt",
+            "--provider-bootstrap-url-file",
+            "bootstrap-url.txt",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["provider_name"] == "vast"
+    assert observed["provider_bootstrap_url_file"] == "bootstrap-url.txt"
+    assert observed["execute"] is False
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_gpu_canary_defaults_bind_authorized_strict_staged_plan(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -803,3 +981,99 @@ def test_strict_probe_runbook_arms_watchdog_within_budget_reservation() -> None:
     )
     assert 'deadline="$(( $(date +%s) + 480 ))"' in runbook
     assert 'deadline="$(( $(date +%s) + 900 ))"' not in runbook
+
+
+def test_gpu_qualification_gpu_status_is_a_successful_control_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "run_qualification_session",
+        lambda **_kwargs: {"status": "gpu_status_collected_continuing_spend"},
+    )
+    out = tmp_path / "gpu-status"
+
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action",
+            "gpu-status",
+            "--qualification-session-manifest",
+            str(out / "session.json"),
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "retained-qualification-gpu",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_qualification_component_stop_is_a_successful_control_action(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "run_qualification_session",
+        lambda **_kwargs: {"status": "component_stopped_continuing_spend"},
+    )
+    out = tmp_path / "component-stop"
+
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action",
+            "stop-component",
+            "--qualification-component",
+            "isaac",
+            "--qualification-session-manifest",
+            str(out / "session.json"),
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "retained-qualification-gpu",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"success": True}

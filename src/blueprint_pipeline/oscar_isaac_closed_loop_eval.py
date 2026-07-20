@@ -1,31 +1,28 @@
-"""Per-step closed-loop eval: policy <-> OSCAR-2B WAM <-> SAM3/DA3 perception harness.
+"""Per-step policy <-> OSCAR WAM <-> perception closed-loop evaluation.
 
-This is the true MuJoCo-parity loop (mujoco_g1_wam_vla_policy_endpoint_eval lines 4513-4559)
-applied to the Isaac G1 lane, instead of the one-shot batch OSCAR clip the provider lane
-generates. Each step:
-
-  1. the policy emits an action (the deterministic G1 walk-to-target controller),
-  2. the WAM generates the NEXT observation conditioned on that action (pluggable backend:
-     a local stub for hermetic tests, real OSCAR-2B per-step for the GPU run),
-  3. the SAM3/DA3 perception harness analyses that generated frame right away
-     (run_wam_derived_observation_harness_step, real backend on GPU or fixture locally),
-  4. the derived observations feed forward into the next step.
-
-The WAM generation and the harness backend are both injected, so the loop structure can be
-validated end-to-end with zero GPU spend and the same code path then runs the real backends.
+Each policy action conditions the next generated observation, the perception
+harness analyzes that frame, and its derived observation feeds the next step.
+Injected WAM and perception backends keep hermetic and real-model runs on the
+same structural path without treating either as semantic task proof.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import csv
+import errno
 import hashlib
 import json
 import math
 import os
+import re
 import shlex
+import signal
 import subprocess
 import sys
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
@@ -37,6 +34,9 @@ from .closed_loop_consistency_scoring import (
 from .g1_kitchen_worker_proof_emission import (
     emit_rows_from_closed_loop_state,
     legacy_worker_proof_rows,
+)
+from .generated_episode_authority import (
+    bind_generated_episode_to_authoritative_loop_status as _bind_generated_episode_to_authoritative_loop_status,
 )
 from .sc3_fidelity_contracts import (
     SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256_ENV,
@@ -52,6 +52,7 @@ from .isaac_g1_policy import (
 )
 from .oscar_wam_provider_command_adapter import run as run_oscar_wam_provider_adapter
 from .oscar_wam_command_adapter import DEFAULT_NUM_FRAMES as DEFAULT_OSCAR_NUM_FRAMES
+from .oscar_wam_provider_bundle import _normalize_oscar_robot_action_prompt
 from .oscar_official_release import (
     OFFICIAL_OSCAR_HF_REPO,
     official_release_blockers,
@@ -74,7 +75,10 @@ from .oscar_cosmos_wam_evaluator import (  # noqa: F401 - preserve test/caller s
     success_label_inference_input_sha256,
 )
 from .wam_backend_strategy import get_wam_backend_strategy
-from .wam_derived_observation_harness import run_wam_derived_observation_harness_step
+from .wam_derived_observation_harness import (
+    GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
+    run_wam_derived_observation_harness_step,
+)
 from .wam_generated_video_review import visual_smoke_generated_rollouts_for_review
 from .wam_provider_runtime import WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE
 from .wam_action_consistency_contract import cross_step_action_motion_replay_blockers
@@ -101,6 +105,10 @@ SC3_LEARNED_POLICY_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
 SC3_FK_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
     "BLUEPRINT_SC3_FK_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256"
 )
+CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT_ENV = "BLUEPRINT_CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT"
+CONTROLLER_FK_CAMERA_PROJECTION_SCHEMA_VERSION = "controller_fk_camera_projection_context.v1"
+CONTROLLER_FK_CAMERA_PROJECTION_LIVE_STATUS = "captured_from_live_persistent_isaac_session"
+CONTROLLER_FK_CAMERA_PROJECTION_TRANSFORM = "mujoco_pelvis_relative_to_live_isaac_pelvis_wxyz"
 SC3_COSMOS3_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256_ENV = (
     "BLUEPRINT_SC3_COSMOS3_RUNTIME_TRUSTED_PUBLIC_KEY_SHA256"
 )
@@ -114,6 +122,25 @@ UNITREE_G1_SONIC_STATE_DIMS = {
     "right_hand": 7,
     "projected_gravity": 3,
 }
+POST_ACTION_POLICY_STATE_SOURCE = "post_action_live_isaac_articulation"
+MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M = 0.015
+UNSAFE_STANCE_MAX_HORIZONTAL_PROJECTED_GRAVITY = 0.5
+UNSAFE_STANCE_MIN_UPRIGHT_PROJECTED_GRAVITY_Z = -0.7
+# A SONIC action chunk is 40 frames (about 0.8 seconds at 50 Hz). Three stale
+# decisions allow one short reach/grasp attempt, then terminate on the fourth
+# observation instead of paying for the historical eight stale WAM generations.
+DEFAULT_NO_PROGRESS_PATIENCE_STEPS = 3
+OSCAR_GPU_RESIDENCY_SAMPLE_SCHEMA_VERSION = "oscar_gpu_residency_sample.v1"
+OSCAR_GPU_RESIDENCY_REPORT_SCHEMA_VERSION = "oscar_gpu_residency_report.v1"
+OSCAR_GPU_RESIDENCY_REQUIRED_ROLES = ("groot", "gear_sonic", "isaac_task", "oscar")
+OSCAR_GPU_RESIDENCY_PID_ENV_BY_ROLE = {
+    "groot": "GROOT_PID",
+    "gear_sonic": "GEAR_SONIC_PID",
+    "isaac_task": "ISAAC_TASK_PID",
+}
+OSCAR_GPU_RESIDENCY_SAMPLE_INTERVAL_SECONDS = 0.75
+OSCAR_GPU_RESIDENCY_MAX_SAMPLES = 4800
+OSCAR_SUBPROCESS_TERMINATION_GRACE_SECONDS = 10.0
 
 # A WAM generation backend: given the current observation frame, the policy action, the step
 # index, and the action history, produce the next-observation frame path (and optional video).
@@ -230,6 +257,79 @@ def _is_sha256(value: Any) -> bool:
     return len(text) == 64 and all(character in "0123456789abcdef" for character in text)
 
 
+def _load_live_controller_fk_camera_projection_context(path: str | Path) -> dict[str, Any]:
+    context_path = Path(path).expanduser().resolve()
+    if not context_path.is_file() or context_path.is_symlink():
+        raise ValueError("controller_fk_camera_projection_context_missing_or_unsafe")
+    try:
+        value = json.loads(context_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("controller_fk_camera_projection_context_unreadable") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError("controller_fk_camera_projection_context_not_object")
+    context = dict(value)
+    if context.get("schema_version") != CONTROLLER_FK_CAMERA_PROJECTION_SCHEMA_VERSION:
+        raise ValueError("controller_fk_camera_projection_context_schema_invalid")
+    if context.get("status") != CONTROLLER_FK_CAMERA_PROJECTION_LIVE_STATUS:
+        raise ValueError("controller_fk_camera_projection_context_not_live_capture")
+    if context.get("coordinate_transform") != CONTROLLER_FK_CAMERA_PROJECTION_TRANSFORM:
+        raise ValueError("controller_fk_camera_projection_context_transform_invalid")
+    for field in ("attempt_id", "launch_nonce", "simulator_session_id", "stage_id"):
+        if not _string(context.get(field)).strip():
+            raise ValueError(f"controller_fk_camera_projection_context_{field}_missing")
+    frame = _mapping(context.get("source_frame_artifact"))
+    frame_path = Path(_string(frame.get("path"))).expanduser().resolve()
+    frame_sha256 = _string(frame.get("sha256")).lower()
+    if (
+        frame_path.is_symlink()
+        or not frame_path.is_file()
+        or not _is_sha256(frame_sha256)
+        or _file_sha256(frame_path) != frame_sha256
+        or int(frame.get("width") or 0) != 640
+        or int(frame.get("height") or 0) != 480
+    ):
+        raise ValueError("controller_fk_camera_projection_context_frame_invalid")
+    camera = _mapping(context.get("camera_contract"))
+    intrinsics = _mapping(camera.get("intrinsics"))
+    clipping_range = camera.get("clipping_range_m")
+    try:
+        near_m, far_m = [float(value) for value in clipping_range]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "controller_fk_camera_projection_context_camera_clipping_range_invalid"
+        ) from exc
+    if (
+        camera.get("available") is not True
+        or camera.get("projection_token") != "perspective"
+        or list(camera.get("resolution") or []) != [640, 480]
+        or camera.get("viewpoint_mode") != "robot_head_mounted_egocentric"
+        or camera.get("mount_motion_model") != "rigid_head_local_transform"
+        or camera.get("gaze_motion_model")
+        != "inherits_head_orientation_no_task_reaim"
+        or intrinsics.get("available") is not True
+        or int(intrinsics.get("image_width") or 0) != 640
+        or int(intrinsics.get("image_height") or 0) != 480
+    ):
+        raise ValueError("controller_fk_camera_projection_context_camera_invalid")
+    if (
+        not isinstance(clipping_range, Sequence)
+        or isinstance(clipping_range, (str, bytes, bytearray))
+        or len(clipping_range) != 2
+        or not all(math.isfinite(value) for value in (near_m, far_m))
+        or not 0.0 < near_m < far_m
+    ):
+        raise ValueError(
+            "controller_fk_camera_projection_context_camera_clipping_range_invalid"
+        )
+    registration = _mapping(context.get("standing_cross_simulator_registration"))
+    if (
+        registration.get("status") != "pending_official_mujoco_named_link_residual_verification"
+        or registration.get("surrogate") is not False
+    ):
+        raise ValueError("controller_fk_camera_projection_context_registration_invalid")
+    return context
+
+
 def _finite_float(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -245,6 +345,395 @@ def _finite_numeric_sequence(value: Any, *, minimum_length: int = 1) -> bool:
         return False
     numbers = [_finite_float(item) for item in value]
     return len(numbers) >= minimum_length and all(item is not None for item in numbers)
+
+
+def _validated_post_action_policy_state(
+    value: Any,
+    *,
+    simulator_session_id: str,
+    stage_id: str,
+    source_action_sha256: str,
+    source_step_index: int,
+) -> dict[str, Any]:
+    """Validate same-session Isaac proprioception before a learned-policy requery.
+
+    A WAM/controller-FK state is useful diagnostic evidence, but it is not the
+    articulation state after the action was applied.  This contract therefore
+    accepts only the exact G1 grouped state measured by the persistent Isaac
+    session and bound to this action and loop step.
+    """
+
+    state = _mapping(value)
+    if not state:
+        raise RuntimeError("post_action_policy_state_missing_or_not_object")
+    normalized: dict[str, Any] = dict(state)
+    for field, dimension in UNITREE_G1_SONIC_STATE_DIMS.items():
+        values = state.get(field)
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+            raise RuntimeError(f"post_action_policy_state_{field}_not_sequence")
+        if len(values) != dimension:
+            raise RuntimeError(
+                f"post_action_policy_state_{field}_dimension_{len(values)}_expected_{dimension}"
+            )
+        finite_values = [_finite_float(item) for item in values]
+        if any(item is None for item in finite_values):
+            raise RuntimeError(f"post_action_policy_state_{field}_nonfinite")
+        normalized[field] = [float(item) for item in finite_values if item is not None]
+
+    measurement = _mapping(state.get("measurement"))
+    if not measurement:
+        raise RuntimeError("post_action_policy_state_measurement_missing_or_not_object")
+    if measurement.get("surrogate") is not False:
+        raise RuntimeError("post_action_policy_state_surrogate_not_false")
+    if _string(measurement.get("source")).strip() != POST_ACTION_POLICY_STATE_SOURCE:
+        raise RuntimeError("post_action_policy_state_source_not_live_post_action_isaac")
+    expected_session_id = _string(simulator_session_id).strip()
+    expected_stage_id = _string(stage_id).strip()
+    expected_action_sha256 = _string(source_action_sha256).strip().lower()
+    if not expected_session_id:
+        raise RuntimeError("post_action_policy_state_expected_simulator_session_id_missing")
+    if not expected_stage_id:
+        raise RuntimeError("post_action_policy_state_expected_stage_id_missing")
+    if not _is_sha256(expected_action_sha256):
+        raise RuntimeError("post_action_policy_state_expected_action_sha256_invalid")
+    if _string(measurement.get("simulator_session_id")).strip() != expected_session_id:
+        raise RuntimeError("post_action_policy_state_simulator_session_id_mismatch")
+    if _string(measurement.get("stage_id")).strip() != expected_stage_id:
+        raise RuntimeError("post_action_policy_state_stage_id_mismatch")
+    if _string(measurement.get("source_action_sha256")).strip().lower() != (expected_action_sha256):
+        raise RuntimeError("post_action_policy_state_source_action_sha256_mismatch")
+    observed_step = measurement.get("source_step_index")
+    if (
+        isinstance(observed_step, bool)
+        or not isinstance(observed_step, int)
+        or observed_step != int(source_step_index)
+    ):
+        raise RuntimeError("post_action_policy_state_source_step_index_mismatch")
+    captured_at_ns = measurement.get("captured_at_ns")
+    if isinstance(captured_at_ns, bool):
+        raise RuntimeError("post_action_policy_state_captured_at_ns_invalid")
+    try:
+        captured_at_ns_int = int(captured_at_ns)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("post_action_policy_state_captured_at_ns_invalid") from exc
+    if captured_at_ns_int <= 0:
+        raise RuntimeError("post_action_policy_state_captured_at_ns_invalid")
+    normalized["measurement"] = dict(measurement)
+    return normalized
+
+
+def _post_action_stance_report(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify live Isaac stance from the controller's projected-gravity vector.
+
+    The upright convention used by the G1 policy is ``[0, 0, -1]``.  The
+    deliberately loose running threshold catches a robot that is plainly
+    falling or down without treating ordinary gait lean as a terminal event.
+    """
+
+    gravity = state.get("projected_gravity")
+    if not _finite_numeric_sequence(gravity, minimum_length=3) or len(gravity) != 3:
+        return {
+            "schema_version": "post_action_stance_report.v1",
+            "status": "invalid",
+            "unsafe_stance_detected": True,
+            "blockers": ["post_action_projected_gravity_missing_or_invalid"],
+        }
+    gx, gy, gz = (float(value) for value in gravity)
+    unsafe = bool(
+        abs(gx) > UNSAFE_STANCE_MAX_HORIZONTAL_PROJECTED_GRAVITY
+        or abs(gy) > UNSAFE_STANCE_MAX_HORIZONTAL_PROJECTED_GRAVITY
+        or gz > UNSAFE_STANCE_MIN_UPRIGHT_PROJECTED_GRAVITY_Z
+    )
+    return {
+        "schema_version": "post_action_stance_report.v1",
+        "status": "unsafe" if unsafe else "upright",
+        "unsafe_stance_detected": unsafe,
+        "projected_gravity": [gx, gy, gz],
+        "thresholds": {
+            "maximum_absolute_horizontal_component": (
+                UNSAFE_STANCE_MAX_HORIZONTAL_PROJECTED_GRAVITY
+            ),
+            "maximum_z_for_upright": UNSAFE_STANCE_MIN_UPRIGHT_PROJECTED_GRAVITY_Z,
+        },
+        "blockers": ["unsafe_post_action_robot_stance"] if unsafe else [],
+    }
+
+
+def _task_progress_report(
+    completion_result: Mapping[str, Any],
+    *,
+    minimum_progress_fraction: float,
+) -> dict[str, Any]:
+    """Normalize live task-transition measurements for an online stall watchdog.
+
+    This is a resource-control signal, not a success verdict. Success still
+    requires the registered, attested task-transition contract.
+    """
+
+    comparison = _string(completion_result.get("comparison")).strip()
+    initial = _finite_float(completion_result.get("episode_initial_value"))
+    current = _finite_float(completion_result.get("after_value"))
+    tolerance = _finite_float(completion_result.get("tolerance"))
+    target = _finite_float(completion_result.get("target_value"))
+    fraction = float(minimum_progress_fraction)
+    if (
+        comparison
+        not in {
+            "increase_at_least",
+            "decrease_at_least",
+            "absolute_change_at_least",
+            "within_tolerance",
+            "at_or_above",
+            "at_or_below",
+        }
+        or initial is None
+        or current is None
+        or tolerance is None
+        or not math.isfinite(fraction)
+        or fraction <= 0.0
+    ):
+        return {
+            "schema_version": "online_task_progress_report.v1",
+            "status": "unavailable",
+            "resource_control_only": True,
+            "blockers": ["online_task_progress_measurement_unavailable"],
+        }
+    if comparison in {"increase_at_least", "at_or_above"}:
+        progress = current - initial
+    elif comparison in {"decrease_at_least", "at_or_below"}:
+        progress = initial - current
+    elif comparison == "absolute_change_at_least":
+        progress = abs(current - initial)
+    elif target is not None:
+        progress = abs(initial - target) - abs(current - target)
+    else:
+        return {
+            "schema_version": "online_task_progress_report.v1",
+            "status": "unavailable",
+            "resource_control_only": True,
+            "blockers": ["online_task_progress_target_value_unavailable"],
+        }
+    minimum_delta = max(1e-6, abs(tolerance) * fraction)
+    return {
+        "schema_version": "online_task_progress_report.v1",
+        "status": "measured",
+        "resource_control_only": True,
+        "criterion_id": completion_result.get("criterion_id"),
+        "comparison": comparison,
+        "episode_initial_value": initial,
+        "current_value": current,
+        "target_value": target,
+        "success_tolerance": tolerance,
+        "progress_toward_criterion": float(progress),
+        "minimum_meaningful_progress_delta": minimum_delta,
+        "registered_transition_passed": bool(
+            completion_result.get("registered_transition_passed") is True
+        ),
+        "blockers": [],
+        "claim_boundary": (
+            "This online signal may stop a stalled episode to conserve runtime; "
+            "it cannot prove task success or replace the registered transition judge."
+        ),
+    }
+
+
+def _manipulation_effector_progress_report(
+    projection: Mapping[str, Any],
+    *,
+    minimum_progress_m: float = MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M,
+) -> dict[str, Any]:
+    """Measure whether a controller FK horizon moves a hand/wrist toward the task.
+
+    This is a capability/sanity gate, not task-success or contact proof.  It
+    prevents an upper-body horizon whose end effectors remain static from being
+    handed to an expensive WAM as though it were a manipulation action.
+    """
+
+    target = projection.get("task_target_world_xyz_m")
+    if not _finite_numeric_sequence(target, minimum_length=3) or len(target) != 3:
+        return {
+            "schema_version": "manipulation_effector_progress_report.v1",
+            "status": "blocked",
+            "capability_gate_passed": False,
+            "blockers": ["manipulation_task_target_world_xyz_missing_or_invalid"],
+        }
+    target_xyz = tuple(float(value) for value in target)
+    sequence = projection.get("controller_fk_sequence")
+    if not isinstance(sequence, Sequence) or isinstance(sequence, (str, bytes, bytearray)):
+        sequence = _mapping(projection.get("generated_robot_state")).get(
+            "controller_fk_sequence"
+        )
+    if not isinstance(sequence, Sequence) or isinstance(sequence, (str, bytes, bytearray)):
+        sequence = []
+
+    distance_by_effector: dict[str, list[float]] = {}
+    position_by_effector: dict[str, list[tuple[float, float, float]]] = {}
+    for frame in sequence:
+        landmarks = _mapping(frame).get("landmarks")
+        if not isinstance(landmarks, Sequence) or isinstance(
+            landmarks, (str, bytes, bytearray)
+        ):
+            continue
+        observed_this_frame: set[str] = set()
+        for landmark in landmarks:
+            row = _mapping(landmark)
+            name = _string(row.get("name") or row.get("landmark_id")).strip().lower()
+            if not name or ("wrist" not in name and "hand" not in name):
+                continue
+            world_xyz = row.get("world_xyz") or row.get("world_xyz_m")
+            if not _finite_numeric_sequence(world_xyz, minimum_length=3) or len(world_xyz) != 3:
+                continue
+            if name in observed_this_frame:
+                continue
+            observed_this_frame.add(name)
+            xyz = tuple(float(value) for value in world_xyz)
+            distance = math.sqrt(sum((a - b) ** 2 for a, b in zip(xyz, target_xyz, strict=True)))
+            distance_by_effector.setdefault(name, []).append(distance)
+            position_by_effector.setdefault(name, []).append(xyz)
+
+    effector_rows: list[dict[str, Any]] = []
+    for name, distances in sorted(distance_by_effector.items()):
+        if len(distances) < 2:
+            continue
+        first_distance = distances[0]
+        minimum_distance = min(distances)
+        positions = position_by_effector[name]
+        first_position = positions[0]
+        maximum_displacement = max(
+            math.dist(first_position, position) for position in positions
+        )
+        effector_rows.append(
+            {
+                "effector": name,
+                "frame_count": len(distances),
+                "first_distance_m": round(first_distance, 9),
+                "minimum_distance_m": round(minimum_distance, 9),
+                "final_distance_m": round(distances[-1], 9),
+                "maximum_progress_toward_target_m": round(
+                    max(0.0, first_distance - minimum_distance), 9
+                ),
+                "maximum_displacement_from_first_frame_m": round(
+                    maximum_displacement, 9
+                ),
+            }
+        )
+    best_progress = max(
+        (float(row["maximum_progress_toward_target_m"]) for row in effector_rows),
+        default=0.0,
+    )
+    best_displacement = max(
+        (
+            float(row["maximum_displacement_from_first_frame_m"])
+            for row in effector_rows
+        ),
+        default=0.0,
+    )
+    directional_progress_passed = bool(
+        effector_rows and best_progress >= float(minimum_progress_m)
+    )
+    motion_capability_passed = bool(
+        effector_rows and best_displacement >= float(minimum_progress_m)
+    )
+    # This is a WAM action-conditioning capability gate. A controller horizon
+    # that moves substantially still provides a real differentiated action for
+    # OSCAR even when its first maneuver is not target-directed. Directional
+    # task progress remains recorded here and is judged after live Isaac
+    # apply/readback by the separate semantic and no-progress gates.
+    passed = motion_capability_passed
+    blockers = [] if passed else [
+        "manipulation_controller_fk_no_meaningful_effector_motion"
+    ]
+    warnings = (
+        []
+        if directional_progress_passed
+        else ["manipulation_controller_fk_motion_not_toward_task_target"]
+    )
+    return {
+        "schema_version": "manipulation_effector_progress_report.v1",
+        "status": "passed" if passed else "blocked",
+        "capability_gate_passed": passed,
+        "task_target_world_xyz_m": list(target_xyz),
+        "minimum_required_progress_m": float(minimum_progress_m),
+        "best_progress_toward_target_m": round(best_progress, 9),
+        "best_effector_displacement_m": round(best_displacement, 9),
+        "directional_progress_passed": directional_progress_passed,
+        "motion_capability_passed": motion_capability_passed,
+        "effectors": effector_rows,
+        "blockers": blockers,
+        "warnings": warnings,
+        "claim_boundary": (
+            "Controller-FK end-effector motion is a pre-generation action-conditioning "
+            "capability check. Directional progress is recorded separately and does not "
+            "replace live Isaac task progress, contact, articulation transition, or "
+            "task-success proof."
+        ),
+    }
+
+
+def _validated_post_action_egocentric_frame(
+    response: Mapping[str, Any], *, source_step_index: int
+) -> dict[str, Any]:
+    """Select the latest hash-bound head-mounted RGB from an Isaac action."""
+    raw_rows = response.get("review_frames") or response.get("review_media_artifacts")
+    if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
+        return {}
+    candidates: list[dict[str, Any]] = []
+    for value in raw_rows:
+        row = _mapping(value)
+        if row.get("camera_role") != "robot_pov" or row.get(
+            "outer_source_step_index"
+        ) != int(source_step_index):
+            continue
+        camera = _mapping(row.get("camera_contract"))
+        if (
+            camera.get("viewpoint_mode") != "robot_head_mounted_egocentric"
+            or camera.get("robot_mounted") is not True
+            or camera.get("policy_observation_eligible") is not True
+            or camera.get("mount_motion_model") != "rigid_head_local_transform"
+            or camera.get("gaze_motion_model")
+            != "inherits_head_orientation_no_task_reaim"
+        ):
+            raise RuntimeError("post_action_robot_pov_not_egocentric")
+        path = Path(_string(row.get("path"))).expanduser().resolve()
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError("post_action_robot_pov_frame_missing_or_unsafe")
+        observed_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        expected_sha256 = _string(row.get("sha256")).strip().lower()
+        if not _is_sha256(expected_sha256) or observed_sha256 != expected_sha256:
+            raise RuntimeError("post_action_robot_pov_frame_sha256_mismatch")
+        if (int(row.get("width") or 0), int(row.get("height") or 0)) != (640, 480):
+            raise RuntimeError("post_action_robot_pov_frame_resolution_invalid")
+        visual_signal = _mapping(row.get("visual_signal"))
+        candidates.append(
+            {
+                "path": str(path),
+                "sha256": observed_sha256,
+                "width": 640,
+                "height": 480,
+                "camera_role": "robot_pov",
+                "viewpoint_mode": "robot_head_mounted_egocentric",
+                "mount_motion_model": "rigid_head_local_transform",
+                "gaze_motion_model": "inherits_head_orientation_no_task_reaim",
+                "source_step_index": int(source_step_index),
+                "frame_index": int(row.get("frame_index") or 0),
+                "control_frame_global_index": int(row.get("control_frame_global_index") or 0),
+                "captured_at_ns": int(row.get("captured_at_ns") or 0),
+                "visual_signal_valid": not visual_signal
+                or visual_signal.get("status") == "completed"
+                and visual_signal.get("non_uniform") is True,
+            }
+        )
+    if not candidates:
+        return {}
+    latest = max(
+        candidates,
+        key=lambda row: (
+            row["control_frame_global_index"],
+            row["frame_index"],
+            row["captured_at_ns"],
+        ),
+    )
+    return latest if latest.pop("visual_signal_valid") is True else {}
 
 
 def _landmark_has_numeric_evidence(landmark: Mapping[str, Any]) -> bool:
@@ -268,6 +757,7 @@ def _landmark_evidence_blockers(landmarks: Sequence[Mapping[str, Any]]) -> list[
     blockers: list[str] = []
     if not landmarks:
         return ["fresh_action_projected_skeleton_missing"]
+    image_space_landmark_count = 0
     for index, landmark in enumerate(landmarks):
         landmark_id = _string(
             landmark.get("landmark_id") or landmark.get("name") or landmark.get("label")
@@ -276,6 +766,40 @@ def _landmark_evidence_blockers(landmarks: Sequence[Mapping[str, Any]]) -> list[
             blockers.append(f"fresh_action_skeleton_landmark_id_missing:{index}")
         if not _landmark_has_numeric_evidence(landmark):
             blockers.append(f"fresh_action_skeleton_landmark_numeric_evidence_missing:{index}")
+        # OSCAR consumes an image-space skeleton video.  Controller/FK XYZ is
+        # useful kinematic evidence, but it cannot be drawn truthfully without
+        # the camera projection that produced the current RGB observation.
+        # Accepting bare x/y here previously let an all-black conditioning
+        # video pass the action-identity contract.
+        projection = _mapping(landmark.get("image_projection"))
+        available = projection.get("available")
+        if available is True:
+            if (
+                _finite_float(projection.get("u_px")) is None
+                or _finite_float(projection.get("v_px")) is None
+            ):
+                blockers.append(
+                    f"fresh_action_skeleton_landmark_pixel_projection_missing_or_invalid:{index}"
+                )
+            else:
+                image_space_landmark_count += 1
+        elif (
+            available is False
+            and projection.get("unavailable_reason") == "outside_live_camera_viewport"
+            and _finite_float(projection.get("u_px")) is not None
+            and _finite_float(projection.get("v_px")) is not None
+        ):
+            # A true head camera may place an official arm action entirely
+            # below the RGB viewport.  Finite out-of-view projections remain
+            # exact camera-space action evidence and are rendered as explicit
+            # edge indicators in the separate conditioning stream.
+            image_space_landmark_count += 1
+        elif not (available is False and _string(projection.get("unavailable_reason")).strip()):
+            blockers.append(
+                f"fresh_action_skeleton_landmark_pixel_projection_missing_or_invalid:{index}"
+            )
+    if image_space_landmark_count < 1:
+        blockers.append("fresh_action_skeleton_no_in_frame_pixel_projections")
     return blockers
 
 
@@ -549,6 +1073,7 @@ def _computed_transition_passed(
     if episode_initial_value is None:
         return None
     from .task_episode_baseline import evaluate_task_criterion
+
     try:
         evaluation = evaluate_task_criterion(
             {"comparison": comparison, "tolerance": tolerance, "target_value": target_value},
@@ -561,6 +1086,56 @@ def _computed_transition_passed(
     return bool(evaluation["passed"])
 
 
+def _task_completion_attested_payload(
+    result: Mapping[str, Any],
+    *,
+    validator_derived_fields: set[str],
+) -> dict[str, Any]:
+    """Recover the exact task-completion payload covered by the live signature.
+
+    ``comparison`` and ``articulation_prim_path`` can originate in either place:
+    the persistent Isaac service supplies and signs both for live measurements,
+    while older/fixture evaluators omit them and the first validation pass derives
+    them from the registered criterion.  A proof leaf from either source contains
+    ``registered_transition_passed``, so presence of that field alone cannot tell
+    the second-pass validator whether the two ambiguous fields were signed.
+
+    Try the bounded four possible signed-field combinations and accept only the
+    one whose canonical digest is already committed by the Ed25519 attestation.
+    The subsequent attestation validator still verifies the signature itself.
+    """
+
+    payload = {
+        key: value
+        for key, value in result.items()
+        if key != "evaluator_attestation" and key not in validator_derived_fields
+    }
+    ambiguous_fields = tuple(
+        field
+        for field in ("comparison", "articulation_prim_path")
+        if field in payload
+    )
+    committed_sha256 = _string(
+        _mapping(result.get("evaluator_attestation")).get("signed_payload_sha256")
+    ).lower()
+    if re.fullmatch(r"[0-9a-f]{64}", committed_sha256):
+        for exclusion_mask in range(1 << len(ambiguous_fields)):
+            candidate = dict(payload)
+            for index, field in enumerate(ambiguous_fields):
+                if exclusion_mask & (1 << index):
+                    candidate.pop(field, None)
+            if _canonical_sha256(candidate) == committed_sha256:
+                return candidate
+
+    # Preserve the historical fail-closed fallback when the claimed digest is
+    # malformed or matches none of the bounded candidates.  Signature validation
+    # will reject that payload; this branch must never manufacture a passing hash.
+    if "registered_transition_passed" in result:
+        for field in ambiguous_fields:
+            payload.pop(field, None)
+    return payload
+
+
 def _validate_task_completion_transition(
     *,
     completion_result: Mapping[str, Any],
@@ -569,11 +1144,27 @@ def _validate_task_completion_transition(
 ) -> dict[str, Any]:
     result = dict(completion_result)
     blockers: list[str] = []
+    # A validated transition is persisted as a proof leaf and can be validated
+    # again by the semantic judge or host collector.  Do not accidentally feed
+    # validator-derived fields back into the signed payload on that second
+    # pass: the persistent Isaac service signed the original result before
+    # these fields existed.
+    validator_derived_fields = {
+        "registered_criterion",
+        "target_value",
+        "computed_transition_passed",
+        "reported_transition_passed",
+        "validated_evidence_artifacts",
+        "evaluator_attestation_validation",
+        "registered_transition_passed",
+        "validation_blockers",
+    }
     evaluator_attestation_validation = validate_trusted_ed25519_attestation(
         _mapping(result.get("evaluator_attestation")),
-        signed_payload={
-            key: value for key, value in result.items() if key != "evaluator_attestation"
-        },
+        signed_payload=_task_completion_attested_payload(
+            result,
+            validator_derived_fields=validator_derived_fields,
+        ),
         prefix="task_transition_evaluator_attestation",
         trusted_public_key_sha256_env=(SC3_TASK_COMPLETION_TRUSTED_PUBLIC_KEY_SHA256_ENV),
     )
@@ -783,6 +1374,9 @@ def _action_record_from_policy_endpoint(
     for key in (
         "action_chunk",
         "sonic_action_chunk",
+        "action_units",
+        "action_timing",
+        "action_horizon",
         "controller_action",
         "not_a_learned_robot_policy_action",
         "out_of_distribution_action_projection",
@@ -989,6 +1583,23 @@ def make_task_completion_command_evaluator(
                 "BLUEPRINT_TASK_COMPLETION_STEP_INDEX": str(step_value),
             },
         )
+        stdout_path = step_dir / "task_completion_stdout.log"
+        stderr_path = step_dir / "task_completion_stderr.log"
+        stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+        stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+        write_json(
+            step_dir / "task_completion_command_result.json",
+            {
+                "schema_version": "task_completion_command_result.v1",
+                "status": "completed" if completed.returncode == 0 else "blocked",
+                "returncode": int(completed.returncode),
+                "stdout_log": str(stdout_path.resolve()),
+                "stderr_log": str(stderr_path.resolve()),
+                "output_path": str(output_path),
+                "output_present": output_path.is_file(),
+                "timeout_seconds": max(1.0, float(timeout_seconds)),
+            },
+        )
         if completed.returncode != 0:
             raise RuntimeError(f"task_completion_command_returncode_{completed.returncode}")
         payload: Any = None
@@ -1027,6 +1638,19 @@ def make_task_completion_command_evaluator(
         after_timestamp = _string(response.get("after_timestamp")).strip()
         if not before_timestamp or not after_timestamp or before_timestamp == after_timestamp:
             raise RuntimeError("task_completion_before_after_timestamps_invalid")
+        response["post_action_policy_state"] = _validated_post_action_policy_state(
+            response.get("post_action_policy_state"),
+            simulator_session_id=session_id,
+            stage_id=_string(response.get("stage_id")).strip(),
+            source_action_sha256=expected_action_sha256,
+            source_step_index=step_value,
+        )
+        post_action_egocentric_frame = _validated_post_action_egocentric_frame(
+            response,
+            source_step_index=step_value,
+        )
+        if post_action_egocentric_frame:
+            response["post_action_egocentric_frame"] = post_action_egocentric_frame
         return response
 
     return evaluator
@@ -1039,7 +1663,11 @@ def _neutral_unitree_g1_sonic_state() -> dict[str, list[float]]:
 
 
 def _policy_observation(
-    frame_path: str, target: Sequence[float], step_index: int
+    frame_path: str,
+    target: Sequence[float],
+    step_index: int,
+    *,
+    task_prompt: str | None = None,
 ) -> dict[str, Any]:
     """The policy observation handed to the harness for this step (evaluator-controlled state
     kept separate from the WAM's pixel-inferred fields)."""
@@ -1048,6 +1676,7 @@ def _policy_observation(
         "step_index": step_index,
         "visual_observation": {"generated_frame_path": _string(frame_path)},
         "task_target_position_xyz": [round(float(c), 6) for c in target],
+        "task_prompt": _string(task_prompt).strip() or None,
     }
 
 
@@ -2140,6 +2769,10 @@ def make_oscar_per_step_wam_backend(
     num_frames: int = DEFAULT_OSCAR_NUM_FRAMES,
     skeleton_for_action: Callable[[Mapping[str, Any], int], Any] | None = None,
     seed: int = 42,
+    require_manipulation_effector_progress: bool = False,
+    minimum_manipulation_effector_progress_m: float = (
+        MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M
+    ),
 ) -> WamGenerateNext:
     """A ``wam_generate_next`` backend that drives real per-step OSCAR-2B generation.
 
@@ -2170,6 +2803,66 @@ def make_oscar_per_step_wam_backend(
         else:
             skeleton = list(projection or [])
             projection_metadata = {}
+        projection_blockers = (
+            _action_conditioning_blockers(
+                action=action,
+                wam_output={
+                    "skeleton_conditioning": projection_metadata,
+                    "generated_robot_state": projection_metadata.get("generated_robot_state"),
+                },
+            )
+            if isinstance(projection, Mapping)
+            else []
+        )
+        if projection_blockers:
+            return {
+                "status": "blocked",
+                "blockers": [
+                    f"oscar_controller_fk_projection_invalid:{blocker}"
+                    for blocker in projection_blockers
+                ],
+                "generated_frame_path": "",
+                "generated_video_path": None,
+                "skeleton_conditioning": projection_metadata or None,
+                "generated_robot_state": projection_metadata.get("generated_robot_state"),
+                "wam_backend": "oscar_2b_per_step",
+                "wam_generation_status": "blocked",
+                "wam_generation_blockers": [
+                    f"oscar_controller_fk_projection_invalid:{blocker}"
+                    for blocker in projection_blockers
+                ],
+            }
+        manipulation_progress_report: dict[str, Any] = {}
+        if require_manipulation_effector_progress:
+            manipulation_progress_report = _manipulation_effector_progress_report(
+                projection_metadata,
+                minimum_progress_m=float(minimum_manipulation_effector_progress_m),
+            )
+            report_dir = resolved_work / f"oscar_step_{step_index:04d}"
+            ensure_dir(report_dir)
+            report_path = report_dir / "manipulation_effector_progress_report.json"
+            write_json(report_path, manipulation_progress_report)
+            if manipulation_progress_report.get("capability_gate_passed") is not True:
+                progress_blockers = _string_list(
+                    manipulation_progress_report.get("blockers")
+                ) or ["manipulation_controller_fk_effector_progress_not_proven"]
+                return {
+                    "status": "blocked",
+                    "blockers": progress_blockers,
+                    "generated_frame_path": "",
+                    "generated_video_path": None,
+                    "skeleton_conditioning": projection_metadata or None,
+                    "generated_robot_state": projection_metadata.get(
+                        "generated_robot_state"
+                    ),
+                    "wam_backend": "oscar_2b_per_step",
+                    "wam_generation_status": "blocked",
+                    "wam_generation_blockers": progress_blockers,
+                    "manipulation_effector_progress_report": (
+                        manipulation_progress_report
+                    ),
+                    "manipulation_effector_progress_report_path": str(report_path),
+                }
         request = build_oscar_per_step_request(
             current_frame_path=current_frame,
             action=action,
@@ -2183,6 +2876,8 @@ def make_oscar_per_step_wam_backend(
         result = dict(oscar_generate(request) or {})
         generated_frame = _string(result.get("generated_frame_path"))
         return {
+            "status": result.get("status"),
+            "blockers": list(result.get("blockers") or []),
             "generated_frame_path": generated_frame,
             "generated_video_path": result.get("generated_video_path"),
             "skeleton_conditioning": {
@@ -2192,9 +2887,13 @@ def make_oscar_per_step_wam_backend(
             if skeleton
             else None,
             "generated_robot_state": projection_metadata.get("generated_robot_state"),
+            "manipulation_effector_progress_report": manipulation_progress_report or None,
             "wam_backend": "oscar_2b_per_step",
             "wam_generation_status": result.get("status"),
             "wam_generation_blockers": list(result.get("blockers") or []),
+            "oscar_gpu_residency_report_path": result.get("oscar_gpu_residency_report_path"),
+            "oscar_gpu_residency_samples_path": result.get("oscar_gpu_residency_samples_path"),
+            "oscar_gpu_residency": result.get("oscar_gpu_residency"),
         }
 
     return _generate_next
@@ -2427,6 +3126,14 @@ def make_controller_fk_skeleton_projector(
     resolved_work = Path(work_dir).expanduser().resolve()
     ensure_dir(resolved_work)
     seen_runtime_result_ids: set[str] = set()
+    camera_projection_context: dict[str, Any] | None = None
+    camera_projection_context_path = _string(
+        os.environ.get(CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT_ENV)
+    ).strip()
+    if camera_projection_context_path:
+        camera_projection_context = _load_live_controller_fk_camera_projection_context(
+            camera_projection_context_path
+        )
 
     def _project(action: Mapping[str, Any], step_index: int) -> Mapping[str, Any]:
         step_dir = resolved_work / f"step_{step_index:04d}"
@@ -2440,6 +3147,8 @@ def make_controller_fk_skeleton_projector(
             "source_action_sha256": action_sha256,
             "action": dict(action),
         }
+        if camera_projection_context is not None:
+            request["camera_projection_context"] = dict(camera_projection_context)
         write_json(input_path, request)
         request_sha256 = _canonical_sha256(request)
         result = subprocess.run(
@@ -2455,8 +3164,21 @@ def make_controller_fk_skeleton_projector(
             check=False,
             timeout=float(timeout_seconds),
         )
+        (step_dir / "controller_fk_stdout.log").write_text(result.stdout or "", encoding="utf-8")
+        (step_dir / "controller_fk_stderr.log").write_text(result.stderr or "", encoding="utf-8")
+        write_json(
+            step_dir / "controller_fk_command_result.json",
+            {
+                "schema_version": "controller_fk_command_result.v1",
+                "returncode": int(result.returncode),
+                "stdout_log": str((step_dir / "controller_fk_stdout.log").resolve()),
+                "stderr_log": str((step_dir / "controller_fk_stderr.log").resolve()),
+                "output_path": str(output_path),
+                "output_present": output_path.is_file(),
+            },
+        )
         if result.returncode != 0:
-            raise RuntimeError("controller_fk_skeleton_command_nonzero")
+            raise RuntimeError(f"controller_fk_skeleton_command_nonzero:{int(result.returncode)}")
         if output_path.is_file():
             payload = json.loads(output_path.read_text(encoding="utf-8"))
         else:
@@ -2487,6 +3209,17 @@ def make_controller_fk_skeleton_projector(
             != _string(projection.get("robot_model_sha256")).lower()
         ):
             raise RuntimeError("controller_fk_skeleton_robot_model_invalid")
+        projection_context_sha256 = _string(
+            projection.get("camera_projection_context_sha256")
+        ).lower()
+        source_frame_sha256 = _string(projection.get("camera_source_frame_sha256")).lower()
+        registration = _mapping(projection.get("cross_simulator_registration"))
+        if not _is_sha256(projection_context_sha256):
+            raise RuntimeError("controller_fk_projection_context_sha256_invalid")
+        if not _is_sha256(source_frame_sha256):
+            raise RuntimeError("controller_fk_projection_source_frame_sha256_invalid")
+        if registration.get("status") != "passed" or registration.get("surrogate") is not False:
+            raise RuntimeError("controller_fk_cross_simulator_registration_not_proven")
         signed_result = {
             "schema_version": "sc3_controller_fk_runtime_result.v1",
             "request_sha256": request_sha256,
@@ -2500,6 +3233,9 @@ def make_controller_fk_skeleton_projector(
             "robot_model_artifact": robot_model_ref,
             "derived_via_controller_fk": projection.get("derived_via_controller_fk"),
             "landmarks": projection.get("landmarks"),
+            "camera_projection_context_sha256": projection.get("camera_projection_context_sha256"),
+            "camera_source_frame_sha256": projection.get("camera_source_frame_sha256"),
+            "cross_simulator_registration": projection.get("cross_simulator_registration"),
             "generated_robot_state": projection.get("generated_robot_state"),
         }
         attestation = validate_trusted_ed25519_attestation(
@@ -2516,6 +3252,26 @@ def make_controller_fk_skeleton_projector(
         projection["derived_via_controller_fk"] = (
             projection.get("derived_via_controller_fk") is True
         )
+        if camera_projection_context is not None:
+            required_points = _mapping(
+                _mapping(
+                    _mapping(camera_projection_context.get("camera_contract")).get(
+                        "framing_validation"
+                    )
+                ).get("required_world_points")
+            )
+            task_target = _mapping(required_points.get("task_target")).get(
+                "world_xyz_m"
+            )
+            if _finite_numeric_sequence(task_target, minimum_length=3) and len(task_target) == 3:
+                projection["task_target_world_xyz_m"] = [
+                    float(value) for value in task_target
+                ]
+                projection["task_target_binding"] = {
+                    "source": "live_isaac_robot_pov_camera_framing_validation",
+                    "camera_projection_context_sha256": projection_context_sha256,
+                    "source_frame_sha256": source_frame_sha256,
+                }
         normalized_projection = _with_action_conditioning_digests(projection)
         evidence_blockers = _action_conditioning_blockers(
             action=action,
@@ -2568,10 +3324,32 @@ def _step_backend_status(step_record: Mapping[str, Any]) -> dict[str, Any]:
     provider_statuses = (
         list(backend.get("provider_statuses") or []) if isinstance(backend, Mapping) else []
     )
+    backend_kind = _string(backend.get("kind")) if isinstance(backend, Mapping) else ""
+    generated_rgb_validated = bool(
+        backend_kind == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
+        and backend.get("generated_rgb_policy_observation_validated")
+        and backend.get("built_in_generated_rgb_validation_ran")
+    )
     return {
         "backend_status": backend.get("status") if isinstance(backend, Mapping) else None,
+        "backend_kind": backend_kind or None,
         "real_model_ran": bool(
             isinstance(backend, Mapping) and backend.get("real_sam_or_depth_model_ran")
+        ),
+        "generated_rgb_policy_observation_validated": generated_rgb_validated,
+        "perception_model_ran": bool(
+            isinstance(backend, Mapping)
+            and (
+                backend.get("real_perception_model_ran")
+                or backend.get("real_sam_or_depth_model_ran")
+            )
+        ),
+        "no_perception_model_ran": bool(
+            generated_rgb_validated
+            and not backend.get("real_perception_model_ran")
+            and not backend.get("real_sam_or_depth_model_ran")
+            and not backend.get("sam3_ran")
+            and not backend.get("da3_ran")
         ),
         "provider_statuses": provider_statuses,
         "sam3_completed": _provider_completed(provider_statuses, "sam3"),
@@ -3008,6 +3786,461 @@ def materialize_projected_skeleton_trace_from_seed_geometry(
     return trace_path
 
 
+def _positive_pid(value: Any) -> int | None:
+    try:
+        pid = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _oscar_process_group_absent(process_group_id: int) -> bool:
+    """Return true only when the isolated OSCAR process group no longer exists."""
+
+    try:
+        os.killpg(int(process_group_id), 0)
+    except ProcessLookupError:
+        return True
+    except OSError as exc:
+        return exc.errno == errno.ESRCH
+    return False
+
+
+def _wait_for_oscar_process_group_absence(
+    process_group_id: int,
+    *,
+    timeout_seconds: float,
+    process_group_absent: Callable[[int], bool],
+) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        if process_group_absent(process_group_id):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+
+
+def _linux_process_parent_pid(pid: int) -> int | None:
+    """Read one Linux parent PID without invoking another process.
+
+    ``/proc/<pid>/stat`` puts the executable name in parentheses and that name may itself
+    contain spaces or parentheses, so split after the final closing parenthesis rather than
+    splitting the entire record on whitespace.
+    """
+
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+        fields_after_name = stat.rsplit(")", 1)[1].strip().split()
+        return _positive_pid(fields_after_name[1])
+    except (IndexError, OSError, TypeError, ValueError):
+        return None
+
+
+def _pid_ancestor_chain(
+    pid: int,
+    *,
+    parent_pid: Callable[[int], int | None],
+    max_depth: int = 128,
+) -> list[int]:
+    chain: list[int] = []
+    current = _positive_pid(pid)
+    visited: set[int] = set()
+    while current is not None and current not in visited and len(chain) < max_depth:
+        chain.append(current)
+        visited.add(current)
+        try:
+            current = _positive_pid(parent_pid(current))
+        except Exception:
+            current = None
+    return chain
+
+
+def _nvidia_smi_query(
+    *,
+    run: Callable[..., Any],
+    argv: Sequence[str],
+) -> dict[str, Any]:
+    try:
+        completed = run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {exc}"[:2000],
+        }
+    returncode = getattr(completed, "returncode", 1)
+    stdout = _string(getattr(completed, "stdout", ""))
+    stderr = _string(getattr(completed, "stderr", ""))
+    return {
+        "status": "completed" if returncode == 0 else "failed",
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr[:2000],
+    }
+
+
+def _csv_rows(text: str) -> list[list[str]]:
+    return [
+        [cell.strip() for cell in row]
+        for row in csv.reader(text.splitlines())
+        if row and any(cell.strip() for cell in row)
+    ]
+
+
+def _nvidia_memory_mib(value: Any) -> float | None:
+    cleaned = re.sub(r"\s*(?:MiB|MB)\s*$", "", _string(value).strip(), flags=re.IGNORECASE)
+    if not cleaned or cleaned.upper() in {"N/A", "[N/A]", "NOT SUPPORTED"}:
+        return None
+    try:
+        return round(float(cleaned), 3)
+    except ValueError:
+        return None
+
+
+def _valid_gpu_uuid(value: Any) -> str | None:
+    uuid = _string(value).strip()
+    if not uuid or uuid.upper() in {"N/A", "[N/A]", "UNKNOWN", "NONE"}:
+        return None
+    return uuid
+
+
+def collect_oscar_gpu_residency_sample(
+    *,
+    query_run: Callable[..., Any],
+    role_root_pids: Mapping[str, int | None],
+    parent_pid: Callable[[int], int | None] = _linux_process_parent_pid,
+    sample_index: int = 0,
+    elapsed_seconds: float = 0.0,
+) -> dict[str, Any]:
+    """Capture one simultaneous GPU/process snapshot for the four runtime roles.
+
+    A compute application is attributed to a role when its PID is that role's exported root PID
+    or a descendant of it. This matters for torchrun and Isaac, whose CUDA-owning child process is
+    commonly not the PID exported by the launch shell.
+    """
+
+    gpu_query = _nvidia_smi_query(
+        run=query_run,
+        argv=(
+            "nvidia-smi",
+            "--query-gpu=index,uuid,memory.total,memory.used,memory.free",
+            "--format=csv,noheader,nounits",
+        ),
+    )
+    compute_query = _nvidia_smi_query(
+        run=query_run,
+        argv=(
+            "nvidia-smi",
+            "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
+            "--format=csv,noheader,nounits",
+        ),
+    )
+    blockers: list[str] = []
+    if gpu_query["status"] != "completed":
+        blockers.append("nvidia_smi_gpu_query_failed")
+    if compute_query["status"] != "completed":
+        blockers.append("nvidia_smi_compute_apps_query_failed")
+
+    gpus: list[dict[str, Any]] = []
+    if gpu_query["status"] == "completed":
+        for row in _csv_rows(_string(gpu_query.get("stdout"))):
+            if len(row) != 5:
+                blockers.append("nvidia_smi_gpu_query_row_malformed")
+                continue
+            uuid = _valid_gpu_uuid(row[1])
+            if uuid is None:
+                blockers.append("nvidia_smi_gpu_uuid_missing")
+            gpus.append(
+                {
+                    "index": row[0],
+                    "uuid": uuid,
+                    "memory_total_mib": _nvidia_memory_mib(row[2]),
+                    "memory_used_mib": _nvidia_memory_mib(row[3]),
+                    "memory_free_mib": _nvidia_memory_mib(row[4]),
+                }
+            )
+        if not gpus:
+            blockers.append("nvidia_smi_gpu_inventory_empty")
+    inventory_uuids = {item["uuid"] for item in gpus if item.get("uuid")}
+    if len(inventory_uuids) != len([item for item in gpus if item.get("uuid")]):
+        blockers.append("nvidia_smi_gpu_uuid_duplicate")
+
+    normalized_roots = {
+        role: _positive_pid(role_root_pids.get(role)) for role in OSCAR_GPU_RESIDENCY_REQUIRED_ROLES
+    }
+    for role, root_pid in normalized_roots.items():
+        if root_pid is None:
+            blockers.append(f"gpu_residency_{role}_root_pid_missing")
+
+    compute_apps: list[dict[str, Any]] = []
+    if compute_query["status"] == "completed":
+        for row in _csv_rows(_string(compute_query.get("stdout"))):
+            if len(row) != 4:
+                blockers.append("nvidia_smi_compute_apps_query_row_malformed")
+                continue
+            uuid = _valid_gpu_uuid(row[0])
+            pid = _positive_pid(row[1])
+            if uuid is None:
+                blockers.append("nvidia_smi_compute_app_gpu_uuid_missing")
+            elif uuid not in inventory_uuids:
+                blockers.append("nvidia_smi_compute_app_gpu_uuid_not_in_inventory")
+            if pid is None:
+                blockers.append("nvidia_smi_compute_app_pid_invalid")
+                ancestor_chain: list[int] = []
+            else:
+                ancestor_chain = _pid_ancestor_chain(pid, parent_pid=parent_pid)
+            roles = [
+                role
+                for role, root_pid in normalized_roots.items()
+                if root_pid is not None and root_pid in ancestor_chain
+            ]
+            compute_apps.append(
+                {
+                    "gpu_uuid": uuid,
+                    "pid": pid,
+                    "process_name": row[2],
+                    "used_gpu_memory_mib": _nvidia_memory_mib(row[3]),
+                    "ancestor_chain": ancestor_chain,
+                    "roles": roles,
+                }
+            )
+
+    roles_by_gpu_uuid: dict[str, set[str]] = {uuid: set() for uuid in inventory_uuids}
+    for app in compute_apps:
+        uuid = app.get("gpu_uuid")
+        if uuid in roles_by_gpu_uuid:
+            roles_by_gpu_uuid[uuid].update(app.get("roles") or [])
+    same_gpu_role_sets = {uuid: sorted(roles) for uuid, roles in sorted(roles_by_gpu_uuid.items())}
+    required = set(OSCAR_GPU_RESIDENCY_REQUIRED_ROLES)
+    simultaneous_uuids = sorted(
+        uuid for uuid, roles in roles_by_gpu_uuid.items() if required.issubset(roles)
+    )
+    diagnostic_text = "\n".join(
+        [
+            _string(gpu_query.get("stdout")),
+            _string(gpu_query.get("stderr")),
+            _string(compute_query.get("stdout")),
+            _string(compute_query.get("stderr")),
+        ]
+    )
+    cuda_oom_detected = bool(
+        re.search(r"(?:CUDA\s+out\s+of\s+memory|CUDNN_STATUS_ALLOC_FAILED)", diagnostic_text, re.I)
+    )
+    xid_detected = bool(re.search(r"\bXid\b", diagnostic_text, re.I))
+    if cuda_oom_detected:
+        blockers.append("cuda_out_of_memory_detected")
+    if xid_detected:
+        blockers.append("nvidia_xid_detected")
+    blockers = sorted(set(blockers))
+    return {
+        "schema_version": OSCAR_GPU_RESIDENCY_SAMPLE_SCHEMA_VERSION,
+        "sample_index": int(sample_index),
+        "sampled_at": utc_now_iso(),
+        "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 3),
+        "query_status": "completed" if not blockers else "blocked",
+        "gpu_query": {
+            "status": gpu_query["status"],
+            "returncode": gpu_query["returncode"],
+            "stderr": gpu_query["stderr"],
+        },
+        "compute_apps_query": {
+            "status": compute_query["status"],
+            "returncode": compute_query["returncode"],
+            "stderr": compute_query["stderr"],
+        },
+        "role_root_pids": normalized_roots,
+        "gpus": gpus,
+        "compute_apps": compute_apps,
+        "roles_by_gpu_uuid": same_gpu_role_sets,
+        "simultaneous_required_roles_gpu_uuids": simultaneous_uuids,
+        "all_required_roles_simultaneously_resident_on_same_gpu": bool(simultaneous_uuids),
+        "cuda_oom_detected": cuda_oom_detected,
+        "nvidia_xid_detected": xid_detected,
+        "blockers": blockers,
+    }
+
+
+def summarize_oscar_gpu_residency_samples(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    role_root_pids: Mapping[str, int | None],
+    runtime_diagnostics: str = "",
+    extra_blockers: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Reduce timestamped snapshots without turning free memory into an admission cutoff."""
+
+    blockers = {str(item) for item in extra_blockers if str(item)}
+    same_gpu_uuids: set[str] = set()
+    simultaneous_sample_indices: list[int] = []
+    peak_used: float | None = None
+    minimum_free: float | None = None
+    role_observed_sample_counts = {role: 0 for role in OSCAR_GPU_RESIDENCY_REQUIRED_ROLES}
+    for sample in samples:
+        blockers.update(_string_list(sample.get("blockers")))
+        simultaneous = _string_list(sample.get("simultaneous_required_roles_gpu_uuids"))
+        if simultaneous:
+            same_gpu_uuids.update(simultaneous)
+            simultaneous_sample_indices.append(int(sample.get("sample_index") or 0))
+        observed_roles: set[str] = set()
+        for roles in _mapping(sample.get("roles_by_gpu_uuid")).values():
+            observed_roles.update(_string_list(roles))
+        for role in observed_roles:
+            if role in role_observed_sample_counts:
+                role_observed_sample_counts[role] += 1
+        for gpu in sample.get("gpus") or []:
+            if not isinstance(gpu, Mapping):
+                continue
+            used = gpu.get("memory_used_mib")
+            free = gpu.get("memory_free_mib")
+            if isinstance(used, (int, float)):
+                peak_used = float(used) if peak_used is None else max(peak_used, float(used))
+            if isinstance(free, (int, float)):
+                minimum_free = (
+                    float(free) if minimum_free is None else min(minimum_free, float(free))
+                )
+    if not samples:
+        blockers.add("oscar_gpu_residency_samples_absent")
+    if not simultaneous_sample_indices:
+        blockers.add("required_roles_not_simultaneously_resident_on_same_gpu")
+
+    cuda_oom_detected = any(sample.get("cuda_oom_detected") is True for sample in samples) or bool(
+        re.search(
+            r"(?:CUDA\s+out\s+of\s+memory|CUDNN_STATUS_ALLOC_FAILED)",
+            runtime_diagnostics,
+            re.I,
+        )
+    )
+    xid_detected = any(sample.get("nvidia_xid_detected") is True for sample in samples) or bool(
+        re.search(r"\bXid\b", runtime_diagnostics, re.I)
+    )
+    if cuda_oom_detected:
+        blockers.add("cuda_out_of_memory_detected")
+    if xid_detected:
+        blockers.add("nvidia_xid_detected")
+    sorted_blockers = sorted(blockers)
+    proof_passed = bool(simultaneous_sample_indices) and not sorted_blockers
+    return {
+        "schema_version": OSCAR_GPU_RESIDENCY_REPORT_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed" if proof_passed else "blocked",
+        "proof_passed": proof_passed,
+        "required_roles": list(OSCAR_GPU_RESIDENCY_REQUIRED_ROLES),
+        "role_root_pids": {
+            role: _positive_pid(role_root_pids.get(role))
+            for role in OSCAR_GPU_RESIDENCY_REQUIRED_ROLES
+        },
+        "sample_count": len(samples),
+        "simultaneous_sample_count": len(simultaneous_sample_indices),
+        "simultaneous_sample_indices": simultaneous_sample_indices,
+        "same_gpu_uuids": sorted(same_gpu_uuids),
+        "role_observed_sample_counts": role_observed_sample_counts,
+        "peak_gpu_memory_used_mib": peak_used,
+        "minimum_gpu_memory_free_mib": minimum_free,
+        "nvidia_smi_query_failure_detected": any(
+            blocker.startswith("nvidia_smi_") and blocker.endswith("_failed")
+            for blocker in sorted_blockers
+        ),
+        "gpu_uuid_failure_detected": any("gpu_uuid" in blocker for blocker in sorted_blockers),
+        "cuda_oom_detected": cuda_oom_detected,
+        "nvidia_xid_detected": xid_detected,
+        "blockers": sorted_blockers,
+        "claim_boundary": {
+            "same_gpu_simultaneous_residency_requires_one_atomic_nvidia_smi_sample": True,
+            "process_role_classification_uses_exported_root_pid_ancestry": True,
+            "gpu_free_memory_is_observed_not_an_admission_cutoff": True,
+            "residency_does_not_claim_semantic_task_success": True,
+        },
+    }
+
+
+class _OscarGpuResidencySampler:
+    """A subprocess-scoped, bounded sampler that streams evidence instead of buffering forever."""
+
+    def __init__(
+        self,
+        *,
+        output_dir: Path,
+        oscar_pid: int | None,
+        query_run: Callable[..., Any],
+        parent_pid: Callable[[int], int | None] = _linux_process_parent_pid,
+        interval_seconds: float = OSCAR_GPU_RESIDENCY_SAMPLE_INTERVAL_SECONDS,
+        max_samples: int = OSCAR_GPU_RESIDENCY_MAX_SAMPLES,
+    ) -> None:
+        self.samples_path = output_dir / "oscar_gpu_residency.jsonl"
+        self.report_path = output_dir / "oscar_gpu_residency_report.json"
+        self.query_run = query_run
+        self.parent_pid = parent_pid
+        self.interval_seconds = min(1.0, max(0.5, float(interval_seconds)))
+        self.max_samples = max(1, int(max_samples))
+        self.role_root_pids = {
+            role: _positive_pid(os.environ.get(env_name))
+            for role, env_name in OSCAR_GPU_RESIDENCY_PID_ENV_BY_ROLE.items()
+        }
+        self.role_root_pids["oscar"] = _positive_pid(oscar_pid)
+        self._samples: list[dict[str, Any]] = []
+        self._stop = threading.Event()
+        self._started_monotonic = time.monotonic()
+        self._sample_limit_reached = False
+        self._thread = threading.Thread(
+            target=self._sample_loop,
+            name="oscar-gpu-residency-sampler",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self.samples_path.unlink(missing_ok=True)
+        self.report_path.unlink(missing_ok=True)
+        self._thread.start()
+
+    def _sample_loop(self) -> None:
+        while not self._stop.is_set() and len(self._samples) < self.max_samples:
+            sample = collect_oscar_gpu_residency_sample(
+                query_run=self.query_run,
+                role_root_pids=self.role_root_pids,
+                parent_pid=self.parent_pid,
+                sample_index=len(self._samples),
+                elapsed_seconds=time.monotonic() - self._started_monotonic,
+            )
+            self._samples.append(sample)
+            with self.samples_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(sample, sort_keys=True) + "\n")
+                handle.flush()
+            if self._stop.wait(self.interval_seconds):
+                break
+        if len(self._samples) >= self.max_samples and not self._stop.is_set():
+            self._sample_limit_reached = True
+
+    def finalize(self, *, runtime_diagnostics: str = "") -> dict[str, Any]:
+        self._stop.set()
+        self._thread.join(timeout=12)
+        extra_blockers: list[str] = []
+        if self._thread.is_alive():
+            extra_blockers.append("oscar_gpu_residency_sampler_stop_timeout")
+        if self._sample_limit_reached:
+            extra_blockers.append("oscar_gpu_residency_sample_limit_reached")
+        report = summarize_oscar_gpu_residency_samples(
+            self._samples,
+            role_root_pids=self.role_root_pids,
+            runtime_diagnostics=runtime_diagnostics,
+            extra_blockers=extra_blockers,
+        )
+        report["samples_path"] = str(self.samples_path)
+        report["report_path"] = str(self.report_path)
+        report["sample_interval_seconds"] = self.interval_seconds
+        report["maximum_sample_count"] = self.max_samples
+        write_json(self.report_path, report)
+        return report
+
+
 def build_oscar_inference_argv(
     *,
     python: str,
@@ -3078,7 +4311,14 @@ def make_local_oscar_subprocess_generate(
     height: int = 480,
     width: int = 640,
     fps: float = 15.0,
+    timeout_seconds: float = 3600.0,
     run: Callable[..., Any],
+    popen: Callable[..., Any] | None = None,
+    process_group_signal: Callable[[int, int], None] = os.killpg,
+    process_group_absent: Callable[[int], bool] = _oscar_process_group_absent,
+    termination_grace_seconds: float = OSCAR_SUBPROCESS_TERMINATION_GRACE_SECONDS,
+    gpu_query_run: Callable[..., Any] | None = None,
+    gpu_parent_pid: Callable[[int], int | None] = _linux_process_parent_pid,
     build_skeleton_video: Callable[[Sequence[Mapping[str, Any]], Path], Path | None] | None = None,
     extract_next_frame: Callable[[Path, Path], Path | None],
 ) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
@@ -3086,6 +4326,13 @@ def make_local_oscar_subprocess_generate(
     checkpoint. ``run`` (subprocess.run), ``build_skeleton_video`` (landmarks -> conditioning
     video), and ``extract_next_frame`` (output clip -> next-observation frame, e.g. via ffmpeg)
     are injected, so the whole wrapper is unit-testable without GPU or OSCAR installed.
+
+    The real worker injects ``popen`` so the OSCAR process has an attributable root PID. The
+    process starts in its own session so a timeout owns and terminates the entire torchrun process
+    group, not just its launcher. While that process runs, GPU inventory and compute applications
+    are sampled every 0.75 seconds. ``timeout_seconds`` bounds that real subprocess using the same
+    provider-call timeout supplied by the CLI. Legacy/fake ``run`` injection remains synchronous
+    and does not pretend to produce residency evidence.
     """
     repo = Path(oscar_repo).expanduser()
 
@@ -3095,12 +4342,30 @@ def make_local_oscar_subprocess_generate(
         output_video = out_dir / "oscar_next_observation.mp4"
         landmarks = request.get("skeleton_landmarks") or []
         skeleton_video = build_skeleton_video(landmarks, out_dir) if build_skeleton_video else None
+        stdout_log = out_dir / "oscar_subprocess_stdout.log"
+        stderr_log = out_dir / "oscar_subprocess_stderr.log"
+        if build_skeleton_video is not None and skeleton_video is None:
+            stdout_log.write_text("", encoding="utf-8")
+            stderr_log.write_text(
+                "OSCAR inference skipped: projected skeleton conditioning is unavailable.\n",
+                encoding="utf-8",
+            )
+            return {
+                "status": "blocked",
+                "blockers": ["oscar_per_step_projected_skeleton_conditioning_unavailable"],
+                "generated_frame_path": "",
+                "generated_video_path": "",
+                "stdout_log_path": str(stdout_log),
+                "stderr_log_path": str(stderr_log),
+            }
         argv = build_oscar_inference_argv(
             python=python,
             oscar_repo=repo,
             checkpoint=checkpoint,
             first_frame_path=_string(request.get("reference_frame_path")),
-            prompt=_string(request.get("task_prompt")),
+            prompt=_normalize_oscar_robot_action_prompt(
+                _string(request.get("task_prompt"))
+            )[0],
             num_frames=int(request.get("num_frames") or 8),
             num_steps=num_steps,
             guidance=guidance,
@@ -3111,20 +4376,231 @@ def make_local_oscar_subprocess_generate(
             output_video=output_video,
             skeleton_video=skeleton_video,
         )
-        completed = run(argv, cwd=str(repo), capture_output=True, text=True, check=False)
-        stdout_log = out_dir / "oscar_subprocess_stdout.log"
-        stderr_log = out_dir / "oscar_subprocess_stderr.log"
-        stdout_log.write_text(str(getattr(completed, "stdout", "") or ""), encoding="utf-8")
-        stderr_log.write_text(str(getattr(completed, "stderr", "") or ""), encoding="utf-8")
-        returncode = getattr(completed, "returncode", 1)
-        if returncode != 0 or not output_video.is_file():
+        runtime_env = os.environ.copy()
+        cudnn_lib_dir_value = _string(runtime_env.get("BLUEPRINT_OSCAR_CUDNN_LIB_DIR"))
+        if cudnn_lib_dir_value:
+            cudnn_lib_dir = Path(cudnn_lib_dir_value).expanduser()
+            if (
+                not cudnn_lib_dir.is_absolute()
+                or not cudnn_lib_dir.is_dir()
+                or not (cudnn_lib_dir / "libcudnn_graph.so.9").is_file()
+            ):
+                stdout_log.write_text("", encoding="utf-8")
+                stderr_log.write_text(
+                    "OSCAR inference skipped: configured cuDNN runtime is unavailable.\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "status": "blocked",
+                    "blockers": ["oscar_cudnn_runtime_directory_invalid"],
+                    "generated_frame_path": "",
+                    "generated_video_path": "",
+                    "stdout_log_path": str(stdout_log),
+                    "stderr_log_path": str(stderr_log),
+                }
+            existing_ld_library_path = _string(runtime_env.get("LD_LIBRARY_PATH"))
+            runtime_env["LD_LIBRARY_PATH"] = ":".join(
+                value for value in (str(cudnn_lib_dir), existing_ld_library_path) if value
+            )
+        residency_report: dict[str, Any] | None = None
+        subprocess_timed_out = False
+        timeout_cleanup_failed = False
+        process_group_id: int | None = None
+        process_group_term_sent = False
+        process_group_kill_sent = False
+        process_group_absent_verified = False
+        subprocess_timeout_seconds = max(1.0, float(timeout_seconds))
+        cleanup_grace_seconds = max(0.1, float(termination_grace_seconds))
+        if popen is None:
+            completed = run(
+                argv,
+                cwd=str(repo),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=runtime_env,
+            )
+            stdout = str(getattr(completed, "stdout", "") or "")
+            stderr = str(getattr(completed, "stderr", "") or "")
+            returncode = getattr(completed, "returncode", 1)
+        else:
+            process = popen(
+                argv,
+                cwd=str(repo),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=runtime_env,
+                start_new_session=True,
+            )
+            process_group_id = _positive_pid(getattr(process, "pid", None))
+            sampler = _OscarGpuResidencySampler(
+                output_dir=out_dir,
+                oscar_pid=process_group_id,
+                query_run=gpu_query_run or subprocess.run,
+                parent_pid=gpu_parent_pid,
+            )
+            sampler.start()
+            stdout = ""
+            stderr = ""
+            try:
+                stdout, stderr = process.communicate(timeout=subprocess_timeout_seconds)
+            except subprocess.TimeoutExpired as timeout_error:
+                subprocess_timed_out = True
+
+                def _timeout_output(value: Any) -> str:
+                    if isinstance(value, bytes):
+                        return value.decode("utf-8", errors="replace")
+                    return str(value or "")
+
+                stdout = _timeout_output(timeout_error.stdout)
+                stderr = _timeout_output(timeout_error.stderr)
+
+                if process_group_id is None:
+                    timeout_cleanup_failed = True
+                else:
+                    try:
+                        process_group_signal(process_group_id, signal.SIGTERM)
+                        process_group_term_sent = True
+                    except ProcessLookupError:
+                        process_group_absent_verified = True
+                    except OSError:
+                        timeout_cleanup_failed = True
+
+                terminate_communicate_timed_out = False
+                try:
+                    terminated_stdout, terminated_stderr = process.communicate(
+                        timeout=cleanup_grace_seconds
+                    )
+                    stdout = str(terminated_stdout or stdout)
+                    stderr = str(terminated_stderr or stderr)
+                except subprocess.TimeoutExpired as terminate_timeout:
+                    terminate_communicate_timed_out = True
+                    stdout = _timeout_output(terminate_timeout.stdout) or stdout
+                    stderr = _timeout_output(terminate_timeout.stderr) or stderr
+
+                if process_group_id is not None and not terminate_communicate_timed_out:
+                    try:
+                        process_group_absent_verified = _wait_for_oscar_process_group_absence(
+                            process_group_id,
+                            timeout_seconds=cleanup_grace_seconds,
+                            process_group_absent=process_group_absent,
+                        )
+                    except Exception:
+                        timeout_cleanup_failed = True
+
+                process_group_needs_kill = (
+                    process_group_id is not None
+                    and (terminate_communicate_timed_out or not process_group_absent_verified)
+                )
+                if process_group_needs_kill:
+                    try:
+                        process_group_signal(process_group_id, signal.SIGKILL)
+                        process_group_kill_sent = True
+                    except ProcessLookupError:
+                        process_group_absent_verified = True
+                    except OSError:
+                        timeout_cleanup_failed = True
+                    try:
+                        killed_stdout, killed_stderr = process.communicate(
+                            timeout=cleanup_grace_seconds
+                        )
+                        stdout = str(killed_stdout or stdout)
+                        stderr = str(killed_stderr or stderr)
+                    except subprocess.TimeoutExpired as kill_timeout:
+                        stdout = _timeout_output(kill_timeout.stdout) or stdout
+                        stderr = _timeout_output(kill_timeout.stderr) or stderr
+                        timeout_cleanup_failed = True
+                    try:
+                        process_group_absent_verified = _wait_for_oscar_process_group_absence(
+                            process_group_id,
+                            timeout_seconds=cleanup_grace_seconds,
+                            process_group_absent=process_group_absent,
+                        )
+                    except Exception:
+                        timeout_cleanup_failed = True
+                if process_group_id is not None and not process_group_absent_verified:
+                    timeout_cleanup_failed = True
+                timeout_diagnostic = (
+                    "OSCAR inference timed out after "
+                    f"{subprocess_timeout_seconds:.3f} seconds."
+                )
+                stderr = f"{stderr.rstrip()}\n{timeout_diagnostic}\n" if stderr else (
+                    f"{timeout_diagnostic}\n"
+                )
+            finally:
+                stdout = str(stdout or "")
+                stderr = str(stderr or "")
+                residency_report = sampler.finalize(
+                    runtime_diagnostics=f"{stdout}\n{stderr}",
+                )
+            returncode = getattr(process, "returncode", 1)
+        stdout_log.write_text(stdout, encoding="utf-8")
+        stderr_log.write_text(stderr, encoding="utf-8")
+        residency_fields: dict[str, Any] = {}
+        if residency_report is not None:
+            residency_fields = {
+                "oscar_gpu_residency_report_path": str(residency_report.get("report_path") or ""),
+                "oscar_gpu_residency_samples_path": str(residency_report.get("samples_path") or ""),
+                "oscar_gpu_residency": residency_report,
+            }
+        residency_blockers: list[str] = []
+        first_real_transition = popen is not None and int(request.get("step_index") or 0) == 1
+        if first_real_transition and not bool(
+            residency_report and residency_report.get("proof_passed") is True
+        ):
+            residency_blockers.append("oscar_first_transition_gpu_residency_proof_absent")
+            residency_blockers.extend(
+                f"oscar_gpu_residency:{blocker}"
+                for blocker in _string_list((residency_report or {}).get("blockers"))
+            )
+        if residency_report and residency_report.get("cuda_oom_detected") is True:
+            residency_blockers.append("oscar_cuda_out_of_memory_detected")
+        if residency_report and residency_report.get("nvidia_xid_detected") is True:
+            residency_blockers.append("oscar_nvidia_xid_detected")
+        if subprocess_timed_out:
+            timeout_blockers = ["oscar_per_step_inference_timeout"]
+            if timeout_cleanup_failed:
+                timeout_blockers.append("oscar_per_step_inference_timeout_cleanup_failed")
             return {
                 "status": "blocked",
-                "blockers": [f"oscar_per_step_inference_returncode_{returncode}"],
+                "blockers": sorted(set(timeout_blockers + residency_blockers)),
                 "generated_frame_path": "",
                 "generated_video_path": str(output_video) if output_video.is_file() else "",
                 "stdout_log_path": str(stdout_log),
                 "stderr_log_path": str(stderr_log),
+                "oscar_subprocess_timed_out": True,
+                "oscar_subprocess_timeout_seconds": subprocess_timeout_seconds,
+                "oscar_subprocess_timeout_cleanup_failed": timeout_cleanup_failed,
+                "oscar_subprocess_process_group_id": process_group_id,
+                "oscar_subprocess_process_group_term_sent": process_group_term_sent,
+                "oscar_subprocess_process_group_kill_sent": process_group_kill_sent,
+                "oscar_subprocess_process_group_absent_verified": (
+                    process_group_absent_verified
+                ),
+                **residency_fields,
+            }
+        if returncode != 0 or not output_video.is_file():
+            return {
+                "status": "blocked",
+                "blockers": sorted(
+                    set([f"oscar_per_step_inference_returncode_{returncode}"] + residency_blockers)
+                ),
+                "generated_frame_path": "",
+                "generated_video_path": str(output_video) if output_video.is_file() else "",
+                "stdout_log_path": str(stdout_log),
+                "stderr_log_path": str(stderr_log),
+                **residency_fields,
+            }
+        if residency_blockers:
+            return {
+                "status": "blocked",
+                "blockers": sorted(set(residency_blockers)),
+                "generated_frame_path": "",
+                "generated_video_path": str(output_video),
+                "stdout_log_path": str(stdout_log),
+                "stderr_log_path": str(stderr_log),
+                **residency_fields,
             }
         next_frame = extract_next_frame(output_video, out_dir)
         if not next_frame or not Path(next_frame).is_file():
@@ -3135,6 +4611,7 @@ def make_local_oscar_subprocess_generate(
                 "generated_video_path": str(output_video),
                 "stdout_log_path": str(stdout_log),
                 "stderr_log_path": str(stderr_log),
+                **residency_fields,
             }
         return {
             "status": "completed",
@@ -3142,6 +4619,7 @@ def make_local_oscar_subprocess_generate(
             "generated_video_path": str(output_video),
             "stdout_log_path": str(stdout_log),
             "stderr_log_path": str(stderr_log),
+            **residency_fields,
         }
 
     return _oscar_generate
@@ -3611,6 +5089,8 @@ def _score_closed_loop_generated_video_success(
 
 
 GENERATED_CLIP_SEED_CORRELATION_FLOOR = 0.5
+GENERATED_CLIP_PATCH_CORRELATION_FLOOR = 0.5
+GENERATED_CLIP_MAX_LAPLACIAN_VARIANCE_RATIO = 3.0
 
 
 def generated_clip_coherence(
@@ -3639,21 +5119,67 @@ def generated_clip_coherence(
         return {"status": "not_measured", "blockers": ["cv2_unavailable"]}
     capture = cv2.VideoCapture(str(resolved))
     seed = None
+    seed_full = None
+    seed_laplacian_variance = None
     correlations: list[float] = []
+    patch_correlation_medians: list[float] = []
+    laplacian_variance_ratios: list[float] = []
+
+    def _patch_correlation_median(seed_gray, current_gray) -> float:
+        height, width = seed_gray.shape
+        rows = 6 if height >= 240 else 3
+        columns = 8 if width >= 320 else 4
+        values: list[float] = []
+        for row in range(rows):
+            y0, y1 = row * height // rows, (row + 1) * height // rows
+            for column in range(columns):
+                x0, x1 = column * width // columns, (column + 1) * width // columns
+                left = seed_gray[y0:y1, x0:x1].reshape(-1)
+                right = current_gray[y0:y1, x0:x1].reshape(-1)
+                left_centered = left - left.mean()
+                right_centered = right - right.mean()
+                denominator = float(
+                    np.sqrt(
+                        (left_centered * left_centered).sum()
+                        * (right_centered * right_centered).sum()
+                    )
+                )
+                if denominator > 1e-6:
+                    values.append(
+                        float((left_centered * right_centered).sum() / denominator)
+                    )
+        return float(np.median(values)) if values else 0.0
+
     try:
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype("float32")
-            gray = cv2.resize(gray, (80, 60))
+            gray_full = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype("float32")
+            gray = cv2.resize(gray_full, (80, 60))
             if seed is None:
                 seed = gray - gray.mean()
+                seed_full = gray_full
+                seed_laplacian_variance = float(
+                    cv2.Laplacian(gray_full, cv2.CV_32F).var()
+                )
                 continue
             centered = gray - gray.mean()
             denominator = float(np.sqrt((centered * centered).sum() * (seed * seed).sum()))
             correlations.append(
                 float((centered * seed).sum() / denominator) if denominator else 0.0
+            )
+            patch_correlation_medians.append(
+                _patch_correlation_median(seed_full, gray_full)
+                if seed_full is not None
+                else 0.0
+            )
+            current_laplacian_variance = float(
+                cv2.Laplacian(gray_full, cv2.CV_32F).var()
+            )
+            laplacian_variance_ratios.append(
+                current_laplacian_variance
+                / max(float(seed_laplacian_variance or 0.0), 1e-6)
             )
     finally:
         capture.release()
@@ -3663,26 +5189,51 @@ def generated_clip_coherence(
             "blockers": ["generated_video_unreadable_or_single_frame"],
         }
     horizon = 1
-    for value in correlations:
-        if value < float(correlation_floor):
+    for correlation, patch_median, laplacian_ratio in zip(
+        correlations,
+        patch_correlation_medians,
+        laplacian_variance_ratios,
+        strict=True,
+    ):
+        if (
+            correlation < float(correlation_floor)
+            or patch_median < GENERATED_CLIP_PATCH_CORRELATION_FLOOR
+            or laplacian_ratio > GENERATED_CLIP_MAX_LAPLACIAN_VARIANCE_RATIO
+        ):
             break
         horizon += 1
     return {
         "status": "measured",
         "frame_count": len(correlations) + 1,
         "seed_correlation_floor": float(correlation_floor),
+        "patch_correlation_floor": GENERATED_CLIP_PATCH_CORRELATION_FLOOR,
+        "maximum_laplacian_variance_ratio": (
+            GENERATED_CLIP_MAX_LAPLACIAN_VARIANCE_RATIO
+        ),
         "coherent_horizon_frames": horizon,
         "first_frame_correlation": round(correlations[0], 6),
+        "first_frame_patch_correlation_median": round(
+            patch_correlation_medians[0], 6
+        ),
+        "first_frame_laplacian_variance_ratio": round(
+            laplacian_variance_ratios[0], 6
+        ),
         "final_frame_correlation": round(correlations[-1], 6),
         "min_correlation": round(min(correlations), 6),
+        "min_patch_correlation_median": round(
+            min(patch_correlation_medians), 6
+        ),
+        "max_laplacian_variance_ratio": round(
+            max(laplacian_variance_ratios), 6
+        ),
+        "early_frame_artifact_detected": horizon == 1,
         "blockers": [],
         "claim_boundary": (
-            "Seed-anchored correlation measures visual drift only; it is not "
+            "Global and tiled seed correlation plus high-frequency growth "
+            "measure visual drift and artifact collapse only; they are not "
             "semantic fidelity, physics plausibility, or task-success evidence."
         ),
     }
-
-
 
 
 def run_oscar_isaac_closed_loop(
@@ -3698,6 +5249,7 @@ def run_oscar_isaac_closed_loop(
     allow_external_backend: bool = False,
     backend_timeout_seconds: int = 600,
     policy_id: str = "blueprint_default_walk_to_target_smoke_policy",
+    task_prompt: str | None = None,
     generated_at: str | None = None,
     require_fresh_oscar_provider: bool = False,
     require_real_perception_backend: bool = False,
@@ -3721,6 +5273,10 @@ def run_oscar_isaac_closed_loop(
     wam_success_label_timeout_seconds: float | None = None,
     min_coherent_horizon_frames: int = 0,
     stop_on_task_completion: bool = False,
+    stop_on_unsafe_stance: bool = False,
+    stop_on_no_progress: bool = False,
+    no_progress_patience_steps: int = DEFAULT_NO_PROGRESS_PATIENCE_STEPS,
+    minimum_task_progress_fraction: float = 0.02,
     min_steps: int = 1,
     task_success_contract: Mapping[str, Any] | None = None,
     task_completion_evaluator: TaskCompletionEvaluator | None = None,
@@ -3739,6 +5295,7 @@ def run_oscar_isaac_closed_loop(
             "blockers": ["blocked_empty_route"],
         }
     target = route[-1]
+    resolved_task_prompt = _string(task_prompt).strip()
     cleaned_target_prompts = [
         prompt for prompt in (_string(item) for item in (perception_target_prompts or [])) if prompt
     ]
@@ -3778,6 +5335,9 @@ def run_oscar_isaac_closed_loop(
     clip_coherence_rows: list[dict[str, Any]] = []
     episode_termination_reason: str | None = None
     task_completed_early = False
+    task_progress_history: list[dict[str, Any]] = []
+    best_task_progress: float | None = None
+    last_meaningful_task_progress_step: int | None = None
     step_records: list[dict[str, Any]] = []
     adapter_reports: list[dict[str, Any]] = []
     trace_rows: list[dict[str, Any]] = []
@@ -3787,15 +5347,19 @@ def run_oscar_isaac_closed_loop(
     pending_policy_endpoint_source_step: int | None = None
     previous_endpoint_action_signature: str | None = None
     learned_policy_requery_count = 0
+    terminal_observation_policy_requery_count = 0
     policy_action_changed_count = 0
     action_derived_skeleton_conditioned_steps = 0
     conditioning_action_by_evidence_sha256: dict[str, str] = {}
     action_conditioning_evidence_rows: list[dict[str, Any]] = []
     current_generated_robot_state: dict[str, Any] = {}
     consistency_results: list[dict[str, Any]] = []
-    consistency_requested = _wam_episode_consistency_requested(
-        explicit_command=wam_consistency_command,
-        allow_wam_consistency_scoring=allow_wam_consistency_scoring,
+    consistency_requested = bool(
+        require_forward_inverse_consistency
+        or _wam_episode_consistency_requested(
+            explicit_command=wam_consistency_command,
+            allow_wam_consistency_scoring=allow_wam_consistency_scoring,
+        )
     )
 
     # The sealed manipulation path must query GR00T on the initial real frame.
@@ -3809,14 +5373,12 @@ def run_oscar_isaac_closed_loop(
             "source_observation_frame": current_frame,
             "observation_kind": "initial_real_observation",
             "visual_observation": {"camera_frame_path": current_frame},
-            "task_prompt": None,
+            "task_prompt": resolved_task_prompt or None,
             "route_target_xyz": list(target),
             "generated_robot_state": {},
         }
         try:
-            pending_policy_endpoint_action = dict(
-                policy_endpoint(initial_observation, [], 0) or {}
-            )
+            pending_policy_endpoint_action = dict(policy_endpoint(initial_observation, [], 0) or {})
             if not pending_policy_endpoint_action:
                 raise RuntimeError("initial_policy_action_empty")
             pending_policy_endpoint_source_step = 0
@@ -3977,9 +5539,7 @@ def run_oscar_isaac_closed_loop(
                 task_prompts=cleaned_target_prompts,
                 wam_consistency_command=wam_consistency_command,
                 allow_wam_consistency_scoring=allow_wam_consistency_scoring,
-                require_strict_action_aware_consistency=bool(
-                    require_forward_inverse_consistency
-                ),
+                require_strict_action_aware_consistency=bool(require_forward_inverse_consistency),
                 timeout_seconds=(
                     float(wam_consistency_timeout_seconds)
                     if wam_consistency_timeout_seconds is not None
@@ -4002,19 +5562,11 @@ def run_oscar_isaac_closed_loop(
         clean_frame_reanchor_applied = bool(
             effective_reanchor_interval > 0 and step_index % effective_reanchor_interval == 0
         )
-        next_policy_frame = initial_clean_frame if clean_frame_reanchor_applied else generated_frame
-        if clean_frame_reanchor_applied:
-            clean_frame_reanchor_events.append(
-                {
-                    "step_index": step_index,
-                    "generated_next_observation_frame_path": generated_frame,
-                    "next_policy_observation_frame_path": next_policy_frame,
-                    "source_frame_kind": "initial_policy_observation_clean_frame",
-                    "interval_steps": effective_reanchor_interval,
-                }
-            )
+        next_policy_frame = generated_frame
+        clean_frame_reanchor_source_kind: str | None = None
 
-        # 3. perception harness (SAM3/DA3) analyses the generated frame immediately
+        # 3. The selected observation backend validates or analyses the generated
+        # frame immediately. The direct RGB-only path runs no perception model.
         result = run_wam_derived_observation_harness_step(
             output_dir=harness_dir,
             generated_at=generated,
@@ -4028,7 +5580,12 @@ def run_oscar_isaac_closed_loop(
                 **({"task_prompt": cleaned_target_prompts[0]} if cleaned_target_prompts else {}),
             },
             action_history=action_history,
-            current_policy_observation=_policy_observation(current_frame, target, step_index),
+            current_policy_observation=_policy_observation(
+                current_frame,
+                target,
+                step_index,
+                task_prompt=resolved_task_prompt,
+            ),
             skeleton_conditioning=wam_output.get("skeleton_conditioning"),
             eval_ready_task_grounding={
                 "schema_version": "eval_ready_task_grounding.v1",
@@ -4070,18 +5627,277 @@ def run_oscar_isaac_closed_loop(
         adapter_reports.append(adapter_report)
 
         adapted_observation = _mapping(result.get("adapted_policy_observation"))
+        adapted_observation["task_prompt"] = resolved_task_prompt or None
         if current_generated_robot_state:
             adapted_observation["generated_robot_state"] = dict(current_generated_robot_state)
             adapted_observation["generated_robot_state_carried_forward"] = True
+            adapted_observation["controller_fk_generated_robot_state"] = dict(
+                current_generated_robot_state
+            )
+
+        # Apply the action to the persistent Isaac session and measure the
+        # resulting articulation state before asking GR00T for another action.
+        # Controller FK remains separate diagnostic evidence; it must never be
+        # substituted for the same-session post-action proprioception below.
+        completion_result: dict[str, Any] = {}
+        post_action_policy_state: dict[str, Any] = {}
+        post_action_stance_report: dict[str, Any] = {}
+        raw_completion_result: dict[str, Any] = {}
+        task_completion_evaluation_failed = False
+        task_completion_evaluation_status = (
+            "not_configured" if task_completion_evaluator is None else "pending"
+        )
+        if task_completion_evaluator is not None:
+            try:
+                raw_completion_result = dict(
+                    task_completion_evaluator(
+                        {
+                            "step_index": step_index,
+                            # Frame 0000 is the immutable initial observation.
+                            # Action evidence therefore uses its source step
+                            # number (0001..N) and can never overwrite it.
+                            "evidence_step_index": step_index,
+                            "action": action,
+                            "wam_output": wam_output,
+                            "harness_step_record": step_record,
+                            "adapted_observation": adapted_observation,
+                            "task_success_contract": completion_contract,
+                        }
+                    )
+                    or {}
+                )
+                completion_result = _validate_task_completion_transition(
+                    completion_result=raw_completion_result,
+                    task_success_contract=completion_contract,
+                    expected_source_step_index=step_index,
+                )
+                task_completion_results.append(completion_result)
+                expected_action_sha256 = _canonical_sha256(action)
+                if _string(raw_completion_result.get("source_action_sha256")).strip() != (
+                    expected_action_sha256
+                ):
+                    raise RuntimeError("post_action_policy_state_response_action_sha256_mismatch")
+                post_action_policy_state = _validated_post_action_policy_state(
+                    raw_completion_result.get("post_action_policy_state"),
+                    simulator_session_id=_string(
+                        raw_completion_result.get("simulator_session_id")
+                    ).strip(),
+                    stage_id=_string(raw_completion_result.get("stage_id")).strip(),
+                    source_action_sha256=expected_action_sha256,
+                    source_step_index=step_index,
+                )
+                adapted_observation["unitree_g1_sonic_state"] = dict(post_action_policy_state)
+                adapted_observation["unitree_g1_sonic_state_source"] = (
+                    POST_ACTION_POLICY_STATE_SOURCE
+                )
+                state_measurement = _mapping(post_action_policy_state.get("measurement"))
+                adapted_observation["unitree_g1_sonic_state_metadata"] = {
+                    "complete": True,
+                    "surrogate": False,
+                    "measured_proprio_available": True,
+                    "simulator_session_id": state_measurement.get("simulator_session_id"),
+                    "stage_id": state_measurement.get("stage_id"),
+                    "source_action_sha256": state_measurement.get("source_action_sha256"),
+                    "source_step_index": state_measurement.get("source_step_index"),
+                    "captured_at_ns": state_measurement.get("captured_at_ns"),
+                }
+                task_completion_evaluation_status = "completed_with_live_post_action_state"
+            except Exception as exc:  # noqa: BLE001 - fail closed before policy requery
+                task_completion_evaluation_failed = True
+                task_completion_evaluation_status = "failed"
+                blockers.append(
+                    f"task_completion_evaluation_failed_at_step_{step_index}:"
+                    f"{type(exc).__name__}:{exc}"
+                )
+
+        if post_action_policy_state:
+            post_action_stance_report = _post_action_stance_report(post_action_policy_state)
+        unsafe_stance_detected = bool(
+            post_action_stance_report.get("unsafe_stance_detected") is True
+        )
+        unsafe_stance_terminal_now = bool(
+            stop_on_unsafe_stance and unsafe_stance_detected
+        )
+
+        if clean_frame_reanchor_applied:
+            post_action_egocentric_frame = _mapping(
+                raw_completion_result.get("post_action_egocentric_frame")
+            )
+            post_action_frame_path = _string(
+                post_action_egocentric_frame.get("path")
+            ).strip()
+            if post_action_frame_path:
+                next_policy_frame = post_action_frame_path
+                clean_frame_reanchor_source_kind = (
+                    "post_action_live_isaac_robot_head_mounted_egocentric"
+                )
+            elif task_completion_evaluator is not None and not (
+                task_completion_evaluation_failed
+            ):
+                blockers.append(
+                    f"post_action_egocentric_reanchor_missing_at_step_{step_index}"
+                )
+                task_completion_evaluation_failed = True
+                task_completion_evaluation_status = (
+                    "failed_missing_post_action_egocentric_reanchor"
+                )
+                next_policy_frame = initial_clean_frame
+                clean_frame_reanchor_source_kind = (
+                    "initial_policy_observation_clean_frame_fail_closed_fallback"
+                )
+            else:
+                next_policy_frame = initial_clean_frame
+                clean_frame_reanchor_source_kind = (
+                    "initial_policy_observation_clean_frame"
+                )
+            clean_frame_reanchor_events.append(
+                {
+                    "step_index": step_index,
+                    "generated_next_observation_frame_path": generated_frame,
+                    "next_policy_observation_frame_path": next_policy_frame,
+                    "source_frame_kind": clean_frame_reanchor_source_kind,
+                    "post_action_egocentric_frame": (
+                        dict(post_action_egocentric_frame)
+                        if post_action_egocentric_frame
+                        else None
+                    ),
+                    "interval_steps": effective_reanchor_interval,
+                }
+            )
+
+        transition_passed = bool(
+            completion_result.get("registered_transition_passed") is True
+            and _string(completion_result.get("criterion_id")).strip()
+            not in {"root_proximity", "robot_root_proximity"}
+        )
+        if transition_passed:
+            proven_task_completion_transition = dict(completion_result)
+        step_root_position = action.get("root_position") or []
+        target_reached_now = bool(
+            len(step_root_position) >= len(target)
+            and sum((float(a) - float(b)) ** 2 for a, b in zip(step_root_position, target)) ** 0.5
+            < 0.25
+        )
+        completion_now = bool(
+            transition_passed if manipulation_task else transition_passed or target_reached_now
+        )
+        task_progress_report = _task_progress_report(
+            completion_result,
+            minimum_progress_fraction=minimum_task_progress_fraction,
+        )
+        task_progress_value = _finite_float(
+            task_progress_report.get("progress_toward_criterion")
+        )
+        minimum_progress_delta = _finite_float(
+            task_progress_report.get("minimum_meaningful_progress_delta")
+        )
+        meaningful_progress_now = False
+        if task_progress_value is not None and minimum_progress_delta is not None:
+            if best_task_progress is None:
+                best_task_progress = task_progress_value
+                last_meaningful_task_progress_step = step_index
+            elif task_progress_value >= best_task_progress + minimum_progress_delta:
+                best_task_progress = task_progress_value
+                last_meaningful_task_progress_step = step_index
+                meaningful_progress_now = True
+        steps_since_meaningful_progress = (
+            step_index - last_meaningful_task_progress_step
+            if last_meaningful_task_progress_step is not None
+            else 0
+        )
+        patience_steps = max(1, int(no_progress_patience_steps))
+        no_progress_terminal_now = bool(
+            stop_on_no_progress
+            and manipulation_task
+            and not completion_now
+            and task_progress_value is not None
+            and step_index >= max(max(1, int(min_steps)), patience_steps + 1)
+            and steps_since_meaningful_progress >= patience_steps
+        )
+        task_progress_report.update(
+            {
+                "step_index": step_index,
+                "best_progress_toward_criterion": best_task_progress,
+                "meaningful_progress_this_step": meaningful_progress_now,
+                "last_meaningful_progress_step": last_meaningful_task_progress_step,
+                "steps_since_meaningful_progress": steps_since_meaningful_progress,
+                "patience_steps": patience_steps,
+                "terminal_enabled": bool(stop_on_no_progress),
+                "terminal_now": no_progress_terminal_now,
+            }
+        )
+        task_progress_history.append(dict(task_progress_report))
+        completion_terminal_now = bool(
+            stop_on_task_completion and completion_now and step_index >= max(1, int(min_steps))
+        )
         adapter_safe_for_policy_requery = bool(adapter_report.get("safe_for_policy_requery"))
+        safe_for_terminal_observation_requery = bool(
+            adapter_safe_for_policy_requery
+            and not consistency_early_termination
+            and not task_completion_evaluation_failed
+            and not unsafe_stance_terminal_now
+            and not no_progress_terminal_now
+        )
         safe_for_policy_requery = bool(
-            adapter_safe_for_policy_requery and not consistency_early_termination
+            safe_for_terminal_observation_requery and not completion_terminal_now
         )
         policy_requeried_on_wam_observation = False
         policy_action_changed_vs_previous = False
+        terminal_observation_policy_requery = False
+        terminal_observation_policy_requery_action_sha256: str | None = None
+        terminal_observation_policy_action_execution_status: str | None = None
         requery_status = "absent"
-        if policy_endpoint is not None and step_index < bounded_steps:
-            if safe_for_policy_requery:
+        if policy_endpoint is not None and (step_index < bounded_steps or completion_terminal_now):
+            if completion_terminal_now:
+                if safe_for_terminal_observation_requery:
+                    try:
+                        # A semantically terminal transition still needs one
+                        # GR00T query on OSCAR's generated observation to prove
+                        # that the learned WAM observation reached the policy.
+                        # The resulting action is evidence only: the episode is
+                        # already terminal, so it is never scheduled, applied to
+                        # Isaac, or sent back through OSCAR.
+                        terminal_action = dict(
+                            policy_endpoint(
+                                adapted_observation,
+                                list(action_history),
+                                step_index,
+                            )
+                            or {}
+                        )
+                        if not terminal_action:
+                            raise RuntimeError("terminal_policy_action_empty")
+                        learned_policy_requery_count += 1
+                        terminal_observation_policy_requery_count += 1
+                        terminal_signature = _endpoint_action_signature(terminal_action)
+                        policy_action_changed_vs_previous = bool(
+                            previous_endpoint_action_signature is not None
+                            and terminal_signature != previous_endpoint_action_signature
+                        )
+                        terminal_observation_policy_requery = True
+                        terminal_observation_policy_requery_action_sha256 = _canonical_sha256(
+                            terminal_action
+                        )
+                        terminal_observation_policy_action_execution_status = (
+                            "not_executed_semantic_terminal"
+                        )
+                        policy_requeried_on_wam_observation = True
+                        requery_status = "completed_terminal_observation_not_executed"
+                    except Exception as exc:  # noqa: BLE001
+                        blockers.append(
+                            "learned_policy_terminal_observation_requery_failed_at_step_"
+                            f"{step_index}:{type(exc).__name__}"
+                        )
+                        requery_status = "failed_terminal_observation_requery"
+                else:
+                    requery_status = "skipped_terminal_observation_unsafe"
+            elif unsafe_stance_terminal_now:
+                requery_status = "skipped_unsafe_stance"
+            elif task_completion_evaluation_failed:
+                requery_status = "skipped_task_completion_evaluation_failed"
+            elif no_progress_terminal_now:
+                requery_status = "skipped_no_task_progress"
+            elif safe_for_policy_requery:
                 try:
                     learned_action = dict(
                         policy_endpoint(adapted_observation, list(action_history), step_index) or {}
@@ -4120,20 +5936,54 @@ def run_oscar_isaac_closed_loop(
             "wam_backend": wam_output.get("wam_backend"),
             "wam_generation_status": wam_output.get("status")
             or wam_output.get("wam_generation_status"),
+            "oscar_gpu_residency_report_path": wam_output.get("oscar_gpu_residency_report_path"),
+            "oscar_gpu_residency_samples_path": wam_output.get("oscar_gpu_residency_samples_path"),
+            "oscar_gpu_residency": wam_output.get("oscar_gpu_residency"),
             "fresh_oscar_provider_model_run_claimed": fresh_oscar_provider,
             "provider_output_path": wam_output.get("provider_output_path"),
             "harness_step_status": step_record.get("status"),
             "harness_backend_kind": harness_backend_kind,
             "real_perception_backend_model_ran": backend_status["real_model_ran"],
+            "generated_rgb_policy_observation_validated": backend_status[
+                "generated_rgb_policy_observation_validated"
+            ],
+            "no_perception_model_ran": backend_status["no_perception_model_ran"],
             "sam3_completed": backend_status["sam3_completed"],
             "depth_completed": backend_status["depth_completed"],
             "da3_completed": backend_status["da3_completed"],
             "safe_for_policy_requery": safe_for_policy_requery,
+            "safe_for_terminal_observation_requery": (safe_for_terminal_observation_requery),
             "policy_adapter_safe_for_policy_requery": adapter_safe_for_policy_requery,
             "policy_requeried_on_wam_observation": policy_requeried_on_wam_observation,
             "policy_action_changed_vs_previous": policy_action_changed_vs_previous,
+            "terminal_observation_policy_requery": terminal_observation_policy_requery,
+            "terminal_observation_policy_requery_action_sha256": (
+                terminal_observation_policy_requery_action_sha256
+            ),
+            "terminal_observation_policy_action_execution_status": (
+                terminal_observation_policy_action_execution_status
+            ),
             "requery_status": requery_status,
+            "task_completion_evaluation_status": task_completion_evaluation_status,
+            "post_action_policy_state_validated": bool(post_action_policy_state),
+            "post_action_policy_state_source": (
+                POST_ACTION_POLICY_STATE_SOURCE if post_action_policy_state else None
+            ),
+            "post_action_policy_state_simulator_session_id": _mapping(
+                post_action_policy_state.get("measurement")
+            ).get("simulator_session_id"),
+            "post_action_policy_state_stage_id": _mapping(
+                post_action_policy_state.get("measurement")
+            ).get("stage_id"),
+            "post_action_stance_report": post_action_stance_report or None,
+            "unsafe_stance_detected": unsafe_stance_detected,
+            "unsafe_stance_terminal_enabled": bool(stop_on_unsafe_stance),
+            "online_task_progress": task_progress_report,
+            "no_progress_terminal_enabled": bool(stop_on_no_progress),
+            "no_progress_terminal_now": no_progress_terminal_now,
             "clean_frame_reanchor_applied": clean_frame_reanchor_applied,
+            "clean_frame_reanchor_source_kind": clean_frame_reanchor_source_kind,
+            "next_policy_observation_frame": next_policy_frame,
             "wam_episode_consistency_request": consistency_result.get("request_path"),
             "wam_consistency_checks": consistency_result.get("checks_path"),
             "external_episode_consistency_scorer_ran": bool(
@@ -4165,16 +6015,40 @@ def run_oscar_isaac_closed_loop(
                 "wam_generated_frame": generated_frame,
                 "wam_generated_video": wam_output.get("generated_video_path"),
                 "oscar_per_step_backend": wam_output.get("wam_backend"),
+                "oscar_gpu_residency_report_path": wam_output.get(
+                    "oscar_gpu_residency_report_path"
+                ),
+                "oscar_gpu_residency_proof_passed": _mapping(
+                    wam_output.get("oscar_gpu_residency")
+                ).get("proof_passed"),
                 "fresh_oscar_provider_model_run_claimed": fresh_oscar_provider,
                 "real_perception_backend_model_ran": backend_status["real_model_ran"],
+                "generated_rgb_policy_observation_validated": backend_status[
+                    "generated_rgb_policy_observation_validated"
+                ],
+                "no_perception_model_ran": backend_status["no_perception_model_ran"],
                 "sam3_completed": backend_status["sam3_completed"],
                 "depth_completed": backend_status["depth_completed"],
                 "da3_completed": backend_status["da3_completed"],
                 "safe_for_policy_requery": safe_for_policy_requery,
+                "safe_for_terminal_observation_requery": (safe_for_terminal_observation_requery),
                 "policy_adapter_safe_for_policy_requery": adapter_safe_for_policy_requery,
                 "policy_requeried_on_wam_observation": policy_requeried_on_wam_observation,
                 "policy_action_changed_vs_previous": policy_action_changed_vs_previous,
+                "terminal_observation_policy_requery": (terminal_observation_policy_requery),
+                "terminal_observation_policy_requery_action_sha256": (
+                    terminal_observation_policy_requery_action_sha256
+                ),
+                "terminal_observation_policy_action_execution_status": (
+                    terminal_observation_policy_action_execution_status
+                ),
                 "requery_status": requery_status,
+                "task_completion_evaluation_status": task_completion_evaluation_status,
+                "post_action_policy_state_validated": bool(post_action_policy_state),
+                "unsafe_stance_detected": unsafe_stance_detected,
+                "post_action_stance_status": post_action_stance_report.get("status"),
+                "online_task_progress": task_progress_report,
+                "no_progress_terminal_now": no_progress_terminal_now,
                 "external_episode_consistency_scorer_ran": bool(
                     consistency_result.get("external_episode_consistency_scorer_ran")
                 ),
@@ -4198,50 +6072,20 @@ def run_oscar_isaac_closed_loop(
             )
             break
 
-        # Dynamic episode length: with stop_on_task_completion the episode runs
-        # until the task-completion criterion fires (the same target-reached
-        # test the final judge applies) and `steps` is only the hard cap —
-        # episodes are as long as the task needs, no longer, no shorter.
-        step_root_position = trace_row.get("root_position") or []
-        target_reached_now = bool(
-            len(step_root_position) >= len(target)
-            and sum((float(a) - float(b)) ** 2 for a, b in zip(step_root_position, target)) ** 0.5
-            < 0.25
-        )
-        completion_result: dict[str, Any] = {}
-        if task_completion_evaluator is not None:
-            completion_result = dict(
-                task_completion_evaluator(
-                    {
-                        "step_index": step_index,
-                        "evidence_step_index": step_index - 1,
-                        "action": action,
-                        "wam_output": wam_output,
-                        "harness_step_record": step_record,
-                        "adapted_observation": adapted_observation,
-                        "task_success_contract": completion_contract,
-                    }
-                )
-                or {}
-            )
-        if completion_result:
-            completion_result = _validate_task_completion_transition(
-                completion_result=completion_result,
-                task_success_contract=completion_contract,
-                expected_source_step_index=step_index,
-            )
-            task_completion_results.append(completion_result)
-        transition_passed = bool(
-            completion_result.get("registered_transition_passed") is True
-            and _string(completion_result.get("criterion_id")).strip()
-            not in {"root_proximity", "robot_root_proximity"}
-        )
-        if transition_passed:
-            proven_task_completion_transition = dict(completion_result)
-        completion_now = bool(
-            transition_passed if manipulation_task else transition_passed or target_reached_now
-        )
-        if stop_on_task_completion and completion_now and step_index >= max(1, int(min_steps)):
+        if unsafe_stance_terminal_now:
+            blockers.append(f"unsafe_post_action_robot_stance_at_step_{step_index}")
+            episode_termination_reason = f"unsafe_stance_detected_at_step_{step_index}"
+            current_frame = next_policy_frame
+            break
+
+        if task_completion_evaluation_failed:
+            episode_termination_reason = f"task_completion_evaluation_failed_at_step_{step_index}"
+            current_frame = next_policy_frame
+            break
+
+        # Dynamic episode length: task completion is measured above, before
+        # any next-policy query. `steps` remains only the hard safety cap.
+        if completion_terminal_now:
             criterion_id = (
                 _string(completion_result.get("criterion_id")).strip() or "navigation_goal"
             )
@@ -4250,6 +6094,12 @@ def run_oscar_isaac_closed_loop(
             )
             task_completed_early = True
             # 4. feed forward still records the generated frame as consumed.
+            current_frame = next_policy_frame
+            break
+
+        if no_progress_terminal_now:
+            blockers.append(f"online_task_no_progress_at_step_{step_index}")
+            episode_termination_reason = f"no_task_progress_at_step_{step_index}"
             current_frame = next_policy_frame
             break
 
@@ -4300,12 +6150,37 @@ def run_oscar_isaac_closed_loop(
         1 for row in proof_rows if row.get("policy_requeried_fresh")
     )
     generated_observation_count = sum(1 for row in proof_rows if row.get("wam_generated_frame"))
-    policy_endpoint_requery_contract_proven = bool(
+    multi_action_policy_requery_contract_proven = bool(
         learned_policy_requery_count >= 2 and policy_action_changed_count >= 1
+    )
+    terminal_observation_policy_requery_proven = bool(
+        manipulation_task
+        and task_completed_early
+        and len(action_history) == 1
+        and proven_task_completion_transition
+        and terminal_observation_policy_requery_count == 1
+        and sum(
+            1
+            for row in proof_rows
+            if row.get("terminal_observation_policy_requery") is True
+            and row.get("policy_requeried_on_wam_observation") is True
+            and row.get("requery_status") == "completed_terminal_observation_not_executed"
+            and row.get("terminal_observation_policy_action_execution_status")
+            == "not_executed_semantic_terminal"
+            and row.get("terminal_observation_policy_requery_action_sha256")
+        )
+        == 1
+    )
+    policy_endpoint_requery_contract_proven = bool(
+        multi_action_policy_requery_contract_proven or terminal_observation_policy_requery_proven
     )
     policy_observes_wam_generated_next_observation = bool(
         generated_observation_count >= 1
-        and (fresh_learned_policy_requery_steps >= 2 or policy_endpoint_requery_contract_proven)
+        and (
+            fresh_learned_policy_requery_steps >= 2
+            or multi_action_policy_requery_contract_proven
+            or terminal_observation_policy_requery_proven
+        )
     )
     wam_evaluator_in_control_loop = bool(generated_observation_count >= 1)
     consistency_scorer_ran_steps = sum(
@@ -4315,12 +6190,10 @@ def run_oscar_isaac_closed_loop(
         1 for row in proof_rows if row.get("forward_inverse_consistency_proven")
     )
     forward_consistency_proven = bool(consistency_results) and all(
-        item.get("forward_dynamics_consistency_proven") is True
-        for item in consistency_results
+        item.get("forward_dynamics_consistency_proven") is True for item in consistency_results
     )
     inverse_consistency_proven = bool(consistency_results) and all(
-        item.get("inverse_dynamics_consistency_proven") is True
-        for item in consistency_results
+        item.get("inverse_dynamics_consistency_proven") is True for item in consistency_results
     )
     consistency_early_termination_recommended = any(
         row.get("wam_episode_consistency_early_termination_recommended") for row in proof_rows
@@ -4350,8 +6223,30 @@ def run_oscar_isaac_closed_loop(
         unique_conditioned_action_count >= 2
         and unique_conditioning_evidence_count == unique_conditioned_action_count
     )
+    single_executed_action_semantic_terminal = bool(
+        terminal_observation_policy_requery_proven
+        and len(action_history) == 1
+        and action_derived_skeleton_conditioned_steps == 1
+    )
+    action_conditioning_differentiation_applicable = bool(
+        strict_action_derived_skeleton_conditioning and not single_executed_action_semantic_terminal
+    )
+    action_conditioning_differentiation_requirement_satisfied = bool(
+        not strict_action_derived_skeleton_conditioning
+        or single_executed_action_semantic_terminal
+        or action_conditioning_differentiation_proven
+    )
+    action_conditioning_differentiation_status = (
+        "not_required"
+        if not strict_action_derived_skeleton_conditioning
+        else "not_applicable_single_executed_action_semantic_terminal"
+        if single_executed_action_semantic_terminal
+        else "proven"
+        if action_conditioning_differentiation_proven
+        else "not_proven"
+    )
     if (
-        strict_action_derived_skeleton_conditioning
+        action_conditioning_differentiation_applicable
         and not action_conditioning_differentiation_proven
     ):
         blockers.append("fresh_action_conditioning_differentiation_not_proven")
@@ -4368,14 +6263,16 @@ def run_oscar_isaac_closed_loop(
             f"generated_video_success_label:{blocker}"
             for blocker in _string_list(generated_video_success.get("blockers"))
         )
+    if stop_on_task_completion and manipulation_task and not proven_task_completion_transition:
+        blockers.append("registered_manipulation_task_transition_not_proven")
     status = "completed" if trace_rows and not blockers else "blocked"
+    generated_episode_artifacts = _bind_generated_episode_to_authoritative_loop_status(
+        generated_episode_artifacts,
+        authoritative_status=status,
+    )
     feed_forward_verified = all(
         trace_rows[index]["source_observation_frame"]
-        == trace_rows[index - 1]["wam_generated_frame"]
-        or (
-            bool(trace_rows[index - 1].get("clean_frame_reanchor_applied"))
-            and trace_rows[index]["source_observation_frame"] == initial_clean_frame
-        )
+        == trace_rows[index - 1]["next_policy_observation_frame"]
         for index in range(1, len(trace_rows))
     )
     proof = {
@@ -4388,6 +6285,17 @@ def run_oscar_isaac_closed_loop(
         "selected_wam_backend": _string(wam_backend_id) or "oscar_wam",
         "isaac_policy_actions_recorded": len(action_history),
         "learned_policy_requery_count": learned_policy_requery_count,
+        "terminal_observation_policy_requery_count": (terminal_observation_policy_requery_count),
+        "terminal_observation_policy_requery_proven": (terminal_observation_policy_requery_proven),
+        "terminal_observation_policy_action_execution_status": (
+            "not_executed_semantic_terminal"
+            if terminal_observation_policy_requery_proven
+            else "not_applicable"
+        ),
+        "multi_action_policy_requery_contract_proven": (
+            multi_action_policy_requery_contract_proven
+        ),
+        "policy_endpoint_requery_contract_proven": (policy_endpoint_requery_contract_proven),
         "fresh_learned_policy_requery_steps": fresh_learned_policy_requery_steps,
         "policy_action_changed_count": policy_action_changed_count,
         "action_derived_skeleton_conditioned_steps": (action_derived_skeleton_conditioned_steps),
@@ -4397,6 +6305,15 @@ def run_oscar_isaac_closed_loop(
         ),
         "fresh_action_conditioning_differentiation_proven": bool(
             action_conditioning_differentiation_proven
+        ),
+        "fresh_action_conditioning_differentiation_applicable": (
+            action_conditioning_differentiation_applicable
+        ),
+        "fresh_action_conditioning_differentiation_requirement_satisfied": (
+            action_conditioning_differentiation_requirement_satisfied
+        ),
+        "fresh_action_conditioning_differentiation_status": (
+            action_conditioning_differentiation_status
         ),
         "action_conditioning_evidence": action_conditioning_evidence_rows,
         "registered_task_completion_transition": (proven_task_completion_transition or None),
@@ -4416,6 +6333,12 @@ def run_oscar_isaac_closed_loop(
         ),
         "real_perception_backend_steps": sum(
             1 for row in proof_rows if row.get("real_perception_backend_model_ran")
+        ),
+        "generated_rgb_policy_observation_validated_steps": sum(
+            1 for row in proof_rows if row.get("generated_rgb_policy_observation_validated")
+        ),
+        "no_perception_model_steps": sum(
+            1 for row in proof_rows if row.get("no_perception_model_ran")
         ),
         "sam3_completed_steps": sum(1 for row in proof_rows if row.get("sam3_completed")),
         "depth_completed_steps": sum(1 for row in proof_rows if row.get("depth_completed")),
@@ -4495,11 +6418,22 @@ def run_oscar_isaac_closed_loop(
         "schema_version": LOOP_SCHEMA_VERSION,
         "generated_at": generated,
         "status": status,
-        "loop_kind": "per_step_policy_wam_perception_closed_loop",
+        "loop_kind": (
+            "per_step_policy_wam_generated_rgb_closed_loop"
+            if harness_backend_kind == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
+            else "per_step_policy_wam_perception_closed_loop"
+        ),
         "steps_executed": len(trace_rows),
         "steps_requested": bounded_steps,
         "harness_backend_kind": harness_backend_kind,
-        "real_perception_backend_used": harness_backend_kind != "fixture",
+        "real_perception_backend_used": bool(proof["real_perception_backend_steps"]),
+        "generated_rgb_policy_observation_backend_used": bool(
+            harness_backend_kind == GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
+        ),
+        "generated_rgb_policy_observation_validated_steps": proof[
+            "generated_rgb_policy_observation_validated_steps"
+        ],
+        "sam3_da3_or_other_perception_model_ran": bool(proof["real_perception_backend_steps"]),
         "task_target_position_xyz": [round(float(c), 6) for c in target],
         "perception_target_prompts": cleaned_target_prompts,
         "final_root_position": final_pose,
@@ -4515,13 +6449,40 @@ def run_oscar_isaac_closed_loop(
         "clean_frame_reanchoring": {
             "enabled": bool(effective_reanchor_interval > 0),
             "interval_steps": int(effective_reanchor_interval) or None,
-            "source_frame_kind": "initial_policy_observation_clean_frame",
+            "source_frame_kind": (
+                sorted(
+                    {
+                        _string(event.get("source_frame_kind"))
+                        for event in clean_frame_reanchor_events
+                        if _string(event.get("source_frame_kind"))
+                    }
+                )[0]
+                if len(
+                    {
+                        _string(event.get("source_frame_kind"))
+                        for event in clean_frame_reanchor_events
+                        if _string(event.get("source_frame_kind"))
+                    }
+                )
+                == 1
+                else "mixed_reanchor_sources"
+                if clean_frame_reanchor_events
+                else "initial_policy_observation_clean_frame"
+            ),
         },
         "episode_termination": {
             "reason": episode_termination_reason,
             "steps_executed": len(trace_rows),
             "steps_cap": int(steps),
             "stop_on_task_completion": bool(stop_on_task_completion),
+            "stop_on_unsafe_stance": bool(stop_on_unsafe_stance),
+            "stop_on_no_progress": bool(stop_on_no_progress),
+            "no_progress_patience_steps": max(1, int(no_progress_patience_steps)),
+            "minimum_task_progress_fraction": float(minimum_task_progress_fraction),
+            "task_progress_history": task_progress_history,
+            "unsafe_stance_detected": any(
+                row.get("unsafe_stance_detected") is True for row in trace_rows
+            ),
             "min_steps": max(1, int(min_steps)),
             "task_completed_early": bool(task_completed_early),
             "task_kind": task_kind,
@@ -4542,7 +6503,10 @@ def run_oscar_isaac_closed_loop(
             "claim_boundary": (
                 "Navigation smoke may terminate on a root goal. Manipulation "
                 "requires a registered task-specific observable transition; "
-                "robot-root proximity never proves manipulation success."
+                "robot-root proximity never proves manipulation success. A live "
+                "unsafe stance terminates the configured manipulation episode. "
+                "The no-progress watchdog is resource control only and cannot "
+                "prove success."
             ),
         },
         "generated_clip_coherence": {
@@ -4697,6 +6661,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Minimum steps before task-completion early termination may fire.",
     )
     parser.add_argument(
+        "--no-progress-patience-steps",
+        type=int,
+        default=DEFAULT_NO_PROGRESS_PATIENCE_STEPS,
+        help=(
+            "For registered manipulation tasks, stop after this many closed-loop "
+            "decisions without meaningful live task-state progress."
+        ),
+    )
+    parser.add_argument(
+        "--minimum-task-progress-fraction",
+        type=float,
+        default=0.02,
+        help=(
+            "Meaningful online progress as a fraction of the registered success "
+            "tolerance; this is a resource watchdog, not success proof."
+        ),
+    )
+    parser.add_argument(
         "--task-success-contract",
         default=None,
         help=(
@@ -4771,6 +6753,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "observation). Example: tcp://127.0.0.1:5550"
         ),
     )
+    parser.add_argument(
+        "--groot-sonic-execution-frame-count",
+        type=int,
+        default=1,
+        help=(
+            "Number of frames from each GR00T SONIC action horizon to send to "
+            "the controller/FK path. The default preserves the historical "
+            "single-frame behavior; direct full-horizon evaluations may opt in "
+            "up to the model-provided horizon."
+        ),
+    )
     parser.add_argument("--groot-root", default=None)
     parser.add_argument(
         "--groot-policy-initial-state",
@@ -4831,9 +6824,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             initial_groot_policy_state = _mapping(
                 json.loads(
-                    Path(args.groot_policy_initial_state)
-                    .expanduser()
-                    .read_text(encoding="utf-8")
+                    Path(args.groot_policy_initial_state).expanduser().read_text(encoding="utf-8")
                 )
             )
         except (OSError, json.JSONDecodeError):
@@ -4993,6 +6984,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             completion_contract_blockers.append(
                 "blocked_manipulation_completion_requires_task_completion_command"
             )
+        if int(args.no_progress_patience_steps) <= 0:
+            completion_contract_blockers.append(
+                "blocked_no_progress_patience_steps_must_be_positive"
+            )
+        if (
+            not math.isfinite(float(args.minimum_task_progress_fraction))
+            or float(args.minimum_task_progress_fraction) <= 0.0
+        ):
+            completion_contract_blockers.append(
+                "blocked_minimum_task_progress_fraction_must_be_positive"
+            )
     if completion_contract_blockers:
         wam_backend_readiness["blockers"] = (
             list(wam_backend_readiness.get("blockers") or []) + completion_contract_blockers
@@ -5058,6 +7060,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "task_success_contract_configured": bool(task_success_contract),
                 "task_completion_command_configured": bool(args.task_completion_command),
                 "manipulation_completion_requested": manipulation_completion_requested,
+                "online_no_progress_termination_enabled": manipulation_completion_requested,
+                "no_progress_patience_steps": int(args.no_progress_patience_steps),
+                "minimum_task_progress_fraction": float(
+                    args.minimum_task_progress_fraction
+                ),
                 "clean_frame_reanchor_interval": int(args.clean_frame_reanchor_interval),
                 "wam_episode_consistency_scoring_configured": bool(
                     args.allow_wam_consistency_scoring or args.wam_consistency_command
@@ -5163,7 +7170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return None
             output_path = Path(step_out_dir) / "step_skeleton_conditioning.mp4"
             try:
-                _render_projected_skeleton_conditioning_video(
+                render_report, _ = _render_projected_skeleton_conditioning_video(
                     trace_path=trace_path,
                     output_path=output_path,
                     width=int(args.oscar_width),
@@ -5173,17 +7180,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             except Exception:
                 return None
+            visual_signal = _mapping(render_report.get("visual_signal"))
+            if visual_signal.get("status") != "completed" or list(
+                visual_signal.get("blockers") or []
+            ):
+                return None
             return output_path if output_path.is_file() else None
 
         oscar_generate = make_local_oscar_subprocess_generate(
             oscar_repo=args.oscar_repo,
             checkpoint=args.checkpoint,
+            # The sealed worker deliberately keeps GR00T, OSCAR, and Isaac in
+            # separate interpreters.  The closed-loop process itself is
+            # launched with /opt/oscar-venv/bin/python, but that venv is not on
+            # PATH; a bare `python` here can therefore select the system
+            # interpreter and fail at the first OSCAR import.
+            python=sys.executable,
             num_steps=int(args.oscar_num_steps),
             guidance=float(args.oscar_guidance),
             height=int(args.oscar_height),
             width=int(args.oscar_width),
             fps=float(args.oscar_fps),
+            timeout_seconds=float(args.provider_timeout_seconds),
             run=subprocess.run,
+            popen=subprocess.Popen,
+            gpu_query_run=subprocess.run,
             build_skeleton_video=_step_skeleton_video_builder,
             extract_next_frame=extract_next_observation_frame_from_video,
         )
@@ -5194,6 +7215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             num_frames=int(args.num_frames),
             skeleton_for_action=skeleton_projector,
             seed=int(args.oscar_seed),
+            require_manipulation_effector_progress=manipulation_completion_requested,
         )
     policy_endpoint = None
     if args.learned_policy_command and args.groot_sonic_policy_server_url:
@@ -5213,6 +7235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             policy_server_url=args.groot_sonic_policy_server_url,
             groot_root=args.groot_root,
             sonic_state=initial_groot_policy_state,
+            execution_frame_count=int(args.groot_sonic_execution_frame_count),
         )
     task_completion_evaluator = (
         make_task_completion_command_evaluator(
@@ -5230,9 +7253,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         wam_generate_next=backend,
         policy_endpoint=policy_endpoint,
         steps=int(args.steps),
+        task_prompt=args.task_prompt,
         harness_backend_kind=args.harness_backend_kind,
         harness_backend_command=harness_command,
-        allow_external_backend=args.harness_backend_kind != "fixture",
+        allow_external_backend=args.harness_backend_kind
+        not in {"fixture", GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND},
         require_fresh_oscar_provider=bool(args.require_fresh_oscar_provider),
         require_real_perception_backend=bool(args.require_real_perception_backend),
         require_sam3_completed=bool(args.require_sam3_completed),
@@ -5254,6 +7279,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
         min_coherent_horizon_frames=int(args.min_coherent_horizon_frames),
         stop_on_task_completion=bool(args.stop_on_task_completion),
+        stop_on_unsafe_stance=manipulation_completion_requested,
+        stop_on_no_progress=manipulation_completion_requested,
+        no_progress_patience_steps=int(args.no_progress_patience_steps),
+        minimum_task_progress_fraction=float(args.minimum_task_progress_fraction),
         min_steps=int(args.min_steps),
         task_success_contract=task_success_contract,
         task_completion_evaluator=task_completion_evaluator,

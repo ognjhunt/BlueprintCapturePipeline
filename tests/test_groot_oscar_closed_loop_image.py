@@ -27,6 +27,7 @@ IMAGE_ROOT = Path("deploy/docker/robot_eval_worker/groot_oscar_closed_loop")
 # image-ref resolution
 # --------------------------------------------------------------------------- #
 
+
 def test_configured_image_ref_prefers_explicit_env():
     env = {gocl.IMAGE_REF_ENV: VERSIONED_REF}
     result = gocl.configured_image_ref(env=env)
@@ -73,6 +74,7 @@ def test_configured_image_ref_none_when_unset(tmp_path):
 # versioned-tag refusal (mirrors the build-script guard)
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.parametrize("ref", [VERSIONED_REF, DIGEST_REF])
 def test_launchable_refs_have_no_blockers(ref):
     assert gocl.image_ref_launch_blockers(ref) == []
@@ -97,6 +99,7 @@ def test_unstable_tags_blocked(tag):
 # --------------------------------------------------------------------------- #
 # fail-closed sealed-mode gate
 # --------------------------------------------------------------------------- #
+
 
 def test_sealed_contract_not_configured_is_blocked(tmp_path):
     env = {gocl.IMAGE_REF_FILE_ENV: str(tmp_path / "absent")}
@@ -152,6 +155,7 @@ def test_sealed_contract_honors_overridden_paths():
 # --------------------------------------------------------------------------- #
 # launch plan
 # --------------------------------------------------------------------------- #
+
 
 def _active_env():
     return {gocl.IMAGE_REF_ENV: VERSIONED_REF, gocl.SEALED_CONFIRMED_ENV: "true"}
@@ -233,24 +237,20 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert "--require-fresh-learned-policy-requery" in cmd
     assert "--allow-wam-consistency-scoring" in cmd
     assert "--require-forward-inverse-consistency" in cmd
-    assert cmd[cmd.index("--wam-consistency-command") + 1] == (
-        REAL_CONSISTENCY_COMMAND
-    )
+    assert cmd[cmd.index("--wam-consistency-command") + 1] == (REAL_CONSISTENCY_COMMAND)
     assert cmd[cmd.index("--wam-consistency-timeout-seconds") + 1] == "300.0"
     assert "--require-generated-video-success-label" not in cmd
     assert plan["gear_sonic_controller_command"][0:2] == ["bash", "-lc"]
-    assert "target/release/g1_deploy_onnx_ref" in plan[
-        "gear_sonic_controller_command"
-    ][2]
+    assert "target/release/g1_deploy_onnx_ref" in plan["gear_sonic_controller_command"][2]
     assert "just build" not in plan["gear_sonic_controller_command"][2]
     assert plan["env"]["BLUEPRINT_GEAR_SONIC_ROOT"] == "/opt/wbc"
     assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == "nvidia/GEAR-SONIC"
     assert plan["env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (
         "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
     )
-    assert "gear_sonic_official_zmq_executor" in plan["env"][
-        "BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND"
-    ]
+    assert (
+        "gear_sonic_official_zmq_executor" in plan["env"]["BLUEPRINT_GEAR_SONIC_EXECUTOR_COMMAND"]
+    )
     assert plan["episode_length_contract"] == {
         "episode_length_unit": "closed_loop_control_steps",
         "stop_condition": "task_completion_or_step_cap",
@@ -293,9 +293,7 @@ def test_launch_plan_env_bakes_runtime_toggles():
     assert plan_env["BLUEPRINT_OSCAR_WAM_HF_REVISION"] == OFFICIAL_OSCAR_HF_REVISION
     assert plan["claim_boundary"]
     assert plan_env["BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING"] == "true"
-    assert plan_env["BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND"] == (
-        REAL_CONSISTENCY_COMMAND
-    )
+    assert plan_env["BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND"] == (REAL_CONSISTENCY_COMMAND)
 
 
 def test_launch_plan_can_make_generated_video_success_label_strict():
@@ -361,14 +359,13 @@ def test_launch_plan_rejects_visual_motion_smoke_as_consistency_scorer():
         wam_consistency_command=gocl.DEFAULT_VISUAL_MOTION_SMOKE_COMMAND,
     )
     assert plan["sealed_active"] is False
-    assert "visual_motion_smoke_cannot_satisfy_forward_inverse_consistency" in plan[
-        "blockers"
-    ]
+    assert "visual_motion_smoke_cannot_satisfy_forward_inverse_consistency" in plan["blockers"]
 
 
 # --------------------------------------------------------------------------- #
 # snapshot layer plan (source of truth for the crane-snapshot script)
 # --------------------------------------------------------------------------- #
+
 
 def test_snapshot_plan_lists_all_baked_trees_and_markers():
     plan = gocl.build_snapshot_layer_plan(env=_active_env())
@@ -384,9 +381,7 @@ def test_snapshot_plan_lists_all_baked_trees_and_markers():
     # sealed markers must be written into the image env
     assert plan["image_env"][gocl.SEALED_CONFIRMED_ENV] == "true"
     assert plan["image_env"]["MUJOCO_GL"] == "osmesa"
-    assert plan["image_env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == (
-        "nvidia/GEAR-SONIC"
-    )
+    assert plan["image_env"][gocl.GEAR_SONIC_CHECKPOINT_REPO_ENV] == ("nvidia/GEAR-SONIC")
     assert plan["image_env"][gocl.GEAR_SONIC_CHECKPOINT_REVISION_ENV] == (
         "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
     )
@@ -397,27 +392,45 @@ def test_snapshot_plan_lists_all_baked_trees_and_markers():
 def test_image_seals_exact_nested_cosmos_backbone_and_disables_network_fallback():
     dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COSMOS_BACKBONE_REPO=nvidia/Cosmos-Reason2-2B" in dockerfile
-    assert (
-        "COSMOS_BACKBONE_REVISION=9ce19a195e423419c349abfc86fd07178b230561"
-        in dockerfile
-    )
+    assert "COSMOS_BACKBONE_REVISION=9ce19a195e423419c349abfc86fd07178b230561" in dockerfile
     assert 'repo_id=os.environ["COSMOS_BACKBONE_REPO"]' in dockerfile
     assert 'revision=os.environ["COSMOS_BACKBONE_REVISION"]' in dockerfile
+    assert 'Path("/opt/blueprint/models/cosmos-reason2-2b")' in dockerfile
+    assert "cosmos_finetune_alias.symlink_to(cosmos_snapshot" in dockerfile
     assert '(cosmos_refs / "main").write_text(cosmos_revision' in dockerfile
     assert 'write_text(cosmos_revision + "\\n"' not in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+    assert 'cosmos_selector_anchor / "../.."' in dockerfile
     assert 'sonic_config["model_name"] = str(cosmos_local)' in dockerfile
+    assert 'processor_kwargs["model_name"] = str(cosmos_local)' in dockerfile
     assert 'sonic_config["blueprint_model_revision"] = cosmos_revision' in dockerfile
+
+
+def test_image_installs_and_imports_official_oscar_minimal_requirements():
+    dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "/opt/OSCAR/requirements_minimal.txt /tmp/oscar_requirements.txt" in dockerfile
+    assert "/opt/OSCAR/requirements.txt /tmp/oscar_requirements.txt" not in dockerfile
+    assert "VIRTUAL_ENV=/opt/oscar-venv uv pip check" in dockerfile
+    assert (
+        'PYTHONPATH=/opt/OSCAR /opt/oscar-venv/bin/python -c "import inference.inference_oscar"'
+        in dockerfile
+    )
+
+
+def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
+    dockerfile = (IMAGE_ROOT / "Foundation.Dockerfile").read_text(encoding="utf-8")
+
+    assert "worldsim._src.configs.agibot_control.config import make_config" in dockerfile
+    assert "importlib.metadata.version('pytest') == '9.1.1'" in dockerfile
+    assert "assert make_config() is not None" in dockerfile
 
 
 def test_image_seals_the_exact_gear_sonic_deploy_models():
     dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC" in dockerfile
-    assert (
-        "GEAR_SONIC_CHECKPOINT_REVISION=5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
-        in dockerfile
-    )
+    assert "GEAR_SONIC_CHECKPOINT_REVISION=5e22ddc69abcea2a9aafc40536b14c232d3f9d7f" in dockerfile
     for required in (
         "policy/release/model_encoder.onnx",
         "policy/release/model_decoder.onnx",
@@ -432,8 +445,7 @@ def test_snapshot_carrier_stamps_the_exact_gear_sonic_revision():
     script = Path("scripts/snapshot_groot_oscar_eval_pod.sh").read_text(encoding="utf-8")
     assert "export GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC" in script
     assert (
-        "export GEAR_SONIC_CHECKPOINT_REVISION="
-        "5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
+        "export GEAR_SONIC_CHECKPOINT_REVISION=5e22ddc69abcea2a9aafc40536b14c232d3f9d7f"
     ) in script
 
 
@@ -461,7 +473,7 @@ def test_wbc_compiler_toolchain_is_confined_to_disposable_builder_stage():
     assert "from gear_sonic.utils.teleop.zmq.zmq_planner_sender import" in runtime
     assert "/opt/wbc/.blueprint-source-revision" in builder
     assert "COPY --from=gear_sonic_builder /opt/wbc/.blueprint-source-revision" in runtime
-    assert 'cat /opt/wbc/.blueprint-source-revision' in runtime
+    assert "cat /opt/wbc/.blueprint-source-revision" in runtime
     assert "COPY --from=gear_sonic_builder /opt/wbc/.git" not in runtime
     assert "libcudart.so* /usr/local/lib/" in runtime
     assert "ldd /opt/wbc/gear_sonic_deploy/target/release/g1_deploy_onnx_ref" in runtime
@@ -482,7 +494,10 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "official_gear_sonic_build_tree_not_writable" in healthcheck
     assert "cosmos_backbone_not_sealed_in_hf_cache" in healthcheck
     assert "cosmos_backbone_default_ref_not_pinned" in healthcheck
-    assert "groot_nested_processor_not_offline_constructible" in healthcheck
+    assert "get_backbone_cls" in healthcheck
+    assert "processor_cfg['processor_kwargs']['model_name'] == cfg.model_name" in healthcheck
+    assert "AutoProcessor.from_pretrained" in healthcheck
+    assert "groot_checkpoint_selector_or_nested_processor_not_offline_constructible" in healthcheck
     assert "official_gear_sonic_source_revision_mismatch" in healthcheck
     assert "gear_sonic_zmq_python_runtime_not_importable" in healthcheck
     assert "cuda_compiler_or_development_files_present" in healthcheck
@@ -492,6 +507,11 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "planner_sonic.onnx" in healthcheck
     assert 'payload["isaac_python_import_stdout_tail"]' in healthcheck
     assert 'payload["isaac_python_import_stderr_tail"]' in healthcheck
+    assert "import inference.inference_oscar" in healthcheck
+    assert "worldsim._src.configs.agibot_control.config import make_config" in healthcheck
+    assert "importlib.metadata.version('pytest') == '9.1.1'" in healthcheck
+    assert 'payload["oscar_dynamic_config_constructible"]' in healthcheck
+    assert "oscar_inference_dynamic_config_not_importable" in healthcheck
 
 
 def test_isaac_backend_uses_supported_isaac_6_articulation_api():
@@ -520,6 +540,7 @@ def test_persistent_executor_composes_g1_using_the_episode_route():
 # --------------------------------------------------------------------------- #
 # CLI (fail-closed exit codes)
 # --------------------------------------------------------------------------- #
+
 
 def test_cli_print_sealed_contract_exit_code(capsys, monkeypatch, tmp_path):
     monkeypatch.setenv(gocl.IMAGE_REF_FILE_ENV, str(tmp_path / "absent"))
@@ -562,7 +583,9 @@ def test_sealed_launch_plan_defaults_to_native_oscar_resolution(monkeypatch):
         steps=3,
         task_prompt="open the fridge",
         output_dir="/workspace/t4_out",
-        env=dict(gocl.SEALED_MARKER_ENV_TRUE) if hasattr(gocl, "SEALED_MARKER_ENV_TRUE") else {"BLUEPRINT_GROOT_OSCAR_SEALED_IMAGE": "true"},
+        env=dict(gocl.SEALED_MARKER_ENV_TRUE)
+        if hasattr(gocl, "SEALED_MARKER_ENV_TRUE")
+        else {"BLUEPRINT_GROOT_OSCAR_SEALED_IMAGE": "true"},
     )
     command = active["closed_loop_command"]
     if command:

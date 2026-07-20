@@ -37,6 +37,27 @@ uses the immutable upstream `uv.lock` with `uv sync --frozen`, followed by a
 no-dependency install of the pinned source tree. Neither environment performs
 an unconstrained dependency solve on the paid builder.
 
+Regenerate the OSCAR lock against a snapshot of the existing lock so adding one
+runtime requirement cannot silently upgrade the already-reviewed closure. The
+OSCAR input must come from the pinned source commit and retain the input digest
+recorded in the lock header:
+
+```bash
+cp deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_foundation.lock \
+  /tmp/requirements_oscar_foundation.previous.lock
+uv pip compile --python-version 3.10 --python-platform x86_64-manylinux_2_28 \
+  --index-url https://download.pytorch.org/whl/cu128 \
+  --extra-index-url https://pypi.org/simple --index-strategy unsafe-best-match \
+  --generate-hashes \
+  --constraints /tmp/requirements_oscar_foundation.previous.lock \
+  /tmp/oscar-requirements-minimal.txt \
+  deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_robot_runtime.txt \
+  --output-file deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_foundation.lock
+```
+
+Review any deliberate package upgrade separately; do not remove the constraint
+snapshot merely to make resolution succeed.
+
 Checkpoints are absent from both OCI images. The release entrypoint verifies
 every declared model file by size and SHA-256 while offline, verifies the exact
 repository revisions and manifest self-digest, and only then links the verified

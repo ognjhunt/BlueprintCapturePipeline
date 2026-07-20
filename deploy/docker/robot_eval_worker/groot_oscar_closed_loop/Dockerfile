@@ -216,9 +216,11 @@ RUN git clone --filter=blob:none "${OSCAR_SOURCE_URL}" /opt/oscar-public \
   && test "$(git -C /opt/oscar-public rev-parse HEAD)" = "${OSCAR_SOURCE_REF}" \
   && ln -s /opt/oscar-public /opt/OSCAR \
   && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import filter_requirements_script_text, transformer_engine_shim_script_text; Path('/tmp/filter.py').write_text(filter_requirements_script_text()); Path('/tmp/te_shim.py').write_text(transformer_engine_shim_script_text())" \
-  && /opt/oscar-venv/bin/python /tmp/filter.py /opt/OSCAR/requirements.txt /tmp/oscar_requirements.txt \
+  && /opt/oscar-venv/bin/python /tmp/filter.py /opt/OSCAR/requirements_minimal.txt /tmp/oscar_requirements.txt \
   && VIRTUAL_ENV=/opt/oscar-venv uv pip install -r /tmp/oscar_requirements.txt \
-  && /opt/oscar-venv/bin/python /tmp/te_shim.py /opt/OSCAR
+  && /opt/oscar-venv/bin/python /tmp/te_shim.py /opt/OSCAR \
+  && VIRTUAL_ENV=/opt/oscar-venv uv pip check \
+  && PYTHONPATH=/opt/OSCAR /opt/oscar-venv/bin/python -c "import inference.inference_oscar"
 
 # 4. GR00T runtime. GEAR-SONIC was compiled in gear_sonic_builder and admitted
 #    above as a runtime-only dynamic closure.
@@ -319,9 +321,24 @@ for remote_name, destination in gear_files.items():
 # 4.57 calls model_info() while patching tokenizer regexes even when every
 # file is cached, which fails correctly under HF_HUB_OFFLINE=1. Bind the
 # config to a stable local symlink so full processor construction is offline.
-cosmos_local = Path("/opt/blueprint/models/cosmos-reason2-2b")
-cosmos_local.parent.mkdir(parents=True, exist_ok=True)
-cosmos_local.symlink_to(cosmos_snapshot)
+# The pinned get_backbone_cls also selects Qwen3 only when model_name contains
+# the literal, case-sensitive ``nvidia/Cosmos-Reason2`` token. Mirror the
+# external-cache selector layout: a token-bearing anchor plus ``../..`` points
+# at a flat local root whose entries link to the immutable HF snapshot.
+cosmos_selector_root = Path("/opt/blueprint/models/cosmos-selector")
+cosmos_selector_root.mkdir(parents=True, exist_ok=True)
+for source in cosmos_snapshot.iterdir():
+    destination = cosmos_selector_root / source.name
+    destination.symlink_to(source, target_is_directory=source.is_dir())
+cosmos_finetune_alias = Path("/opt/blueprint/models/cosmos-reason2-2b")
+cosmos_finetune_alias.symlink_to(cosmos_snapshot, target_is_directory=True)
+if cosmos_finetune_alias.resolve() != cosmos_snapshot:
+    raise RuntimeError("Cosmos fine-tune alias does not resolve to the pinned snapshot")
+cosmos_selector_anchor = cosmos_selector_root / "nvidia/Cosmos-Reason2-2B"
+cosmos_selector_anchor.mkdir(parents=True, exist_ok=True)
+cosmos_local = cosmos_selector_anchor / "../.."
+if cosmos_local.resolve() != cosmos_selector_root:
+    raise RuntimeError("Cosmos local selector path escaped its model root")
 sonic_config_path = sonic / "config.json"
 sonic_config = __import__("json").loads(sonic_config_path.read_text(encoding="utf-8"))
 original_model_name = sonic_config.get("model_name")
@@ -334,6 +351,24 @@ sonic_config["blueprint_model_revision"] = cosmos_revision
 sonic_config["model_name"] = str(cosmos_local)
 sonic_config_path.write_text(
     __import__("json").dumps(sonic_config, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+processor_config_path = sonic / "processor/processor_config.json"
+processor_config = __import__("json").loads(
+    processor_config_path.read_text(encoding="utf-8")
+)
+processor_kwargs = processor_config.get("processor_kwargs")
+if not isinstance(processor_kwargs, dict):
+    raise RuntimeError("SONIC processor_kwargs missing")
+processor_model_name = processor_kwargs.get("model_name")
+if processor_model_name != os.environ["COSMOS_BACKBONE_REPO"]:
+    raise RuntimeError(
+        f"unexpected SONIC processor nested model: {processor_model_name!r}"
+    )
+processor_kwargs["model_name"] = str(cosmos_local)
+processor_config["processor_kwargs"] = processor_kwargs
+processor_config_path.write_text(
+    __import__("json").dumps(processor_config, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",
 )
 

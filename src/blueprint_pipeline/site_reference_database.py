@@ -7,12 +7,15 @@ local contract executable without calling provider or live WebApp services.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+import math
+import re
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 from .common import read_json, utc_now_iso, write_json
 
 SITE_REFERENCE_DATABASE_SCHEMA_VERSION = "site_reference_database.v1"
 WEBAPP_PROJECTION_SCHEMA_VERSION = "site_reference_webapp_projection.v1"
+EVALUATION_SITE_ADMISSION_SCHEMA_VERSION = "evaluation_site_admission.v1"
 
 REFERENCE_RECORD_REQUIRED_FIELDS = (
     "reference_id",
@@ -86,6 +89,215 @@ DENSE_RECORD_FIELD_KEYS = frozenset(
 
 class SiteReferenceContractError(ValueError):
     """Raised when a site-reference artifact violates the local v1 contract."""
+
+
+_SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
+
+
+def _admission_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _admission_rows(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _admission_digest(value: Any) -> bool:
+    return bool(_SHA256_RE.fullmatch(str(value or "").strip().lower()))
+
+
+def _admission_finite(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive evaluation readiness for a real-site scan without trusting labels.
+
+    Assisted import, indexing, visual geometry, and review readiness are support
+    states.  Only this derived contract may mark a site evaluation-ready.
+    """
+
+    blockers: list[str] = []
+    if manifest.get("schema_version") != EVALUATION_SITE_ADMISSION_SCHEMA_VERSION:
+        blockers.append("site_admission_schema_missing_or_unsupported")
+
+    identity = _admission_mapping(manifest.get("immutable_source_identity"))
+    for field in ("site_id", "scene_id", "capture_id", "source_bundle_id"):
+        if not str(identity.get(field) or "").strip():
+            blockers.append(f"immutable_source_identity_missing:{field}")
+    for field in ("capture_sha256", "source_bundle_sha256", "manifest_sha256"):
+        if not _admission_digest(identity.get(field)):
+            blockers.append(f"immutable_source_digest_missing_or_invalid:{field}")
+
+    rights = _admission_mapping(manifest.get("rights_privacy_provenance"))
+    for field in (
+        "consent_active",
+        "rights_verified",
+        "privacy_review_passed",
+        "provenance_verified",
+        "commercial_sim_evaluation_allowed",
+    ):
+        if rights.get(field) is not True:
+            blockers.append(f"rights_privacy_provenance_not_proven:{field}")
+    if not _admission_digest(rights.get("rights_manifest_sha256")):
+        blockers.append("rights_manifest_digest_missing_or_invalid")
+
+    geometry = _admission_mapping(manifest.get("metric_coordinate_contract"))
+    if geometry.get("scale_status") != "verified_metric" or geometry.get("length_unit") != "m":
+        blockers.append("metric_scale_not_verified_in_meters")
+    if geometry.get("up_axis") not in {"+Z", "-Z", "+Y", "-Y"}:
+        blockers.append("up_axis_missing_or_invalid")
+    gravity = geometry.get("gravity_m_s2")
+    if not (
+        isinstance(gravity, Sequence)
+        and not isinstance(gravity, (str, bytes, bytearray))
+        and len(gravity) == 3
+        and all(_admission_finite(item) is not None for item in gravity)
+    ):
+        blockers.append("gravity_vector_missing_or_invalid")
+    if not _admission_digest(geometry.get("coordinate_frame_manifest_sha256")):
+        blockers.append("coordinate_frame_manifest_digest_missing_or_invalid")
+    uncertainty = _admission_mapping(geometry.get("uncertainty"))
+    for field in ("scale_sigma", "translation_sigma_m", "rotation_sigma_deg"):
+        value = _admission_finite(uncertainty.get(field))
+        if value is None or value < 0:
+            blockers.append(f"coordinate_uncertainty_missing_or_invalid:{field}")
+
+    calibration = _admission_mapping(manifest.get("camera_time_calibration"))
+    for field in (
+        "intrinsics_calibrated",
+        "extrinsics_calibrated",
+        "timestamps_synchronized",
+        "reprojection_check_passed",
+    ):
+        if calibration.get(field) is not True:
+            blockers.append(f"camera_time_calibration_not_proven:{field}")
+    reprojection_error = _admission_finite(calibration.get("reprojection_rmse_px"))
+    reprojection_limit = _admission_finite(calibration.get("maximum_reprojection_rmse_px"))
+    if (
+        reprojection_error is None
+        or reprojection_limit is None
+        or reprojection_limit < 0
+        or reprojection_error > reprojection_limit
+    ):
+        blockers.append("camera_reprojection_error_missing_or_above_limit")
+    if not _admission_digest(calibration.get("calibration_manifest_sha256")):
+        blockers.append("camera_calibration_manifest_digest_missing_or_invalid")
+
+    viewpoints = _admission_rows(manifest.get("static_robot_evaluation_viewpoints"))
+    if not viewpoints:
+        blockers.append("static_robot_evaluation_viewpoints_missing")
+    for index, viewpoint in enumerate(viewpoints):
+        if viewpoint.get("derived_from_moving_scan") is not True:
+            blockers.append(f"static_viewpoint_not_derived_from_scan:{index}")
+        if viewpoint.get("status") != "calibrated_static_viewpoint":
+            blockers.append(f"static_viewpoint_not_calibrated:{index}")
+        for field in ("viewpoint_id", "camera_profile_id", "robot_profile_id"):
+            if not str(viewpoint.get(field) or "").strip():
+                blockers.append(f"static_viewpoint_missing:{index}:{field}")
+        if not _admission_digest(viewpoint.get("pose_sha256")):
+            blockers.append(f"static_viewpoint_pose_digest_invalid:{index}")
+
+    embodiment = _admission_mapping(manifest.get("robot_camera_embodiment"))
+    for field in (
+        "robot_profile_sha256",
+        "camera_profile_sha256",
+        "embodiment_manifest_sha256",
+    ):
+        if not _admission_digest(embodiment.get(field)):
+            blockers.append(f"robot_camera_embodiment_digest_invalid:{field}")
+
+    grounding = _admission_mapping(manifest.get("task_scene_grounding"))
+    for field in ("scene_identity", "task_objects", "articulated_parts", "target_zones"):
+        value = grounding.get(field)
+        if not value or (field != "scene_identity" and not _admission_rows(value)):
+            blockers.append(f"task_scene_grounding_missing:{field}")
+    if not _admission_digest(grounding.get("grounding_manifest_sha256")):
+        blockers.append("task_scene_grounding_digest_missing_or_invalid")
+
+    task_contracts = _admission_rows(manifest.get("task_contracts"))
+    if not task_contracts:
+        blockers.append("explicit_task_contracts_missing")
+    for index, contract in enumerate(task_contracts):
+        for field in ("task_id", "criterion_id", "evidence_type", "evaluator_mapping"):
+            if not str(contract.get(field) or "").strip():
+                blockers.append(f"task_contract_missing:{index}:{field}")
+        tolerance = _admission_finite(contract.get("tolerance"))
+        if tolerance is None or tolerance < 0 or not str(contract.get("tolerance_unit") or ""):
+            blockers.append(f"task_contract_tolerance_invalid:{index}")
+
+    truth = _admission_mapping(manifest.get("truth_layers"))
+    visual = _admission_mapping(truth.get("visual_geometry"))
+    if visual.get("status") != "verified":
+        blockers.append("visual_geometry_truth_not_verified")
+    for layer in ("collision", "contact", "dynamics"):
+        detail = _admission_mapping(truth.get(layer))
+        if detail.get("status") != "verified" or not _admission_digest(
+            detail.get("evidence_sha256")
+        ):
+            blockers.append(f"{layer}_truth_not_verified")
+
+    dedup = _admission_mapping(manifest.get("deduplication"))
+    if dedup.get("status") != "passed":
+        blockers.append("site_task_trajectory_dedup_not_passed")
+    for field in ("site_dedup_id", "task_dedup_id", "trajectory_dedup_id"):
+        if not str(dedup.get(field) or "").strip():
+            blockers.append(f"deduplication_identity_missing:{field}")
+    if not _admission_digest(dedup.get("dedup_report_sha256")):
+        blockers.append("deduplication_report_digest_missing_or_invalid")
+
+    splits = _admission_mapping(manifest.get("frozen_splits"))
+    if splits.get("locked_before_evaluation") is not True:
+        blockers.append("evaluation_splits_not_frozen")
+    if not _admission_digest(splits.get("split_manifest_sha256")):
+        blockers.append("split_manifest_digest_missing_or_invalid")
+    partition_sites = {
+        name: {str(item) for item in splits.get(name, []) or []}
+        for name in ("train_sites", "dev_sites", "held_out_sites")
+    }
+    if not partition_sites["held_out_sites"]:
+        blockers.append("held_out_site_split_missing")
+    overlaps = (
+        partition_sites["train_sites"] & partition_sites["dev_sites"]
+        | partition_sites["train_sites"] & partition_sites["held_out_sites"]
+        | partition_sites["dev_sites"] & partition_sites["held_out_sites"]
+    )
+    if overlaps:
+        blockers.append("site_split_overlap_detected")
+    site_id = str(identity.get("site_id") or "")
+    if site_id and sum(site_id in sites for sites in partition_sites.values()) != 1:
+        blockers.append("site_not_assigned_to_exactly_one_frozen_split")
+
+    ood = _admission_mapping(manifest.get("ood_abstention"))
+    if ood.get("abstention_enabled") is not True or not _admission_rows(ood.get("axes")):
+        blockers.append("ood_abstention_contract_missing")
+
+    blockers = sorted(set(blockers))
+    assisted_import = str(manifest.get("importer_kind") or "").startswith("scaniverse")
+    return {
+        "schema_version": EVALUATION_SITE_ADMISSION_SCHEMA_VERSION,
+        "status": "evaluation_ready" if not blockers else "blocked",
+        "evaluation_ready": not blockers,
+        "site_id": identity.get("site_id"),
+        "scene_id": identity.get("scene_id"),
+        "importer_kind": manifest.get("importer_kind"),
+        "scaniverse_assisted_import": assisted_import,
+        "blockers": blockers,
+        "claim_boundary": {
+            "site_reference_indexing_is_not_evaluation_admission": True,
+            "assisted_import_is_not_evaluation_readiness": True,
+            "visual_geometry_is_separate_from_collision_contact_and_dynamics": True,
+            "physical_robot_performance_proven": False,
+        },
+    }
 
 
 def validate_site_reference_record(record: Mapping[str, Any]) -> None:

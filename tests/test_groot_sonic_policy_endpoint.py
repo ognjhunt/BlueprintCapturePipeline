@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from blueprint_pipeline.groot_sonic_policy_endpoint import (
@@ -7,6 +10,7 @@ from blueprint_pipeline.groot_sonic_policy_endpoint import (
     make_groot_sonic_zmq_policy_endpoint,
     project_chunk_to_root_delta,
 )
+from blueprint_pipeline.gear_sonic_official_zmq_executor import _validated_action_frames
 
 
 def _fake_run_command_factory(chunks):
@@ -51,6 +55,195 @@ def test_endpoint_projects_real_chunk_and_varies_with_observation() -> None:
     assert calls[0]["observation"]["camera_frame_path"] == "/a.jpg"
     assert calls[1]["observation"]["camera_frame_path"] == "/b.jpg"
     assert second["sonic_action_chunk_dim"] == 78
+
+
+def test_endpoint_preserves_selected_frame_and_hashed_horizon_metadata() -> None:
+    selected = [float(index) for index in range(78)]
+    units = ["latent"] * 64 + ["rad"] * 14
+    timing = {
+        "control_hz": 50.0,
+        "sample_period_seconds": 0.02,
+        "selected_horizon_frame_index": 0,
+        "source_horizon_frame_count": 40,
+    }
+    horizon = {
+        "schema_version": "unitree_g1_sonic_action_horizon.v1",
+        "frame_count": 40,
+        "frame_dimension": 78,
+        "full_dimension": 3120,
+        "source_fieldwise_horizon_sha256": "a" * 64,
+        "selected_frame_sha256": "b" * 64,
+        "selected_frame_index": 0,
+        "selection_mode": "fresh_receding_horizon_first_frame",
+    }
+
+    def fake(**_kwargs):
+        return (
+            {
+                "status": "completed",
+                "runtime_result_id": "runtime-horizon-1",
+                "action": {
+                    "action_chunk": selected,
+                    "action_units": units,
+                    "action_timing": timing,
+                    "action_horizon": horizon,
+                },
+            },
+            0,
+        )
+
+    endpoint = make_groot_sonic_zmq_policy_endpoint(
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        run_command=fake,
+    )
+
+    action = endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
+
+    assert action["sonic_action_chunk"] == selected
+    assert action["sonic_action_chunk_dim"] == 78
+    assert action["action_units"] == units
+    assert action["action_timing"] == timing
+    assert action["action_horizon"] == horizon
+    assert action["controller_action"]["execution_frame_count"] == 1
+    assert action["controller_action"]["frames"] == [selected]
+
+
+def test_endpoint_explicitly_executes_full_hash_bound_model_horizon() -> None:
+    frames = [
+        [float(frame_index * 1000 + value_index) for value_index in range(78)]
+        for frame_index in range(40)
+    ]
+    frames_sha256 = hashlib.sha256(
+        json.dumps(frames, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    def fake(**_kwargs):
+        return (
+            {
+                "status": "completed",
+                "runtime_result_id": "runtime-full-horizon-1",
+                "action": {
+                    "action_chunk": frames[0],
+                    "action_units": ["latent"] * 64 + ["rad"] * 14,
+                    "action_timing": {
+                        "control_hz": 50.0,
+                        "sample_period_seconds": 0.02,
+                    },
+                    "sonic_action_sequence": {
+                        "schema_version": "unitree_g1_sonic_action_sequence.v1",
+                        "frame_count": 40,
+                        "frame_dimension": 78,
+                        "control_hz": 50.0,
+                        "sample_period_seconds": 0.02,
+                        "frames": frames,
+                        "frames_sha256": frames_sha256,
+                        "source_fieldwise_horizon_sha256": "a" * 64,
+                    },
+                },
+            },
+            0,
+        )
+
+    endpoint = make_groot_sonic_zmq_policy_endpoint(
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        execution_frame_count=40,
+        run_command=fake,
+    )
+
+    action = endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
+
+    controller = action["controller_action"]
+    assert controller["schema_version"] == "gear_sonic_controller_action_sequence.v1"
+    assert controller["execution_mode"] == "bounded_model_horizon_prefix"
+    assert controller["execution_frame_count"] == 40
+    assert controller["source_horizon_frame_count"] == 40
+    assert controller["frames"] == frames
+    assert controller["frames_sha256"] == frames_sha256
+    assert controller["source_frames_sha256"] == frames_sha256
+    assert controller["execution_duration_seconds"] == pytest.approx(0.8)
+    assert action["sonic_action_execution_frame_count"] == 40
+    assert action["sonic_action_execution_frames_sha256"] == frames_sha256
+
+
+def test_endpoint_preserves_non_round_float32_frame_zero_for_official_executor() -> None:
+    frame_zero = [-0.13916015625] + [float(index) / 1024.0 for index in range(1, 78)]
+    frames = [frame_zero, [value + 0.0009765625 for value in frame_zero]]
+    frames_sha256 = hashlib.sha256(
+        json.dumps(frames, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    def fake(**_kwargs):
+        return (
+            {
+                "status": "completed",
+                "runtime_result_id": "runtime-float32-horizon-1",
+                "action": {
+                    "action_chunk": frame_zero,
+                    "action_units": ["latent"] * 64 + ["rad"] * 14,
+                    "action_timing": {"control_hz": 50.0, "sample_period_seconds": 0.02},
+                    "sonic_action_sequence": {
+                        "schema_version": "unitree_g1_sonic_action_sequence.v1",
+                        "frame_count": 2,
+                        "frame_dimension": 78,
+                        "control_hz": 50.0,
+                        "sample_period_seconds": 0.02,
+                        "frames": frames,
+                        "frames_sha256": frames_sha256,
+                        "source_fieldwise_horizon_sha256": "a" * 64,
+                    },
+                },
+            },
+            0,
+        )
+
+    endpoint = make_groot_sonic_zmq_policy_endpoint(
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        execution_frame_count=2,
+        run_command=fake,
+    )
+
+    action = endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
+    validated_frames, contract = _validated_action_frames(action)
+
+    assert action["sonic_action_chunk"][0] == -0.13916015625
+    assert action["sonic_action_chunk"] == action["controller_action"]["frames"][0]
+    assert validated_frames == frames
+    assert contract["frames_sha256"] == frames_sha256
+
+
+def test_endpoint_full_horizon_fails_closed_on_sequence_hash_mismatch() -> None:
+    frames = [[0.0] * 78, [1.0] * 78]
+
+    def fake(**_kwargs):
+        return (
+            {
+                "status": "completed",
+                "action": {
+                    "action_chunk": frames[0],
+                    "sonic_action_sequence": {
+                        "schema_version": "unitree_g1_sonic_action_sequence.v1",
+                        "frame_count": 2,
+                        "frame_dimension": 78,
+                        "control_hz": 50.0,
+                        "frames": frames,
+                        "frames_sha256": "0" * 64,
+                    },
+                },
+            },
+            0,
+        )
+
+    endpoint = make_groot_sonic_zmq_policy_endpoint(
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        execution_frame_count=2,
+        run_command=fake,
+    )
+    with pytest.raises(RuntimeError, match="sonic_action_sequence_sha256_mismatch"):
+        endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
 
 
 def test_endpoint_fails_closed_on_blocked_server() -> None:

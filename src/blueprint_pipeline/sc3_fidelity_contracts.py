@@ -19,6 +19,14 @@ from typing import Any, Mapping, Sequence
 
 from PIL import Image
 
+from .external_study_protocols import (
+    EXTERNAL_STUDY_PROTOCOL_PROFILES,
+    OSCAR_SUCCESS_RATE_DIFFERENCE_METRIC,
+    validate_external_study,
+)
+
+__all__ = ["EXTERNAL_STUDY_PROTOCOL_PROFILES", "validate_external_study"]
+
 
 SC3_CAMERA_COUNT = 3
 SC3_MAX_CAMERA_SKEW_MS = 10.0
@@ -64,8 +72,6 @@ SC3_OOD_BOOTSTRAP_CLUSTER_LEVELS = (
     "condition_id",
     "replicate_seed",
 )
-
-
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -1796,172 +1802,6 @@ def validate_ood_registry(registry: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_external_study(study: Mapping[str, Any]) -> dict[str, Any]:
-    blockers: list[str] = []
-    if study.get("status") != "accepted_frozen_study":
-        blockers.append("external_sc3_study_not_accepted")
-    checkpoint_count = study.get("independent_policy_checkpoint_count")
-    if (
-        isinstance(checkpoint_count, bool)
-        or not isinstance(checkpoint_count, int)
-        or checkpoint_count < 7
-    ):
-        blockers.append("external_sc3_study_policy_checkpoint_count_lt_7")
-    accepted_anchor_count = study.get("accepted_anchor_count")
-    if (
-        isinstance(accepted_anchor_count, bool)
-        or not isinstance(accepted_anchor_count, int)
-        or accepted_anchor_count <= 0
-    ):
-        blockers.append("external_sc3_study_has_no_accepted_anchors")
-    independent_policy_ids = [
-        _string(item) for item in study.get("independent_policy_checkpoint_ids", []) or []
-    ]
-    if (
-        any(not item for item in independent_policy_ids)
-        or len(set(independent_policy_ids)) < 7
-        or (
-            isinstance(checkpoint_count, int)
-            and not isinstance(checkpoint_count, bool)
-            and len(set(independent_policy_ids)) != checkpoint_count
-        )
-    ):
-        blockers.append("external_sc3_study_independent_policy_ids_invalid")
-    if study.get("three_view_sc3_checkpoint_run_proven") is not True:
-        blockers.append("external_sc3_study_three_view_checkpoint_run_missing")
-    if study.get("calibrated_inverse_threshold_proven") is not True:
-        blockers.append("external_sc3_study_inverse_threshold_missing")
-    for key in (
-        "study_registration_sha256",
-        "raw_per_cell_outputs_sha256",
-        "code_sha256",
-        "model_checkpoint_manifest_sha256",
-        "dataset_manifest_sha256",
-        "split_manifest_sha256",
-        "environment_manifest_sha256",
-    ):
-        if not _sha256(study.get(key)):
-            blockers.append(f"external_sc3_study_{key}_missing_or_invalid")
-    for ref_key, digest_key in (
-        ("study_registration_artifact", "study_registration_sha256"),
-        ("raw_per_cell_outputs_artifact", "raw_per_cell_outputs_sha256"),
-        ("code_artifact", "code_sha256"),
-        ("model_checkpoint_manifest_artifact", "model_checkpoint_manifest_sha256"),
-        ("dataset_manifest_artifact", "dataset_manifest_sha256"),
-        ("split_manifest_artifact", "split_manifest_sha256"),
-        ("environment_manifest_artifact", "environment_manifest_sha256"),
-        ("independent_reproduction_artifact", None),
-        ("human_label_protocol_artifact", None),
-    ):
-        ref = _mapping(study.get(ref_key))
-        blockers.extend(_validate_artifact_ref(ref, prefix=f"external_sc3_study_{ref_key}"))
-        if (
-            digest_key
-            and ref
-            and _string(ref.get("sha256")).lower() != _string(study.get(digest_key)).lower()
-        ):
-            blockers.append(f"external_sc3_study_{ref_key}_digest_mismatch")
-    metrics = _mapping(study.get("metrics"))
-    pearson = _number(metrics.get("pearson_success_rate_correlation"))
-    spearman = _number(metrics.get("spearman_rank_correlation"))
-    mmrv = _number(metrics.get("mean_maximum_rank_violation"))
-    abstention = _number(metrics.get("abstention_rate"))
-    if pearson is None or not -1.0 <= pearson <= 1.0:
-        blockers.append("external_sc3_study_pearson_missing_or_invalid")
-    if spearman is None or not -1.0 <= spearman <= 1.0:
-        blockers.append("external_sc3_study_spearman_missing_or_invalid")
-    if mmrv is None or mmrv < 0.0:
-        blockers.append("external_sc3_study_mmrv_missing_or_invalid")
-    if abstention is None or not 0.0 <= abstention <= 1.0:
-        blockers.append("external_sc3_study_abstention_missing_or_invalid")
-    interval_specs = (
-        ("pearson_95_ci", pearson, -1.0, 1.0),
-        ("spearman_95_ci", spearman, -1.0, 1.0),
-        ("mmrv_95_ci", mmrv, 0.0, math.inf),
-        ("abstention_95_ci", abstention, 0.0, 1.0),
-    )
-    for interval_name, estimate, minimum, maximum in interval_specs:
-        interval = metrics.get(interval_name)
-        bounds = (
-            [_number(value) for value in interval]
-            if isinstance(interval, Sequence) and not isinstance(interval, (str, bytes, bytearray))
-            else []
-        )
-        if not (
-            len(bounds) == 2
-            and all(value is not None for value in bounds)
-            and minimum <= bounds[0] <= bounds[1] <= maximum
-            and estimate is not None
-            and bounds[0] <= estimate <= bounds[1]
-        ):
-            blockers.append(f"external_sc3_study_{interval_name}_invalid")
-    design = _mapping(study.get("registered_design"))
-    for field in (
-        "matched_conditions_and_replicates",
-        "grouped_train_dev_locked_test",
-        "locked_ind_test",
-        "locked_ood_test",
-        "hierarchical_cluster_uncertainty",
-        "abstention_and_coverage_registered",
-        "failure_case_reporting_registered",
-    ):
-        if design.get(field) is not True:
-            blockers.append(f"external_sc3_study_design_{field}_not_proven")
-    raw_cell_count = study.get("raw_per_cell_count")
-    failure_case_count = study.get("failure_case_count")
-    coverage_rate = _number(study.get("coverage_rate"))
-    if (
-        isinstance(raw_cell_count, bool)
-        or not isinstance(raw_cell_count, int)
-        or raw_cell_count <= 0
-    ):
-        blockers.append("external_sc3_study_raw_per_cell_count_invalid")
-    if (
-        isinstance(failure_case_count, bool)
-        or not isinstance(failure_case_count, int)
-        or failure_case_count < 0
-    ):
-        blockers.append("external_sc3_study_failure_case_count_invalid")
-    if coverage_rate is None or not 0.0 <= coverage_rate <= 1.0:
-        blockers.append("external_sc3_study_coverage_rate_invalid")
-    if _mapping(study.get("independent_reproduction")).get("status") != "passed":
-        blockers.append("external_sc3_study_independent_reproduction_not_passed")
-    human_protocol = _mapping(study.get("human_label_protocol"))
-    agreement = _number(human_protocol.get("inter_rater_agreement"))
-    if not (
-        human_protocol.get("status") == "accepted"
-        and agreement is not None
-        and 0.0 <= agreement <= 1.0
-        and human_protocol.get("adjudication_completed") is True
-    ):
-        blockers.append("external_sc3_study_human_label_protocol_incomplete")
-    study_signature = _mapping(study.get("study_signature"))
-    if not (
-        study_signature.get("signature_verified") is True
-        and _string(study_signature.get("signer_key_id"))
-        and _string(study_signature.get("verifier_id"))
-    ):
-        blockers.append("external_sc3_study_signature_not_verified")
-    blockers.extend(
-        _validate_artifact_ref(
-            _mapping(study_signature.get("verification_report_artifact")),
-            prefix="external_sc3_study_signature_verification_report",
-        )
-    )
-    # Local files can be structurally screened for intake, but the audit's
-    # external study requirement cannot be self-approved by this repository.
-    # An independent reviewer must record acceptance out of band before any
-    # public rank-fidelity claim is upgraded.
-    blockers.append("external_sc3_study_requires_independent_manual_acceptance")
-    blockers = sorted(set(blockers))
-    return {
-        "schema_version": "sc3_external_study_validation.v1",
-        "status": "external_proof_required",
-        "external_manual_proof": True,
-        "blockers": blockers,
-    }
-
-
 def validate_benchmark_cards(cards: Mapping[str, Any]) -> dict[str, Any]:
     blockers: list[str] = []
     sc3 = _mapping(cards.get("sc3_eval"))
@@ -1978,7 +1818,7 @@ def validate_benchmark_cards(cards: Mapping[str, Any]) -> dict[str, Any]:
         "mean_maximum_rank_violation",
     }.issubset(sc3_metrics):
         blockers.append("sc3_correlation_metric_names_incomplete")
-    if "success_rate_difference_pp" not in oscar_metrics:
+    if OSCAR_SUCCESS_RATE_DIFFERENCE_METRIC not in oscar_metrics:
         blockers.append("oscar_success_rate_difference_pp_metric_missing")
     if "sisr_delta" in oscar_metrics:
         blockers.append("oscar_metric_mislabeled_as_sisr_delta")
@@ -1992,7 +1832,7 @@ def validate_benchmark_cards(cards: Mapping[str, Any]) -> dict[str, Any]:
         "mean_maximum_rank_violation",
     }:
         blockers.append("sc3_metric_transferred_to_oscar_card")
-    if sc3_metrics & {"success_rate_difference_pp", "mae"}:
+    if sc3_metrics & {OSCAR_SUCCESS_RATE_DIFFERENCE_METRIC, "mae"}:
         blockers.append("oscar_metric_transferred_to_sc3_card")
     for card_name, card in (("sc3", sc3), ("oscar", oscar)):
         for field in ("model_id", "protocol_id", "label_unit", "sample_unit"):
