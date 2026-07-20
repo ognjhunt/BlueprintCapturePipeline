@@ -9,6 +9,10 @@ from blueprint_pipeline.policy_evaluation_contracts import (
     validate_policy_adapter_manifest,
     validate_policy_evaluation_design,
 )
+from blueprint_pipeline.evaluator_evidence_profiles import (
+    EVALUATOR_EVIDENCE_PROFILES,
+    validate_evaluator_evidence,
+)
 from blueprint_pipeline.decision_grade_ranking import (
     BOOTSTRAP_METHOD,
     BOOTSTRAP_REPLICATES,
@@ -62,32 +66,45 @@ def _design() -> dict:
                     "task_id": "open-door",
                     "condition_id": "condition-1",
                     "seed": seed,
+                    "site_task_condition_seed_manifest_sha256": _digest(550 + seed),
                     "observation_sha256": _digest(600 + seed),
-                    "commanded_action_chunk_sha256": _digest(
-                        800 + policy_index * 100 + seed
-                    ),
-                    "policy_runtime_output_sha256": _digest(
-                        1600 + policy_index * 100 + seed
-                    ),
+                    "commanded_action_chunk_sha256": _digest(800 + policy_index * 100 + seed),
+                    "policy_runtime_output_sha256": _digest(1600 + policy_index * 100 + seed),
                     "initial_condition_sha256": _digest(600 + seed),
-                    "skeleton_conditioning_sha256": _digest(
-                        2300 + policy_index * 100 + seed
-                    ),
-                    "oscar_checkpoint_sha256": _digest(2600),
+                    "evaluator_profile_manifest_sha256": _digest(2300),
+                    "evaluator_backend_manifest_sha256": _digest(2350),
+                    "evaluator_backend": {
+                        "schema_version": "evaluator_backend_manifest.v1",
+                        "backend_id": "cosmos-3-evaluator-adapter",
+                        "model_family": "cosmos",
+                        "model_version": "3",
+                        "adapter_version": "1.0.0",
+                        "backend_kind": "world_model",
+                        "execution_interface": "provider_worker",
+                        "model_artifact_sha256": _digest(2600),
+                        "adapter_code_sha256": _digest(2351),
+                        "runtime_manifest_sha256": _digest(2352),
+                        "license_manifest_sha256": _digest(2353),
+                        "backend_is_compute_provider": False,
+                    },
+                    "evaluator_request_sha256": _digest(2400 + policy_index * 100 + seed),
+                    "evaluator_checkpoint_sha256": _digest(2600),
                     "model_output_sha256": _digest(2700 + policy_index * 100 + seed),
-                    "provider_execution_sha256": _digest(
-                        3500 + policy_index * 100 + seed
-                    ),
-                    "next_policy_query_sha256": _digest(
-                        4300 + policy_index * 100 + seed
-                    ),
-                    "action_control_suite_sha256": _digest(
-                        5100 + policy_index * 100 + seed
-                    ),
-                    "evaluator_profile_id": "oscar_official_v2",
-                    "fresh_official_oscar_model_execution_proven": True,
-                    "fresh_oscar_provider_model_run_steps": 1,
+                    "provider_execution_sha256": _digest(3500 + policy_index * 100 + seed),
+                    "next_policy_query_sha256": _digest(4300 + policy_index * 100 + seed),
+                    "action_control_suite_sha256": _digest(5100 + policy_index * 100 + seed),
+                    "criterion_result_sha256": _digest(5900 + policy_index * 100 + seed),
+                    "authoritative_manifest_sha256": _digest(6700 + policy_index * 100 + seed),
+                    "evaluator_profile_id": "generic_evaluator_bounded_v1",
+                    "fresh_evaluator_model_execution_proven": True,
+                    "fresh_evaluator_model_run_steps": 1,
                     "action_control_suite_status": "passed",
+                    "authoritative_manifest_status": "completed",
+                    "infrastructure_status": "succeeded",
+                    "evaluator_outcome_status": "valid",
+                    "criterion_result_status": "valid",
+                    "evaluator_identity_is_compute_provider": False,
+                    "generic_evaluator_contract_status": "validated",
                     "missing_action": False,
                     "zero_action_substitute_used": False,
                     "scripted_target_motion_used": False,
@@ -131,6 +148,10 @@ def test_generic_policy_design_admits_seven_independent_matched_policies() -> No
     assert result["independent_checkpoint_count"] == 7
     assert result["g1_kitchen_fixture_present"] is True
     assert result["g1_kitchen_is_product_architecture"] is False
+    assert result["evaluator_profile_ids"] == ["generic_evaluator_bounded_v1"]
+    assert result["evaluator_families"] == ["generic_evaluator_bounded"]
+    assert result["evaluator_backend_ids"] == ["cosmos-3-evaluator-adapter"]
+    assert result["evaluator_model_families"] == ["cosmos"]
 
 
 def test_policy_design_normalizes_checkpoint_digests_before_independence_count() -> None:
@@ -154,31 +175,149 @@ def test_policy_design_rejects_asymmetric_cells_and_fallback_injection() -> None
     result = validate_policy_evaluation_design(candidate)
 
     assert result["status"] == "blocked"
-    assert any(blocker.startswith("asymmetric_matched_cell_coverage:") for blocker in result["blockers"])
+    assert any(
+        blocker.startswith("asymmetric_matched_cell_coverage:") for blocker in result["blockers"]
+    )
+    assert "decision_grade_row_forbidden_or_unproven:0:fallback_policy_used" in result["blockers"]
+
+
+def test_policy_design_requires_identical_matched_cell_bindings_across_policies() -> None:
+    candidate = _design()
+    row = next(
+        item for item in candidate["rows"] if item["policy_id"] == "policy-1" and item["seed"] == 0
+    )
+    row["initial_condition_sha256"] = _digest(9999)
+    row["evaluator_profile_manifest_sha256"] = _digest(9998)
+
+    result = validate_policy_evaluation_design(candidate)
+
+    assert result["status"] == "blocked"
     assert (
-        "decision_grade_row_forbidden_or_unproven:0:fallback_policy_used"
+        "matched_cell_binding_mismatch:site-1:open-door:condition-1:0:initial_condition_sha256"
+        in result["blockers"]
+    )
+    assert (
+        "matched_cell_binding_mismatch:site-1:open-door:condition-1:0:evaluator_profile_manifest_sha256"
         in result["blockers"]
     )
 
 
-def test_policy_design_requires_fresh_oscar_chain_and_passed_controls() -> None:
+def test_policy_design_requires_fresh_profiled_evaluator_chain_and_passed_controls() -> None:
     candidate = _design()
     row = candidate["rows"][0]
-    row["fresh_oscar_provider_model_run_steps"] = 0
-    row["fresh_official_oscar_model_execution_proven"] = False
+    row["fresh_evaluator_model_run_steps"] = 0
+    row["fresh_evaluator_model_execution_proven"] = False
     row["action_control_suite_status"] = "blocked"
     row.pop("next_policy_query_sha256")
 
     result = validate_policy_evaluation_design(candidate)
 
     assert result["status"] == "blocked"
-    assert "evaluation_row_fresh_oscar_execution_not_proven:0" in result["blockers"]
-    assert "evaluation_row_fresh_oscar_model_steps_invalid:0" in result["blockers"]
-    assert "evaluation_row_action_control_suite_not_passed:0" in result["blockers"]
     assert (
-        "evaluation_row_digest_missing_or_invalid:0:next_policy_query_sha256"
+        "evaluation_row_evaluator_evidence:0:fresh_evaluator_model_execution_not_proven"
         in result["blockers"]
     )
+    assert (
+        "evaluation_row_evaluator_evidence:0:fresh_evaluator_model_run_steps_missing_or_invalid"
+        in result["blockers"]
+    )
+    assert (
+        "evaluation_row_evaluator_evidence:0:action_control_suite_not_passed" in result["blockers"]
+    )
+    assert (
+        "evaluation_row_evaluator_evidence:0:evaluator_evidence_digest_missing_or_invalid:next_policy_query_sha256"
+        in result["blockers"]
+    )
+
+
+def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -> None:
+    generic = _design()["rows"][0]
+    assert validate_evaluator_evidence(generic)["status"] == "validated"
+    assert set(EVALUATOR_EVIDENCE_PROFILES) == {
+        "generic_evaluator_bounded_v1",
+        "oscar_roboarena_v2",
+        "sc3_eval_v3",
+    }
+
+    alternate_backend = deepcopy(generic)
+    alternate_backend["evaluator_backend_manifest_sha256"] = _digest(7990)
+    alternate_backend["evaluator_checkpoint_sha256"] = _digest(7991)
+    alternate_backend["evaluator_backend"].update(
+        {
+            "backend_id": "future-world-model-adapter",
+            "model_family": "future-world-model",
+            "model_version": "1",
+            "model_artifact_sha256": _digest(7991),
+        }
+    )
+    alternate_result = validate_evaluator_evidence(alternate_backend)
+    assert alternate_result["status"] == "validated"
+    assert alternate_result["evaluator_model_family"] == "future-world-model"
+
+    blocked_manifest = deepcopy(generic)
+    blocked_manifest["generated_episode_results_status"] = "completed"
+    blocked_manifest["authoritative_manifest_status"] = "blocked"
+    assert (
+        "authoritative_manifest_not_completed"
+        in validate_evaluator_evidence(blocked_manifest)["blockers"]
+    )
+
+    oscar = deepcopy(generic)
+    oscar.update(
+        {
+            "evaluator_profile_id": "oscar_roboarena_v2",
+            "official_runtime_contract_sha256": _digest(8000),
+            "fk_result_sha256": _digest(8001),
+            "camera_projection_sha256": _digest(8002),
+            "skeleton_conditioning_sha256": _digest(8003),
+            "official_runtime_contract_status": "validated",
+            "fk_status": "passed",
+            "camera_projection_status": "passed",
+            "skeleton_validation_status": "passed",
+        }
+    )
+    assert validate_evaluator_evidence(oscar)["status"] == "validated"
+    oscar.pop("fk_result_sha256")
+    assert (
+        "evaluator_evidence_digest_missing_or_invalid:fk_result_sha256"
+        in validate_evaluator_evidence(oscar)["blockers"]
+    )
+
+    sc3 = deepcopy(generic)
+    sc3.update(
+        {
+            "evaluator_profile_id": "sc3_eval_v3",
+            "synchronized_multiview_manifest_sha256": _digest(8100),
+            "recovered_inverse_actions_sha256": _digest(8101),
+            "per_chunk_error_sha256": _digest(8102),
+            "inverse_calibration_set_sha256": _digest(8103),
+            "strict_scorer_request_status": "validated",
+            "multiview_consistency_status": "passed",
+            "inverse_action_recovery_status": "passed",
+            "termination_chunk_index": 3,
+            "inverse_error_threshold": 0.05,
+            "recovered_inverse_action_dimensions": [
+                {"dimension": 0, "unit": "rad", "maximum_error": 0.01}
+            ],
+        }
+    )
+    assert validate_evaluator_evidence(sc3)["status"] == "validated"
+    sc3["evaluator_outcome_status"] = "abstained"
+    sc3["criterion_result_status"] = "abstained"
+    assert (
+        "sc3_abstention_requires_inverse_recovery_abstention"
+        in validate_evaluator_evidence(sc3)["blockers"]
+    )
+
+
+def test_evaluator_profile_does_not_default_to_sc3_or_oscar() -> None:
+    row = deepcopy(_design()["rows"][0])
+    row.pop("evaluator_profile_id")
+
+    result = validate_evaluator_evidence(row)
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["evaluator_profile_missing_or_unsupported"]
 
 
 def test_direct_sc3_comparison_requires_36_or_37_replicates() -> None:
@@ -188,9 +327,8 @@ def test_direct_sc3_comparison_requires_36_or_37_replicates() -> None:
     result = validate_policy_evaluation_design(candidate)
 
     assert result["decision_grade_eligible"] is False
-    assert "direct_sc3_comparison_requires_36_or_37_matched_replicates" in result[
-        "blockers"
-    ]
+    assert "direct_sc3_comparison_requires_36_or_37_matched_replicates" in result["blockers"]
+    assert "direct_sc3_comparison_requires_sc3_evaluator_profile" in result["blockers"]
 
 
 def _ranking_request() -> dict:
@@ -209,13 +347,24 @@ def _ranking_request() -> dict:
                 "full_ordered_episode_evidence": True,
                 "episode_evidence_sha256": "sha256:" + _digest(3000 + row["seed"]),
                 "artifact_freshness_status": "current",
-                "fresh_official_oscar_model_execution_proven": True,
+                "evaluator_profile_id": row["evaluator_profile_id"],
+                "evaluator_backend_id": row["evaluator_backend"]["backend_id"],
+                "fresh_evaluator_model_execution_proven": True,
+                "authoritative_manifest_status": "completed",
+                "infrastructure_status": "succeeded",
+                "evaluator_outcome_status": "valid",
                 "fixture_or_proxy_model_output_used": False,
                 "fallback_policy_used": False,
                 "commanded_action_chunk_sha256": row["commanded_action_chunk_sha256"],
+                "evaluator_profile_manifest_sha256": row["evaluator_profile_manifest_sha256"],
+                "evaluator_backend_manifest_sha256": row["evaluator_backend_manifest_sha256"],
+                "evaluator_checkpoint_sha256": row["evaluator_checkpoint_sha256"],
+                "evaluator_request_sha256": row["evaluator_request_sha256"],
                 "model_output_sha256": row["model_output_sha256"],
                 "next_policy_query_sha256": row["next_policy_query_sha256"],
                 "action_control_suite_sha256": row["action_control_suite_sha256"],
+                "criterion_result_sha256": row["criterion_result_sha256"],
+                "authoritative_manifest_sha256": row["authoritative_manifest_sha256"],
                 "criterion_results": [
                     {
                         "criterion_id": "door-angle",
@@ -263,9 +412,7 @@ def _ranking_request() -> dict:
                 "failure_taxonomy": {"criterion_not_reached": 2},
                 "split_manifest_sha256": "sha256:" + _digest(7000 + index),
             }
-            for index, axis in enumerate(
-                ("site", "task", "embodiment", "viewpoint", "appearance")
-            )
+            for index, axis in enumerate(("site", "task", "embodiment", "viewpoint", "appearance"))
         ],
         "accepted_external_anchor_rows": [],
     }
@@ -285,7 +432,9 @@ def test_decision_grade_ranking_keeps_correlation_unmeasured_without_real_anchor
     assert result["mmrv"] is None
 
 
-def test_decision_grade_ranking_rejects_low_confidence_silent_failure_and_disconnected_graph() -> None:
+def test_decision_grade_ranking_rejects_low_confidence_silent_failure_and_disconnected_graph() -> (
+    None
+):
     candidate = _ranking_request()
     candidate["episode_results"][0]["criterion_results"][0]["confidence"] = 0.2
     candidate["episode_results"][0]["criterion_results"][0]["outcome"] = "failure"
@@ -309,8 +458,7 @@ def test_decision_grade_ranking_blocks_all_abstain_policy_conditions() -> None:
     assert result["status"] == "blocked"
     assert all(row["coverage"] == 0.0 for row in result["policy_scorecards"])
     assert any(
-        blocker.startswith("decided_outcome_count_below_minimum:")
-        for blocker in result["blockers"]
+        blocker.startswith("decided_outcome_count_below_minimum:") for blocker in result["blockers"]
     )
 
     partial = _ranking_request()
@@ -320,6 +468,21 @@ def test_decision_grade_ranking_blocks_all_abstain_policy_conditions() -> None:
     assert any(
         blocker.endswith(":19<20")
         for blocker in partial_result["blockers"]
+        if blocker.startswith("decided_outcome_count_below_minimum:")
+    )
+
+
+def test_decision_grade_ranking_keeps_model_abstention_separate_from_decided_label() -> None:
+    candidate = _ranking_request()
+    candidate["episode_results"][0]["evaluator_outcome_status"] = "abstained"
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "abstained_evaluator_cannot_emit_decided_criterion:0:0" in result["blockers"]
+    assert any(
+        blocker.endswith(":19<20")
+        for blocker in result["blockers"]
         if blocker.startswith("decided_outcome_count_below_minimum:")
     )
 

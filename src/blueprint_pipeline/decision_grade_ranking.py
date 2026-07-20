@@ -174,9 +174,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
     observed_result_keys: set[tuple[Any, ...]] = set()
     outcomes_by_policy: dict[str, list[float | None]] = defaultdict(list)
     outcomes_by_policy_cell: dict[str, dict[tuple[Any, ...], float | None]] = defaultdict(dict)
-    outcomes_by_policy_condition: dict[
-        tuple[str, str, str, str], list[float | None]
-    ] = defaultdict(list)
+    outcomes_by_policy_condition: dict[tuple[str, str, str, str], list[float | None]] = defaultdict(
+        list
+    )
     failures_by_policy: dict[str, list[str]] = defaultdict(list)
     for row_index, row in enumerate(results):
         policy_id = str(row.get("policy_id") or "")
@@ -198,18 +198,46 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
             blockers.append(f"episode_result_evidence_digest_missing:{row_index}")
         if row.get("artifact_freshness_status") != "current":
             blockers.append(f"episode_result_artifact_not_current:{row_index}")
-        if row.get("fresh_official_oscar_model_execution_proven") is not True:
-            blockers.append(f"episode_result_fresh_oscar_execution_not_proven:{row_index}")
+        if row.get("fresh_evaluator_model_execution_proven") is not True:
+            blockers.append(f"episode_result_fresh_evaluator_execution_not_proven:{row_index}")
         if row.get("fixture_or_proxy_model_output_used") is not False:
             blockers.append(f"episode_result_fixture_or_proxy_not_blocked:{row_index}")
         if row.get("fallback_policy_used") is not False:
             blockers.append(f"episode_result_fallback_policy_not_blocked:{row_index}")
         design_row = design_rows_by_key.get(result_key, {})
+        evaluator_profile_id = str(row.get("evaluator_profile_id") or "")
+        if not evaluator_profile_id:
+            blockers.append(f"episode_result_evaluator_profile_missing:{row_index}")
+        elif evaluator_profile_id != str(design_row.get("evaluator_profile_id") or ""):
+            blockers.append(f"episode_result_evaluator_profile_mismatch:{row_index}")
+        design_backend = (
+            design_row.get("evaluator_backend")
+            if isinstance(design_row.get("evaluator_backend"), Mapping)
+            else {}
+        )
+        evaluator_backend_id = str(row.get("evaluator_backend_id") or "")
+        if not evaluator_backend_id:
+            blockers.append(f"episode_result_evaluator_backend_missing:{row_index}")
+        elif evaluator_backend_id != str(design_backend.get("backend_id") or ""):
+            blockers.append(f"episode_result_evaluator_backend_mismatch:{row_index}")
+        if row.get("authoritative_manifest_status") != "completed":
+            blockers.append(f"episode_result_authoritative_manifest_not_completed:{row_index}")
+        if row.get("infrastructure_status") != "succeeded":
+            blockers.append(f"episode_result_infrastructure_not_succeeded:{row_index}")
+        evaluator_outcome_status = row.get("evaluator_outcome_status")
+        if evaluator_outcome_status not in {"valid", "abstained"}:
+            blockers.append(f"episode_result_evaluator_outcome_invalid:{row_index}")
         for field in (
             "commanded_action_chunk_sha256",
+            "evaluator_profile_manifest_sha256",
+            "evaluator_backend_manifest_sha256",
+            "evaluator_checkpoint_sha256",
+            "evaluator_request_sha256",
             "model_output_sha256",
             "next_policy_query_sha256",
             "action_control_suite_sha256",
+            "criterion_result_sha256",
+            "authoritative_manifest_sha256",
         ):
             if not _digest(row.get(field)):
                 blockers.append(f"episode_result_chain_digest_missing:{row_index}:{field}")
@@ -221,14 +249,12 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         if not criteria:
             blockers.append(f"episode_result_criteria_missing:{row_index}")
         episode_values: list[float] = []
-        episode_abstained = False
+        episode_abstained = evaluator_outcome_status == "abstained"
         for criterion_index, criterion in enumerate(criteria):
             outcome = str(criterion.get("outcome") or "")
             confidence = _number(criterion.get("confidence"))
             if outcome not in {"success", "failure", "abstain", "inconclusive"}:
-                blockers.append(
-                    f"criterion_outcome_invalid:{row_index}:{criterion_index}"
-                )
+                blockers.append(f"criterion_outcome_invalid:{row_index}:{criterion_index}")
                 continue
             if confidence is None or not 0.0 <= confidence <= 1.0:
                 blockers.append(
@@ -246,14 +272,20 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
             if not evidence_refs:
                 blockers.append(f"criterion_evidence_missing:{row_index}:{criterion_index}")
             elif any(not _digest(ref.get("sha256")) for ref in evidence_refs):
-                blockers.append(
-                    f"criterion_evidence_digest_invalid:{row_index}:{criterion_index}"
-                )
+                blockers.append(f"criterion_evidence_digest_invalid:{row_index}:{criterion_index}")
             if outcome in {"abstain", "inconclusive"}:
                 episode_abstained = True
             elif outcome == "success":
+                if evaluator_outcome_status == "abstained":
+                    blockers.append(
+                        f"abstained_evaluator_cannot_emit_decided_criterion:{row_index}:{criterion_index}"
+                    )
                 episode_values.append(1.0)
             else:
+                if evaluator_outcome_status == "abstained":
+                    blockers.append(
+                        f"abstained_evaluator_cannot_emit_decided_criterion:{row_index}:{criterion_index}"
+                    )
                 episode_values.append(0.0)
                 taxonomy = [str(item) for item in criterion.get("failure_taxonomy", []) or []]
                 if not taxonomy:
@@ -409,6 +441,8 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         "blockers": blockers,
         "claim_boundary": {
             "simulator_ranking_is_not_real_world_ordering": True,
+            "evaluator_profile_is_not_compute_provider_identity": True,
+            "oscar_and_sc3_are_optional_versioned_evaluator_profiles": True,
             "paper_metrics_are_never_inherited": True,
             "correlation_requires_independently_accepted_anchor_rows": True,
         },

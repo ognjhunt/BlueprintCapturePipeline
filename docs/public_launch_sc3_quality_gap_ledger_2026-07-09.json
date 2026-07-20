@@ -5,7 +5,7 @@
   "updated_at": "2026-07-10T13:13:27+00:00",
   "source_audit": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
   "source_audit_sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
-  "evidence_mapping_sha256": "sha256:e2b94f149b21cf7cc32a848f838ad19be4a6afc51c8043a0ce9684c50acec778",
+  "evidence_mapping_sha256": "sha256:ae957b116eaa493595e29b32022c3869c20b17e781bc69117489c67278375bfb",
   "authoritative_for_current_status": true,
   "status_definitions": {
     "open": "No complete, current exit-criteria proof is recorded.",
@@ -3545,7 +3545,7 @@
             {
               "artifact_id": "SC3-08-AC-01-EV-04",
               "path": "src/blueprint_pipeline/policy_evaluation_contracts.py",
-              "sha256": "sha256:08f811eb4ce881a08414c50561c3ab869d2bbea726a329eb1223a3a798535e2d",
+              "sha256": "sha256:0311a4fa1bdf5992802ad33455daa4e068c726ad8855b90138345ca5b19f156f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3577,8 +3577,24 @@
             {
               "artifact_id": "SC3-08-AC-01-EV-06",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "sha256": "sha256:9565860fbd8958567346f44ffe3834389b6e28a54172ab79dd43f8568ac50325",
               "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-08-AC-01-EV-07",
+              "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
+              "sha256": "sha256:aaa8467252f36521e3c3f07e001b6af937ce901af15e6f754dd7c912e057287e",
+              "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
               "supports_remediation": true,
@@ -3613,7 +3629,8 @@
               "SC3-08-AC-01-EV-03",
               "SC3-08-AC-01-EV-04",
               "SC3-08-AC-01-EV-05",
-              "SC3-08-AC-01-EV-06"
+              "SC3-08-AC-01-EV-06",
+              "SC3-08-AC-01-EV-07"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -4133,7 +4150,7 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-03",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "sha256": "sha256:57bfe8be3e7addfb2d3392b2a0d1d771b3d624830ffee98b61518b2f45ca6581",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4149,8 +4166,24 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "sha256": "sha256:9565860fbd8958567346f44ffe3834389b6e28a54172ab79dd43f8568ac50325",
               "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-12-AC-01-EV-05",
+              "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
+              "sha256": "sha256:aaa8467252f36521e3c3f07e001b6af937ce901af15e6f754dd7c912e057287e",
+              "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
               "supports_remediation": true,
@@ -4183,7 +4216,8 @@
               "SC3-12-AC-01-EV-01",
               "SC3-12-AC-01-EV-02",
               "SC3-12-AC-01-EV-03",
-              "SC3-12-AC-01-EV-04"
+              "SC3-12-AC-01-EV-04",
+              "SC3-12-AC-01-EV-05"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -7104,6 +7138,22 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "REL-14-AC-01-EV-04",
+              "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
+              "sha256": "sha256:aaa8467252f36521e3c3f07e001b6af937ce901af15e6f754dd7c912e057287e",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
@@ -7125,7 +7175,8 @@
             "evidence_artifact_ids": [
               "REL-14-AC-01-EV-01",
               "REL-14-AC-01-EV-02",
-              "REL-14-AC-01-EV-03"
+              "REL-14-AC-01-EV-03",
+              "REL-14-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -9680,8 +9731,8 @@
           "evidence_artifacts": [
             {
               "artifact_id": "SC3-16-AC-01-EV-01",
-              "path": "src/blueprint_pipeline/policy_evaluation_contracts.py",
-              "sha256": "sha256:08f811eb4ce881a08414c50561c3ab869d2bbea726a329eb1223a3a798535e2d",
+              "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
+              "sha256": "sha256:aaa8467252f36521e3c3f07e001b6af937ce901af15e6f754dd7c912e057287e",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9696,8 +9747,8 @@
             },
             {
               "artifact_id": "SC3-16-AC-01-EV-02",
-              "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "path": "src/blueprint_pipeline/policy_evaluation_contracts.py",
+              "sha256": "sha256:0311a4fa1bdf5992802ad33455daa4e068c726ad8855b90138345ca5b19f156f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9712,8 +9763,24 @@
             },
             {
               "artifact_id": "SC3-16-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/decision_grade_ranking.py",
+              "sha256": "sha256:57bfe8be3e7addfb2d3392b2a0d1d771b3d624830ffee98b61518b2f45ca6581",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-16-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "sha256": "sha256:9565860fbd8958567346f44ffe3834389b6e28a54172ab79dd43f8568ac50325",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9746,7 +9813,8 @@
             "evidence_artifact_ids": [
               "SC3-16-AC-01-EV-01",
               "SC3-16-AC-01-EV-02",
-              "SC3-16-AC-01-EV-03"
+              "SC3-16-AC-01-EV-03",
+              "SC3-16-AC-01-EV-04"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -10277,7 +10345,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-03",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "sha256": "sha256:57bfe8be3e7addfb2d3392b2a0d1d771b3d624830ffee98b61518b2f45ca6581",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10293,7 +10361,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "sha256": "sha256:9565860fbd8958567346f44ffe3834389b6e28a54172ab79dd43f8568ac50325",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10439,6 +10507,22 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "SC3-21-AC-01-EV-03",
+              "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
+              "sha256": "sha256:aaa8467252f36521e3c3f07e001b6af937ce901af15e6f754dd7c912e057287e",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
@@ -10459,7 +10543,8 @@
             "evaluated_at": "2026-07-10T13:01:59+00:00",
             "evidence_artifact_ids": [
               "SC3-21-AC-01-EV-01",
-              "SC3-21-AC-01-EV-02"
+              "SC3-21-AC-01-EV-02",
+              "SC3-21-AC-01-EV-03"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -13686,7 +13771,7 @@
             {
               "artifact_id": "EVID-01-AC-01-EV-02",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:af07c0b5710dc95b8e294ff3ec8eeafd9a03a0cb2faea1fa5a355321d01f8104",
+              "sha256": "sha256:57bfe8be3e7addfb2d3392b2a0d1d771b3d624830ffee98b61518b2f45ca6581",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13718,7 +13803,7 @@
             {
               "artifact_id": "EVID-01-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:32ad3c4acf3a7f41d3020e340306cb8d1d0da80aea2fabe85204e1acc9bdb76d",
+              "sha256": "sha256:9565860fbd8958567346f44ffe3834389b6e28a54172ab79dd43f8568ac50325",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
