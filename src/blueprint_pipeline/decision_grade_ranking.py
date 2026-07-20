@@ -16,7 +16,7 @@ from .policy_evaluation_contracts import (
 )
 
 
-SCHEMA_VERSION = "decision_grade_ranking_request.v1"
+SCHEMA_VERSION = "decision_grade_ranking_request.v2"
 BOOTSTRAP_REPLICATES = 10_000
 BOOTSTRAP_METHOD = "matched_cell_policy_criterion_cluster_percentile.v1"
 _SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
@@ -409,7 +409,7 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("accepted_anchor_rows_require_frozen_calibration_recomputation")
     blockers = sorted(set(blockers))
     return {
-        "schema_version": "decision_grade_ranking.v1",
+        "schema_version": "decision_grade_ranking.v2",
         "status": "decision_grade" if not blockers else "blocked",
         "decision_grade": not blockers,
         "policy_scorecards": score_rows,

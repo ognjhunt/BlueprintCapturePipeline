@@ -144,6 +144,7 @@ def test_policy_adapter_requires_exact_action_semantics() -> None:
 def test_generic_policy_design_admits_seven_independent_matched_policies() -> None:
     result = validate_policy_evaluation_design(_design())
 
+    assert result["schema_version"] == "policy_evaluation_design_validation.v2"
     assert result["status"] == "decision_grade"
     assert result["policy_count"] == 7
     assert result["independent_checkpoint_count"] == 7
@@ -153,6 +154,16 @@ def test_generic_policy_design_admits_seven_independent_matched_policies() -> No
     assert result["evaluator_families"] == ["generic_evaluator_bounded"]
     assert result["evaluator_backend_ids"] == ["cosmos-3-evaluator-adapter"]
     assert result["evaluator_model_families"] == ["cosmos"]
+
+
+def test_legacy_policy_design_schema_does_not_silently_enter_v2_contract() -> None:
+    candidate = _design()
+    candidate["schema_version"] = "policy_evaluation_design.v1"
+
+    result = validate_policy_evaluation_design(candidate)
+
+    assert result["status"] == "blocked"
+    assert "policy_evaluation_design_schema_missing_or_unsupported" in result["blockers"]
 
 
 def test_policy_design_normalizes_checkpoint_digests_before_independence_count() -> None:
@@ -413,6 +424,7 @@ def _ranking_request() -> dict:
 def test_decision_grade_ranking_keeps_correlation_unmeasured_without_real_anchors() -> None:
     result = build_decision_grade_ranking(_ranking_request())
 
+    assert result["schema_version"] == "decision_grade_ranking.v2"
     assert result["status"] == "decision_grade"
     assert result["bradley_terry"]["graph_connected"] is True
     assert len(result["bradley_terry"]["ranking"]) == 7
@@ -422,6 +434,16 @@ def test_decision_grade_ranking_keeps_correlation_unmeasured_without_real_anchor
     assert result["pearson"] is None
     assert result["spearman"] is None
     assert result["mmrv"] is None
+
+
+def test_legacy_ranking_request_schema_does_not_silently_enter_v2_contract() -> None:
+    candidate = _ranking_request()
+    candidate["schema_version"] = "decision_grade_ranking_request.v1"
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "decision_grade_ranking_schema_missing_or_unsupported" in result["blockers"]
 
 
 def test_decision_grade_ranking_rejects_low_confidence_silent_failure_and_disconnected_graph() -> (

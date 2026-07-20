@@ -287,7 +287,7 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
 
     blockers = sorted(set(blockers))
     return {
-        "schema_version": "policy_evaluation_design_validation.v1",
+        "schema_version": "policy_evaluation_design_validation.v2",
         "status": "decision_grade" if not blockers else "blocked",
         "decision_grade_eligible": not blockers,
         "policy_count": len(set(policy_ids)),
