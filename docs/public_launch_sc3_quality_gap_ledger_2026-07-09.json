@@ -3577,7 +3577,7 @@
             {
               "artifact_id": "SC3-08-AC-01-EV-06",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:3bbb18c94310d854ae910cefaa4dd757e1a7a845432d236ba2de0bde1f291430",
+              "sha256": "sha256:c7828081e42be0c1c3ae5b87aaa565b4c6c0bf7d11375d68cb0b7b49e80d9cc8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3593,7 +3593,7 @@
             {
               "artifact_id": "SC3-08-AC-01-EV-07",
               "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
-              "sha256": "sha256:a367143b89ed954b93b0100b451e5a706a76b4aae74e1517286d5be074ce6ce1",
+              "sha256": "sha256:f17186d2efeac4726fcc0d06903e5b86ee04c5936e517dad0f0fcfb87dfdf27f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4166,7 +4166,7 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:3bbb18c94310d854ae910cefaa4dd757e1a7a845432d236ba2de0bde1f291430",
+              "sha256": "sha256:c7828081e42be0c1c3ae5b87aaa565b4c6c0bf7d11375d68cb0b7b49e80d9cc8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4182,7 +4182,7 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-05",
               "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
-              "sha256": "sha256:a367143b89ed954b93b0100b451e5a706a76b4aae74e1517286d5be074ce6ce1",
+              "sha256": "sha256:f17186d2efeac4726fcc0d06903e5b86ee04c5936e517dad0f0fcfb87dfdf27f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7142,7 +7142,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-04",
               "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
-              "sha256": "sha256:a367143b89ed954b93b0100b451e5a706a76b4aae74e1517286d5be074ce6ce1",
+              "sha256": "sha256:f17186d2efeac4726fcc0d06903e5b86ee04c5936e517dad0f0fcfb87dfdf27f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9732,7 +9732,7 @@
             {
               "artifact_id": "SC3-16-AC-01-EV-01",
               "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
-              "sha256": "sha256:a367143b89ed954b93b0100b451e5a706a76b4aae74e1517286d5be074ce6ce1",
+              "sha256": "sha256:f17186d2efeac4726fcc0d06903e5b86ee04c5936e517dad0f0fcfb87dfdf27f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9780,7 +9780,7 @@
             {
               "artifact_id": "SC3-16-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:3bbb18c94310d854ae910cefaa4dd757e1a7a845432d236ba2de0bde1f291430",
+              "sha256": "sha256:c7828081e42be0c1c3ae5b87aaa565b4c6c0bf7d11375d68cb0b7b49e80d9cc8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10361,7 +10361,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:3bbb18c94310d854ae910cefaa4dd757e1a7a845432d236ba2de0bde1f291430",
+              "sha256": "sha256:c7828081e42be0c1c3ae5b87aaa565b4c6c0bf7d11375d68cb0b7b49e80d9cc8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10511,7 +10511,7 @@
             {
               "artifact_id": "SC3-21-AC-01-EV-03",
               "path": "src/blueprint_pipeline/evaluator_evidence_profiles.py",
-              "sha256": "sha256:a367143b89ed954b93b0100b451e5a706a76b4aae74e1517286d5be074ce6ce1",
+              "sha256": "sha256:f17186d2efeac4726fcc0d06903e5b86ee04c5936e517dad0f0fcfb87dfdf27f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13803,7 +13803,7 @@
             {
               "artifact_id": "EVID-01-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:3bbb18c94310d854ae910cefaa4dd757e1a7a845432d236ba2de0bde1f291430",
+              "sha256": "sha256:c7828081e42be0c1c3ae5b87aaa565b4c6c0bf7d11375d68cb0b7b49e80d9cc8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

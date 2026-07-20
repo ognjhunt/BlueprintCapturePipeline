@@ -121,7 +121,7 @@ def required_evaluator_evidence_digest_fields(profile_id: str) -> tuple[str, ...
     unsupported-profile blocker.
     """
 
-    profile = EVALUATOR_EVIDENCE_PROFILES.get(profile_id)
+    profile = EVALUATOR_EVIDENCE_PROFILES.get(str(profile_id or "").strip())
     if profile is None:
         return COMMON_DIGEST_FIELDS
     return (*COMMON_DIGEST_FIELDS, *profile["required_digest_fields"])

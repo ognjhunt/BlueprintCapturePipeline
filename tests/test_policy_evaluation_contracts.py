@@ -546,6 +546,7 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
 
 def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> None:
     candidate = _ranking_request()
+    padded_profile_id = " oscar_roboarena_v2 "
     profile_digests = {
         "official_runtime_contract_sha256": _digest(8000),
         "fk_result_sha256": _digest(8001),
@@ -557,7 +558,7 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
     ):
         design_row.update(
             {
-                "evaluator_profile_id": "oscar_roboarena_v2",
+                "evaluator_profile_id": padded_profile_id,
                 **profile_digests,
                 "official_runtime_contract_status": "validated",
                 "fk_status": "passed",
@@ -567,11 +568,13 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
         )
         result_row.update(
             {
-                "evaluator_profile_id": "oscar_roboarena_v2",
+                "evaluator_profile_id": padded_profile_id,
                 **profile_digests,
             }
         )
 
+    # Admission and final ranking must select the same profile even when an
+    # upstream serializer has not yet trimmed surrounding whitespace.
     assert build_decision_grade_ranking(candidate)["status"] == "decision_grade"
 
     candidate["episode_results"][0].pop("fk_result_sha256")
