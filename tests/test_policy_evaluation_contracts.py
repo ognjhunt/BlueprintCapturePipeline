@@ -12,6 +12,7 @@ from blueprint_pipeline.policy_evaluation_contracts import (
 from blueprint_pipeline.evaluator_evidence_profiles import (
     COMMON_DIGEST_FIELDS,
     EVALUATOR_EVIDENCE_PROFILES,
+    required_evaluator_evidence_digest_fields,
     validate_evaluator_evidence,
 )
 from blueprint_pipeline.decision_grade_ranking import (
@@ -250,6 +251,13 @@ def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -
         "oscar_roboarena_v2",
         "sc3_eval_v3",
     }
+    assert required_evaluator_evidence_digest_fields("generic_evaluator_bounded_v1") == (
+        COMMON_DIGEST_FIELDS
+    )
+    assert "fk_result_sha256" in required_evaluator_evidence_digest_fields("oscar_roboarena_v2")
+    assert "synchronized_multiview_manifest_sha256" in (
+        required_evaluator_evidence_digest_fields("sc3_eval_v3")
+    )
 
     alternate_backend = deepcopy(generic)
     alternate_backend["evaluator_backend_manifest_sha256"] = _digest(7990)
@@ -534,6 +542,47 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
         "episode_result_chain_digest_missing:0:policy_runtime_output_sha256" in result["blockers"]
     )
     assert "criterion_evidence_digest_invalid:0:0" in result["blockers"]
+
+
+def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> None:
+    candidate = _ranking_request()
+    profile_digests = {
+        "official_runtime_contract_sha256": _digest(8000),
+        "fk_result_sha256": _digest(8001),
+        "camera_projection_sha256": _digest(8002),
+        "skeleton_conditioning_sha256": _digest(8003),
+    }
+    for design_row, result_row in zip(
+        candidate["evaluation_design"]["rows"], candidate["episode_results"]
+    ):
+        design_row.update(
+            {
+                "evaluator_profile_id": "oscar_roboarena_v2",
+                **profile_digests,
+                "official_runtime_contract_status": "validated",
+                "fk_status": "passed",
+                "camera_projection_status": "passed",
+                "skeleton_validation_status": "passed",
+            }
+        )
+        result_row.update(
+            {
+                "evaluator_profile_id": "oscar_roboarena_v2",
+                **profile_digests,
+            }
+        )
+
+    assert build_decision_grade_ranking(candidate)["status"] == "decision_grade"
+
+    candidate["episode_results"][0].pop("fk_result_sha256")
+    candidate["episode_results"][1]["skeleton_conditioning_sha256"] = _digest(8999)
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "episode_result_chain_digest_missing:0:fk_result_sha256" in result["blockers"]
+    assert (
+        "episode_result_chain_digest_mismatch:1:skeleton_conditioning_sha256" in result["blockers"]
+    )
 
 
 def test_decision_grade_ranking_is_invariant_to_registered_row_permutation() -> None:

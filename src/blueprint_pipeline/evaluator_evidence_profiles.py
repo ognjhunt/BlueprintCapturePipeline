@@ -113,6 +113,20 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def required_evaluator_evidence_digest_fields(profile_id: str) -> tuple[str, ...]:
+    """Return the common and profile-specific digest chain for ``profile_id``.
+
+    Unknown profiles still return the common chain so downstream validators do
+    not accidentally stop checking shared evidence while reporting the separate
+    unsupported-profile blocker.
+    """
+
+    profile = EVALUATOR_EVIDENCE_PROFILES.get(profile_id)
+    if profile is None:
+        return COMMON_DIGEST_FIELDS
+    return (*COMMON_DIGEST_FIELDS, *profile["required_digest_fields"])
+
+
 def validate_evaluator_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
     """Validate one row under its selected evaluator evidence profile."""
 
@@ -163,7 +177,7 @@ def validate_evaluator_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
     if backend.get("backend_is_compute_provider") is not False:
         blockers.append("evaluator_backend_must_not_be_compute_provider")
 
-    for field in (*COMMON_DIGEST_FIELDS, *profile["required_digest_fields"]):
+    for field in required_evaluator_evidence_digest_fields(profile_id):
         if not _digest(row.get(field)):
             blockers.append(f"evaluator_evidence_digest_missing_or_invalid:{field}")
 
