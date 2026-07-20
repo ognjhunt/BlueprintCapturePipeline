@@ -13263,7 +13263,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:4db9c2503612b011c2b24875306f0c90f42bd911915c889ffebb71b318f5c91d",
+              "sha256": "sha256:d30ce612e9ceec929263f968443bb1c2bbcef94febae05210f61ed173bc840be",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

@@ -54,6 +54,32 @@ class _FakeProvider:
         raise AssertionError("provider launch reached without current spend lock")
 
 
+def test_ambiguous_launch_state_is_preserved_for_teardown_settlement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_mark(path, *, reason, evidence):
+        recorded.update(path=path, reason=reason, evidence=dict(evidence))
+
+    monkeypatch.setattr(job, "mark_pending_teardown_ambiguous", fake_mark)
+    launch: dict[str, object] = {}
+    pending_path = tmp_path / "pending_teardown.json"
+
+    job._preserve_ambiguous_launch(
+        pending_path,
+        launch,
+        reason="finetune_launch_or_collection_exception:TimeoutError",
+    )
+
+    assert launch["allocation_outcome_ambiguous"] is True
+    assert recorded == {
+        "path": pending_path,
+        "reason": "finetune_launch_or_collection_exception:TimeoutError",
+        "evidence": {"allocation_outcome_ambiguous": True},
+    }
+
+
 def _dataset_archive(tmp_path: Path) -> Path:
     root = tmp_path / "microwave_owned_lerobot_v21_20260717"
     root.mkdir()

@@ -131,6 +131,22 @@ def _inventory_scope_excluding_bound_instance(
     }
 
 
+def _preserve_ambiguous_launch(
+    pending_path: str | Path,
+    launch: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    """Keep the pending teardown open when provider allocation is uncertain."""
+
+    launch["allocation_outcome_ambiguous"] = True
+    mark_pending_teardown_ambiguous(
+        pending_path,
+        reason=reason,
+        evidence=launch,
+    )
+
+
 def _load_mapping(path: Path, *, name: str) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1375,16 +1391,16 @@ def run_finetune_job(
                     ),
                 )
         else:
-            mark_pending_teardown_ambiguous(
+            _preserve_ambiguous_launch(
                 pending["path"],
+                launch,
                 reason="finetune_provider_launch_returned_without_instance_id",
-                evidence=launch,
             )
     except BaseException as exc:  # Provider outcome is ambiguous even on caller cancellation.
-        mark_pending_teardown_ambiguous(
+        _preserve_ambiguous_launch(
             pending["path"],
+            launch,
             reason=f"finetune_launch_or_collection_exception:{type(exc).__name__}",
-            evidence=launch,
         )
         collection = {
             "status": "blocked",
