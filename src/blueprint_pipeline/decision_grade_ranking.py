@@ -294,9 +294,7 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("bootstrap_method_missing_or_mismatch")
 
     rng = random.Random(seed)
-    matched_cell_keys = sorted(
-        {key[1:] for key in expected_result_keys}, key=lambda value: repr(value)
-    )
+    matched_cell_keys = sorted({key[1:] for key in expected_result_keys}, key=repr)
     bootstrap_samples_by_policy: dict[str, list[float]] = defaultdict(list)
     if matched_cell_keys:
         for _ in range(replicate_count):
