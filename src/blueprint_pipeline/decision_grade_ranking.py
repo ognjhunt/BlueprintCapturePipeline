@@ -217,10 +217,11 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(design_row.get("evaluator_backend"), Mapping)
             else {}
         )
-        evaluator_backend_id = str(row.get("evaluator_backend_id") or "")
+        evaluator_backend_id = str(row.get("evaluator_backend_id") or "").strip()
+        design_evaluator_backend_id = str(design_backend.get("backend_id") or "").strip()
         if not evaluator_backend_id:
             blockers.append(f"episode_result_evaluator_backend_missing:{row_index}")
-        elif evaluator_backend_id != str(design_backend.get("backend_id") or ""):
+        elif evaluator_backend_id != design_evaluator_backend_id:
             blockers.append(f"episode_result_evaluator_backend_mismatch:{row_index}")
         if row.get("authoritative_manifest_status") != "completed":
             blockers.append(f"episode_result_authoritative_manifest_not_completed:{row_index}")

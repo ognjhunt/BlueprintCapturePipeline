@@ -234,9 +234,9 @@ def validate_evaluator_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
         "status": "validated" if not blockers else "blocked",
         "evaluator_profile_id": profile_id,
         "evaluator_family": profile["family"],
-        "evaluator_backend_id": backend.get("backend_id"),
-        "evaluator_model_family": backend.get("model_family"),
-        "evaluator_model_version": backend.get("model_version"),
+        "evaluator_backend_id": str(backend.get("backend_id") or "").strip(),
+        "evaluator_model_family": str(backend.get("model_family") or "").strip(),
+        "evaluator_model_version": str(backend.get("model_version") or "").strip(),
         "model_abstained": outcome_status == "abstained",
         "blockers": blockers,
         "claim_boundary": {

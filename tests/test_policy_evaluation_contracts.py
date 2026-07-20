@@ -556,6 +556,9 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
     for row_index, (design_row, result_row) in enumerate(
         zip(candidate["evaluation_design"]["rows"], candidate["episode_results"])
     ):
+        design_row["evaluator_backend"]["backend_id"] = (
+            " cosmos-3-evaluator-adapter " if row_index % 2 else "cosmos-3-evaluator-adapter"
+        )
         design_row.update(
             {
                 "evaluator_profile_id": (
@@ -576,8 +579,8 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
         )
 
     # Admission and final ranking must select the same profile even when
-    # serializers disagree about surrounding whitespace between matched
-    # policies or between a design row and its episode result.
+    # serializers disagree about surrounding whitespace in profile/backend
+    # identities between matched policies or between design and result rows.
     assert build_decision_grade_ranking(candidate)["status"] == "decision_grade"
 
     candidate["episode_results"][0].pop("fk_result_sha256")
