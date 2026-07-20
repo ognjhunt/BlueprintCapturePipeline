@@ -44,6 +44,7 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .qualification_control_admission import admit_qualification_control_mutation
+from .wam_provider_object_store import signed_output_object_binding_sha256
 
 
 SCHEMA_VERSION = "g1_microwave_finetune_provider_job.v1"
@@ -166,13 +167,29 @@ def _bundle_evidence(bundle_path: Path) -> dict[str, Any]:
     return report
 
 
-def _staging_evidence(stage_dir: Path, bundle_path: Path) -> dict[str, Any]:
+def _staging_evidence(
+    stage_dir: Path,
+    bundle_path: Path,
+    *,
+    output_put_url: str | None = None,
+    output_get_url: str | None = None,
+) -> dict[str, Any]:
     manifest = _load_mapping(
         stage_dir / "wam_provider_object_store_staging_manifest.json",
         name="finetune_object_store_staging_manifest",
     )
     round_trip = manifest.get("signed_output_round_trip") or {}
     output_binding = str(manifest.get("output_url_object_binding_sha256") or "").lower()
+    put_url = output_put_url or _read_secret_url(
+        stage_dir / "provider_output_put_url.txt", name="finetune_staging_output_put_url"
+    )
+    get_url = output_get_url or _read_secret_url(
+        stage_dir / "provider_output_get_url.txt", name="finetune_staging_output_get_url"
+    )
+    try:
+        current_output_binding = signed_output_object_binding_sha256(put_url, get_url)
+    except ValueError as exc:
+        raise ValueError("finetune_object_store_staging_not_qualified") from exc
     if (
         manifest.get("status") != "completed"
         or Path(str(manifest.get("bundle_path") or "")).resolve() != bundle_path.resolve()
@@ -180,6 +197,7 @@ def _staging_evidence(stage_dir: Path, bundle_path: Path) -> dict[str, Any]:
         or round_trip.get("status") != "passed"
         or len(output_binding) != 64
         or any(character not in "0123456789abcdef" for character in output_binding)
+        or output_binding != current_output_binding
         or manifest.get("raw_secret_values_recorded") is not False
     ):
         raise ValueError("finetune_object_store_staging_not_qualified")
@@ -903,13 +921,21 @@ def resume_checkpoint_transfer_to_vast(
             raise ValueError("finetune_worker_report_not_qualified")
         for index, value in enumerate(checkpoint_object_store_stage_dirs, start=1):
             stage = Path(value).expanduser().resolve()
-            _staging_evidence(stage, bundle_path)
-            get_urls.append(
-                _read_secret_url(
-                    stage / "provider_output_get_url.txt",
-                    name=f"finetune_checkpoint_part_{index}_get_url",
-                )
+            put_url = _read_secret_url(
+                stage / "provider_output_put_url.txt",
+                name=f"finetune_checkpoint_part_{index}_put_url",
             )
+            get_url = _read_secret_url(
+                stage / "provider_output_get_url.txt",
+                name=f"finetune_checkpoint_part_{index}_get_url",
+            )
+            _staging_evidence(
+                stage,
+                bundle_path,
+                output_put_url=put_url,
+                output_get_url=get_url,
+            )
+            get_urls.append(get_url)
         if not get_urls:
             raise ValueError("finetune_checkpoint_part_stage_dirs_missing")
         target = _load_vast_checkpoint_target(
@@ -1001,7 +1027,6 @@ def run_finetune_job(
             blockers.append(str(exc))
     try:
         bundle = _bundle_evidence(bundle_path)
-        staging = _staging_evidence(stage_dir, bundle_path)
         bundle_url = _read_secret_url(
             stage_dir / "provider_bundle_url.txt", name="finetune_provider_bundle_url"
         )
@@ -1011,8 +1036,12 @@ def run_finetune_job(
         get_url = _read_secret_url(
             stage_dir / "provider_output_get_url.txt", name="finetune_provider_output_get_url"
         )
-        checkpoint_staging = _staging_evidence(checkpoint_stage_dir, bundle_path)
-        checkpoint_part_staging = [checkpoint_staging]
+        staging = _staging_evidence(
+            stage_dir,
+            bundle_path,
+            output_put_url=put_url,
+            output_get_url=get_url,
+        )
         checkpoint_put_url = _read_secret_url(
             checkpoint_stage_dir / "provider_output_put_url.txt",
             name="finetune_checkpoint_output_put_url",
@@ -1021,22 +1050,34 @@ def run_finetune_job(
             checkpoint_stage_dir / "provider_output_get_url.txt",
             name="finetune_checkpoint_output_get_url",
         )
+        checkpoint_staging = _staging_evidence(
+            checkpoint_stage_dir,
+            bundle_path,
+            output_put_url=checkpoint_put_url,
+            output_get_url=checkpoint_get_url,
+        )
+        checkpoint_part_staging = [checkpoint_staging]
         checkpoint_part_put_urls = [checkpoint_put_url]
         checkpoint_part_get_urls = [checkpoint_get_url]
         for index, part_stage_dir in enumerate(checkpoint_part_stage_dirs, start=2):
-            checkpoint_part_staging.append(_staging_evidence(part_stage_dir, bundle_path))
-            checkpoint_part_put_urls.append(
-                _read_secret_url(
-                    part_stage_dir / "provider_output_put_url.txt",
-                    name=f"finetune_checkpoint_part_{index}_put_url",
+            part_put_url = _read_secret_url(
+                part_stage_dir / "provider_output_put_url.txt",
+                name=f"finetune_checkpoint_part_{index}_put_url",
+            )
+            part_get_url = _read_secret_url(
+                part_stage_dir / "provider_output_get_url.txt",
+                name=f"finetune_checkpoint_part_{index}_get_url",
+            )
+            checkpoint_part_staging.append(
+                _staging_evidence(
+                    part_stage_dir,
+                    bundle_path,
+                    output_put_url=part_put_url,
+                    output_get_url=part_get_url,
                 )
             )
-            checkpoint_part_get_urls.append(
-                _read_secret_url(
-                    part_stage_dir / "provider_output_get_url.txt",
-                    name=f"finetune_checkpoint_part_{index}_get_url",
-                )
-            )
+            checkpoint_part_put_urls.append(part_put_url)
+            checkpoint_part_get_urls.append(part_get_url)
     except (OSError, ValueError) as exc:
         bundle = {}
         staging = {}

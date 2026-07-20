@@ -79,14 +79,19 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
     )
     stage = tmp_path / "stage"
     stage.mkdir()
-    for name in (
-        "provider_bundle_url.txt",
-        "provider_output_put_url.txt",
-        "provider_output_get_url.txt",
-    ):
+    stage_urls = {
+        "provider_bundle_url.txt": "https://objects.example/bundle.zip?signed=get",
+        "provider_output_put_url.txt": "https://objects.example/proof-output.zip?signed=put",
+        "provider_output_get_url.txt": "https://objects.example/proof-output.zip?signed=get",
+    }
+    for name, url in stage_urls.items():
         path = stage / name
-        path.write_text(f"https://objects.example/{name}?signed=test", encoding="utf-8")
+        path.write_text(url, encoding="utf-8")
         path.chmod(0o600)
+    stage_binding = job.signed_output_object_binding_sha256(
+        stage_urls["provider_output_put_url.txt"],
+        stage_urls["provider_output_get_url.txt"],
+    )
     (stage / "wam_provider_object_store_staging_manifest.json").write_text(
         json.dumps(
             {
@@ -94,7 +99,7 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
                 "bundle_path": str(provider_bundle),
                 "bundle_size_bytes": provider_bundle.stat().st_size,
                 "signed_output_round_trip": {"status": "passed"},
-                "output_url_object_binding_sha256": "a" * 64,
+                "output_url_object_binding_sha256": stage_binding,
                 "raw_secret_values_recorded": False,
             }
         ),
@@ -102,16 +107,19 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
     )
     checkpoint_stage = tmp_path / "checkpoint-stage"
     checkpoint_stage.mkdir()
-    for name in (
-        "provider_bundle_url.txt",
-        "provider_output_put_url.txt",
-        "provider_output_get_url.txt",
-    ):
+    checkpoint_urls = {
+        "provider_bundle_url.txt": "https://checkpoint-objects.example/bundle.zip?signed=get",
+        "provider_output_put_url.txt": "https://checkpoint-objects.example/checkpoint.zip?signed=put",
+        "provider_output_get_url.txt": "https://checkpoint-objects.example/checkpoint.zip?signed=get",
+    }
+    for name, url in checkpoint_urls.items():
         path = checkpoint_stage / name
-        path.write_text(
-            f"https://checkpoint-objects.example/{name}?signed=test", encoding="utf-8"
-        )
+        path.write_text(url, encoding="utf-8")
         path.chmod(0o600)
+    checkpoint_binding = job.signed_output_object_binding_sha256(
+        checkpoint_urls["provider_output_put_url.txt"],
+        checkpoint_urls["provider_output_get_url.txt"],
+    )
     (checkpoint_stage / "wam_provider_object_store_staging_manifest.json").write_text(
         json.dumps(
             {
@@ -119,7 +127,7 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
                 "bundle_path": str(provider_bundle),
                 "bundle_size_bytes": provider_bundle.stat().st_size,
                 "signed_output_round_trip": {"status": "passed"},
-                "output_url_object_binding_sha256": "c" * 64,
+                "output_url_object_binding_sha256": checkpoint_binding,
                 "raw_secret_values_recorded": False,
             }
         ),
@@ -163,7 +171,7 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
     assert result["bound_request"]["signed_bundle_url_present"] is True
     assert result["bound_request"]["signed_checkpoint_output_urls_present"] is True
     assert result["bound_request"]["checkpoint_output_object_binding_sha256"] == (
-        "c" * 64
+        checkpoint_binding
     )
     assert result["bound_request"]["raw_secret_values_recorded"] is False
     assert len(result["bound_request"]["provider_bootstrap_sha256"]) == 64
@@ -212,7 +220,11 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
 
     checkpoint_manifest = checkpoint_stage / "wam_provider_object_store_staging_manifest.json"
     colliding = json.loads(checkpoint_manifest.read_text(encoding="utf-8"))
-    colliding["output_url_object_binding_sha256"] = "a" * 64
+    for name in ("provider_output_put_url.txt", "provider_output_get_url.txt"):
+        path = checkpoint_stage / name
+        path.write_text(stage_urls[name], encoding="utf-8")
+        path.chmod(0o600)
+    colliding["output_url_object_binding_sha256"] = stage_binding
     checkpoint_manifest.write_text(json.dumps(colliding), encoding="utf-8")
     collision_result_path = tmp_path / "collision-result.json"
     collision = job.run_finetune_job(
@@ -232,6 +244,26 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
         collision["blockers"]
     )
     assert json.loads(collision_result_path.read_text(encoding="utf-8")) == collision
+
+    replaced_url = stage / "provider_output_get_url.txt"
+    replaced_url.write_text(
+        "https://objects.example/unrelated-output.zip?signed=get", encoding="utf-8"
+    )
+    replaced_url.chmod(0o600)
+    replaced = job.run_finetune_job(
+        provider_name="runpod",
+        provider_bundle=provider_bundle,
+        object_store_stage_dir=stage,
+        checkpoint_object_store_stage_dir=checkpoint_stage,
+        release_evidence=release,
+        admission_out=tmp_path / "replaced-admission.json",
+        bound_request_out=tmp_path / "replaced-bound.json",
+        adapter_output=tmp_path / "replaced-result.json",
+        pod_name="",
+        execute=False,
+    )
+    assert replaced["status"] == "blocked"
+    assert "finetune_object_store_staging_not_qualified" in replaced["blockers"]
 
 
 def test_vast_finetune_inventory_allows_only_exact_bound_retained_target(
@@ -253,7 +285,7 @@ def test_vast_finetune_inventory_allows_only_exact_bound_retained_target(
     monkeypatch.setattr(
         job,
         "_staging_evidence",
-        lambda path, _bundle: {
+        lambda path, _bundle, **_kwargs: {
             "output_url_object_binding_sha256": (
                 "c" * 64 if "checkpoint" in str(path) else "a" * 64
             )
@@ -762,7 +794,7 @@ def test_resume_checkpoint_transfer_uses_existing_parts_without_runpod(
     monkeypatch.setattr(
         job,
         "_staging_evidence",
-        lambda _stage, _bundle: {"status": "completed"},
+        lambda _stage, _bundle, **_kwargs: {"status": "completed"},
     )
     monkeypatch.setattr(
         job,
