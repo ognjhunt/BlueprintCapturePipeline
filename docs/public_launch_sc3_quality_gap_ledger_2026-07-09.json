@@ -9616,7 +9616,7 @@
             {
               "artifact_id": "SC3-15-AC-01-EV-02",
               "path": "tests/test_sc3_fidelity_contracts.py",
-              "sha256": "sha256:cd5e210113b295c987bed4538bd451caab4af4bc19ff8c664c47a925e637c642",
+              "sha256": "sha256:206dcd41c9f474722a6ebdfa4c5017864a28edd2dc6927435618081c9441d747",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10329,7 +10329,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-02",
               "path": "tests/test_sc3_fidelity_contracts.py",
-              "sha256": "sha256:cd5e210113b295c987bed4538bd451caab4af4bc19ff8c664c47a925e637c642",
+              "sha256": "sha256:206dcd41c9f474722a6ebdfa4c5017864a28edd2dc6927435618081c9441d747",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10644,7 +10644,7 @@
             {
               "artifact_id": "SC3-22-AC-01-EV-02",
               "path": "src/blueprint_pipeline/external_study_protocols.py",
-              "sha256": "sha256:4ecfb237117a8c3dbaf9fbabe8542ffb668a28859e5465b962e3fdd271f9119b",
+              "sha256": "sha256:32efa89f3f1e5599c08361b27030679daf4ae45a3246ba38f7e5a11cab6ddcd3",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10692,7 +10692,7 @@
             {
               "artifact_id": "SC3-22-AC-01-EV-05",
               "path": "tests/test_sc3_fidelity_contracts.py",
-              "sha256": "sha256:cd5e210113b295c987bed4538bd451caab4af4bc19ff8c664c47a925e637c642",
+              "sha256": "sha256:206dcd41c9f474722a6ebdfa4c5017864a28edd2dc6927435618081c9441d747",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
