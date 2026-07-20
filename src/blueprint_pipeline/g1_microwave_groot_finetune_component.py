@@ -209,7 +209,7 @@ if hashlib.sha256(payload).hexdigest() != sys.argv[2]:
 root = pathlib.Path(sys.argv[1]).resolve()
 with zipfile.ZipFile(io.BytesIO(payload)) as archive:
     names = archive.namelist()
-    if len(names) != len(set(names)) or set(names) != {sorted(REQUIRED_DATASET_MEMBERS)!r}:
+    if len(names) != len(set(names)) or set(names) != set({sorted(REQUIRED_DATASET_MEMBERS)!r}):
         raise SystemExit("g1_microwave_finetune_dataset_archive_members_invalid")
     for member in archive.infolist():
         destination = (root / member.filename).resolve()

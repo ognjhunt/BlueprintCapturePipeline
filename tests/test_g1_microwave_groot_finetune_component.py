@@ -92,6 +92,38 @@ def test_component_is_deterministic_hash_bound_and_fixed(tmp_path: Path) -> None
     assert "sealed_checkpoint_files_modified\": False" in script
 
 
+def test_generated_component_accepts_exact_dataset_archive_members(tmp_path: Path) -> None:
+    built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
+    script = built["script"]
+    marker = 'python3 - "$DATASET" "$ARCHIVE_SHA" <<\'PY\'\n'
+    extraction_source = script.split(marker, 1)[1].split(
+        "\nPY\nif [ ! -x /opt/gr00t-venv/bin/python ]",
+        1,
+    )[0]
+    extraction_root = tmp_path / "extracted"
+    extraction_root.mkdir()
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            extraction_source,
+            str(extraction_root),
+            built["dataset_archive"]["sha256"],
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert {
+        path.relative_to(extraction_root).as_posix()
+        for path in extraction_root.rglob("*")
+        if path.is_file()
+    } == component.REQUIRED_DATASET_MEMBERS
+
+
 def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:
     script = component.build_finetune_component(_dataset(tmp_path / "dataset"))["script"]
     marker = (
