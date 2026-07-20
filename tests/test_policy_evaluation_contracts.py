@@ -370,6 +370,7 @@ def _ranking_request() -> dict:
                 "evaluator_profile_id": row["evaluator_profile_id"],
                 "evaluator_backend_id": row["evaluator_backend"]["backend_id"],
                 "fresh_evaluator_model_execution_proven": True,
+                "fresh_evaluator_model_run_steps": row["fresh_evaluator_model_run_steps"],
                 "authoritative_manifest_status": "completed",
                 "infrastructure_status": "succeeded",
                 "evaluator_outcome_status": "valid",
@@ -529,6 +530,8 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
     row["model_output_sha256"] = "sha256:not-a-digest"
     row["provider_execution_sha256"] = "sha256:" + _digest(99999)
     row.pop("policy_runtime_output_sha256")
+    row.pop("fresh_evaluator_model_run_steps")
+    candidate["episode_results"][1]["fresh_evaluator_model_run_steps"] = 2
     row["criterion_results"][0]["evidence_refs"] = [{"sha256": "forged"}]
 
     result = build_decision_grade_ranking(candidate)
@@ -541,6 +544,8 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
     assert (
         "episode_result_chain_digest_missing:0:policy_runtime_output_sha256" in result["blockers"]
     )
+    assert "episode_result_fresh_evaluator_steps_invalid:0" in result["blockers"]
+    assert "episode_result_fresh_evaluator_steps_mismatch:1" in result["blockers"]
     assert "criterion_evidence_digest_invalid:0:0" in result["blockers"]
 
 

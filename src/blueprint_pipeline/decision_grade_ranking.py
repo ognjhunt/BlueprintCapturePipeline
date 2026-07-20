@@ -206,11 +206,25 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
             blockers.append(f"episode_result_artifact_not_current:{row_index}")
         if row.get("fresh_evaluator_model_execution_proven") is not True:
             blockers.append(f"episode_result_fresh_evaluator_execution_not_proven:{row_index}")
+        fresh_evaluator_model_run_steps = row.get("fresh_evaluator_model_run_steps")
+        if (
+            isinstance(fresh_evaluator_model_run_steps, bool)
+            or not isinstance(fresh_evaluator_model_run_steps, int)
+            or fresh_evaluator_model_run_steps <= 0
+        ):
+            blockers.append(f"episode_result_fresh_evaluator_steps_invalid:{row_index}")
         if row.get("fixture_or_proxy_model_output_used") is not False:
             blockers.append(f"episode_result_fixture_or_proxy_not_blocked:{row_index}")
         if row.get("fallback_policy_used") is not False:
             blockers.append(f"episode_result_fallback_policy_not_blocked:{row_index}")
         design_row = design_rows_by_key.get(result_key, {})
+        if (
+            isinstance(fresh_evaluator_model_run_steps, int)
+            and not isinstance(fresh_evaluator_model_run_steps, bool)
+            and fresh_evaluator_model_run_steps > 0
+            and fresh_evaluator_model_run_steps != design_row.get("fresh_evaluator_model_run_steps")
+        ):
+            blockers.append(f"episode_result_fresh_evaluator_steps_mismatch:{row_index}")
         evaluator_profile_id = str(row.get("evaluator_profile_id") or "").strip()
         design_evaluator_profile_id = str(design_row.get("evaluator_profile_id") or "").strip()
         if not evaluator_profile_id:
