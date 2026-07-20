@@ -959,7 +959,7 @@
             {
               "artifact_id": "DATA-01-AC-01-EV-02",
               "path": "src/blueprint_pipeline/materialization.py",
-              "sha256": "sha256:fdfe200b89065d03e85336ac07ab673147aca340f98658dad8f6f644b7bc4eae",
+              "sha256": "sha256:c12c822083a1b262c3ada01f31abcbb1b565cca37a8889c48ebcf593313abee5",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7520,7 +7520,7 @@
             {
               "artifact_id": "DATA-21-AC-01-EV-01",
               "path": "src/blueprint_pipeline/materialization.py",
-              "sha256": "sha256:fdfe200b89065d03e85336ac07ab673147aca340f98658dad8f6f644b7bc4eae",
+              "sha256": "sha256:c12c822083a1b262c3ada01f31abcbb1b565cca37a8889c48ebcf593313abee5",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
