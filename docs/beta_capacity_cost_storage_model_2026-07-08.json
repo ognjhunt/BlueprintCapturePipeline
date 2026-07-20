@@ -129,6 +129,7 @@
       "shard_count": 16,
       "shard_derivation": "int(hashlib.sha256(capture_id.encode()).hexdigest(), 16) % shard_count",
       "writer": "Blueprint-WebApp server/routes/creator.ts capture registration via server/utils/captureShard.ts",
+      "writer_note": "Blueprint-WebApp creator capture registration writes createdAtShard on new capture records; backfill of pre-existing records is a separate migration.",
       "reader_requirement_before_scale_up": "Aggregate per-shard created_at result sets before removing the legacy created_at composite.",
       "legacy_index_removal_requirement": "After sharded reader migration is proven, remove composites that still route high-rate creatorCaptures queries directly through monotonically increasing created_at.",
       "beta_without_sharding_max_write_rate_per_second": 500,
@@ -178,7 +179,9 @@
     "raw_capture_prefixes": ["scenes/", "targets/"],
     "raw_nearline_after_days": 30,
     "raw_coldline_after_days": 90,
-    "raw_delete_after_days": 180,
+    "raw_archive_after_days": 365,
+    "raw_delete_after_days": null,
+    "raw_archive_rationale": "Raw capture truth is never lifecycle-deleted; it moves to ARCHIVE at 365 days. At 10k locations x ~1.2 GiB raw p50 (~12 TiB), ARCHIVE at $0.0012/GiB-month is roughly $15/month, negligible versus recapture cost, and preserves capture data for future world-model training per WORLD_MODEL_STRATEGY_CONTEXT.md Data Priority.",
     "temporary_delete_after_days": 14,
     "buyer_eval_hosted_delete_after_days": 365,
     "local_robot_eval_jobs_retention": {
@@ -203,7 +206,8 @@
         "prefixes": ["scenes/", "targets/"],
         "nearline_after_days": 30,
         "coldline_after_days": 90,
-        "delete_after_days": 180
+        "archive_after_days": 365,
+        "delete_after_days": null
       },
       "temporary_processing": {
         "prefixes": ["tmp/", "staging/", "debug/"],

@@ -62,6 +62,11 @@ def _frame_step_bindings(overview, pov) -> dict[str, dict]:
         for index, path in enumerate(paths):
             bindings[path.name] = {
                 "camera_role": role,
+                "camera_motion_model": (
+                    "rigid_head_local_transform"
+                    if role == "robot_pov"
+                    else "task_framed_third_person_review"
+                ),
                 "step_index": index,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 **{key: value for key, value in steps[index].items() if key != "step_index"},

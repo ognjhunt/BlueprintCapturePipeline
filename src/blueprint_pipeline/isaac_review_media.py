@@ -12,6 +12,12 @@ from typing import Any, Sequence
 from .g1_kitchen_semantic_review import run_full_episode_semantic_review
 
 
+CAMERA_MOTION_MODELS = {
+    "overview": "task_framed_third_person_review",
+    "robot_pov": "rigid_head_local_transform",
+}
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -182,6 +188,11 @@ def admit_full_ordered_episode(
                         row_blockers.append("frame_step_binding_sha256_mismatch")
                     if str(frame_binding.get("camera_role") or "") != role:
                         row_blockers.append("frame_step_binding_role_mismatch")
+                    if (
+                        str(frame_binding.get("camera_motion_model") or "")
+                        != CAMERA_MOTION_MODELS[role]
+                    ):
+                        row_blockers.append("frame_step_binding_camera_motion_mismatch")
                     if int(frame_binding.get("step_index", -1)) != index:
                         row_blockers.append("frame_step_binding_index_mismatch")
                     expected_step = steps_by_index.get(index, {})
@@ -328,6 +339,26 @@ def record_frame_step_bindings(
                     "after_timestamp",
                     "attempt_id",
                     "launch_nonce",
+                    "allocation_launch_session_id",
+                    "qualification_attempt_bound",
+                    "qualification_attempt_sequence",
+                    "qualification_attempt_nonce_sha256",
+                    "control_frame_global_index",
+                    "physics_step_count_before",
+                    "physics_step_count_after",
+                    "physics_step_delta",
+                    "simulation_time_before_seconds",
+                    "simulation_time_after_seconds",
+                    "simulation_time_delta_seconds",
+                    "outer_source_step_index",
+                    "horizon_frame_index",
+                    "controller_frame_index",
+                    "source_action_frame_sha256",
+                    "task_joint_value_rad",
+                    "registered_transition_passed",
+                    "semantic_terminal_frame",
+                    "captured_at_ns",
+                    "camera_motion_model",
                 )
             },
         }

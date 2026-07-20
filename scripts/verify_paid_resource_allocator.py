@@ -46,17 +46,22 @@ PRODUCTION_SCAN_EXCLUSIONS = {
     "scripts/verify_paid_resource_allocator.py",
 }
 APPROVED_ADMISSION_ISSUERS = {
+    "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
     "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
     "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
     "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
     "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
     "src/blueprint_pipeline/paid_resource_allocator.py",
+    "src/blueprint_pipeline/qualification_control_admission.py",
+    "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
+    "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
     "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
     "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
+    "src/blueprint_pipeline/qualification_control_admission.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS = {
     (

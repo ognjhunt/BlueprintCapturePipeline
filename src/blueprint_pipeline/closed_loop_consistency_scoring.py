@@ -189,6 +189,26 @@ def _score_closed_loop_step_episode_consistency(
     action_units = [str(item) for item in action_source.get("action_units") or []]
     if action_vector_field == "root_position_and_yaw_fallback" and not action_units:
         action_units = ["m", "m", "m", "rad"]
+    strict_request_blockers: list[str] = []
+    if require_strict_action_aware_consistency:
+        if action_vector_field == "root_position_and_yaw_fallback" or not action_vector:
+            strict_request_blockers.append(
+                "strict_action_consistency_exact_commanded_action_chunk_missing"
+            )
+        if len(action_units) != len(action_vector) or any(not unit for unit in action_units):
+            strict_request_blockers.append(
+                "strict_action_consistency_per_dimension_action_units_missing_or_mismatch"
+            )
+        if (
+            control_hz is None
+            or control_hz <= 0
+            or sample_period is None
+            or sample_period <= 0
+            or sim_time is None
+        ):
+            strict_request_blockers.append(
+                "strict_action_consistency_action_timing_missing_or_invalid"
+            )
     controller_fk_state = _mapping(wam_output.get("skeleton_conditioning"))
     generated_state = _mapping(wam_output.get("generated_robot_state"))
     generated_motion_sha256 = _file_sha256(generated_video) if generated_video else ""
@@ -214,12 +234,18 @@ def _score_closed_loop_step_episode_consistency(
         "generated_robot_state": generated_state,
         "generated_state_sha256": _canonical_sha256(generated_state),
         "generated_motion_sha256": generated_motion_sha256,
+        "request_validation_status": (
+            "ready" if not strict_request_blockers else "blocked"
+        ),
+        "request_validation_blockers": strict_request_blockers,
     }
     request = {
         "schema_version": "wam_episode_consistency_request.v2",
         "generated_at": generated_at,
         "status": "ready_for_external_episode_scorer"
-        if rollouts and visual_rollout_useful
+        if rollouts and visual_rollout_useful and not strict_request_blockers
+        else "blocked_strict_action_contract"
+        if strict_request_blockers
         else "blocked_generated_rollout_visual_quality"
         if rollouts
         else "blocked_missing_generated_rollout",
@@ -275,6 +301,12 @@ def _score_closed_loop_step_episode_consistency(
                 "forward_result",
                 "inverse_result",
             ],
+            "outcome_states": ["passed", "failed", "abstained"],
+            "failure_domains": [
+                "model_abstention",
+                "infrastructure_failure",
+                "protocol_failure",
+            ],
         },
         "claim_boundary": {
             "scorer_is_separate_from_wam_execution_and_evaluator": True,
@@ -304,7 +336,9 @@ def _score_closed_loop_step_episode_consistency(
     consistency_blockers: list[str] = []
     command_result: dict[str, Any] | None = None
     command_payload: dict[str, Any] = {}
-    if not rollouts:
+    if strict_request_blockers:
+        consistency_blockers = list(strict_request_blockers)
+    elif not rollouts:
         consistency_blockers = ["missing_generated_video_for_wam_episode_consistency"]
     elif not visual_rollout_useful:
         consistency_blockers = _string_list(visual_smoke.get("blockers")) or [
@@ -367,7 +401,43 @@ def _score_closed_loop_step_episode_consistency(
         )
         if command_result is not None:
             consistency["command_result"] = command_result
-    scoring_requested = bool(allow_wam_consistency_scoring or command)
+    scoring_requested = bool(
+        require_strict_action_aware_consistency or allow_wam_consistency_scoring or command
+    )
+    payload_status = _string(command_payload.get("status")).strip().lower()
+    model_abstained = bool(
+        payload_status == "abstained"
+        or any(
+            _string(row.get("outcome")).strip().lower() == "abstained"
+            for row in command_payload.get("rollout_checks", []) or []
+            if isinstance(row, Mapping)
+        )
+    )
+    infrastructure_failure = bool(
+        scoring_requested
+        and command_result is not None
+        and command_result.get("status") != "completed"
+    )
+    protocol_failure = bool(
+        scoring_requested
+        and not model_abstained
+        and not infrastructure_failure
+        and not consistency.get("forward_inverse_consistency_proven")
+    )
+    consistency["model_abstained"] = model_abstained
+    consistency["infrastructure_failure"] = infrastructure_failure
+    consistency["protocol_failure"] = protocol_failure
+    consistency["scorer_outcome"] = (
+        "model_abstention"
+        if model_abstained
+        else "infrastructure_failure"
+        if infrastructure_failure
+        else "protocol_failure"
+        if protocol_failure
+        else "passed"
+        if consistency.get("forward_inverse_consistency_proven")
+        else "not_run"
+    )
     consistency["early_termination_recommended"] = bool(
         scoring_requested and not consistency.get("forward_inverse_consistency_proven")
     )
@@ -407,6 +477,10 @@ def _score_closed_loop_step_episode_consistency(
         "external_episode_consistency_scorer_ran": bool(
             consistency.get("external_episode_consistency_scorer_ran")
         ),
+        "scorer_outcome": consistency.get("scorer_outcome"),
+        "model_abstained": bool(consistency.get("model_abstained")),
+        "infrastructure_failure": bool(consistency.get("infrastructure_failure")),
+        "protocol_failure": bool(consistency.get("protocol_failure")),
         "early_termination_recommended": bool(consistency.get("early_termination_recommended")),
         "commanded_action_sha256": consistency.get("commanded_action_sha256"),
         "generated_motion_sha256": consistency.get("generated_motion_sha256"),

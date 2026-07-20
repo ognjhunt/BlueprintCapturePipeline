@@ -391,6 +391,11 @@ def test_worker_status_boolean_is_never_the_verdict(tmp_path: Path) -> None:
     result = _validate(tmp_path, rows, key, identity=identity)
     row = result["rows"]["persistent_simulator_transition"]
     assert row["status"] == "blocked"
+    assert result["blockers"] == []
+    assert not any(
+        "cross_row_action_sequence_mismatch" in blocker
+        for blocker in row["blockers"]
+    )
 
 
 def test_tampered_artifact_bytes_block(tmp_path: Path) -> None:

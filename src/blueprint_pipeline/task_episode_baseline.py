@@ -51,6 +51,10 @@ def _baseline_digest(baseline: Mapping[str, Any]) -> str:
         "episode_initial_value": baseline.get("episode_initial_value"),
         **{field: baseline.get(field) for field in _BINDING_STRING_FIELDS},
     }
+    if baseline.get("task_contract_artifact_sha256"):
+        payload["task_contract_artifact_sha256"] = baseline.get(
+            "task_contract_artifact_sha256"
+        )
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
@@ -65,6 +69,7 @@ def build_task_episode_baseline(
     stage_id: str,
     articulation_prim_path: str,
     task_contract_sha256: str,
+    task_contract_artifact_sha256: str | None = None,
     criterion_id: str,
     unit: str,
     captured_timestamp: str,
@@ -94,6 +99,15 @@ def build_task_episode_baseline(
         "episode_initial_value": initial,
         **{field: str(value) for field, value in fields.items()},
     }
+    if task_contract_artifact_sha256 is not None:
+        artifact_digest = str(task_contract_artifact_sha256).strip().lower()
+        if len(artifact_digest) != 64 or any(
+            char not in "0123456789abcdef" for char in artifact_digest
+        ):
+            raise ValueError(
+                "task_episode_baseline_field_invalid:task_contract_artifact_sha256"
+            )
+        baseline["task_contract_artifact_sha256"] = artifact_digest
     baseline["baseline_digest"] = _baseline_digest(baseline)
     return baseline
 

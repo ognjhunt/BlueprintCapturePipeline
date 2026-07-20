@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -82,15 +83,17 @@ def _keys(tmp_path: Path, monkeypatch) -> dict:
     }
 
 
+@pytest.mark.parametrize("direct_episode", [False, True])
 def test_emitter_output_is_directly_accepted_by_host_validator(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, direct_episode: bool
 ) -> None:
     pins = _keys(tmp_path, monkeypatch)
     monkeypatch.setenv("BLUEPRINT_PROVIDER_ALLOCATION_ID", "12345")
     attempt_path = tmp_path / "attempt_input_manifest.json"
     identity = _attempt(attempt_path)
-    out = tmp_path / "closed_loop_out"
-    startup = out / "startup_gates"
+    closed_loop_out = tmp_path / "closed_loop_out"
+    out = closed_loop_out / "episode_001" if direct_episode else closed_loop_out
+    startup = closed_loop_out / "startup_gates"
     for _, (relative, schema) in SPECS.items():
         path = startup / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,3 +188,17 @@ def test_emitter_output_is_directly_accepted_by_host_validator(
     assert set(result["rows"]) == set(WORKER_PROOF_ROW_SPECS)
     assert result["blockers"] == []
     assert {row["status"] for row in result["rows"].values()} == {"passed"}
+    expected_prefix = (
+        "closed_loop_out/episode_001/proof_leaves/"
+        if direct_episode
+        else "closed_loop_out/proof_leaves/"
+    )
+    emitted_refs = [
+        leaf["path"]
+        for row_id, row in rows.items()
+        if row_id not in SPECS
+        for leaf in row.get("leaf_artifacts") or []
+        if "/proof_leaves/" in str(leaf.get("path") or "")
+    ]
+    assert emitted_refs
+    assert all(path.startswith(expected_prefix) for path in emitted_refs)

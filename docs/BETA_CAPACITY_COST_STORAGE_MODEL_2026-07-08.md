@@ -108,7 +108,7 @@ Per-data-class policy:
 
 | Data class | Prefixes | Lifecycle action |
 | --- | --- | --- |
-| Raw capture truth | `scenes/`, `targets/` | Nearline after 30 days, Coldline after 90 days, delete after 180 days. |
+| Raw capture truth | `scenes/`, `targets/` | Nearline after 30 days, Coldline after 90 days, Archive after 365 days. No lifecycle delete: raw capture truth is preserved as if future world-model training depends on it (`WORLD_MODEL_STRATEGY_CONTEXT.md` Data Priority). At 10k locations x ~1.2 GiB raw p50 (~12 TiB), ARCHIVE at $0.0012/GiB-month costs roughly $15/month — negligible versus recapture cost. |
 | Temporary processing | `tmp/`, `staging/`, `debug/` | Delete after 14 days. |
 | Buyer/eval/hosted artifacts | `buyer_delivery/`, `marketplace/`, `hosted_sessions/`, `robot_eval_jobs/` | Delete after 365 days unless a contract-specific retention hold supersedes it. |
 
@@ -197,9 +197,12 @@ composite indexes now live where the collection's owner deploys them —
 | Soak report field | `firestore_latency_observation` |
 
 Before scaling beyond the beta model, readers must aggregate per-shard
-`created_at` results before any removal of the legacy composite. The
-checked-in index manifest and alert are not live Firestore latency proof and
-do not prove readers already fan out per-shard queries.
+`created_at` results before any removal of the legacy composite.
+Blueprint-WebApp creator capture registration writes `createdAtShard` on new
+capture records (`server/utils/captureShard.ts`); pre-existing records are
+unsharded until a separate backfill migration runs. The checked-in index
+manifest and alert are not live Firestore latency proof and do not prove
+readers already fan out per-shard queries.
 
 ## Verification
 

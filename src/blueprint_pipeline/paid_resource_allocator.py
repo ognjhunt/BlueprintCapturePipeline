@@ -53,7 +53,21 @@ from .groot_oscar_runpod_storage_volume import (
     retain_verified_model_cache,
     run_storage_model_volume,
 )
+from .g1_microwave_finetune_provider_job import (
+    PROBE_KIND as G1_MICROWAVE_FINETUNE_PROBE_KIND,
+    run_finetune_job as run_g1_microwave_finetune_job,
+)
 from .paid_resource_admission import require_paid_resource_admission
+from .single_g1_kitchen_episode_runpod import (
+    PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
+    run_single_episode,
+)
+from .single_g1_kitchen_qualification_session import (
+    COMPONENT_ALIASES as QUALIFICATION_COMPONENT_ALIASES,
+    PROBE_KIND as SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+    SESSION_ACTIONS as QUALIFICATION_SESSION_ACTIONS,
+    run_qualification_session,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -295,7 +309,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--bound-request-out", required=True)
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
-    gpu.add_argument("--provider", choices=("runpod", "digitalocean"), default="runpod")
+    gpu.add_argument(
+        "--provider",
+        choices=("runpod", "vast", "digitalocean"),
+        default="runpod",
+    )
     gpu.add_argument(
         "--probe-kind",
         choices=(
@@ -303,6 +321,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "strict-policy-smoke",
             "persistent-host-bake",
             PERSISTENT_CARRIER_PROBE_KIND,
+            SINGLE_KITCHEN_EPISODE_PROBE_KIND,
+            SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            G1_MICROWAVE_FINETUNE_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -310,6 +331,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--policy-observation")
     gpu.add_argument("--persistent-job-dir")
     gpu.add_argument("--task-prompt")
+    gpu.add_argument("--episode-bundle")
+    gpu.add_argument("--provider-bundle-url-file")
+    gpu.add_argument("--provider-output-put-url-file")
+    gpu.add_argument("--provider-output-get-url-file")
+    gpu.add_argument("--provider-bootstrap-url-file")
+    gpu.add_argument("--finetune-provider-bundle")
+    gpu.add_argument("--finetune-object-store-stage-dir")
+    gpu.add_argument("--finetune-checkpoint-object-store-stage-dir")
+    gpu.add_argument(
+        "--finetune-checkpoint-part-stage-dir",
+        action="append",
+        default=[],
+    )
+    gpu.add_argument("--finetune-checkpoint-vast-session-manifest")
+    gpu.add_argument(
+        "--qualification-action",
+        choices=QUALIFICATION_SESSION_ACTIONS,
+    )
+    gpu.add_argument("--qualification-session-manifest")
+    gpu.add_argument("--qualification-training-dataset")
+    gpu.add_argument("--qualification-trained-checkpoint")
+    gpu.add_argument("--qualification-checkpoint-report")
+    gpu.add_argument(
+        "--qualification-checkpoint-part-stage-dir",
+        action="append",
+        default=[],
+    )
+    gpu.add_argument(
+        "--qualification-component",
+        choices=tuple(QUALIFICATION_COMPONENT_ALIASES),
+        default="episode",
+    )
+    gpu.add_argument("--qualification-tail-lines", type=int, default=200)
+    gpu.add_argument(
+        "--qualification-identity-file",
+        default="~/.ssh/id_ed25519",
+    )
     gpu.add_argument("--execute", action="store_true")
     gpu.add_argument("--campaign-budget-ledger")
     gpu.add_argument("--campaign-initial-spent-usd", type=float)
@@ -502,6 +560,207 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == G1_MICROWAVE_FINETUNE_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "finetune_provider_bundle",
+                    "finetune_object_store_stage_dir",
+                    "finetune_checkpoint_object_store_stage_dir",
+                )
+                if not getattr(args, name, None)
+            ]
+            if args.provider not in {"runpod", "vast"}:
+                missing.append("provider_must_be_runpod_or_vast")
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "g1_microwave_finetune_required_arguments_missing:"
+                        + ",".join(sorted(set(missing)))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.adapter_output), result)
+            else:
+                result = run_g1_microwave_finetune_job(
+                    provider_name=args.provider,
+                    provider_bundle=args.finetune_provider_bundle,
+                    object_store_stage_dir=args.finetune_object_store_stage_dir,
+                    checkpoint_object_store_stage_dir=(
+                        args.finetune_checkpoint_object_store_stage_dir
+                    ),
+                    checkpoint_object_store_part_stage_dirs=(
+                        args.finetune_checkpoint_part_stage_dir
+                    ),
+                    release_evidence=args.release_evidence,
+                    provider_launch_request=args.provider_launch_request,
+                    preflight_bundle=args.preflight_bundle,
+                    admission_out=args.admission_out,
+                    bound_request_out=args.bound_request_out,
+                    adapter_output=args.adapter_output,
+                    pod_name=args.pod_name,
+                    execute=args.execute,
+                    checkpoint_vast_session_manifest=(
+                        args.finetune_checkpoint_vast_session_manifest
+                    ),
+                    qualification_identity_file=args.qualification_identity_file,
+                )
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "qualification_action",
+                    "qualification_session_manifest",
+                )
+                if not getattr(args, name, None)
+            ]
+            if args.provider != "vast":
+                missing.append("provider_must_be_vast")
+            if args.qualification_action == "allocate":
+                missing.extend(
+                    name
+                    for name in (
+                        "episode_bundle",
+                        "provider_bundle_url_file",
+                        "provider_output_put_url_file",
+                        "provider_output_get_url_file",
+                    )
+                    if not getattr(args, name, None)
+                )
+            if args.qualification_action == "refresh-bootstrap" and not getattr(
+                args, "episode_bundle", None
+            ):
+                missing.append("episode_bundle")
+            if args.qualification_action == "restart-component" and (
+                args.qualification_component
+                not in {"groot", "controller", "isaac", "bridge"}
+            ):
+                missing.append("restartable_qualification_component")
+            if args.qualification_action == "stop-component" and (
+                args.qualification_component
+                not in {"groot", "controller", "isaac", "bridge", "finetune"}
+            ):
+                missing.append("stoppable_qualification_component")
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "single_kitchen_qualification_required_arguments_missing:"
+                        + ",".join(sorted(set(missing)))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.adapter_output), result)
+            else:
+                try:
+                    result = run_qualification_session(
+                        action=args.qualification_action,
+                        session_manifest=args.qualification_session_manifest,
+                        provider_name=args.provider,
+                        component=args.qualification_component,
+                        tail_lines=args.qualification_tail_lines,
+                        identity_file=args.qualification_identity_file,
+                        episode_bundle=args.episode_bundle,
+                        training_dataset=args.qualification_training_dataset,
+                        trained_checkpoint_path=args.qualification_trained_checkpoint,
+                        provider_bundle_url_file=args.provider_bundle_url_file,
+                        provider_output_put_url_file=args.provider_output_put_url_file,
+                        provider_output_get_url_file=args.provider_output_get_url_file,
+                        provider_bootstrap_url_file=args.provider_bootstrap_url_file,
+                        release_evidence=args.release_evidence,
+                        provider_launch_request=args.provider_launch_request,
+                        preflight_bundle=args.preflight_bundle,
+                        admission_out=args.admission_out,
+                        bound_request_out=args.bound_request_out,
+                        adapter_output=args.adapter_output,
+                        pod_name=args.pod_name,
+                        execute=args.execute,
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    result = {
+                        "status": "blocked",
+                        "blockers": [str(exc)],
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.adapter_output), result)
+            success = result.get("status") in {
+                "bootstrap_staging_required",
+                "refresh_bootstrap_staging_required_continuing_spend",
+                "dry_run_bound",
+                "dry_run_ready",
+                "dry_run_refresh_bound_continuing_spend",
+                "allocated_ready_continuing_spend",
+                "bootstrap_refreshed_continuing_spend",
+                "episode_dispatched_continuing_spend",
+                "episode_snapshot_collected_continuing_spend",
+                "episode_collected_passed_continuing_spend",
+                "episode_collected_blocked_continuing_spend",
+                "status_observed_continuing_spend",
+                "tail_collected_continuing_spend",
+                "gpu_status_collected_continuing_spend",
+                "component_restarted_continuing_spend",
+                "component_stopped_continuing_spend",
+                "teardown_completed_provider_zero",
+            }
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == SINGLE_KITCHEN_EPISODE_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "episode_bundle",
+                    "provider_bundle_url_file",
+                    "provider_output_put_url_file",
+                    "provider_output_get_url_file",
+                )
+                if not getattr(args, name, None)
+            ]
+            if args.provider not in {"runpod", "vast"}:
+                missing.append("provider_must_be_runpod_or_vast")
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "single_kitchen_episode_required_arguments_missing:"
+                        + ",".join(sorted(missing))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.adapter_output), result)
+            else:
+                result = run_single_episode(
+                    provider_name=args.provider,
+                    episode_bundle=args.episode_bundle,
+                    provider_bundle_url_file=args.provider_bundle_url_file,
+                    provider_output_put_url_file=args.provider_output_put_url_file,
+                    provider_output_get_url_file=args.provider_output_get_url_file,
+                    provider_bootstrap_url_file=args.provider_bootstrap_url_file,
+                    release_evidence=args.release_evidence,
+                    provider_launch_request=args.provider_launch_request,
+                    preflight_bundle=args.preflight_bundle,
+                    admission_out=args.admission_out,
+                    bound_request_out=args.bound_request_out,
+                    adapter_output=args.adapter_output,
+                    pod_name=args.pod_name,
+                    execute=args.execute,
+                    qualification_checkpoint_report=(
+                        args.qualification_checkpoint_report
+                    ),
+                    qualification_checkpoint_part_stage_dirs=tuple(
+                        args.qualification_checkpoint_part_stage_dir
+                    ),
+                )
+            success = result.get("status") in {
+                "bootstrap_staging_required",
+                "dry_run_ready",
+                "completed",
+            }
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == "persistent-host-bake":
             missing = [
                 name

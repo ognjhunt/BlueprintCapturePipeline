@@ -106,15 +106,22 @@ def test_task_label_prompt_is_normalized_for_robot_action_context() -> None:
     )
     assert bundle_module._task_prompt_from_wam_generation_step(step_input) == (
         "A robot performs the task: open the refrigerator. "
-        "Continue the first-person robot manipulation video."
+        "Continue the egocentric first-person manipulation video from the robot's "
+        "rigidly head-mounted camera. Keep that same camera viewpoint; never switch "
+        "to an external, overhead, or third-person shot. Do not show the robot's "
+        "head or torso; only its hands or forearms may enter from the bottom of the frame."
     )
 
 
-def test_robot_context_prompt_is_not_double_wrapped() -> None:
+def test_robot_context_prompt_still_receives_egocentric_viewpoint_contract() -> None:
     prompt = "A robot reaches toward the refrigerator handle."
     step_input = {"current_policy_observation": {"task_prompt": prompt}}
 
-    assert bundle_module._task_prompt_from_wam_generation_step(step_input) == prompt
+    normalized = bundle_module._task_prompt_from_wam_generation_step(step_input)
+
+    assert normalized.startswith(prompt)
+    assert "rigidly head-mounted camera" in normalized
+    assert "never switch to an external, overhead, or third-person shot" in normalized
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -1108,6 +1115,120 @@ def test_projected_skeleton_renderer_scales_source_viewport_to_wam_canvas(
     capture.release()
     assert ok
     assert int(np.count_nonzero(frame)) > 0
+
+
+def test_projected_skeleton_renderer_accepts_official_g1_link_ids_without_segments(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    trace = tmp_path / "official_g1_trace.jsonl"
+    rows = []
+    for frame_index in range(2):
+        landmarks = []
+        for side, x_offset in (("left", -30), ("right", 30)):
+            for landmark_id, y_offset in (
+                (f"{side}_shoulder_pitch_link", -60),
+                (f"{side}_shoulder_roll_link", -45),
+                (f"{side}_shoulder_yaw_link", -30),
+                (f"{side}_elbow_link", 0),
+                (f"{side}_wrist_roll_link", 25),
+                (f"{side}_wrist_pitch_link", 35),
+                (f"{side}_wrist_yaw_link", 45),
+                (f"{side}_hand_index_0_link", 65),
+                (f"{side}_hand_index_1_link", 80),
+            ):
+                landmarks.append(
+                    {
+                        "landmark_id": landmark_id,
+                        "image_projection": {
+                            "available": True,
+                            "u_px": 320 + x_offset + frame_index,
+                            "v_px": 240 + y_offset,
+                            "image_width_px": 640,
+                            "image_height_px": 480,
+                        },
+                    }
+                )
+        rows.append({"frame_index": frame_index, "projected_landmarks": landmarks})
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    report, _ = bundle_module._render_projected_skeleton_conditioning_video(
+        trace_path=trace,
+        output_path=tmp_path / "conditioning.mp4",
+        width=640,
+        height=480,
+        fps=5.0,
+        num_frames=2,
+    )
+
+    assert report["visual_signal"] == {
+        "status": "completed",
+        "blockers": [],
+        "trace_row_count": 2,
+        "projectable_row_count": 2,
+        "max_interframe_landmark_motion_px": 1.0,
+        "max_visible_landmark_draw_count": 18,
+        "max_visible_segment_count": 16,
+        "max_clipped_landmark_count": 0,
+        "max_offscreen_edge_indicator_count": 0,
+        "max_end_effector_axis_draw_count": 2,
+    }
+    capture = cv2.VideoCapture(str(tmp_path / "conditioning.mp4"))
+    ok, frame = capture.read()
+    capture.release()
+    assert ok and frame is not None
+
+
+def test_projected_skeleton_renderer_encodes_finite_offscreen_fk_at_image_edge(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    trace = tmp_path / "offscreen_g1_trace.jsonl"
+    rows = []
+    for frame_index in range(2):
+        landmarks = []
+        for side, x_offset in (("left", -80), ("right", 80)):
+            for landmark_id, y_offset in (
+                (f"{side}_shoulder_pitch_link", 0),
+                (f"{side}_elbow_link", 40),
+                (f"{side}_wrist_yaw_link", 80),
+                (f"{side}_hand_index_0_link", 120),
+            ):
+                landmarks.append(
+                    {
+                        "landmark_id": landmark_id,
+                        "image_projection": {
+                            "available": False,
+                            "unavailable_reason": "outside_live_camera_viewport",
+                            "u_px": 320 + x_offset + frame_index * 4,
+                            "v_px": 600 + y_offset,
+                            "image_width_px": 640,
+                            "image_height_px": 480,
+                        },
+                    }
+                )
+        rows.append({"frame_index": frame_index, "projected_landmarks": landmarks})
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    report, _ = bundle_module._render_projected_skeleton_conditioning_video(
+        trace_path=trace,
+        output_path=tmp_path / "offscreen_conditioning.mp4",
+        width=640,
+        height=480,
+        fps=5.0,
+        num_frames=2,
+    )
+
+    assert report["visual_signal"]["status"] == "completed"
+    assert report["offscreen_edge_indicators_used"] is True
+    assert report["projected_g1_skeleton_offscreen_edge_indicator_count"] == 8
+    assert report["projected_g1_skeleton_visible_landmark_draw_count"] == 8
+    assert report["projected_g1_skeleton_visible_segment_count"] >= 2
+    assert report["projected_g1_skeleton_end_effector_axis_draw_count"] == 2
+    capture = cv2.VideoCapture(str(tmp_path / "offscreen_conditioning.mp4"))
+    ok, frame = capture.read()
+    capture.release()
+    assert ok and frame is not None and int(np.count_nonzero(frame)) > 0
 
 
 def test_short_conditioning_video_can_stage_when_signal_is_useful_for_model_input(

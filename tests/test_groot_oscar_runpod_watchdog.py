@@ -1,6 +1,7 @@
 import json
 import os
 
+from blueprint_pipeline import groot_oscar_runpod_watchdog as watchdog_module
 from blueprint_pipeline.groot_oscar_runpod_watchdog import (
     run_watchdog,
     terminate_canary_resources,
@@ -23,6 +24,481 @@ class _Provider:
     def terminate(self, instance_id: str) -> dict:
         self.ids.remove(instance_id)
         return {"status": "terminated"}
+
+
+def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence(
+    monkeypatch,
+) -> None:
+    prefix = "blueprint-groot-oscar-canary-single-episode-"
+    rows = [
+        {
+            "id": 101,
+            "label": prefix + "target",
+            "actual_status": "running",
+            "gpu_name": "RTX 6000 Ada",
+            "dph_total": 0.5,
+        },
+        {
+            "id": 202,
+            "label": "unrelated-vast-instance",
+            "actual_status": "running",
+        },
+        {
+            "id": 303,
+            "label": prefix + "already-done",
+            "actual_status": "destroyed",
+        },
+    ]
+    api_calls: list[tuple[str, str]] = []
+
+    def fake_api_json(**kwargs):
+        assert kwargs["api_key"] == "vast-secret"
+        api_calls.append((kwargs["method"], kwargs["path"]))
+        return 200, {"instances": list(rows)}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+
+    class VastProvider:
+        name = "vast"
+
+        def _key(self):
+            return "vast-secret"
+
+        def terminate(self, instance_id: str) -> dict:
+            assert instance_id == "101"
+            rows[0]["actual_status"] = "destroyed"
+            return {"status": "stopped", "http": 204}
+
+    result = terminate_canary_resources(
+        provider=VastProvider(),
+        provider_name="vast",
+        pod_name_prefix=prefix,
+        armed={"status": "armed", "provider": "vast"},
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["initial_inventory"]["live_resource_count"] == 1
+    assert result["initial_inventory"]["resources"][0]["instance_id"] == "101"
+    assert result["final_inventory"]["live_resource_count"] == 0
+    assert result["terminations"] == [
+        {"instance_id": "101", "status": "stopped", "http": 204}
+    ]
+    assert api_calls == [("GET", "/instances/"), ("GET", "/instances/")]
+    assert "vast-secret" not in json.dumps(result)
+
+
+def test_vast_watchdog_deletes_recorded_terminal_instance_and_proves_exact_absence(
+    tmp_path, monkeypatch
+) -> None:
+    prefix = "blueprint-groot-oscar-canary-single-episode-"
+    instance_id = "45121866"
+    (tmp_path / "started_vast_instance_id.txt").write_text(
+        instance_id, encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json",
+        lambda **_kwargs: (
+            200,
+            {
+                "instances": [
+                    {
+                        "id": int(instance_id),
+                        "label": prefix + "target",
+                        "actual_status": "exited",
+                    }
+                ]
+            },
+        ),
+    )
+
+    class VastProvider:
+        name = "vast"
+
+        def __init__(self) -> None:
+            self.delete_calls = 0
+            self.inspect_calls = 0
+
+        def _key(self):
+            return "vast-secret"
+
+        def terminate(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            self.delete_calls += 1
+            if self.delete_calls == 1:
+                return {"status": "stopped", "http": 204}
+            return {
+                "status": "stopped",
+                "http": 404,
+                "already_gone": True,
+            }
+
+        def inspect(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            self.inspect_calls += 1
+            if self.inspect_calls == 1:
+                return {
+                    "status": "observed",
+                    "provider": "vast",
+                    "http": 200,
+                    "instance_id": instance_id,
+                    "api_confirmed": True,
+                    "provider_absence_confirmed": False,
+                    "actual_status": "exited",
+                    "name": prefix + "target",
+                }
+            return {
+                "status": "absent",
+                "provider": "vast",
+                "http": 404,
+                "instance_id": instance_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+            }
+
+    provider = VastProvider()
+    result = terminate_canary_resources(
+        provider=provider,
+        provider_name="vast",
+        pod_name_prefix=prefix,
+        armed={
+            "status": "armed",
+            "provider": "vast",
+            "pod_name_prefix": prefix,
+            "watchdog_out_dir": str(tmp_path),
+        },
+    )
+
+    # The name-scoped list intentionally excludes the exited row, but the
+    # attempt-local ownership file still forces exact-id DELETE and GET proof.
+    assert result["initial_inventory"]["live_resource_count"] == 0
+    assert result["final_inventory"]["live_resource_count"] == 0
+    assert provider.delete_calls == 2
+    assert provider.inspect_calls == 2
+    assert result["provider_absence_confirmed"] is True
+    assert result["recorded_vast_instance"] == {
+        "status": "recorded",
+        "required": True,
+        "path": str(tmp_path / "started_vast_instance_id.txt"),
+        "instance_id": instance_id,
+        "scope_confirmed": True,
+        "pod_name_prefix": prefix,
+    }
+    assert result["recorded_vast_instance_teardown"][
+        "provider_absence_confirmed"
+    ] is True
+    assert [row["instance_id"] for row in result["terminations"]] == [
+        instance_id,
+        instance_id,
+    ]
+
+
+def test_vast_watchdog_refuses_absence_when_recorded_id_survives_repeated_delete(
+    tmp_path, monkeypatch
+) -> None:
+    prefix = "blueprint-groot-oscar-canary-single-episode-"
+    instance_id = "45121866"
+    (tmp_path / "started_vast_instance_id.txt").write_text(
+        instance_id, encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        watchdog_module,
+        "_vast_billable_inventory",
+        lambda **_kwargs: {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+    )
+
+    class VastProvider:
+        name = "vast"
+
+        def __init__(self) -> None:
+            self.delete_calls = 0
+
+        def terminate(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            self.delete_calls += 1
+            return {"status": "stopped", "http": 204}
+
+        def inspect(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            return {
+                "status": "observed",
+                "provider": "vast",
+                "http": 200,
+                "instance_id": instance_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": False,
+                "actual_status": "exited",
+                "name": prefix + "target",
+            }
+
+    provider = VastProvider()
+    result = terminate_canary_resources(
+        provider=provider,
+        provider_name="vast",
+        pod_name_prefix=prefix,
+        armed={
+            "status": "armed",
+            "provider": "vast",
+            "pod_name_prefix": prefix,
+            "watchdog_out_dir": str(tmp_path),
+        },
+    )
+
+    assert provider.delete_calls == 2
+    assert result["final_inventory"]["live_resource_count"] == 0
+    assert result["provider_absence_confirmed"] is False
+    assert result["status"] == "teardown_unverified"
+    assert result["recorded_vast_instance_teardown"]["status"] == (
+        "teardown_unverified"
+    )
+
+
+def test_vast_watchdog_still_deletes_recorded_id_when_initial_inventory_raises(
+    tmp_path, monkeypatch
+) -> None:
+    prefix = "blueprint-groot-oscar-canary-single-episode-"
+    instance_id = "45121866"
+    (tmp_path / "started_vast_instance_id.txt").write_text(
+        instance_id, encoding="utf-8"
+    )
+    inventory_calls = 0
+
+    def inventory(**_kwargs):
+        nonlocal inventory_calls
+        inventory_calls += 1
+        if inventory_calls == 1:
+            raise TimeoutError("secret provider response")
+        return {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        }
+
+    monkeypatch.setattr(watchdog_module, "_vast_billable_inventory", inventory)
+
+    class VastProvider:
+        name = "vast"
+
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def terminate(self, observed_id: str) -> dict:
+            self.deleted.append(observed_id)
+            return {"status": "stopped", "http": 204}
+
+        def inspect(self, observed_id: str) -> dict:
+            return {
+                "status": "absent",
+                "provider": "vast",
+                "http": 404,
+                "instance_id": observed_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+            }
+
+    provider = VastProvider()
+    result = terminate_canary_resources(
+        provider=provider,
+        provider_name="vast",
+        pod_name_prefix=prefix,
+        armed={
+            "status": "armed",
+            "provider": "vast",
+            "pod_name_prefix": prefix,
+            "watchdog_out_dir": str(tmp_path),
+        },
+    )
+
+    assert provider.deleted == [instance_id]
+    assert result["initial_inventory"]["api_confirmed"] is False
+    assert result["initial_inventory"]["error_type"] == "TimeoutError"
+    assert result["provider_absence_confirmed"] is True
+    assert "secret provider response" not in json.dumps(result)
+
+
+def test_vast_watchdog_started_id_file_requires_exact_armed_prefix(
+    tmp_path, monkeypatch
+) -> None:
+    prefix = "blueprint-groot-oscar-canary-single-episode-"
+    (tmp_path / "started_vast_instance_id.txt").write_text(
+        "45121866", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        watchdog_module,
+        "_vast_billable_inventory",
+        lambda **_kwargs: {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+    )
+
+    class VastProvider:
+        name = "vast"
+
+        def terminate(self, _instance_id: str) -> dict:
+            raise AssertionError("a differently scoped id must not be destroyed")
+
+    result = terminate_canary_resources(
+        provider=VastProvider(),
+        provider_name="vast",
+        pod_name_prefix=prefix,
+        armed={
+            "status": "armed",
+            "provider": "vast",
+            "pod_name_prefix": prefix + "different",
+            "watchdog_out_dir": str(tmp_path),
+        },
+    )
+
+    assert result["provider_absence_confirmed"] is False
+    assert result["recorded_vast_instance"]["blockers"] == [
+        "vast_started_instance_id_scope_mismatch"
+    ]
+    assert result["terminations"] == []
+
+
+def test_vast_watchdog_fails_closed_on_active_instance_without_label(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json",
+        lambda **_kwargs: (
+            200,
+            {"instances": [{"id": 404, "actual_status": "running"}]},
+        ),
+    )
+
+    class VastProvider:
+        name = "vast"
+
+        def _key(self):
+            return "vast-secret"
+
+        def terminate(self, _instance_id: str) -> dict:
+            raise AssertionError("an unlabeled instance must never be destroyed")
+
+    result = terminate_canary_resources(
+        provider=VastProvider(),
+        provider_name="vast",
+        pod_name_prefix="blueprint-groot-oscar-canary-single-episode-",
+        armed={"status": "armed", "provider": "vast"},
+    )
+
+    assert result["status"] == "teardown_unverified"
+    assert result["provider_absence_confirmed"] is False
+    assert result["initial_inventory"]["api_confirmed"] is False
+    assert result["initial_inventory"]["blockers"] == [
+        "vast_active_instance_label_missing"
+    ]
+    assert result["terminations"] == []
+
+
+def test_run_watchdog_selects_vast_provider_without_changing_default_contract(
+    tmp_path, monkeypatch
+) -> None:
+    selected: list[str] = []
+
+    class VastProvider:
+        name = "vast"
+
+    def provider_factory(name: str):
+        selected.append(name)
+        return VastProvider()
+
+    monkeypatch.setattr(
+        watchdog_module,
+        "_vast_billable_inventory",
+        lambda **_kwargs: {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+    )
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-groot-oscar-canary-single-episode-",
+        deadline_epoch=10_000_000_000.0,
+        provider_name="vast",
+        provider_factory=provider_factory,
+        clock=lambda: 10_000_000_000.0,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert selected == ["vast"]
+    assert result["provider"] == "vast"
+    assert result["status"] == "provider_terminal"
+    persisted = json.loads(
+        (tmp_path / "groot_oscar_runpod_canary_watchdog.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted == result
+
+
+def test_independent_watchdog_never_mutates_provider_before_hard_deadline(
+    tmp_path, monkeypatch
+) -> None:
+    now = {"value": 100.0}
+    deadline = 200.0
+    events: list[tuple[str, float]] = []
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now["value"])
+
+    class Provider:
+        name = "runpod"
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            events.append(("inventory", now["value"]))
+            assert name_prefix == "blueprint-groot-oscar-canary-attempt-"
+            assert now["value"] >= deadline
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+    def provider_factory(_name: str) -> Provider:
+        events.append(("provider_factory", now["value"]))
+        assert now["value"] >= deadline
+        return Provider()
+
+    def sleeper(seconds: float) -> None:
+        events.append(("sleep", now["value"]))
+        assert now["value"] < deadline
+        now["value"] += seconds
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-groot-oscar-canary-attempt-",
+        deadline_epoch=deadline,
+        provider_factory=provider_factory,
+        clock=lambda: now["value"],
+        sleeper=sleeper,
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_mutation_trigger"] == "hard_deadline_only"
+    assert result["pre_deadline_provider_mutation_allowed"] is False
+    assert events[0] == ("sleep", 100.0)
+    assert all(
+        observed_at >= deadline
+        for event, observed_at in events
+        if event in {"provider_factory", "inventory"}
+    )
 
 
 def test_watchdog_reaps_every_name_bound_resource_and_proves_absence() -> None:

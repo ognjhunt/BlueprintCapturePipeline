@@ -12,7 +12,7 @@ launch model. The canonical JSON artifact is
 
 | Data class | Scope | Retention |
 | --- | --- | --- |
-| Raw capture truth | `scenes/`, `targets/` | Nearline after 30 days, Coldline after 90 days, delete after 180 days unless legal hold or a contract-specific hold overrides. |
+| Raw capture truth | `scenes/`, `targets/` | Nearline after 30 days, Coldline after 90 days, Archive after 365 days. Never lifecycle-deleted; deletion happens only through rights/privacy or legal workflows. |
 | Temporary processing | `tmp/`, `staging/`, `debug/` | Delete after 14 days unless legal hold overrides. |
 | Buyer/eval/hosted artifacts | `buyer_delivery/`, `marketplace/`, `hosted_sessions/`, `robot_eval_jobs/` | Delete after 365 days unless contract-specific retention hold overrides. |
 | Local output snapshots | `output/` | Canonical launch evidence 365 days, CI/capacity artifacts 90 days, provider/runtime or paid-run snapshots 30 days, local preflight/dry-run snapshots 14 days. |

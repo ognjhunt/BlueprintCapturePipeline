@@ -35,8 +35,9 @@
       "authoritative_truth": true,
       "nearline_after_days": 30,
       "coldline_after_days": 90,
-      "delete_after_days": 180,
-      "support_purpose": "Preserve raw capture, timestamp, pose, rights, privacy, and provenance evidence long enough for beta support review.",
+      "archive_after_days": 365,
+      "delete_after_days": null,
+      "support_purpose": "Preserve raw capture, timestamp, pose, rights, privacy, and provenance evidence indefinitely (ARCHIVE class after 365 days) so future world-model training and support review never lose capture truth.",
       "legal_hold_may_override": true
     },
     "temporary_processing": {

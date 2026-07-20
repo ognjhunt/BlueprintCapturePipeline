@@ -1,5 +1,82 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-17
+
+### User-Facing
+
+- Hardened the governed RunPod model-cache path so full post-upload verification
+  re-downloads objects with the volume endpoint's supported streaming `GetObject`
+  API. Verification still hashes the downloaded cache and fails closed on
+  corruption; this is transport-integrity evidence, not model-runtime or episode
+  success (`src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py`).
+
+### Employee-Facing
+
+- Made runtime-carrier library-path manifests accept shell-quotable paths while
+  rejecting delimiter, expansion, control-character, traversal, and
+  out-of-root inputs. The generated loader environment is now shell-quoted before
+  reuse, preserving the fail-closed carrier contract without rejecting valid
+  runtime layouts (`src/blueprint_pipeline/groot_oscar_runpod_carrier_volume.py`,
+  `src/blueprint_pipeline/groot_oscar_model_cache_s3_remote_executor.py`).
+- The committed America/Chicago window contains two `origin/main` commits,
+  `201146ea` (PR #128) and `01545646` (PR #129). The reviewed feature checkout
+  is clean and diverges from `origin/main` (`81` checkout-only commits and `39`
+  main-only commits), so no July 17 uncommitted source change is recorded.
+
+### Future-Agent-Facing
+
+- Keep loader-path serialization, cache upload, cache re-download, digest
+  verification, provider allocation, startup readiness, semantic task success,
+  artifact review, and teardown as separate evidence layers. Ignored July 17
+  operational files under `output/single_g1_kitchen_episode_20260716/` are
+  support artifacts, not source changes or standalone proof of a completed
+  episode, deployment, public readiness, or physical-robot execution.
+
+## 2026-07-15
+
+### User-Facing
+
+- Added a governed RunPod FlashBoot kitchen-campaign path and a persistent,
+  pre-baked DigitalOcean GPU-host path to reduce repeated cold-start work while
+  retaining exact image/cache/source bindings, bounded leases, watchdogs, and
+  teardown controls (`src/blueprint_pipeline/production_gpu_runpod_autoscaler.py`,
+  `src/blueprint_pipeline/groot_oscar_digitalocean_prebaked_host.py`). These are
+  provider/runtime paths, not proof of semantic task success or deployment.
+
+### Employee-Facing
+
+- Merged the canonical paid-resource and GPU reliability closure (PR #80), then
+  added a strict RunPod policy smoke probe, hardened S3 multipart transfer and
+  recovery, and corrected the offline Cosmos cache layout. Model-cache reuse is
+  now bound to verified transport, inventory, lifecycle policy, an armed
+  watchdog deadline, and byte-exact handoff evidence
+  (`src/blueprint_pipeline/paid_resource_allocator.py`,
+  `src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py`,
+  `src/blueprint_pipeline/groot_oscar_model_cache.py`).
+- Reconciled the authorized GPU campaign budget across cold-start retries and
+  terminal canaries without turning cumulative authority into one unbounded
+  job. Persistent DigitalOcean bake storage and RunPod warm/cache retention now
+  remain explicit, bounded resource lanes rather than implicit leftovers
+  (`src/blueprint_pipeline/production_gpu_campaign_budget.py`,
+  `src/blueprint_pipeline/paid_provider_lane_lease.py`,
+  `docs/runbooks/groot-oscar-thin-release.md`).
+- The committed America/Chicago window contains 16 first-parent `origin/main`
+  commits from `9cba1c2e` through `e4ebfc23` (PRs #80–#95 and the FlashBoot
+  campaign merge). At review time the local checkout was still at July 14 head
+  `8de9115d`; the only tracked worktree change was the prior changelog update,
+  so no July 15 uncommitted source change is recorded.
+
+### Future-Agent-Facing
+
+- Preserve the canonical allocator boundary for every CPU build, model-volume,
+  and GPU-canary mutation. Cache transfer, cache retention, a prebaked host,
+  FlashBoot startup, provider readiness, review-media validity, semantic task
+  success, buyer claims, and teardown are separate evidence layers.
+- July 15 local output directories contain operational attempt artifacts, but
+  they are downstream support evidence rather than source truth. Do not infer a
+  successful episode, public readiness, deployment, or physical-robot result
+  without validating the exact attempt closure and final provider inventory.
+
 ## 2026-07-14
 
 ### User-Facing
@@ -15,6 +92,12 @@
   is at least 640x480, artifacts resume by verified offset/hash, and customer
   status never equates startup or artifact arrival with task success
   (`src/blueprint_pipeline/production_gpu_campaign_control_plane.py`).
+- Split the GR00T+OSCAR worker into a cached robot foundation, an external
+  checksum-bound model volume, and a thin Blueprint release so normal releases
+  do not rebuild or repull the full robot/model stack. Paid CPU builds,
+  model-volume creation, and GPU canaries now enter only through the shared
+  fail-closed allocator (`docs/runbooks/groot-oscar-thin-release.md`,
+  `src/blueprint_pipeline/paid_resource_allocator.py`).
 
 ### Employee-Facing
 
@@ -65,6 +148,24 @@
   can promote from local or historical evidence
   (`production_gpu_launch_qualification.py`,
   `production_gpu_replenishment_probe.py`, `production_gpu_rollback_drill.py`).
+- Added guarded remote foundation/release builds, RunPod canary and network
+  model-volume allocators, exact-source build packets, pre-allocation
+  prerequisite checks, watchdog handoff verification, global inventory/budget
+  accounting, sanitized failure evidence, and explicit GPU/datacenter capacity
+  admission (`src/blueprint_pipeline/groot_oscar_digitalocean_builder.py`,
+  `src/blueprint_pipeline/groot_oscar_runpod_model_volume.py`,
+  `scripts/verify_paid_resource_allocator.py`). Legacy build scripts are hard
+  disabled as launchers; the canonical allocator commands are the supported
+  paid-resource entrypoints.
+- Isolated incompatible Isaac/GR00T/OSCAR Python and CUDA dependencies inside
+  the pinned foundation, bound cache sizing and runtime imports to governed
+  metadata, and required admitted model-cache identity before worker bootstrap
+  (`deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile`,
+  `src/blueprint_pipeline/isaac_g1_worker_bootstrap.py`).
+- Merged the production reliability control plane as PR #78, including the
+  first-class GCP/AWS adapters that were uncommitted in the July 13 snapshot.
+  The July 14 window then continued through commit `8de9115d`; the worktree was
+  clean at this review, so no uncommitted July 14 changes are recorded.
 
 ### Future-Agent-Facing
 
@@ -78,6 +179,16 @@
   pool tests do not prove a live GPU host image, warm capacity, or latency SLO;
   preserve `local_contract_ready_live_proof_required` until the exact promoted
   tuple passes the live evidence gate.
+- Keep foundation-image construction, model-volume materialization, thin-release
+  publication, provider allocation, readiness, review-media validity, artifact
+  retrieval, semantic task success, and teardown as separate claims. The new
+  admission and watchdog controls reduce launch/spend risk but do not prove a
+  published exact image, populated external cache, live customer-ready worker,
+  successful episode, public readiness, deployment, or physical-robot result.
+- Use only `python -m blueprint_pipeline.paid_resource_allocator cpu-build`,
+  `model-volume`, or `gpu-canary` for new paid resources. Provider-specific
+  modules remain adapters, and every launch must retain exact source/image/cache
+  bindings plus provider absence evidence after teardown.
 
 ## 2026-07-13
 
