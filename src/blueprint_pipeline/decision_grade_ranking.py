@@ -249,6 +249,8 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         evaluator_outcome_status = row.get("evaluator_outcome_status")
         if evaluator_outcome_status not in {"valid", "abstained"}:
             blockers.append(f"episode_result_evaluator_outcome_invalid:{row_index}")
+        elif evaluator_outcome_status != design_row.get("evaluator_outcome_status"):
+            blockers.append(f"episode_result_evaluator_outcome_mismatch:{row_index}")
         for field in required_evaluator_evidence_digest_fields(evaluator_profile_id):
             if not _digest(row.get(field)):
                 blockers.append(f"episode_result_chain_digest_missing:{row_index}:{field}")

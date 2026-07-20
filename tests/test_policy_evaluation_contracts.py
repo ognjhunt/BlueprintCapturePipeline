@@ -502,6 +502,7 @@ def test_decision_grade_ranking_keeps_model_abstention_separate_from_decided_lab
     result = build_decision_grade_ranking(candidate)
 
     assert result["status"] == "blocked"
+    assert "episode_result_evaluator_outcome_mismatch:0" in result["blockers"]
     assert "abstained_evaluator_cannot_emit_decided_criterion:0:0" in result["blockers"]
     assert any(
         blocker.endswith(":19<20")
