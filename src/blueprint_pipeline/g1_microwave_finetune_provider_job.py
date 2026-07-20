@@ -77,6 +77,58 @@ VAST_CHECKPOINT_PYTHON = "/opt/gr00t-venv/bin/python"
 DEFAULT_QUALIFICATION_IDENTITY_FILE = "~/.ssh/id_ed25519"
 
 
+def _inventory_scope_excluding_bound_instance(
+    inventory: Mapping[str, Any],
+    *,
+    bound_instance_id: str = "",
+) -> dict[str, Any]:
+    """Derive a fail-closed launch/teardown scope from global provider inventory."""
+
+    blockers: list[str] = []
+    raw_resources = inventory.get("resources")
+    resources: list[dict[str, Any]] = []
+    if inventory.get("api_confirmed") is not True:
+        blockers.append("provider_inventory_api_unconfirmed")
+    if not isinstance(raw_resources, list):
+        blockers.append("provider_inventory_resources_invalid")
+    else:
+        resources = [dict(row) for row in raw_resources if isinstance(row, Mapping)]
+        if len(resources) != len(raw_resources):
+            blockers.append("provider_inventory_resource_row_invalid")
+    source_live_count = inventory.get("live_resource_count")
+    if (
+        isinstance(source_live_count, bool)
+        or not isinstance(source_live_count, int)
+        or source_live_count != len(resources)
+    ):
+        blockers.append("provider_inventory_live_count_inconsistent")
+
+    normalized_bound_id = str(bound_instance_id or "").strip()
+    bound_rows = (
+        [
+            row
+            for row in resources
+            if str(row.get("instance_id") or "") == normalized_bound_id
+        ]
+        if normalized_bound_id
+        else []
+    )
+    if normalized_bound_id and len(bound_rows) != 1:
+        blockers.append("bound_retained_instance_inventory_binding_invalid")
+    other_resources = [row for row in resources if row not in bound_rows]
+    return {
+        "schema_version": "g1_microwave_finetune_inventory_scope.v1",
+        "status": "passed" if not blockers else "blocked",
+        "api_confirmed": inventory.get("api_confirmed") is True,
+        "source_live_resource_count": source_live_count,
+        "bound_retained_instance_id": normalized_bound_id or None,
+        "bound_retained_instance_present": len(bound_rows) == 1,
+        "other_live_resource_count": len(other_resources) if not blockers else None,
+        "other_live_resources": other_resources,
+        "blockers": sorted(set(blockers)),
+    }
+
+
 def _load_mapping(path: Path, *, name: str) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1024,6 +1076,12 @@ def run_finetune_job(
     bootstrap_sha256 = ""
     capacity: dict[str, Any] = {}
     inventory: dict[str, Any] = {}
+    inventory_scope: dict[str, Any] = {}
+    retained_target_instance_id = (
+        str(checkpoint_vast_target.get("instance_id") or "")
+        if resolved_provider == "vast" and checkpoint_vast_target
+        else ""
+    )
     if bundle and staging and not blockers:
         script = render_provider_bootstrap(expected_bundle_sha256=bundle_sha)
         bootstrap_sha256 = hashlib.sha256(script.encode("utf-8")).hexdigest()
@@ -1060,6 +1118,10 @@ def run_finetune_job(
         request["min_gpu_ram_mb"] = MIN_GPU_RAM_MB
         request["requires_rtx"] = False
         inventory = provider.billable_inventory(name_prefix="")
+        inventory_scope = _inventory_scope_excluding_bound_instance(
+            inventory,
+            bound_instance_id=retained_target_instance_id,
+        )
         capacity = provider.capacity_preflight(request)
         viable = [
             row
@@ -1068,7 +1130,10 @@ def run_finetune_job(
             and isinstance(row.get("on_demand_price_usd_per_hour"), (int, float))
             and float(row["on_demand_price_usd_per_hour"]) <= MAX_HOURLY_RATE_USD
         ]
-        if inventory.get("api_confirmed") is not True or inventory.get("live_resource_count") != 0:
+        if (
+            inventory_scope.get("status") != "passed"
+            or inventory_scope.get("other_live_resource_count") != 0
+        ):
             blockers.append("g1_microwave_finetune_prelaunch_inventory_not_zero")
         if capacity.get("status") != "available" or not viable:
             blockers.append("g1_microwave_finetune_40gb_capacity_unavailable")
@@ -1082,6 +1147,7 @@ def run_finetune_job(
             "maximum_estimated_spend_usd": round(
                 MAX_HOURLY_RATE_USD * HARD_WALL_SECONDS / 3600.0, 2
             ),
+            "inventory_scope": inventory_scope,
         }
 
     admission = {
@@ -1279,10 +1345,18 @@ def run_finetune_job(
         write_json(root / "g1_microwave_finetune_teardown.json", teardown)
 
     final_inventory = provider.billable_inventory(name_prefix="")
+    final_inventory_scope = _inventory_scope_excluding_bound_instance(
+        final_inventory,
+        bound_instance_id=retained_target_instance_id,
+    )
+    trainer_provider_global_zero = bool(
+        final_inventory.get("api_confirmed") is True
+        and final_inventory.get("live_resource_count") == 0
+    )
     absence = bool(
         teardown.get("provider_absence_confirmed") is True
-        and final_inventory.get("api_confirmed") is True
-        and final_inventory.get("live_resource_count") == 0
+        and final_inventory_scope.get("status") == "passed"
+        and final_inventory_scope.get("other_live_resource_count") == 0
     )
     if launch.get("instance_id"):
         close_pending_teardown(
@@ -1292,6 +1366,7 @@ def run_finetune_job(
                 "provider_absence_confirmed": absence,
                 "teardown": teardown,
                 "final_inventory": final_inventory,
+                "final_inventory_scope": final_inventory_scope,
             },
         )
     elif not launch.get("allocation_outcome_ambiguous"):
@@ -1334,10 +1409,11 @@ def run_finetune_job(
         "checkpoint_collection": checkpoint_collection,
         "teardown": teardown,
         "final_global_inventory": final_inventory,
+        "final_inventory_scope": final_inventory_scope,
         "pending_teardown_record": pending["path"],
         "watchdog_pid": watchdog.pid,
         "provider_mutations_performed": 1 if launch.get("instance_id") else 0,
-        "continuing_spend": not absence,
+        "continuing_spend": bool(checkpoint_vast_target) or not absence,
         "blockers": sorted(set(run_blockers)),
         "claim_boundary": {
             "fine_tune_completed": collection.get("status") == "completed",
@@ -1348,6 +1424,14 @@ def run_finetune_job(
                 "checkpoint_object_store_bound"
             )
             is True,
+            "trainer_provider_absence_confirmed": absence,
+            "trainer_provider_global_zero_proven": trainer_provider_global_zero,
+            "bound_retained_session_continuing_spend": bool(
+                checkpoint_vast_target
+            ),
+            "cross_provider_global_zero_not_proven": bool(
+                checkpoint_vast_target
+            ),
             "checkpoint_task_qualification_not_proven": True,
             "isaac_semantic_episode_success_not_proven": True,
         },

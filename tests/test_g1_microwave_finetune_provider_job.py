@@ -20,6 +20,7 @@ class _FakeProvider:
 
     def __init__(self) -> None:
         self.request = None
+        self.resources: list[dict[str, object]] = []
 
     def build_request(self, spec, job_dir):
         assert spec.requires_rtx is False
@@ -34,8 +35,8 @@ class _FakeProvider:
         return {
             "status": "observed",
             "api_confirmed": True,
-            "live_resource_count": 0,
-            "resources": [],
+            "live_resource_count": len(self.resources),
+            "resources": self.resources,
         }
 
     def capacity_preflight(self, request):
@@ -174,6 +175,17 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
         "max_hourly_rate_usd": 1.1,
         "maximum_live_seconds": 7_500,
         "maximum_estimated_spend_usd": 2.29,
+        "inventory_scope": {
+            "schema_version": "g1_microwave_finetune_inventory_scope.v1",
+            "status": "passed",
+            "api_confirmed": True,
+            "source_live_resource_count": 0,
+            "bound_retained_instance_id": None,
+            "bound_retained_instance_present": False,
+            "other_live_resource_count": 0,
+            "other_live_resources": [],
+            "blockers": [],
+        },
     }
     assert result["bound_request"]["prelaunch_spend_guard"] == (
         provider.request["prelaunch_spend_guard"]
@@ -220,6 +232,90 @@ def test_provider_job_dry_run_is_admitted_without_mutation(
         collision["blockers"]
     )
     assert json.loads(collision_result_path.read_text(encoding="utf-8")) == collision
+
+
+def test_vast_finetune_inventory_allows_only_exact_bound_retained_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _FakeProvider()
+    provider.name = "vast"
+    provider.resources = [{"instance_id": "vast-target", "name": "retained"}]
+    monkeypatch.setattr(job, "get_render_provider", lambda _name: provider)
+    monkeypatch.setattr(
+        job,
+        "_bundle_evidence",
+        lambda _path: {
+            "bundle": {"sha256": "b" * 64},
+            "dataset": {"sha256": "d" * 64},
+            "worker": {"sha256": "w" * 64},
+        },
+    )
+    monkeypatch.setattr(
+        job,
+        "_staging_evidence",
+        lambda path, _bundle: {
+            "output_url_object_binding_sha256": (
+                "c" * 64 if "checkpoint" in str(path) else "a" * 64
+            )
+        },
+    )
+    monkeypatch.setattr(
+        job,
+        "_read_secret_url",
+        lambda _path, *, name: f"https://objects.example/{name}",
+    )
+    monkeypatch.setattr(
+        job,
+        "_load_mapping",
+        lambda _path, *, name: {
+            "status": "completed",
+            "resolved_digest_ref": bundle_module.IMAGE_REF,
+        },
+    )
+    monkeypatch.setattr(
+        job,
+        "_load_vast_checkpoint_target",
+        lambda _path, **_kwargs: {"instance_id": "vast-target"},
+    )
+
+    def run(name: str) -> dict[str, object]:
+        return job.run_finetune_job(
+            provider_name="vast",
+            provider_bundle=tmp_path / "provider-bundle.zip",
+            object_store_stage_dir=tmp_path / "input-stage",
+            checkpoint_object_store_stage_dir=tmp_path / "checkpoint-stage",
+            release_evidence=tmp_path / "release.json",
+            admission_out=tmp_path / f"{name}-admission.json",
+            bound_request_out=tmp_path / f"{name}-bound.json",
+            adapter_output=tmp_path / f"{name}-result.json",
+            pod_name="",
+            execute=False,
+            checkpoint_vast_session_manifest=tmp_path / "session.json",
+        )
+
+    admitted = run("admitted")
+    assert admitted["status"] == "dry_run_ready"
+    scope = admitted["bound_request"]["prelaunch_spend_guard"]["inventory_scope"]
+    assert scope["bound_retained_instance_present"] is True
+    assert scope["other_live_resource_count"] == 0
+
+    provider.resources = []
+    missing = run("missing")
+    assert missing["status"] == "blocked"
+    missing_scope = missing["bound_request"]["prelaunch_spend_guard"][
+        "inventory_scope"
+    ]
+    assert missing_scope["blockers"] == [
+        "bound_retained_instance_inventory_binding_invalid"
+    ]
+
+    provider.resources = [
+        {"instance_id": "vast-target", "name": "retained"},
+        {"instance_id": "unrelated", "name": "other"},
+    ]
+    blocked = run("blocked")
+    assert blocked["status"] == "blocked"
+    assert "g1_microwave_finetune_prelaunch_inventory_not_zero" in blocked["blockers"]
 
 
 def test_output_collector_stops_when_provider_runtime_exits(
