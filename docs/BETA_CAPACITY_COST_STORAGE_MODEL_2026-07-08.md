@@ -159,6 +159,18 @@ it or it has been copied into a current operator evidence bundle. This local
 cache policy does not prove GCS lifecycle, legal deletion, or live provider
 result validity.
 
+## Buyer Delivery Egress (SCALE2-04)
+
+Buyer delivery downloads are direct GCS signed URLs today (~$0.12/GiB at
+~1 GiB/delivery). A Cloud CDN design — CDN-rate egress (~$0.04–0.08/GiB) +
+edge caching, entitlement gating unchanged — is validated and feature-flagged
+(`BLUEPRINT_DELIVERY_CDN_ENABLED`, default off, GCS fallback preserved) in
+`docs/BUYER_DELIVERY_CDN_DESIGN_2026-07-20.md`, which carries the full cost
+table (~$1,229/mo direct vs ~$430–1,000/mo CDN at 10k deliveries/month).
+Provisioning the CDN backend (LB, hostname, signing key) is an owner
+decision executed via a separate reviewed Terraform change; until then the
+direct-GCS path and cost line stand.
+
 ## Firestore CreatedAt Hotspot Guard
 
 Corrected in scaling round 2 (SCALE2-07): earlier revisions of this model
