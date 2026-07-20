@@ -46,6 +46,24 @@ def test_right_hand_geom_ids_fails_closed_when_missing():
         dynamics._right_hand_geom_ids(_FakeMujoco, model)
 
 
+def test_positive_handle_contact_requires_observed_contact_and_force():
+    assert dynamics._positive_handle_contact_proven(
+        contact_step_count=2,
+        positive_force_contact_count=1,
+        peak_normal_force_n=4.0,
+    )
+    assert not dynamics._positive_handle_contact_proven(
+        contact_step_count=0,
+        positive_force_contact_count=0,
+        peak_normal_force_n=0.0,
+    )
+    assert not dynamics._positive_handle_contact_proven(
+        contact_step_count=2,
+        positive_force_contact_count=0,
+        peak_normal_force_n=0.0,
+    )
+
+
 def test_main_writes_bound_trace_and_qualified_report(tmp_path, monkeypatch):
     trace = np.asarray(
         (

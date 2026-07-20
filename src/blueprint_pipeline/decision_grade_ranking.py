@@ -9,7 +9,10 @@ from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .policy_evaluation_contracts import validate_policy_evaluation_design
+from .policy_evaluation_contracts import (
+    MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION,
+    validate_policy_evaluation_design,
+)
 
 
 SCHEMA_VERSION = "decision_grade_ranking_request.v1"
@@ -171,6 +174,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
     observed_result_keys: set[tuple[Any, ...]] = set()
     outcomes_by_policy: dict[str, list[float | None]] = defaultdict(list)
     outcomes_by_policy_cell: dict[str, dict[tuple[Any, ...], float | None]] = defaultdict(dict)
+    outcomes_by_policy_condition: dict[
+        tuple[str, str, str, str], list[float | None]
+    ] = defaultdict(list)
     failures_by_policy: dict[str, list[str]] = defaultdict(list)
     for row_index, row in enumerate(results):
         policy_id = str(row.get("policy_id") or "")
@@ -263,8 +269,21 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         outcomes_by_policy[policy_id].append(episode_outcome)
         matched_cell_key = result_key[1:]
         outcomes_by_policy_cell[policy_id][matched_cell_key] = episode_outcome
+        outcomes_by_policy_condition[result_key[:4]].append(episode_outcome)
     if observed_result_keys != expected_result_keys:
         blockers.append("episode_results_do_not_exactly_cover_registered_matched_cells")
+    expected_policy_conditions = {key[:4] for key in expected_result_keys}
+    for policy_condition in sorted(expected_policy_conditions):
+        decided_count = sum(
+            outcome is not None
+            for outcome in outcomes_by_policy_condition.get(policy_condition, [])
+        )
+        if decided_count < MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION:
+            blockers.append(
+                "decided_outcome_count_below_minimum:"
+                + ":".join(policy_condition)
+                + f":{decided_count}<{MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION}"
+            )
 
     preferences = _rows(request.get("pairwise_preferences"))
     for index, row in enumerate(preferences):

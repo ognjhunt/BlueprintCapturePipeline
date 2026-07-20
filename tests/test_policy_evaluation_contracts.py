@@ -298,6 +298,32 @@ def test_decision_grade_ranking_rejects_low_confidence_silent_failure_and_discon
     assert "bradley_terry_preference_graph_not_connected" in result["blockers"]
 
 
+def test_decision_grade_ranking_blocks_all_abstain_policy_conditions() -> None:
+    candidate = _ranking_request()
+    for row in candidate["episode_results"]:
+        for criterion in row["criterion_results"]:
+            criterion["outcome"] = "abstain"
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert all(row["coverage"] == 0.0 for row in result["policy_scorecards"])
+    assert any(
+        blocker.startswith("decided_outcome_count_below_minimum:")
+        for blocker in result["blockers"]
+    )
+
+    partial = _ranking_request()
+    partial["episode_results"][0]["criterion_results"][0]["outcome"] = "abstain"
+    partial_result = build_decision_grade_ranking(partial)
+    assert partial_result["status"] == "blocked"
+    assert any(
+        blocker.endswith(":19<20")
+        for blocker in partial_result["blockers"]
+        if blocker.startswith("decided_outcome_count_below_minimum:")
+    )
+
+
 def test_decision_grade_ranking_rejects_weak_ood_reporting() -> None:
     candidate = _ranking_request()
     candidate["ood_axis_results"][0].pop("coverage_95_ci")

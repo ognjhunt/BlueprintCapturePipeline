@@ -35,6 +35,20 @@ from .gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
 SCHEMA_VERSION = "g1_microwave_handle_only_dynamic_validation.v2"
 
 
+def _positive_handle_contact_proven(
+    *,
+    contact_step_count: int,
+    positive_force_contact_count: int,
+    peak_normal_force_n: float,
+) -> bool:
+    return bool(
+        contact_step_count > 0
+        and positive_force_contact_count > 0
+        and math.isfinite(peak_normal_force_n)
+        and peak_normal_force_n > 0.0
+    )
+
+
 def _right_hand_geom_ids(mujoco: Any, model: Any) -> set[int]:
     ids: set[int] = set()
     for geom_id in range(model.ngeom):
@@ -326,9 +340,17 @@ def validate_handle_only_dynamics(
     minimum_angle = float(np.min(trace[:, 1]))
     final_angle = float(trace[-1, 1])
     opening_delta = initial_angle - minimum_angle
-    proven = bool(opening_delta >= threshold)
+    positive_handle_contact_proven = _positive_handle_contact_proven(
+        contact_step_count=contact_step_count,
+        positive_force_contact_count=positive_force_contact_count,
+        peak_normal_force_n=peak_normal_force_n,
+    )
+    proven = bool(
+        opening_delta >= threshold and positive_handle_contact_proven
+    )
     requested_transition_proven = bool(
         opening_delta >= requested_opening - completion_tolerance
+        and positive_handle_contact_proven
     )
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -401,6 +423,9 @@ def validate_handle_only_dynamics(
         },
         "qualification": {
             "opening_threshold_rad": threshold,
+            "right_hand_handle_positive_force_contact_proven": (
+                positive_handle_contact_proven
+            ),
             "contact_driven_door_articulation_proven": proven,
             "requested_opening_within_tolerance_proven": (
                 requested_transition_proven
@@ -411,6 +436,11 @@ def validate_handle_only_dynamics(
             "semantic_task_success_proven": False,
         },
         "blockers": [
+            *(
+                []
+                if positive_handle_contact_proven
+                else ["right_hand_handle_positive_force_contact_not_proven"]
+            ),
             *(
                 []
                 if requested_transition_proven
