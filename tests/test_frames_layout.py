@@ -158,6 +158,25 @@ def test_packed_capture_with_missing_archive_linkage_fails_closed(tmp_path: Path
         load_frames_layout(frames_dir)
 
 
+def test_manifestless_mixed_index_fails_closed(tmp_path: Path) -> None:
+    # A packed capture whose manifest upload was lost AND whose index mixes
+    # packed and unpacked rows is a partial upload/corruption: it must fail
+    # closed, not silently drop the unarchived frames.
+    frames_dir = tmp_path / "frames"
+    build_packed_capture(frames_dir)
+    (frames_dir / "packing_manifest.json").unlink()
+    index_path = frames_dir / "index.jsonl"
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    broken = json.loads(lines[1])
+    del broken["archive"]
+    del broken["packaging"]
+    lines[1] = json.dumps(broken)
+    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="without archive linkage"):
+        load_frames_layout(frames_dir)
+
+
 def test_missing_member_in_archive_fails_closed(tmp_path: Path) -> None:
     frames_dir = tmp_path / "frames"
     build_packed_capture(frames_dir)

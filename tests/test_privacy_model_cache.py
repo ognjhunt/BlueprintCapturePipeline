@@ -82,6 +82,65 @@ def test_timed_model_load_failure_is_not_cached():
     assert len(attempts) == 2
 
 
+def test_sam3_backend_keys_cache_by_stable_reference(monkeypatch, tmp_path):
+    # execute_privacy_service_request materializes gs://https weights under a
+    # fresh TemporaryDirectory per request; keying the cache by that temp path
+    # would miss on every warm invocation and accumulate duplicate runtimes.
+    # The backend must key by the ORIGINAL model reference instead.
+    import inspect
+
+    signature = inspect.signature(psr._run_sam3_backend)
+    assert "weights_cache_key" in signature.parameters
+
+    loads = []
+    monkeypatch.setattr(
+        psr,
+        "_timed_model_load",
+        lambda kind, key, loader: loads.append((kind, key)) or {"runtime": "fake"},
+    )
+
+    class _FailingCv2:
+        @staticmethod
+        def VideoCapture(_path):
+            class _Cap:
+                @staticmethod
+                def isOpened():
+                    return False
+
+            return _Cap()
+
+    import sys
+    from types import ModuleType
+
+    for name in ("numpy", "PIL", "PIL.Image"):
+        if name not in sys.modules:
+            monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    monkeypatch.setitem(sys.modules, "cv2", _FailingCv2)
+    sam3_pkg = ModuleType("sam3")
+    sam3_model_pkg = ModuleType("sam3.model")
+    processor_mod = ModuleType("sam3.model.sam3_image_processor")
+    builder_mod = ModuleType("sam3.model_builder")
+    processor_mod.Sam3Processor = lambda model: {"processor": model}  # type: ignore[attr-defined]
+    builder_mod.build_sam3_image_model = lambda **_kwargs: object()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sam3", sam3_pkg)
+    monkeypatch.setitem(sys.modules, "sam3.model", sam3_model_pkg)
+    monkeypatch.setitem(sys.modules, "sam3.model.sam3_image_processor", processor_mod)
+    monkeypatch.setitem(sys.modules, "sam3.model_builder", builder_mod)
+
+    video = tmp_path / "input.mov"
+    video.write_bytes(b"video")
+    for temp_weights in ("/tmp/req-a/sam3.pt", "/tmp/req-b/sam3.pt"):
+        psr._run_sam3_backend(
+            input_video=video,
+            masks_dir=tmp_path / "masks",
+            prompt="person",
+            stage_name="",
+            weights_path=temp_weights,
+            weights_cache_key="gs://models/sam3.pt",
+        )
+    assert [key for _, key in loads] == ["gs://models/sam3.pt", "gs://models/sam3.pt"]
+
+
 def test_cache_can_be_disabled_by_env(monkeypatch):
     monkeypatch.setenv("PRIVACY_RUNNER_MODEL_CACHE", "0")
     calls = []

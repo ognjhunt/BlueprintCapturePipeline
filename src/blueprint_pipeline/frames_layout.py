@@ -133,7 +133,17 @@ def load_frames_layout(frames_dir: Path) -> FramesLayout:
         )
 
     if packed_records:
-        # No manifest but archive fields present: still readable, treat as v2.
+        # No manifest but archive fields present: still readable as v2, with
+        # the SAME fail-closed linkage check as the manifest path — a mixed
+        # index (some rows packed, some not) means a partial upload or
+        # corruption, and silently dropping the unarchived rows would corrupt
+        # downstream frame counts.
+        missing_archive = [r.frame_id for r in records if r.packaging != "tar" or not r.archive]
+        if missing_archive:
+            raise ValueError(
+                "packed capture has index entries without archive linkage: "
+                + ", ".join(missing_archive[:5])
+            )
         return FramesLayout(
             schema_version=FRAMES_INDEX_SCHEMA_V2,
             packaging="tar",

@@ -336,7 +336,10 @@ def _frames_with_suffix(directory: Optional[Path], suffixes: Iterable[str]) -> l
     return sorted(path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in wanted)
 
 
-def _load_depth_anything_runtime(model_path: str) -> tuple[Optional[Any], list[str]]:
+def _load_depth_anything_runtime(
+    model_path: str,
+    cache_key: Optional[str] = None,
+) -> tuple[Optional[Any], list[str]]:
     from .geometry_da3 import _infer_depth_with_runtime, _load_da3_runtime
 
     os.environ.setdefault("DA3_MODEL_NAME", str(os.getenv("DA3_MODEL_NAME") or "da3metric-large"))
@@ -348,8 +351,11 @@ def _load_depth_anything_runtime(model_path: str) -> tuple[Optional[Any], list[s
 
     # A failed load returns (None, warnings); _timed_model_load must not cache
     # it, so unwrap and only route successes through the cache.
-    cache_key = model_path or str(os.getenv("DA3_MODEL_PATH") or "default")
-    key = ("depth_anything", cache_key)
+    # Cache key must be the ORIGINAL model reference (body/env URI), not the
+    # per-request materialized temp path — otherwise warm instances miss the
+    # cache on every request and accumulate duplicate runtimes.
+    stable_key = cache_key or model_path or str(os.getenv("DA3_MODEL_PATH") or "default")
+    key = ("depth_anything", stable_key)
     if _model_cache_enabled() and key in _MODEL_RUNTIME_CACHE:
         runtime, warnings = _MODEL_RUNTIME_CACHE[key]
         log_event(
@@ -413,6 +419,7 @@ def _run_sam3_backend(
     prompt: str,
     stage_name: str,
     weights_path: str,
+    weights_cache_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         import cv2  # type: ignore[import-not-found]
@@ -443,7 +450,9 @@ def _run_sam3_backend(
     try:
         processor = _timed_model_load(
             "sam3",
-            weights_path or "hf-default",
+            # Stable model identity (original body/env reference), never the
+            # per-request materialized temp path.
+            weights_cache_key or weights_path or "hf-default",
             _load_sam3_processor,
         )
     except Exception as exc:
@@ -557,6 +566,7 @@ def _run_depth_anything_backend(
     depth_dir: Path,
     confidence_dir: Path,
     depth_anything_model_path: str,
+    depth_anything_cache_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         import cv2  # type: ignore[import-not-found]
@@ -569,7 +579,9 @@ def _run_depth_anything_backend(
             "detail": str(exc),
         }
 
-    runtime, warnings = _load_depth_anything_runtime(depth_anything_model_path)
+    runtime, warnings = _load_depth_anything_runtime(
+        depth_anything_model_path, cache_key=depth_anything_cache_key
+    )
     if runtime is None:
         return {
             "status": "failed",
@@ -777,6 +789,7 @@ def _run_vip_backend(
     precomputed_confidence_frames: Optional[Mapping[int, Path]],
     vip_model_path: str,
     depth_anything_model_path: str,
+    depth_anything_cache_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     del vip_model_path
     try:
@@ -804,7 +817,9 @@ def _run_vip_backend(
             depth_warnings = []
             use_precomputed_depth = True
         else:
-            depth_runtime, depth_warnings = _load_depth_anything_runtime(depth_anything_model_path)
+            depth_runtime, depth_warnings = _load_depth_anything_runtime(
+                depth_anything_model_path, cache_key=depth_anything_cache_key
+            )
             if depth_runtime is None:
                 return {
                     "status": "failed",
@@ -1031,8 +1046,11 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 masks_dir = _json_path(outputs_dir, "masks")
             except Exception:
                 masks_dir = outputs_dir / "masks"
+            sam3_weights_ref = _string(
+                body.get("sam3_weights_path") or os.getenv("SAM3_WEIGHTS_PATH")
+            )
             weights_path = _materialize_model_path(
-                _string(body.get("sam3_weights_path") or os.getenv("SAM3_WEIGHTS_PATH")),
+                sam3_weights_ref,
                 working_dir=inputs_dir,
                 default_name="sam3.pt",
             )
@@ -1042,6 +1060,7 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 prompt=_string(body.get("prompt")) or "person",
                 stage_name=_string(body.get("stage_name")),
                 weights_path=weights_path,
+                weights_cache_key=sam3_weights_ref or "hf-default",
             )
             if _string(result.get("status")).lower() == "succeeded":
                 mask_paths = _copy_directory_to_uri(masks_dir, _string(body.get("masks_prefix_uri")))
@@ -1059,11 +1078,15 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
             )
 
         if runner_kind == "vip":
+            depth_anything_ref = _string(
+                body.get("depth_anything_model_path") or os.getenv("DEPTH_ANYTHING_MODEL_PATH")
+            )
             depth_anything_model_path = _materialize_model_path(
-                _string(body.get("depth_anything_model_path") or os.getenv("DEPTH_ANYTHING_MODEL_PATH")),
+                depth_anything_ref,
                 working_dir=inputs_dir,
                 default_name="depth_anything_model",
             )
+            depth_anything_cache_key = depth_anything_ref or "default"
             if parse_bool(body.get("depth_generation_only"), default=False):
                 depth_dir = outputs_dir / "depth"
                 confidence_dir = outputs_dir / "confidence"
@@ -1072,6 +1095,7 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                     depth_dir=depth_dir,
                     confidence_dir=confidence_dir,
                     depth_anything_model_path=depth_anything_model_path,
+                    depth_anything_cache_key=depth_anything_cache_key,
                 )
                 if _string(result.get("status")).lower() == "succeeded":
                     depth_destination = _string(body.get("depth_output_prefix_uri")) or _string(
@@ -1227,6 +1251,7 @@ def execute_privacy_service_request(kind: str, body: Mapping[str, Any]) -> Dict[
                 ),
                 vip_model_path=vip_model_path,
                 depth_anything_model_path=depth_anything_model_path,
+                depth_anything_cache_key=depth_anything_cache_key,
             )
             if _string(result.get("status")).lower() == "succeeded":
                 output_video_uri = _string(body.get("output_video_uri"))
