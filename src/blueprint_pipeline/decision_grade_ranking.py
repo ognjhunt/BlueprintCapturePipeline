@@ -42,6 +42,11 @@ def _digest(value: Any) -> bool:
     return bool(_SHA256_RE.fullmatch(str(value or "").strip().lower()))
 
 
+def _normalized_digest(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    return digest.removeprefix("sha256:") if _SHA256_RE.fullmatch(digest) else ""
+
+
 def _percentile(values: Sequence[float], fraction: float) -> float | None:
     if not values:
         return None
@@ -233,9 +238,7 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         for field in required_evaluator_evidence_digest_fields(evaluator_profile_id):
             if not _digest(row.get(field)):
                 blockers.append(f"episode_result_chain_digest_missing:{row_index}:{field}")
-            elif str(row.get(field)).removeprefix("sha256:") != str(
-                design_row.get(field) or ""
-            ).removeprefix("sha256:"):
+            elif _normalized_digest(row.get(field)) != _normalized_digest(design_row.get(field)):
                 blockers.append(f"episode_result_chain_digest_mismatch:{row_index}:{field}")
         criteria = _rows(row.get("criterion_results"))
         if not criteria:

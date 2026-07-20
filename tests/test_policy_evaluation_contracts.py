@@ -577,6 +577,9 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
                 **profile_digests,
             }
         )
+        result_row["fk_result_sha256"] = (
+            " SHA256:" + profile_digests["fk_result_sha256"].upper() + " "
+        )
 
     # Admission and final ranking must select the same profile even when
     # serializers disagree about surrounding whitespace in profile/backend
