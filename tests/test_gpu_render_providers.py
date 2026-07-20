@@ -596,6 +596,8 @@ def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> N
     res = RunPodRenderProvider().launch(tmp_path, {"imageName": "x"}, cold=True)
     assert res["status"] == "blocked"
     assert "runpod_api_key_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
 
 
 def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
@@ -621,6 +623,8 @@ def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
 
     assert res["status"] == "blocked"
     assert "runpod_render_prelaunch_spend_guard_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
     assert calls == []
 
 
@@ -1329,6 +1333,8 @@ def test_vast_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> Non
     res = VastRenderProvider().launch(tmp_path, {"search_payload": {}}, cold=False)
     assert res["status"] == "blocked"
     assert "vast_api_key_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
 
 
 def test_vast_launch_blocks_without_prelaunch_guard_before_provider_call(
@@ -1350,7 +1356,35 @@ def test_vast_launch_blocks_without_prelaunch_guard_before_provider_call(
 
     assert res["status"] == "blocked"
     assert "vast_render_prelaunch_spend_guard_missing" in res["blockers"]
+    assert res["allocation_created"] is False
+    assert res["spend_occurred"] is False
     assert calls == []
+
+
+def test_vast_offer_search_failure_is_definitive_no_allocation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        calls.append((method, path))
+        raise TimeoutError("marketplace unavailable before create")
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
+    )
+    provider = VastRenderProvider()
+    request = _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
+
+    result = provider.launch(tmp_path, request)
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["vast_offer_search_failed"]
+    assert result["allocation_created"] is False
+    assert result["spend_occurred"] is False
+    assert calls == [("POST", "/bundles/")]
+    assert not (tmp_path / "started_vast_instance_id.txt").exists()
 
 
 def test_vast_stop_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:

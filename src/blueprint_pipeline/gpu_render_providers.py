@@ -669,14 +669,14 @@ class RunPodRenderProvider(GpuRenderProvider):
             return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         key = self._key()
         if not key:
-            return {"status": "blocked", "blockers": ["runpod_api_key_missing"]}
+            return {"status": "blocked", "blockers": ["runpod_api_key_missing"], "allocation_created": False, "spend_occurred": False}
         prelaunch_blockers = _runpod_render_prelaunch_guard_blockers(request)
         if prelaunch_blockers:
             return {
                 "status": "blocked",
                 "blockers": prelaunch_blockers,
-                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard"))
-                or None,
+                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard")) or None,
+                "allocation_created": False, "spend_occurred": False,
             }
         launch_request = dict(request)
         rate_cap = _positive_float(
@@ -2044,7 +2044,7 @@ class VastRenderProvider(GpuRenderProvider):
             return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
         key = self._key()
         if not key:
-            return {"status": "blocked", "blockers": ["vast_api_key_missing"]}
+            return {"status": "blocked", "blockers": ["vast_api_key_missing"], "allocation_created": False, "spend_occurred": False}
         prelaunch_blockers = _render_prelaunch_guard_blockers(
             request, provider_name="vast"
         )
@@ -2052,8 +2052,8 @@ class VastRenderProvider(GpuRenderProvider):
             return {
                 "status": "blocked",
                 "blockers": prelaunch_blockers,
-                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard"))
-                or None,
+                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard")) or None,
+                "allocation_created": False, "spend_occurred": False,
             }
         from .vast_provider_adapter import (
             _api_json, _offer_id, _offers_from_response, _select_offer,
@@ -2082,7 +2082,7 @@ class VastRenderProvider(GpuRenderProvider):
                                 payload=search_payload, timeout_seconds=45)
         except Exception as e:  # noqa: BLE001
             return {"status": "blocked", "blockers": ["vast_offer_search_failed"],
-                    "error": repr(e)[:200]}
+                    "error": repr(e)[:200], "allocation_created": False, "spend_occurred": False}
         offers = _offers_from_response(resp)
         attempts.append(
             {

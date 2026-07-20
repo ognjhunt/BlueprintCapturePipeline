@@ -131,6 +131,22 @@ def _inventory_scope_excluding_bound_instance(
     }
 
 
+def _preserve_ambiguous_launch(
+    pending_path: str | Path,
+    launch: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    """Keep the pending teardown open when provider allocation is uncertain."""
+
+    launch["allocation_outcome_ambiguous"] = True
+    mark_pending_teardown_ambiguous(
+        pending_path,
+        reason=reason,
+        evidence=launch,
+    )
+
+
 def _load_mapping(path: Path, *, name: str) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -985,6 +1001,39 @@ def resume_checkpoint_transfer_to_vast(
     return result
 
 
+def _launch_without_instance_is_ambiguous(launch: Mapping[str, Any]) -> bool:
+    """Distinguish an uncertain create from an explicit no-allocation result."""
+
+    return launch.get("allocation_created") is not False
+
+
+def _settle_no_instance_teardown(
+    pending_path: str | Path,
+    *,
+    launch: Mapping[str, Any],
+    absence: bool,
+    evidence: Mapping[str, Any],
+) -> None:
+    """Close proven absence, retain uncertainty, or cancel explicit rejection."""
+
+    if launch.get("allocation_outcome_ambiguous") is True:
+        if absence:
+            close_pending_teardown(
+                pending_path,
+                {
+                    **dict(evidence),
+                    "status": "PASS",
+                    "provider_absence_confirmed": True,
+                },
+            )
+        return
+    cancel_pending_teardown(
+        pending_path,
+        reason="provider_returned_no_allocation",
+        evidence=launch,
+    )
+
+
 def run_finetune_job(
     *,
     provider_name: str,
@@ -1375,16 +1424,17 @@ def run_finetune_job(
                     ),
                 )
         else:
-            mark_pending_teardown_ambiguous(
-                pending["path"],
-                reason="finetune_provider_launch_returned_without_instance_id",
-                evidence=launch,
-            )
+            if _launch_without_instance_is_ambiguous(launch):
+                _preserve_ambiguous_launch(
+                    pending["path"],
+                    launch,
+                    reason="finetune_provider_launch_returned_without_instance_id",
+                )
     except BaseException as exc:  # Provider outcome is ambiguous even on caller cancellation.
-        mark_pending_teardown_ambiguous(
+        _preserve_ambiguous_launch(
             pending["path"],
+            launch,
             reason=f"finetune_launch_or_collection_exception:{type(exc).__name__}",
-            evidence=launch,
         )
         collection = {
             "status": "blocked",
@@ -1424,9 +1474,16 @@ def run_finetune_job(
                 "final_inventory_scope": final_inventory_scope,
             },
         )
-    elif not launch.get("allocation_outcome_ambiguous"):
-        cancel_pending_teardown(
-            pending["path"], reason="provider_returned_no_allocation", evidence=launch
+    else:
+        _settle_no_instance_teardown(
+            pending["path"],
+            launch=launch,
+            absence=absence,
+            evidence={
+                "teardown": teardown,
+                "final_inventory": final_inventory,
+                "final_inventory_scope": final_inventory_scope,
+            },
         )
     run_blockers = list(collection.get("blockers") or [])
     if launch.get("status") != "launched":

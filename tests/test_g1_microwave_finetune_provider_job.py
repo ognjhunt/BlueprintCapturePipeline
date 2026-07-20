@@ -54,6 +54,90 @@ class _FakeProvider:
         raise AssertionError("provider launch reached without current spend lock")
 
 
+def test_ambiguous_launch_state_is_preserved_for_teardown_settlement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_mark(path, *, reason, evidence):
+        recorded.update(path=path, reason=reason, evidence=dict(evidence))
+
+    monkeypatch.setattr(job, "mark_pending_teardown_ambiguous", fake_mark)
+    launch: dict[str, object] = {}
+    pending_path = tmp_path / "pending_teardown.json"
+
+    job._preserve_ambiguous_launch(
+        pending_path,
+        launch,
+        reason="finetune_launch_or_collection_exception:TimeoutError",
+    )
+
+    assert launch["allocation_outcome_ambiguous"] is True
+    assert recorded == {
+        "path": pending_path,
+        "reason": "finetune_launch_or_collection_exception:TimeoutError",
+        "evidence": {"allocation_outcome_ambiguous": True},
+    }
+
+
+@pytest.mark.parametrize(
+    ("launch", "expected"),
+    [
+        ({"allocation_created": False, "spend_occurred": False}, False),
+        ({"allocation_created": False}, False),
+        ({"allocation_outcome_ambiguous": True, "spend_occurred": None}, True),
+        ({}, True),
+    ],
+)
+def test_launch_without_instance_only_retains_uncertain_outcomes(
+    launch: dict[str, object], expected: bool
+) -> None:
+    assert job._launch_without_instance_is_ambiguous(launch) is expected
+
+
+@pytest.mark.parametrize(
+    ("launch", "absence", "expected_action"),
+    [
+        ({"allocation_outcome_ambiguous": True}, True, "close"),
+        ({"allocation_outcome_ambiguous": True}, False, "retain"),
+        ({"allocation_created": False}, True, "cancel"),
+    ],
+)
+def test_no_instance_teardown_settlement_requires_verified_absence(
+    tmp_path: Path,
+    monkeypatch,
+    launch: dict[str, object],
+    absence: bool,
+    expected_action: str,
+) -> None:
+    actions: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        job,
+        "close_pending_teardown",
+        lambda _path, proof: actions.append(("close", dict(proof))),
+    )
+    monkeypatch.setattr(
+        job,
+        "cancel_pending_teardown",
+        lambda _path, **kwargs: actions.append(("cancel", dict(kwargs))),
+    )
+
+    job._settle_no_instance_teardown(
+        tmp_path / "pending.json",
+        launch=launch,
+        absence=absence,
+        evidence={"final_inventory": {"live_resource_count": 0}},
+    )
+
+    if expected_action == "retain":
+        assert actions == []
+    else:
+        assert actions[0][0] == expected_action
+        if expected_action == "close":
+            assert actions[0][1]["status"] == "PASS"
+            assert actions[0][1]["provider_absence_confirmed"] is True
+
+
 def _dataset_archive(tmp_path: Path) -> Path:
     root = tmp_path / "microwave_owned_lerobot_v21_20260717"
     root.mkdir()
