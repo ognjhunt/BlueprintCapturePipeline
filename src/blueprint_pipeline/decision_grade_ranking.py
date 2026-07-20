@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 import re
@@ -45,6 +47,11 @@ def _digest(value: Any) -> bool:
 def _normalized_digest(value: Any) -> str:
     digest = str(value or "").strip().lower()
     return digest.removeprefix("sha256:") if _SHA256_RE.fullmatch(digest) else ""
+
+
+def _canonical_payload_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _percentile(values: Sequence[float], fraction: float) -> float | None:
@@ -259,6 +266,10 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         criteria = _rows(row.get("criterion_results"))
         if not criteria:
             blockers.append(f"episode_result_criteria_missing:{row_index}")
+        elif _normalized_digest(row.get("criterion_result_sha256")) != (
+            _canonical_payload_sha256(criteria)
+        ):
+            blockers.append(f"criterion_result_payload_digest_mismatch:{row_index}")
         episode_values: list[float] = []
         episode_abstained = evaluator_outcome_status == "abstained"
         for criterion_index, criterion in enumerate(criteria):

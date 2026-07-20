@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 
 from blueprint_pipeline.policy_evaluation_contracts import (
@@ -25,6 +27,11 @@ from blueprint_pipeline.decision_grade_ranking import (
 
 def _digest(index: int) -> str:
     return f"{index:064x}"
+
+
+def _payload_digest(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _policy(index: int) -> dict:
@@ -357,6 +364,17 @@ def _ranking_request() -> dict:
     for row in design["rows"]:
         policy_index = int(row["policy_id"].split("-")[-1])
         success = row["seed"] < 14 + (policy_index % 3)
+        criterion_results = [
+            {
+                "criterion_id": "door-angle",
+                "outcome": "success" if success else "failure",
+                "confidence": 0.95,
+                "label_blinded_and_randomized": True,
+                "evidence_refs": [{"sha256": "sha256:" + _digest(4000 + row["seed"])}],
+                "failure_taxonomy": [] if success else ["criterion_not_reached"],
+            }
+        ]
+        row["criterion_result_sha256"] = _payload_digest(criterion_results)
         episode_results.append(
             {
                 "policy_id": row["policy_id"],
@@ -377,16 +395,7 @@ def _ranking_request() -> dict:
                 "fixture_or_proxy_model_output_used": False,
                 "fallback_policy_used": False,
                 **{field: row[field] for field in COMMON_DIGEST_FIELDS},
-                "criterion_results": [
-                    {
-                        "criterion_id": "door-angle",
-                        "outcome": "success" if success else "failure",
-                        "confidence": 0.95,
-                        "label_blinded_and_randomized": True,
-                        "evidence_refs": [{"sha256": "sha256:" + _digest(4000 + row["seed"])}],
-                        "failure_taxonomy": [] if success else ["criterion_not_reached"],
-                    }
-                ],
+                "criterion_results": criterion_results,
             }
         )
     preferences = [
@@ -548,6 +557,7 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
     assert "episode_result_fresh_evaluator_steps_invalid:0" in result["blockers"]
     assert "episode_result_fresh_evaluator_steps_mismatch:1" in result["blockers"]
     assert "criterion_evidence_digest_invalid:0:0" in result["blockers"]
+    assert "criterion_result_payload_digest_mismatch:0" in result["blockers"]
 
 
 def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> None:
