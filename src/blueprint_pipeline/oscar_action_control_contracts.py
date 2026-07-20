@@ -21,7 +21,14 @@ def _rows(value: Any) -> list[dict[str, Any]]:
 
 
 def _digest(value: Any) -> bool:
-    return bool(_SHA256_RE.fullmatch(str(value or "").strip().lower()))
+    return bool(_normalized_digest(value))
+
+
+def _normalized_digest(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    if not _SHA256_RE.fullmatch(digest):
+        return ""
+    return digest.removeprefix("sha256:")
 
 
 def validate_oscar_action_control_suite(suite: Mapping[str, Any]) -> dict[str, Any]:
@@ -49,13 +56,13 @@ def validate_oscar_action_control_suite(suite: Mapping[str, Any]) -> dict[str, A
     if set(kinds) != REQUIRED_CONTROL_KINDS or len(kinds) != len(REQUIRED_CONTROL_KINDS):
         blockers.append("oscar_action_control_kind_coverage_invalid")
     executed_outputs: set[str] = set()
-    base_action = str(suite.get("base_commanded_action_sha256") or "").lower()
-    base_output = str(suite.get("base_model_output_sha256") or "").lower()
+    base_action = _normalized_digest(suite.get("base_commanded_action_sha256"))
+    base_output = _normalized_digest(suite.get("base_model_output_sha256"))
     for index, row in enumerate(rows):
         kind = str(row.get("control_kind") or "")
         if not _digest(row.get("control_action_sha256")):
             blockers.append(f"oscar_action_control_digest_invalid:{index}:control_action_sha256")
-        elif str(row.get("control_action_sha256") or "").lower() == base_action:
+        elif _normalized_digest(row.get("control_action_sha256")) == base_action:
             blockers.append(f"oscar_action_control_action_not_distinct_from_base:{index}")
         if row.get("transformation_or_replay_condition_verified") is not True:
             blockers.append(f"oscar_action_control_transformation_not_verified:{index}")
@@ -68,7 +75,7 @@ def validate_oscar_action_control_suite(suite: Mapping[str, Any]) -> dict[str, A
             ):
                 if not _digest(row.get(field)):
                     blockers.append(f"oscar_action_control_digest_invalid:{index}:{field}")
-            output = str(row.get("model_output_sha256") or "").lower()
+            output = _normalized_digest(row.get("model_output_sha256"))
             if output == base_output or output in executed_outputs:
                 blockers.append(f"oscar_action_control_model_output_reused:{index}")
             executed_outputs.add(output)

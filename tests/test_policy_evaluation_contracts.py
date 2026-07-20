@@ -133,6 +133,19 @@ def test_generic_policy_design_admits_seven_independent_matched_policies() -> No
     assert result["g1_kitchen_is_product_architecture"] is False
 
 
+def test_policy_design_normalizes_checkpoint_digests_before_independence_count() -> None:
+    candidate = _design()
+    candidate["policies"][1]["checkpoint_sha256"] = (
+        "sha256:" + candidate["policies"][0]["checkpoint_sha256"]
+    )
+
+    result = validate_policy_evaluation_design(candidate)
+
+    assert result["status"] == "blocked"
+    assert result["independent_checkpoint_count"] == 6
+    assert "independent_checkpoint_count_lt_7" in result["blockers"]
+
+
 def test_policy_design_rejects_asymmetric_cells_and_fallback_injection() -> None:
     candidate = _design()
     candidate["rows"].pop()

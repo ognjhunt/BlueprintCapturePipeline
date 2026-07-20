@@ -28,7 +28,14 @@ def _rows(value: Any) -> list[dict[str, Any]]:
 
 
 def _digest(value: Any) -> bool:
-    return bool(_SHA256_RE.fullmatch(str(value or "").strip().lower()))
+    return bool(_normalized_digest(value))
+
+
+def _normalized_digest(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    if not _SHA256_RE.fullmatch(digest):
+        return ""
+    return digest.removeprefix("sha256:")
 
 
 def _finite(value: Any) -> float | None:
@@ -134,7 +141,11 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
             for blocker in validation["blockers"]
         )
     policy_ids = [str(row.get("policy_id") or "") for row in policies]
-    checkpoint_digests = [str(row.get("checkpoint_sha256") or "") for row in policies]
+    checkpoint_digests = [
+        digest
+        for row in policies
+        if (digest := _normalized_digest(row.get("checkpoint_sha256")))
+    ]
     if len(set(policy_ids)) < MINIMUM_DECISION_POLICY_COUNT:
         blockers.append(f"independent_policy_count_lt_{MINIMUM_DECISION_POLICY_COUNT}")
     if len(set(checkpoint_digests)) < MINIMUM_DECISION_POLICY_COUNT:

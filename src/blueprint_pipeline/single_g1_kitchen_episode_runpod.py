@@ -887,7 +887,7 @@ else
   echo vast_bootstrap_nonroot_ssh_repair_skipped >&2
 fi
 {SYSTEM_PYTHON} - <<'PY'
-{VAST_BOOTSTRAP_DOWNLOADER_PYTHON}PY
+{VAST_BOOTSTRAP_DOWNLOADER_PYTHON.rstrip()}\nPY
 """
 
 

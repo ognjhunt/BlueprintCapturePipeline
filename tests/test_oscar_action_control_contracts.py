@@ -76,3 +76,19 @@ def test_oscar_action_control_suite_blocks_reused_outputs_and_admitted_stale_act
     assert "oscar_action_control_model_output_reused:0" in result["blockers"]
     assert any("oscar_action_replay_control_not_rejected" in item for item in result["blockers"])
     assert any("oscar_action_replay_control_not_decision_blocked" in item for item in result["blockers"])
+
+
+def test_oscar_action_controls_normalize_digests_before_reuse_checks() -> None:
+    candidate = deepcopy(_suite())
+    candidate["controls"][0]["control_action_sha256"] = (
+        "sha256:" + candidate["base_commanded_action_sha256"]
+    )
+    candidate["controls"][1]["model_output_sha256"] = (
+        "sha256:" + candidate["base_model_output_sha256"]
+    )
+
+    result = validate_oscar_action_control_suite(candidate)
+
+    assert result["status"] == "blocked"
+    assert "oscar_action_control_action_not_distinct_from_base:0" in result["blockers"]
+    assert "oscar_action_control_model_output_reused:1" in result["blockers"]

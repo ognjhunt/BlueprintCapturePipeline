@@ -671,6 +671,15 @@ def test_vast_signed_bootstrap_keeps_provider_env_and_args_below_32kb(
     assert "chmod 600 /root/.ssh/authorized_keys" in downloader
     assert "vast_root_ssh_directory_symlink_forbidden" in downloader
     assert "vast_authorized_keys_not_regular_file" in downloader
+    assert downloader.endswith("\nPY\n")
+    syntax = subprocess.run(
+        ["bash", "-n"],
+        input=downloader,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
     assert downloader.index("chmod 600 /root/.ssh/authorized_keys") < downloader.index(
         "BLUEPRINT_VAST_REMOTE_BOOTSTRAP_SIGNED_GET_URL"
     )
