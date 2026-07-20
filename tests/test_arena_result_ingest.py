@@ -1346,7 +1346,8 @@ def test_arena_delivery_retention_policy_uses_primary_bucket_lifecycle(
         "prefixes": ["scenes/", "targets/"],
         "nearline_after_days": 30,
         "coldline_after_days": 90,
-        "delete_after_days": 180,
+        "archive_after_days": 365,
+        "delete_after_days": None,
         "enforcement_layer": "gcs_bucket_lifecycle",
     }
     assert retention["data_classes"]["temporary_processing"]["delete_after_days"] == 14

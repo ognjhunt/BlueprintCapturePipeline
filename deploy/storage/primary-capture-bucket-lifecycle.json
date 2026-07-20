@@ -22,10 +22,11 @@
     },
     {
       "action": {
-        "type": "Delete"
+        "type": "SetStorageClass",
+        "storageClass": "ARCHIVE"
       },
       "condition": {
-        "age": 180,
+        "age": 365,
         "matchesPrefix": ["scenes/", "targets/"]
       }
     },

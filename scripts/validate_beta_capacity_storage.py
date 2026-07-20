@@ -42,7 +42,8 @@ EXPECTED_STORAGE_DATA_CLASSES = {
         "prefixes": ["scenes/", "targets/"],
         "nearline_after_days": 30,
         "coldline_after_days": 90,
-        "delete_after_days": 180,
+        "archive_after_days": 365,
+        "delete_after_days": None,
     },
     "temporary_processing": {
         "prefixes": ["tmp/", "staging/", "debug/"],
@@ -69,7 +70,13 @@ def _load_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _find_rule(lifecycle: dict[str, Any], action_type: str, age: int, prefixes: set[str]) -> dict[str, Any]:
+def _find_rule(
+    lifecycle: dict[str, Any],
+    action_type: str,
+    age: int,
+    prefixes: set[str],
+    storage_class: str | None = None,
+) -> dict[str, Any]:
     for rule in lifecycle.get("rule", []):
         if not isinstance(rule, dict):
             continue
@@ -77,11 +84,29 @@ def _find_rule(lifecycle: dict[str, Any], action_type: str, age: int, prefixes: 
         condition = rule.get("condition") if isinstance(rule.get("condition"), dict) else {}
         if action.get("type") != action_type:
             continue
+        if storage_class is not None and action.get("storageClass") != storage_class:
+            continue
         if condition.get("age") != age:
             continue
         if prefixes.issubset(set(condition.get("matchesPrefix") or [])):
             return rule
     raise AssertionError(f"missing lifecycle rule action={action_type} age={age} prefixes={sorted(prefixes)}")
+
+
+def _forbid_delete_rule(lifecycle: dict[str, Any], prefixes: set[str]) -> None:
+    """Raw capture truth is never lifecycle-deleted; it archives instead."""
+    for rule in lifecycle.get("rule", []):
+        if not isinstance(rule, dict):
+            continue
+        action = rule.get("action") if isinstance(rule.get("action"), dict) else {}
+        condition = rule.get("condition") if isinstance(rule.get("condition"), dict) else {}
+        if action.get("type") != "Delete":
+            continue
+        overlap = prefixes.intersection(set(condition.get("matchesPrefix") or []))
+        if overlap:
+            raise AssertionError(
+                f"forbidden Delete lifecycle rule covers raw capture truth prefixes: {sorted(overlap)}"
+            )
 
 
 def _require_text(path: Path, required: list[str]) -> None:
@@ -278,9 +303,10 @@ def validate_files(repo_root: Path, capture_swift_policy: Path | None = None) ->
     if "not launch proof" not in local_jobs.get("canonical_handoff_rule", ""):
         raise AssertionError("local robot_eval_jobs retention must keep launch-proof boundary explicit")
 
-    _find_rule(lifecycle, "SetStorageClass", 30, {"scenes/", "targets/"})
-    _find_rule(lifecycle, "SetStorageClass", 90, {"scenes/", "targets/"})
-    _find_rule(lifecycle, "Delete", 180, {"scenes/", "targets/"})
+    _find_rule(lifecycle, "SetStorageClass", 30, {"scenes/", "targets/"}, storage_class="NEARLINE")
+    _find_rule(lifecycle, "SetStorageClass", 90, {"scenes/", "targets/"}, storage_class="COLDLINE")
+    _find_rule(lifecycle, "SetStorageClass", 365, {"scenes/", "targets/"}, storage_class="ARCHIVE")
+    _forbid_delete_rule(lifecycle, {"scenes/", "targets/"})
     _find_rule(lifecycle, "Delete", 14, {"tmp/", "staging/", "debug/"})
     _find_rule(lifecycle, "Delete", 365, {"buyer_delivery/", "marketplace/", "hosted_sessions/", "robot_eval_jobs/"})
 

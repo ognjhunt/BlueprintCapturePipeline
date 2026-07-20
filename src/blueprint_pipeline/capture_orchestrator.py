@@ -20,6 +20,18 @@ from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
+from .eval_card_ids import (
+    _failure_mode_ids_from_taxonomy,
+    _load_cards,
+    _metric_ids_from_methodology,
+    _task_ids_from_thresholds,
+)
+from .lane_resume import (
+    lane_ledger_input_fingerprint,
+    lane_resume_disabled,
+    read_completed_lane_result,
+    record_lane_completion,
+)
 from .retrieval_index_stage import run_retrieval_index_stage
 from .robot_eval_job_orchestrator import (
     REQUIRED_ROBOT_EVAL_INPUTS,
@@ -428,92 +440,6 @@ def _default_robot_eval_job_runtime(capture_root: Path) -> Dict[str, Any]:
         "allow_cpu_simulator_preflight": _sim_only_beta_autonomy_enabled()
         and _env_truthy("BLUEPRINT_ALLOW_CPU_SIMULATOR_PREFLIGHT"),
     }
-
-
-def _load_cards(path: Path) -> List[Dict[str, Any]]:
-    payload = _read_json_mapping(path)
-    cards = payload.get("cards")
-    if not isinstance(cards, list):
-        return []
-    return [dict(card) for card in cards if isinstance(card, Mapping)]
-
-
-def _metric_ids_from_methodology(path: Path) -> set[str]:
-    payload = _read_json_mapping(path)
-    raw_metrics = (
-        payload.get("metrics")
-        or payload.get("scorecard_metrics")
-        or payload.get("standard_scorecard_metrics")
-    )
-    metric_ids: set[str] = set()
-    if isinstance(raw_metrics, Mapping):
-        for key, value in raw_metrics.items():
-            if isinstance(value, Mapping):
-                metric_id = value.get("metric_id") or value.get("metricId") or value.get("id")
-            else:
-                metric_id = key
-            metric_id = str(metric_id or "").strip()
-            if metric_id:
-                metric_ids.add(metric_id)
-        return metric_ids
-    if not isinstance(raw_metrics, list):
-        return metric_ids
-    for metric in raw_metrics:
-        if isinstance(metric, Mapping):
-            metric_id = metric.get("metric_id") or metric.get("metricId") or metric.get("id")
-        else:
-            metric_id = metric
-        metric_id = str(metric_id or "").strip()
-        if metric_id:
-            metric_ids.add(metric_id)
-    return metric_ids
-
-
-def _task_ids_from_thresholds(path: Path) -> set[str]:
-    payload = _read_json_mapping(path)
-    raw_thresholds = (
-        payload.get("task_thresholds")
-        or payload.get("taskThresholds")
-        or payload.get("thresholds")
-    )
-    task_ids: set[str] = set()
-    if isinstance(raw_thresholds, Mapping):
-        for key, value in raw_thresholds.items():
-            if isinstance(value, Mapping):
-                task_id = value.get("task_id") or value.get("taskId") or value.get("id")
-            else:
-                task_id = key
-            task_id = str(task_id or "").strip()
-            if task_id:
-                task_ids.add(task_id)
-        return task_ids
-    if not isinstance(raw_thresholds, list):
-        return task_ids
-    for threshold in raw_thresholds:
-        if not isinstance(threshold, Mapping):
-            continue
-        task_id = threshold.get("task_id") or threshold.get("taskId") or threshold.get("id")
-        task_id = str(task_id or "").strip()
-        if task_id:
-            task_ids.add(task_id)
-    return task_ids
-
-
-def _failure_mode_ids_from_taxonomy(path: Path) -> set[str]:
-    payload = _read_json_mapping(path)
-    raw_modes = payload.get("failure_modes") or payload.get("failureModes")
-    mode_ids: set[str] = set()
-    if not isinstance(raw_modes, list):
-        return mode_ids
-    for mode in raw_modes:
-        if isinstance(mode, Mapping):
-            mode_id = mode.get("failure_mode_id") or mode.get("failureModeId") or mode.get("id")
-        else:
-            mode_id = mode
-        mode_id = str(mode_id or "").strip()
-        if mode_id:
-            mode_ids.add(mode_id)
-    return mode_ids
 
 
 def _as_mapping(value: Any) -> Dict[str, Any]:
@@ -1429,6 +1355,24 @@ def run_capture_pipeline(
     )
     allow_lane_fault_isolation = len(lanes) > 1
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
+    # Production dispatch (storage_trigger -> run_capture_pipeline) bypasses the
+    # run_e2e stage ledger, so Cloud Tasks x Cloud Run Job retries would re-run
+    # every lane. The lane ledger skips lanes already completed for the same
+    # capture input fingerprint. BLUEPRINT_LANE_RESUME_DISABLED=1 disables it.
+    resume_root = descriptor_path.parent
+    lane_ledger_fingerprint: Optional[Dict[str, Any]] = None
+    if not lane_resume_disabled():
+        try:
+            lane_ledger_fingerprint = lane_ledger_input_fingerprint(
+                capture_root=resume_root,
+                descriptor_path=descriptor_path,
+            )
+        except OSError:
+            logger.warning(
+                "capture_pipeline.lane_resume_fingerprint_failed descriptor=%s",
+                descriptor_gcs_uri,
+                exc_info=True,
+            )
     auto_stage_task_eval = _descriptor_requests_task_evaluation_run(
         descriptor_path
     ) or _call_requests_task_evaluation_run(
@@ -1464,6 +1408,15 @@ def run_capture_pipeline(
             manifest_path=lane_result.get("manifest_path"),
             source=lane_result.get("source"),
         )
+        if lane_ledger_fingerprint is not None and not lane_result.get(
+            "resumed_from_lane_ledger"
+        ):
+            record_lane_completion(
+                capture_root=resume_root,
+                lane=selected_lane,
+                fingerprint=lane_ledger_fingerprint,
+                lane_result=lane_result,
+            )
 
     def _append_lane_failure(selected_lane: str, exc: BaseException) -> None:
         failure = {
@@ -1507,6 +1460,29 @@ def run_capture_pipeline(
         return qualification_result
 
     for selected_lane in lanes:
+        if lane_ledger_fingerprint is not None:
+            resumed_result = read_completed_lane_result(
+                capture_root=resume_root,
+                lane=selected_lane,
+                fingerprint=lane_ledger_fingerprint,
+            )
+            if resumed_result is not None:
+                if selected_lane == "qualification" and qualification_result is None:
+                    qualification_result = dict(resumed_result)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "capture_pipeline.lane_skipped_already_completed",
+                    descriptor_gcs_uri=descriptor_gcs_uri,
+                    selected_lane=selected_lane,
+                    reason="lane_ledger_marker_matches_capture_input_fingerprint",
+                    marker_dir="pipeline/lane_ledger",
+                )
+                _append_lane_result(
+                    selected_lane,
+                    {**resumed_result, "resumed_from_lane_ledger": True},
+                )
+                continue
         log_event(
             logger,
             logging.INFO,
