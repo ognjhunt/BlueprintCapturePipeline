@@ -577,6 +577,62 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_canary_forwards_finetune_qualification_identity_file(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_finetune(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(
+        allocator,
+        "run_g1_microwave_finetune_job",
+        fake_run_finetune,
+    )
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.G1_MICROWAVE_FINETUNE_PROBE_KIND,
+            "--finetune-provider-bundle",
+            "finetune-bundle.json",
+            "--finetune-object-store-stage-dir",
+            "input-stage",
+            "--finetune-checkpoint-object-store-stage-dir",
+            "checkpoint-stage",
+            "--finetune-checkpoint-vast-session-manifest",
+            "qualification-session.json",
+            "--qualification-identity-file",
+            "operator-key",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "finetune-pod",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["qualification_identity_file"] == "operator-key"
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_gpu_canary_dispatches_one_single_kitchen_episode(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

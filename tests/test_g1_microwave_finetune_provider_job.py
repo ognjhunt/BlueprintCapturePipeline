@@ -530,6 +530,119 @@ def test_large_checkpoint_collector_preserves_verified_object_store_parts(
     assert not (tmp_path / "g1_microwave_finetune_checkpoint.zip").exists()
 
 
+def test_vast_checkpoint_target_honors_qualification_identity_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("vast.example ssh-ed25519 AAAA\n", encoding="utf-8")
+    identity = tmp_path / "operator-key"
+    identity.write_text("test-key\n", encoding="utf-8")
+    session = tmp_path / "session.json"
+    session.write_text(
+        json.dumps(
+            {
+                "provider": "vast",
+                "continuing_spend": True,
+                "instance_id": "123",
+                "resource_name": "qualification-receiver",
+                "ssh_connection": {
+                    "ssh_host": "vast.example",
+                    "ssh_port": 22022,
+                },
+                "ssh_host_key": {"known_hosts_file": str(known_hosts)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class Provider:
+        def inspect(self, instance_id):
+            assert instance_id == "123"
+            return {
+                "status": "observed",
+                "actual_status": "running",
+                "instance_id": "123",
+                "name": "qualification-receiver",
+                "ssh_host": "vast.example",
+                "ssh_port": 22022,
+            }
+
+    monkeypatch.setattr(job, "get_render_provider", lambda _name: Provider())
+    target = job._load_vast_checkpoint_target(
+        session,
+        identity_file=identity,
+    )
+
+    assert target["identity_file"] == str(identity.resolve())
+
+
+def test_vast_checkpoint_collection_admits_before_streaming(
+    tmp_path: Path, monkeypatch
+) -> None:
+    events: list[str] = []
+
+    def fake_admit(*_args, **_kwargs):
+        events.append("admit")
+        return object()
+
+    def fake_collect(**_kwargs):
+        assert events == ["admit"]
+        events.append("collect")
+        return {"status": "completed", "blockers": []}
+
+    monkeypatch.setattr(job, "admit_qualification_control_mutation", fake_admit)
+    monkeypatch.setattr(job, "_collect_checkpoint", fake_collect)
+    admission = tmp_path / "checkpoint-install-admission.json"
+    result = job._collect_checkpoint_with_vast_admission(
+        get_urls=["https://objects.example/checkpoint"],
+        output_dir=tmp_path / "checkpoint",
+        worker_report={},
+        vast_target={
+            "instance_id": "vast-123",
+            "_admission_manifest": {"continuing_spend": True},
+            "_admission_inspection": {"status": "observed"},
+        },
+        admission_out=admission,
+    )
+
+    assert events == ["admit", "collect"]
+    assert result["qualification_control_admission_passed"] is True
+    assert result["qualification_control_admission_path"] == str(admission.resolve())
+
+
+def test_vast_checkpoint_collection_refuses_streaming_when_admission_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    collected = False
+
+    def fake_admit(*_args, **_kwargs):
+        raise ValueError("qualification_control_session_ttl_expired")
+
+    def fake_collect(**_kwargs):
+        nonlocal collected
+        collected = True
+        return {"status": "completed", "blockers": []}
+
+    monkeypatch.setattr(job, "admit_qualification_control_mutation", fake_admit)
+    monkeypatch.setattr(job, "_collect_checkpoint", fake_collect)
+    result = job._collect_checkpoint_with_vast_admission(
+        get_urls=["https://objects.example/checkpoint"],
+        output_dir=tmp_path / "checkpoint",
+        worker_report={},
+        vast_target={
+            "instance_id": "vast-123",
+            "_admission_manifest": {"continuing_spend": True},
+            "_admission_inspection": {"status": "observed"},
+        },
+        admission_out=tmp_path / "checkpoint-install-admission.json",
+    )
+
+    assert collected is False
+    assert result["status"] == "blocked"
+    assert result["qualification_control_admission_passed"] is False
+    assert result["blockers"] == ["qualification_control_session_ttl_expired"]
+
+
 def test_resume_checkpoint_transfer_uses_existing_parts_without_runpod(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -563,7 +676,7 @@ def test_resume_checkpoint_transfer_uses_existing_parts_without_runpod(
     monkeypatch.setattr(
         job,
         "_load_vast_checkpoint_target",
-        lambda _manifest: {
+        lambda _manifest, **_kwargs: {
             "instance_id": "vast-123",
             "resource_name": "qualification-receiver",
             "_admission_manifest": {
@@ -646,6 +759,8 @@ def test_main_exposes_checkpoint_resume_without_runpod(
             str(tmp_path / "worker-report.json"),
             "--checkpoint-vast-session-manifest",
             str(tmp_path / "session.json"),
+            "--qualification-identity-file",
+            str(tmp_path / "operator-key"),
             "--adapter-output",
             str(output),
             "--admission-out",
@@ -665,6 +780,7 @@ def test_main_exposes_checkpoint_resume_without_runpod(
     assert captured["checkpoint_vast_session_manifest"] == str(
         tmp_path / "session.json"
     )
+    assert captured["qualification_identity_file"] == str(tmp_path / "operator-key")
     assert captured["adapter_output"] == str(output)
     assert captured["admission_out"] == str(tmp_path / "resume-admission.json")
     assert captured["execute"] is True

@@ -604,6 +604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     checkpoint_vast_session_manifest=(
                         args.finetune_checkpoint_vast_session_manifest
                     ),
+                    qualification_identity_file=args.qualification_identity_file,
                 )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))

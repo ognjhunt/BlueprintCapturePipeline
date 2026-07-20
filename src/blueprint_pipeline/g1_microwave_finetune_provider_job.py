@@ -74,6 +74,7 @@ MAX_OUTPUT_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_OUTPUT_ARCHIVE_MEMBERS = 100_000
 MAX_OUTPUT_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
 VAST_CHECKPOINT_PYTHON = "/opt/gr00t-venv/bin/python"
+DEFAULT_QUALIFICATION_IDENTITY_FILE = "~/.ssh/id_ed25519"
 
 
 def _load_mapping(path: Path, *, name: str) -> dict[str, Any]:
@@ -418,6 +419,53 @@ def _collect_checkpoint(
         temporary.unlink(missing_ok=True)
 
 
+def _collect_checkpoint_with_vast_admission(
+    *,
+    get_urls: Sequence[str],
+    output_dir: Path,
+    worker_report: Mapping[str, Any],
+    vast_target: Mapping[str, Any] | None = None,
+    admission_out: str | Path | None = None,
+) -> dict[str, Any]:
+    """Admit a retained-session mutation immediately before checkpoint streaming."""
+
+    admission_path = (
+        str(Path(admission_out).expanduser().resolve())
+        if admission_out not in {None, ""}
+        else None
+    )
+    if vast_target:
+        try:
+            admit_qualification_control_mutation(
+                admission_out,
+                dict(vast_target.get("_admission_manifest") or {}),
+                dict(vast_target.get("_admission_inspection") or {}),
+                str(vast_target.get("instance_id") or ""),
+                "install-checkpoint",
+                "groot_microwave_finetune",
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {
+                "status": "blocked",
+                "qualification_control_admission_passed": False,
+                "qualification_control_admission_path": admission_path,
+                "blockers": [str(exc)],
+            }
+    collection = _collect_checkpoint(
+        get_urls=get_urls,
+        output_dir=output_dir,
+        worker_report=worker_report,
+        vast_target=vast_target,
+    )
+    if vast_target:
+        return {
+            **collection,
+            "qualification_control_admission_passed": True,
+            "qualification_control_admission_path": admission_path,
+        }
+    return collection
+
+
 def _checkpoint_receiver_script() -> str:
     """Return the fixed remote receiver used for a disk-free checkpoint handoff."""
 
@@ -523,7 +571,11 @@ finally:
 '''
 
 
-def _load_vast_checkpoint_target(session_manifest: str | Path) -> dict[str, Any]:
+def _load_vast_checkpoint_target(
+    session_manifest: str | Path,
+    *,
+    identity_file: str | Path = DEFAULT_QUALIFICATION_IDENTITY_FILE,
+) -> dict[str, Any]:
     manifest_path = Path(session_manifest).expanduser().resolve()
     manifest = _load_mapping(manifest_path, name="finetune_checkpoint_vast_session")
     if manifest.get("provider") != "vast" or manifest.get("continuing_spend") is not True:
@@ -554,7 +606,7 @@ def _load_vast_checkpoint_target(session_manifest: str | Path) -> dict[str, Any]
         "ssh_host": host,
         "ssh_port": port,
         "known_hosts_file": str(known_hosts),
-        "identity_file": str(Path("~/.ssh/id_ed25519").expanduser().resolve()),
+        "identity_file": str(Path(identity_file).expanduser().resolve()),
         "checkpoint_path": REMOTE_FINAL_CHECKPOINT,
         "_admission_manifest": manifest,
         "_admission_inspection": inspected,
@@ -771,6 +823,7 @@ def resume_checkpoint_transfer_to_vast(
     admission_out: str | Path | None,
     adapter_output: str | Path,
     execute: bool = False,
+    qualification_identity_file: str | Path = DEFAULT_QUALIFICATION_IDENTITY_FILE,
 ) -> dict[str, Any]:
     """Install an already-qualified object-store checkpoint on live Vast."""
 
@@ -807,7 +860,10 @@ def resume_checkpoint_transfer_to_vast(
             )
         if not get_urls:
             raise ValueError("finetune_checkpoint_part_stage_dirs_missing")
-        target = _load_vast_checkpoint_target(checkpoint_vast_session_manifest)
+        target = _load_vast_checkpoint_target(
+            checkpoint_vast_session_manifest,
+            identity_file=qualification_identity_file,
+        )
     except (OSError, ValueError) as exc:
         blockers.append(str(exc))
 
@@ -818,19 +874,12 @@ def resume_checkpoint_transfer_to_vast(
     if not execute:
         blockers.append("g1_microwave_finetune_checkpoint_resume_execute_required")
     if not blockers:
-        admit_qualification_control_mutation(
-            admission_out,
-            target["_admission_manifest"],
-            target["_admission_inspection"],
-            str(target["instance_id"]),
-            "install-checkpoint",
-            "groot_microwave_finetune",
-        )
-        collection = _collect_checkpoint(
+        collection = _collect_checkpoint_with_vast_admission(
             get_urls=get_urls,
             output_dir=result_path.parent / "resumed_checkpoint",
             worker_report=worker_report,
             vast_target=target,
+            admission_out=admission_out,
         )
         blockers.extend(collection.get("blockers") or [])
     result = {
@@ -873,6 +922,7 @@ def run_finetune_job(
     pod_name: str,
     execute: bool,
     checkpoint_vast_session_manifest: str | Path | None = None,
+    qualification_identity_file: str | Path = DEFAULT_QUALIFICATION_IDENTITY_FILE,
 ) -> dict[str, Any]:
     result_path = Path(adapter_output).expanduser().resolve()
     root = result_path.parent
@@ -892,7 +942,8 @@ def run_finetune_job(
     if checkpoint_vast_session_manifest not in {None, ""}:
         try:
             checkpoint_vast_target = _load_vast_checkpoint_target(
-                checkpoint_vast_session_manifest
+                checkpoint_vast_session_manifest,
+                identity_file=qualification_identity_file,
             )
         except (OSError, ValueError) as exc:
             blockers.append(str(exc))
@@ -1192,11 +1243,15 @@ def run_finetune_job(
                 instance_id=instance_id,
             )
             if collection.get("status") == "completed":
-                checkpoint_collection = _collect_checkpoint(
+                checkpoint_collection = _collect_checkpoint_with_vast_admission(
                     get_urls=checkpoint_part_get_urls,
                     output_dir=root / "collected_checkpoint",
                     worker_report=collection.get("worker_report") or {},
                     vast_target=checkpoint_vast_target or None,
+                    admission_out=(
+                        root
+                        / "g1_microwave_finetune_checkpoint_install_admission.json"
+                    ),
                 )
         else:
             mark_pending_teardown_ambiguous(
@@ -1320,6 +1375,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--adapter-output", required=True)
     parser.add_argument("--pod-name", default="")
     parser.add_argument("--checkpoint-vast-session-manifest")
+    parser.add_argument(
+        "--qualification-identity-file",
+        default=DEFAULT_QUALIFICATION_IDENTITY_FILE,
+    )
     parser.add_argument("--worker-report")
     parser.add_argument("--resume-checkpoint-to-vast", action="store_true")
     parser.add_argument("--execute", action="store_true")
@@ -1355,6 +1414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 admission_out=args.admission_out,
                 adapter_output=args.adapter_output,
                 execute=args.execute,
+                qualification_identity_file=args.qualification_identity_file,
             )
         else:
             required = {
@@ -1390,6 +1450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint_vast_session_manifest=(
                     args.checkpoint_vast_session_manifest
                 ),
+                qualification_identity_file=args.qualification_identity_file,
             )
     except (OSError, ValueError, json.JSONDecodeError):
         return 1
