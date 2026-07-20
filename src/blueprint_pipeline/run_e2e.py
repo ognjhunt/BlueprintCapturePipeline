@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from hashlib import sha256
 import json
 import logging
 from pathlib import Path
@@ -18,6 +17,10 @@ from .capture_orchestrator import (
 )
 from .common import PipelineError, read_json_any, utc_now_iso, write_json
 from .evaluation_prep_stage import run_evaluation_prep_stage
+from .lane_resume import (
+    CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION,
+    capture_input_fingerprint,
+)
 from .logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
@@ -33,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 RUN_E2E_STAGE_LEDGER_FILENAME = "run_e2e_stage_ledger.json"
 RUN_E2E_STAGE_LEDGER_SCHEMA_VERSION = "run_e2e_stage_ledger.v1"
-RUN_E2E_INPUT_FINGERPRINT_SCHEMA_VERSION = "run_e2e_capture_input_fingerprint.v1"
+RUN_E2E_INPUT_FINGERPRINT_SCHEMA_VERSION = CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION
 RUN_E2E_STAGE_RESULT_SNAPSHOT_MAX_BYTES = 512_000
 _SENSITIVE_STAGE_SNAPSHOT_KEY_MARKERS = (
     "api_key",
@@ -73,52 +76,13 @@ def _run_e2e_stage_ledger_path(capture_root: Path) -> Path:
     return capture_root / "pipeline" / RUN_E2E_STAGE_LEDGER_FILENAME
 
 
-def _sha_file(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _capture_input_fingerprint_source(
-    *,
-    capture_root: Path,
-    role: str,
-    path: Path,
-) -> dict[str, Any]:
-    relative_path = path.relative_to(capture_root) if path.is_relative_to(capture_root) else path
-    exists = path.is_file()
-    return {
-        "role": role,
-        "relative_path": str(relative_path),
-        "exists": exists,
-        "size_bytes": path.stat().st_size if exists else None,
-        "sha256": _sha_file(path) if exists else None,
-    }
-
-
 def _capture_input_fingerprint(context: Any) -> dict[str, Any]:
     capture_root = Path(context.capture_root)
-    raw_root = Path(getattr(context, "raw_root", capture_root / "raw"))
-    sources = [
-        _capture_input_fingerprint_source(
-            capture_root=capture_root,
-            role="capture_descriptor",
-            path=Path(context.descriptor_path),
-        ),
-        _capture_input_fingerprint_source(
-            capture_root=capture_root,
-            role="raw_manifest",
-            path=raw_root / "manifest.json",
-        ),
-    ]
-    payload = {
-        "schema_version": RUN_E2E_INPUT_FINGERPRINT_SCHEMA_VERSION,
-        "sources": sources,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return {**payload, "fingerprint_sha256": sha256(encoded).hexdigest()}
+    return capture_input_fingerprint(
+        capture_root=capture_root,
+        descriptor_path=Path(context.descriptor_path),
+        raw_root=Path(getattr(context, "raw_root", capture_root / "raw")),
+    )
 
 
 def _new_run_e2e_stage_ledger(

@@ -108,7 +108,7 @@ Per-data-class policy:
 
 | Data class | Prefixes | Lifecycle action |
 | --- | --- | --- |
-| Raw capture truth | `scenes/`, `targets/` | Nearline after 30 days, Coldline after 90 days, delete after 180 days. |
+| Raw capture truth | `scenes/`, `targets/` | Nearline after 30 days, Coldline after 90 days, Archive after 365 days. No lifecycle delete: raw capture truth is preserved as if future world-model training depends on it (`WORLD_MODEL_STRATEGY_CONTEXT.md` Data Priority). At 10k locations x ~1.2 GiB raw p50 (~12 TiB), ARCHIVE at $0.0012/GiB-month costs roughly $15/month — negligible versus recapture cost. |
 | Temporary processing | `tmp/`, `staging/`, `debug/` | Delete after 14 days. |
 | Buyer/eval/hosted artifacts | `buyer_delivery/`, `marketplace/`, `hosted_sessions/`, `robot_eval_jobs/` | Delete after 365 days unless a contract-specific retention hold supersedes it. |
 
@@ -169,6 +169,7 @@ treats monotonic `createdAt` index hotspotting as a monitored scale-up risk at
 | Contract | Value |
 | --- | --- |
 | Shard field | `createdAtShard` |
+| Shard count / derivation | `16`; deterministic `int(sha256(capture_id), 16) % 16` (neither the Terraform indexes nor earlier docs pinned a count, so 16 is the canonical choice) |
 | Sharded Terraform indexes | `google_firestore_index.captures_status_created_at_shard`, `google_firestore_index.captures_user_created_at_shard` |
 | Runtime alert | `google_monitoring_alert_policy.firestore_request_latency` |
 | Firestore latency metric | `serviceruntime.googleapis.com/api/request_latencies` |
@@ -176,11 +177,13 @@ treats monotonic `createdAt` index hotspotting as a monitored scale-up risk at
 | Soak report field | `firestore_latency_observation` |
 
 Before scaling beyond the beta model, capture writers must populate
-`createdAtShard` with a bounded random or hashed shard value, readers must
-aggregate per-shard `createdAt` results, and the remaining high-rate legacy
-`createdAt` composites must be removed after that migration is proven. The
-checked-in indexes and alert are not live Firestore latency proof and do not
-prove WebApp or Capture writers already populate `createdAtShard`.
+`createdAtShard` with the deterministic capture-id hash shard above, readers
+must aggregate per-shard `createdAt` results, and the remaining high-rate
+legacy `createdAt` composites must be removed after that migration is proven.
+Blueprint-WebApp creator capture registration now writes `createdAtShard` on
+new capture records (`server/utils/captureShard.ts`); pre-existing records are
+unsharded until a separate backfill migration runs. The checked-in indexes and
+alert are not live Firestore latency proof.
 
 ## Verification
 

@@ -20,6 +20,12 @@ from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
+from .lane_resume import (
+    capture_input_fingerprint,
+    lane_resume_disabled,
+    read_completed_lane_result,
+    record_lane_completion,
+)
 from .retrieval_index_stage import run_retrieval_index_stage
 from .robot_eval_job_orchestrator import (
     REQUIRED_ROBOT_EVAL_INPUTS,
@@ -1429,6 +1435,24 @@ def run_capture_pipeline(
     )
     allow_lane_fault_isolation = len(lanes) > 1
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
+    # Production dispatch (storage_trigger -> run_capture_pipeline) bypasses the
+    # run_e2e stage ledger, so Cloud Tasks x Cloud Run Job retries would re-run
+    # every lane. The lane ledger skips lanes already completed for the same
+    # capture input fingerprint. BLUEPRINT_LANE_RESUME_DISABLED=1 disables it.
+    resume_root = descriptor_path.parent
+    lane_ledger_fingerprint: Optional[Dict[str, Any]] = None
+    if not lane_resume_disabled():
+        try:
+            lane_ledger_fingerprint = capture_input_fingerprint(
+                capture_root=resume_root,
+                descriptor_path=descriptor_path,
+            )
+        except OSError:
+            logger.warning(
+                "capture_pipeline.lane_resume_fingerprint_failed descriptor=%s",
+                descriptor_gcs_uri,
+                exc_info=True,
+            )
     auto_stage_task_eval = _descriptor_requests_task_evaluation_run(
         descriptor_path
     ) or _call_requests_task_evaluation_run(
@@ -1464,6 +1488,15 @@ def run_capture_pipeline(
             manifest_path=lane_result.get("manifest_path"),
             source=lane_result.get("source"),
         )
+        if lane_ledger_fingerprint is not None and not lane_result.get(
+            "resumed_from_lane_ledger"
+        ):
+            record_lane_completion(
+                capture_root=resume_root,
+                lane=selected_lane,
+                fingerprint=lane_ledger_fingerprint,
+                lane_result=lane_result,
+            )
 
     def _append_lane_failure(selected_lane: str, exc: BaseException) -> None:
         failure = {
@@ -1507,6 +1540,29 @@ def run_capture_pipeline(
         return qualification_result
 
     for selected_lane in lanes:
+        if lane_ledger_fingerprint is not None:
+            resumed_result = read_completed_lane_result(
+                capture_root=resume_root,
+                lane=selected_lane,
+                fingerprint=lane_ledger_fingerprint,
+            )
+            if resumed_result is not None:
+                if selected_lane == "qualification" and qualification_result is None:
+                    qualification_result = dict(resumed_result)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "capture_pipeline.lane_skipped_already_completed",
+                    descriptor_gcs_uri=descriptor_gcs_uri,
+                    selected_lane=selected_lane,
+                    reason="lane_ledger_marker_matches_capture_input_fingerprint",
+                    marker_dir="pipeline/lane_ledger",
+                )
+                _append_lane_result(
+                    selected_lane,
+                    {**resumed_result, "resumed_from_lane_ledger": True},
+                )
+                continue
         log_event(
             logger,
             logging.INFO,
