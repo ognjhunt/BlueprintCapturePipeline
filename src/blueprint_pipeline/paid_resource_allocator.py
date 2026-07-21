@@ -780,7 +780,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ],
                     "provider_mutations_performed": 0,
                 }
-                write_json(Path(args.adapter_output), result)
+                if args.qualification_action == "allocate":
+                    _write_blocked_qualification_allocation_outputs(args, result)
+                else:
+                    write_json(Path(args.adapter_output), result)
             else:
                 if args.qualification_action == "allocate":
                     source_blockers, _checkout_commit = _source_checkout_blockers(

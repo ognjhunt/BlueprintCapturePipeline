@@ -18,7 +18,10 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import single_g1_kitchen_qualification_session as qualification
 from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
-from blueprint_pipeline.single_g1_kitchen_qualification_contract import embedded_launch_rebind
+from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
+    capture_runtime_attempt_overlay_base,
+    embedded_launch_rebind,
+)
 
 
 TEST_SOURCE_COMMIT = "a" * 40
@@ -72,6 +75,14 @@ def _minimal_inputs() -> dict:
             "image_digest": "sha256:" + "1" * 64,
             "source_commit": "f" * 40,
             "source_dirty_patch_sha256": "9" * 64,
+            "launch_nonce": "prepared-source-nonce",
+            "artifacts": {
+                "task_success_contract": {
+                    "path": "/source/task_success_contract.json",
+                    "sha256": "6" * 64,
+                    "size_bytes": 459,
+                }
+            },
         },
         "route": {"route": []},
         "seed": {"seed": 1001},
@@ -142,6 +153,44 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert qualification.collected_attempt_derived_artifact_blockers(
         rebound_attempt_bytes + b" ", rebound["attempt"], binding
     ) == ["qualification_collected_attempt_manifest_digest_mismatch"]
+    runtime_attempt = json.loads(json.dumps(rebound["attempt"]))
+    runtime_attempt.update(
+        {
+            "prepared_launch_nonce": "prepared-source-nonce",
+            "allocation_launch_session_id": "qualification-session-1",
+            "launch_nonce": "qualification-session-1:attempt_0001",
+            "qualification_attempt_bound": True,
+            "qualification_attempt_sequence": 1,
+            "qualification_attempt_nonce": "qualification-session-1:attempt_0001",
+            "qualification_attempt_nonce_sha256": hashlib.sha256(
+                b"qualification-session-1:attempt_0001"
+            ).hexdigest(),
+        }
+    )
+    runtime_attempt["artifacts"]["task_success_contract"] = {
+        "path": "/workspace/task_success_contract.json",
+        "sha256": "7" * 64,
+        "size_bytes": 500,
+        "derived_from_sha256": "6" * 64,
+        "resolution_artifact_path": (
+            "/workspace/closed_loop_out/direct_task_contract_resolution.json"
+        ),
+    }
+    runtime_attempt_bytes = (
+        json.dumps(runtime_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        runtime_attempt_bytes, runtime_attempt, binding
+    ) == []
+    runtime_attempt["source_commit"] = "3" * 40
+    tampered_runtime_bytes = (
+        json.dumps(runtime_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert "qualification_collected_attempt_manifest_digest_mismatch" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            tampered_runtime_bytes, runtime_attempt, binding
+        )
+    )
     tampered_attempt = json.loads(json.dumps(rebound["attempt"]))
     tampered_attempt["qualification_derived_launch_plan"]["image_ref"] = (
         "registry.example/tampered@sha256:" + "2" * 64
@@ -400,17 +449,10 @@ def _qualification_output_zip(
                 ensure_ascii=True,
             ).encode("utf-8")
         ).hexdigest()
-        attempt_input = {
+        base_attempt_input = {
             "run_id": "single-g1-kitchen-direct",
             "attempt_id": "single-g1-kitchen-attempt-1",
-            "launch_nonce": nonce,
-            "allocation_launch_session_id": manifest["launch_session_id"],
-            "qualification_attempt_bound": True,
-            "qualification_attempt_sequence": sequence,
-            "qualification_attempt_nonce": nonce,
-            "qualification_attempt_nonce_sha256": hashlib.sha256(
-                nonce.encode()
-            ).hexdigest(),
+            "launch_nonce": "prepared-source-launch-nonce",
             "source_commit": manifest["source_commit"],
             "source_dirty_patch_sha256": manifest["release_binding"][
                 "source_patch_sha256"
@@ -432,6 +474,35 @@ def _qualification_output_zip(
                 "task_success_contract": {"sha256": digest},
             },
         }
+        base_attempt_input["qualification_runtime_attempt_overlay_base"] = (
+            capture_runtime_attempt_overlay_base(base_attempt_input)
+        )
+        base_attempt_input_bytes = (
+            json.dumps(base_attempt_input, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        attempt_input = json.loads(base_attempt_input_bytes)
+        attempt_input.update(
+            {
+                "prepared_launch_nonce": base_attempt_input["launch_nonce"],
+                "launch_nonce": nonce,
+                "allocation_launch_session_id": manifest["launch_session_id"],
+                "qualification_attempt_bound": True,
+                "qualification_attempt_sequence": sequence,
+                "qualification_attempt_nonce": nonce,
+                "qualification_attempt_nonce_sha256": hashlib.sha256(
+                    nonce.encode()
+                ).hexdigest(),
+            }
+        )
+        attempt_input["artifacts"]["task_success_contract"] = {
+            "path": "/workspace/task_success_contract.json",
+            "sha256": digest,
+            "size_bytes": 459,
+            "derived_from_sha256": digest,
+            "resolution_artifact_path": (
+                "/workspace/closed_loop_out/direct_task_contract_resolution.json"
+            ),
+        }
         attempt_input.update(attempt_input_overrides or {})
         attempt_input_bytes = (
             json.dumps(attempt_input, indent=2, sort_keys=True) + "\n"
@@ -441,7 +512,7 @@ def _qualification_output_zip(
         latest_rebind = dict(latest.get("qualification_launch_rebind") or {})
         latest_rebind["derived_launch_plan_sha256"] = derived_plan_sha256
         latest_rebind["derived_attempt_manifest_sha256"] = hashlib.sha256(
-            attempt_input_bytes
+            base_attempt_input_bytes
         ).hexdigest()
         latest["qualification_launch_rebind"] = latest_rebind
         manifest["latest_attempt"] = latest

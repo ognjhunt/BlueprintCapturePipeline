@@ -1203,6 +1203,8 @@ def test_gpu_qualification_allocate_requires_independent_source_commit(
     assert result["blockers"] == [
         "single_kitchen_qualification_required_arguments_missing:expected_source_commit"
     ]
+    for name in ("request.json", "preflight.json", "admission.json", "bound.json"):
+        assert json.loads((out / name).read_text()) == result
     assert json.loads(capsys.readouterr().out) == {"success": False}
 
 

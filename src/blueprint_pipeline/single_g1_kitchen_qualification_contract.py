@@ -12,6 +12,18 @@ from typing import Any, Mapping
 
 RELEASE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_release_binding.v1"
 LAUNCH_REBIND_SCHEMA_VERSION = "single_g1_kitchen_qualification_launch_rebind.v1"
+RUNTIME_ATTEMPT_OVERLAY_BASE_SCHEMA_VERSION = (
+    "single_g1_kitchen_qualification_runtime_attempt_overlay_base.v1"
+)
+_RUNTIME_ATTEMPT_OVERLAY_TOP_LEVEL_FIELDS = (
+    "prepared_launch_nonce",
+    "allocation_launch_session_id",
+    "launch_nonce",
+    "qualification_attempt_bound",
+    "qualification_attempt_sequence",
+    "qualification_attempt_nonce",
+    "qualification_attempt_nonce_sha256",
+)
 _LAUNCH_ONLY_REBIND_FIELDS = frozenset(
     {
         "derived_launch_plan_sha256",
@@ -98,13 +110,30 @@ def collected_attempt_derived_artifact_blockers(
     attempt: Mapping[str, Any],
     launch_rebind: Mapping[str, Any],
 ) -> list[str]:
-    """Recompute collected attempt and launch-plan digests from retained bytes."""
+    """Verify retained bytes and the immutable base beneath the runtime overlay."""
 
     blockers: list[str] = []
-    if hashlib.sha256(attempt_bytes).hexdigest() != launch_rebind.get(
-        "derived_attempt_manifest_sha256"
-    ):
+    canonical_attempt_bytes = (
+        json.dumps(dict(attempt), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        parsed_attempt = json.loads(attempt_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        parsed_attempt = None
+    if parsed_attempt != dict(attempt) or attempt_bytes != canonical_attempt_bytes:
         blockers.append("qualification_collected_attempt_manifest_digest_mismatch")
+    try:
+        base_attempt = _restore_runtime_attempt_overlay_base(attempt)
+    except ValueError:
+        blockers.append("qualification_collected_attempt_runtime_overlay_base_invalid")
+    else:
+        base_attempt_bytes = (
+            json.dumps(base_attempt, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        if hashlib.sha256(base_attempt_bytes).hexdigest() != launch_rebind.get(
+            "derived_attempt_manifest_sha256"
+        ):
+            blockers.append("qualification_collected_attempt_manifest_digest_mismatch")
     plan_value = attempt.get("qualification_derived_launch_plan")
     plan = dict(plan_value) if isinstance(plan_value, Mapping) else {}
     plan_digest = _canonical_sha256(plan) if plan else ""
@@ -114,7 +143,111 @@ def collected_attempt_derived_artifact_blockers(
         or launch_rebind.get("derived_launch_plan_sha256") != plan_digest
     ):
         blockers.append("qualification_collected_launch_plan_digest_mismatch")
-    return blockers
+    return sorted(set(blockers))
+
+
+def capture_runtime_attempt_overlay_base(attempt: Mapping[str, Any]) -> dict[str, Any]:
+    """Snapshot only fields the worker may replace after provider allocation."""
+
+    artifacts_value = attempt.get("artifacts")
+    artifacts = dict(artifacts_value) if isinstance(artifacts_value, Mapping) else {}
+    return {
+        "schema_version": RUNTIME_ATTEMPT_OVERLAY_BASE_SCHEMA_VERSION,
+        "top_level_fields": {
+            field: _field_snapshot(attempt, field)
+            for field in _RUNTIME_ATTEMPT_OVERLAY_TOP_LEVEL_FIELDS
+        },
+        "task_success_contract_artifact": _field_snapshot(
+            artifacts, "task_success_contract"
+        ),
+    }
+
+
+def _field_snapshot(value: Mapping[str, Any], field: str) -> dict[str, Any]:
+    present = field in value
+    return {
+        "present": present,
+        "value": copy.deepcopy(value.get(field)) if present else None,
+    }
+
+
+def _restore_snapshot_field(
+    target: dict[str, Any], field: str, snapshot_value: object
+) -> None:
+    snapshot = dict(snapshot_value) if isinstance(snapshot_value, Mapping) else {}
+    if set(snapshot) != {"present", "value"} or not isinstance(
+        snapshot.get("present"), bool
+    ):
+        raise ValueError("qualification_runtime_attempt_overlay_snapshot_invalid")
+    if snapshot["present"]:
+        target[field] = copy.deepcopy(snapshot.get("value"))
+    else:
+        if snapshot.get("value") is not None:
+            raise ValueError("qualification_runtime_attempt_overlay_snapshot_invalid")
+        target.pop(field, None)
+
+
+def _restore_runtime_attempt_overlay_base(
+    attempt: Mapping[str, Any],
+) -> dict[str, Any]:
+    base = copy.deepcopy(dict(attempt))
+    overlay_value = base.get("qualification_runtime_attempt_overlay_base")
+    overlay = dict(overlay_value) if isinstance(overlay_value, Mapping) else {}
+    if overlay.get("schema_version") != RUNTIME_ATTEMPT_OVERLAY_BASE_SCHEMA_VERSION:
+        raise ValueError("qualification_runtime_attempt_overlay_base_schema_invalid")
+    top_value = overlay.get("top_level_fields")
+    top = dict(top_value) if isinstance(top_value, Mapping) else {}
+    if set(top) != set(_RUNTIME_ATTEMPT_OVERLAY_TOP_LEVEL_FIELDS):
+        raise ValueError("qualification_runtime_attempt_overlay_base_fields_invalid")
+    for field in _RUNTIME_ATTEMPT_OVERLAY_TOP_LEVEL_FIELDS:
+        _restore_snapshot_field(base, field, top[field])
+
+    artifacts_value = base.get("artifacts")
+    artifacts = dict(artifacts_value) if isinstance(artifacts_value, Mapping) else {}
+    _restore_snapshot_field(
+        artifacts,
+        "task_success_contract",
+        overlay.get("task_success_contract_artifact"),
+    )
+    if artifacts or isinstance(artifacts_value, Mapping):
+        base["artifacts"] = artifacts
+    else:
+        base.pop("artifacts", None)
+
+    launch_snapshot = dict(top["launch_nonce"])
+    prepared_launch_nonce = attempt.get("prepared_launch_nonce")
+    if (
+        prepared_launch_nonce is not None
+        and prepared_launch_nonce != launch_snapshot.get("value")
+    ):
+        raise ValueError("qualification_runtime_attempt_prepared_nonce_mismatch")
+    source_contract_snapshot = dict(overlay["task_success_contract_artifact"])
+    source_contract_value = source_contract_snapshot.get("value")
+    source_contract = (
+        dict(source_contract_value) if isinstance(source_contract_value, Mapping) else {}
+    )
+    current_artifacts_value = attempt.get("artifacts")
+    current_artifacts = (
+        dict(current_artifacts_value)
+        if isinstance(current_artifacts_value, Mapping)
+        else {}
+    )
+    current_contract_value = current_artifacts.get("task_success_contract")
+    current_contract = (
+        dict(current_contract_value)
+        if isinstance(current_contract_value, Mapping)
+        else {}
+    )
+    if current_contract != source_contract:
+        source_contract_sha256 = source_contract.get("sha256")
+        if (
+            not source_contract_sha256
+            or current_contract.get("derived_from_sha256") != source_contract_sha256
+        ):
+            raise ValueError(
+                "qualification_runtime_attempt_task_contract_lineage_mismatch"
+            )
+    return base
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
@@ -271,6 +404,9 @@ def bind_inputs_to_release(
     attempt["qualification_release_rebind"] = embedded_binding
     attempt["qualification_derived_launch_plan"] = copy.deepcopy(plan)
     attempt["qualification_derived_launch_plan_sha256"] = derived_plan_sha256
+    attempt["qualification_runtime_attempt_overlay_base"] = (
+        capture_runtime_attempt_overlay_base(attempt)
+    )
     attempt_bytes = (json.dumps(attempt, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
     bootstrap_script = str(inputs.get("bootstrap_script") or "")
