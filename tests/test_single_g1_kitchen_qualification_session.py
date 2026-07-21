@@ -91,6 +91,7 @@ def _minimal_inputs() -> dict:
             "task_id": "microwave_door",
             "registered_criteria": [],
         },
+        "source_task_contract_sha256": "6" * 64,
         "start_frame": b"exact-frame",
         "bootstrap_script": (
             "cp /workspace/attempt_input_manifest_episode_001.json "
@@ -203,6 +204,41 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
             stale_contract_bytes, stale_contract_attempt, binding
         )
     )
+    source_less_inputs = _minimal_inputs()
+    source_less_inputs["attempt"]["artifacts"].pop("task_success_contract")
+    source_less_rebound, source_less_binding = qualification.bind_inputs_to_release(
+        source_less_inputs, release_binding
+    )
+    source_less_runtime_attempt = json.loads(
+        json.dumps(source_less_rebound["attempt"])
+    )
+    source_less_runtime_attempt.update(
+        {
+            key: value
+            for key, value in runtime_attempt.items()
+            if key
+            in {
+                "prepared_launch_nonce",
+                "allocation_launch_session_id",
+                "launch_nonce",
+                "qualification_attempt_bound",
+                "qualification_attempt_sequence",
+                "qualification_attempt_nonce",
+                "qualification_attempt_nonce_sha256",
+            }
+        }
+    )
+    source_less_runtime_attempt.setdefault("artifacts", {})[
+        "task_success_contract"
+    ] = json.loads(json.dumps(runtime_attempt["artifacts"]["task_success_contract"]))
+    source_less_runtime_bytes = (
+        json.dumps(source_less_runtime_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        source_less_runtime_bytes,
+        source_less_runtime_attempt,
+        source_less_binding,
+    ) == []
     wrong_contract_attempt = json.loads(json.dumps(runtime_attempt))
     wrong_contract_attempt["artifacts"]["task_success_contract"]["sha256"] = "8" * 64
     wrong_contract_bytes = (
@@ -498,6 +534,7 @@ def _qualification_output_zip(
             "qualification_derived_launch_plan": derived_plan,
             "qualification_derived_launch_plan_sha256": derived_plan_sha256,
             "qualification_resolved_task_success_contract_sha256": digest,
+            "qualification_source_task_success_contract_sha256": digest,
             "selected_task_id": "microwave_door",
             "artifacts": {
                 "bundle": {"sha256": manifest["bundle_sha256"]},

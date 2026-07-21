@@ -243,7 +243,9 @@ def _restore_runtime_attempt_overlay_base(
     ):
         raise ValueError("qualification_runtime_attempt_resolved_task_contract_mismatch")
     if current_contract != source_contract:
-        source_contract_sha256 = source_contract.get("sha256")
+        source_contract_sha256 = source_contract.get("sha256") or attempt.get(
+            "qualification_source_task_success_contract_sha256"
+        )
         if (
             not source_contract_sha256
             or current_contract.get("derived_from_sha256") != source_contract_sha256
@@ -404,6 +406,9 @@ def bind_inputs_to_release(
     resolved_task_contract_sha256 = hashlib.sha256(
         resolved_task_contract_bytes
     ).hexdigest()
+    source_task_contract_sha256 = str(inputs.get("source_task_contract_sha256") or "")
+    if re.fullmatch(r"[0-9a-f]{64}", source_task_contract_sha256) is None:
+        raise ValueError("qualification_source_task_contract_digest_invalid")
     source_attempt_identity = {
         "source_commit": attempt.get("source_commit"),
         "source_dirty_patch_sha256": attempt.get("source_dirty_patch_sha256"),
@@ -419,6 +424,9 @@ def bind_inputs_to_release(
     attempt["qualification_derived_launch_plan_sha256"] = derived_plan_sha256
     attempt["qualification_resolved_task_success_contract_sha256"] = (
         resolved_task_contract_sha256
+    )
+    attempt["qualification_source_task_success_contract_sha256"] = (
+        source_task_contract_sha256
     )
     attempt["qualification_runtime_attempt_overlay_base"] = (
         capture_runtime_attempt_overlay_base(attempt)
