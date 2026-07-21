@@ -890,9 +890,12 @@ def _validated_qualification_manifest(
 
     # Import lazily so ordinary render-owner scans do not load the qualification
     # runtime and its provider adapters.
-    from blueprint_pipeline.single_g1_kitchen_qualification_session import (
-        _validate_manifest_binding,
-    )
+    try:
+        from blueprint_pipeline.single_g1_kitchen_qualification_session import (
+            _validate_manifest_binding,
+        )
+    except Exception:  # noqa: BLE001 - an optional owner must not disable the guard
+        return None
 
     for manifest_path in sorted(id_path.parent.glob("*.json")):
         encoded = _read_bounded_regular_text(
@@ -916,7 +919,7 @@ def _validated_qualification_manifest(
             source = manifest_path.expanduser().absolute()
         try:
             _validate_manifest_binding(source, manifest)
-        except ValueError:
+        except Exception:  # noqa: BLE001 - invalid/unavailable binding fails closed
             continue
         if (
             manifest.get("release_binding_status") == "bound"

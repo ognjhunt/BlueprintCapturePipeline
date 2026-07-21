@@ -565,6 +565,63 @@ def test_qualification_owner_id_file_must_be_small_regular_file(
     assert protected == set()
 
 
+def test_qualification_import_failure_does_not_disable_spend_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = tmp_path / "qualification"
+    attempt.mkdir()
+    (attempt / "started_vast_instance_id.txt").write_text("45483300")
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {attempt / 'qualification_session.json'}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_qualification_validation_failure_does_not_disable_spend_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "qualification", "45483300"
+    )
+    monkeypatch.setattr(
+        qualification,
+        "_validate_manifest_binding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("qualification validator unavailable")
+        ),
+    )
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_spoofed_partial_qualification_manifest_is_not_protected(
     tmp_path: Path,
 ) -> None:
