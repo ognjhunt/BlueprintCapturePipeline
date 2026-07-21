@@ -3577,7 +3577,7 @@
             {
               "artifact_id": "SC3-08-AC-01-EV-06",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:9735a55d0ab423a6e7c16947c27424c00d57a2a69280c3e4c0d6e30f28a73755",
+              "sha256": "sha256:6991cd2b1bb8f100dc1d665c08f44ee18f687649c6de4dd31ccf2dcbcca16259",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4150,7 +4150,7 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-03",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:6daf23d35daaaca2a2406bbab297e022e59e353fdf4cd154b0424de79cdd48bb",
+              "sha256": "sha256:835f34a55d09c257a7b57314ebb9bdb91ab0abafaf2e3aa86a24c3c793204577",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4166,7 +4166,7 @@
             {
               "artifact_id": "SC3-12-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:9735a55d0ab423a6e7c16947c27424c00d57a2a69280c3e4c0d6e30f28a73755",
+              "sha256": "sha256:6991cd2b1bb8f100dc1d665c08f44ee18f687649c6de4dd31ccf2dcbcca16259",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9764,7 +9764,7 @@
             {
               "artifact_id": "SC3-16-AC-01-EV-03",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:6daf23d35daaaca2a2406bbab297e022e59e353fdf4cd154b0424de79cdd48bb",
+              "sha256": "sha256:835f34a55d09c257a7b57314ebb9bdb91ab0abafaf2e3aa86a24c3c793204577",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9780,7 +9780,7 @@
             {
               "artifact_id": "SC3-16-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:9735a55d0ab423a6e7c16947c27424c00d57a2a69280c3e4c0d6e30f28a73755",
+              "sha256": "sha256:6991cd2b1bb8f100dc1d665c08f44ee18f687649c6de4dd31ccf2dcbcca16259",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10345,7 +10345,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-03",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:6daf23d35daaaca2a2406bbab297e022e59e353fdf4cd154b0424de79cdd48bb",
+              "sha256": "sha256:835f34a55d09c257a7b57314ebb9bdb91ab0abafaf2e3aa86a24c3c793204577",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10361,7 +10361,7 @@
             {
               "artifact_id": "SC3-20-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:9735a55d0ab423a6e7c16947c27424c00d57a2a69280c3e4c0d6e30f28a73755",
+              "sha256": "sha256:6991cd2b1bb8f100dc1d665c08f44ee18f687649c6de4dd31ccf2dcbcca16259",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13771,7 +13771,7 @@
             {
               "artifact_id": "EVID-01-AC-01-EV-02",
               "path": "src/blueprint_pipeline/decision_grade_ranking.py",
-              "sha256": "sha256:6daf23d35daaaca2a2406bbab297e022e59e353fdf4cd154b0424de79cdd48bb",
+              "sha256": "sha256:835f34a55d09c257a7b57314ebb9bdb91ab0abafaf2e3aa86a24c3c793204577",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13803,7 +13803,7 @@
             {
               "artifact_id": "EVID-01-AC-01-EV-04",
               "path": "tests/test_policy_evaluation_contracts.py",
-              "sha256": "sha256:9735a55d0ab423a6e7c16947c27424c00d57a2a69280c3e4c0d6e30f28a73755",
+              "sha256": "sha256:6991cd2b1bb8f100dc1d665c08f44ee18f687649c6de4dd31ccf2dcbcca16259",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

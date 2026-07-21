@@ -560,6 +560,35 @@ def test_decision_grade_ranking_rejects_stale_forged_and_fallback_evidence() -> 
     assert "criterion_result_payload_digest_mismatch:0" in result["blockers"]
 
 
+def test_decision_grade_ranking_rejects_non_mapping_criterion_payload_entries() -> None:
+    candidate = _ranking_request()
+    raw_criteria = candidate["episode_results"][0]["criterion_results"]
+    raw_criteria.append("corrupt-extra-criterion")
+    digest = _payload_digest(raw_criteria)
+    candidate["episode_results"][0]["criterion_result_sha256"] = digest
+    candidate["evaluation_design"]["rows"][0]["criterion_result_sha256"] = digest
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "criterion_results_payload_invalid:0" in result["blockers"]
+
+
+def test_decision_grade_ranking_rejects_non_mapping_criterion_evidence_entries() -> None:
+    candidate = _ranking_request()
+    criterion = candidate["episode_results"][0]["criterion_results"][0]
+    criterion["evidence_refs"].append("corrupt-evidence-reference")
+    criteria = candidate["episode_results"][0]["criterion_results"]
+    digest = _payload_digest(criteria)
+    candidate["episode_results"][0]["criterion_result_sha256"] = digest
+    candidate["evaluation_design"]["rows"][0]["criterion_result_sha256"] = digest
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "criterion_evidence_payload_invalid:0:0" in result["blockers"]
+
+
 def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> None:
     candidate = _ranking_request()
     padded_profile_id = " oscar_roboarena_v2 "

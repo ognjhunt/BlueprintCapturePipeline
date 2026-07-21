@@ -30,6 +30,14 @@ def _rows(value: Any) -> list[dict[str, Any]]:
     return [dict(row) for row in value if isinstance(row, Mapping)]
 
 
+def _strict_rows(value: Any) -> tuple[list[dict[str, Any]], bool]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return [], False
+    if any(not isinstance(row, Mapping) for row in value):
+        return [], False
+    return [dict(row) for row in value], True
+
+
 def _number(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -50,7 +58,10 @@ def _normalized_digest(value: Any) -> str:
 
 
 def _canonical_payload_sha256(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    try:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -263,8 +274,10 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
                 blockers.append(f"episode_result_chain_digest_missing:{row_index}:{field}")
             elif _normalized_digest(row.get(field)) != _normalized_digest(design_row.get(field)):
                 blockers.append(f"episode_result_chain_digest_mismatch:{row_index}:{field}")
-        criteria = _rows(row.get("criterion_results"))
-        if not criteria:
+        criteria, criteria_payload_valid = _strict_rows(row.get("criterion_results"))
+        if not criteria_payload_valid:
+            blockers.append(f"criterion_results_payload_invalid:{row_index}")
+        elif not criteria:
             blockers.append(f"episode_result_criteria_missing:{row_index}")
         elif _normalized_digest(row.get("criterion_result_sha256")) != (
             _canonical_payload_sha256(criteria)
@@ -290,8 +303,10 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
                 blockers.append(
                     f"criterion_label_not_blinded_randomized:{row_index}:{criterion_index}"
                 )
-            evidence_refs = _rows(criterion.get("evidence_refs"))
-            if not evidence_refs:
+            evidence_refs, evidence_payload_valid = _strict_rows(criterion.get("evidence_refs"))
+            if not evidence_payload_valid:
+                blockers.append(f"criterion_evidence_payload_invalid:{row_index}:{criterion_index}")
+            elif not evidence_refs:
                 blockers.append(f"criterion_evidence_missing:{row_index}:{criterion_index}")
             elif any(not _digest(ref.get("sha256")) for ref in evidence_refs):
                 blockers.append(f"criterion_evidence_digest_invalid:{row_index}:{criterion_index}")
