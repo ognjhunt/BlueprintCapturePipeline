@@ -101,6 +101,8 @@ def build_cosmos3_edge_qualification(
     ]
     if not stability or any(int(row.get("repeat_count") or 0) < 2 for row in stability):
         blockers.append("edge_output_stability_not_measured_with_repeats")
+    if any(row.get("exact_output_digest_stable") is not True for row in stability):
+        blockers.append("edge_output_digest_not_stable_across_repeats")
 
     if receipt.get("status") != "validated":
         blockers.append("edge_evaluator_runtime_receipt_not_validated")

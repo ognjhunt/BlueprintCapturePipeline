@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/blueprint_benchmark_spec.v1.json",
+  "title": "Blueprint benchmark specification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "benchmark_id",
+    "benchmark_version",
+    "protocol_version",
+    "frozen",
+    "preregistration_sha256",
+    "tasks",
+    "action_space",
+    "scenarios",
+    "rollout_protocol",
+    "required_episode_evidence",
+    "scoring",
+    "public_baselines",
+    "candidate_policies"
+  ],
+  "properties": {
+    "schema_version": { "const": "blueprint_benchmark_spec.v1" },
+    "benchmark_id": { "$ref": "#/$defs/identifier" },
+    "benchmark_version": { "$ref": "#/$defs/identifier" },
+    "protocol_version": { "$ref": "#/$defs/identifier" },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "frozen": { "const": true },
+    "preregistration_sha256": { "$ref": "#/$defs/sha256" },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/task" }
+    },
+    "action_space": { "$ref": "#/$defs/actionSpace" },
+    "scenarios": {
+      "type": "array",
+      "minItems": 4,
+      "items": { "$ref": "#/$defs/scenario" }
+    },
+    "rollout_protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixed_rollouts_per_scenario_policy",
+        "cherry_picking_prohibited",
+        "result_replacement_prohibited",
+        "infrastructure_retries_scored_as_new_attempts"
+      ],
+      "properties": {
+        "fixed_rollouts_per_scenario_policy": { "type": "integer", "minimum": 1 },
+        "cherry_picking_prohibited": { "const": true },
+        "result_replacement_prohibited": { "const": true },
+        "infrastructure_retries_scored_as_new_attempts": { "const": true }
+      }
+    },
+    "required_episode_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["video", "action_trace", "evaluator_output", "content_digests"],
+      "properties": {
+        "video": { "const": true },
+        "action_trace": { "const": true },
+        "evaluator_output": { "const": true },
+        "content_digests": { "const": true }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metrics", "confidence_intervals_required", "bootstrap_replicates"],
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "full_task_success",
+              "partial_progress",
+              "efficiency",
+              "safety_interventions",
+              "evaluator_abstention"
+            ]
+          }
+        },
+        "confidence_intervals_required": { "const": true },
+        "bootstrap_replicates": { "const": 10000 }
+      }
+    },
+    "public_baselines": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/publicPolicy" }
+    },
+    "candidate_policies": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/policy" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^(sha256:)?[0-9a-f]{64}$"
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "instruction",
+        "reset_protocol",
+        "success_definition",
+        "timeout_seconds",
+        "partial_progress_predicates"
+      ],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/identifier" },
+        "instruction": { "type": "string", "minLength": 1 },
+        "reset_protocol": { "type": "string", "minLength": 1 },
+        "success_definition": { "type": "string", "minLength": 1 },
+        "timeout_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "partial_progress_predicates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["predicate_id", "weight"],
+            "properties": {
+              "predicate_id": { "$ref": "#/$defs/identifier" },
+              "weight": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "actionSpace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_ref",
+        "dimension",
+        "coordinate_frame",
+        "timestamp_semantics",
+        "normalization_manifest_sha256"
+      ],
+      "properties": {
+        "schema_ref": { "type": "string", "minLength": 1 },
+        "dimension": { "type": "integer", "minimum": 1 },
+        "coordinate_frame": { "type": "string", "minLength": 1 },
+        "timestamp_semantics": { "type": "string", "minLength": 1 },
+        "normalization_manifest_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "generalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "scene", "object", "camera", "lighting", "embodiment"],
+      "properties": {
+        "task": { "enum": ["seen", "unseen"] },
+        "scene": { "enum": ["seen", "unseen"] },
+        "object": { "enum": ["seen", "unseen"] },
+        "camera": { "enum": ["seen", "unseen"] },
+        "lighting": { "enum": ["seen", "unseen"] },
+        "embodiment": { "enum": ["seen", "unseen"] }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "task_id",
+        "split",
+        "seed",
+        "initial_condition_sha256",
+        "generalization"
+      ],
+      "properties": {
+        "scenario_id": { "$ref": "#/$defs/identifier" },
+        "task_id": { "$ref": "#/$defs/identifier" },
+        "split": { "enum": ["train", "dev", "public_test", "hidden_test"] },
+        "seed": { "type": "integer", "minimum": 0 },
+        "initial_condition_sha256": { "$ref": "#/$defs/sha256" },
+        "generalization": { "$ref": "#/$defs/generalization" }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "required": ["schema_version", "command", "runner_manifest_sha256"],
+      "properties": {
+        "schema_version": { "const": "reproducible_policy_runner.v1" },
+        "command": { "type": "string", "minLength": 1 },
+        "runner_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "container_image_digest": {
+          "type": "string",
+          "pattern": "^.+@sha256:[0-9a-f]{64}$"
+        },
+        "source_revision": { "type": "string", "minLength": 1 }
+      },
+      "anyOf": [
+        { "required": ["container_image_digest"] },
+        { "required": ["source_revision"] }
+      ]
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "policy_id",
+        "policy_family",
+        "checkpoint_id",
+        "checkpoint_sha256",
+        "adapter_code_sha256",
+        "embodiment_id",
+        "public",
+        "runner"
+      ],
+      "properties": {
+        "policy_id": { "$ref": "#/$defs/identifier" },
+        "policy_family": { "type": "string", "minLength": 1 },
+        "checkpoint_id": { "type": "string", "minLength": 1 },
+        "checkpoint_sha256": { "$ref": "#/$defs/sha256" },
+        "adapter_code_sha256": { "$ref": "#/$defs/sha256" },
+        "embodiment_id": { "type": "string", "minLength": 1 },
+        "public": { "type": "boolean" },
+        "runner": { "$ref": "#/$defs/runner" }
+      }
+    },
+    "publicPolicy": {
+      "allOf": [
+        { "$ref": "#/$defs/policy" },
+        {
+          "type": "object",
+          "required": ["source_uri", "license"],
+          "properties": {
+            "public": { "const": true },
+            "source_uri": { "type": "string", "minLength": 1 },
+            "license": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
+}

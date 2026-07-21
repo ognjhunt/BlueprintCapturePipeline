@@ -170,6 +170,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         ("matrix", "variations"),
     ),
     EvaluationRunAdapterDescriptor(
+        "task_scenario_pack",
+        "benchmark_task_scenario_pack",
+        "1",
+        ("frozen_splits", "hidden_test", "seen_unseen", "fixed_rollouts"),
+    ),
+    EvaluationRunAdapterDescriptor(
         "policy_adapter", "isaac_g1_deterministic_controller", "1", ("in_process",)
     ),
     EvaluationRunAdapterDescriptor(

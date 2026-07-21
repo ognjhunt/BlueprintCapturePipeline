@@ -118,6 +118,26 @@ def test_paid_resource_rejects_provider_specific_launcher() -> None:
     )
 
 
+def test_paid_resource_requires_closeout_before_adapter_can_pass() -> None:
+    context = {
+        "schema_version": "nvidia_experiment_resource_context.v1",
+        "resource_origin": "paid_provider",
+        "paid_resource": True,
+        "allocation": {
+            "provider_id": "runpod",
+            "allocation_id": "pod-a",
+            "attempt_id": "attempt-a",
+        },
+    }
+    closeout, blockers = load_resource_closeout(context, None)
+    assert closeout == {}
+    assert blockers == ["nvidia_paid_resource_closeout_required"]
+
+    local_closeout, local_blockers = load_resource_closeout(local_unpaid_resource_context(), None)
+    assert local_closeout == {}
+    assert local_blockers == []
+
+
 def test_closeout_loader_rejects_unbound_allocation(tmp_path: Path) -> None:
     context = {
         "schema_version": "nvidia_experiment_resource_context.v1",

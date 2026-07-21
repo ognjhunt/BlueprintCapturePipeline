@@ -182,6 +182,48 @@ def test_external_simready_validation_blocks_missing_command_transformations_and
     assert core_result["external_validator_ran"] is False
 
 
+def test_external_simready_paid_worker_cannot_pass_without_closeout(tmp_path: Path) -> None:
+    capture_root = _build_simready_capture(tmp_path / "paid")
+    validator = _fake_validator(tmp_path)
+    resource_context = tmp_path / "paid-resource.json"
+    resource_context.write_text(
+        json.dumps(
+            {
+                "schema_version": "nvidia_experiment_resource_context.v1",
+                "resource_origin": "paid_provider",
+                "paid_resource": True,
+                "allocation": {
+                    "provider_id": "runpod",
+                    "allocation_id": "pod-123",
+                    "attempt_id": "attempt-simready-1",
+                },
+                "admission": {
+                    "status": "PASS",
+                    "spend_allowed": True,
+                    "allocator_module": "blueprint_pipeline.paid_resource_allocator",
+                    "allocation_kind": "gpu-canary",
+                    "spend_cap_usd": 1.0,
+                    "pre_spend_preflight_sha256": "a" * 64,
+                    "allocation_receipt_sha256": "b" * 64,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    run = run_external_simready_validation(
+        capture_root=capture_root,
+        validator_command=_command(validator),
+        validator_version="1.2.3",
+        validator_source_revision="fixture-revision",
+        license_compatible=True,
+        resource_context_path=resource_context,
+    )
+    result = _read_json(Path(run["result_path"]))
+    assert run["status"] == "blocked"
+    assert "nvidia_paid_resource_closeout_required" in result["blockers"]
+
+
 def test_simready_builder_runs_explicit_external_validator_and_cli(tmp_path: Path) -> None:
     capture_root = _build_capture_root(tmp_path / "builder")
     validator = _fake_validator(tmp_path)

@@ -1,6 +1,6 @@
 {
   "schema_version": "nvidia_siggraph_2026_completion_matrix.v1",
-  "generated_at": "2026-07-21T20:59:24.656098+00:00",
+  "generated_at": "2026-07-21T21:34:39.656497+00:00",
   "memo_path": "docs/NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md",
   "implementation_complete": true,
   "status": "implementation_complete_external_qualification_pending",
@@ -106,7 +106,7 @@
         },
         {
           "path": "tests/test_external_simready_validation.py",
-          "sha256": "8625fe43131aded95af9cbe01b42fdd3df3c91cc88bd6dfe920373638c7e61cf"
+          "sha256": "b82978aa3538da51d858669d0e7863116e63d480eb39f3eab49946cf0f4c9de9"
         }
       ],
       "missing_paths": []
@@ -189,7 +189,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/nvidia_experiment_resource.py",
-          "sha256": "c6a0484097e361f9f167328db9bf26567675ba3f5d755858b0658e8aa415d555"
+          "sha256": "9e2364f15fc29e52f8cbf7a4be39b72d5fb7b05537c831590fe2b370d3b077a3"
         },
         {
           "path": "docs/schemas/nvidia_experiment_resource_context.schema.json",
@@ -201,7 +201,7 @@
         },
         {
           "path": "tests/test_nvidia_experiment_resource.py",
-          "sha256": "a5fe5403342092c8c131a9ac17ff13eacbb6210c59c598088eb732f9e86dc229"
+          "sha256": "66d246286f6ade3d13205643fea974fe5e0f6df3f82470ef8d3c7c1c40692004"
         }
       ],
       "missing_paths": []
@@ -235,7 +235,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/cosmos3_edge_qualification.py",
-          "sha256": "f2ec003d3aead9453f6963f57b9c2333052f29cc8fb1a025de0cce37f9146c7b"
+          "sha256": "ce8c8ce6e8ebced58ea372af144a415ddf8c53b920e22b47d81cbf10b1f064c8"
         },
         {
           "path": "docs/schemas/cosmos3_edge_qualification.schema.json",
@@ -243,7 +243,7 @@
         },
         {
           "path": "tests/test_cosmos3_edge_qualification.py",
-          "sha256": "d7335bb8a1b634ff95fb66a8110e6834b6cc09917b16212dea8953491f569038"
+          "sha256": "f05729b7f52ea86a7507f9db1b1a1c4267ea501567716292e76f9a076c4387a7"
         }
       ],
       "missing_paths": []
@@ -377,5 +377,5 @@
     "provider_teardown_proven_without_attempt": false,
     "production_promotion_allowed": false
   },
-  "matrix_fingerprint": "4a2aa0268f4b79a3e142394f09fd1a473d495b78f657b514b193ceebbd23ece2"
+  "matrix_fingerprint": "2eb8c8dd81c393cd72b73deb7d8ec0595564899d69dfeb86de05c1499980ba98"
 }

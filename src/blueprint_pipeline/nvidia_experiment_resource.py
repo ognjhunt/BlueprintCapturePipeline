@@ -142,7 +142,11 @@ def load_resource_closeout(
     """Load and bind a post-attempt closeout to the admitted allocation."""
 
     if path is None:
-        return {}, []
+        paid = (
+            context.get("resource_origin") == "paid_provider"
+            or context.get("paid_resource") is True
+        )
+        return {}, ["nvidia_paid_resource_closeout_required"] if paid else []
     source = Path(path).resolve()
     loaded = read_json_any(source)
     payload = _mapping(loaded)

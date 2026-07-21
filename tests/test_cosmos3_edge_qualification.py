@@ -122,3 +122,34 @@ def test_edge_qualification_fails_closed_on_wrong_evaluator(tmp_path: Path) -> N
     )
     assert result["status"] == "not_qualified"
     assert "edge_configured_evaluator_identity_mismatch" in result["blockers"]
+
+
+def test_edge_qualification_fails_closed_on_unstable_repeated_outputs(tmp_path: Path) -> None:
+    manifest = tmp_path / "attempts.json"
+    receipt = tmp_path / "receipt.json"
+    scorecard = tmp_path / "scorecard.json"
+    payload = _manifest()
+    payload["output_stability"][0]["exact_output_digest_stable"] = False  # type: ignore[index]
+    _write(manifest, payload)
+    _write(receipt, {"status": "validated", "model_family": "cosmos3edge"})
+    _write(
+        scorecard,
+        {
+            "schema_version": "cosmos3_edge_blueprint_scorecard.v1",
+            "frozen_before_scoring": True,
+            "configured_evaluator_id": "expected",
+            "evaluator_runtime_receipt_sha256": __import__("hashlib").sha256(
+                receipt.read_bytes()
+            ).hexdigest(),
+            "attempt_scores": [],
+        },
+    )
+    result = build_cosmos3_edge_qualification(
+        attempt_manifest_path=manifest,
+        evaluator_runtime_receipt_path=receipt,
+        scorecard_path=scorecard,
+        output_path=tmp_path / "out.json",
+        expected_evaluator_id="expected",
+    )
+    assert result["status"] == "not_qualified"
+    assert "edge_output_digest_not_stable_across_repeats" in result["blockers"]

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/blueprint_benchmark_report.v1.json",
+  "title": "Blueprint benchmark report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "benchmark_id",
+    "benchmark_version",
+    "status",
+    "execution_plan_sha256",
+    "attempt_count_expected",
+    "attempt_count_observed",
+    "anti_cherry_picking_verified",
+    "policy_aggregates",
+    "breakdowns",
+    "blockers",
+    "claim_boundary",
+    "benchmark_report_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "blueprint_benchmark_report.v1" },
+    "status": { "enum": ["complete", "blocked"] },
+    "anti_cherry_picking_verified": { "type": "boolean" },
+    "attempt_count_expected": { "type": "integer", "minimum": 0 },
+    "attempt_count_observed": { "type": "integer", "minimum": 0 },
+    "policy_aggregates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["policy_id", "checkpoint_sha256", "metrics"],
+        "properties": {
+          "policy_id": { "type": "string", "minLength": 1 },
+          "checkpoint_sha256": { "$ref": "#/$defs/sha256" },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/aggregate" }
+          }
+        }
+      }
+    },
+    "external_rank_fidelity": {
+      "type": ["object", "null"]
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "claim_boundary": {
+      "type": "object",
+      "required": [
+        "simulator_results_are_not_real_world_results",
+        "external_report_does_not_auto_upgrade_public_claims",
+        "physical_robot_readiness_proven",
+        "safety_validation_proven",
+        "public_claim_upgrade_allowed"
+      ]
+    },
+    "benchmark_report_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^(sha256:)?[0-9a-f]{64}$"
+    },
+    "aggregate": {
+      "type": "object",
+      "required": [
+        "estimate",
+        "confidence_interval_95",
+        "sample_count",
+        "method",
+        "bootstrap_replicates"
+      ],
+      "properties": {
+        "estimate": { "type": ["number", "null"] },
+        "confidence_interval_95": {
+          "type": "array",
+          "prefixItems": [
+            { "type": ["number", "null"] },
+            { "type": ["number", "null"] }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "method": { "const": "episode_percentile_bootstrap.v1" },
+        "bootstrap_replicates": { "const": 10000 }
+      }
+    }
+  }
+}
