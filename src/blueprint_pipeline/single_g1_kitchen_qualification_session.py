@@ -2124,7 +2124,7 @@ def _allocate(
     )
     preserve_existing_bound_release = (
         bool(existing_manifest)
-        and existing_manifest.get("release_binding_status") != "blocked"
+        and existing_manifest.get("release_binding_status") == "bound"
     )
     manifest = _manifest_base(
         root=root,
@@ -2177,14 +2177,24 @@ def _allocate(
         }
     ]
     _private_write_json(manifest_path, manifest)
+    artifact_release_binding = dict(release_binding)
+    if preserve_existing_bound_release:
+        artifact_release_binding.update(
+            {
+                "image_ref": manifest["image_ref"],
+                "image_digest": manifest["image_digest"],
+                "source_commit": manifest["source_commit"],
+                "preserved_from_session_manifest": True,
+            }
+        )
     preflight = {
         "schema_version": PREFLIGHT_SCHEMA_VERSION,
         "status": manifest["status"],
         "provider": "vast",
-        "image_ref": image_ref,
-        "image_digest": image_digest,
-        "source_commit": source_commit,
-        "release_binding": release_binding,
+        "image_ref": manifest["image_ref"],
+        "image_digest": manifest["image_digest"],
+        "source_commit": manifest["source_commit"],
+        "release_binding": artifact_release_binding,
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_mode": "ssh_direct",
         "capacity": capacity,
@@ -2212,10 +2222,10 @@ def _allocate(
         "provider": "vast",
         "resource_name": resource_name,
         "resource_name_prefix": prefix,
-        "image_ref": image_ref,
-        "image_digest": image_digest,
-        "source_commit": source_commit,
-        "release_binding": release_binding,
+        "image_ref": manifest["image_ref"],
+        "image_digest": manifest["image_digest"],
+        "source_commit": manifest["source_commit"],
+        "release_binding": artifact_release_binding,
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_session_id": launch_session_id,
         "launch_session_nonce_sha256": manifest["launch_session_nonce_sha256"],

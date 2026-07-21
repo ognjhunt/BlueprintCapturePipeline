@@ -2339,9 +2339,17 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         provider_bootstrap_url_file=secret_url,
     )
     preserved_after_bad_retry = json.loads(manifest_path.read_text())
+    bad_preflight = json.loads(Path(common["preflight_bundle"]).read_text())
+    bad_bound = json.loads(Path(common["bound_request_out"]).read_text())
     assert bad_retry["status"] == "blocked"
     assert preserved_after_bad_retry["release_binding_status"] == "bound"
     assert preserved_after_bad_retry["source_commit"] == TEST_SOURCE_COMMIT
+    for artifact in (bad_preflight, bad_bound):
+        assert artifact["image_ref"] == TEST_IMAGE_REF
+        assert artifact["image_digest"] == TEST_IMAGE_DIGEST
+        assert artifact["source_commit"] == TEST_SOURCE_COMMIT
+        assert artifact["release_binding"]["source_commit"] == TEST_SOURCE_COMMIT
+        assert artifact["release_binding"]["preserved_from_session_manifest"] is True
 
     changed_source = "c" * 40
     release.write_text(json.dumps(_release_evidence(source_commit=changed_source)))
@@ -2354,6 +2362,30 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert "qualification_existing_manifest_release_binding_mismatch" in mismatch["blockers"]
     assert preserved["image_ref"] == TEST_IMAGE_REF
     assert preserved["source_commit"] == TEST_SOURCE_COMMIT
+
+    legacy_path = tmp_path / "legacy-session.json"
+    legacy_manifest = dict(staged_manifest)
+    legacy_manifest.pop("release_binding_status")
+    legacy_manifest.pop("source_commit")
+    qualification._private_write_json(legacy_path, legacy_manifest)
+    release.write_text(json.dumps(_release_evidence()))
+    legacy_retry = qualification.run_qualification_session(
+        **{
+            **common,
+            "session_manifest": legacy_path,
+            "provider_launch_request": tmp_path / "legacy-provider-request.json",
+            "preflight_bundle": tmp_path / "legacy-preflight.json",
+            "admission_out": tmp_path / "legacy-admission.json",
+            "bound_request_out": tmp_path / "legacy-bound.json",
+            "adapter_output": tmp_path / "legacy-result.json",
+        },
+        provider_bootstrap_url_file=secret_url,
+    )
+    legacy_after = json.loads(legacy_path.read_text())
+    assert legacy_retry["status"] == "blocked"
+    assert legacy_after["release_binding_status"] == "bound"
+    assert legacy_after["source_commit"] == TEST_SOURCE_COMMIT
+    qualification._load_private_manifest(legacy_path)
 
 
 def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
