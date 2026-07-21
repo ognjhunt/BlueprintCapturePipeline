@@ -461,6 +461,7 @@ def test_known_digitalocean_cpu_builder_profile_blocks_drift_and_overlap() -> No
 
 def _release() -> dict:
     return {
+        "source_commit": COMMIT,
         "resolved_digest_ref": DIGEST_REF,
         "thin_release_contract_status": "passed",
         "runnable_platform": "linux/amd64",
@@ -519,9 +520,27 @@ def test_runpod_serve_plane_admits_only_published_volume_ready_worker() -> None:
         volume=_volume(),
         runtime=_runtime(),
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert result["status"] == "admitted"
     assert result["blockers"] == []
+    assert result["schema_version"] == "groot_oscar_runpod_serve_plane_admission.v2"
+
+
+def test_runpod_serve_plane_rejects_release_from_different_source_commit() -> None:
+    release = _release()
+    release["source_commit"] = "b" * 40
+    result = build_runpod_serve_plane_admission(
+        release=release,
+        model_cache=_models(),
+        volume=_volume(),
+        runtime=_runtime(),
+        spend=_serve_spend(),
+        expected_source_commit=COMMIT,
+    )
+    assert result["status"] == "blocked"
+    assert result["source_bound"] is False
+    assert "runpod_release_source_commit_mismatch" in result["blockers"]
 
 
 def test_runpod_serve_plane_rejects_legacy_weak_model_verification() -> None:
@@ -533,6 +552,7 @@ def test_runpod_serve_plane_rejects_legacy_weak_model_verification() -> None:
         volume=_volume(),
         runtime=_runtime(),
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_model_cache_verification_schema_invalid" in result["blockers"]
@@ -547,6 +567,7 @@ def test_runpod_serve_plane_binds_cache_verification_to_volume_and_path() -> Non
         volume=_volume(),
         runtime=_runtime(),
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_model_cache_verification_volume_mismatch" in result["blockers"]
@@ -562,6 +583,7 @@ def test_runpod_serve_plane_rejects_volume_smaller_than_verified_cache() -> None
         volume=_volume(),
         runtime=_runtime(),
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_network_volume_smaller_than_verified_model_cache" in result["blockers"]
@@ -578,6 +600,7 @@ def test_runpod_serve_plane_blocks_missing_volume_and_cold_start() -> None:
         volume=volume,
         runtime=runtime,
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert "runpod_network_volume_id_missing" in result["blockers"]
     assert "runpod_model_cache_path_must_be_under_workspace" in result["blockers"]
@@ -593,6 +616,7 @@ def test_runpod_serve_plane_rejects_operator_asserted_cuda_version() -> None:
         volume=_volume(),
         runtime=_runtime(),
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_release_cuda_not_registry_config_verified" in result["blockers"]
@@ -616,6 +640,7 @@ def test_runpod_serve_plane_blocks_unknown_capacity_cuda_and_unarmed_watchdog() 
         volume=_volume(),
         runtime=runtime,
         spend=spend,
+        expected_source_commit=COMMIT,
     )
     assert "runpod_gpu_capacity_not_provider_verified" in result["blockers"]
     assert "runpod_single_gpu_availability_unknown" in result["blockers"]
@@ -632,6 +657,7 @@ def test_runpod_serve_plane_rejects_cuda_constraint_different_from_release() -> 
         volume=_volume(),
         runtime=runtime,
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert "runpod_cuda_version_differs_from_release" in result["blockers"]
 
@@ -645,6 +671,7 @@ def test_runpod_serve_plane_rejects_capacity_from_different_data_center() -> Non
         volume=_volume(),
         runtime=runtime,
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_gpu_capacity_not_verified_in_volume_data_center" in result["blockers"]
@@ -659,6 +686,7 @@ def test_runpod_serve_plane_rejects_capacity_not_filtered_for_cuda() -> None:
         volume=_volume(),
         runtime=runtime,
         spend=_serve_spend(),
+        expected_source_commit=COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_gpu_capacity_not_verified_for_cuda_version" in result["blockers"]

@@ -41,6 +41,7 @@ def prepare_persistent_carrier_launch(
     carrier_volume_admission: Mapping[str, Any],
     loop_step_count: int,
     max_wait_seconds: int,
+    expected_source_commit: str,
 ) -> dict[str, Any]:
     """Bind one exact carrier, volume, runtime, model cache, GPU, and campaign."""
 
@@ -53,6 +54,7 @@ def prepare_persistent_carrier_launch(
         volume=volume,
         runtime=runtime,
         spend=spend,
+        expected_source_commit=expected_source_commit,
         maximum_ttl_seconds=PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
     )
     carrier = verify_carrier_volume_admission(carrier_volume_admission)

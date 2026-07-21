@@ -1664,6 +1664,8 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --release-evidence /path/to/protected-release-evidence.json \
   --model-cache-evidence /path/to/verified-model-cache-evidence.json \
   --preflight-bundle /path/to/provider-preflight-bundle.json \
+  --expected-source-commit "$(git rev-parse HEAD)" \
+  --provider-output-put-url-file /path/to/private-runtime-output-put-url.txt \
   --admission-out /path/to/gpu-canary-admission.json \
   --bound-request-out /path/to/bound-runpod-request.json \
   --adapter-output /path/to/runpod-provider-result.json \
@@ -1677,6 +1679,13 @@ general paid robot evaluation and dynamic episode execution are still disabled
 until their own fixed canonical route exists.
 
 Omit `--execute` for admission/binding validation without a provider mutation.
+The release evidence must carry the same full source commit supplied through
+`--expected-source-commit`. The preflight observation must be no more than five
+minutes old, and the signed output URL must be in a regular `0600` file. Its
+value is injected only for the adapter call and is never copied into admission
+evidence. The allocator independently derives the checkout `HEAD`, requires it
+to match that argument, local `origin/main`, and the live remote `main`, and
+blocks a dirty tracked worktree.
 The RunPod adapter remains useful for dry-run request-shape inspection, but its
 public paid modes exit with the stable legacy-disabled blocker. Provider
 allocation alone never proves simulator execution, generated-world rank

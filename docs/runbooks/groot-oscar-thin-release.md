@@ -357,7 +357,13 @@ version; global stock or stock on an incompatible CUDA host cannot satisfy
 admission. Unknown stock, a missing volume, a
 datacenter mismatch, an unverified cache, a tag instead of a digest, an absent
 rate, a TTL above 30 minutes, a TTL whose maximum cost exceeds the cap, or an
-unarmed watchdog all reject before allocation.
+unarmed watchdog all reject before allocation. A release/source mismatch, a
+preflight observation older than five minutes, or a missing/non-`0600` HTTPS
+signed output URL file also rejects before the provider adapter is reachable.
+The allocator derives `HEAD` from its own source checkout, requires it to equal
+`--expected-source-commit`, local `origin/main`, and the live remote `main`, and
+rejects tracked worktree changes. A PR branch or stale remote-tracking ref
+therefore cannot allocate before protected-main merge.
 
 Run the admission/launcher first without `--execute` to inspect the exact bound
 request. Add `--execute` only for the single authorized canary; the generic
@@ -370,6 +376,8 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --release-evidence <groot_oscar_thin_remote_build_result.json> \
   --model-cache-evidence <model-cache-verification.json> \
   --preflight-bundle <canary-dir>/runpod_preflight.json \
+  --expected-source-commit "$(git rev-parse HEAD)" \
+  --provider-output-put-url-file <private-runtime-output-put-url.txt> \
   --admission-out <canary-dir>/runpod_admission.json \
   --bound-request-out <canary-dir>/bound_provider_request.json \
   --adapter-output <canary-dir>/runpod_adapter_result.json \
@@ -422,6 +430,7 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --model-cache-evidence <model-cache-verification.json> \
   --carrier-volume-admission <persistent-volume-evidence-dir>/carrier_volume_admission.json \
   --preflight-bundle <persistent-canary-dir>/runpod_preflight.json \
+  --expected-source-commit "$(git rev-parse HEAD)" \
   --policy-observation <fresh-policy-observation.json> \
   --persistent-job-dir <persistent-canary-dir>/job \
   --admission-out <persistent-canary-dir>/runpod_admission.json \

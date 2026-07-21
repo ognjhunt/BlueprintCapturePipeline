@@ -23,6 +23,7 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
 
 RELEASE_REF = "docker.io/blueprint/release@sha256:" + "1" * 64
 CARRIER_REF = PERSISTENT_CARRIER_IMAGE_REF
+SOURCE_COMMIT = "a" * 40
 
 
 def _carrier() -> dict:
@@ -69,6 +70,7 @@ def _carrier() -> dict:
 
 def _release() -> dict:
     return {
+        "source_commit": SOURCE_COMMIT,
         "resolved_digest_ref": RELEASE_REF,
         "thin_release_contract": {"status": "passed"},
         "runnable_platform": "linux/amd64",
@@ -161,6 +163,7 @@ def _inputs(tmp_path: Path) -> dict[str, Path]:
         "admission_out": tmp_path / "admission.json",
         "bound_request_out": tmp_path / "bound.json",
         "adapter_output": tmp_path / "result.json",
+        "expected_source_commit": SOURCE_COMMIT,
     }
 
 
