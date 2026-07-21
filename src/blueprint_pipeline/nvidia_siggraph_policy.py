@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .common import read_json_any, sha256_file, utc_now_iso, write_json
+from .external_tool_runtime import PUBLIC_CLAIM_UPGRADE_KEY
 
 
 SOURCE_SNAPSHOT_DATE = "2026-07-21"
@@ -141,7 +142,7 @@ def evaluate_stop_rules(
         "triggered_stop_rules": triggered,
         "deferred_measurement_rules": deferred,
         "policy": dict(COMPONENT_POLICY[component]),
-        "public_claim_upgrade_allowed": False,
+        PUBLIC_CLAIM_UPGRADE_KEY: False,
     }
 
 
@@ -233,7 +234,7 @@ def validate_post_conference_source_review(
         "component_count": len(rows),
         "expected_component_count": len(COMPONENT_POLICY),
         "blockers": list(dict.fromkeys(blockers)),
-        "public_claim_upgrade_allowed": False,
+        PUBLIC_CLAIM_UPGRADE_KEY: False,
     }
 
 
@@ -328,7 +329,7 @@ def evaluate_component_activation(
         "blockers": blockers,
         "policy": dict(COMPONENT_POLICY[component]),
         "production_promotion_allowed": False,
-        "public_claim_upgrade_allowed": False,
+        PUBLIC_CLAIM_UPGRADE_KEY: False,
     }
 
 

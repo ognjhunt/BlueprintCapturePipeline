@@ -1206,15 +1206,16 @@ default, none install prerelease NVIDIA packages into the core environment, and
 none upgrade simulator, task-success, policy, ranking, real-sensor, or
 deployment claims.
 
-- `blueprint-run-external-simready-validation` normalizes a pinned SimReady
+- `python -m blueprint_pipeline.external_simready_validation` normalizes a pinned SimReady
   Foundation profile report. Use
   `scripts/setup_simready_validator_env.sh` and
   `scripts/run_simready_validator_worker.py`; transformations are prohibited in
   the v1 lane.
-- `blueprint-calibrate-simready-rules` compares repeatable validator findings
+- `python -m blueprint_pipeline.simready_rule_calibration` compares repeatable validator findings
   with frozen expert labels. Only explicitly approved zero-error rules may be
   promoted to a CPU/pre-GPU blocking gate; all others remain advisory.
-- `blueprint-run-ovrtx-preflight` and `blueprint-run-ovphysx-preflight` launch
+- `python -m blueprint_pipeline.omniverse_library_preflight ovrtx` and
+  `python -m blueprint_pipeline.omniverse_library_preflight ovphysx` launch
   isolated workers through an explicit command template. They require both the
   CLI flag and `BLUEPRINT_ALLOW_OMNIVERSE_EXTERNAL_PREFLIGHT=true`, record cold
   and warm runs, and write request/result/runtime-receipt/claim-boundary
@@ -1226,41 +1227,41 @@ deployment claims.
   `ParticleField3DGaussianSplat`, time-sampled episode state, semantic ID maps,
   lidar/radar structure, and configured robot/target visibility. A generic USD
   load cannot satisfy those checks.
-- `blueprint-build-omniverse-preflight-benchmark` retains a library only when
+- `python -m blueprint_pipeline.omniverse_library_preflight benchmark` retains a library only when
   the exact scene also has accepted Isaac execution evidence and the sidecar
   demonstrates repeatable outputs, relevant failure coverage, preserved sensor
   metadata, and the configured cold/warm runtime advantage.
-- `blueprint-build-omniverse-preflight-benchmark-suite` additionally requires
+- `python -m blueprint_pipeline.omniverse_library_preflight benchmark-suite` additionally requires
   valid and intentionally negative same-scene fixtures, CPU/GPU memory
   measurements, and matching Isaac failure detection.
-- `blueprint-run-cosmos3-edge-experiment` is a separate 4B Edge profile; it
+- `python -m blueprint_pipeline.cosmos3_edge_experiment` is a separate 4B Edge profile; it
   requires a frozen privacy-safe cell manifest and runs forward, inverse, and
   reasoning modes separately. It never inherits Cosmos3-Nano/SC3 qualification.
   NVIDIA's July 20 model card does not list Unitree G1 7D actions among the
   supported action encodings, so the adapter blocks that substitution.
-- `blueprint-build-cosmos3-edge-qualification` consumes the Edge attempt
+- `python -m blueprint_pipeline.cosmos3_edge_qualification` consumes the Edge attempt
   manifest, validated evaluator runtime receipt, and a frozen Blueprint
   scorecard. It measures grounding, abstention, rank correlation, and failure
   recall while still requiring a separate owner decision for any default.
-- `blueprint-run-gsplat-conformance` compares Blueprint's current
+- `python -m blueprint_pipeline.gsplat_conformance` compares Blueprint's current
   `ParticleField3DGaussianSplat` authoring with a pinned
   `usd-convert-gsplat` oracle, including array values, quaternion sign
   equivalence, stage units and up axis. It does not replace the current author.
 - ArtiFixer output is generated support pending a frozen, disjoint held-out
   real-view evaluation. It remains neither captured pixels nor collision
   geometry.
-- `blueprint-write-nvidia-siggraph-policy` writes the component policy registry.
+- `python -m blueprint_pipeline.nvidia_siggraph_policy` writes the component policy registry.
   Content Agents, SimReady Blender, standalone ovstage, and conference research
   systems remain deferred behind their component-specific blockers. A fresh
   source/version/license review is mandatory on or after 2026-07-24.
-- `blueprint-review-nvidia-asset-conditioning` records immutable proposal-only
+- `python -m blueprint_pipeline.nvidia_asset_conditioning_review` records immutable proposal-only
   evidence for buyer CAD, Content Agent, or Blender workflows. Physical
   metadata stays non-authoritative and Content Agent/Blender proposals require
   a human approval receipt.
-- `blueprint-close-nvidia-experiment-resource` binds paid execution to the
+- `python -m blueprint_pipeline.nvidia_experiment_resource` binds paid execution to the
   shared allocator admission and requires exact-attempt, global inventory,
   zero-burn, and billing reconciliation evidence.
-- `blueprint-build-nvidia-siggraph-completion-matrix` maps every memo lane to
+- `python -m blueprint_pipeline.nvidia_siggraph_completion` maps every memo lane to
   source, schema, test, and verification evidence while leaving external GPU
   qualification explicitly unproven.
 

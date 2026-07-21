@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, sha256_file, utc_now_iso, write_json
-from .external_tool_runtime import canonical_sha256, executable_identity, run_json_worker
+from .external_tool_runtime import (
+    PUBLIC_CLAIM_UPGRADE_KEY,
+    canonical_sha256,
+    executable_identity,
+    run_json_worker,
+)
 from .local_capture import resolve_local_capture_context
 from .nvidia_experiment_resource import (
     load_resource_closeout,
@@ -39,7 +44,7 @@ CLAIM_BOUNDARY: dict[str, Any] = {
     "rank_fidelity_result_proven": False,
     "deployment_ready": False,
     "real_world_task_success_proven": False,
-    "public_claim_upgrade_allowed": False,
+    PUBLIC_CLAIM_UPGRADE_KEY: False,
     "advisory_only": True,
 }
 

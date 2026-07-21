@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import read_json_any, sha256_file, utc_now_iso, write_json
-from .external_tool_runtime import canonical_sha256
+from .external_tool_runtime import PUBLIC_CLAIM_UPGRADE_KEY, canonical_sha256
 
 
 SCHEMA_VERSION = "simready_rule_calibration.v1"
@@ -197,7 +197,7 @@ def build_simready_rule_calibration(
             "uncalibrated_rules_advisory_only": True,
             "authorized_rules_may_block_cpu_pre_gpu_gate": bool(authorized),
             "validator_pass_is_simulator_or_task_proof": False,
-            "public_claim_upgrade_allowed": False,
+            PUBLIC_CLAIM_UPGRADE_KEY: False,
         },
     }
     payload["calibration_fingerprint"] = canonical_sha256(payload)

@@ -1,6 +1,6 @@
 {
   "schema_version": "nvidia_siggraph_2026_completion_matrix.v1",
-  "generated_at": "2026-07-21T19:41:52.952048+00:00",
+  "generated_at": "2026-07-21T20:41:43.320888+00:00",
   "memo_path": "docs/NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md",
   "implementation_complete": true,
   "status": "implementation_complete_external_qualification_pending",
@@ -49,7 +49,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/external_simready_validation.py",
-          "sha256": "80fcd3a6f69b52dd087018d707160082e7ef883ffc3c44ddf99b2f7d8ea00cb3"
+          "sha256": "2cb41b795e3a7b1d736b36fc7916505c18a74044d7f3c7d4b40f1f0334881dfd"
         }
       ],
       "missing_paths": []
@@ -75,7 +75,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/simready_rule_calibration.py",
-          "sha256": "4180df7edfc13c70aad5dc530a01987b66ce84f0c32195a2cd3a5d7eb0617151"
+          "sha256": "2af7b9259010c64d3f4a201cbc1c215d830883460466bea6f4d1f461ec9b9554"
         },
         {
           "path": "docs/schemas/simready_rule_calibration.schema.json",
@@ -94,7 +94,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/external_simready_validation.py",
-          "sha256": "80fcd3a6f69b52dd087018d707160082e7ef883ffc3c44ddf99b2f7d8ea00cb3"
+          "sha256": "2cb41b795e3a7b1d736b36fc7916505c18a74044d7f3c7d4b40f1f0334881dfd"
         },
         {
           "path": "scripts/run_simready_validator_worker.py",
@@ -136,7 +136,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/omniverse_library_preflight.py",
-          "sha256": "f6cf23ca440e23ce58ce8e01d43cf350b8c4bd8b958455a9297795fecf7cfcfe"
+          "sha256": "0c6f483ca1985b14201822c295d55c6e583445b72008e81cdf9884b4779a2b19"
         },
         {
           "path": "scripts/run_ovrtx_preflight_worker.py",
@@ -155,7 +155,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/omniverse_library_preflight.py",
-          "sha256": "f6cf23ca440e23ce58ce8e01d43cf350b8c4bd8b958455a9297795fecf7cfcfe"
+          "sha256": "0c6f483ca1985b14201822c295d55c6e583445b72008e81cdf9884b4779a2b19"
         },
         {
           "path": "scripts/run_ovphysx_preflight_worker.py",
@@ -284,7 +284,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/nvidia_siggraph_policy.py",
-          "sha256": "cc093f4e812dca319be1f5a6febb4cdcd783e99d2b8312f6059f8c2729261b48"
+          "sha256": "d8aad85e1b34ee7ff8dc54e434fe58767ac477d39133a411d9c2e39cc940c339"
         },
         {
           "path": "tests/test_nvidia_siggraph_policy.py",
@@ -299,7 +299,7 @@
       "evidence": [
         {
           "path": "src/blueprint_pipeline/simulation_automation.py",
-          "sha256": "4535c9c5776e93087c0efb4c2835efa38c2ec141715d14e3340410c6dd02eb11"
+          "sha256": "ad92103d45181dbf8c583055de80fe8a8e627ee5818b6630c4a463f01dbf5add"
         },
         {
           "path": "tests/test_simulation_automation.py",
@@ -314,7 +314,7 @@
       "evidence": [
         {
           "path": "docs/NVIDIA_SIGGRAPH_2026_IMPLEMENTATION_RUNBOOK.md",
-          "sha256": "b6399d5dea165cc20e3726f7e5bb07ba650a43c4a34194b9f1db3a9a997c5f40"
+          "sha256": "52980954b6f868b8985b95ee83d44acbd1a5bba73c875e2a8474c154929a55ac"
         },
         {
           "path": "docs/NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md",
@@ -330,7 +330,7 @@
     "status": "passed",
     "exit_code": 0,
     "command": ".venv/bin/pytest -q",
-    "working_directory": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+    "working_directory": ".",
     "git_head": "2edb48b0205e1f2b7f1182e83fae708f9e8a8abf",
     "selected_test_count": 4864,
     "passed_test_count": 4864,
@@ -353,8 +353,8 @@
       "semantic_or_ranking_success_proven": false,
       "production_promotion_allowed": false
     },
-    "path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/evidence/nvidia_siggraph_2026_verification_receipt.json",
-    "sha256": "9dd11711d3beca7595cc02f5d6978e7b5a2da356bb524f382de6676064b391ad"
+    "path": "docs/evidence/nvidia_siggraph_2026_verification_receipt.json",
+    "sha256": "669af335c70924f5291e13450e10f33b3637c04fef24d2d1f47e92bb68932319"
   },
   "post_conference_source_review": {
     "status": "pending_until_2026-07-24_or_later",
@@ -377,5 +377,5 @@
     "provider_teardown_proven_without_attempt": false,
     "production_promotion_allowed": false
   },
-  "matrix_fingerprint": "0b8a97bcd8c2e500730a37927d23509326a2b7967d2c77245bf9e9c8e110ae9e"
+  "matrix_fingerprint": "e70492912ecc56261260b82fe150aca101cdae52cc7c94b19a14d2ff7413d384"
 }

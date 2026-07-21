@@ -43,6 +43,7 @@ from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_te
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import EpisodeSpecAgentAdapter, FakeEpisodeSpecAgentAdapter, build_episode_specs
 from .local_capture import resolve_local_capture_context
+from . import nvidia_siggraph_automation_evidence as nvidia_evidence
 from .scene_asset_preflight import build_scene_asset_preflight
 from .scenario_variation_instantiator import build_scenario_variation_instances
 
@@ -210,11 +211,9 @@ class CodexSdkSimulationAutomationAgentAdapter:
         resolved_codex_cli = _string(self.codex_cli_path) or resolve_codex_cli_path()
         codex_cli_ready = bool(resolved_codex_cli)
         codex_cli_host_oauth_allowed = env_truthy(CODEX_CLI_HOST_OAUTH_ENV)
-        transport_ready = (
-            bool(self.executor is not None)
-            or (sdk_available and api_key_present)
-            or (codex_cli_ready and codex_cli_host_oauth_allowed)
-        )
+        transport_ready = bool(self.executor is not None) or (
+            sdk_available and api_key_present
+        ) or (codex_cli_ready and codex_cli_host_oauth_allowed)
         env_allowed = (
             bool(self.live_env_allowed)
             if self.live_env_allowed is not None
@@ -223,9 +222,7 @@ class CodexSdkSimulationAutomationAgentAdapter:
         request = {
             "action": "resume_thread" if self.thread_id else "start_thread",
             "thread_id": self.thread_id,
-            "sandbox": self.sandbox
-            if self.sandbox in {"read-only", "workspace-write"}
-            else "read-only",
+            "sandbox": self.sandbox if self.sandbox in {"read-only", "workspace-write"} else "read-only",
             "workspace": str(plan_context.get("repo_root") or ""),
             "prompt_purpose": "simulation_automation_live_code_maintenance",
             "allowed_actions": [
@@ -397,9 +394,7 @@ class AgentsSdkCodexMCPAdapter:
             "agent_type": "openai_agents_sdk",
             "mcp_server": "codex",
             "workspace": str(plan_context.get("repo_root") or ""),
-            "sandbox": self.sandbox
-            if self.sandbox in {"read-only", "workspace-write"}
-            else "read-only",
+            "sandbox": self.sandbox if self.sandbox in {"read-only", "workspace-write"} else "read-only",
             "tool_scope": [
                 "inspect_manifests_and_logs",
                 "choose_next_deterministic_command",
@@ -564,14 +559,6 @@ def _string_list(value: Any) -> List[str]:
     return out
 
 
-def _relative_to(base_dir: Path, target: Path) -> str:
-    return os.path.relpath(target.resolve(), start=base_dir.resolve()).replace("\\", "/")
-
-
-def _relative_if_file(base_dir: Path, target: Path) -> str | None:
-    return _relative_to(base_dir, target) if target.is_file() else None
-
-
 def _sha_payload(payload: Mapping[str, Any]) -> str:
     return sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
@@ -594,50 +581,11 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
         "worldlabs_request_manifest": pipeline_dir / "worldlabs_request_manifest.json",
         "worldlabs_operation_manifest": pipeline_dir / "worldlabs_operation_manifest.json",
         "worldlabs_world_manifest": pipeline_dir / "worldlabs_world_manifest.json",
-        "marble_simready_bridge": pipeline_dir
-        / "marble_sim_assets"
-        / "marble_simready_bridge.json",
-        "marble_asset_validation": pipeline_dir
-        / "marble_sim_assets"
-        / "marble_asset_validation.json",
+        "marble_simready_bridge": pipeline_dir / "marble_sim_assets" / "marble_simready_bridge.json",
+        "marble_asset_validation": pipeline_dir / "marble_sim_assets" / "marble_asset_validation.json",
         "simready_scene_manifest": pipeline_dir / "simready" / "simready_scene_manifest.json",
         "simready_validation": pipeline_dir / "simready" / "simready_validation.json",
-        "external_simready_validation_result": (
-            pipeline_dir / "simready" / "external_validation_result.json"
-        ),
-        "simready_rule_calibration": pipeline_dir / "simready" / "rule_calibration.json",
-        "ovrtx_preflight_result": pipeline_dir / "sensor_preflight" / "ovrtx_result.json",
-        "ovrtx_preflight_runtime_receipt": (
-            pipeline_dir / "sensor_preflight" / "ovrtx_runtime_receipt.json"
-        ),
-        "ovphysx_preflight_result": pipeline_dir / "physics_preflight" / "ovphysx_result.json",
-        "ovphysx_preflight_runtime_receipt": (
-            pipeline_dir / "physics_preflight" / "ovphysx_runtime_receipt.json"
-        ),
-        "omniverse_preflight_benchmark": (pipeline_dir / "omniverse_preflight_benchmark.json"),
-        "omniverse_preflight_benchmark_suite": (
-            pipeline_dir / "omniverse_preflight_benchmark_suite.json"
-        ),
-        "cosmos3_edge_experiment_result": pipeline_dir / "cosmos3_edge_experiment" / "result.json",
-        "cosmos3_edge_attempt_manifest": (
-            pipeline_dir / "cosmos3_edge_experiment" / "attempt_manifest.json"
-        ),
-        "cosmos3_edge_qualification": (
-            pipeline_dir / "cosmos3_edge_experiment" / "qualification.json"
-        ),
-        "gsplat_conformance_result": pipeline_dir / "gsplat_conformance" / "result.json",
-        "nvidia_asset_conditioning_review": (
-            pipeline_dir / "nvidia_asset_conditioning" / "review.json"
-        ),
-        "nvidia_experiment_resource_closeout": (
-            pipeline_dir / "nvidia_experiment_resource_closeout.json"
-        ),
-        "nvidia_siggraph_completion_matrix": (
-            pipeline_dir / "nvidia_siggraph_2026_completion_matrix.json"
-        ),
-        "nvidia_siggraph_capability_registry": (
-            pipeline_dir / "nvidia_siggraph_2026_capability_registry.json"
-        ),
+        **nvidia_evidence.nvidia_source_artifact_paths(pipeline_dir),
         "robot_eval_dataset_manifest": (
             pipeline_dir / "robot_eval_dataset" / "robot_eval_dataset_manifest.json"
         ),
@@ -656,8 +604,7 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
         "episode_setup_manifest": automation_dir / "episode_setup_manifest.json",
         "spawn_pose_validation_manifest": automation_dir / "spawn_pose_validation_manifest.json",
         "scenario_variation_instances": automation_dir / "scenario_variation_instances.json",
-        "cpu_simulator_preflight_manifest": automation_dir
-        / "cpu_simulator_preflight_manifest.json",
+        "cpu_simulator_preflight_manifest": automation_dir / "cpu_simulator_preflight_manifest.json",
         "cpu_preflight_manifest": automation_dir / "cpu_preflight_manifest.json",
         "pre_gpu_readiness_summary": automation_dir / "pre_gpu_readiness_summary.json",
         "arena_environment_packet": automation_dir / "arena_environment_packet.json",
@@ -684,7 +631,7 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
     return {
         key: rel
         for key, path in sorted(candidates.items())
-        if (rel := _relative_if_file(automation_dir, path))
+        if (rel := nvidia_evidence.relative_if_file(automation_dir, path))
     }
 
 
@@ -860,11 +807,7 @@ def _robot_assets_match(left: Mapping[str, Any], right: Mapping[str, Any]) -> bo
     left_path = _normalize_asset_text(_robot_asset_path(left))
     right_path = _normalize_asset_text(_robot_asset_path(right))
     if left_path and right_path:
-        return (
-            left_path == right_path
-            or left_path.endswith(right_path)
-            or right_path.endswith(left_path)
-        )
+        return left_path == right_path or left_path.endswith(right_path) or right_path.endswith(left_path)
     left_name = _normalize_asset_text(_robot_asset_name(left))
     right_name = _normalize_asset_text(_robot_asset_name(right))
     return bool(left_name and right_name and left_name == right_name)
@@ -875,9 +818,7 @@ def _sim_robot_pov_ok(payload: Mapping[str, Any]) -> bool:
         return True
     if _string(payload.get("robot_camera_video_uri") or payload.get("video_uri")):
         return True
-    return bool(
-        payload.get("frames") or payload.get("frame_paths") or payload.get("frame_sequence")
-    )
+    return bool(payload.get("frames") or payload.get("frame_paths") or payload.get("frame_sequence"))
 
 
 def _owner_required_field_present(value: Any) -> bool:
@@ -923,13 +864,9 @@ def validate_owner_gpu_system_proof(
         return manifest
 
     missing_fields = [
-        field
-        for field in OWNER_GPU_REQUIRED_FIELDS
-        if not _owner_required_field_present(proof.get(field))
+        field for field in OWNER_GPU_REQUIRED_FIELDS if not _owner_required_field_present(proof.get(field))
     ]
-    if not _string(
-        proof.get("spawn_pose_validation_uri_or_path") or proof.get("spawn_trace_uri_or_path")
-    ):
+    if not _string(proof.get("spawn_pose_validation_uri_or_path") or proof.get("spawn_trace_uri_or_path")):
         missing_fields.append("spawn_pose_validation_uri_or_path")
     if missing_fields:
         blockers.append("owner_gpu_proof_missing_required_fields")
@@ -941,10 +878,7 @@ def validate_owner_gpu_system_proof(
     if context is not None:
         if _string(proof.get("scene_id")) and _string(proof.get("scene_id")) != context.scene_id:
             blockers.append("owner_gpu_proof_scene_id_mismatch")
-        if (
-            _string(proof.get("capture_id"))
-            and _string(proof.get("capture_id")) != context.capture_id
-        ):
+        if _string(proof.get("capture_id")) and _string(proof.get("capture_id")) != context.capture_id:
             blockers.append("owner_gpu_proof_capture_id_mismatch")
 
     try:
@@ -1012,11 +946,7 @@ def validate_owner_gpu_system_proof(
     spawn_loaded = spawn_present and _trace_status_ok(spawn_trace, true_field="spawn_pose_loaded")
     action_trace_ok = action_present and (
         _trace_status_ok(action_trace, true_field="policy_trace_loaded")
-        or bool(
-            action_trace.get("actions")
-            or action_trace.get("attempts")
-            or action_trace.get("records")
-        )
+        or bool(action_trace.get("actions") or action_trace.get("attempts") or action_trace.get("records"))
     )
     default_policy_ok = default_policy_present and _default_smoke_policy_ok(default_policy)
     policy_execution_ok = policy_present and (
@@ -1227,32 +1157,9 @@ def _build_plan(
     marble_validation = _read_optional_mapping(
         pipeline_dir / "marble_sim_assets" / "marble_asset_validation.json"
     )
-    simready_scene = _read_optional_mapping(
-        pipeline_dir / "simready" / "simready_scene_manifest.json"
-    )
-    simready_validation = _read_optional_mapping(
-        pipeline_dir / "simready" / "simready_validation.json"
-    )
-    external_simready = _read_optional_mapping(
-        pipeline_dir / "simready" / "external_validation_result.json"
-    )
-    simready_calibration = _read_optional_mapping(
-        pipeline_dir / "simready" / "rule_calibration.json"
-    )
-    ovrtx_preflight = _read_optional_mapping(
-        pipeline_dir / "sensor_preflight" / "ovrtx_result.json"
-    )
-    ovphysx_preflight = _read_optional_mapping(
-        pipeline_dir / "physics_preflight" / "ovphysx_result.json"
-    )
-    cosmos3_edge = _read_optional_mapping(pipeline_dir / "cosmos3_edge_experiment" / "result.json")
-    cosmos3_edge_qualification = _read_optional_mapping(
-        pipeline_dir / "cosmos3_edge_experiment" / "qualification.json"
-    )
-    gsplat_conformance = _read_optional_mapping(pipeline_dir / "gsplat_conformance" / "result.json")
-    cosmos_export = _read_optional_mapping(
-        pipeline_dir / "cosmos_training_export" / "manifest.json"
-    )
+    simready_scene = _read_optional_mapping(pipeline_dir / "simready" / "simready_scene_manifest.json")
+    simready_validation = _read_optional_mapping(pipeline_dir / "simready" / "simready_validation.json")
+    cosmos_export = _read_optional_mapping(pipeline_dir / "cosmos_training_export" / "manifest.json")
     cpu_preflight_scorecard = _read_optional_mapping(
         pipeline_dir / "simulation_automation" / "cpu_preflight_scorecard.json"
     )
@@ -1277,9 +1184,7 @@ def _build_plan(
                 "physics_collision_review_ready": bool(
                     marble_validation.get("physics_collision_review_ready")
                 ),
-                "rank_fidelity_result_proven": bool(
-                    marble_validation.get("rank_fidelity_result_proven")
-                ),
+                "rank_fidelity_result_proven": bool(marble_validation.get("rank_fidelity_result_proven")),
             },
             "simready": {
                 "scene_status": _string(simready_scene.get("status")) or None,
@@ -1290,9 +1195,7 @@ def _build_plan(
                     )
                 ),
                 "rank_fidelity_result_proven": bool(
-                    _mapping(simready_validation.get("claim_boundary")).get(
-                        "rank_fidelity_result_proven"
-                    )
+                    _mapping(simready_validation.get("claim_boundary")).get("rank_fidelity_result_proven")
                 ),
             },
             "cpu_preflight": {
@@ -1314,28 +1217,7 @@ def _build_plan(
                 ),
                 "simulator_execution_not_run": True,
             },
-            "nvidia_siggraph_experiments": {
-                "external_simready_validation_status": _string(external_simready.get("status"))
-                or "optional_not_run",
-                "simready_rule_calibration_status": _string(simready_calibration.get("status"))
-                or "optional_not_run",
-                "ovrtx_preflight_status": _string(ovrtx_preflight.get("status"))
-                or "optional_not_run",
-                "ovphysx_preflight_status": _string(ovphysx_preflight.get("status"))
-                or "optional_not_run",
-                "cosmos3_edge_experiment_status": _string(cosmos3_edge.get("status"))
-                or "optional_not_run",
-                "cosmos3_edge_qualification_status": _string(
-                    cosmos3_edge_qualification.get("status")
-                )
-                or "optional_not_run",
-                "gsplat_conformance_status": _string(gsplat_conformance.get("status"))
-                or "optional_not_run",
-                "all_artifacts_advisory_only": True,
-                "simulator_execution_proven": False,
-                "robot_policy_execution_proven": False,
-                "rank_fidelity_result_proven": False,
-            },
+            "nvidia_siggraph_experiments": nvidia_evidence.nvidia_experiment_plan_summary(pipeline_dir),
         },
         "automation_scope": {
             "plans_asset_conversion": True,
@@ -1351,15 +1233,11 @@ def _build_plan(
             "simulator_execution_allowed_by_default": False,
             "gpu_training_allowed_by_default": False,
             "external_omniverse_preflights_allowed_by_default": False,
-            "cosmos3_edge_experiment_allowed_by_default": False,
-            "content_agents_or_simready_blender_on_critical_path": False,
         },
         "training_sources": {
             "cosmos_export_status": _string(cosmos_export.get("status")) or "missing",
             "cosmos_export_manifest": (
-                _relative_to(
-                    automation_dir, pipeline_dir / "cosmos_training_export" / "manifest.json"
-                )
+                nvidia_evidence.relative_to(automation_dir, pipeline_dir / "cosmos_training_export" / "manifest.json")
                 if (pipeline_dir / "cosmos_training_export" / "manifest.json").is_file()
                 else None
             ),
@@ -1664,7 +1542,9 @@ def _arena_scenario_components(
                 ),
                 "review_required": True,
                 "source": (
-                    "robot_eval_dataset/scenario_cards.json" if card else "episode_spec.v1.json"
+                    "robot_eval_dataset/scenario_cards.json"
+                    if card
+                    else "episode_spec.v1.json"
                 ),
                 "claim_boundary": "arena_scenario_component_is_review_scope_not_simulator_result",
             }
@@ -1820,9 +1700,7 @@ def _build_arena_environment_packet(
         pipeline_dir / "robot_eval_dataset" / "proof_boundaries.json"
     )
     episode_spec = _read_optional_mapping(automation_dir / "episode_spec.v1.json")
-    variation_instances = _read_optional_mapping(
-        automation_dir / "scenario_variation_instances.json"
-    )
+    variation_instances = _read_optional_mapping(automation_dir / "scenario_variation_instances.json")
     inventory = _read_optional_mapping(automation_dir / "scene_asset_inventory.json")
     dependency_audit = _read_optional_mapping(automation_dir / "scene_asset_dependency_audit.json")
 
@@ -2180,9 +2058,7 @@ def _build_simulator_engine_plugin_registry(
                 _mapping(scenario_variation_instances.get("engine_mutation_plan")).get(framework)
             ).get("status"),
             "execution_manager": {
-                "status": "ready_to_run_command"
-                if not missing_gates
-                else "gated_waiting_for_owner_runtime",
+                "status": "ready_to_run_command" if not missing_gates else "gated_waiting_for_owner_runtime",
                 "env_gate_allows": env_allows,
                 "allow_simulator_execution_flag": bool(allow_simulator_execution),
                 "simulator_allowlisted": framework in allowed,
@@ -2241,7 +2117,9 @@ def _request_for_framework(
     generated_at: str,
 ) -> Dict[str, Any]:
     conversion = _mapping(_mapping(conversion_plan.get("frameworks")).get(framework))
-    arena_packet_path = "arena_environment_packet.json" if framework == "isaac_lab_arena" else None
+    arena_packet_path = (
+        "arena_environment_packet.json" if framework == "isaac_lab_arena" else None
+    )
     return {
         "schema_version": SIMULATOR_REQUEST_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -2341,9 +2219,7 @@ def _run_simulator_command(
         "framework": framework,
         "status": status,
         "reason": None if status == "completed" else f"simulator_exit_code:{completed.returncode}",
-        "blockers": []
-        if status == "completed"
-        else [f"simulator_exit_code:{completed.returncode}"],
+        "blockers": [] if status == "completed" else [f"simulator_exit_code:{completed.returncode}"],
         "command": list(command),
         "request_manifest": str(request_path),
         "blocked_manifest": None,
@@ -2393,8 +2269,8 @@ def _build_simulator_execution_manifest(
             generated_at=generated_at,
         )
         write_json(request_path, request)
-        requests[framework] = _relative_to(automation_dir, request_path)
-        result_paths[framework] = _relative_to(automation_dir, result_path)
+        requests[framework] = nvidia_evidence.relative_to(automation_dir, request_path)
+        result_paths[framework] = nvidia_evidence.relative_to(automation_dir, result_path)
 
         command = shlex.split(command_text) if command_text else []
         if not global_allowed:
@@ -2479,9 +2355,7 @@ def _build_simulator_execution_manifest(
         "rank_fidelity_result_proven": False,
         "claim_boundary": {
             **dict(CLAIM_BOUNDARY),
-            "simulators_run": any(
-                item.get("status") in {"completed", "failed"} for item in results
-            ),
+            "simulators_run": any(item.get("status") in {"completed", "failed"} for item in results),
             "simulator_execution_proven": any_completed,
         },
     }
@@ -2510,7 +2384,9 @@ def _training_orchestration_manifest(
             "status": "blocked",
             "reason": "approval_required",
             "runner": TRAINING_RUNNER,
-            "export_manifest_path": _relative_to(automation_dir, export_manifest_path)
+            "export_manifest_path": nvidia_evidence.relative_to(
+                automation_dir, export_manifest_path
+            )
             if export_manifest_path.is_file()
             else None,
             "training_command_template": training_command,
@@ -2537,11 +2413,11 @@ def _training_orchestration_manifest(
         "status": result.get("status"),
         "reason": result.get("reason"),
         "runner": TRAINING_RUNNER,
-        "export_manifest_path": _relative_to(automation_dir, export_manifest_path)
+        "export_manifest_path": nvidia_evidence.relative_to(automation_dir, export_manifest_path)
         if export_manifest_path.is_file()
         else None,
         "training_command_template": training_command,
-        "training_run_manifest_path": _relative_to(
+        "training_run_manifest_path": nvidia_evidence.relative_to(
             automation_dir,
             context.pipeline_root / "cosmos_training_export" / "training_run_manifest.json",
         ),
@@ -2591,10 +2467,7 @@ def _proof_aware_claim_boundary(
                 "robot-team policy/action logs beyond the default smoke policy"
             )
             continue
-        if (
-            effective_simulator_proven
-            and requirement == "accepted simulator or real robot trial evidence"
-        ):
+        if effective_simulator_proven and requirement == "accepted simulator or real robot trial evidence":
             proof_upgrade_requires.append(
                 "accepted real robot trial evidence for physical-readiness claims"
             )
@@ -2608,13 +2481,19 @@ def _proof_aware_claim_boundary(
         "isaac_sim_execution_proven": bool(isaac_sim_execution_proven),
         "isaac_robot_asset_execution_proven": bool(isaac_robot_asset_execution_proven),
         "mujoco_g1_asset_execution_proven": bool(mujoco_g1_asset_execution_proven),
-        "local_mujoco_g1_asset_execution_proven": bool(local_mujoco_g1_asset_execution_proven),
+        "local_mujoco_g1_asset_execution_proven": bool(
+            local_mujoco_g1_asset_execution_proven
+        ),
         "owner_gpu_simulator_execution_proven": bool(owner_gpu_simulator_execution_proven),
         "owner_gpu_default_policy_execution_proven": bool(
             owner_gpu_default_policy_execution_proven
         ),
-        "default_sim_policy_execution_proven": bool(owner_gpu_default_policy_execution_proven),
-        "owner_gpu_sim_robot_pov_evidence_proven": bool(owner_gpu_sim_robot_pov_evidence_proven),
+        "default_sim_policy_execution_proven": bool(
+            owner_gpu_default_policy_execution_proven
+        ),
+        "owner_gpu_sim_robot_pov_evidence_proven": bool(
+            owner_gpu_sim_robot_pov_evidence_proven
+        ),
         "real_robot_pov_evidence_proven": False,
         "rank_fidelity_result_proven": False,
         "robot_policy_execution_proven": False,
@@ -2708,7 +2587,9 @@ def _proof_boundary(
             "simulators_run": bool(simulator_execution.get("simulators_run")),
             "result_paths": simulator_execution.get("simulator_result_paths") or {},
             "owner_gpu_proof_manifest": (
-                "owner_gpu_simulator_execution_proof_manifest.json" if owner_gpu_proof else None
+                "owner_gpu_simulator_execution_proof_manifest.json"
+                if owner_gpu_proof
+                else None
             ),
             "default_policy_execution_proven": default_policy_proven,
             "sim_robot_pov_evidence_proven": sim_robot_pov_proven,
@@ -2813,9 +2694,7 @@ def _gpu_backend_recommendations(
                 "backend": "isaac_sim",
                 "priority": 1,
                 "recommendation": "owner_review_required_before_backend_selection",
-                "why": [
-                    "No compatible local scene asset or collider/proxy plan was proven locally"
-                ],
+                "why": ["No compatible local scene asset or collider/proxy plan was proven locally"],
                 "requires_owner_gpu": True,
                 "compatible_with_proxy_only": False,
                 "conversion_status": None,
@@ -2826,9 +2705,7 @@ def _gpu_backend_recommendations(
                 "backend": "isaac_lab_arena",
                 "priority": 2,
                 "recommendation": "owner_review_required_before_arena_package_execution",
-                "why": [
-                    "Arena package can still be reviewed, but no compatible scene asset was proven locally"
-                ],
+                "why": ["Arena package can still be reviewed, but no compatible scene asset was proven locally"],
                 "requires_owner_gpu": True,
                 "compatible_with_proxy_only": False,
                 "conversion_status": _mapping(
@@ -2840,9 +2717,7 @@ def _gpu_backend_recommendations(
     return sorted(recommendations, key=lambda item: int(item.get("priority") or 99))
 
 
-def _gpu_owner_system_proof_schema(
-    *, generated_at: str, scene_id: str, capture_id: str
-) -> Dict[str, Any]:
+def _gpu_owner_system_proof_schema(*, generated_at: str, scene_id: str, capture_id: str) -> Dict[str, Any]:
     return {
         "schema_version": GPU_OWNER_SYSTEM_PROOF_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -3092,9 +2967,7 @@ def _spawn_validation_summary(spawn_validation: Mapping[str, Any]) -> Dict[str, 
 def _gpu_run_checklist_text(packet: Mapping[str, Any]) -> str:
     commands = packet.get("command_templates") or {}
     recommended = packet.get("recommended_backends") or []
-    primary_backend = (
-        _string(_mapping(recommended[0] if recommended else {}).get("backend")) or "isaac_sim"
-    )
+    primary_backend = _string(_mapping(recommended[0] if recommended else {}).get("backend")) or "isaac_sim"
     primary_command = _string(_mapping(commands).get(primary_backend)) or _string(
         _mapping(commands).get("isaac_sim")
     )
@@ -3149,9 +3022,7 @@ def _build_gpu_handoff_artifacts(
     inventory = _read_optional_mapping(automation_dir / "scene_asset_inventory.json")
     dependency_audit = _read_optional_mapping(automation_dir / "scene_asset_dependency_audit.json")
     collider_proxy_plan = _read_optional_mapping(automation_dir / "collider_proxy_plan.json")
-    spawn_validation = _read_optional_mapping(
-        automation_dir / "spawn_pose_validation_manifest.json"
-    )
+    spawn_validation = _read_optional_mapping(automation_dir / "spawn_pose_validation_manifest.json")
     cpu_preflight = _read_optional_mapping(automation_dir / "cpu_preflight_manifest.json")
     pre_gpu_summary = _read_optional_mapping(automation_dir / "pre_gpu_readiness_summary.json")
     arena_packet = _read_optional_mapping(automation_dir / "arena_environment_packet.json")
@@ -3290,11 +3161,7 @@ def _build_gpu_handoff_artifacts(
             "pybullet": "Use for URDF/proxy fixture load checks, not as rich-scene proof unless owner accepts it.",
         },
         "required_dependencies": {
-            "isaac_sim": [
-                "NVIDIA GPU",
-                "Isaac Sim/Isaac Lab owner install",
-                "OpenUSD dependencies",
-            ],
+            "isaac_sim": ["NVIDIA GPU", "Isaac Sim/Isaac Lab owner install", "OpenUSD dependencies"],
             "isaac_lab_arena": [
                 "NVIDIA GPU",
                 "Owner-pinned Isaac Lab-Arena install",
@@ -3336,7 +3203,9 @@ def _build_gpu_handoff_artifacts(
             "owner_attestation",
         ],
         "owner_gpu_proof_manifest_path": (
-            "owner_gpu_simulator_execution_proof_manifest.json" if owner_gpu_proof else None
+            "owner_gpu_simulator_execution_proof_manifest.json"
+            if owner_gpu_proof
+            else None
         ),
         "pass_fail_criteria": {
             "pass": [
@@ -3633,7 +3502,9 @@ def build_simulation_automation(
         "gpu_handoff_packet_path": "gpu_handoff_packet.json",
         "gpu_owner_system_proof_schema_path": "gpu_owner_system_proof_schema.json",
         "owner_gpu_simulator_execution_proof_manifest_path": (
-            "owner_gpu_simulator_execution_proof_manifest.json" if owner_gpu_proof else None
+            "owner_gpu_simulator_execution_proof_manifest.json"
+            if owner_gpu_proof
+            else None
         ),
         "local_mujoco_g1_smoke_manifest_path": (
             "mujoco_g1_local_smoke/mujoco_g1_local_smoke_manifest.json"
@@ -3651,53 +3522,7 @@ def build_simulation_automation(
         "agent_decision_ledger_path": "agent_decision_ledger.json",
         "agent_operator_status": agent_ledger.get("status"),
         "agent_operator_mode": agent_ledger.get("operator_mode"),
-        "nvidia_siggraph_experiment_artifacts": {
-            "external_simready_validation_result": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "simready" / "external_validation_result.json",
-            ),
-            "simready_rule_calibration": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "simready" / "rule_calibration.json",
-            ),
-            "ovrtx_preflight_result": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "sensor_preflight" / "ovrtx_result.json",
-            ),
-            "ovphysx_preflight_result": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "physics_preflight" / "ovphysx_result.json",
-            ),
-            "cosmos3_edge_experiment_result": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "cosmos3_edge_experiment" / "result.json",
-            ),
-            "cosmos3_edge_qualification": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "cosmos3_edge_experiment" / "qualification.json",
-            ),
-            "omniverse_preflight_benchmark_suite": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "omniverse_preflight_benchmark_suite.json",
-            ),
-            "asset_conditioning_review": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "nvidia_asset_conditioning" / "review.json",
-            ),
-            "resource_closeout": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "nvidia_experiment_resource_closeout.json",
-            ),
-            "completion_matrix": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "nvidia_siggraph_2026_completion_matrix.json",
-            ),
-            "gsplat_conformance_result": _relative_if_file(
-                automation_dir,
-                pipeline_dir / "gsplat_conformance" / "result.json",
-            ),
-            "advisory_only": True,
-        },
+        "nvidia_siggraph_experiment_artifacts": nvidia_evidence.nvidia_experiment_result_artifacts(automation_dir=automation_dir, pipeline_dir=pipeline_dir),
         "scene_asset_preflight_status": scene_preflight.get("status"),
         "episode_spec_status": episode_specs.get("status"),
         "episode_count": episode_specs.get("episode_count"),
@@ -3735,13 +3560,11 @@ def build_simulation_automation(
         ),
         "real_robot_pov_evidence_proven": False,
         "live_provider_calls_performed": False,
-        "remote_asset_downloads_performed": bool(
-            local_mujoco_g1_smoke.get("asset_source_manifest")
-        ),
+        "remote_asset_downloads_performed": bool(local_mujoco_g1_smoke.get("asset_source_manifest")),
         "local_cpu_preflight_smoke_ran": bool(
-            _read_optional_mapping(automation_dir / "cpu_simulator_preflight_manifest.json").get(
-                "local_cpu_smoke_ran"
-            )
+            _read_optional_mapping(
+                automation_dir / "cpu_simulator_preflight_manifest.json"
+            ).get("local_cpu_smoke_ran")
         ),
         "simulators_run": bool(run_claim_boundary.get("simulators_run")),
         "gpu_training_run": bool(training.get("gpu_training_run")),
@@ -3764,9 +3587,7 @@ def build_simulation_automation(
         "schema_version": "simulation_automation_result.v1",
         "capture_root": str(context.capture_root),
         "automation_dir": str(automation_dir),
-        "manifest_path": str(
-            (automation_dir / "simulation_automation_run_manifest.json").resolve()
-        ),
+        "manifest_path": str((automation_dir / "simulation_automation_run_manifest.json").resolve()),
         "plan_path": str((automation_dir / "simulation_automation_plan.json").resolve()),
         "status": status,
         "claim_boundary": dict(run_manifest["claim_boundary"]),

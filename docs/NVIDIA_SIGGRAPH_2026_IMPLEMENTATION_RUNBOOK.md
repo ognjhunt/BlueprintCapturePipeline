@@ -22,7 +22,7 @@ Refresh these pins after SIGGRAPH closes before an external attempt:
 
 Complete `docs/nvidia_siggraph_post_conference_source_review.template.json` on
 or after July 24, validate every component row, then pass that review to
-`blueprint-write-nvidia-siggraph-policy`. A missing, early, or incomplete
+`python -m blueprint_pipeline.nvidia_siggraph_policy`. A missing, early, or incomplete
 refresh blocks activation.
 
 ## SimReady Advisory Validation
@@ -41,7 +41,7 @@ worker command must include placeholders for `{input}` and `{output}`; the
 adapter also supplies the requested profile and profile version.
 
 ```bash
-blueprint-run-external-simready-validation \
+python -m blueprint_pipeline.external_simready_validation \
   --capture-root <capture-root> \
   --input-usd <privacy-safe-pipeline-usd> \
   --validator-command '/path/to/disposable-simready-venv/bin/python <repo>/scripts/run_simready_validator_worker.py --source-root /path/to/simready-foundation --input {input} --output {output} --profile {profile} --profile-version {profile_version} --expected-validator-version <version>' \
@@ -63,7 +63,7 @@ manifest containing known-valid and intentionally malformed cases plus signed
 expert review, then run:
 
 ```bash
-blueprint-calibrate-simready-rules \
+python -m blueprint_pipeline.simready_rule_calibration \
   --manifest <calibration-manifest.json> \
   --evidence-root <immutable-evidence-root> \
   --output <capture-root>/pipeline/simready/rule_calibration.json \
@@ -98,7 +98,7 @@ Blueprint automatically adds ParticleField, dynamic-update, semantic-map,
 visibility, lidar, and radar checks when the scene or request requires them.
 
 ```bash
-blueprint-run-ovrtx-preflight \
+python -m blueprint_pipeline.omniverse_library_preflight ovrtx \
   --capture-root <capture-root> \
   --input-usd <privacy-safe-pipeline-usd> \
   --worker-command '/path/to/disposable-ovrtx-venv/bin/python <repo>/scripts/run_ovrtx_preflight_worker.py --input {input} --output {output} --output-dir {output_dir} --config {config} --mode {mode} --source-revision {source_revision} --modality rgb --modality depth --modality semantic_segmentation --modality semantic_id_map' \
@@ -118,7 +118,7 @@ The ovphysx configuration should pin fixed time step, number of steps, gravity,
 mass/friction bounds, snapshot steps, and any articulation prim path:
 
 ```bash
-blueprint-run-ovphysx-preflight \
+python -m blueprint_pipeline.omniverse_library_preflight ovphysx \
   --capture-root <capture-root> \
   --input-usd <privacy-safe-pipeline-usd> \
   --worker-command '/path/to/disposable-ovphysx-venv/bin/python <repo>/scripts/run_ovphysx_preflight_worker.py --input {input} --output {output} --output-dir {output_dir} --config {config} --mode {mode} --source-revision {source_revision}' \
@@ -133,10 +133,10 @@ blueprint-run-ovphysx-preflight \
 Each adapter runs cold and warm attempts, validates component/config identities,
 contains outputs under the capture pipeline root, and requires repeatable output
 digests. Compare both results to an accepted same-scene Isaac baseline with
-`blueprint-build-omniverse-preflight-benchmark`. Retain a library only when the
+`python -m blueprint_pipeline.omniverse_library_preflight benchmark`. Retain a library only when the
 comparison demonstrates a useful failure class or a measured runtime/cost gain.
 The stronger
-`blueprint-build-omniverse-preflight-benchmark-suite --manifest <suite.json>`
+`python -m blueprint_pipeline.omniverse_library_preflight benchmark-suite --manifest <suite.json>`
 requires valid and negative fixtures, exact scene-digest equality across the
 library and Isaac evidence, cold/warm CPU and GPU memory, and matching detection
 of the expected failure class.
@@ -147,7 +147,7 @@ Install the official converter from a pinned checkout into a disposable
 environment with `scripts/setup_gsplat_conformance_env.sh`. Then run:
 
 ```bash
-blueprint-run-gsplat-conformance \
+python -m blueprint_pipeline.gsplat_conformance \
   --capture-root <capture-root> \
   --source-ply <privacy-safe-pipeline-ply> \
   --converter-command '/path/to/converter-venv/bin/python <repo>/scripts/run_usd_convert_gsplat_worker.py --input {input} --oracle-output {oracle_output} --report {output} --expected-version {converter_version} --source-revision {source_revision}' \
@@ -183,7 +183,7 @@ export BLUEPRINT_ALLOW_COSMOS3_EDGE_EXPERIMENT=true
 ```
 
 ```bash
-blueprint-run-cosmos3-edge-experiment \
+python -m blueprint_pipeline.cosmos3_edge_experiment \
   --capture-root <capture-root> \
   --frozen-manifest <edge-frozen-benchmark.json> \
   --worker-command '/path/to/disposable-cosmos-edge-venv/bin/python <repo>/scripts/run_cosmos3_edge_worker.py --input {input} --output {output} --output-dir {output_dir} --config {config} --mode {mode} --cell-id {cell_id} --model-revision {model_revision} --code-revision {code_revision} --checkpoint {checkpoint} --checkpoint-sha256 {checkpoint_sha256} --configuration-sha256 {configuration_sha256}' \
@@ -207,7 +207,7 @@ After the configured Blueprint evaluator emits a validated runtime receipt and
 a frozen accepted-anchor scorecard, build the separate qualification:
 
 ```bash
-blueprint-build-cosmos3-edge-qualification \
+python -m blueprint_pipeline.cosmos3_edge_qualification \
   --attempt-manifest <capture-root>/pipeline/cosmos3_edge_experiment/attempt_manifest.json \
   --evaluator-runtime-receipt <validated-runtime-receipt.json> \
   --scorecard <frozen-blueprint-scorecard.json> \
@@ -221,7 +221,7 @@ default without a separate owner decision.
 
 ## Deferred Asset-Conditioning Reviews
 
-Use `blueprint-review-nvidia-asset-conditioning` only for a named buyer need.
+Use `python -m blueprint_pipeline.nvidia_asset_conditioning_review` only for a named buyer need.
 CAD-to-SimReady requires evidence for import, minimum USD validation, material
 proposal, physics proposal, conformance, and report stages. Content Agents and
 SimReady Blender require a human approval receipt. All variants preserve the
@@ -246,7 +246,7 @@ Pass the admission context into every external command with
 `--resource-context`. After teardown, create the immutable closeout:
 
 ```bash
-blueprint-close-nvidia-experiment-resource \
+python -m blueprint_pipeline.nvidia_experiment_resource \
   --resource-context <admitted-resource-context.json> \
   --teardown-evidence <provider-teardown-evidence.json> \
   --output <capture-root>/pipeline/nvidia_experiment_resource_closeout.json
@@ -264,7 +264,7 @@ teardown as proven.
 After the final targeted and full test runs, record a
 `nvidia_siggraph_2026_verification_receipt.v1` containing the exact command and
 zero exit status. Then run
-`blueprint-build-nvidia-siggraph-completion-matrix` to map every phase and
+`python -m blueprint_pipeline.nvidia_siggraph_completion` to map every phase and
 deferred lane to its implementation evidence. The matrix deliberately keeps
 official NVIDIA execution, same-scene Isaac comparison, Edge rank fidelity,
 and any provider execution unproven until their own evidence exists.

@@ -159,6 +159,13 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _portable_evidence_path(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return f"external:{path.name}"
+
+
 def build_completion_matrix(
     *,
     repository_root: str | Path,
@@ -199,7 +206,7 @@ def build_completion_matrix(
             blockers.append("verification_receipt_not_passed")
         verification = {
             **verification,
-            "path": str(verification_path),
+            "path": _portable_evidence_path(verification_path, root),
             "sha256": sha256_file(verification_path) if verification_path.is_file() else None,
         }
     else:
@@ -219,7 +226,7 @@ def build_completion_matrix(
             source_review_status = "completed"
         source_review = {
             **source_review,
-            "path": str(source_path),
+            "path": _portable_evidence_path(source_path, root),
             "sha256": sha256_file(source_path) if source_path.is_file() else None,
         }
 

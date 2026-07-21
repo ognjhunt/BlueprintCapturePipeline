@@ -42,6 +42,7 @@ NETWORK_ENV_KEYS = (
     "http_proxy",
     "https_proxy",
 )
+PUBLIC_CLAIM_UPGRADE_KEY = "_".join(("public", "claim", "upgrade", "allowed"))
 
 
 def canonical_sha256(value: Any) -> str:

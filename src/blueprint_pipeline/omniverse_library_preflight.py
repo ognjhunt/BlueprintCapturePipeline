@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .common import ensure_dir, parse_bool, read_json_any, sha256_file, utc_now_iso, write_json
-from .external_tool_runtime import canonical_sha256, executable_identity, run_json_worker
+from .external_tool_runtime import (
+    PUBLIC_CLAIM_UPGRADE_KEY,
+    canonical_sha256,
+    executable_identity,
+    run_json_worker,
+)
 from .local_capture import resolve_local_capture_context
 from .nvidia_experiment_resource import (
     load_resource_closeout,
@@ -91,7 +96,7 @@ COMMON_CLAIM_BOUNDARY: dict[str, Any] = {
     "real_sensor_correlation_proven": False,
     "real_world_task_success_proven": False,
     "deployment_ready": False,
-    "public_claim_upgrade_allowed": False,
+    PUBLIC_CLAIM_UPGRADE_KEY: False,
     "advisory_only": True,
 }
 
@@ -1166,3 +1171,23 @@ def benchmark_suite_main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps({"status": result["status"], "blockers": result["blockers"]}))
     return 0 if result["status"] == "completed" else 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run an Omniverse library experiment command")
+    parser.add_argument(
+        "command",
+        choices=("ovrtx", "ovphysx", "benchmark", "benchmark-suite"),
+    )
+    args, remainder = parser.parse_known_args(argv)
+    entrypoints = {
+        "ovrtx": ovrtx_main,
+        "ovphysx": ovphysx_main,
+        "benchmark": benchmark_main,
+        "benchmark-suite": benchmark_suite_main,
+    }
+    return entrypoints[args.command](remainder)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -36,6 +36,7 @@ def test_completion_matrix_covers_every_memo_lane_without_claiming_external_runs
     assert len(result["requirements"]) >= 18
     assert all(row["implementation_status"] == "implemented" for row in result["requirements"])
     assert result["external_qualification_state"]["cosmos3_edge_rank_fidelity"] == "unproven"
+    assert result["verification_receipt"]["path"] == "external:verification.json"
     assert result["claim_boundary"]["production_promotion_allowed"] is False
     schema = json.loads(
         (root / "docs/schemas/nvidia_siggraph_completion_matrix.schema.json").read_text()

@@ -4,7 +4,7 @@
   "status": "passed",
   "exit_code": 0,
   "command": ".venv/bin/pytest -q",
-  "working_directory": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+  "working_directory": ".",
   "git_head": "2edb48b0205e1f2b7f1182e83fae708f9e8a8abf",
   "selected_test_count": 4864,
   "passed_test_count": 4864,
