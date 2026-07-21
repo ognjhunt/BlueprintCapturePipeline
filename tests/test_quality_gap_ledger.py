@@ -20,7 +20,7 @@ ID_PATTERN = re.compile(r"^(?:REL|DATA|SC3|RUN|P2|EVID)-\d{2}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 APPROVED_CRITERION_EVIDENCE_MAP_SHA256 = (
-    "sha256:e2b94f149b21cf7cc32a848f838ad19be4a6afc51c8043a0ce9684c50acec778"
+    "sha256:ae957b116eaa493595e29b32022c3869c20b17e781bc69117489c67278375bfb"
 )
 ALLOWED_STATUSES = {"open", "partial", "closed", "reopened"}
 ALLOWED_SCOPES = {"BASE", "SIM", "PTDP", "SC3", "PAID", "LIVE", "PHYSICAL"}

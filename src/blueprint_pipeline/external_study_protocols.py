@@ -103,8 +103,6 @@ def _external_study_protocol_profile(
     study: Mapping[str, Any], explicit_profile: str | None
 ) -> tuple[str, dict[str, Any] | None]:
     profile_id = _string(explicit_profile or study.get("protocol_profile")).strip()
-    if not profile_id:
-        profile_id = "sc3_eval_v3"
     profile = EXTERNAL_STUDY_PROTOCOL_PROFILES.get(profile_id)
     return profile_id, dict(profile) if profile else None
 
@@ -122,7 +120,11 @@ def validate_external_study(
             "protocol_profile": profile_id,
             "status": "external_proof_required",
             "external_manual_proof": True,
-            "blockers": ["external_study_protocol_profile_unsupported"],
+            "blockers": [
+                "external_study_protocol_profile_missing"
+                if not profile_id
+                else "external_study_protocol_profile_unsupported"
+            ],
         }
     sc3_profile = profile_id == "sc3_eval_v3"
     blocker_prefix = "external_sc3_study" if sc3_profile else "external_study"

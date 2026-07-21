@@ -1321,10 +1321,11 @@ def test_benchmark_names_and_external_study_remain_separate() -> None:
     missing_study = validate_external_study({})
     assert missing_study["status"] == "external_proof_required"
     assert missing_study["external_manual_proof"] is True
-    assert "external_sc3_study_requires_independent_manual_acceptance" in missing_study["blockers"]
+    assert missing_study["blockers"] == ["external_study_protocol_profile_missing"]
 
     malformed_counts = validate_external_study(
         {
+            "protocol_profile": "sc3_eval_v3",
             "independent_policy_checkpoint_count": "seven",
             "accepted_anchor_count": "many",
         }
@@ -1357,10 +1358,7 @@ def test_external_study_profiles_do_not_impose_sc3_only_runtime_requirements(
     assert "external_sc3_study_three_view_checkpoint_run_missing" not in result["blockers"]
     assert "external_sc3_study_inverse_threshold_missing" not in result["blockers"]
     assert "external_study_requires_independent_manual_acceptance" in result["blockers"]
-    assert (
-        "external_study_rights_commercial_use_scope_verified_not_proven"
-        in result["blockers"]
-    )
+    assert "external_study_rights_commercial_use_scope_verified_not_proven" in result["blockers"]
 
 
 def test_external_study_rejects_unknown_protocol_profile() -> None:

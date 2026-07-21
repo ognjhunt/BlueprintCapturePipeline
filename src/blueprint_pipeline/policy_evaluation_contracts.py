@@ -8,9 +8,11 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .evaluator_evidence_profiles import validate_evaluator_evidence
+
 
 POLICY_ADAPTER_SCHEMA_VERSION = "policy_adapter_manifest.v1"
-POLICY_EVALUATION_DESIGN_SCHEMA_VERSION = "policy_evaluation_design.v1"
+POLICY_EVALUATION_DESIGN_SCHEMA_VERSION = "policy_evaluation_design.v2"
 MINIMUM_DECISION_POLICY_COUNT = 7
 MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION = 20
 SC3_DIRECT_COMPARISON_REPLICATE_TARGET = (36, 37)
@@ -21,10 +23,12 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _rows(value: Any) -> list[dict[str, Any]]:
+def _strict_rows(value: Any) -> tuple[list[dict[str, Any]], bool]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return []
-    return [dict(item) for item in value if isinstance(item, Mapping)]
+        return [], False
+    if any(not isinstance(item, Mapping) for item in value):
+        return [], False
+    return [dict(item) for item in value], True
 
 
 def _digest(value: Any) -> bool:
@@ -77,7 +81,9 @@ def validate_policy_adapter_manifest(manifest: Mapping[str, Any]) -> dict[str, A
         or any(not str(item).strip() for item in units)
     ):
         blockers.append("policy_action_units_missing_or_dimension_mismatch")
-    bounds = _rows(action.get("bounds"))
+    bounds, bounds_payload_valid = _strict_rows(action.get("bounds"))
+    if not bounds_payload_valid:
+        blockers.append("policy_action_bounds_payload_invalid")
     if len(bounds) != dimension:
         blockers.append("policy_action_bounds_missing_or_dimension_mismatch")
     else:
@@ -133,7 +139,9 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
     blockers: list[str] = []
     if design.get("schema_version") != POLICY_EVALUATION_DESIGN_SCHEMA_VERSION:
         blockers.append("policy_evaluation_design_schema_missing_or_unsupported")
-    policies = _rows(design.get("policies"))
+    policies, policies_payload_valid = _strict_rows(design.get("policies"))
+    if not policies_payload_valid:
+        blockers.append("policy_registry_payload_invalid")
     validations = [validate_policy_adapter_manifest(row) for row in policies]
     for validation in validations:
         blockers.extend(
@@ -142,9 +150,7 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
         )
     policy_ids = [str(row.get("policy_id") or "") for row in policies]
     checkpoint_digests = [
-        digest
-        for row in policies
-        if (digest := _normalized_digest(row.get("checkpoint_sha256")))
+        digest for row in policies if (digest := _normalized_digest(row.get("checkpoint_sha256")))
     ]
     if len(set(policy_ids)) < MINIMUM_DECISION_POLICY_COUNT:
         blockers.append(f"independent_policy_count_lt_{MINIMUM_DECISION_POLICY_COUNT}")
@@ -157,11 +163,19 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
     if design.get("policy_specific_scenario_changes_prohibited") is not True:
         blockers.append("policy_specific_scenario_changes_not_prohibited")
 
-    rows = _rows(design.get("rows"))
+    rows, rows_payload_valid = _strict_rows(design.get("rows"))
+    if not rows_payload_valid:
+        blockers.append("evaluation_rows_payload_invalid")
     cells_by_policy: dict[str, set[tuple[str, str, str, int]]] = defaultdict(set)
     replicate_seeds: dict[tuple[str, str, str], dict[str, set[int]]] = defaultdict(
         lambda: defaultdict(set)
     )
+    evaluator_profile_ids: set[str] = set()
+    evaluator_families: set[str] = set()
+    evaluator_backend_ids: set[str] = set()
+    evaluator_model_families: set[str] = set()
+    seen_policy_cells: set[tuple[str, tuple[str, str, str, int]]] = set()
+    matched_bindings: dict[tuple[str, str, str, int], dict[str, dict[str, str]]] = defaultdict(dict)
     forbidden_flags = (
         "missing_action",
         "zero_action_substitute_used",
@@ -179,32 +193,46 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
         if key is None:
             blockers.append(f"evaluation_row_cell_identity_invalid:{index}")
             continue
+        policy_cell = (policy_id, key)
+        if policy_cell in seen_policy_cells:
+            blockers.append(f"duplicate_policy_evaluation_cell:{index}")
+        seen_policy_cells.add(policy_cell)
         for flag in forbidden_flags:
             if row.get(flag) is not False:
                 blockers.append(f"decision_grade_row_forbidden_or_unproven:{index}:{flag}")
-        for field in (
-            "observation_sha256",
-            "commanded_action_chunk_sha256",
-            "policy_runtime_output_sha256",
-            "initial_condition_sha256",
-            "skeleton_conditioning_sha256",
-            "oscar_checkpoint_sha256",
-            "model_output_sha256",
-            "provider_execution_sha256",
-            "next_policy_query_sha256",
-            "action_control_suite_sha256",
-        ):
-            if not _digest(row.get(field)):
-                blockers.append(f"evaluation_row_digest_missing_or_invalid:{index}:{field}")
-        if row.get("evaluator_profile_id") != "oscar_official_v2":
-            blockers.append(f"evaluation_row_oscar_profile_not_proven:{index}")
-        if row.get("fresh_official_oscar_model_execution_proven") is not True:
-            blockers.append(f"evaluation_row_fresh_oscar_execution_not_proven:{index}")
-        run_steps = row.get("fresh_oscar_provider_model_run_steps")
-        if isinstance(run_steps, bool) or not isinstance(run_steps, int) or run_steps <= 0:
-            blockers.append(f"evaluation_row_fresh_oscar_model_steps_invalid:{index}")
-        if row.get("action_control_suite_status") != "passed":
-            blockers.append(f"evaluation_row_action_control_suite_not_passed:{index}")
+        evaluator_validation = validate_evaluator_evidence(row)
+        blockers.extend(
+            f"evaluation_row_evaluator_evidence:{index}:{blocker}"
+            for blocker in evaluator_validation["blockers"]
+        )
+        evaluator_profile_id = evaluator_validation.get("evaluator_profile_id")
+        evaluator_family = evaluator_validation.get("evaluator_family")
+        evaluator_backend_id = evaluator_validation.get("evaluator_backend_id")
+        evaluator_model_family = evaluator_validation.get("evaluator_model_family")
+        if evaluator_profile_id:
+            evaluator_profile_ids.add(str(evaluator_profile_id))
+        if evaluator_family:
+            evaluator_families.add(str(evaluator_family))
+        if evaluator_backend_id:
+            evaluator_backend_ids.add(str(evaluator_backend_id))
+        if evaluator_model_family:
+            evaluator_model_families.add(str(evaluator_model_family))
+        matched_bindings[key][policy_id] = {
+            "evaluator_profile_id": str(evaluator_profile_id or ""),
+            "evaluator_backend_id": str(evaluator_backend_id or ""),
+            "evaluator_model_family": str(evaluator_model_family or ""),
+            **{
+                field: _normalized_digest(row.get(field))
+                for field in (
+                    "site_task_condition_seed_manifest_sha256",
+                    "initial_condition_sha256",
+                    "observation_sha256",
+                    "evaluator_profile_manifest_sha256",
+                    "evaluator_backend_manifest_sha256",
+                    "evaluator_checkpoint_sha256",
+                )
+            },
+        }
         cells_by_policy[policy_id].add(key)
         site_id, task_id, condition_id, seed = key
         replicate_seeds[(site_id, task_id, condition_id)][policy_id].add(seed)
@@ -228,24 +256,46 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
             blockers.append("matched_replicate_count_below_minimum:" + ":".join(cell))
         if seed_sets and any(seeds != seed_sets[0] for seeds in seed_sets[1:]):
             blockers.append("matched_replicate_seed_sets_differ:" + ":".join(cell))
+    for cell, policy_bindings in matched_bindings.items():
+        if set(policy_bindings) != registered_policy_ids:
+            continue
+        for field in (
+            "evaluator_profile_id",
+            "evaluator_backend_id",
+            "evaluator_model_family",
+            "site_task_condition_seed_manifest_sha256",
+            "initial_condition_sha256",
+            "observation_sha256",
+            "evaluator_profile_manifest_sha256",
+            "evaluator_backend_manifest_sha256",
+            "evaluator_checkpoint_sha256",
+        ):
+            values = {binding[field] for binding in policy_bindings.values()}
+            if len(values) != 1:
+                blockers.append(
+                    "matched_cell_binding_mismatch:"
+                    + ":".join(str(item) for item in cell)
+                    + f":{field}"
+                )
 
     direct_sc3_claim_requested = design.get("direct_sc3_comparison_requested") is True
     direct_sc3_target_met = bool(
         direct_sc3_claim_requested
         and replicate_seeds
         and all(
-            len(seeds_by_policy.get(policy_id, set()))
-            in SC3_DIRECT_COMPARISON_REPLICATE_TARGET
+            len(seeds_by_policy.get(policy_id, set())) in SC3_DIRECT_COMPARISON_REPLICATE_TARGET
             for seeds_by_policy in replicate_seeds.values()
             for policy_id in policy_ids
         )
     )
     if direct_sc3_claim_requested and not direct_sc3_target_met:
         blockers.append("direct_sc3_comparison_requires_36_or_37_matched_replicates")
+    if direct_sc3_claim_requested and evaluator_profile_ids != {"sc3_eval_v3"}:
+        blockers.append("direct_sc3_comparison_requires_sc3_evaluator_profile")
 
     blockers = sorted(set(blockers))
     return {
-        "schema_version": "policy_evaluation_design_validation.v1",
+        "schema_version": "policy_evaluation_design_validation.v2",
         "status": "decision_grade" if not blockers else "blocked",
         "decision_grade_eligible": not blockers,
         "policy_count": len(set(policy_ids)),
@@ -260,9 +310,16 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
             row.get("qualification_fixture") == "g1_kitchen" for row in policies
         ),
         "g1_kitchen_is_product_architecture": False,
+        "evaluator_profile_ids": sorted(evaluator_profile_ids),
+        "evaluator_families": sorted(evaluator_families),
+        "evaluator_backend_ids": sorted(evaluator_backend_ids),
+        "evaluator_model_families": sorted(evaluator_model_families),
         "blockers": blockers,
         "claim_boundary": {
             "policy_family_provider_and_embodiment_neutral": True,
+            "evaluator_profile_is_versioned_and_replaceable": True,
+            "evaluator_protocol_is_separate_from_model_backend": True,
+            "oscar_and_sc3_requirements_apply_only_to_selected_profiles": True,
             "fallback_fixture_and_proxy_rows_are_not_decision_grade": True,
             "matched_cells_do_not_by_themselves_prove_real_world_ordering": True,
         },

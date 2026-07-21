@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 import re
@@ -9,13 +11,14 @@ from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .evaluator_evidence_profiles import required_evaluator_evidence_digest_fields
 from .policy_evaluation_contracts import (
     MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION,
     validate_policy_evaluation_design,
 )
 
 
-SCHEMA_VERSION = "decision_grade_ranking_request.v1"
+SCHEMA_VERSION = "decision_grade_ranking_request.v2"
 BOOTSTRAP_REPLICATES = 10_000
 BOOTSTRAP_METHOD = "matched_cell_policy_criterion_cluster_percentile.v1"
 _SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
@@ -25,6 +28,14 @@ def _rows(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
     return [dict(row) for row in value if isinstance(row, Mapping)]
+
+
+def _strict_rows(value: Any) -> tuple[list[dict[str, Any]], bool]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return [], False
+    if any(not isinstance(row, Mapping) for row in value):
+        return [], False
+    return [dict(row) for row in value], True
 
 
 def _number(value: Any) -> float | None:
@@ -39,6 +50,19 @@ def _number(value: Any) -> float | None:
 
 def _digest(value: Any) -> bool:
     return bool(_SHA256_RE.fullmatch(str(value or "").strip().lower()))
+
+
+def _normalized_digest(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    return digest.removeprefix("sha256:") if _SHA256_RE.fullmatch(digest) else ""
+
+
+def _canonical_payload_sha256(value: Any) -> str:
+    try:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _percentile(values: Sequence[float], fraction: float) -> float | None:
@@ -159,7 +183,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
     if request.get("label_authority_independent_of_policy_and_model") is not True:
         blockers.append("label_authority_not_independent")
 
-    results = _rows(request.get("episode_results"))
+    results, results_payload_valid = _strict_rows(request.get("episode_results"))
+    if not results_payload_valid:
+        blockers.append("episode_results_payload_invalid")
     design_rows_by_key = {
         (
             str(row.get("policy_id") or ""),
@@ -174,9 +200,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
     observed_result_keys: set[tuple[Any, ...]] = set()
     outcomes_by_policy: dict[str, list[float | None]] = defaultdict(list)
     outcomes_by_policy_cell: dict[str, dict[tuple[Any, ...], float | None]] = defaultdict(dict)
-    outcomes_by_policy_condition: dict[
-        tuple[str, str, str, str], list[float | None]
-    ] = defaultdict(list)
+    outcomes_by_policy_condition: dict[tuple[str, str, str, str], list[float | None]] = defaultdict(
+        list
+    )
     failures_by_policy: dict[str, list[str]] = defaultdict(list)
     for row_index, row in enumerate(results):
         policy_id = str(row.get("policy_id") or "")
@@ -198,37 +224,74 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
             blockers.append(f"episode_result_evidence_digest_missing:{row_index}")
         if row.get("artifact_freshness_status") != "current":
             blockers.append(f"episode_result_artifact_not_current:{row_index}")
-        if row.get("fresh_official_oscar_model_execution_proven") is not True:
-            blockers.append(f"episode_result_fresh_oscar_execution_not_proven:{row_index}")
+        if row.get("fresh_evaluator_model_execution_proven") is not True:
+            blockers.append(f"episode_result_fresh_evaluator_execution_not_proven:{row_index}")
+        fresh_evaluator_model_run_steps = row.get("fresh_evaluator_model_run_steps")
+        if (
+            isinstance(fresh_evaluator_model_run_steps, bool)
+            or not isinstance(fresh_evaluator_model_run_steps, int)
+            or fresh_evaluator_model_run_steps <= 0
+        ):
+            blockers.append(f"episode_result_fresh_evaluator_steps_invalid:{row_index}")
         if row.get("fixture_or_proxy_model_output_used") is not False:
             blockers.append(f"episode_result_fixture_or_proxy_not_blocked:{row_index}")
         if row.get("fallback_policy_used") is not False:
             blockers.append(f"episode_result_fallback_policy_not_blocked:{row_index}")
         design_row = design_rows_by_key.get(result_key, {})
-        for field in (
-            "commanded_action_chunk_sha256",
-            "model_output_sha256",
-            "next_policy_query_sha256",
-            "action_control_suite_sha256",
+        if (
+            isinstance(fresh_evaluator_model_run_steps, int)
+            and not isinstance(fresh_evaluator_model_run_steps, bool)
+            and fresh_evaluator_model_run_steps > 0
+            and fresh_evaluator_model_run_steps != design_row.get("fresh_evaluator_model_run_steps")
         ):
+            blockers.append(f"episode_result_fresh_evaluator_steps_mismatch:{row_index}")
+        evaluator_profile_id = str(row.get("evaluator_profile_id") or "").strip()
+        design_evaluator_profile_id = str(design_row.get("evaluator_profile_id") or "").strip()
+        if not evaluator_profile_id:
+            blockers.append(f"episode_result_evaluator_profile_missing:{row_index}")
+        elif evaluator_profile_id != design_evaluator_profile_id:
+            blockers.append(f"episode_result_evaluator_profile_mismatch:{row_index}")
+        design_backend = (
+            design_row.get("evaluator_backend")
+            if isinstance(design_row.get("evaluator_backend"), Mapping)
+            else {}
+        )
+        evaluator_backend_id = str(row.get("evaluator_backend_id") or "").strip()
+        design_evaluator_backend_id = str(design_backend.get("backend_id") or "").strip()
+        if not evaluator_backend_id:
+            blockers.append(f"episode_result_evaluator_backend_missing:{row_index}")
+        elif evaluator_backend_id != design_evaluator_backend_id:
+            blockers.append(f"episode_result_evaluator_backend_mismatch:{row_index}")
+        if row.get("authoritative_manifest_status") != "completed":
+            blockers.append(f"episode_result_authoritative_manifest_not_completed:{row_index}")
+        if row.get("infrastructure_status") != "succeeded":
+            blockers.append(f"episode_result_infrastructure_not_succeeded:{row_index}")
+        evaluator_outcome_status = row.get("evaluator_outcome_status")
+        if evaluator_outcome_status not in {"valid", "abstained"}:
+            blockers.append(f"episode_result_evaluator_outcome_invalid:{row_index}")
+        elif evaluator_outcome_status != design_row.get("evaluator_outcome_status"):
+            blockers.append(f"episode_result_evaluator_outcome_mismatch:{row_index}")
+        for field in required_evaluator_evidence_digest_fields(evaluator_profile_id):
             if not _digest(row.get(field)):
                 blockers.append(f"episode_result_chain_digest_missing:{row_index}:{field}")
-            elif str(row.get(field)).removeprefix("sha256:") != str(
-                design_row.get(field) or ""
-            ).removeprefix("sha256:"):
+            elif _normalized_digest(row.get(field)) != _normalized_digest(design_row.get(field)):
                 blockers.append(f"episode_result_chain_digest_mismatch:{row_index}:{field}")
-        criteria = _rows(row.get("criterion_results"))
-        if not criteria:
+        criteria, criteria_payload_valid = _strict_rows(row.get("criterion_results"))
+        if not criteria_payload_valid:
+            blockers.append(f"criterion_results_payload_invalid:{row_index}")
+        elif not criteria:
             blockers.append(f"episode_result_criteria_missing:{row_index}")
+        elif _normalized_digest(row.get("criterion_result_sha256")) != (
+            _canonical_payload_sha256(criteria)
+        ):
+            blockers.append(f"criterion_result_payload_digest_mismatch:{row_index}")
         episode_values: list[float] = []
-        episode_abstained = False
+        episode_abstained = evaluator_outcome_status == "abstained"
         for criterion_index, criterion in enumerate(criteria):
             outcome = str(criterion.get("outcome") or "")
             confidence = _number(criterion.get("confidence"))
             if outcome not in {"success", "failure", "abstain", "inconclusive"}:
-                blockers.append(
-                    f"criterion_outcome_invalid:{row_index}:{criterion_index}"
-                )
+                blockers.append(f"criterion_outcome_invalid:{row_index}:{criterion_index}")
                 continue
             if confidence is None or not 0.0 <= confidence <= 1.0:
                 blockers.append(
@@ -242,21 +305,39 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
                 blockers.append(
                     f"criterion_label_not_blinded_randomized:{row_index}:{criterion_index}"
                 )
-            evidence_refs = _rows(criterion.get("evidence_refs"))
-            if not evidence_refs:
+            evidence_refs, evidence_payload_valid = _strict_rows(criterion.get("evidence_refs"))
+            if not evidence_payload_valid:
+                blockers.append(f"criterion_evidence_payload_invalid:{row_index}:{criterion_index}")
+            elif not evidence_refs:
                 blockers.append(f"criterion_evidence_missing:{row_index}:{criterion_index}")
             elif any(not _digest(ref.get("sha256")) for ref in evidence_refs):
-                blockers.append(
-                    f"criterion_evidence_digest_invalid:{row_index}:{criterion_index}"
-                )
+                blockers.append(f"criterion_evidence_digest_invalid:{row_index}:{criterion_index}")
             if outcome in {"abstain", "inconclusive"}:
                 episode_abstained = True
             elif outcome == "success":
+                if evaluator_outcome_status == "abstained":
+                    blockers.append(
+                        f"abstained_evaluator_cannot_emit_decided_criterion:{row_index}:{criterion_index}"
+                    )
                 episode_values.append(1.0)
             else:
+                if evaluator_outcome_status == "abstained":
+                    blockers.append(
+                        f"abstained_evaluator_cannot_emit_decided_criterion:{row_index}:{criterion_index}"
+                    )
                 episode_values.append(0.0)
-                taxonomy = [str(item) for item in criterion.get("failure_taxonomy", []) or []]
-                if not taxonomy:
+                raw_taxonomy = criterion.get("failure_taxonomy")
+                taxonomy_payload_valid = bool(
+                    isinstance(raw_taxonomy, Sequence)
+                    and not isinstance(raw_taxonomy, (str, bytes, bytearray))
+                    and all(isinstance(item, str) and item.strip() for item in raw_taxonomy)
+                )
+                taxonomy = [item.strip() for item in raw_taxonomy] if taxonomy_payload_valid else []
+                if not taxonomy_payload_valid:
+                    blockers.append(
+                        f"criterion_failure_taxonomy_payload_invalid:{row_index}:{criterion_index}"
+                    )
+                elif not taxonomy:
                     blockers.append(
                         f"criterion_failure_taxonomy_missing:{row_index}:{criterion_index}"
                     )
@@ -285,18 +366,38 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
                 + f":{decided_count}<{MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION}"
             )
 
-    preferences = _rows(request.get("pairwise_preferences"))
+    preferences, preferences_payload_valid = _strict_rows(request.get("pairwise_preferences"))
+    if not preferences_payload_valid:
+        blockers.append("pairwise_preferences_payload_invalid")
+    normalized_preferences: list[dict[str, Any]] = []
     for index, row in enumerate(preferences):
+        left_policy_id = str(row.get("policy_a") or "").strip()
+        right_policy_id = str(row.get("policy_b") or "").strip()
+        normalized_preferences.append(
+            {
+                **row,
+                "policy_a": left_policy_id,
+                "policy_b": right_policy_id,
+            }
+        )
+        if (
+            left_policy_id not in policy_ids
+            or right_policy_id not in policy_ids
+            or left_policy_id == right_policy_id
+        ):
+            blockers.append(f"pairwise_policy_identity_invalid:{index}")
         if row.get("label_blinded_and_randomized") is not True:
             blockers.append(f"pairwise_label_not_blinded_randomized:{index}")
         if row.get("outcome") not in {"policy_a", "policy_b", "tie", "inconclusive"}:
             blockers.append(f"pairwise_outcome_invalid:{index}")
-        evidence_refs = _rows(row.get("evidence_refs"))
-        if not evidence_refs:
+        evidence_refs, evidence_payload_valid = _strict_rows(row.get("evidence_refs"))
+        if not evidence_payload_valid:
+            blockers.append(f"pairwise_evidence_payload_invalid:{index}")
+        elif not evidence_refs:
             blockers.append(f"pairwise_evidence_missing:{index}")
         elif any(not _digest(ref.get("sha256")) for ref in evidence_refs):
             blockers.append(f"pairwise_evidence_digest_invalid:{index}")
-    graph_connected = _connected(policy_ids, preferences)
+    graph_connected = _connected(policy_ids, normalized_preferences)
     if not graph_connected:
         blockers.append("bradley_terry_preference_graph_not_connected")
 
@@ -350,7 +451,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     required_ood_axes = {"site", "task", "embodiment", "viewpoint", "appearance"}
-    ood_rows = _rows(request.get("ood_axis_results"))
+    ood_rows, ood_payload_valid = _strict_rows(request.get("ood_axis_results"))
+    if not ood_payload_valid:
+        blockers.append("ood_axis_results_payload_invalid")
     observed_ood_axes = {str(row.get("axis") or "") for row in ood_rows}
     if observed_ood_axes != required_ood_axes:
         blockers.append("ood_axis_results_missing_or_mismatched")
@@ -381,19 +484,25 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         if not _digest(row.get("split_manifest_sha256")):
             blockers.append(f"ood_axis_split_manifest_digest_missing:{index}")
 
-    anchor_rows = _rows(request.get("accepted_external_anchor_rows"))
+    anchor_rows, anchor_payload_valid = _strict_rows(
+        request.get("accepted_external_anchor_rows", [])
+    )
+    if not anchor_payload_valid:
+        blockers.append("accepted_external_anchor_rows_payload_invalid")
     anchor_status = "correlation_not_measured"
     if anchor_rows:
         blockers.append("accepted_anchor_rows_require_frozen_calibration_recomputation")
     blockers = sorted(set(blockers))
     return {
-        "schema_version": "decision_grade_ranking.v1",
+        "schema_version": "decision_grade_ranking.v2",
         "status": "decision_grade" if not blockers else "blocked",
         "decision_grade": not blockers,
         "policy_scorecards": score_rows,
         "bradley_terry": {
             "graph_connected": graph_connected,
-            "ranking": _bradley_terry(policy_ids, preferences) if graph_connected else [],
+            "ranking": _bradley_terry(policy_ids, normalized_preferences)
+            if graph_connected
+            else [],
             "ties_retained": True,
         },
         "bootstrap": {
@@ -409,6 +518,8 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         "blockers": blockers,
         "claim_boundary": {
             "simulator_ranking_is_not_real_world_ordering": True,
+            "evaluator_profile_is_not_compute_provider_identity": True,
+            "oscar_and_sc3_are_optional_versioned_evaluator_profiles": True,
             "paper_metrics_are_never_inherited": True,
             "correlation_requires_independently_accepted_anchor_rows": True,
         },

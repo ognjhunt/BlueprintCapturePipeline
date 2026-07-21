@@ -38,6 +38,7 @@ EVIDENCE_OVERRIDES: dict[str, list[tuple[str, str]]] = {
         ("tests/test_oscar_isaac_closed_loop_eval.py", "test_contract"),
     ],
     "SC3-16-AC-01": [
+        ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
         ("src/blueprint_pipeline/policy_evaluation_contracts.py", "implementation"),
         ("src/blueprint_pipeline/decision_grade_ranking.py", "implementation"),
         ("tests/test_policy_evaluation_contracts.py", "test_contract"),
@@ -71,18 +72,26 @@ EVIDENCE_EXTENSIONS: dict[str, list[tuple[str, str]]] = {
         ("tests/test_site_reference_database_contract.py", "test_contract"),
     ],
     "SC3-08-AC-01": [
+        ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
         ("src/blueprint_pipeline/oscar_action_control_contracts.py", "implementation"),
         ("src/blueprint_pipeline/policy_evaluation_contracts.py", "implementation"),
         ("tests/test_oscar_action_control_contracts.py", "test_contract"),
         ("tests/test_policy_evaluation_contracts.py", "test_contract"),
     ],
     "SC3-12-AC-01": [
+        ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
         ("src/blueprint_pipeline/decision_grade_ranking.py", "implementation"),
         ("tests/test_policy_evaluation_contracts.py", "test_contract"),
     ],
     "SC3-20-AC-01": [
         ("src/blueprint_pipeline/decision_grade_ranking.py", "implementation"),
         ("tests/test_policy_evaluation_contracts.py", "test_contract"),
+    ],
+    "SC3-21-AC-01": [
+        ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
+    ],
+    "REL-14-AC-01": [
+        ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
     ],
     "SC3-10-AC-01": [],
     "SC3-11-AC-01": [],
