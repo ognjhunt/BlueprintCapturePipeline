@@ -12,6 +12,14 @@ from typing import Any, Mapping
 
 RELEASE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_release_binding.v1"
 LAUNCH_REBIND_SCHEMA_VERSION = "single_g1_kitchen_qualification_launch_rebind.v1"
+_LAUNCH_ONLY_REBIND_FIELDS = frozenset(
+    {
+        "derived_launch_plan_sha256",
+        "derived_attempt_manifest_sha256",
+        "runtime_attempt_manifest_rebound",
+        "raw_source_bundle_modified",
+    }
+)
 EMPTY_PATCH_SHA256 = hashlib.sha256(b"").hexdigest()
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _DIGEST_REF_RE = re.compile(r"[^\s@]+@sha256:([0-9a-f]{64})")
@@ -54,6 +62,35 @@ def release_binding_record_blockers(value: object) -> list[str]:
     if binding.get("thin_release_contract_status") != "passed":
         blockers.append("thin_release_status")
     return sorted(set(blockers))
+
+
+def embedded_launch_rebind(value: object) -> dict[str, Any]:
+    binding = dict(value) if isinstance(value, Mapping) else {}
+    return {
+        key: item for key, item in binding.items() if key not in _LAUNCH_ONLY_REBIND_FIELDS
+    }
+
+
+def collected_attempt_release_blocker(
+    attempt: Mapping[str, Any], session: Mapping[str, Any]
+) -> str | None:
+    release = dict(session.get("release_binding") or {})
+    expected = {
+        "source_commit": session.get("source_commit"),
+        "source_dirty_patch_sha256": release.get("source_patch_sha256"),
+        "image_digest": session.get("image_digest"),
+        "qualification_release_rebind": embedded_launch_rebind(
+            session.get("qualification_launch_rebind")
+        ),
+    }
+    mismatches = sorted(
+        key for key, value in expected.items() if not value or attempt.get(key) != value
+    )
+    return (
+        "qualification_attempt_input_release_binding_mismatch:" + ",".join(mismatches)
+        if mismatches
+        else None
+    )
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:

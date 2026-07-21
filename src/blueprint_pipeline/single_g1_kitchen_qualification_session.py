@@ -101,6 +101,7 @@ from .single_g1_kitchen_qualification_admission import (
 from .single_g1_kitchen_qualification_contract import (
     bind_inputs_to_release,
     build_release_binding as _release_binding,
+    collected_attempt_release_blocker,
     qualification_gate_matrix,
     release_binding_record_blockers,
     session_claim_boundary as _session_claim_boundary,
@@ -3327,6 +3328,9 @@ def _validate_terminal_collection(
                 "qualification_attempt_input_binding_mismatch:"
                 + ",".join(sorted(mismatches))
             )
+        release_blocker = collected_attempt_release_blocker(attempt_input, manifest)
+        if release_blocker:
+            blockers.append(release_blocker)
 
     if expected_trace_count > 0:
         try:

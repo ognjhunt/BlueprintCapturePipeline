@@ -18,6 +18,7 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import single_g1_kitchen_qualification_session as qualification
 from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
+from blueprint_pipeline.single_g1_kitchen_qualification_contract import embedded_launch_rebind
 
 
 TEST_SOURCE_COMMIT = "a" * 40
@@ -220,6 +221,12 @@ def _bootstrap_metadata() -> dict:
 def _live_manifest(tmp_path: Path) -> Path:
     prefix = qualification.NAME_PREFIX_ROOT + "0123456789"
     nonce = "single-g1-kitchen-qualification-0123456789"
+    release_binding = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )[0]
+    _, launch_rebind = qualification.bind_inputs_to_release(
+        _minimal_inputs(), release_binding
+    )
     manifest = qualification._manifest_base(
         root=tmp_path,
         resource_name=prefix + "-pod",
@@ -230,9 +237,8 @@ def _live_manifest(tmp_path: Path) -> Path:
         image_ref=TEST_IMAGE_REF,
         image_digest=TEST_IMAGE_DIGEST,
         source_commit=TEST_SOURCE_COMMIT,
-        release_binding=qualification._release_binding(
-            _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
-        )[0],
+        release_binding=release_binding,
+        qualification_launch_rebind=launch_rebind,
     )
     manifest.update(
         {
@@ -313,6 +319,7 @@ def _qualification_output_zip(
     phase: str,
     sequence: int = 1,
     successful_terminal: bool = False,
+    attempt_input_overrides: dict[str, object] | None = None,
 ) -> bytes:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     attempt_slug = f"attempt_{sequence:04d}"
@@ -359,9 +366,14 @@ def _qualification_output_zip(
             "qualification_attempt_nonce_sha256": hashlib.sha256(
                 nonce.encode()
             ).hexdigest(),
-            "source_commit": "b" * 40,
-            "source_dirty_patch_sha256": "c" * 64,
+            "source_commit": manifest["source_commit"],
+            "source_dirty_patch_sha256": manifest["release_binding"][
+                "source_patch_sha256"
+            ],
             "image_digest": manifest["image_digest"],
+            "qualification_release_rebind": embedded_launch_rebind(
+                manifest["qualification_launch_rebind"]
+            ),
             "selected_task_id": "microwave_door",
             "artifacts": {
                 "bundle": {"sha256": manifest["bundle_sha256"]},
@@ -370,6 +382,7 @@ def _qualification_output_zip(
                 "task_success_contract": {"sha256": digest},
             },
         }
+        attempt_input.update(attempt_input_overrides or {})
         files["closed_loop_out/attempt_input_manifest.json"] = (
             json.dumps(attempt_input).encode()
         )
@@ -1667,6 +1680,39 @@ def test_collect_terminal_success_validates_semantics_and_all_review_media(
     persisted = json.loads(manifest_path.read_text())
     assert persisted["latest_attempt"]["collection_status"] == (
         "collected_terminal_passed"
+    )
+
+
+def test_collect_terminal_rejects_self_consistent_nonrelease_attempt_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(manifest_path, remote_process_state="stopped")
+    _write_output_get_url(tmp_path)
+    archive = _qualification_output_zip(
+        manifest_path,
+        phase="runner_done",
+        successful_terminal=True,
+        attempt_input_overrides={"source_commit": "b" * 40},
+    )
+    monkeypatch.setattr(
+        qualification,
+        "_download_provider_output_archive",
+        lambda _url: archive,
+    )
+
+    result = qualification.run_qualification_session(
+        action="collect",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "collect.json",
+        execute=True,
+    )
+
+    assert result["status"] == "episode_collected_blocked_continuing_spend"
+    assert any(
+        blocker
+        == "qualification_attempt_input_release_binding_mismatch:source_commit"
+        for blocker in result["blockers"]
     )
 
 
