@@ -600,6 +600,21 @@ def test_blocked_manifest_does_not_get_overridden_by_model_or_media_success() ->
     assert result["status"] == "blocked"
 
 
+def test_runtime_normalized_row_must_name_the_outer_envelope_cell() -> None:
+    request = _qualification_request()
+    request["runtime_evidence_requests"][0]["normalization_request"]["evaluator_row"][
+        "policy_id"
+    ] = "policy-1"
+
+    result = build_evaluator_qualification_workflow(request)
+
+    assert "runtime_normalized_cell_identity_mismatch:0" in result["lifecycle"][
+        "model_execution"
+    ]["blockers"]
+    assert result["lifecycle"]["model_execution"]["status"] == "blocked"
+    assert result["status"] == "blocked"
+
+
 def test_valid_scientific_ranking_stays_separate_from_billing_and_teardown() -> None:
     request = _qualification_request()
     request["teardown_evidence"]["exact_attempt_active_resource_count"] = 1
@@ -650,6 +665,26 @@ def test_workflow_rejects_three_site_smoke_fallback_and_sensitive_input() -> Non
     assert result["lifecycle"]["request_acceptance"]["status"] == "blocked"
     assert result["sensitive_paths_omitted"] == 1
     assert "must-not-be-retained" not in json.dumps(result)
+
+
+def test_workflow_rejects_separator_and_prefix_variants_of_sensitive_keys() -> None:
+    request = _qualification_request()
+    request["metadata"] = {
+        "client_secret": "secret-value",
+        "refresh_token": "refresh-value",
+        "api-token": "api-value",
+        "private-key": "private-value",
+    }
+
+    result = build_evaluator_qualification_workflow(request)
+
+    assert result["lifecycle"]["request_acceptance"]["status"] == "blocked"
+    assert result["sensitive_paths_omitted"] == 4
+    serialized = json.dumps(result)
+    assert all(
+        value not in serialized
+        for value in ("secret-value", "refresh-value", "api-value", "private-value")
+    )
 
 
 def test_release_split_container_model_set_and_delivery_bindings_fail_closed() -> None:

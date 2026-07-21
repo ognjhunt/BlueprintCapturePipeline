@@ -34,7 +34,7 @@ MINIMUM_QUALIFICATION_SITE_COUNT = 4
 MAX_REQUEST_BYTES = 256 * 1024 * 1024
 _SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-_SENSITIVE_KEYS = {
+_SENSITIVE_KEY_MARKERS = (
     "api_key",
     "api_token",
     "access_token",
@@ -48,7 +48,7 @@ _SENSITIVE_KEYS = {
     "secret",
     "signed_url",
     "token",
-}
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -120,9 +120,11 @@ def _sensitive_paths(value: Any, path: str = "$") -> list[str]:
         for raw_key, item in value.items():
             key = str(raw_key)
             child = f"{path}.{key}"
-            if key.strip().lower() in _SENSITIVE_KEYS:
+            normalized_key = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+            if any(marker in normalized_key for marker in _SENSITIVE_KEY_MARKERS):
                 paths.append(child)
-            paths.extend(_sensitive_paths(item, child))
+            else:
+                paths.extend(_sensitive_paths(item, child))
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, item in enumerate(value):
             paths.extend(_sensitive_paths(item, f"{path}[{index}]"))
@@ -335,6 +337,8 @@ def _validate_runtime_rows(
         blockers.extend(f"runtime:{index}:{item}" for item in normalized["blockers"])
         candidate = normalized.get("evaluator_row")
         candidate_row = dict(candidate) if isinstance(candidate, Mapping) else {}
+        if _cell_key(candidate_row) != key:
+            blockers.append(f"runtime_normalized_cell_identity_mismatch:{index}")
         expected = design_by_key.get(key, {})
         profile_id = str(expected.get("evaluator_profile_id") or "")
         for field in (
