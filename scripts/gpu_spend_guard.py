@@ -38,6 +38,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -816,14 +817,101 @@ OWNER_ID_FILENAMES = (
     "started_gcp_instance_name.txt",
     "started_aws_instance_id.txt",
 )
+MAX_OWNER_ID_BYTES = 1024
+MAX_QUALIFICATION_MANIFEST_BYTES = 2 * 1024 * 1024
 
 
-def _iter_owner_id_files(
+@dataclass(frozen=True)
+class _OwnerBinding:
+    id_path: Path
+    launched_id: str
+    qualification_manifest_path: Path | None = None
+
+
+def _read_bounded_regular_text(path: Path, *, max_bytes: int) -> str | None:
+    """Read a small regular file without following a symlink or device node."""
+
+    try:
+        before = path.lstat()
+    except OSError:
+        return None
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_size <= 0
+        or before.st_size > max_bytes
+    ):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size <= 0
+            or opened.st_size > max_bytes
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            return None
+        payload = os.read(descriptor, max_bytes + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    if not payload or len(payload) > max_bytes:
+        return None
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError:
+        return None
+
+
+def _validated_qualification_manifest(
+    id_path: Path, launched_id: str
+) -> Path | None:
+    """Return an adjacent, fully bound live Vast qualification manifest."""
+
+    # Import lazily so ordinary render-owner scans do not load the qualification
+    # runtime and its provider adapters.
+    from blueprint_pipeline.single_g1_kitchen_qualification_session import (
+        _load_private_manifest,
+    )
+
+    for manifest_path in sorted(id_path.parent.glob("*.json")):
+        try:
+            metadata = manifest_path.lstat()
+        except OSError:
+            continue
+        if (
+            manifest_path.is_symlink()
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size <= 0
+            or metadata.st_size > MAX_QUALIFICATION_MANIFEST_BYTES
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            continue
+        try:
+            source, manifest = _load_private_manifest(manifest_path)
+        except (OSError, ValueError):
+            continue
+        if (
+            str(manifest.get("instance_id") or "") == launched_id
+            and manifest.get("continuing_spend") is True
+        ):
+            return source
+    return None
+
+
+def _iter_owner_bindings(
     output_roots: Iterable[Path | str], filename: str
-) -> list[tuple[Path, str]]:
-    """Return validated provider-owner id files under configured output roots."""
-    found: list[tuple[Path, str]] = []
-    seen: set[tuple[str, str]] = set()
+) -> list[_OwnerBinding]:
+    """Return validated provider-owner bindings under configured output roots."""
+
+    found: list[_OwnerBinding] = []
+    seen: set[tuple[str, str, str]] = set()
     for root in output_roots:
         base = Path(root).expanduser()
         if not base.is_dir():
@@ -832,52 +920,46 @@ def _iter_owner_id_files(
         if filename == "started_vast_instance_id.txt":
             candidates.extend(base.glob(f"**/{filename}"))
         for path in candidates:
-            try:
-                launched_id = path.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
+            payload = _read_bounded_regular_text(path, max_bytes=MAX_OWNER_ID_BYTES)
+            launched_id = str(payload or "").strip()
             if not launched_id:
                 continue
             render_owner = path.parent.name == "object_store_real_run" and (
                 "pipeline" in path.parts
             )
-            qualification_owner = False
-            if (
-                filename == "started_vast_instance_id.txt"
-                and not path.is_symlink()
-            ):
-                for manifest_path in path.parent.glob("*.json"):
-                    try:
-                        manifest_stat = manifest_path.lstat()
-                        if (
-                            manifest_path.is_symlink()
-                            or manifest_stat.st_size > 1024 * 1024
-                            or stat.S_IMODE(manifest_stat.st_mode) != 0o600
-                        ):
-                            continue
-                        manifest = json.loads(
-                            manifest_path.read_text(encoding="utf-8")
-                        )
-                    except (OSError, UnicodeError, json.JSONDecodeError):
-                        continue
-                    qualification_owner = bool(
-                        isinstance(manifest, Mapping)
-                        and manifest.get("schema_version")
-                        == "single_g1_kitchen_qualification_session.v1"
-                        and manifest.get("provider") == "vast"
-                        and str(manifest.get("instance_id") or "") == launched_id
-                        and manifest.get("continuing_spend") is True
-                    )
-                    if qualification_owner:
-                        break
-            if not render_owner and not qualification_owner:
+            qualification_manifest_path = None
+            if filename == "started_vast_instance_id.txt" and not render_owner:
+                qualification_manifest_path = _validated_qualification_manifest(
+                    path, launched_id
+                )
+            if not render_owner and qualification_manifest_path is None:
                 continue
-            dedupe_key = (str(path), launched_id)
+            dedupe_key = (
+                str(path),
+                launched_id,
+                str(qualification_manifest_path or ""),
+            )
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
-            found.append((path, launched_id))
+            found.append(
+                _OwnerBinding(
+                    id_path=path,
+                    launched_id=launched_id,
+                    qualification_manifest_path=qualification_manifest_path,
+                )
+            )
     return found
+
+
+def _iter_owner_id_files(
+    output_roots: Iterable[Path | str], filename: str
+) -> list[tuple[Path, str]]:
+    """Return validated provider-owner id files under configured output roots."""
+    return [
+        (binding.id_path, binding.launched_id)
+        for binding in _iter_owner_bindings(output_roots, filename)
+    ]
 
 
 def iter_started_pod_id_files(output_roots: Iterable[Path | str]) -> list[tuple[Path, str]]:
@@ -950,18 +1032,33 @@ def find_protected_pod_ids(
     *live* owning process exists.
 
     An owner-id file (``started_pod_id.txt`` / ``started_vast_instance_id.txt``) has
-    a live owner when some running process's command line references that run — by the
-    launched id, by the ``object_store_real_run`` dir, or by the ``--out-dir`` (its
-    parent) the render job was launched with. If the file exists but no process
-    references it, the launching run has died and the instance is an orphan (eligible
-    for reaping), not protected.
+    a live render owner when some running process's command line references that run.
+    A qualification owner additionally requires the exact validated manifest as the
+    value of ``--qualification-session-manifest``; directory prefixes and instance-id
+    substrings never establish qualification ownership. If the file exists but no
+    process references it, the launching run has died and the instance is an orphan
+    (eligible for reaping), not protected.
     """
     protected: set[str] = set()
     cmdlines = [c for c in process_cmdlines if isinstance(c, str)]
-    owner_files: list[tuple[Path, str]] = []
+    owner_files: list[_OwnerBinding] = []
     for filename in OWNER_ID_FILENAMES:
-        owner_files.extend(_iter_owner_id_files(output_roots, filename))
-    for path, launched_id in owner_files:
+        owner_files.extend(_iter_owner_bindings(output_roots, filename))
+    for binding in owner_files:
+        path = binding.id_path
+        launched_id = binding.launched_id
+        qualification_manifest_path = binding.qualification_manifest_path
+        if qualification_manifest_path is not None:
+            if any(
+                _cmd_option_references_exact_value(
+                    cmd,
+                    "--qualification-session-manifest",
+                    str(qualification_manifest_path),
+                )
+                for cmd in cmdlines
+            ):
+                protected.add(launched_id)
+            continue
         job_dir = str(path.parent)
         render_out_dir = (
             str(path.parent.parent)
@@ -970,7 +1067,7 @@ def find_protected_pod_ids(
         )
         for cmd in cmdlines:
             if (
-                launched_id in cmd
+                _cmd_references_exact_token(cmd, launched_id)
                 or _cmd_references_path(cmd, job_dir)
                 or (
                     render_out_dir
@@ -980,6 +1077,38 @@ def find_protected_pod_ids(
                 protected.add(launched_id)
                 break
     return protected
+
+
+def _cmd_references_exact_token(cmd: str, target: str) -> bool:
+    """Whether a command line contains ``target`` as a complete argument value."""
+
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        tokens = cmd.split()
+    for token in tokens:
+        if token == target:
+            return True
+        if token.startswith("--") and "=" in token:
+            _, value = token.split("=", 1)
+            if value == target:
+                return True
+    return False
+
+
+def _cmd_option_references_exact_value(cmd: str, option: str, target: str) -> bool:
+    """Whether ``option`` names ``target`` as its complete command-line value."""
+
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        tokens = cmd.split()
+    for index, token in enumerate(tokens):
+        if token == option and index + 1 < len(tokens) and tokens[index + 1] == target:
+            return True
+        if token == f"{option}={target}":
+            return True
+    return False
 
 
 def _cmd_references_path(cmd: str, target: str) -> bool:
