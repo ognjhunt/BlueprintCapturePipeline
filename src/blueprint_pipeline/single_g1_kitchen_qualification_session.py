@@ -102,9 +102,9 @@ from .single_g1_kitchen_qualification_contract import (
     bind_inputs_to_release,
     build_release_binding as _release_binding,
     collected_attempt_release_blocker,
-    embedded_launch_rebind,
     qualification_gate_matrix,
     release_binding_record_blockers,
+    require_latest_attempt_binding as _require_latest_attempt_binding,
     session_claim_boundary as _session_claim_boundary,
     valid_image_binding,
     valid_source_commit,
@@ -2854,72 +2854,6 @@ def _read_collected_json(path: Path, *, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"qualification_collected_{label}_not_object")
     return dict(value)
-
-
-def _require_latest_attempt_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    value = manifest.get("latest_attempt")
-    latest = dict(value) if isinstance(value, Mapping) else {}
-    try:
-        sequence = int(latest.get("attempt_sequence"))
-        overlay_revision = int(latest.get("overlay_revision"))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("qualification_latest_attempt_binding_missing") from exc
-    attempt_slug = f"attempt_{sequence:04d}"
-    launch_session_id = str(manifest.get("launch_session_id") or "")
-    attempt_nonce = f"{launch_session_id}:{attempt_slug}"
-    expected = {
-        "schema_version": "single_g1_kitchen_qualification_attempt_binding.v1",
-        "attempt_sequence": sequence,
-        "attempt_slug": attempt_slug,
-        "attempt_nonce": attempt_nonce,
-        "attempt_nonce_sha256": _sha256_bytes(attempt_nonce.encode("utf-8")),
-        "launch_session_id": launch_session_id,
-        "episode_bootstrap_sha256": str(latest.get("episode_bootstrap_sha256") or ""),
-        "bundle_sha256": str(manifest.get("bundle_sha256") or ""),
-        "overlay_revision": overlay_revision,
-    }
-    attempt_launch_rebind = latest.get("qualification_launch_rebind")
-    attempt_launch_rebind = (
-        dict(attempt_launch_rebind)
-        if isinstance(attempt_launch_rebind, Mapping)
-        else {}
-    )
-    mismatches = [
-        key
-        for key, expected_value in expected.items()
-        if key != "schema_version" and latest.get(key) != expected_value
-    ]
-    if sequence < 1:
-        mismatches.append("attempt_sequence")
-    if not _valid_sha256(expected["episode_bootstrap_sha256"]):
-        mismatches.append("episode_bootstrap_sha256")
-    release = dict(manifest.get("release_binding") or {})
-    embedded_rebind = embedded_launch_rebind(attempt_launch_rebind)
-    expected_release_rebind = {
-        "schema_version": "single_g1_kitchen_qualification_launch_rebind.v1",
-        "status": "bound",
-        "source_bundle_sha256": manifest.get("bundle_sha256"),
-        "release_image_ref": manifest.get("image_ref"),
-        "release_image_digest": manifest.get("image_digest"),
-        "release_source_commit": manifest.get("source_commit"),
-        "release_source_patch_sha256": release.get("source_patch_sha256"),
-        "source_bundle_preserved": True,
-        "derived_plan_and_attempt_required": True,
-    }
-    mismatches.extend(
-        f"qualification_launch_rebind.{key}"
-        for key, expected_value in expected_release_rebind.items()
-        if embedded_rebind.get(key) != expected_value
-    )
-    if mismatches:
-        raise ValueError(
-            "qualification_latest_attempt_binding_invalid:" + ",".join(sorted(set(mismatches)))
-        )
-    return {
-        **latest,
-        **expected,
-        "qualification_launch_rebind": attempt_launch_rebind,
-    }
 
 
 def _validate_collected_attempt_binding(

@@ -100,6 +100,82 @@ def _canonical_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def require_latest_attempt_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the immutable dispatch binding used to validate one collection."""
+
+    value = manifest.get("latest_attempt")
+    latest = dict(value) if isinstance(value, Mapping) else {}
+    try:
+        sequence = int(latest.get("attempt_sequence"))
+        overlay_revision = int(latest.get("overlay_revision"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("qualification_latest_attempt_binding_missing") from exc
+    attempt_slug = f"attempt_{sequence:04d}"
+    launch_session_id = str(manifest.get("launch_session_id") or "")
+    attempt_nonce = f"{launch_session_id}:{attempt_slug}"
+    expected = {
+        "schema_version": "single_g1_kitchen_qualification_attempt_binding.v1",
+        "attempt_sequence": sequence,
+        "attempt_slug": attempt_slug,
+        "attempt_nonce": attempt_nonce,
+        "attempt_nonce_sha256": hashlib.sha256(attempt_nonce.encode("utf-8")).hexdigest(),
+        "launch_session_id": launch_session_id,
+        "episode_bootstrap_sha256": str(latest.get("episode_bootstrap_sha256") or ""),
+        "bundle_sha256": str(manifest.get("bundle_sha256") or ""),
+        "overlay_revision": overlay_revision,
+    }
+    attempt_rebind_value = latest.get("qualification_launch_rebind")
+    attempt_rebind = (
+        dict(attempt_rebind_value)
+        if isinstance(attempt_rebind_value, Mapping)
+        else {}
+    )
+    mismatches = [
+        key
+        for key, expected_value in expected.items()
+        if key != "schema_version" and latest.get(key) != expected_value
+    ]
+    if sequence < 1:
+        mismatches.append("attempt_sequence")
+    if re.fullmatch(r"[0-9a-f]{64}", expected["episode_bootstrap_sha256"]) is None:
+        mismatches.append("episode_bootstrap_sha256")
+    release = dict(manifest.get("release_binding") or {})
+    expected_rebind = {
+        "schema_version": LAUNCH_REBIND_SCHEMA_VERSION,
+        "status": "bound",
+        "source_bundle_sha256": manifest.get("bundle_sha256"),
+        "release_image_ref": manifest.get("image_ref"),
+        "release_image_digest": manifest.get("image_digest"),
+        "release_source_commit": manifest.get("source_commit"),
+        "release_source_patch_sha256": release.get("source_patch_sha256"),
+        "source_bundle_preserved": True,
+        "derived_plan_and_attempt_required": True,
+    }
+    embedded_rebind = embedded_launch_rebind(attempt_rebind)
+    mismatches.extend(
+        f"qualification_launch_rebind.{key}"
+        for key, expected_value in expected_rebind.items()
+        if embedded_rebind.get(key) != expected_value
+    )
+    rebind_body = dict(embedded_rebind)
+    binding_sha256 = rebind_body.pop("binding_sha256", None)
+    if binding_sha256 != _canonical_sha256(rebind_body):
+        mismatches.append("qualification_launch_rebind.binding_sha256")
+    for key in ("derived_launch_plan_sha256", "derived_attempt_manifest_sha256"):
+        if re.fullmatch(r"[0-9a-f]{64}", str(attempt_rebind.get(key) or "")) is None:
+            mismatches.append(f"qualification_launch_rebind.{key}")
+    if attempt_rebind.get("runtime_attempt_manifest_rebound") is not True:
+        mismatches.append("qualification_launch_rebind.runtime_attempt_manifest_rebound")
+    if attempt_rebind.get("raw_source_bundle_modified") is not False:
+        mismatches.append("qualification_launch_rebind.raw_source_bundle_modified")
+    if mismatches:
+        raise ValueError(
+            "qualification_latest_attempt_binding_invalid:"
+            + ",".join(sorted(set(mismatches)))
+        )
+    return {**latest, **expected, "qualification_launch_rebind": attempt_rebind}
+
+
 def bind_inputs_to_release(
     inputs: Mapping[str, Any], release_binding: Mapping[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
