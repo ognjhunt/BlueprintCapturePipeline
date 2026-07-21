@@ -1004,6 +1004,8 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
 def test_gpu_canary_source_checkout_binding_rejects_mismatch_and_dirty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "c" * 40)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "c" * 40)
     monkeypatch.setattr(
         allocator,
         "_current_checkout_source_state",
@@ -1020,6 +1022,48 @@ def test_gpu_canary_source_checkout_binding_rejects_mismatch_and_dirty(
     )
     assert allocator._source_checkout_blockers("c" * 40) == (
         ["gpu_canary_checkout_not_clean"],
+        "c" * 40,
+    )
+
+
+def test_gpu_canary_source_checkout_binding_requires_origin_main_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_current_checkout_source_state",
+        lambda: ("c" * 40, True),
+    )
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "c" * 40)
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
+    assert allocator._source_checkout_blockers("c" * 40) == (
+        ["gpu_canary_checkout_not_origin_main"],
+        "c" * 40,
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "")
+    assert allocator._source_checkout_blockers("c" * 40) == (
+        ["gpu_canary_origin_main_commit_unavailable"],
+        "c" * 40,
+    )
+
+
+def test_gpu_canary_source_checkout_binding_requires_live_remote_main_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_current_checkout_source_state",
+        lambda: ("c" * 40, True),
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "c" * 40)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "b" * 40)
+    assert allocator._source_checkout_blockers("c" * 40) == (
+        ["gpu_canary_checkout_not_remote_main"],
+        "c" * 40,
+    )
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "")
+    assert allocator._source_checkout_blockers("c" * 40) == (
+        ["gpu_canary_remote_main_commit_unavailable"],
         "c" * 40,
     )
 

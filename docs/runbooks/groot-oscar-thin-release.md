@@ -361,7 +361,9 @@ unarmed watchdog all reject before allocation. A release/source mismatch, a
 preflight observation older than five minutes, or a missing/non-`0600` HTTPS
 signed output URL file also rejects before the provider adapter is reachable.
 The allocator derives `HEAD` from its own source checkout, requires it to equal
-`--expected-source-commit`, and rejects tracked worktree changes.
+`--expected-source-commit`, local `origin/main`, and the live remote `main`, and
+rejects tracked worktree changes. A PR branch or stale remote-tracking ref
+therefore cannot allocate before protected-main merge.
 
 Run the admission/launcher first without `--execute` to inspect the exact bound
 request. Add `--execute` only for the single authorized canary; the generic

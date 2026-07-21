@@ -998,7 +998,9 @@ runtime artifacts. Admission additionally requires exact release/source-commit
 parity, a preflight observation no more than five minutes old, and a regular
 `0600` HTTPS signed-output URL file; the URL value is not retained. It also
 derives the allocator checkout's `HEAD` independently and rejects a mismatch or
-tracked dirty worktree. The repo-owned RunPod adapter remains available for a
+tracked dirty worktree. It also requires exact local and live-remote `main`
+parity, so a PR branch or stale remote-tracking ref cannot allocate before
+protected-main merge. The repo-owned RunPod adapter remains available for a
 no-spend dry-run request-shape proof:
 
 ```bash

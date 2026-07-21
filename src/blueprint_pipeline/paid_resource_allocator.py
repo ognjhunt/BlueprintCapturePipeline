@@ -110,13 +110,82 @@ def _current_checkout_source_state() -> tuple[str, bool]:
     return (commit if commit_valid else ""), clean
 
 
+def _current_origin_main_commit() -> str:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ROOT),
+                "rev-parse",
+                "--verify",
+                "origin/main^{commit}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    commit = result.stdout.strip().lower()
+    if (
+        result.returncode != 0
+        or len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+    ):
+        return ""
+    return commit
+
+
+def _current_remote_main_commit() -> str:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ROOT),
+                "ls-remote",
+                "--exit-code",
+                "origin",
+                "refs/heads/main",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    fields = result.stdout.strip().split()
+    commit = fields[0].lower() if len(fields) == 2 else ""
+    if (
+        result.returncode != 0
+        or fields[1:] != ["refs/heads/main"]
+        or len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+    ):
+        return ""
+    return commit
+
+
 def _source_checkout_blockers(expected_source_commit: str) -> tuple[list[str], str]:
     checkout_commit, checkout_clean = _current_checkout_source_state()
+    origin_main_commit = _current_origin_main_commit()
+    remote_main_commit = _current_remote_main_commit()
     blockers: list[str] = []
     if not checkout_commit:
         blockers.append("gpu_canary_checkout_source_commit_unavailable")
     elif expected_source_commit.strip().lower() != checkout_commit:
         blockers.append("gpu_canary_expected_source_commit_not_current_checkout")
+    if not origin_main_commit:
+        blockers.append("gpu_canary_origin_main_commit_unavailable")
+    elif checkout_commit != origin_main_commit:
+        blockers.append("gpu_canary_checkout_not_origin_main")
+    if not remote_main_commit:
+        blockers.append("gpu_canary_remote_main_commit_unavailable")
+    elif checkout_commit != remote_main_commit:
+        blockers.append("gpu_canary_checkout_not_remote_main")
     if not checkout_clean:
         blockers.append("gpu_canary_checkout_not_clean")
     return blockers, checkout_commit
