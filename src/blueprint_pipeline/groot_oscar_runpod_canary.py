@@ -18,6 +18,7 @@ import zipfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlparse
 
 from .common import write_json
 from .gpu_render_providers import _runpod_call, get_render_provider
@@ -61,6 +62,11 @@ STRICT_POLICY_SMOKE_MAX_ZIP_BYTES = 16 * 1024 * 1024
 STRICT_POLICY_SMOKE_HARD_TIMEOUT_SECONDS = 420
 STRICT_POLICY_SMOKE_STARTUP_ARTIFACT_TIMEOUT_SECONDS = 420
 STRICT_POLICY_SMOKE_WATCHDOG_TTL_SECONDS = 480
+PREFLIGHT_MAX_AGE_SECONDS = 300
+PREFLIGHT_FUTURE_TOLERANCE_SECONDS = 30
+RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV = (
+    "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"
+)
 
 
 def refresh_runpod_preflight(
@@ -119,6 +125,93 @@ def _read(path: str | Path) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"expected_json_object:{path}")
     return dict(value)
+
+
+def _preflight_freshness_blockers(
+    preflight: Mapping[str, Any], *, observed_now_epoch: float
+) -> list[str]:
+    observed_at = preflight.get("observed_at_epoch")
+    if observed_at is None:
+        return ["runpod_preflight_observed_at_missing"]
+    if type(observed_at) not in {int, float} or not math.isfinite(float(observed_at)):
+        return ["runpod_preflight_observed_at_invalid"]
+    age_seconds = float(observed_now_epoch) - float(observed_at)
+    blockers: list[str] = []
+    if age_seconds > PREFLIGHT_MAX_AGE_SECONDS:
+        blockers.append("runpod_preflight_stale")
+    if age_seconds < -PREFLIGHT_FUTURE_TOLERANCE_SECONDS:
+        blockers.append("runpod_preflight_observed_at_in_future")
+    return blockers
+
+
+def _read_private_signed_put_url(
+    path_value: str | Path | None,
+) -> tuple[str, dict[str, Any]]:
+    blockers: list[str] = []
+    path = Path(path_value).expanduser() if path_value else None
+    url = ""
+    mode_octal: str | None = None
+    regular_private_file = False
+    if path is None:
+        blockers.append("runtime_manifest_signed_put_url_file_missing")
+    else:
+        descriptor: int | None = None
+        no_follow = getattr(os, "O_NOFOLLOW", None)
+        if no_follow is None:
+            return "", {
+                "status": "blocked",
+                "blockers": [
+                    "runtime_manifest_signed_put_url_no_follow_unavailable"
+                ],
+                "private_file_present": False,
+                "private_file_mode": None,
+                "https_signed_put_url_present": False,
+                "signed_put_url_value_recorded": False,
+            }
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | no_follow,
+            )
+            metadata = os.fstat(descriptor)
+            mode_octal = oct(stat.S_IMODE(metadata.st_mode))
+            if not stat.S_ISREG(metadata.st_mode):
+                blockers.append("runtime_manifest_signed_put_url_file_not_regular")
+            elif stat.S_IMODE(metadata.st_mode) != 0o600:
+                blockers.append("runtime_manifest_signed_put_url_file_mode_not_0600")
+            elif metadata.st_size > 8192:
+                blockers.append("runtime_manifest_signed_put_url_file_oversized")
+            else:
+                regular_private_file = True
+                with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                    descriptor = None
+                    url = handle.read(8193).strip()
+        except (OSError, UnicodeError):
+            blockers.append("runtime_manifest_signed_put_url_file_unreadable")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    parsed = urlparse(url)
+    if url and (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(character.isspace() for character in url)
+    ):
+        blockers.append("runtime_manifest_signed_put_url_invalid")
+        url = ""
+    if not url and not blockers:
+        blockers.append("runtime_manifest_signed_put_url_empty")
+    return url, {
+        "status": "ready" if url and not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "private_file_present": regular_private_file,
+        "private_file_mode": mode_octal,
+        "https_signed_put_url_present": bool(url),
+        "signed_put_url_value_recorded": False,
+    }
 
 
 def validate_strict_policy_smoke_output(
@@ -471,6 +564,7 @@ def prepare_canary_launch(
     release: Mapping[str, Any],
     model_cache: Mapping[str, Any],
     preflight: Mapping[str, Any],
+    expected_source_commit: str,
     probe_kind: str = STARTUP_PROBE_KIND,
 ) -> dict[str, Any]:
     volume = preflight.get("volume")
@@ -482,6 +576,7 @@ def prepare_canary_launch(
         volume=volume if isinstance(volume, Mapping) else {},
         runtime=runtime if isinstance(runtime, Mapping) else {},
         spend=spend if isinstance(spend, Mapping) else {},
+        expected_source_commit=expected_source_commit,
     )
     if preflight.get("status") != "verified":
         admission = {
@@ -550,6 +645,8 @@ def run_canary(
     adapter_output: str | Path,
     pod_name: str,
     execute: bool,
+    expected_source_commit: str,
+    provider_output_put_url_file: str | Path | None,
     campaign_budget: Mapping[str, Any] | None = None,
     probe_kind: str = STARTUP_PROBE_KIND,
 ) -> dict[str, Any]:
@@ -587,13 +684,31 @@ def run_canary(
                 "provider_mutations_performed": 0,
             }
         write_json(refresh_path, preflight)
+    signed_put_url, output_sink = _read_private_signed_put_url(
+        provider_output_put_url_file
+    )
     prepared = prepare_canary_launch(
         request=_read(provider_launch_request),
         release=_read(release_evidence),
         model_cache=_read(model_cache_evidence),
         preflight=preflight,
+        expected_source_commit=expected_source_commit,
         probe_kind=probe_kind,
     )
+    pre_provider_blockers = [
+        *_preflight_freshness_blockers(preflight, observed_now_epoch=time.time()),
+        *output_sink["blockers"],
+    ]
+    if pre_provider_blockers:
+        prepared = {
+            **prepared,
+            "status": "blocked",
+            "blockers": sorted(
+                set([*prepared.get("blockers", []), *pre_provider_blockers])
+            ),
+        }
+    prepared["preflight_observed_at_epoch"] = preflight.get("observed_at_epoch")
+    prepared["runtime_manifest_output_sink"] = output_sink
     spend = preflight.get("spend")
     spend = spend if isinstance(spend, Mapping) else {}
     watchdog_prefix = str(spend.get("watchdog_pod_name_prefix") or "").strip()
@@ -840,6 +955,8 @@ def run_canary(
                 }
                 write_json(Path(admission_out), blocked)
                 return blocked
+    previous_signed_put_url = os.environ.get(RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV)
+    os.environ[RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV] = signed_put_url
     try:
         adapter = run_runpod_provider_adapter(
             provider_launch_request_path=bound_request_out,
@@ -886,6 +1003,11 @@ def run_canary(
         }
         write_json(Path(adapter_output), failed)
         return failed
+    finally:
+        if previous_signed_put_url is None:
+            os.environ.pop(RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV, None)
+        else:
+            os.environ[RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV] = previous_signed_put_url
     if execute and pod_pending is not None:
         response = adapter.get("runpod_response")
         response = response if isinstance(response, Mapping) else {}

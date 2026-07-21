@@ -690,11 +690,20 @@ def build_runpod_serve_plane_admission(
     volume: Mapping[str, Any],
     runtime: Mapping[str, Any],
     spend: Mapping[str, Any],
+    expected_source_commit: str,
     maximum_ttl_seconds: int = MAX_CANARY_TTL_SECONDS,
 ) -> dict[str, Any]:
     """Admit a RunPod warm worker only from published/cache-ready evidence."""
 
     blockers: list[str] = []
+    release_source_commit = _string(release.get("source_commit"))
+    expected_source_commit = _string(expected_source_commit)
+    if not _COMMIT.fullmatch(expected_source_commit):
+        blockers.append("runpod_expected_source_commit_invalid")
+    if not _COMMIT.fullmatch(release_source_commit):
+        blockers.append("runpod_release_source_commit_invalid")
+    elif release_source_commit != expected_source_commit:
+        blockers.append("runpod_release_source_commit_mismatch")
     release_ref = _string(release.get("resolved_digest_ref") or release.get("release_image_ref"))
     if not _DIGEST_REF.fullmatch(release_ref):
         blockers.append("runpod_release_image_not_digest_pinned")
@@ -818,6 +827,12 @@ def build_runpod_serve_plane_admission(
         "schema_version": SERVE_SCHEMA_VERSION,
         "status": "admitted" if not blockers else "blocked",
         "blockers": sorted(set(blockers)),
+        "source_commit": release_source_commit or None,
+        "expected_source_commit": expected_source_commit or None,
+        "source_bound": bool(
+            _COMMIT.fullmatch(release_source_commit)
+            and release_source_commit == expected_source_commit
+        ),
         "release_image_ref": release_ref or None,
         "model_manifest_digest": manifest_digest or None,
         "model_cache_path": cache_path or None,
@@ -861,6 +876,7 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--volume", required=True)
     serve.add_argument("--runtime", required=True)
     serve.add_argument("--spend", required=True)
+    serve.add_argument("--expected-source-commit", required=True)
     serve.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.command == "build":
@@ -876,6 +892,7 @@ def main(argv: list[str] | None = None) -> int:
             volume=_load(args.volume),
             runtime=_load(args.runtime),
             spend=_load(args.spend),
+            expected_source_commit=args.expected_source_commit,
         )
     write_json(Path(args.out), result)
     print(json.dumps(result, indent=2, sort_keys=True))

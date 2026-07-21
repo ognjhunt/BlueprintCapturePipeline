@@ -18,6 +18,7 @@ from blueprint_pipeline.groot_oscar_runpod_persistent_carrier import (
 
 RELEASE_REF = "docker.io/blueprint/release@sha256:" + "1" * 64
 CARRIER_REF = PERSISTENT_CARRIER_IMAGE_REF
+SOURCE_COMMIT = "a" * 40
 
 
 def test_persistent_carrier_is_exact_compatible_image_digest() -> None:
@@ -67,6 +68,7 @@ def _carrier() -> dict:
 
 def _release() -> dict:
     return {
+        "source_commit": SOURCE_COMMIT,
         "resolved_digest_ref": RELEASE_REF,
         "thin_release_contract": {"status": "passed"},
         "runnable_platform": "linux/amd64",
@@ -133,6 +135,7 @@ def test_persistent_carrier_binds_exact_campaign_and_small_image() -> None:
         carrier_volume_admission=_carrier(),
         loop_step_count=5,
         max_wait_seconds=18_000,
+        expected_source_commit=SOURCE_COMMIT,
     )
 
     assert result["status"] == "admitted"
@@ -165,6 +168,7 @@ def test_persistent_carrier_rejects_h100_wrong_loop_and_short_watchdog() -> None
         carrier_volume_admission=carrier,
         loop_step_count=4,
         max_wait_seconds=480,
+        expected_source_commit=SOURCE_COMMIT,
     )
 
     assert result["status"] == "blocked"

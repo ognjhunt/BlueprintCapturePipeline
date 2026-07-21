@@ -258,6 +258,7 @@ def run_persistent_carrier_campaign(
     adapter_output: str | Path,
     pod_name: str,
     execute: bool,
+    expected_source_commit: str,
     campaign_budget: Mapping[str, Any] | None = None,
     task_prompt: str | None = None,
     session_runner: Callable[..., tuple[dict[str, Any], int]] = (
@@ -310,6 +311,7 @@ def run_persistent_carrier_campaign(
         carrier_volume_admission=carrier,
         loop_step_count=5,
         max_wait_seconds=PERSISTENT_LOOP_MAX_WAIT_SECONDS,
+        expected_source_commit=expected_source_commit,
     )
     write_json(Path(admission_out), prepared)
     write_json(Path(bound_request_out), prepared["bound_request"])

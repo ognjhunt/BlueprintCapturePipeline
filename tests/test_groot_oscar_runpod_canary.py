@@ -2,6 +2,7 @@ import json
 import os
 import time
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -195,6 +196,7 @@ def test_confirmed_pre_provider_block_settles_zero(tmp_path) -> None:
 
 
 DIGEST = "docker.io/example/release@sha256:" + "a" * 64
+SOURCE_COMMIT = "c" * 40
 MODEL_VOLUME_WATCHDOG_STATE = "/tmp/model-volume/watchdog_state.json"
 CANARY_WATCHDOG_OUT_DIR = "/tmp/canary-watchdog"
 
@@ -252,8 +254,68 @@ def _request() -> dict:
     }
 
 
+def _output_put_url_file(tmp_path: Path) -> Path:
+    path = tmp_path / "runtime-output-put-url.txt"
+    path.write_text(
+        "https://storage.example.test/runtime-output.zip?signature=test",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
+def test_preflight_freshness_rejects_nonfinite_and_future_observations() -> None:
+    assert canary_module._preflight_freshness_blockers(
+        {"observed_at_epoch": float("nan")}, observed_now_epoch=1000.0
+    ) == ["runpod_preflight_observed_at_invalid"]
+    assert canary_module._preflight_freshness_blockers(
+        {"observed_at_epoch": 1031.0}, observed_now_epoch=1000.0
+    ) == ["runpod_preflight_observed_at_in_future"]
+
+
+def test_private_signed_put_url_file_rejects_weak_modes_symlinks_and_oversize(
+    tmp_path: Path,
+) -> None:
+    weak = tmp_path / "weak.txt"
+    weak.write_text("https://storage.example.test/out?signature=test", encoding="utf-8")
+    weak.chmod(0o644)
+    value, metadata = canary_module._read_private_signed_put_url(weak)
+    assert value == ""
+    assert metadata["blockers"] == [
+        "runtime_manifest_signed_put_url_file_mode_not_0600"
+    ]
+
+    symlink = tmp_path / "symlink.txt"
+    symlink.symlink_to(weak)
+    value, metadata = canary_module._read_private_signed_put_url(symlink)
+    assert value == ""
+    assert metadata["status"] == "blocked"
+
+    oversized = tmp_path / "oversized.txt"
+    oversized.write_text("x" * 8193, encoding="utf-8")
+    oversized.chmod(0o600)
+    value, metadata = canary_module._read_private_signed_put_url(oversized)
+    assert value == ""
+    assert metadata["blockers"] == [
+        "runtime_manifest_signed_put_url_file_oversized"
+    ]
+
+
+def test_private_signed_put_url_reader_fails_closed_without_no_follow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private_file = _output_put_url_file(tmp_path)
+    monkeypatch.delattr(canary_module.os, "O_NOFOLLOW")
+    value, metadata = canary_module._read_private_signed_put_url(private_file)
+    assert value == ""
+    assert metadata["blockers"] == [
+        "runtime_manifest_signed_put_url_no_follow_unavailable"
+    ]
+
+
 def _preflight() -> dict:
     return {
+        "observed_at_epoch": time.time(),
         "status": "verified",
         "volume": {
             "provider": "runpod",
@@ -309,6 +371,7 @@ def test_canary_preparation_binds_exact_admitted_tuple_into_request() -> None:
     result = prepare_canary_launch(
         request=_request(),
         release={
+            "source_commit": SOURCE_COMMIT,
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
@@ -325,6 +388,7 @@ def test_canary_preparation_binds_exact_admitted_tuple_into_request() -> None:
             "checks": {"models_cached_offline": True},
         },
         preflight=_preflight(),
+        expected_source_commit=SOURCE_COMMIT,
     )
     assert result["status"] == "admitted"
     shape = result["bound_request"]["provider_request_shape"]
@@ -346,6 +410,7 @@ def test_canary_preparation_rejects_tag_or_different_digest() -> None:
     result = prepare_canary_launch(
         request=request,
         release={
+            "source_commit": SOURCE_COMMIT,
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
@@ -362,6 +427,7 @@ def test_canary_preparation_rejects_tag_or_different_digest() -> None:
             "checks": {"models_cached_offline": True},
         },
         preflight=_preflight(),
+        expected_source_commit=SOURCE_COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_request_release_image_differs_from_admission" in result["blockers"]
@@ -375,6 +441,7 @@ def test_canary_preparation_rejects_different_model_cache_path() -> None:
     result = prepare_canary_launch(
         request=request,
         release={
+            "source_commit": SOURCE_COMMIT,
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
@@ -391,6 +458,7 @@ def test_canary_preparation_rejects_different_model_cache_path() -> None:
             "checks": {"models_cached_offline": True},
         },
         preflight=_preflight(),
+        expected_source_commit=SOURCE_COMMIT,
     )
     assert result["status"] == "blocked"
     assert "runpod_request_model_cache_path_differs_from_admission" in result["blockers"]
@@ -481,6 +549,7 @@ def test_execute_blocks_before_adapter_when_launch_refresh_fails(
     payloads = {
         "request.json": _request(),
         "release.json": {
+            "source_commit": SOURCE_COMMIT,
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
@@ -510,6 +579,8 @@ def test_execute_blocks_before_adapter_when_launch_refresh_fails(
         adapter_output=tmp_path / "adapter.json",
         pod_name="blueprint-groot-oscar-canary-test",
         execute=True,
+        expected_source_commit=SOURCE_COMMIT,
+        provider_output_put_url_file=_output_put_url_file(tmp_path),
     )
     assert result["status"] == "blocked"
     assert "runpod_preflight_bundle_not_verified" in result["blockers"]
@@ -520,6 +591,71 @@ def test_execute_blocks_before_adapter_when_launch_refresh_fails(
     )
     assert refresh["status"] == "blocked"
     assert refresh["provider_mutations_performed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("preflight_age_seconds", "include_output_sink", "expected_blocker"),
+    [
+        (301, True, "runpod_preflight_stale"),
+        (0, False, "runtime_manifest_signed_put_url_file_missing"),
+    ],
+)
+def test_dry_run_blocks_stale_preflight_or_missing_output_sink_before_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preflight_age_seconds: int,
+    include_output_sink: bool,
+    expected_blocker: str,
+) -> None:
+    preflight = _preflight()
+    preflight["observed_at_epoch"] = time.time() - preflight_age_seconds
+    payloads = {
+        "request.json": _request(),
+        "release.json": {
+            "source_commit": SOURCE_COMMIT,
+            "resolved_digest_ref": DIGEST,
+            "thin_release_contract_status": "passed",
+            "runnable_platform": "linux/amd64",
+            "required_cuda_version": "12.6",
+            "required_cuda_version_source": "image_config_env:CUDA_VERSION",
+        },
+        "models.json": {
+            "schema_version": "groot_oscar_external_model_cache_verification.v2",
+            "status": "passed",
+            "model_manifest_digest": "sha256:" + "b" * 64,
+            "verified_size_bytes": 20 * 1024**3,
+            "cache_root": "/workspace/models",
+            "provider_volume_id": "volume-1",
+            "checks": {"models_cached_offline": True},
+        },
+        "preflight.json": preflight,
+    }
+    for name, payload in payloads.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    def adapter_must_not_run(**_kwargs):
+        raise AssertionError("provider adapter reached after blocked admission")
+
+    monkeypatch.setattr(canary_module, "run_runpod_provider_adapter", adapter_must_not_run)
+    result = run_canary(
+        provider_launch_request=tmp_path / "request.json",
+        release_evidence=tmp_path / "release.json",
+        model_cache_evidence=tmp_path / "models.json",
+        preflight_bundle=tmp_path / "preflight.json",
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        pod_name="blueprint-groot-oscar-canary-dry-run-blocked",
+        execute=False,
+        expected_source_commit=SOURCE_COMMIT,
+        provider_output_put_url_file=(
+            _output_put_url_file(tmp_path) if include_output_sink else None
+        ),
+    )
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert expected_blocker in result["blockers"]
+    assert result["runtime_manifest_output_sink"]["signed_put_url_value_recorded"] is False
 
 
 def test_execute_reserves_then_accepts_handoff_before_adapter(
@@ -575,14 +711,24 @@ def test_execute_reserves_then_accepts_handoff_before_adapter(
         "blueprint_pipeline.groot_oscar_runpod_canary.bind_pending_teardown_instance",
         lambda *_args: order.append("bind") or {},
     )
+
+    def adapter_with_private_output_url(**_kwargs):
+        assert os.environ[canary_module.RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV] == (
+            "https://storage.example.test/runtime-output.zip?signature=test"
+        )
+        order.append("adapter")
+        return {"status": "submitted", "runpod_response": {"id": "pod-1"}}
+
+    previous_url = "https://storage.example.test/prior?signature=prior"
+    monkeypatch.setenv(canary_module.RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV, previous_url)
     monkeypatch.setattr(
         "blueprint_pipeline.groot_oscar_runpod_canary.run_runpod_provider_adapter",
-        lambda **_kwargs: order.append("adapter")
-        or {"status": "submitted", "runpod_response": {"id": "pod-1"}},
+        adapter_with_private_output_url,
     )
     payloads = {
         "request.json": _request(),
         "release.json": {
+            "source_commit": SOURCE_COMMIT,
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
@@ -612,10 +758,13 @@ def test_execute_reserves_then_accepts_handoff_before_adapter(
         adapter_output=tmp_path / "adapter.json",
         pod_name="blueprint-groot-oscar-canary-ordering",
         execute=True,
+        expected_source_commit=SOURCE_COMMIT,
+        provider_output_put_url_file=_output_put_url_file(tmp_path),
         campaign_budget=_budget_config(tmp_path),
     )
     assert result["status"] == "submitted"
     assert order == ["refresh", "reserve", "accept", "pending", "adapter", "bind"]
+    assert os.environ[canary_module.RUNTIME_MANIFEST_SIGNED_PUT_URL_ENV] == previous_url
     receipt = json.loads(
         (watchdog_dir / "provider_lane_handoff_receipt.json").read_text()
     )
@@ -677,6 +826,7 @@ def test_handoff_rejection_blocks_adapter_and_settles_zero(tmp_path, monkeypatch
     payloads = {
         "request.json": _request(),
         "release.json": {
+            "source_commit": SOURCE_COMMIT,
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
@@ -706,6 +856,8 @@ def test_handoff_rejection_blocks_adapter_and_settles_zero(tmp_path, monkeypatch
         adapter_output=tmp_path / "adapter.json",
         pod_name="blueprint-groot-oscar-canary-rejected",
         execute=True,
+        expected_source_commit=SOURCE_COMMIT,
+        provider_output_put_url_file=_output_put_url_file(tmp_path),
         campaign_budget=_budget_config(tmp_path),
     )
     assert result["status"] == "blocked"
@@ -759,6 +911,7 @@ def test_watchdog_contract_exceeding_reservation_blocks_before_handoff(
     payloads = {
         "request.json": _request(),
         "release.json": {
+            "source_commit": SOURCE_COMMIT,
             "resolved_digest_ref": DIGEST,
             "thin_release_contract_status": "passed",
             "runnable_platform": "linux/amd64",
@@ -788,6 +941,8 @@ def test_watchdog_contract_exceeding_reservation_blocks_before_handoff(
         adapter_output=tmp_path / "adapter.json",
         pod_name="blueprint-groot-oscar-canary-budget-contract",
         execute=True,
+        expected_source_commit=SOURCE_COMMIT,
+        provider_output_put_url_file=_output_put_url_file(tmp_path),
         campaign_budget=_budget_config(tmp_path),
     )
     assert result["status"] == "blocked"

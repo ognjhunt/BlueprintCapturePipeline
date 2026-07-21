@@ -549,6 +549,9 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
         return {"status": "dry_run_ready"}
 
     monkeypatch.setattr(allocator, "run_canary", fake_run_canary)
+    monkeypatch.setattr(
+        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+    )
     exit_code = allocator.main(
         [
             "gpu-canary",
@@ -568,13 +571,60 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
             "adapter.json",
             "--pod-name",
             "strict-smoke-pod",
+            "--expected-source-commit",
+            "c" * 40,
+            "--provider-output-put-url-file",
+            "output-put-url.txt",
             "--probe-kind",
             "strict-policy-smoke",
         ]
     )
     assert exit_code == 0
     assert observed["probe_kind"] == "strict-policy-smoke"
+    assert observed["expected_source_commit"] == "c" * 40
+    assert observed["provider_output_put_url_file"] == "output-put-url.txt"
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_canary_rejects_missing_source_and_output_sink_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def must_not_dispatch(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("canary dispatched without required admission inputs")
+
+    monkeypatch.setattr(allocator, "run_canary", must_not_dispatch)
+    admission = tmp_path / "admission.json"
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            str(admission),
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "strict-smoke-pod",
+        ]
+    )
+    assert exit_code == 2
+    result = json.loads(admission.read_text(encoding="utf-8"))
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == [
+        "gpu_canary_required_arguments_missing:"
+        "expected_source_commit,provider_output_put_url_file"
+    ]
+    assert json.loads(capsys.readouterr().out) == {"success": False}
 
 
 def test_gpu_canary_forwards_finetune_qualification_identity_file(
@@ -766,6 +816,9 @@ def test_gpu_canary_defaults_bind_authorized_strict_staged_plan(
         return {"status": "submitted"}
 
     monkeypatch.setattr(allocator, "run_canary", fake_run_canary)
+    monkeypatch.setattr(
+        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+    )
     exit_code = allocator.main(
         [
             "gpu-canary",
@@ -785,6 +838,10 @@ def test_gpu_canary_defaults_bind_authorized_strict_staged_plan(
             "adapter.json",
             "--pod-name",
             "strict-smoke-pod",
+            "--expected-source-commit",
+            "c" * 40,
+            "--provider-output-put-url-file",
+            "output-put-url.txt",
             "--campaign-budget-ledger",
             "budget.json",
             "--campaign-initial-spent-usd",
@@ -886,6 +943,9 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
         return {"status": "completed"}
 
     monkeypatch.setattr(allocator, "run_persistent_carrier_campaign", fake_campaign)
+    monkeypatch.setattr(
+        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+    )
     out = tmp_path / "persistent"
     exit_code = allocator.main(
         [
@@ -914,6 +974,8 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
             str(out / "result.json"),
             "--pod-name",
             "blueprint-persistent-exact",
+            "--expected-source-commit",
+            "c" * 40,
             "--campaign-budget-ledger",
             str(out / "budget.json"),
             "--campaign-initial-spent-usd",
@@ -929,6 +991,7 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
 
     assert exit_code == 0
     assert observed["execute"] is True
+    assert observed["expected_source_commit"] == "c" * 40
     budget = observed["campaign_budget"]
     assert isinstance(budget, dict)
     assert budget["campaign_stage"] == "persistent_carrier_campaign"
@@ -936,6 +999,29 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
     assert budget["combined_gpu_wall_cap_seconds"] == 36_000
     assert budget["future_campaign_allowance_gpu_seconds"] == 0
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_gpu_canary_source_checkout_binding_rejects_mismatch_and_dirty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_current_checkout_source_state",
+        lambda: ("c" * 40, True),
+    )
+    assert allocator._source_checkout_blockers("b" * 40) == (
+        ["gpu_canary_expected_source_commit_not_current_checkout"],
+        "c" * 40,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_current_checkout_source_state",
+        lambda: ("c" * 40, False),
+    )
+    assert allocator._source_checkout_blockers("c" * 40) == (
+        ["gpu_canary_checkout_not_clean"],
+        "c" * 40,
+    )
 
 
 def test_gpu_canary_rejects_digitalocean_provider_for_runpod_probe(

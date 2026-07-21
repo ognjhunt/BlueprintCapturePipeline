@@ -82,6 +82,46 @@ PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
 DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
 
 
+def _current_checkout_source_state() -> tuple[str, bool]:
+    try:
+        commit_result = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        status_result = subprocess.run(
+            ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    commit = commit_result.stdout.strip().lower()
+    commit_valid = bool(
+        commit_result.returncode == 0
+        and len(commit) == 40
+        and all(character in "0123456789abcdef" for character in commit)
+    )
+    clean = bool(status_result.returncode == 0 and not status_result.stdout.strip())
+    return (commit if commit_valid else ""), clean
+
+
+def _source_checkout_blockers(expected_source_commit: str) -> tuple[list[str], str]:
+    checkout_commit, checkout_clean = _current_checkout_source_state()
+    blockers: list[str] = []
+    if not checkout_commit:
+        blockers.append("gpu_canary_checkout_source_commit_unavailable")
+    elif expected_source_commit.strip().lower() != checkout_commit:
+        blockers.append("gpu_canary_expected_source_commit_not_current_checkout")
+    if not checkout_clean:
+        blockers.append("gpu_canary_checkout_not_clean")
+    return blockers, checkout_commit
+
+
 def _configure_detached_model_volume_signal_policy(command: str) -> bool:
     """Keep an explicitly detached paid supervisor alive through local SIGINT.
 
@@ -309,6 +349,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--bound-request-out", required=True)
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
+    gpu.add_argument("--expected-source-commit")
     gpu.add_argument(
         "--provider",
         choices=("runpod", "vast", "digitalocean"),
@@ -854,6 +895,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "carrier_volume_admission",
                     "policy_observation",
                     "persistent_job_dir",
+                    "expected_source_commit",
                 )
                 if not getattr(args, name, None)
             ]
@@ -867,6 +909,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 missing.append("persistent_campaign_budget_arguments")
             if args.execute and not args.authorize_persistent_carrier_campaign:
                 missing.append("persistent_campaign_authorization")
+            checkout_commit = ""
+            if not missing:
+                source_blockers, checkout_commit = _source_checkout_blockers(
+                    args.expected_source_commit or ""
+                )
+                if source_blockers:
+                    result = {
+                        "status": "blocked",
+                        "blockers": source_blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.admission_out), result)
+                    print(json.dumps({"success": False}, sort_keys=True))
+                    return 2
             if missing:
                 result = {
                     "status": "blocked",
@@ -890,6 +946,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     adapter_output=args.adapter_output,
                     pod_name=args.pod_name,
                     execute=args.execute,
+                    expected_source_commit=checkout_commit,
                     task_prompt=args.task_prompt,
                     campaign_budget=(
                         {
@@ -926,6 +983,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
+        generic_canary_missing = [
+            name
+            for name in (
+                "expected_source_commit",
+                "provider_output_put_url_file",
+            )
+            if not getattr(args, name, None)
+        ]
+        if generic_canary_missing:
+            result = {
+                "status": "blocked",
+                "blockers": [
+                    "gpu_canary_required_arguments_missing:"
+                    + ",".join(sorted(generic_canary_missing))
+                ],
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(args.admission_out), result)
+            print(json.dumps({"success": False}, sort_keys=True))
+            return 2
+        source_blockers, checkout_commit = _source_checkout_blockers(
+            args.expected_source_commit or ""
+        )
+        if source_blockers:
+            result = {
+                "status": "blocked",
+                "blockers": source_blockers,
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(args.admission_out), result)
+            print(json.dumps({"success": False}, sort_keys=True))
+            return 2
         strict_policy_smoke = args.probe_kind == "strict-policy-smoke"
         maximum_canary_reservation_seconds = (
             STRICT_POLICY_SMOKE_RESERVATION_SECONDS
@@ -961,6 +1050,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 adapter_output=args.adapter_output,
                 pod_name=args.pod_name,
                 execute=args.execute,
+                expected_source_commit=checkout_commit,
+                provider_output_put_url_file=args.provider_output_put_url_file,
                 probe_kind=args.probe_kind,
                 campaign_budget=(
                     {

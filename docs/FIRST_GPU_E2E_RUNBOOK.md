@@ -495,6 +495,8 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --release-evidence /path/to/protected-release-evidence.json \
   --model-cache-evidence /path/to/verified-model-cache-evidence.json \
   --preflight-bundle /path/to/provider-preflight-bundle.json \
+  --expected-source-commit "$(git rev-parse HEAD)" \
+  --provider-output-put-url-file /path/to/private-runtime-output-put-url.txt \
   --admission-out "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_canary_admission.json" \
   --bound-request-out "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/bound_runpod_request.json" \
   --adapter-output "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/runpod_provider_adapter_result.canary.json" \
@@ -979,6 +981,8 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --release-evidence /path/to/protected-release-evidence.json \
   --model-cache-evidence /path/to/verified-model-cache-evidence.json \
   --preflight-bundle /path/to/provider-preflight-bundle.json \
+  --expected-source-commit "$(git rev-parse HEAD)" \
+  --provider-output-put-url-file /path/to/private-runtime-output-put-url.txt \
   --admission-out /path/to/gpu-canary-admission.json \
   --bound-request-out /path/to/bound-runpod-request.json \
   --adapter-output /path/to/runpod-provider-result.json \
@@ -990,7 +994,11 @@ The allocator records the bound request, admission, adapter result, and the
 watchdog evidence it required. Terminal provider absence still requires the
 independent watchdog/closure evidence. It stores no raw provider secret values and does not
 prove simulator execution or generated-world rank fidelity without the returned
-runtime artifacts. The repo-owned RunPod adapter remains available for a
+runtime artifacts. Admission additionally requires exact release/source-commit
+parity, a preflight observation no more than five minutes old, and a regular
+`0600` HTTPS signed-output URL file; the URL value is not retained. It also
+derives the allocator checkout's `HEAD` independently and rejects a mismatch or
+tracked dirty worktree. The repo-owned RunPod adapter remains available for a
 no-spend dry-run request-shape proof:
 
 ```bash
