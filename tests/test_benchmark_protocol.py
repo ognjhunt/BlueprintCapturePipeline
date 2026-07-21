@@ -175,6 +175,8 @@ def _results(plan: dict) -> dict:
                         "seed",
                         "rollout_index",
                         "initial_condition_sha256",
+                        "environment_sha256",
+                        "evaluator_runtime_sha256",
                     )
                 },
                 "status": "completed",
@@ -366,6 +368,28 @@ def test_report_blocks_missing_attempt_and_missing_evidence(tmp_path: Path):
     assert "result_attempt_coverage_not_exact" in report["blockers"]
     assert "result_evidence_missing_or_invalid:0:video" in report["blockers"]
     assert report["anti_cherry_picking_verified"] is False
+
+
+def test_report_blocks_result_environment_or_evaluator_binding_mismatch(tmp_path: Path):
+    spec = valid_spec()
+    compiled = compile_benchmark_protocol(spec, output_dir=tmp_path)
+    results = _results(compiled["execution_plan"])
+    results["attempts"][0]["environment_sha256"] = DIGEST_F
+    results["attempts"][1].pop("evaluator_runtime_sha256")
+
+    report = build_benchmark_report(
+        spec=spec,
+        plan=compiled["execution_plan"],
+        results=results,
+        seed=17,
+    )
+
+    assert report["status"] == "blocked"
+    assert "result_attempt_binding_mismatch:0:environment_sha256" in report["blockers"]
+    assert (
+        "result_attempt_binding_mismatch:1:evaluator_runtime_sha256"
+        in report["blockers"]
+    )
 
 
 def test_invalid_spec_rejects_unfrozen_hidden_and_missing_seen_unseen_axis():

@@ -1006,6 +1006,8 @@ def build_benchmark_report(
             "seed",
             "rollout_index",
             "initial_condition_sha256",
+            "environment_sha256",
+            "evaluator_runtime_sha256",
         ):
             left = _digest(row.get(field)) if field.endswith("sha256") else row.get(field)
             right = _digest(scheduled.get(field)) if field.endswith("sha256") else scheduled.get(field)
