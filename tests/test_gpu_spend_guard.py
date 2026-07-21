@@ -416,6 +416,119 @@ def test_relative_qualification_manifest_path_is_protected(tmp_path: Path) -> No
     assert protected == {"45483300"}
 
 
+def test_qualification_hard_ttl_watchdog_is_a_bound_live_owner(tmp_path: Path) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {attempt} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_relative_symlinked_qualification_watchdog_is_a_bound_owner(
+    tmp_path: Path,
+) -> None:
+    real_root = tmp_path / "capture_volume"
+    attempt = real_root / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    linked_root = tmp_path / "output"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    relative_out_dir = Path("output") / attempt.relative_to(real_root)
+
+    protected = guard.find_protected_pod_ids(
+        [linked_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {relative_out_dir} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_ambiguous_relative_qualification_watchdog_protects_neither_tree(
+    tmp_path: Path,
+) -> None:
+    suffix = Path("output/episode/attempt_047_qualification")
+    first_manifest = _write_qualification_owner(
+        tmp_path / "capture_a" / suffix, "45483300"
+    )
+    _write_qualification_owner(tmp_path / "capture_b" / suffix, "45483301")
+    manifest = json.loads(first_manifest.read_text(encoding="utf-8"))
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path / "capture_a", tmp_path / "capture_b"],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {suffix} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+    )
+
+    assert protected == set()
+
+
+@pytest.mark.parametrize(
+    ("module", "out_dir_suffix", "prefix_suffix", "provider", "deadline_delta"),
+    [
+        ("blueprint_pipeline.unrelated_watchdog", "", "", "vast", 0.0),
+        (
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "_retry",
+            "",
+            "vast",
+            0.0,
+        ),
+        (
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "",
+            "-other",
+            "vast",
+            0.0,
+        ),
+        ("blueprint_pipeline.groot_oscar_runpod_watchdog", "", "", "runpod", 0.0),
+        ("blueprint_pipeline.groot_oscar_runpod_watchdog", "", "", "vast", 1.0),
+    ],
+)
+def test_qualification_watchdog_owner_requires_exact_bound_identity(
+    tmp_path: Path,
+    module: str,
+    out_dir_suffix: str,
+    prefix_suffix: str,
+    provider: str,
+    deadline_delta: float,
+) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    deadline = float(manifest["watchdog_deadline_epoch"]) + deadline_delta
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            f"python -m {module} --out-dir {attempt}{out_dir_suffix} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']}{prefix_suffix} "
+            f"--deadline-epoch {deadline} "
+            f"--provider {provider}"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_ambiguous_relative_qualification_path_protects_neither_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

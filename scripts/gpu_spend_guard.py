@@ -827,6 +827,8 @@ class _OwnerBinding:
     launched_id: str
     qualification_manifest_path: Path | None = None
     qualification_manifest_alias_path: Path | None = None
+    qualification_resource_name_prefix: str | None = None
+    qualification_watchdog_deadline_epoch: str | None = None
 
 
 def _read_bounded_regular_text(
@@ -885,7 +887,7 @@ def _read_bounded_regular_text(
 
 def _validated_qualification_manifest(
     id_path: Path, launched_id: str
-) -> tuple[Path, Path] | None:
+) -> tuple[Path, Path, str, str] | None:
     """Return an adjacent, fully bound live Vast qualification manifest."""
 
     # Import lazily so ordinary render-owner scans do not load the qualification
@@ -921,12 +923,23 @@ def _validated_qualification_manifest(
             _validate_manifest_binding(source, manifest)
         except Exception:  # noqa: BLE001 - invalid/unavailable binding fails closed
             continue
+        try:
+            watchdog_deadline_epoch = float(manifest.get("watchdog_deadline_epoch"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not 0 < watchdog_deadline_epoch < 1e20:
+            continue
         if (
             manifest.get("release_binding_status") == "bound"
             and str(manifest.get("instance_id") or "") == launched_id
             and manifest.get("continuing_spend") is True
         ):
-            return source, discovered_source
+            return (
+                source,
+                discovered_source,
+                str(manifest.get("resource_name_prefix") or ""),
+                str(watchdog_deadline_epoch),
+            )
     return None
 
 
@@ -954,6 +967,8 @@ def _iter_owner_bindings(
             )
             qualification_manifest_path = None
             qualification_manifest_alias_path = None
+            qualification_resource_name_prefix = None
+            qualification_watchdog_deadline_epoch = None
             if filename == "started_vast_instance_id.txt" and not render_owner:
                 qualification_manifest = _validated_qualification_manifest(
                     path, launched_id
@@ -962,6 +977,8 @@ def _iter_owner_bindings(
                     (
                         qualification_manifest_path,
                         qualification_manifest_alias_path,
+                        qualification_resource_name_prefix,
+                        qualification_watchdog_deadline_epoch,
                     ) = qualification_manifest
             if not render_owner and qualification_manifest_path is None:
                 continue
@@ -979,6 +996,12 @@ def _iter_owner_bindings(
                     launched_id=launched_id,
                     qualification_manifest_path=qualification_manifest_path,
                     qualification_manifest_alias_path=qualification_manifest_alias_path,
+                    qualification_resource_name_prefix=(
+                        qualification_resource_name_prefix
+                    ),
+                    qualification_watchdog_deadline_epoch=(
+                        qualification_watchdog_deadline_epoch
+                    ),
                 )
             )
     return found
@@ -1085,12 +1108,16 @@ def find_protected_pod_ids(
         )
         if candidate is not None
     )
+    qualification_out_dirs = tuple(
+        str(Path(candidate).parent)
+        for candidate in qualification_targets
+    )
     for binding in owner_files:
         path = binding.id_path
         launched_id = binding.launched_id
         qualification_manifest_path = binding.qualification_manifest_path
         if qualification_manifest_path is not None:
-            if any(
+            allocator_owner = any(
                 _cmd_option_references_exact_path(
                     cmd,
                     "--qualification-session-manifest",
@@ -1098,7 +1125,34 @@ def find_protected_pod_ids(
                     candidate_targets=qualification_targets,
                 )
                 for cmd in cmdlines
-            ):
+            )
+            watchdog_owner = any(
+                _cmd_option_references_exact_value(
+                    cmd,
+                    "-m",
+                    "blueprint_pipeline.groot_oscar_runpod_watchdog",
+                )
+                and _cmd_option_references_exact_path(
+                    cmd,
+                    "--out-dir",
+                    str(qualification_manifest_path.parent),
+                    candidate_targets=qualification_out_dirs,
+                    reject_final_symlink=False,
+                )
+                and _cmd_option_references_exact_value(cmd, "--provider", "vast")
+                and _cmd_option_references_exact_value(
+                    cmd,
+                    "--pod-name-prefix",
+                    str(binding.qualification_resource_name_prefix or ""),
+                )
+                and _cmd_option_references_exact_value(
+                    cmd,
+                    "--deadline-epoch",
+                    str(binding.qualification_watchdog_deadline_epoch or ""),
+                )
+                for cmd in cmdlines
+            )
+            if allocator_owner or watchdog_owner:
                 protected.add(launched_id)
             continue
         job_dir = str(path.parent)
@@ -1146,15 +1200,7 @@ def _resolved_path_identity(value: str | Path) -> Path:
         return Path(os.path.abspath(path))
 
 
-def _cmd_option_references_exact_path(
-    cmd: str,
-    option: str,
-    target: str,
-    *,
-    candidate_targets: Sequence[str],
-) -> bool:
-    """Whether ``option`` names the exact absolute or component-relative path."""
-
+def _cmd_option_values(cmd: str, option: str) -> list[str]:
     try:
         tokens = shlex.split(cmd)
     except ValueError:
@@ -1165,12 +1211,30 @@ def _cmd_option_references_exact_path(
             values.append(tokens[index + 1])
         elif token.startswith(f"{option}="):
             values.append(token.split("=", 1)[1])
+    return values
+
+
+def _cmd_option_references_exact_value(cmd: str, option: str, target: str) -> bool:
+    return bool(target) and target in _cmd_option_values(cmd, option)
+
+
+def _cmd_option_references_exact_path(
+    cmd: str,
+    option: str,
+    target: str,
+    *,
+    candidate_targets: Sequence[str],
+    reject_final_symlink: bool = True,
+) -> bool:
+    """Whether ``option`` names the exact absolute or component-relative path."""
+
+    values = _cmd_option_values(cmd, option)
     target_path = _resolved_path_identity(target)
     for value in values:
         candidate = Path(value).expanduser()
         # Directory symlink components are supported, but the manifest option
         # itself must not be a symlink because qualification evidence forbids it.
-        if candidate.is_symlink():
+        if reject_final_symlink and candidate.is_symlink():
             continue
         if candidate.is_absolute():
             if _resolved_path_identity(candidate) == target_path:
