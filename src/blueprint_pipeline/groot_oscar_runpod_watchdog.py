@@ -635,10 +635,20 @@ def run_watchdog(
                     provider_name=resolved_provider,
                     name_prefix=pod_name_prefix,
                 )
+                first_global_zero = _billable_inventory(
+                    provider=cancel_provider,
+                    provider_name=resolved_provider,
+                    name_prefix="",
+                )
                 second_zero = _billable_inventory(
                     provider=cancel_provider,
                     provider_name=resolved_provider,
                     name_prefix=pod_name_prefix,
+                )
+                second_global_zero = _billable_inventory(
+                    provider=cancel_provider,
+                    provider_name=resolved_provider,
+                    name_prefix="",
                 )
                 exact_contract_zero = True
                 if resolved_provider == "vast":
@@ -673,12 +683,19 @@ def run_watchdog(
                     }
             except Exception:  # noqa: BLE001 - hard-deadline protection remains armed
                 first_zero = {}
+                first_global_zero = {}
                 second_zero = {}
+                second_global_zero = {}
                 exact_contract_zero = False
             independently_zero = all(
                 inventory.get("api_confirmed") is True
                 and inventory.get("live_resource_count") == 0
-                for inventory in (first_zero, second_zero)
+                for inventory in (
+                    first_zero,
+                    first_global_zero,
+                    second_zero,
+                    second_global_zero,
+                )
             ) and exact_contract_zero
             if independently_zero:
                 owner_teardown_cancel = cancel_candidate
@@ -687,8 +704,10 @@ def run_watchdog(
                     "status": "provider_terminal",
                     "completed_at": utc_now_iso(),
                     "initial_inventory": first_zero,
+                    "initial_global_inventory": first_global_zero,
                     "terminations": [],
                     "final_inventory": second_zero,
+                    "final_global_inventory": second_global_zero,
                     "provider_absence_confirmed": True,
                     "provider_mutations_performed": 0,
                     "teardown_error_type": None,

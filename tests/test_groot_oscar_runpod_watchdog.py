@@ -552,7 +552,71 @@ def test_owner_teardown_cancel_runs_zero_verification_before_deadline(
     assert result["provider_mutation_trigger"] == (
         "owner_teardown_cancel_request_after_provider_zero"
     )
-    assert events == [f"inventory:{prefix}", f"inventory:{prefix}"]
+    assert events == [
+        f"inventory:{prefix}",
+        "inventory:",
+        f"inventory:{prefix}",
+        "inventory:",
+    ]
+
+
+def test_owner_teardown_cancel_requires_global_provider_zero(
+    tmp_path, monkeypatch
+) -> None:
+    now = {"value": 100.0}
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-attempt-"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now["value"])
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
+                ),
+                "requested_by": "qualification_owner_teardown",
+                "provider": "runpod",
+                "instance_id": "pod-terminated",
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+    observed: list[tuple[float, str]] = []
+
+    class Provider:
+        name = "runpod"
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            observed.append((now["value"], name_prefix))
+            count = 1 if name_prefix == "" else 0
+            return {
+                "api_confirmed": True,
+                "live_resource_count": count,
+                "resources": ([{"instance_id": "unrelated-live"}] if count else []),
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now["value"],
+        sleeper=lambda seconds: now.__setitem__("value", now["value"] + seconds),
+    )
+
+    assert result["owner_teardown_cancel_requested"] is False
+    assert any(name_prefix == "" for _, name_prefix in observed)
+    assert all(
+        observed_at < deadline
+        for observed_at, name_prefix in observed
+        if name_prefix == ""
+    )
 
 
 def test_vast_owner_cancel_requires_exact_recorded_id_absence(
