@@ -102,6 +102,7 @@ from .single_g1_kitchen_qualification_contract import (
     bind_inputs_to_release,
     build_release_binding as _release_binding,
     qualification_gate_matrix,
+    release_binding_record_blockers,
     session_claim_boundary as _session_claim_boundary,
     valid_image_binding,
     valid_source_commit,
@@ -253,7 +254,9 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
         if not valid_source_commit(manifest.get("source_commit")):
             blockers.append("source_commit")
         stored_release = manifest.get("release_binding")
-        if isinstance(stored_release, Mapping):
+        release_record_blockers = release_binding_record_blockers(stored_release)
+        blockers.extend(f"release_binding_{item}" for item in release_record_blockers)
+        if isinstance(stored_release, Mapping) and not release_record_blockers:
             if any(
                 stored_release.get(key) != manifest.get(key)
                 for key in ("image_ref", "image_digest", "source_commit")
@@ -2701,6 +2704,7 @@ def _refresh_bootstrap(
     recorded_at = utc_now_iso()
     if completed:
         bootstrap = dict(manifest["bootstrap"])
+        prior_launch_rebind = dict(manifest.get("qualification_launch_rebind") or {})
         prior_episode_sha = bootstrap["episode_bootstrap_sha256"]
         bootstrap.update(
             {
@@ -2728,9 +2732,12 @@ def _refresh_bootstrap(
                 "image_digest": manifest["image_digest"],
                 "bundle_sha256": manifest["bundle_sha256"],
                 "launch_session_nonce_sha256": manifest["launch_session_nonce_sha256"],
+                "prior_qualification_launch_rebind": prior_launch_rebind,
+                "qualification_launch_rebind": refresh_launch_rebind,
                 "provider_mutation_performed": True,
             },
         )
+        manifest["qualification_launch_rebind"] = refresh_launch_rebind
         manifest["pending_refresh"] = None
         manifest["status"] = "bootstrap_refreshed_continuing_spend"
     else:
@@ -2746,6 +2753,10 @@ def _refresh_bootstrap(
         "episode_bootstrap_sha256": refresh["episode_bootstrap_sha256"],
         "control_status": control.get("status"),
         "audit_sha256": audit.get("audit_sha256") if audit else None,
+        "requested_qualification_launch_rebind": refresh_launch_rebind,
+        "active_qualification_launch_rebind": manifest.get(
+            "qualification_launch_rebind"
+        ),
         "signed_get_url_stored": False,
     }
     manifest.setdefault("history", []).append(
@@ -2767,6 +2778,7 @@ def _refresh_bootstrap(
         "refresh_payload_sha256": refresh["refresh_payload_sha256"],
         "control": control,
         "audit": audit,
+        "qualification_launch_rebind": manifest.get("qualification_launch_rebind"),
         "control_script_unchanged": True,
         "image_bundle_instance_scope_unchanged": True,
         "signed_get_url_stored": False,

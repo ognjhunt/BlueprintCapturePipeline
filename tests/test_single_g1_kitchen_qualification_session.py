@@ -67,7 +67,11 @@ def _minimal_inputs() -> dict:
                 "/workspace/runtime_overlay/run_patched_isaac_executor.py",
             ],
         },
-        "attempt": {"image_digest": "sha256:" + "1" * 64},
+        "attempt": {
+            "image_digest": "sha256:" + "1" * 64,
+            "source_commit": "f" * 40,
+            "source_dirty_patch_sha256": "9" * 64,
+        },
         "route": {"route": []},
         "seed": {"seed": 1001},
         "start_frame": b"exact-frame",
@@ -115,6 +119,14 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert inputs["attempt"]["image_digest"] == "sha256:" + "1" * 64
     assert rebound["plan"]["image_ref"] == TEST_IMAGE_REF
     assert rebound["attempt"]["image_digest"] == TEST_IMAGE_DIGEST
+    assert rebound["attempt"]["source_commit"] == TEST_SOURCE_COMMIT
+    assert rebound["attempt"]["source_dirty_patch_sha256"] == hashlib.sha256(b"").hexdigest()
+    assert rebound["attempt"]["source_bundle_attempt_identity"] == {
+        "source_commit": "f" * 40,
+        "source_dirty_patch_sha256": "9" * 64,
+        "image_digest": "sha256:" + "1" * 64,
+        "preserved_from_source_bundle": True,
+    }
     assert binding["source_image_ref"] == source_ref
     assert binding["release_image_ref"] == TEST_IMAGE_REF
     assert binding["source_bundle_sha256"] == qualification.BUNDLE_SHA256
@@ -252,6 +264,19 @@ def _live_manifest(tmp_path: Path) -> Path:
     path = tmp_path / qualification.SESSION_MANIFEST_NAME
     qualification._private_write_json(path, manifest)
     return path
+
+
+def test_explicit_bound_manifest_requires_complete_release_record(tmp_path: Path) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop("release_binding")
+    qualification._private_write_json(manifest_path, manifest)
+
+    with pytest.raises(
+        ValueError,
+        match="qualification_session_manifest_binding_invalid:release_binding_missing",
+    ):
+        qualification._load_private_manifest(manifest_path)
 
 
 def _bind_latest_attempt(
@@ -1889,6 +1914,18 @@ def test_refresh_bootstrap_is_two_phase_digest_bound_and_audit_chained(
     audit = after["refresh_audit_chain"][0]
     assert audit["previous_audit_sha256"] == "0" * 64
     assert len(audit["audit_sha256"]) == 64
+    assert after["qualification_launch_rebind"]["release_source_commit"] == (
+        TEST_SOURCE_COMMIT
+    )
+    assert audit["qualification_launch_rebind"] == after[
+        "qualification_launch_rebind"
+    ]
+    assert after["last_refresh"]["active_qualification_launch_rebind"] == after[
+        "qualification_launch_rebind"
+    ]
+    assert refreshed["qualification_launch_rebind"] == after[
+        "qualification_launch_rebind"
+    ]
     assert signed_url not in manifest_path.read_text()
     assert signed_url not in (tmp_path / "refresh_result.json").read_text()
 

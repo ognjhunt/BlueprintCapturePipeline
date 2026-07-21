@@ -26,6 +26,36 @@ def valid_image_binding(image_ref: object, image_digest: object) -> bool:
     return bool(match and image_digest == f"sha256:{match.group(1)}")
 
 
+def release_binding_record_blockers(value: object) -> list[str]:
+    binding = dict(value) if isinstance(value, Mapping) else {}
+    blockers: list[str] = []
+    if not binding:
+        return ["missing"]
+    if binding.get("schema_version") != RELEASE_BINDING_SCHEMA_VERSION:
+        blockers.append("schema")
+    if not valid_image_binding(binding.get("image_ref"), binding.get("image_digest")):
+        blockers.append("image")
+    if not valid_source_commit(binding.get("source_commit")):
+        blockers.append("source_commit")
+    if binding.get("source_patch_sha256") != EMPTY_PATCH_SHA256:
+        blockers.append("source_patch")
+    if binding.get("runnable_platform") != "linux/amd64":
+        blockers.append("platform")
+    if not str(binding.get("required_cuda_version") or ""):
+        blockers.append("cuda_version")
+    if not str(binding.get("required_cuda_version_source") or "").startswith(
+        "image_config_env:"
+    ):
+        blockers.append("cuda_source")
+    if binding.get("models_externalized") is not True:
+        blockers.append("models_externalized")
+    if binding.get("release_evidence_status") != "completed":
+        blockers.append("release_status")
+    if binding.get("thin_release_contract_status") != "passed":
+        blockers.append("thin_release_status")
+    return sorted(set(blockers))
+
+
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -63,6 +93,9 @@ def bind_inputs_to_release(
         raise ValueError("qualification_target_release_image_invalid")
     if not valid_source_commit(source_commit):
         raise ValueError("qualification_target_release_source_commit_invalid")
+    source_patch_sha256 = str(release_binding.get("source_patch_sha256") or "")
+    if source_patch_sha256 != EMPTY_PATCH_SHA256:
+        raise ValueError("qualification_target_release_source_patch_invalid")
     bundle_sha256 = str(inputs.get("bundle_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", bundle_sha256):
         raise ValueError("qualification_source_bundle_digest_invalid")
@@ -78,6 +111,7 @@ def bind_inputs_to_release(
         "release_image_ref": target_image_ref,
         "release_image_digest": target_image_digest,
         "release_source_commit": source_commit,
+        "release_source_patch_sha256": source_patch_sha256,
         "source_bundle_preserved": True,
         "derived_plan_and_attempt_required": True,
     }
@@ -86,6 +120,15 @@ def bind_inputs_to_release(
 
     plan["image_ref"] = target_image_ref
     plan["qualification_release_rebind"] = embedded_binding
+    source_attempt_identity = {
+        "source_commit": attempt.get("source_commit"),
+        "source_dirty_patch_sha256": attempt.get("source_dirty_patch_sha256"),
+        "image_digest": attempt.get("image_digest"),
+        "preserved_from_source_bundle": True,
+    }
+    attempt["source_bundle_attempt_identity"] = source_attempt_identity
+    attempt["source_commit"] = source_commit
+    attempt["source_dirty_patch_sha256"] = source_patch_sha256
     attempt["image_digest"] = target_image_digest
     attempt["qualification_release_rebind"] = embedded_binding
     attempt_bytes = (json.dumps(attempt, indent=2, sort_keys=True) + "\n").encode("utf-8")
