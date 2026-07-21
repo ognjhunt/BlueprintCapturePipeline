@@ -118,6 +118,13 @@ def _admission_digest(value: Any) -> bool:
     return bool(_SHA256_RE.fullmatch(str(value or "").strip().lower()))
 
 
+def _admission_normalized_digest(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    if not _SHA256_RE.fullmatch(digest):
+        return ""
+    return digest.removeprefix("sha256:")
+
+
 def _admission_finite(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -165,6 +172,22 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         if not _admission_digest(identity.get(field)):
             blockers.append(f"immutable_source_digest_missing_or_invalid:{field}")
 
+    verification = _admission_mapping(manifest.get("independent_evidence_verification"))
+    if verification.get("status") != "verified":
+        blockers.append("independent_evidence_verification_not_verified")
+    if verification.get("independent_of_importer_and_model_backend") is not True:
+        blockers.append("site_evidence_verifier_independence_not_proven")
+    for field in ("verifier_id", "verifier_version"):
+        if not str(verification.get(field) or "").strip():
+            blockers.append(f"independent_evidence_verifier_identity_missing:{field}")
+    for field in ("verification_report_sha256", "source_artifact_index_sha256"):
+        if not _admission_digest(verification.get(field)):
+            blockers.append(f"independent_evidence_verification_digest_invalid:{field}")
+    if _admission_normalized_digest(verification.get("verified_source_manifest_sha256")) != (
+        _admission_normalized_digest(identity.get("manifest_sha256"))
+    ):
+        blockers.append("independent_verification_source_manifest_digest_mismatch")
+
     rights = _admission_mapping(manifest.get("rights_privacy_provenance"))
     for field in (
         "consent_active",
@@ -203,6 +226,9 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         blockers.append("gravity_vector_inconsistent_with_up_axis")
     if not _admission_digest(geometry.get("coordinate_frame_manifest_sha256")):
         blockers.append("coordinate_frame_manifest_digest_missing_or_invalid")
+    for field in ("world_frame_id", "site_frame_id", "capture_frame_id"):
+        if not str(geometry.get(field) or "").strip():
+            blockers.append(f"coordinate_frame_identity_missing:{field}")
     for field in ("scale_evidence_sha256", "gravity_alignment_sha256"):
         if not _admission_digest(geometry.get(field)):
             blockers.append(f"metric_coordinate_evidence_digest_invalid:{field}")
@@ -226,6 +252,7 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
     if (
         reprojection_error is None
         or reprojection_limit is None
+        or reprojection_error < 0
         or reprojection_limit < 0
         or reprojection_error > reprojection_limit
     ):
@@ -243,6 +270,8 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         blockers.append("static_robot_evaluation_viewpoints_payload_invalid")
     if not viewpoints:
         blockers.append("static_robot_evaluation_viewpoints_missing")
+    viewpoint_ids: set[str] = set()
+    source_viewpoints: set[tuple[str, str]] = set()
     for index, viewpoint in enumerate(viewpoints):
         if viewpoint.get("derived_from_moving_scan") is not True:
             blockers.append(f"static_viewpoint_not_derived_from_scan:{index}")
@@ -257,6 +286,17 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         ):
             if not str(viewpoint.get(field) or "").strip():
                 blockers.append(f"static_viewpoint_missing:{index}:{field}")
+        viewpoint_id = str(viewpoint.get("viewpoint_id") or "").strip()
+        source_viewpoint = (
+            str(viewpoint.get("source_capture_id") or "").strip(),
+            str(viewpoint.get("source_frame_id") or "").strip(),
+        )
+        if viewpoint_id in viewpoint_ids:
+            blockers.append(f"static_viewpoint_duplicate_identity:{index}")
+        viewpoint_ids.add(viewpoint_id)
+        if source_viewpoint in source_viewpoints:
+            blockers.append(f"static_viewpoint_duplicate_source_frame:{index}")
+        source_viewpoints.add(source_viewpoint)
         if (
             str(viewpoint.get("source_capture_id") or "").strip()
             != str(identity.get("capture_id") or "").strip()
@@ -307,8 +347,12 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
             blockers.append(f"task_scene_grounding_payload_invalid:{field}")
         if not rows:
             blockers.append(f"task_scene_grounding_missing:{field}")
-        elif any(not str(row.get(identity_field) or "").strip() for row in rows):
-            blockers.append(f"task_scene_grounding_identity_missing:{field}")
+        else:
+            row_ids = [str(row.get(identity_field) or "").strip() for row in rows]
+            if any(not row_id for row_id in row_ids):
+                blockers.append(f"task_scene_grounding_identity_missing:{field}")
+            if len(row_ids) != len(set(row_ids)):
+                blockers.append(f"task_scene_grounding_duplicate_identity:{field}")
     if not _admission_digest(grounding.get("grounding_manifest_sha256")):
         blockers.append("task_scene_grounding_digest_missing_or_invalid")
 
@@ -317,13 +361,19 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         blockers.append("task_contracts_payload_invalid")
     if not task_contracts:
         blockers.append("explicit_task_contracts_missing")
+    if not _admission_digest(manifest.get("task_contract_manifest_sha256")):
+        blockers.append("task_contract_manifest_digest_missing_or_invalid")
     task_criterion_ids: set[tuple[str, str]] = set()
     for index, contract in enumerate(task_contracts):
         for field in ("task_id", "criterion_id", "evidence_type", "evaluator_mapping"):
             if not str(contract.get(field) or "").strip():
                 blockers.append(f"task_contract_missing:{index}:{field}")
         tolerance = _admission_finite(contract.get("tolerance"))
-        if tolerance is None or tolerance < 0 or not str(contract.get("tolerance_unit") or ""):
+        if (
+            tolerance is None
+            or tolerance < 0
+            or not str(contract.get("tolerance_unit") or "").strip()
+        ):
             blockers.append(f"task_contract_tolerance_invalid:{index}")
         task_criterion_id = (
             str(contract.get("task_id") or "").strip(),

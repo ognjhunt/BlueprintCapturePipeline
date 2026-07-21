@@ -99,6 +99,15 @@ def _evaluation_admission() -> dict[str, object]:
             "source_bundle_sha256": digest,
             "manifest_sha256": digest,
         },
+        "independent_evidence_verification": {
+            "status": "verified",
+            "independent_of_importer_and_model_backend": True,
+            "verifier_id": "site-admission-verifier",
+            "verifier_version": "2.0.0",
+            "verification_report_sha256": digest,
+            "source_artifact_index_sha256": digest,
+            "verified_source_manifest_sha256": digest,
+        },
         "rights_privacy_provenance": {
             "consent_active": True,
             "rights_verified": True,
@@ -117,6 +126,9 @@ def _evaluation_admission() -> dict[str, object]:
             "up_axis": "+Z",
             "gravity_m_s2": [0.0, 0.0, -9.81],
             "coordinate_frame_manifest_sha256": digest,
+            "world_frame_id": "world-z-up",
+            "site_frame_id": "site-held-out-site",
+            "capture_frame_id": "capture-1-origin",
             "scale_evidence_sha256": digest,
             "gravity_alignment_sha256": digest,
             "uncertainty": {
@@ -175,6 +187,7 @@ def _evaluation_admission() -> dict[str, object]:
                 "evaluator_mapping": "isaac.articulation_transition.v1",
             }
         ],
+        "task_contract_manifest_sha256": digest,
         "truth_layers": {
             "visual_geometry": {"status": "verified", "evidence_sha256": digest},
             "collision": {"status": "verified", "evidence_sha256": digest},
@@ -236,6 +249,10 @@ def test_legacy_site_admission_schema_cannot_enter_v2_contract() -> None:
             "camera_reprojection_error_missing_or_above_limit",
         ),
         (
+            lambda value: value["camera_time_calibration"].update({"reprojection_rmse_px": -0.1}),
+            "camera_reprojection_error_missing_or_above_limit",
+        ),
+        (
             lambda value: value["truth_layers"]["collision"].update({"status": "review_only"}),
             "collision_truth_not_verified",
         ),
@@ -282,6 +299,30 @@ def test_assisted_import_cannot_self_declare_evaluation_readiness(
                 {"out_of_distribution_behavior": "force_decision"}
             ),
             "ood_behavior_must_abstain",
+        ),
+        (
+            lambda value: value["independent_evidence_verification"].update(
+                {"verified_source_manifest_sha256": "b" * 64}
+            ),
+            "independent_verification_source_manifest_digest_mismatch",
+        ),
+        (
+            lambda value: value["independent_evidence_verification"].update(
+                {"independent_of_importer_and_model_backend": False}
+            ),
+            "site_evidence_verifier_independence_not_proven",
+        ),
+        (
+            lambda value: value["static_robot_evaluation_viewpoints"].append(
+                dict(value["static_robot_evaluation_viewpoints"][0])
+            ),
+            "static_viewpoint_duplicate_identity:1",
+        ),
+        (
+            lambda value: value["task_scene_grounding"]["task_objects"].append(
+                {"object_id": "door"}
+            ),
+            "task_scene_grounding_duplicate_identity:task_objects",
         ),
     ],
 )
