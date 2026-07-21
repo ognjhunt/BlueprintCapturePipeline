@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/omniverse_preflight_request.schema.json",
+  "title": "Omniverse library preflight request",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "component",
+    "scene_id",
+    "capture_id",
+    "input",
+    "component_identity",
+    "configuration_sha256",
+    "required_checks",
+    "required_output_kinds",
+    "execution_policy",
+    "claim_boundary_path",
+    "request_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"enum": ["ovrtx_preflight_request.v1", "ovphysx_preflight_request.v1"]},
+    "component": {"enum": ["ovrtx", "ovphysx"]},
+    "scene_id": {"type": "string", "minLength": 1},
+    "capture_id": {"type": "string", "minLength": 1},
+    "input": {
+      "type": "object",
+      "required": ["path", "sha256", "privacy_safe_pipeline_derived"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "privacy_safe_pipeline_derived": {"type": "boolean"}
+      }
+    },
+    "component_identity": {
+      "type": "object",
+      "required": ["version", "source_revision", "source_url", "license_id", "license_compatible", "prerelease"],
+      "properties": {
+        "version": {"type": "string"},
+        "source_revision": {"type": "string"},
+        "source_url": {"type": "string", "format": "uri"},
+        "license_id": {"type": "string"},
+        "license_compatible": {"type": "boolean"},
+        "prerelease": {"type": "boolean"}
+      }
+    },
+    "configuration_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "required_checks": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+    "required_output_kinds": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+    "required_output_metadata": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+    "usd_feature_preflight": {"type": "object"},
+    "execution_policy": {
+      "type": "object",
+      "required": ["gate_satisfied", "network_policy", "isolated_external_worker_required", "cold_and_warm_runs_required", "paid_resource_allocation_performed_by_this_command"],
+      "properties": {
+        "gate_satisfied": {"type": "boolean"},
+        "network_policy": {"const": "disabled"},
+        "isolated_external_worker_required": {"const": true},
+        "cold_and_warm_runs_required": {"const": true},
+        "paid_resource_allocation_performed_by_this_command": {"const": false}
+      }
+    },
+    "claim_boundary_path": {"type": "string"},
+    "request_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -43,6 +43,7 @@ from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_te
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import EpisodeSpecAgentAdapter, FakeEpisodeSpecAgentAdapter, build_episode_specs
 from .local_capture import resolve_local_capture_context
+from . import nvidia_siggraph_automation_evidence as nvidia_evidence
 from .scene_asset_preflight import build_scene_asset_preflight
 from .scenario_variation_instantiator import build_scenario_variation_instances
 
@@ -558,14 +559,6 @@ def _string_list(value: Any) -> List[str]:
     return out
 
 
-def _relative_to(base_dir: Path, target: Path) -> str:
-    return os.path.relpath(target.resolve(), start=base_dir.resolve()).replace("\\", "/")
-
-
-def _relative_if_file(base_dir: Path, target: Path) -> str | None:
-    return _relative_to(base_dir, target) if target.is_file() else None
-
-
 def _sha_payload(payload: Mapping[str, Any]) -> str:
     return sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
@@ -592,6 +585,7 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
         "marble_asset_validation": pipeline_dir / "marble_sim_assets" / "marble_asset_validation.json",
         "simready_scene_manifest": pipeline_dir / "simready" / "simready_scene_manifest.json",
         "simready_validation": pipeline_dir / "simready" / "simready_validation.json",
+        **nvidia_evidence.nvidia_source_artifact_paths(pipeline_dir),
         "robot_eval_dataset_manifest": (
             pipeline_dir / "robot_eval_dataset" / "robot_eval_dataset_manifest.json"
         ),
@@ -637,7 +631,7 @@ def _source_artifacts(*, automation_dir: Path, pipeline_dir: Path) -> Dict[str, 
     return {
         key: rel
         for key, path in sorted(candidates.items())
-        if (rel := _relative_if_file(automation_dir, path))
+        if (rel := nvidia_evidence.relative_if_file(automation_dir, path))
     }
 
 
@@ -1223,6 +1217,7 @@ def _build_plan(
                 ),
                 "simulator_execution_not_run": True,
             },
+            "nvidia_siggraph_experiments": nvidia_evidence.nvidia_experiment_plan_summary(pipeline_dir),
         },
         "automation_scope": {
             "plans_asset_conversion": True,
@@ -1237,11 +1232,12 @@ def _build_plan(
             "cpu_simulator_preflight_allowed_by_default": False,
             "simulator_execution_allowed_by_default": False,
             "gpu_training_allowed_by_default": False,
+            "external_omniverse_preflights_allowed_by_default": False,
         },
         "training_sources": {
             "cosmos_export_status": _string(cosmos_export.get("status")) or "missing",
             "cosmos_export_manifest": (
-                _relative_to(automation_dir, pipeline_dir / "cosmos_training_export" / "manifest.json")
+                nvidia_evidence.relative_to(automation_dir, pipeline_dir / "cosmos_training_export" / "manifest.json")
                 if (pipeline_dir / "cosmos_training_export" / "manifest.json").is_file()
                 else None
             ),
@@ -2273,8 +2269,8 @@ def _build_simulator_execution_manifest(
             generated_at=generated_at,
         )
         write_json(request_path, request)
-        requests[framework] = _relative_to(automation_dir, request_path)
-        result_paths[framework] = _relative_to(automation_dir, result_path)
+        requests[framework] = nvidia_evidence.relative_to(automation_dir, request_path)
+        result_paths[framework] = nvidia_evidence.relative_to(automation_dir, result_path)
 
         command = shlex.split(command_text) if command_text else []
         if not global_allowed:
@@ -2388,7 +2384,9 @@ def _training_orchestration_manifest(
             "status": "blocked",
             "reason": "approval_required",
             "runner": TRAINING_RUNNER,
-            "export_manifest_path": _relative_to(automation_dir, export_manifest_path)
+            "export_manifest_path": nvidia_evidence.relative_to(
+                automation_dir, export_manifest_path
+            )
             if export_manifest_path.is_file()
             else None,
             "training_command_template": training_command,
@@ -2415,11 +2413,11 @@ def _training_orchestration_manifest(
         "status": result.get("status"),
         "reason": result.get("reason"),
         "runner": TRAINING_RUNNER,
-        "export_manifest_path": _relative_to(automation_dir, export_manifest_path)
+        "export_manifest_path": nvidia_evidence.relative_to(automation_dir, export_manifest_path)
         if export_manifest_path.is_file()
         else None,
         "training_command_template": training_command,
-        "training_run_manifest_path": _relative_to(
+        "training_run_manifest_path": nvidia_evidence.relative_to(
             automation_dir,
             context.pipeline_root / "cosmos_training_export" / "training_run_manifest.json",
         ),
@@ -3524,6 +3522,7 @@ def build_simulation_automation(
         "agent_decision_ledger_path": "agent_decision_ledger.json",
         "agent_operator_status": agent_ledger.get("status"),
         "agent_operator_mode": agent_ledger.get("operator_mode"),
+        "nvidia_siggraph_experiment_artifacts": nvidia_evidence.nvidia_experiment_result_artifacts(automation_dir=automation_dir, pipeline_dir=pipeline_dir),
         "scene_asset_preflight_status": scene_preflight.get("status"),
         "episode_spec_status": episode_specs.get("status"),
         "episode_count": episode_specs.get("episode_count"),

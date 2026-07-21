@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/omniverse_preflight_benchmark_suite.v1.json",
+  "title": "Valid and negative fixture comparison for Omniverse preflights",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "status",
+    "manifest_path",
+    "fixture_count",
+    "valid_fixture_count",
+    "negative_fixture_count",
+    "cases",
+    "decisions",
+    "blockers",
+    "claim_boundary",
+    "benchmark_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "omniverse_preflight_benchmark_suite.v1"},
+    "status": {"enum": ["completed", "blocked"]},
+    "fixture_count": {"type": "integer", "minimum": 0},
+    "valid_fixture_count": {"type": "integer", "minimum": 0},
+    "negative_fixture_count": {"type": "integer", "minimum": 0},
+    "decisions": {
+      "type": "object",
+      "required": ["ovrtx", "ovphysx"]
+    },
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["same_scene_fixture_comparison_only", "candidate_retention_is_production_qualification"],
+      "properties": {
+        "same_scene_fixture_comparison_only": {"const": true},
+        "candidate_retention_is_production_qualification": {"const": false}
+      }
+    },
+    "benchmark_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.invalid/schemas/nvidia_siggraph_completion_matrix.schema.json",
+  "type": "object",
+  "required": ["schema_version", "implementation_complete", "status", "requirements", "verification_receipt", "post_conference_source_review", "external_qualification_state", "blockers", "claim_boundary", "matrix_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "nvidia_siggraph_2026_completion_matrix.v1"},
+    "implementation_complete": {"type": "boolean"},
+    "status": {"enum": ["implementation_complete_external_qualification_pending", "complete_with_source_review", "implementation_incomplete"]},
+    "requirements": {
+      "type": "array",
+      "minItems": 18,
+      "items": {"type": "object", "required": ["requirement_id", "implementation_status", "evidence", "missing_paths"]}
+    },
+    "verification_receipt": {"type": ["object", "null"]},
+    "post_conference_source_review": {"type": "object"},
+    "external_qualification_state": {"type": "object"},
+    "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "claim_boundary": {"type": "object"},
+    "matrix_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

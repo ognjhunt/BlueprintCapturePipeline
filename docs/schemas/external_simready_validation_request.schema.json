@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/external_simready_validation_request.v1.json",
+  "title": "External SimReady Validation Request",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "scene_id",
+    "capture_id",
+    "package_id",
+    "input",
+    "local_validation_baseline",
+    "requested_profile",
+    "requested_profile_version",
+    "validator",
+    "transformations",
+    "execution_policy",
+    "request_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "external_simready_validation_request.v1"},
+    "scene_id": {"type": "string", "minLength": 1},
+    "capture_id": {"type": "string", "minLength": 1},
+    "package_id": {"type": "string", "minLength": 1},
+    "input": {
+      "type": "object",
+      "required": ["path", "sha256", "source_manifest_ids", "privacy_safe_pipeline_derived"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "source_manifest_ids": {"type": "array", "items": {"type": "string"}},
+        "privacy_safe_pipeline_derived": {"const": true}
+      }
+    },
+    "local_validation_baseline": {
+      "type": "object",
+      "required": ["path", "sha256", "status"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "requested_profile": {"type": "string", "minLength": 1},
+    "requested_profile_version": {"type": "string", "minLength": 1},
+    "validator": {
+      "type": "object",
+      "required": ["package_version", "source_url", "source_revision", "license_id", "license_compatible", "executable_identity"],
+      "properties": {
+        "license_id": {"type": "string", "minLength": 1},
+        "license_compatible": {"const": true}
+      }
+    },
+    "transformations": {
+      "type": "object",
+      "required": ["requested", "allowed", "enabled"],
+      "properties": {
+        "requested": {"type": "array", "maxItems": 0},
+        "allowed": {"const": false},
+        "enabled": {"const": false}
+      }
+    },
+    "execution_policy": {
+      "type": "object",
+      "required": ["timeout_seconds", "resource_class", "network_policy", "advisory_only", "repeat_runs"],
+      "properties": {
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "resource_class": {"type": "string"},
+        "network_policy": {"const": "disabled"},
+        "advisory_only": {"const": true},
+        "repeat_runs": {"type": "integer", "minimum": 2}
+      }
+    },
+    "request_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

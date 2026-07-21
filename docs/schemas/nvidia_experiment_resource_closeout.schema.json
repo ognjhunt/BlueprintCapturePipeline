@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.invalid/schemas/nvidia_experiment_resource_closeout.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "provider_id", "allocation_id", "attempt_id", "exact_attempt_zero_proven", "global_provider_zero_proven", "total_spend_usd", "blockers", "claim_boundary", "closeout_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "nvidia_experiment_resource_closeout.v1"},
+    "status": {"enum": ["proven_zero", "blocked"]},
+    "provider_id": {"type": ["string", "null"]},
+    "allocation_id": {"type": ["string", "null"]},
+    "attempt_id": {"type": ["string", "null"]},
+    "exact_attempt_zero_proven": {"type": "boolean"},
+    "global_provider_zero_proven": {"type": "boolean"},
+    "total_spend_usd": {"type": ["number", "null"], "minimum": 0},
+    "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "claim_boundary": {"type": "object"},
+    "closeout_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/omniverse_preflight_claim_boundary.schema.json",
+  "title": "Omniverse library preflight claim boundary",
+  "type": "object",
+  "required": [
+    "raw_capture_authority_preserved",
+    "support_artifact_only",
+    "isaac_scene_parity_proven",
+    "isaac_sim_execution_proven",
+    "robot_policy_execution_proven",
+    "physics_contact_task_success_proven",
+    "rank_fidelity_result_proven",
+    "real_sensor_correlation_proven",
+    "real_world_task_success_proven",
+    "deployment_ready",
+    "public_claim_upgrade_allowed",
+    "advisory_only"
+  ],
+  "properties": {
+    "raw_capture_authority_preserved": {"const": true},
+    "support_artifact_only": {"const": true},
+    "isaac_scene_parity_proven": {"const": false},
+    "isaac_sim_execution_proven": {"const": false},
+    "robot_policy_execution_proven": {"const": false},
+    "physics_contact_task_success_proven": {"const": false},
+    "rank_fidelity_result_proven": {"const": false},
+    "real_sensor_correlation_proven": {"const": false},
+    "real_world_task_success_proven": {"const": false},
+    "deployment_ready": {"const": false},
+    "public_claim_upgrade_allowed": {"const": false},
+    "advisory_only": {"const": true}
+  },
+  "additionalProperties": true
+}

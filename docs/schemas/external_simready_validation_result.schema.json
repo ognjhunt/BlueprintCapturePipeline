@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/external_simready_validation_result.v1.json",
+  "title": "External SimReady Validation Result",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "status",
+    "advisory_only",
+    "external_validator_ran",
+    "normalized_findings",
+    "reported_identity",
+    "requested_identity",
+    "version_identity_verified",
+    "repeatability",
+    "local_validation_baseline",
+    "resource_context",
+    "input_sha256_before",
+    "input_sha256_after",
+    "input_modified",
+    "transformations_performed",
+    "blockers",
+    "claim_boundary",
+    "result_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "external_simready_validation_result.v1"},
+    "status": {"enum": ["blocked", "validation_failed", "passed_advisory"]},
+    "advisory_only": {"const": true},
+    "external_validator_ran": {"type": "boolean"},
+    "normalized_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "severity", "status", "object_path", "message", "suggested_action"]
+      }
+    },
+    "version_identity_verified": {"type": "boolean"},
+    "repeatability": {
+      "type": "object",
+      "required": ["required_runs", "completed_runs", "stable_normalized_results", "normalized_finding_fingerprints"],
+      "properties": {
+        "required_runs": {"type": "integer", "minimum": 2},
+        "completed_runs": {"type": "integer", "minimum": 0},
+        "stable_normalized_results": {"type": "boolean"},
+        "normalized_finding_fingerprints": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "input_sha256_before": {"type": ["string", "null"]},
+    "input_sha256_after": {"type": ["string", "null"]},
+    "input_modified": {"type": "boolean"},
+    "transformations_performed": {"type": "array", "maxItems": 0},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["advisory_only", "simulator_execution_proven", "rank_fidelity_result_proven"],
+      "properties": {
+        "advisory_only": {"const": true},
+        "simulator_execution_proven": {"const": false},
+        "rank_fidelity_result_proven": {"const": false}
+      }
+    },
+    "result_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

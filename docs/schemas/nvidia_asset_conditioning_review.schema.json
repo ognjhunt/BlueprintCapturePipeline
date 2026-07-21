@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/nvidia_asset_conditioning_review.v1.json",
+  "title": "Proposal-only NVIDIA asset conditioning review",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "status",
+    "component",
+    "buyer_need_id",
+    "component_identity",
+    "original_asset",
+    "candidate_outputs",
+    "staged_evidence",
+    "human_approval",
+    "activation_evaluation",
+    "blockers",
+    "claim_boundary",
+    "review_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "nvidia_asset_conditioning_review.v1"},
+    "status": {"enum": ["accepted_advisory_proposal", "blocked"]},
+    "component": {"enum": ["cad_to_simready_skill", "content_agents", "simready_blender"]},
+    "buyer_need_id": {"type": "string", "minLength": 1},
+    "original_asset": {
+      "type": "object",
+      "required": ["sha256_before", "sha256_after", "modified", "buyer_supplied_pipeline_staged"],
+      "properties": {
+        "sha256_before": {"type": ["string", "null"]},
+        "sha256_after": {"type": ["string", "null"]},
+        "modified": {"const": false},
+        "buyer_supplied_pipeline_staged": {"type": "boolean"}
+      }
+    },
+    "candidate_outputs": {"type": "array"},
+    "staged_evidence": {"type": "array"},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["proposal_only", "raw_capture_modified", "material_mass_friction_semantics_or_colliders_authoritative", "headless_pipeline_or_simulator_proof"],
+      "properties": {
+        "proposal_only": {"const": true},
+        "raw_capture_modified": {"const": false},
+        "material_mass_friction_semantics_or_colliders_authoritative": {"const": false},
+        "headless_pipeline_or_simulator_proof": {"const": false}
+      }
+    },
+    "review_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.invalid/schemas/nvidia_experiment_resource_context.schema.json",
+  "type": "object",
+  "required": ["schema_version", "resource_origin", "paid_resource", "admission", "claim_boundary", "context_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "nvidia_experiment_resource_context.v1"},
+    "resource_origin": {"enum": ["local_unpaid", "paid_provider"]},
+    "paid_resource": {"type": "boolean"},
+    "allocation": {"type": ["object", "null"]},
+    "admission": {"type": "object"},
+    "claim_boundary": {"type": "object"},
+    "context_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

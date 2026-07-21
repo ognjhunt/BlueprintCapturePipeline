@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/omniverse_preflight_runtime_receipt.schema.json",
+  "title": "Omniverse library preflight runtime receipt",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "component",
+    "component_ran",
+    "cold_run",
+    "warm_run",
+    "repeatable_output_digests",
+    "input_sha256",
+    "configuration_sha256",
+    "secret_values_in_artifact",
+    "paid_resource_allocation_performed"
+  ],
+  "properties": {
+    "schema_version": {"enum": ["ovrtx_preflight_runtime_receipt.v1", "ovphysx_preflight_runtime_receipt.v1"]},
+    "component": {"enum": ["ovrtx", "ovphysx"]},
+    "component_ran": {"type": "boolean"},
+    "cold_run": {"type": ["object", "null"]},
+    "warm_run": {"type": ["object", "null"]},
+    "repeatable_output_digests": {"type": "boolean"},
+    "input_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "configuration_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "secret_values_in_artifact": {"const": false},
+    "paid_resource_allocation_performed": {"const": false}
+  },
+  "additionalProperties": true
+}

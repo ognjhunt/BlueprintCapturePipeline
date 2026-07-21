@@ -1192,9 +1192,92 @@ Blueprint writes `sc3_eval_protocol.json` to keep those requirements, accepted
 anchor joins, correlation metrics, and robot/policy adapter contracts explicit.
 See
 [`docs/SC3_EVAL_PROTOCOL.md`](docs/SC3_EVAL_PROTOCOL.md).
+For benchmark-grade comparisons across evaluator backends, use
+`python -m blueprint_pipeline.benchmark_protocol compile` and
+`python -m blueprint_pipeline.benchmark_protocol report`. That protocol
+adds frozen public/hidden splits, fixed non-replaceable attempts, exact baseline
+and candidate checkpoint digests, seen/unseen generalization slices, confidence
+intervals, digest-bound episode evidence, and scoped external rank comparison.
+See
+[`docs/BLUEPRINT_BENCHMARK_PROTOCOL.md`](docs/BLUEPRINT_BENCHMARK_PROTOCOL.md).
 `cosmos3_super` is a high-cost adjudication candidate, not the default local
-path; `cosmos3_edge` is not treated as a released/default runtime unless a
-future session reverifies availability from primary sources.
+path. NVIDIA released the 4B `cosmos3_edge` model on 2026-07-20, but Blueprint
+does not treat it as a default or qualified runtime. Edge requires a distinct
+model profile and Blueprint-specific runtime/ranking evidence; it must not
+inherit the Nano-specific SC3-Eval recipe or paper results. See
+[`docs/NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md`](docs/NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md).
+
+### NVIDIA SIGGRAPH 2026 experimental support lanes
+
+The SIGGRAPH integrations are replaceable, advisory sidecars. None run by
+default, none install prerelease NVIDIA packages into the core environment, and
+none upgrade simulator, task-success, policy, ranking, real-sensor, or
+deployment claims.
+
+- `python -m blueprint_pipeline.external_simready_validation` normalizes a pinned SimReady
+  Foundation profile report. Use
+  `scripts/setup_simready_validator_env.sh` and
+  `scripts/run_simready_validator_worker.py`; transformations are prohibited in
+  the v1 lane.
+- `python -m blueprint_pipeline.simready_rule_calibration` compares repeatable validator findings
+  with frozen expert labels. Only explicitly approved zero-error rules may be
+  promoted to a CPU/pre-GPU blocking gate; all others remain advisory.
+- `python -m blueprint_pipeline.omniverse_library_preflight ovrtx` and
+  `python -m blueprint_pipeline.omniverse_library_preflight ovphysx` launch
+  isolated workers through an explicit command template. They require both the
+  CLI flag and `BLUEPRINT_ALLOW_OMNIVERSE_EXTERNAL_PREFLIGHT=true`, record cold
+  and warm runs, and write request/result/runtime-receipt/claim-boundary
+  artifacts under `pipeline/sensor_preflight/` or
+  `pipeline/physics_preflight/`. The reference workers are
+  `scripts/run_ovrtx_preflight_worker.py` and
+  `scripts/run_ovphysx_preflight_worker.py`.
+- An ovrtx preflight automatically adds specific checks for
+  `ParticleField3DGaussianSplat`, time-sampled episode state, semantic ID maps,
+  lidar/radar structure, and configured robot/target visibility. A generic USD
+  load cannot satisfy those checks.
+- `python -m blueprint_pipeline.omniverse_library_preflight benchmark` retains a library only when
+  the exact scene also has accepted Isaac execution evidence and the sidecar
+  demonstrates repeatable outputs, relevant failure coverage, preserved sensor
+  metadata, and the configured cold/warm runtime advantage.
+- `python -m blueprint_pipeline.omniverse_library_preflight benchmark-suite` additionally requires
+  valid and intentionally negative same-scene fixtures, CPU/GPU memory
+  measurements, and matching Isaac failure detection.
+- `python -m blueprint_pipeline.cosmos3_edge_experiment` is a separate 4B Edge profile; it
+  requires a frozen privacy-safe cell manifest and runs forward, inverse, and
+  reasoning modes separately. It never inherits Cosmos3-Nano/SC3 qualification.
+  NVIDIA's July 20 model card does not list Unitree G1 7D actions among the
+  supported action encodings, so the adapter blocks that substitution.
+- `python -m blueprint_pipeline.cosmos3_edge_qualification` consumes the Edge attempt
+  manifest, validated evaluator runtime receipt, and a frozen Blueprint
+  scorecard. It measures grounding, abstention, rank correlation, and failure
+  recall while still requiring a separate owner decision for any default.
+- `python -m blueprint_pipeline.gsplat_conformance` compares Blueprint's current
+  `ParticleField3DGaussianSplat` authoring with a pinned
+  `usd-convert-gsplat` oracle, including array values, quaternion sign
+  equivalence, stage units and up axis. It does not replace the current author.
+- ArtiFixer output is generated support pending a frozen, disjoint held-out
+  real-view evaluation. It remains neither captured pixels nor collision
+  geometry.
+- `python -m blueprint_pipeline.nvidia_siggraph_policy` writes the component policy registry.
+  Content Agents, SimReady Blender, standalone ovstage, and conference research
+  systems remain deferred behind their component-specific blockers. A fresh
+  source/version/license review is mandatory on or after 2026-07-24.
+- `python -m blueprint_pipeline.nvidia_asset_conditioning_review` records immutable proposal-only
+  evidence for buyer CAD, Content Agent, or Blender workflows. Physical
+  metadata stays non-authoritative and Content Agent/Blender proposals require
+  a human approval receipt.
+- `python -m blueprint_pipeline.nvidia_experiment_resource` binds paid execution to the
+  shared allocator admission and requires exact-attempt, global inventory,
+  zero-burn, and billing reconciliation evidence.
+- `python -m blueprint_pipeline.nvidia_siggraph_completion` maps every memo lane to
+  source, schema, test, and verification evidence while leaving external GPU
+  qualification explicitly unproven.
+
+Paid execution must enter through
+`python -m blueprint_pipeline.paid_resource_allocator cpu-build`,
+`model-volume`, or `gpu-canary`; provider-specific launchers are not supported.
+The experimental commands do not allocate resources themselves. Simulation
+automation merely surfaces any resulting artifacts as advisory inputs.
 
 When `eval_ready_task_grounding.json` is present, the OSCAR/Cosmos WAM evaluator
 copies it into the job directory, enriches task prompts with the selected

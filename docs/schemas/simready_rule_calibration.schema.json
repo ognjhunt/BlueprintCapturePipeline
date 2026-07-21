@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/simready_rule_calibration.v1.json",
+  "title": "Expert-reviewed SimReady rule calibration",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "status",
+    "manifest_path",
+    "case_count",
+    "expected_valid_case_count",
+    "expected_invalid_case_count",
+    "cases",
+    "rules",
+    "eligible_rule_ids",
+    "authorized_blocking_rule_ids",
+    "blockers",
+    "claim_boundary",
+    "calibration_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "simready_rule_calibration.v1"},
+    "status": {"enum": ["completed", "blocked"]},
+    "case_count": {"type": "integer", "minimum": 0},
+    "expected_valid_case_count": {"type": "integer", "minimum": 0},
+    "expected_invalid_case_count": {"type": "integer", "minimum": 0},
+    "eligible_rule_ids": {"type": "array", "items": {"type": "string"}},
+    "authorized_blocking_rule_ids": {"type": "array", "items": {"type": "string"}},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["uncalibrated_rules_advisory_only", "validator_pass_is_simulator_or_task_proof"],
+      "properties": {
+        "uncalibrated_rules_advisory_only": {"const": true},
+        "validator_pass_is_simulator_or_task_proof": {"const": false}
+      }
+    },
+    "calibration_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

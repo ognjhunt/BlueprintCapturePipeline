@@ -98,6 +98,12 @@ evidence contracts. `g1_kitchen_evaluation_run_adapter.py` translates that
 lane into `evaluation_run.v1`; new generic orchestration must not import
 kitchen modules.
 
+Benchmark-grade runs use `benchmark_task_scenario_pack@1`. The private adapter
+artifact is compiled by `python -m blueprint_pipeline.benchmark_protocol compile`
+and binds the Evaluation
+Run to a frozen split digest and immutable attempt plan. Public benchmark cards
+do not expose hidden scenario identifiers.
+
 Every binding resolves through `EvaluationRunAdapterRegistry`. Unknown adapter
 IDs fail closed. A new robot, policy, scene format, runtime, or proof adapter is
 added by registering an `EvaluationRunAdapterDescriptor`; the compiler itself

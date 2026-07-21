@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/cosmos3_edge_experiment_result.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "request_path", "attempt_manifest_path", "wam_command_adapter_result_path", "attempt_count", "stop_rule_evaluation", "blockers", "claim_boundary"],
+  "properties": {
+    "schema_version": {"const": "cosmos3_edge_experiment_result.v1"},
+    "status": {"enum": ["completed_advisory", "blocked"]},
+    "request_path": {"type": "string"},
+    "attempt_manifest_path": {"type": "string"},
+    "wam_command_adapter_result_path": {"type": "string"},
+    "attempt_count": {"type": "integer", "minimum": 0},
+    "stop_rule_evaluation": {"type": "object"},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {"type": "object"}
+  },
+  "additionalProperties": true
+}

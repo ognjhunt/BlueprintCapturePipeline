@@ -4855,7 +4855,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_job_orchestrator.py",
-              "sha256": "sha256:39638bbb1a8cdee8f8d6f768c9ae6a798b263779d3ae05dfdbb39241276694c1",
+              "sha256": "sha256:453e6474f8e860cd3a91978892229fe33af793a3e698390aaa77b2943287d465",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7260,7 +7260,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-05",
               "path": "src/blueprint_pipeline/evaluator_runtime_evidence.py",
-              "sha256": "sha256:1bcb7695d0659760521eeb168ab77bda470ec61222de916415a2512687569f34",
+              "sha256": "sha256:46c29096e8044d9790346d37af8600f68685f999998c0a143010c4ea3550d16d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10850,7 +10850,7 @@
             {
               "artifact_id": "SC3-21-AC-01-EV-04",
               "path": "src/blueprint_pipeline/evaluator_runtime_evidence.py",
-              "sha256": "sha256:1bcb7695d0659760521eeb168ab77bda470ec61222de916415a2512687569f34",
+              "sha256": "sha256:46c29096e8044d9790346d37af8600f68685f999998c0a143010c4ea3550d16d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",

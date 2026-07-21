@@ -270,7 +270,9 @@ def _site_reference_summary(*, context: Any, descriptor: Mapping[str, Any]) -> D
         "readiness": dict(manifest.get("readiness") or {})
         if isinstance(manifest.get("readiness"), Mapping)
         else {},
-        "validation_status": str(validation.get("status") or validation.get("readiness_state") or ""),
+        "validation_status": str(
+            validation.get("status") or validation.get("readiness_state") or ""
+        ),
         "sample_references": sample,
         "dense_payload_policy": "summary_only_no_dense_rows",
     }
@@ -367,7 +369,9 @@ def _indent_xml(root: ET.Element) -> None:
         pass
 
 
-def _write_mujoco_mjcf(path: Path, *, scene_name: str, objects: Sequence[Mapping[str, Any]]) -> None:
+def _write_mujoco_mjcf(
+    path: Path, *, scene_name: str, objects: Sequence[Mapping[str, Any]]
+) -> None:
     root = ET.Element("mujoco", {"model": _xml_name(scene_name, fallback="blueprint_site")})
     ET.SubElement(root, "compiler", {"angle": "radian", "coordinate": "local"})
     ET.SubElement(root, "option", {"timestep": "0.002", "gravity": "0 0 -9.81"})
@@ -411,7 +415,9 @@ def _write_mujoco_mjcf(path: Path, *, scene_name: str, objects: Sequence[Mapping
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 
-def _write_pybullet_urdf(path: Path, *, scene_name: str, objects: Sequence[Mapping[str, Any]]) -> None:
+def _write_pybullet_urdf(
+    path: Path, *, scene_name: str, objects: Sequence[Mapping[str, Any]]
+) -> None:
     robot = ET.Element("robot", {"name": _xml_name(scene_name, fallback="blueprint_site")})
     ET.SubElement(robot, "link", {"name": "world"})
     for obj in objects:
@@ -437,7 +443,11 @@ def _write_pybullet_urdf(path: Path, *, scene_name: str, objects: Sequence[Mappi
         joint = ET.SubElement(robot, "joint", {"name": f"world_to_{name}", "type": "fixed"})
         ET.SubElement(joint, "parent", {"link": "world"})
         ET.SubElement(joint, "child", {"link": name})
-        ET.SubElement(joint, "origin", {"xyz": f"{center[0]:.6f} {center[1]:.6f} {center[2]:.6f}", "rpy": "0 0 0"})
+        ET.SubElement(
+            joint,
+            "origin",
+            {"xyz": f"{center[0]:.6f} {center[1]:.6f} {center[2]:.6f}", "rpy": "0 0 0"},
+        )
     _indent_xml(robot)
     ensure_dir(path.parent)
     ET.ElementTree(robot).write(path, encoding="utf-8", xml_declaration=True)
@@ -538,6 +548,14 @@ def build_simready_assets(
     task_anchor_manifest: Optional[Mapping[str, Any]] = None,
     site_world_spec: Optional[Mapping[str, Any]] = None,
     hosted_session_runtime_manifest: Optional[Mapping[str, Any]] = None,
+    external_validator_command: str | Sequence[str] | None = None,
+    external_validator_version: str | None = None,
+    external_validator_source_revision: str | None = None,
+    external_validator_license_id: str = "Apache-2.0",
+    external_validator_license_compatible: bool = False,
+    external_validator_profile: str = "Prop-Robotics-Neutral",
+    external_validator_profile_version: str = "1.0.0",
+    external_validator_timeout_seconds: int = 180,
 ) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     pipeline_dir = context.pipeline_root
@@ -551,8 +569,7 @@ def build_simready_assets(
         or _read_optional_mapping(eval_dir / "object_geometry_manifest.json")
     )
     task_anchor = dict(
-        task_anchor_manifest
-        or _read_optional_mapping(eval_dir / "task_anchor_manifest.json")
+        task_anchor_manifest or _read_optional_mapping(eval_dir / "task_anchor_manifest.json")
     )
     site_world = dict(site_world_spec or _read_optional_mapping(eval_dir / "site_world_spec.json"))
     hosted_manifest = dict(
@@ -613,14 +630,20 @@ def build_simready_assets(
     }
     source_artifacts = {
         "capture_descriptor": str(context.descriptor_path.resolve()),
-        "object_geometry_manifest": _relative_if_exists(sim_dir, eval_dir / "object_geometry_manifest.json"),
-        "task_anchor_manifest": _relative_if_exists(sim_dir, eval_dir / "task_anchor_manifest.json"),
+        "object_geometry_manifest": _relative_if_exists(
+            sim_dir, eval_dir / "object_geometry_manifest.json"
+        ),
+        "task_anchor_manifest": _relative_if_exists(
+            sim_dir, eval_dir / "task_anchor_manifest.json"
+        ),
         "site_world_spec": _relative_if_exists(sim_dir, eval_dir / "site_world_spec.json"),
         "hosted_session_runtime_manifest": _relative_if_exists(
             sim_dir,
             eval_dir / "hosted_session_runtime_manifest.json",
         ),
-        "geometry_summary": _relative_if_exists(sim_dir, pipeline_dir / "geometry" / "geometry_summary.json"),
+        "geometry_summary": _relative_if_exists(
+            sim_dir, pipeline_dir / "geometry" / "geometry_summary.json"
+        ),
     }
     compact_frameworks = {
         key: {**dict(value), "path": _relative_to(sim_dir, Path(str(value["path"])))}
@@ -674,10 +697,47 @@ def build_simready_assets(
     write_json(sim_dir / "site_reference_summary.json", site_reference)
     write_json(sim_dir / "evidence_boundaries.json", evidence_boundaries)
     write_json(sim_dir / "task_scenarios.json", task_scenarios)
-    write_json(sim_dir / "robot_profiles.json", {"schema_version": "simready_robot_profiles.v1", "robot_profiles": robot_profiles})
-    write_json(sim_dir / "framework_review_manifest.json", {"schema_version": "simready_framework_review_manifest.v1", "frameworks": compact_frameworks})
+    write_json(
+        sim_dir / "robot_profiles.json",
+        {"schema_version": "simready_robot_profiles.v1", "robot_profiles": robot_profiles},
+    )
+    write_json(
+        sim_dir / "framework_review_manifest.json",
+        {
+            "schema_version": "simready_framework_review_manifest.v1",
+            "frameworks": compact_frameworks,
+        },
+    )
     write_json(sim_dir / "simready_scene_manifest.json", scene_manifest)
     write_json(sim_dir / "simready_validation.json", validation)
+    external_validation: Dict[str, Any] | None = None
+    if external_validator_command is not None:
+        if not external_validator_version or not external_validator_source_revision:
+            raise ValueError(
+                "external validator command requires exact version and source revision pins"
+            )
+        from .external_simready_validation import run_external_simready_validation
+
+        external_validation = run_external_simready_validation(
+            capture_root=context.capture_root,
+            input_usd=framework_artifacts["isaac_sim"]["path"],
+            validator_command=external_validator_command,
+            requested_profile=external_validator_profile,
+            profile_version=external_validator_profile_version,
+            validator_version=external_validator_version,
+            validator_source_revision=external_validator_source_revision,
+            validator_license_id=external_validator_license_id,
+            license_compatible=external_validator_license_compatible,
+            timeout_seconds=external_validator_timeout_seconds,
+        )
+        scene_manifest["external_validation"] = {
+            "status": external_validation["status"],
+            "advisory_only": True,
+            "request_path": "external_validation_request.json",
+            "result_path": "external_validation_result.json",
+            "claim_boundary_path": "external_validation_claim_boundary.json",
+        }
+        write_json(sim_dir / "simready_scene_manifest.json", scene_manifest)
     return {
         "schema_version": "v1",
         "capture_root": str(context.capture_root),
@@ -685,6 +745,7 @@ def build_simready_assets(
         "validation_path": str((sim_dir / "simready_validation.json").resolve()),
         "status": validation["overall_status"],
         "framework_artifacts": compact_frameworks,
+        "external_validation": external_validation,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 
@@ -694,10 +755,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Build local simulator-review artifacts without executing simulators"
     )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
+    parser.add_argument(
+        "--external-validator-command",
+        default=None,
+        help=(
+            "Isolated command template with {input}, {output}, {profile}, and "
+            "{profile_version} placeholders"
+        ),
+    )
+    parser.add_argument("--external-validator-version", default=None)
+    parser.add_argument("--external-validator-source-revision", default=None)
+    parser.add_argument("--external-validator-license-id", default="Apache-2.0")
+    parser.add_argument("--external-validator-license-compatible", action="store_true")
+    parser.add_argument("--external-validator-profile", default="Prop-Robotics-Neutral")
+    parser.add_argument("--external-validator-profile-version", default="1.0.0")
+    parser.add_argument("--external-validator-timeout-seconds", type=int, default=180)
     args = parser.parse_args(argv)
 
     try:
-        result = build_simready_assets(capture_root=args.capture_root)
+        result = build_simready_assets(
+            capture_root=args.capture_root,
+            external_validator_command=args.external_validator_command,
+            external_validator_version=args.external_validator_version,
+            external_validator_source_revision=args.external_validator_source_revision,
+            external_validator_license_id=args.external_validator_license_id,
+            external_validator_license_compatible=args.external_validator_license_compatible,
+            external_validator_profile=args.external_validator_profile,
+            external_validator_profile_version=args.external_validator_profile_version,
+            external_validator_timeout_seconds=args.external_validator_timeout_seconds,
+        )
     except (PipelineError, ValueError, OSError) as exc:
         print(f"[simready] FAILED: {exc}")
         return 1

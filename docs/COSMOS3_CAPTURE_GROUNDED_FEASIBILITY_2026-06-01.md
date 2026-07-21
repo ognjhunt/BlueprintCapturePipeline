@@ -24,12 +24,18 @@ video, audio, and action, and as supporting modes that include multimodal
 reasoning, text-to-image, image-to-video, video-to-video future prediction,
 video transfer, forward dynamics, inverse dynamics, and policy-style
 video-action generation. It also makes the scale and hardware posture explicit:
-Nano and Super are the released variants in the paper, with Nano built around an
+At the date of this original assessment, Nano and Super were the released
+variants in the paper, with Nano built around an
 8B dense transformer and 16B total parameters, and Super around a 32B dense
 transformer and 64B total parameters. Edge is described as a later release. The
 report includes single-GPU serving measurements for Nano on H100 NVL and B200,
 so "single GPU" should mean an adequate NVIDIA workstation/datacenter GPU, not
 this local Mac.
+
+Update as of 2026-07-21: NVIDIA released the 4B Cosmos 3 Edge model on
+2026-07-20. It remains an unqualified experimental candidate for Blueprint and
+does not inherit the Nano-specific SC3-Eval recipe or results. See
+[`NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md`](NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md).
 
 ## Blueprint Fit
 

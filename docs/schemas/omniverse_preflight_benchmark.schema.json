@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/omniverse_preflight_benchmark.schema.json",
+  "title": "Omniverse preflight comparison against accepted Isaac execution",
+  "type": "object",
+  "required": ["schema_version", "status", "input_sha256", "accepted_isaac_baseline", "decisions", "blockers", "claim_boundary", "benchmark_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "omniverse_preflight_benchmark.v1"},
+    "status": {"enum": ["completed", "blocked"]},
+    "input_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "accepted_isaac_baseline": {"type": "boolean"},
+    "decisions": {
+      "type": "object",
+      "required": ["ovrtx", "ovphysx"],
+      "properties": {
+        "ovrtx": {"type": "object"},
+        "ovphysx": {"type": "object"}
+      }
+    },
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {"type": "object"},
+    "benchmark_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

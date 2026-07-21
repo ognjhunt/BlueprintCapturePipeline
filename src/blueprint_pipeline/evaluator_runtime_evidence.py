@@ -68,6 +68,12 @@ _SUPPORTED_WAM_OUTPUTS = {
         "model_family": "oscar",
         "model_version_path": ("official_oscar_release", "model_name"),
     },
+    "cosmos3_edge_wam_command_adapter.v1": {
+        "adapter_id": "blueprint_cosmos3_edge_experimental_command_adapter",
+        "subprocess_field": "edge_subprocess",
+        "model_family": "cosmos3edge",
+        "model_version_path": ("model_provenance", "model"),
+    },
 }
 
 
