@@ -9,6 +9,8 @@ the compute provider or the product architecture.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -115,6 +117,22 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def canonical_evaluator_backend_manifest_sha256(manifest: Mapping[str, Any]) -> str:
+    """Hash the complete backend manifest using its canonical JSON representation."""
+
+    try:
+        payload = json.dumps(
+            dict(manifest),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return ""
+    return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
 def required_evaluator_evidence_digest_fields(profile_id: str) -> tuple[str, ...]:
     """Return the common and profile-specific digest chain for ``profile_id``.
 
@@ -178,6 +196,13 @@ def validate_evaluator_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
         blockers.append("evaluator_backend_model_digest_does_not_match_checkpoint")
     if backend.get("backend_is_compute_provider") is not False:
         blockers.append("evaluator_backend_must_not_be_compute_provider")
+    backend_manifest_digest = canonical_evaluator_backend_manifest_sha256(backend)
+    if not backend_manifest_digest:
+        blockers.append("evaluator_backend_manifest_payload_invalid")
+    elif _normalized_digest(row.get("evaluator_backend_manifest_sha256")) != (
+        _normalized_digest(backend_manifest_digest)
+    ):
+        blockers.append("evaluator_backend_manifest_digest_mismatch")
 
     for field in required_evaluator_evidence_digest_fields(profile_id):
         if not _digest(row.get(field)):

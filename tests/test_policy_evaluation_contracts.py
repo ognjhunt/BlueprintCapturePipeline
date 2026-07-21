@@ -14,6 +14,7 @@ from blueprint_pipeline.policy_evaluation_contracts import (
 from blueprint_pipeline.evaluator_evidence_profiles import (
     COMMON_DIGEST_FIELDS,
     EVALUATOR_EVIDENCE_PROFILES,
+    canonical_evaluator_backend_manifest_sha256,
     required_evaluator_evidence_digest_fields,
     validate_evaluator_evidence,
 )
@@ -68,6 +69,20 @@ def _design() -> dict:
     rows = []
     for policy_index, policy in enumerate(policies):
         for seed in range(MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION):
+            evaluator_backend = {
+                "schema_version": "evaluator_backend_manifest.v1",
+                "backend_id": "cosmos-3-evaluator-adapter",
+                "model_family": "cosmos",
+                "model_version": "3",
+                "adapter_version": "1.0.0",
+                "backend_kind": "world_model",
+                "execution_interface": "provider_worker",
+                "model_artifact_sha256": _digest(2600),
+                "adapter_code_sha256": _digest(2351),
+                "runtime_manifest_sha256": _digest(2352),
+                "license_manifest_sha256": _digest(2353),
+                "backend_is_compute_provider": False,
+            }
             rows.append(
                 {
                     "policy_id": policy["policy_id"],
@@ -81,21 +96,10 @@ def _design() -> dict:
                     "policy_runtime_output_sha256": _digest(1600 + policy_index * 100 + seed),
                     "initial_condition_sha256": _digest(600 + seed),
                     "evaluator_profile_manifest_sha256": _digest(2300),
-                    "evaluator_backend_manifest_sha256": _digest(2350),
-                    "evaluator_backend": {
-                        "schema_version": "evaluator_backend_manifest.v1",
-                        "backend_id": "cosmos-3-evaluator-adapter",
-                        "model_family": "cosmos",
-                        "model_version": "3",
-                        "adapter_version": "1.0.0",
-                        "backend_kind": "world_model",
-                        "execution_interface": "provider_worker",
-                        "model_artifact_sha256": _digest(2600),
-                        "adapter_code_sha256": _digest(2351),
-                        "runtime_manifest_sha256": _digest(2352),
-                        "license_manifest_sha256": _digest(2353),
-                        "backend_is_compute_provider": False,
-                    },
+                    "evaluator_backend_manifest_sha256": (
+                        canonical_evaluator_backend_manifest_sha256(evaluator_backend)
+                    ),
+                    "evaluator_backend": evaluator_backend,
                     "evaluator_request_sha256": _digest(2400 + policy_index * 100 + seed),
                     "evaluator_checkpoint_sha256": _digest(2600),
                     "model_output_sha256": _digest(2700 + policy_index * 100 + seed),
@@ -286,7 +290,6 @@ def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -
     )
 
     alternate_backend = deepcopy(generic)
-    alternate_backend["evaluator_backend_manifest_sha256"] = _digest(7990)
     alternate_backend["evaluator_checkpoint_sha256"] = _digest(7991)
     alternate_backend["evaluator_backend"].update(
         {
@@ -296,9 +299,19 @@ def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -
             "model_artifact_sha256": _digest(7991),
         }
     )
+    alternate_backend["evaluator_backend_manifest_sha256"] = (
+        canonical_evaluator_backend_manifest_sha256(alternate_backend["evaluator_backend"])
+    )
     alternate_result = validate_evaluator_evidence(alternate_backend)
     assert alternate_result["status"] == "validated"
     assert alternate_result["evaluator_model_family"] == "future-world-model"
+
+    unbound_backend = deepcopy(generic)
+    unbound_backend["evaluator_backend_manifest_sha256"] = _digest(7990)
+    assert (
+        "evaluator_backend_manifest_digest_mismatch"
+        in validate_evaluator_evidence(unbound_backend)["blockers"]
+    )
 
     blocked_manifest = deepcopy(generic)
     blocked_manifest["generated_episode_results_status"] = "completed"
@@ -685,9 +698,6 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
     for row_index, (design_row, result_row) in enumerate(
         zip(candidate["evaluation_design"]["rows"], candidate["episode_results"])
     ):
-        design_row["evaluator_backend"]["backend_id"] = (
-            " cosmos-3-evaluator-adapter " if row_index % 2 else "cosmos-3-evaluator-adapter"
-        )
         design_row.update(
             {
                 "evaluator_profile_id": (
@@ -703,6 +713,11 @@ def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> Non
         result_row.update(
             {
                 "evaluator_profile_id": "oscar_roboarena_v2",
+                "evaluator_backend_id": (
+                    " cosmos-3-evaluator-adapter "
+                    if row_index % 2
+                    else "cosmos-3-evaluator-adapter"
+                ),
                 **profile_digests,
             }
         )
