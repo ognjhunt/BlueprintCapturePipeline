@@ -103,10 +103,12 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _rows(value: Any) -> list[dict[str, Any]]:
+def _strict_rows(value: Any) -> tuple[list[dict[str, Any]], bool]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return []
-    return [dict(item) for item in value if isinstance(item, Mapping)]
+        return [], False
+    if any(not isinstance(item, Mapping) for item in value):
+        return [], False
+    return [dict(item) for item in value], True
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -211,7 +213,11 @@ def validate_evaluator_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
     if profile_id == "sc3_eval_v3":
         termination_chunk = row.get("termination_chunk_index")
         threshold = _finite(row.get("inverse_error_threshold"))
-        recovered_dimensions = _rows(row.get("recovered_inverse_action_dimensions"))
+        recovered_dimensions, recovered_dimensions_payload_valid = _strict_rows(
+            row.get("recovered_inverse_action_dimensions")
+        )
+        if not recovered_dimensions_payload_valid:
+            blockers.append("sc3_recovered_inverse_action_dimensions_payload_invalid")
         if (
             isinstance(termination_chunk, bool)
             or not isinstance(termination_chunk, int)

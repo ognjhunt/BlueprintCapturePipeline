@@ -183,7 +183,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
     if request.get("label_authority_independent_of_policy_and_model") is not True:
         blockers.append("label_authority_not_independent")
 
-    results = _rows(request.get("episode_results"))
+    results, results_payload_valid = _strict_rows(request.get("episode_results"))
+    if not results_payload_valid:
+        blockers.append("episode_results_payload_invalid")
     design_rows_by_key = {
         (
             str(row.get("policy_id") or ""),
@@ -354,14 +356,18 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
                 + f":{decided_count}<{MINIMUM_MATCHED_REPLICATES_PER_POLICY_CONDITION}"
             )
 
-    preferences = _rows(request.get("pairwise_preferences"))
+    preferences, preferences_payload_valid = _strict_rows(request.get("pairwise_preferences"))
+    if not preferences_payload_valid:
+        blockers.append("pairwise_preferences_payload_invalid")
     for index, row in enumerate(preferences):
         if row.get("label_blinded_and_randomized") is not True:
             blockers.append(f"pairwise_label_not_blinded_randomized:{index}")
         if row.get("outcome") not in {"policy_a", "policy_b", "tie", "inconclusive"}:
             blockers.append(f"pairwise_outcome_invalid:{index}")
-        evidence_refs = _rows(row.get("evidence_refs"))
-        if not evidence_refs:
+        evidence_refs, evidence_payload_valid = _strict_rows(row.get("evidence_refs"))
+        if not evidence_payload_valid:
+            blockers.append(f"pairwise_evidence_payload_invalid:{index}")
+        elif not evidence_refs:
             blockers.append(f"pairwise_evidence_missing:{index}")
         elif any(not _digest(ref.get("sha256")) for ref in evidence_refs):
             blockers.append(f"pairwise_evidence_digest_invalid:{index}")
@@ -419,7 +425,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     required_ood_axes = {"site", "task", "embodiment", "viewpoint", "appearance"}
-    ood_rows = _rows(request.get("ood_axis_results"))
+    ood_rows, ood_payload_valid = _strict_rows(request.get("ood_axis_results"))
+    if not ood_payload_valid:
+        blockers.append("ood_axis_results_payload_invalid")
     observed_ood_axes = {str(row.get("axis") or "") for row in ood_rows}
     if observed_ood_axes != required_ood_axes:
         blockers.append("ood_axis_results_missing_or_mismatched")
@@ -450,7 +458,11 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         if not _digest(row.get("split_manifest_sha256")):
             blockers.append(f"ood_axis_split_manifest_digest_missing:{index}")
 
-    anchor_rows = _rows(request.get("accepted_external_anchor_rows"))
+    anchor_rows, anchor_payload_valid = _strict_rows(
+        request.get("accepted_external_anchor_rows", [])
+    )
+    if not anchor_payload_valid:
+        blockers.append("accepted_external_anchor_rows_payload_invalid")
     anchor_status = "correlation_not_measured"
     if anchor_rows:
         blockers.append("accepted_anchor_rows_require_frozen_calibration_recomputation")

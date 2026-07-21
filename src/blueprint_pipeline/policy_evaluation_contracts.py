@@ -23,10 +23,12 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _rows(value: Any) -> list[dict[str, Any]]:
+def _strict_rows(value: Any) -> tuple[list[dict[str, Any]], bool]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return []
-    return [dict(item) for item in value if isinstance(item, Mapping)]
+        return [], False
+    if any(not isinstance(item, Mapping) for item in value):
+        return [], False
+    return [dict(item) for item in value], True
 
 
 def _digest(value: Any) -> bool:
@@ -79,7 +81,9 @@ def validate_policy_adapter_manifest(manifest: Mapping[str, Any]) -> dict[str, A
         or any(not str(item).strip() for item in units)
     ):
         blockers.append("policy_action_units_missing_or_dimension_mismatch")
-    bounds = _rows(action.get("bounds"))
+    bounds, bounds_payload_valid = _strict_rows(action.get("bounds"))
+    if not bounds_payload_valid:
+        blockers.append("policy_action_bounds_payload_invalid")
     if len(bounds) != dimension:
         blockers.append("policy_action_bounds_missing_or_dimension_mismatch")
     else:
@@ -135,7 +139,9 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
     blockers: list[str] = []
     if design.get("schema_version") != POLICY_EVALUATION_DESIGN_SCHEMA_VERSION:
         blockers.append("policy_evaluation_design_schema_missing_or_unsupported")
-    policies = _rows(design.get("policies"))
+    policies, policies_payload_valid = _strict_rows(design.get("policies"))
+    if not policies_payload_valid:
+        blockers.append("policy_registry_payload_invalid")
     validations = [validate_policy_adapter_manifest(row) for row in policies]
     for validation in validations:
         blockers.extend(
@@ -157,7 +163,9 @@ def validate_policy_evaluation_design(design: Mapping[str, Any]) -> dict[str, An
     if design.get("policy_specific_scenario_changes_prohibited") is not True:
         blockers.append("policy_specific_scenario_changes_not_prohibited")
 
-    rows = _rows(design.get("rows"))
+    rows, rows_payload_valid = _strict_rows(design.get("rows"))
+    if not rows_payload_valid:
+        blockers.append("evaluation_rows_payload_invalid")
     cells_by_policy: dict[str, set[tuple[str, str, str, int]]] = defaultdict(set)
     replicate_seeds: dict[tuple[str, str, str], dict[str, set[int]]] = defaultdict(
         lambda: defaultdict(set)

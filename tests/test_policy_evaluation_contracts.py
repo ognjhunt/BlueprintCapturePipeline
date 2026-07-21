@@ -148,6 +148,13 @@ def test_policy_adapter_requires_exact_action_semantics() -> None:
     assert "policy_action_units_missing_or_dimension_mismatch" in result["blockers"]
     assert "policy_missing_action_behavior_must_block" in result["blockers"]
 
+    malformed_bounds = _policy(0)
+    malformed_bounds["action_contract"]["bounds"].append("corrupt-bound")
+    assert (
+        "policy_action_bounds_payload_invalid"
+        in validate_policy_adapter_manifest(malformed_bounds)["blockers"]
+    )
+
 
 def test_generic_policy_design_admits_seven_independent_matched_policies() -> None:
     result = validate_policy_evaluation_design(_design())
@@ -199,6 +206,18 @@ def test_policy_design_rejects_asymmetric_cells_and_fallback_injection() -> None
         blocker.startswith("asymmetric_matched_cell_coverage:") for blocker in result["blockers"]
     )
     assert "decision_grade_row_forbidden_or_unproven:0:fallback_policy_used" in result["blockers"]
+
+
+def test_policy_design_rejects_malformed_registry_and_row_entries() -> None:
+    candidate = _design()
+    candidate["policies"].append("corrupt-policy")
+    candidate["rows"].append("corrupt-row")
+
+    result = validate_policy_evaluation_design(candidate)
+
+    assert result["status"] == "blocked"
+    assert "policy_registry_payload_invalid" in result["blockers"]
+    assert "evaluation_rows_payload_invalid" in result["blockers"]
 
 
 def test_policy_design_requires_identical_matched_cell_bindings_across_policies() -> None:
@@ -329,6 +348,12 @@ def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -
         }
     )
     assert validate_evaluator_evidence(sc3)["status"] == "validated"
+    malformed_sc3 = deepcopy(sc3)
+    malformed_sc3["recovered_inverse_action_dimensions"].append("corrupt-dimension")
+    assert (
+        "sc3_recovered_inverse_action_dimensions_payload_invalid"
+        in validate_evaluator_evidence(malformed_sc3)["blockers"]
+    )
     sc3["evaluator_outcome_status"] = "abstained"
     sc3["criterion_result_status"] = "abstained"
     assert (
@@ -587,6 +612,32 @@ def test_decision_grade_ranking_rejects_non_mapping_criterion_evidence_entries()
 
     assert result["status"] == "blocked"
     assert "criterion_evidence_payload_invalid:0:0" in result["blockers"]
+
+
+def test_decision_grade_ranking_rejects_malformed_top_level_row_collections() -> None:
+    candidate = _ranking_request()
+    candidate["episode_results"].append("corrupt-episode")
+    candidate["pairwise_preferences"].append("corrupt-preference")
+    candidate["ood_axis_results"].append("corrupt-ood-row")
+    candidate["accepted_external_anchor_rows"].append("corrupt-anchor")
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "episode_results_payload_invalid" in result["blockers"]
+    assert "pairwise_preferences_payload_invalid" in result["blockers"]
+    assert "ood_axis_results_payload_invalid" in result["blockers"]
+    assert "accepted_external_anchor_rows_payload_invalid" in result["blockers"]
+
+
+def test_decision_grade_ranking_rejects_malformed_pairwise_evidence_entries() -> None:
+    candidate = _ranking_request()
+    candidate["pairwise_preferences"][0]["evidence_refs"].append("corrupt-evidence-ref")
+
+    result = build_decision_grade_ranking(candidate)
+
+    assert result["status"] == "blocked"
+    assert "pairwise_evidence_payload_invalid:0" in result["blockers"]
 
 
 def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> None:
