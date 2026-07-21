@@ -826,6 +826,7 @@ class _OwnerBinding:
     id_path: Path
     launched_id: str
     qualification_manifest_path: Path | None = None
+    qualification_manifest_alias_path: Path | None = None
 
 
 def _read_bounded_regular_text(
@@ -884,7 +885,7 @@ def _read_bounded_regular_text(
 
 def _validated_qualification_manifest(
     id_path: Path, launched_id: str
-) -> Path | None:
+) -> tuple[Path, Path] | None:
     """Return an adjacent, fully bound live Vast qualification manifest."""
 
     # Import lazily so ordinary render-owner scans do not load the qualification
@@ -908,6 +909,7 @@ def _validated_qualification_manifest(
         if not isinstance(value, Mapping):
             continue
         manifest = dict(value)
+        discovered_source = manifest_path.expanduser().absolute()
         try:
             source = manifest_path.parent.resolve(strict=True) / manifest_path.name
         except OSError:
@@ -921,7 +923,7 @@ def _validated_qualification_manifest(
             and str(manifest.get("instance_id") or "") == launched_id
             and manifest.get("continuing_spend") is True
         ):
-            return source
+            return source, discovered_source
     return None
 
 
@@ -948,10 +950,16 @@ def _iter_owner_bindings(
                 "pipeline" in path.parts
             )
             qualification_manifest_path = None
+            qualification_manifest_alias_path = None
             if filename == "started_vast_instance_id.txt" and not render_owner:
-                qualification_manifest_path = _validated_qualification_manifest(
+                qualification_manifest = _validated_qualification_manifest(
                     path, launched_id
                 )
+                if qualification_manifest is not None:
+                    (
+                        qualification_manifest_path,
+                        qualification_manifest_alias_path,
+                    ) = qualification_manifest
             if not render_owner and qualification_manifest_path is None:
                 continue
             dedupe_key = (
@@ -967,6 +975,7 @@ def _iter_owner_bindings(
                     id_path=path,
                     launched_id=launched_id,
                     qualification_manifest_path=qualification_manifest_path,
+                    qualification_manifest_alias_path=qualification_manifest_alias_path,
                 )
             )
     return found
@@ -1065,9 +1074,13 @@ def find_protected_pod_ids(
     for filename in OWNER_ID_FILENAMES:
         owner_files.extend(_iter_owner_bindings(output_roots, filename))
     qualification_targets = tuple(
-        str(binding.qualification_manifest_path)
+        str(candidate)
         for binding in owner_files
-        if binding.qualification_manifest_path is not None
+        for candidate in (
+            binding.qualification_manifest_path,
+            binding.qualification_manifest_alias_path,
+        )
+        if candidate is not None
     )
     for binding in owner_files:
         path = binding.id_path
@@ -1169,12 +1182,14 @@ def _cmd_option_references_exact_path(
             continue
         if len(parts) < 3:
             continue
-        matching_targets = {
-            resolved
-            for item in candidate_targets
-            if (resolved := _resolved_path_identity(item)).parts[-len(parts) :]
-            == parts
-        }
+        matching_targets = set()
+        for item in candidate_targets:
+            # Retain the lexical path used to discover a manifest (including a
+            # configured symlink-root alias) for suffix matching, but collapse
+            # matches to their resolved identity before deciding uniqueness.
+            lexical = Path(os.path.abspath(Path(item).expanduser()))
+            if lexical.parts[-len(parts) :] == parts:
+                matching_targets.add(_resolved_path_identity(item))
         if matching_targets == {target_path}:
             return True
     return False

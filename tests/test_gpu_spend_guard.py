@@ -457,6 +457,27 @@ def test_symlinked_manifest_directory_argument_is_protected(tmp_path: Path) -> N
     assert protected == {"45483300"}
 
 
+def test_relative_symlinked_manifest_directory_argument_is_protected(
+    tmp_path: Path,
+) -> None:
+    real_root = tmp_path / "capture_volume"
+    attempt = real_root / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    linked_root = tmp_path / "output"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    relative_manifest = Path("output") / manifest_path.relative_to(real_root)
+
+    protected = guard.find_protected_pod_ids(
+        [linked_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
 def test_terminal_persistent_qualification_is_not_protected(tmp_path: Path) -> None:
     attempt = tmp_path / "single_g1_kitchen_episode" / "attempt_047_qualification"
     manifest_path = _write_qualification_owner(
