@@ -315,9 +315,10 @@ def _validate_runtime_rows(
     envelopes: Any,
     *,
     design_rows: Sequence[Mapping[str, Any]],
-) -> tuple[list[dict[str, Any]], set[str], list[str]]:
+) -> tuple[list[dict[str, Any]], set[str], list[str], bool]:
     rows, payload_valid = _strict_rows(envelopes)
     blockers: list[str] = []
+    provider_evaluator_separation_proven = payload_valid and bool(rows)
     if not payload_valid:
         blockers.append("runtime_evidence_requests_payload_invalid")
     design_by_key = {_cell_key(row): dict(row) for row in design_rows if _cell_key(row) is not None}
@@ -328,6 +329,7 @@ def _validate_runtime_rows(
         key = _cell_key(envelope)
         if key is None:
             blockers.append(f"runtime_evidence_cell_identity_invalid:{index}")
+            provider_evaluator_separation_proven = False
             continue
         if key in observed_keys:
             blockers.append(f"duplicate_runtime_evidence_cell:{index}")
@@ -340,6 +342,22 @@ def _validate_runtime_rows(
         if _cell_key(candidate_row) != key:
             blockers.append(f"runtime_normalized_cell_identity_mismatch:{index}")
         expected = design_by_key.get(key, {})
+        expected_backend = _mapping(expected.get("evaluator_backend"))
+        actual_backend = _mapping(candidate_row.get("evaluator_backend"))
+        receipt = _mapping(request.get("runtime_receipt"))
+        provider_execution = _mapping(receipt.get("provider_execution"))
+        if any(
+            value is not False
+            for value in (
+                expected.get("evaluator_identity_is_compute_provider"),
+                candidate_row.get("evaluator_identity_is_compute_provider"),
+                expected_backend.get("backend_is_compute_provider"),
+                actual_backend.get("backend_is_compute_provider"),
+                receipt.get("backend_is_compute_provider"),
+                provider_execution.get("provider_is_evaluator_identity"),
+            )
+        ):
+            provider_evaluator_separation_proven = False
         profile_id = str(expected.get("evaluator_profile_id") or "")
         for field in (
             *required_evaluator_evidence_digest_fields(profile_id),
@@ -353,16 +371,12 @@ def _validate_runtime_rows(
                 matches = actual_value == expected_value
             if not matches:
                 blockers.append(f"runtime_design_binding_mismatch:{index}:{field}")
-        expected_backend = _mapping(expected.get("evaluator_backend"))
-        actual_backend = _mapping(candidate_row.get("evaluator_backend"))
         for field in ("backend_id", "model_family", "model_version"):
             if (
                 str(actual_backend.get(field) or "").strip()
                 != str(expected_backend.get(field) or "").strip()
             ):
                 blockers.append(f"runtime_design_backend_binding_mismatch:{index}:{field}")
-        receipt = _mapping(request.get("runtime_receipt"))
-        provider_execution = _mapping(receipt.get("provider_execution"))
         execution_id = str(provider_execution.get("execution_id") or "").strip()
         if not execution_id:
             blockers.append(f"runtime_provider_execution_identity_missing:{index}")
@@ -382,7 +396,13 @@ def _validate_runtime_rows(
         )
     if observed_keys != set(design_by_key):
         blockers.append("runtime_evidence_does_not_exactly_cover_evaluation_design")
-    return summaries, execution_ids, sorted(set(blockers))
+        provider_evaluator_separation_proven = False
+    return (
+        summaries,
+        execution_ids,
+        sorted(set(blockers)),
+        provider_evaluator_separation_proven,
+    )
 
 
 def _validate_allocations(
@@ -678,7 +698,12 @@ def build_evaluator_qualification_workflow(request: Mapping[str, Any]) -> dict[s
         design_rows=design_rows,
         release_split_manifest_sha256=str(release_identity.get("data_split_manifest_sha256") or ""),
     )
-    runtime_summaries, execution_ids, runtime_blockers = _validate_runtime_rows(
+    (
+        runtime_summaries,
+        execution_ids,
+        runtime_blockers,
+        provider_evaluator_separation_proven,
+    ) = _validate_runtime_rows(
         request.get("runtime_evidence_requests"), design_rows=design_rows
     )
     allocation_summaries, allocation_blockers, allocation_ids = _validate_allocations(
@@ -799,7 +824,7 @@ def build_evaluator_qualification_workflow(request: Mapping[str, Any]) -> dict[s
         "qualification_id": qualification_id or None,
         "evaluated_at": request.get("evaluated_at"),
         "source_commit": source_commit or None,
-        "request_sha256": _canonical_sha256(request),
+        "request_sha256": None if sensitive_paths else _canonical_sha256(request),
         "lifecycle": lifecycle,
         "matrix": {
             "policy_count": design_validation.get("policy_count", 0),
@@ -816,7 +841,7 @@ def build_evaluator_qualification_workflow(request: Mapping[str, Any]) -> dict[s
         "model_provider_proof": {
             "runtime_rows": runtime_summaries,
             "provider_allocations": allocation_summaries,
-            "providers_are_not_evaluator_identities": True,
+            "providers_are_not_evaluator_identities": provider_evaluator_separation_proven,
         },
         "ranking": ranking,
         "delivery": delivery_summary,

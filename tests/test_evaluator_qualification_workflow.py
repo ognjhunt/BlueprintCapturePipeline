@@ -577,6 +577,8 @@ def test_workflow_composes_real_contracts_without_inheriting_paper_metrics() -> 
     assert result["ranking"]["pearson"] is None
     assert result["ranking"]["spearman"] is None
     assert result["ranking"]["mmrv"] is None
+    assert result["request_sha256"] is not None
+    assert result["model_provider_proof"]["providers_are_not_evaluator_identities"] is True
     assert all(state["status"] != "blocked" for state in result["lifecycle"].values())
     assert result["claim_boundary"]["simulator_ranking_is_not_physical_robot_performance"]
     assert result["claim_boundary"]["paper_metrics_are_not_blueprint_results"]
@@ -612,6 +614,20 @@ def test_runtime_normalized_row_must_name_the_outer_envelope_cell() -> None:
         "model_execution"
     ]["blockers"]
     assert result["lifecycle"]["model_execution"]["status"] == "blocked"
+    assert result["status"] == "blocked"
+
+
+def test_provider_evaluator_separation_summary_is_derived_from_rows() -> None:
+    request = _qualification_request()
+    request["evaluation_design"]["rows"][0]["evaluator_identity_is_compute_provider"] = True
+    request["runtime_evidence_requests"][0]["normalization_request"]["evaluator_row"][
+        "evaluator_identity_is_compute_provider"
+    ] = True
+
+    result = build_evaluator_qualification_workflow(request)
+
+    assert result["lifecycle"]["evaluator_validity"]["status"] == "blocked"
+    assert result["model_provider_proof"]["providers_are_not_evaluator_identities"] is False
     assert result["status"] == "blocked"
 
 
@@ -680,6 +696,7 @@ def test_workflow_rejects_separator_and_prefix_variants_of_sensitive_keys() -> N
 
     assert result["lifecycle"]["request_acceptance"]["status"] == "blocked"
     assert result["sensitive_paths_omitted"] == 4
+    assert result["request_sha256"] is None
     serialized = json.dumps(result)
     assert all(
         value not in serialized
