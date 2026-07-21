@@ -230,7 +230,16 @@ def _evaluation_admission() -> dict[str, object]:
             "abstention_enabled": True,
             "out_of_distribution_behavior": "abstain",
             "calibration_manifest_sha256": digest,
-            "axes": [{"axis": "site"}, {"axis": "task"}, {"axis": "embodiment"}],
+            "axes": [
+                {"axis": "site"},
+                {"axis": "task"},
+                {"axis": "policy_family"},
+                {"axis": "embodiment"},
+                {"axis": "camera"},
+                {"axis": "visual"},
+                {"axis": "dynamics"},
+                {"axis": "contact"},
+            ],
         },
     }
 
@@ -370,7 +379,13 @@ def test_assisted_import_cannot_self_declare_evaluation_readiness(
         ),
         (
             lambda value: value["ood_abstention"].update({"axes": [{"axis": "embodiment"}]}),
-            "ood_required_site_task_axes_missing",
+            ("ood_required_axes_missing:camera,contact,dynamics,policy_family,site,task,visual"),
+        ),
+        (
+            lambda value: value["ood_abstention"].update(
+                {"axes": [{"axis": "site"}, {"axis": "task"}]}
+            ),
+            ("ood_required_axes_missing:camera,contact,dynamics,embodiment,policy_family,visual"),
         ),
     ],
 )

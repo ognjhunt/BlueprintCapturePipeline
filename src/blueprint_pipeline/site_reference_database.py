@@ -18,6 +18,18 @@ from .common import read_json, utc_now_iso, write_json
 SITE_REFERENCE_DATABASE_SCHEMA_VERSION = "site_reference_database.v1"
 WEBAPP_PROJECTION_SCHEMA_VERSION = "site_reference_webapp_projection.v1"
 EVALUATION_SITE_ADMISSION_SCHEMA_VERSION = "evaluation_site_admission.v2"
+EVALUATION_SITE_REQUIRED_OOD_AXES = frozenset(
+    {
+        "site",
+        "task",
+        "policy_family",
+        "embodiment",
+        "camera",
+        "visual",
+        "dynamics",
+        "contact",
+    }
+)
 
 REFERENCE_RECORD_REQUIRED_FIELDS = (
     "reference_id",
@@ -504,8 +516,9 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
     ood_axis_ids = [str(row.get("axis") or "").strip() for row in ood_axes]
     if any(not axis for axis in ood_axis_ids) or len(ood_axis_ids) != len(set(ood_axis_ids)):
         blockers.append("ood_axis_identity_missing_or_duplicate")
-    if not {"site", "task"}.issubset(set(ood_axis_ids)):
-        blockers.append("ood_required_site_task_axes_missing")
+    missing_ood_axes = sorted(EVALUATION_SITE_REQUIRED_OOD_AXES - set(ood_axis_ids))
+    if missing_ood_axes:
+        blockers.append("ood_required_axes_missing:" + ",".join(missing_ood_axes))
 
     blockers = sorted(set(blockers))
     assisted_import = str(manifest.get("importer_kind") or "").startswith("scaniverse")
