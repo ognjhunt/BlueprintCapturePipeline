@@ -14,6 +14,8 @@
     "anti_cherry_picking_verified",
     "policy_aggregates",
     "breakdowns",
+    "evidence_summary",
+    "evidence_index_sha256",
     "blockers",
     "claim_boundary",
     "benchmark_report_sha256"
@@ -42,6 +44,25 @@
     "external_rank_fidelity": {
       "type": ["object", "null"]
     },
+    "evidence_summary": {
+      "type": "object",
+      "required": [
+        "attempt_count",
+        "video_count",
+        "action_trace_count",
+        "evaluator_output_count",
+        "all_attempts_digest_bound"
+      ],
+      "properties": {
+        "attempt_count": { "type": "integer", "minimum": 0 },
+        "video_count": { "type": "integer", "minimum": 0 },
+        "action_trace_count": { "type": "integer", "minimum": 0 },
+        "evaluator_output_count": { "type": "integer", "minimum": 0 },
+        "all_attempts_digest_bound": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "evidence_index_sha256": { "$ref": "#/$defs/sha256" },
     "blockers": {
       "type": "array",
       "items": { "type": "string" }

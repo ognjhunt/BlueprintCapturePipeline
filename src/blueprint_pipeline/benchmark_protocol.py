@@ -33,6 +33,8 @@ REPORT_SCHEMA_VERSION = "blueprint_benchmark_report.v1"
 EXTERNAL_REFERENCE_SCHEMA_VERSION = "external_reference_results.v1"
 EXTERNAL_REPORT_SCHEMA_VERSION = "blueprint_external_rank_fidelity_report.v1"
 WEBAPP_PROJECTION_SCHEMA_VERSION = "blueprint_webapp_benchmark_projection.v1"
+BENCHMARK_REQUEST_STATUS_SCHEMA_VERSION = "blueprint_benchmark_protocol_request_status.v1"
+EVIDENCE_INDEX_SCHEMA_VERSION = "blueprint_benchmark_evidence_index.v1"
 
 BOOTSTRAP_REPLICATES = 10_000
 # Kept separate so focused unit tests can shorten sampling without weakening the
@@ -313,10 +315,7 @@ def validate_benchmark_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _chmod_private(path: Path) -> None:
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    path.chmod(0o600)
 
 
 def compile_benchmark_protocol(
@@ -849,6 +848,8 @@ def _webapp_projection(
         "scoring": card.get("scoring"),
         "policy_aggregates": safe_aggregates,
         "breakdowns": safe_breakdowns,
+        "evidence_summary": (report or {}).get("evidence_summary"),
+        "evidence_index_sha256": (report or {}).get("evidence_index_sha256"),
         "external_rank_fidelity": external_report,
         "hidden_scenario_identifiers_included": False,
         "claim_boundary": {
@@ -969,6 +970,35 @@ def build_benchmark_report(
             policy_registry=registry,
             seed=seed,
         )
+    evidence_index = _private_evidence_index(
+        spec=spec,
+        plan=plan,
+        results=results,
+    )
+    evidence_rows = _rows(evidence_index.get("attempt_evidence"))
+    evidence_summary = {
+        "attempt_count": len(evidence_rows),
+        "video_count": sum(
+            _artifact_ref_valid(_mapping(row.get("evidence")).get("video"))
+            for row in evidence_rows
+        ),
+        "action_trace_count": sum(
+            _artifact_ref_valid(_mapping(row.get("evidence")).get("action_trace"))
+            for row in evidence_rows
+        ),
+        "evaluator_output_count": sum(
+            _artifact_ref_valid(_mapping(row.get("evidence")).get("evaluator_output"))
+            for row in evidence_rows
+        ),
+        "all_attempts_digest_bound": all(
+            all(
+                _artifact_ref_valid(_mapping(row.get("evidence")).get(key))
+                for key in ("video", "action_trace", "evaluator_output")
+            )
+            for row in evidence_rows
+        )
+        and len(evidence_rows) == len(expected),
+    }
     blockers = sorted(set(blockers))
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -981,6 +1011,8 @@ def build_benchmark_report(
         "anti_cherry_picking_verified": set(observed) == set(expected) and len(observed) == len(result_rows),
         "policy_aggregates": policy_aggregates,
         "breakdowns": breakdowns,
+        "evidence_summary": evidence_summary,
+        "evidence_index_sha256": evidence_index["evidence_index_sha256"],
         "external_rank_fidelity": external_report,
         "blockers": blockers,
         "claim_boundary": {
@@ -993,6 +1025,52 @@ def build_benchmark_report(
     }
     report["benchmark_report_sha256"] = canonical_sha256(report)
     return report
+
+
+def _private_evidence_index(
+    *,
+    spec: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    results: Mapping[str, Any],
+) -> dict[str, Any]:
+    attempts_by_id = {
+        _string(row.get("attempt_id")): row for row in _rows(plan.get("attempts"))
+    }
+    attempt_evidence: list[dict[str, Any]] = []
+    for result in _rows(results.get("attempts")):
+        attempt_id = _string(result.get("attempt_id"))
+        scheduled = _mapping(attempts_by_id.get(attempt_id))
+        attempt_evidence.append(
+            {
+                "attempt_id": attempt_id,
+                "policy_id": scheduled.get("policy_id") or result.get("policy_id"),
+                "checkpoint_sha256": scheduled.get("checkpoint_sha256")
+                or result.get("checkpoint_sha256"),
+                "scenario_id": scheduled.get("scenario_id") or result.get("scenario_id"),
+                "split": scheduled.get("split") or result.get("split"),
+                "seed": scheduled.get("seed") if scheduled else result.get("seed"),
+                "rollout_index": scheduled.get("rollout_index")
+                if scheduled
+                else result.get("rollout_index"),
+                "status": result.get("status"),
+                "evidence": _mapping(result.get("evidence")),
+            }
+        )
+    payload = {
+        "schema_version": EVIDENCE_INDEX_SCHEMA_VERSION,
+        "benchmark_id": spec.get("benchmark_id"),
+        "benchmark_version": spec.get("benchmark_version"),
+        "execution_plan_sha256": plan.get("execution_plan_sha256"),
+        "private": True,
+        "attempt_evidence": attempt_evidence,
+        "claim_boundary": {
+            "contains_hidden_scenario_material": True,
+            "webapp_export_allowed": False,
+            "public_export_allowed": False,
+        },
+    }
+    payload["evidence_index_sha256"] = canonical_sha256(payload)
+    return payload
 
 
 def write_benchmark_report(
@@ -1014,6 +1092,12 @@ def write_benchmark_report(
     )
     report_path = output_dir / "benchmark_report.json"
     write_json(report_path, report)
+    evidence_index_path = output_dir / "benchmark_evidence_index.private.json"
+    write_json(
+        evidence_index_path,
+        _private_evidence_index(spec=spec, plan=plan, results=results),
+    )
+    _chmod_private(evidence_index_path)
     external = report.get("external_rank_fidelity")
     if isinstance(external, Mapping):
         write_json(output_dir / "external_rank_fidelity_report.json", external)
@@ -1029,6 +1113,167 @@ def write_benchmark_report(
     )
     write_json(output_dir / "webapp_benchmark_projection.json", projection)
     return {"report": report, "webapp_projection": projection}
+
+
+def _request_artifact_path(
+    value: Any, *, allowed_root: Path, field: str
+) -> tuple[Path | None, str | None]:
+    uri = _string(value)
+    if not uri:
+        return None, f"{field}_missing"
+    if uri.startswith("file://"):
+        candidate = Path(uri[7:])
+    elif "://" in uri:
+        return None, f"{field}_requires_staged_local_artifact"
+    else:
+        candidate = Path(uri)
+    if not candidate.is_absolute():
+        candidate = allowed_root / candidate
+    resolved = candidate.resolve()
+    root = allowed_root.resolve()
+    if not resolved.is_relative_to(root):
+        return None, f"{field}_outside_allowed_root"
+    if not resolved.is_file():
+        return None, f"{field}_not_found"
+    return resolved, None
+
+
+def execute_benchmark_protocol_request(
+    request: Mapping[str, Any], *, output_dir: Path, allowed_root: Path
+) -> dict[str, Any]:
+    """Compile/report a benchmark request without exposing private split material.
+
+    Remote artifacts must first be staged beneath ``allowed_root`` by an
+    authenticated owner-system adapter. This function never downloads URLs or
+    resolves customer credentials.
+    """
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    protocol = _mapping(request.get("benchmark_protocol_request"))
+    mode = _string(protocol.get("mode") or "standard")
+    status_path = output_dir / "benchmark_protocol_status.json"
+    if mode != "benchmark_grade":
+        status = {
+            "schema_version": BENCHMARK_REQUEST_STATUS_SCHEMA_VERSION,
+            "mode": "standard",
+            "status": "not_requested",
+            "blockers": [],
+            "artifacts": {},
+            "claim_boundary": {
+                "benchmark_execution_proven": False,
+                "private_split_material_exported": False,
+                PUBLIC_CLAIM_UPGRADE_KEY: False,
+            },
+        }
+        write_json(status_path, status)
+        return status
+
+    blockers: list[str] = []
+    if protocol.get("schema_version") != "blueprint_benchmark_protocol_request.v1":
+        blockers.append("benchmark_protocol_request_schema_missing_or_unsupported")
+    for field in (
+        "frozen_hidden_splits_required",
+        "fixed_rollouts_required",
+        "confidence_intervals_required",
+        "exact_checkpoint_digests_required",
+    ):
+        if protocol.get(field) is not True:
+            blockers.append(f"benchmark_protocol_requirement_missing:{field}")
+    if protocol.get("private_split_material_allowed_in_webapp") is not False:
+        blockers.append("private_split_material_must_not_enter_webapp")
+    if protocol.get("scheduler_owner") != "BlueprintCapturePipeline":
+        blockers.append("benchmark_scheduler_owner_must_be_pipeline")
+
+    spec_path, path_error = _request_artifact_path(
+        protocol.get("benchmark_spec_uri"),
+        allowed_root=allowed_root,
+        field="benchmark_spec_uri",
+    )
+    if path_error:
+        blockers.append(path_error)
+    compiled: dict[str, Any] | None = None
+    report_outcome: dict[str, Any] | None = None
+    if not blockers and spec_path is not None:
+        spec = _load_mapping(spec_path)
+        declared_digest = _digest(protocol.get("benchmark_spec_sha256"))
+        if not declared_digest or declared_digest != canonical_sha256(spec):
+            blockers.append("benchmark_spec_sha256_mismatch")
+        else:
+            try:
+                compiled = compile_benchmark_protocol(spec, output_dir=output_dir)
+            except ValueError:
+                blockers.append("benchmark_spec_validation_failed")
+
+    results_path: Path | None = None
+    external_path: Path | None = None
+    if compiled and _string(protocol.get("benchmark_results_uri")):
+        results_path, results_error = _request_artifact_path(
+            protocol.get("benchmark_results_uri"),
+            allowed_root=allowed_root,
+            field="benchmark_results_uri",
+        )
+        if results_error:
+            blockers.append(results_error)
+        if _string(protocol.get("external_reference_uri")):
+            external_path, external_error = _request_artifact_path(
+                protocol.get("external_reference_uri"),
+                allowed_root=allowed_root,
+                field="external_reference_uri",
+            )
+            if external_error:
+                blockers.append(external_error)
+        if not blockers and results_path is not None:
+            report_outcome = write_benchmark_report(
+                spec=_load_mapping(spec_path),
+                plan=compiled["execution_plan"],
+                results=_load_mapping(results_path),
+                output_dir=output_dir,
+                external_reference=(
+                    _load_mapping(external_path) if external_path is not None else None
+                ),
+            )
+
+    if blockers:
+        request_status = "blocked"
+    elif report_outcome:
+        request_status = str(report_outcome["report"].get("status") or "blocked")
+    else:
+        request_status = "planned"
+    artifacts = {
+        key: str(Path(value).relative_to(output_dir))
+        for key, value in (compiled or {}).get("artifacts", {}).items()
+    }
+    if report_outcome:
+        artifacts.update(
+            {
+                "benchmark_report": "benchmark_report.json",
+                "private_evidence_index": "benchmark_evidence_index.private.json",
+                "webapp_projection": "webapp_benchmark_projection.json",
+            }
+        )
+        if report_outcome["report"].get("external_rank_fidelity"):
+            artifacts["external_rank_fidelity_report"] = (
+                "external_rank_fidelity_report.json"
+            )
+    status = {
+        "schema_version": BENCHMARK_REQUEST_STATUS_SCHEMA_VERSION,
+        "mode": "benchmark_grade",
+        "status": request_status,
+        "blockers": sorted(set(blockers)),
+        "artifacts": artifacts,
+        "benchmark_id": (compiled or {}).get("benchmark_card", {}).get("benchmark_id"),
+        "benchmark_version": (compiled or {}).get("benchmark_card", {}).get(
+            "benchmark_version"
+        ),
+        "claim_boundary": {
+            "benchmark_execution_proven": request_status == "complete",
+            "private_split_material_exported": False,
+            "webapp_projection_contains_private_split_material": False,
+            PUBLIC_CLAIM_UPGRADE_KEY: False,
+        },
+    }
+    write_json(status_path, status)
+    return status
 
 
 def _load_mapping(path: str | Path) -> dict[str, Any]:

@@ -5,15 +5,19 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.benchmark_protocol as benchmark_protocol
-from blueprint_pipeline.benchmark_protocol import (
-    BOOTSTRAP_REPLICATES,
-    EXTERNAL_REFERENCE_SCHEMA_VERSION,
-    RESULTS_SCHEMA_VERSION,
-    SPEC_SCHEMA_VERSION,
-    build_benchmark_report,
-    compile_benchmark_protocol,
-    validate_benchmark_spec,
-)
+from blueprint_pipeline.common import write_json
+
+
+BOOTSTRAP_REPLICATES = benchmark_protocol.BOOTSTRAP_REPLICATES
+EXTERNAL_REFERENCE_SCHEMA_VERSION = benchmark_protocol.EXTERNAL_REFERENCE_SCHEMA_VERSION
+RESULTS_SCHEMA_VERSION = benchmark_protocol.RESULTS_SCHEMA_VERSION
+SPEC_SCHEMA_VERSION = benchmark_protocol.SPEC_SCHEMA_VERSION
+build_benchmark_report = benchmark_protocol.build_benchmark_report
+canonical_sha256 = benchmark_protocol.canonical_sha256
+compile_benchmark_protocol = benchmark_protocol.compile_benchmark_protocol
+execute_benchmark_protocol_request = benchmark_protocol.execute_benchmark_protocol_request
+validate_benchmark_spec = benchmark_protocol.validate_benchmark_spec
+write_benchmark_report = benchmark_protocol.write_benchmark_report
 
 
 DIGEST_A = "a" * 64
@@ -226,6 +230,14 @@ def test_report_has_all_metric_confidence_intervals_breakdowns_and_external_fide
 
     assert report["status"] == "complete"
     assert report["anti_cherry_picking_verified"] is True
+    assert report["evidence_summary"] == {
+        "attempt_count": 8,
+        "video_count": 8,
+        "action_trace_count": 8,
+        "evaluator_output_count": 8,
+        "all_attempts_digest_bound": True,
+    }
+    assert len(report["evidence_index_sha256"]) == 64
     for policy in report["policy_aggregates"]:
         for metric in policy["metrics"].values():
             assert len(metric["confidence_interval_95"]) == 2
@@ -235,6 +247,18 @@ def test_report_has_all_metric_confidence_intervals_breakdowns_and_external_fide
     }
     assert report["external_rank_fidelity"]["status"] == "blocked"
     assert "external_rank_fidelity_requires_three_exact_checkpoint_matches" in report["external_rank_fidelity"]["blockers"]
+    written = write_benchmark_report(
+        spec=spec,
+        plan=compiled["execution_plan"],
+        results=results,
+        output_dir=tmp_path,
+        external_reference=reference,
+        seed=7,
+    )
+    assert written["webapp_projection"]["evidence_summary"]["video_count"] == 8
+    evidence_index_path = tmp_path / "benchmark_evidence_index.private.json"
+    assert evidence_index_path.is_file()
+    assert evidence_index_path.stat().st_mode & 0o077 == 0
 
 
 def test_external_rank_fidelity_measures_three_exact_checkpoints(tmp_path: Path):
@@ -306,3 +330,61 @@ def test_invalid_spec_rejects_unfrozen_hidden_and_missing_seen_unseen_axis():
     assert "benchmark_must_be_frozen" in blockers
     assert "required_split_missing:hidden_test" in blockers
     assert "seen_unseen_coverage_missing:camera" in blockers
+
+
+def test_benchmark_grade_job_request_compiles_private_plan_and_redacted_projection(
+    tmp_path: Path,
+):
+    spec = valid_spec()
+    spec_path = tmp_path / "private" / "benchmark_spec.json"
+    write_json(spec_path, spec)
+    status = execute_benchmark_protocol_request(
+        {
+            "benchmark_protocol_request": {
+                "schema_version": "blueprint_benchmark_protocol_request.v1",
+                "mode": "benchmark_grade",
+                "benchmark_spec_uri": "private/benchmark_spec.json",
+                "benchmark_spec_sha256": canonical_sha256(spec),
+                "frozen_hidden_splits_required": True,
+                "fixed_rollouts_required": True,
+                "confidence_intervals_required": True,
+                "exact_checkpoint_digests_required": True,
+                "private_split_material_allowed_in_webapp": False,
+                "scheduler_owner": "BlueprintCapturePipeline",
+            }
+        },
+        output_dir=tmp_path / "job" / "benchmark_protocol",
+        allowed_root=tmp_path,
+    )
+    assert status["status"] == "planned"
+    assert status["claim_boundary"]["private_split_material_exported"] is False
+    assert (tmp_path / "job/benchmark_protocol/benchmark_split_manifest.private.json").is_file()
+    projection_text = (
+        tmp_path / "job/benchmark_protocol/webapp_benchmark_projection.json"
+    ).read_text()
+    assert "scenario-hidden_test" not in projection_text
+
+
+def test_benchmark_grade_job_request_blocks_digest_mismatch(tmp_path: Path):
+    spec_path = tmp_path / "benchmark_spec.json"
+    write_json(spec_path, valid_spec())
+    status = execute_benchmark_protocol_request(
+        {
+            "benchmark_protocol_request": {
+                "schema_version": "blueprint_benchmark_protocol_request.v1",
+                "mode": "benchmark_grade",
+                "benchmark_spec_uri": "benchmark_spec.json",
+                "benchmark_spec_sha256": DIGEST_F,
+                "frozen_hidden_splits_required": True,
+                "fixed_rollouts_required": True,
+                "confidence_intervals_required": True,
+                "exact_checkpoint_digests_required": True,
+                "private_split_material_allowed_in_webapp": False,
+                "scheduler_owner": "BlueprintCapturePipeline",
+            }
+        },
+        output_dir=tmp_path / "job" / "benchmark_protocol",
+        allowed_root=tmp_path,
+    )
+    assert status["status"] == "blocked"
+    assert status["blockers"] == ["benchmark_spec_sha256_mismatch"]

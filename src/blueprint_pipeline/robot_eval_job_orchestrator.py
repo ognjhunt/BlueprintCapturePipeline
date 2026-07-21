@@ -43,6 +43,7 @@ from .agent_operator_runtime import (
 )
 from .arena_result_ingest import build_arena_result_ingest
 from .action_normalization import build_action_normalization_from_trace
+from .benchmark_protocol import execute_benchmark_protocol_request
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
@@ -1693,6 +1694,7 @@ def _job_validation(
     missing_robot_eval_inputs: Sequence[str],
     generated_at: str,
     pipeline_dir: Path,
+    benchmark_protocol_status: Mapping[str, Any],
 ) -> Dict[str, Any]:
     missing_inputs: List[str] = []
     blockers: List[str] = []
@@ -1719,6 +1721,9 @@ def _job_validation(
     if _request_rights_blocked(request) or _site_card_rights_blocked(pipeline_dir):
         blockers.append("blocked_rights_privacy")
         missing_inputs = ["rights_privacy_clearance"]
+    if benchmark_protocol_status.get("status") == "blocked":
+        blockers.append("benchmark_protocol_blocked")
+        missing_inputs.extend(_string_list(benchmark_protocol_status.get("blockers")))
     return {
         "schema_version": JOB_VALIDATION_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1729,6 +1734,7 @@ def _job_validation(
         "rights_privacy_blocked": "blocked_rights_privacy" in blockers,
         "policy_evidence_complete": not policy_missing_inputs,
         "robot_eval_dataset_cards_present": not missing_robot_eval_inputs,
+        "benchmark_protocol_status": benchmark_protocol_status.get("status"),
         "evidence_requirements": {
             "policy_package_modalities": list(POLICY_MODALITY_ORDER),
             "robot_eval_dataset_inputs": dict(REQUIRED_ROBOT_EVAL_INPUTS),
@@ -7943,6 +7949,11 @@ def build_robot_eval_job(
     _write_job_json(job_dir, "job_request_source.json", source_request)
     _write_job_json(job_dir, "job_request_enrichment_manifest.json", request_enrichment)
     _write_job_json(job_dir, "job_request.json", request)
+    benchmark_protocol_status = execute_benchmark_protocol_request(
+        request,
+        output_dir=job_dir / "benchmark_protocol",
+        allowed_root=context.capture_root,
+    )
     scene_preflight = build_scene_asset_preflight(capture_root=context.capture_root)
     episode_specs = build_episode_specs(capture_root=context.capture_root)
     cpu_preflight = build_cpu_simulator_preflight(
@@ -7988,6 +7999,7 @@ def build_robot_eval_job(
         missing_robot_eval_inputs=missing_robot_eval_inputs,
         generated_at=generated_at,
         pipeline_dir=pipeline_dir,
+        benchmark_protocol_status=benchmark_protocol_status,
     )
     _write_job_json(job_dir, "job_validation.json", validation)
     evaluation_run_spec = build_robot_eval_evaluation_run_spec(
@@ -8911,6 +8923,10 @@ def build_robot_eval_job(
         "cpu_simulator_preflight_status": cpu_preflight.get("status"),
         "simulation_automation_status": simulation_automation.get("status"),
         "validation_status": validation.get("status"),
+        "benchmark_protocol_status": benchmark_protocol_status.get("status"),
+        "benchmark_protocol_status_path": (
+            "benchmark_protocol/benchmark_protocol_status.json"
+        ),
         "evaluation_run_status": evaluation_run_plan.get("status"),
         "evaluation_run_spec_digest": evaluation_run_plan.get("spec_digest"),
         "evaluation_run_spec_path": "evaluation_run_spec.json",
@@ -9242,6 +9258,7 @@ def build_robot_eval_job(
             "training_result": training_res,
             "evaluation_result": eval_result,
             "task_eval_run_report": task_eval_run_report,
+            "benchmark_protocol_status": benchmark_protocol_status,
             "wam_eval_result": {
                 "status": wam_eval_result.get("status"),
                 "evaluation_substrate": wam_eval_result.get("evaluation_substrate"),
@@ -9346,6 +9363,12 @@ def build_robot_eval_job(
         "server_attempt_id": execution_claim["server_attempt_id"],
         "commit_path": str((job_dir / "job_commit.json").resolve()),
         "live_eval_closure_status": live_closure.get("status"),
+        "benchmark_protocol_status": benchmark_protocol_status.get("status"),
+        "webapp_benchmark_projection_path": (
+            str((job_dir / "benchmark_protocol" / "webapp_benchmark_projection.json").resolve())
+            if (job_dir / "benchmark_protocol" / "webapp_benchmark_projection.json").is_file()
+            else None
+        ),
         "live_end_to_end_verified": _strict_bool(
             live_closure.get("live_end_to_end_verified")
         ),

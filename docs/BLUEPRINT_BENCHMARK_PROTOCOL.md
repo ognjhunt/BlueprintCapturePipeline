@@ -31,6 +31,37 @@ The JSON Schemas are:
 - [`schemas/blueprint_benchmark_spec.schema.json`](schemas/blueprint_benchmark_spec.schema.json)
 - [`schemas/blueprint_benchmark_report.schema.json`](schemas/blueprint_benchmark_report.schema.json)
 
+## Robot-eval job option
+
+`robot_eval_job_request.v1` can select the protocol with a
+`blueprint_benchmark_protocol_request.v1` object:
+
+```json
+{
+  "schema_version": "blueprint_benchmark_protocol_request.v1",
+  "mode": "benchmark_grade",
+  "benchmark_spec_uri": "private/benchmarks/drawer/spec.json",
+  "benchmark_spec_sha256": "<64 lowercase hex characters>",
+  "frozen_hidden_splits_required": true,
+  "fixed_rollouts_required": true,
+  "confidence_intervals_required": true,
+  "exact_checkpoint_digests_required": true,
+  "private_split_material_allowed_in_webapp": false,
+  "scheduler_owner": "BlueprintCapturePipeline"
+}
+```
+
+The orchestrator resolves only a staged local artifact beneath the capture root,
+checks the exact spec digest, and writes the protocol under the job's
+`benchmark_protocol/` directory. HTTP and cloud URIs must first be staged by an
+authenticated owner-system adapter; the benchmark compiler does not download
+URLs or resolve customer credentials. A request with no result artifact remains
+`planned`. A supplied `benchmark_results_uri` is validated against the immutable
+execution plan before a report can become `complete`.
+
+The `standard` mode preserves the existing operational evaluation path. It does
+not imply benchmark-grade reporting.
+
 ## Compile a protocol
 
 ```bash
@@ -71,6 +102,12 @@ The command exits `2` when attempt coverage, binding, evidence, or result fields
 are incomplete. It still writes a blocked report so the missing evidence stays
 inspectable.
 
+Reporting also writes `benchmark_evidence_index.private.json` with each scheduled
+attempt's video, action trace, evaluator output, and content digest references.
+It retains scenario IDs and seeds, so it is owner-only and never enters the
+WebApp projection. The public report and WebApp projection expose only its
+content digest and completeness counts.
+
 ## External comparison boundary
 
 The external reference format requires a source artifact digest, task-mapping
@@ -90,6 +127,11 @@ and physical-readiness claims require their separate owner-system evidence.
 
 `webapp_benchmark_projection.json` is the only benchmark artifact intended for
 direct buyer-surface projection. It contains public card summaries, aggregate
-metrics and confidence intervals, and the external comparison report. It cannot
-contain hidden scenario identifiers. The WebApp validates this contract again
-before persisting or displaying it.
+metrics and confidence intervals, safe split and seen/unseen breakdowns, and the
+external comparison report. It cannot contain hidden scenario identifiers. The
+WebApp validates this contract again before persisting or displaying it.
+
+Private/closed policy executables and credentials remain in the existing sealed
+policy-package/runtime path. Benchmark artifacts expose policy IDs and exact
+checkpoint hashes for matching, not policy bytes, API tokens, container secrets,
+or private source code.
