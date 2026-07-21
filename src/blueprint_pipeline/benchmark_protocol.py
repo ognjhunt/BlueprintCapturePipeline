@@ -712,6 +712,8 @@ def build_external_rank_fidelity_report(
             blockers.append(f"external_reference_digest_missing:{field}")
     if not _string(reference.get("source_uri")):
         blockers.append("external_reference_source_uri_missing")
+    if reference.get("independently_accepted") is not True:
+        blockers.append("external_reference_not_independently_accepted")
     external_rows, rows_valid = _strict_rows(reference.get("policy_results"))
     if not rows_valid:
         blockers.append("external_policy_results_invalid")
@@ -782,6 +784,13 @@ def build_external_rank_fidelity_report(
     else:
         measurement_scope = "cross_evaluator_concordance"
     blockers = sorted(set(blockers))
+    measured = not blockers
+    same_site_real_robot_fidelity = (
+        measured and reference_type == "real_robot" and site_alignment == "same_site"
+    )
+    cross_site_real_robot_concordance = (
+        measured and reference_type == "real_robot" and site_alignment == "different_site"
+    )
     return {
         "schema_version": EXTERNAL_REPORT_SCHEMA_VERSION,
         "status": "measured" if not blockers else "blocked",
@@ -801,7 +810,9 @@ def build_external_rank_fidelity_report(
             "simulator_agreement_is_not_real_world_validation": reference_type != "real_robot",
             "exact_checkpoint_matching_required": True,
             PUBLIC_CLAIM_UPGRADE_KEY: False,
-            "rank_fidelity_result_proven": False,
+            "scoped_external_comparison_measured": measured,
+            "rank_fidelity_result_proven": same_site_real_robot_fidelity,
+            "cross_site_rank_concordance_proven": cross_site_real_robot_concordance,
         },
     }
 

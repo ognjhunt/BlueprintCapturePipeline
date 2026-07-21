@@ -300,6 +300,30 @@ def test_external_rank_fidelity_measures_three_exact_checkpoints(tmp_path: Path)
     assert external["metrics"]["mmrv"]["confidence_interval_95"][0] is not None
     assert external["claim_boundary"]["different_site_comparison_is_not_site_specific_validation"] is True
     assert external["claim_boundary"]["rank_fidelity_result_proven"] is False
+    assert external["claim_boundary"]["cross_site_rank_concordance_proven"] is True
+
+    reference["site_alignment"] = "same_site"
+    same_site = build_benchmark_report(
+        spec=spec,
+        plan=compiled["execution_plan"],
+        results=results,
+        external_reference=reference,
+        seed=11,
+    )["external_rank_fidelity"]
+    assert same_site["measurement_scope"] == "same_site_real_robot_rank_fidelity"
+    assert same_site["claim_boundary"]["rank_fidelity_result_proven"] is True
+    assert same_site["claim_boundary"]["public_claim_upgrade_allowed"] is False
+
+    reference["independently_accepted"] = False
+    unaccepted = build_benchmark_report(
+        spec=spec,
+        plan=compiled["execution_plan"],
+        results=results,
+        external_reference=reference,
+        seed=11,
+    )["external_rank_fidelity"]
+    assert unaccepted["status"] == "blocked"
+    assert "external_reference_not_independently_accepted" in unaccepted["blockers"]
 
 
 def test_report_blocks_missing_attempt_and_missing_evidence(tmp_path: Path):

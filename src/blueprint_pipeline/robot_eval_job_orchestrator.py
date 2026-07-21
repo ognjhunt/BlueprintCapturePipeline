@@ -1694,8 +1694,9 @@ def _job_validation(
     missing_robot_eval_inputs: Sequence[str],
     generated_at: str,
     pipeline_dir: Path,
-    benchmark_protocol_status: Mapping[str, Any],
+    benchmark_protocol_status: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    benchmark_status = benchmark_protocol_status or {}
     missing_inputs: List[str] = []
     blockers: List[str] = []
     missing_evidence_statuses = list(policy_missing_statuses)
@@ -1721,9 +1722,9 @@ def _job_validation(
     if _request_rights_blocked(request) or _site_card_rights_blocked(pipeline_dir):
         blockers.append("blocked_rights_privacy")
         missing_inputs = ["rights_privacy_clearance"]
-    if benchmark_protocol_status.get("status") == "blocked":
+    if benchmark_status.get("status") == "blocked":
         blockers.append("benchmark_protocol_blocked")
-        missing_inputs.extend(_string_list(benchmark_protocol_status.get("blockers")))
+        missing_inputs.extend(_string_list(benchmark_status.get("blockers")))
     return {
         "schema_version": JOB_VALIDATION_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1734,7 +1735,7 @@ def _job_validation(
         "rights_privacy_blocked": "blocked_rights_privacy" in blockers,
         "policy_evidence_complete": not policy_missing_inputs,
         "robot_eval_dataset_cards_present": not missing_robot_eval_inputs,
-        "benchmark_protocol_status": benchmark_protocol_status.get("status"),
+        "benchmark_protocol_status": benchmark_status.get("status"),
         "evidence_requirements": {
             "policy_package_modalities": list(POLICY_MODALITY_ORDER),
             "robot_eval_dataset_inputs": dict(REQUIRED_ROBOT_EVAL_INPUTS),

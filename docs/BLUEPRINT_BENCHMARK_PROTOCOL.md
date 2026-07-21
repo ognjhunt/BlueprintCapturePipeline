@@ -111,7 +111,8 @@ content digest and completeness counts.
 ## External comparison boundary
 
 The external reference format requires a source artifact digest, task-mapping
-digest, site-alignment declaration, and exact checkpoint digests. Its
+digest, site-alignment declaration, independent acceptance, and exact checkpoint
+digests. Unaccepted/provisional rows produce a blocked comparison. Its
 `measurement_scope` is deliberately different for:
 
 - `same_site_real_robot_rank_fidelity`

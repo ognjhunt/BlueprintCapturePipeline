@@ -1192,6 +1192,14 @@ Blueprint writes `sc3_eval_protocol.json` to keep those requirements, accepted
 anchor joins, correlation metrics, and robot/policy adapter contracts explicit.
 See
 [`docs/SC3_EVAL_PROTOCOL.md`](docs/SC3_EVAL_PROTOCOL.md).
+For benchmark-grade comparisons across evaluator backends, use
+`python -m blueprint_pipeline.benchmark_protocol compile` and
+`python -m blueprint_pipeline.benchmark_protocol report`. That protocol
+adds frozen public/hidden splits, fixed non-replaceable attempts, exact baseline
+and candidate checkpoint digests, seen/unseen generalization slices, confidence
+intervals, digest-bound episode evidence, and scoped external rank comparison.
+See
+[`docs/BLUEPRINT_BENCHMARK_PROTOCOL.md`](docs/BLUEPRINT_BENCHMARK_PROTOCOL.md).
 `cosmos3_super` is a high-cost adjudication candidate, not the default local
 path. NVIDIA released the 4B `cosmos3_edge` model on 2026-07-20, but Blueprint
 does not treat it as a default or qualified runtime. Edge requires a distinct

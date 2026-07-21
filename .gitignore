@@ -50,6 +50,7 @@ Thumbs.db
 htmlcov/
 .tox/
 .nox/
+.playwright-mcp/
 yolov8s-worldv2.pt
 yolo11n-pose.pt
 
