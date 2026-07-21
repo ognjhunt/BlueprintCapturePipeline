@@ -2333,6 +2333,16 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert manifest["bootstrap"]["arbitrary_remote_command_allowed"] is False
     assert manifest_path.stat().st_mode & 0o777 == 0o600
 
+    release.write_text("{bad release evidence")
+    bad_retry = qualification.run_qualification_session(
+        **common,
+        provider_bootstrap_url_file=secret_url,
+    )
+    preserved_after_bad_retry = json.loads(manifest_path.read_text())
+    assert bad_retry["status"] == "blocked"
+    assert preserved_after_bad_retry["release_binding_status"] == "bound"
+    assert preserved_after_bad_retry["source_commit"] == TEST_SOURCE_COMMIT
+
     changed_source = "c" * 40
     release.write_text(json.dumps(_release_evidence(source_commit=changed_source)))
     mismatch = qualification.run_qualification_session(

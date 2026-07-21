@@ -2156,7 +2156,11 @@ def _allocate(
             if preserve_existing_bound_release
             else source_commit
         ),
-        release_binding_status="bound" if not release_blockers else "blocked",
+        release_binding_status=(
+            "bound"
+            if preserve_existing_bound_release or not release_blockers
+            else "blocked"
+        ),
     )
     manifest["status"] = (
         "bootstrap_staging_required"
