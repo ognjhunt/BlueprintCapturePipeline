@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .common import utc_now_iso
+from .common import sha256_file, utc_now_iso
 from .oscar_official_release import (
     OFFICIAL_OSCAR_HF_REPO,
     official_release_blockers,
@@ -1641,6 +1641,7 @@ def _run_oscar(
         "stderr_size_bytes": len(result.stderr or ""),
         "stderr_omitted_to_avoid_secret_leakage": bool(result.stderr),
         "stale_output_removed_before_launch": stale_output_removed,
+        "configured_inference_steps": num_steps,
         "blockers": [] if result.returncode == 0 else ["oscar_inference_command_nonzero"],
     }
 
@@ -1667,8 +1668,7 @@ def _rollout_payload(
             source_url=source_url or (_source_root_origin_url(source_root) or ""),
             source_ref=source_ref or (_source_root_commit(source_root) or ""),
             hf_repo=checkpoint_repo,
-            hf_revision=checkpoint_revision
-            or (_checkpoint_revision_from_path(checkpoint) or ""),
+            hf_revision=checkpoint_revision or (_checkpoint_revision_from_path(checkpoint) or ""),
         )
     )
     official_release_match = official_release_payload.get("official_release_match") is True
@@ -1679,6 +1679,7 @@ def _rollout_payload(
                 "policy_id": ADAPTER_ID,
                 "model_candidate": "oscar_wam",
                 "generated_video_path": str(output_video),
+                "generated_video_sha256": sha256_file(output_video),
                 "source_review_video_path": package_manifest.get("source_review_video_path"),
                 "source_camera": package_manifest.get("source_camera"),
                 "scenario_eval_run_id": package_manifest.get("scenario_eval_run_id"),
@@ -1693,9 +1694,7 @@ def _rollout_payload(
         if video_reviewable and subprocess_completed
         else []
     )
-    validation_blockers = [
-        str(item) for item in video_validation.get("blockers", []) if str(item)
-    ]
+    validation_blockers = [str(item) for item in video_validation.get("blockers", []) if str(item)]
     if rollouts:
         blockers = []
     else:
@@ -1732,9 +1731,9 @@ def _rollout_payload(
         "input_package": dict(package_manifest),
         "oscar_subprocess": dict(subprocess_detail),
         "blockers": blockers,
-        "fresh_model_command_executed_this_invocation": bool(
-            rollouts and subprocess_detail.get("status") == "completed"
-        ),
+        "fresh_model_command_executed_this_invocation": bool(rollouts and subprocess_completed),
+        "fresh_model_run_steps": len(rollouts) if subprocess_completed else 0,
+        "configured_inference_steps_per_model_run": int(subprocess_detail.get("configured_inference_steps") or 0) if rollouts and subprocess_completed else 0,
         "fresh_model_run_claimed": bool(
             rollouts
             and subprocess_detail.get("status") == "completed"

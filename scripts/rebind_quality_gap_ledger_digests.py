@@ -89,9 +89,15 @@ EVIDENCE_EXTENSIONS: dict[str, list[tuple[str, str]]] = {
     ],
     "SC3-21-AC-01": [
         ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_runtime_evidence.py", "implementation"),
+        ("tests/test_evaluator_runtime_evidence.py", "test_contract"),
+        ("docs/EVALUATOR_RUNTIME_EVIDENCE_CONTRACT.md", "policy_or_runbook"),
     ],
     "REL-14-AC-01": [
         ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_runtime_evidence.py", "implementation"),
+        ("tests/test_evaluator_runtime_evidence.py", "test_contract"),
+        ("docs/EVALUATOR_RUNTIME_EVIDENCE_CONTRACT.md", "policy_or_runbook"),
     ],
     "SC3-10-AC-01": [],
     "SC3-11-AC-01": [],

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -911,11 +912,16 @@ def test_oscar_wam_runtime_probe_subprocess_and_rollout_edges(
         package_manifest={"source_review_video_path": "review.mp4"},
         checkpoint=checkpoint,
         source_root=source_root,
-        subprocess_detail={"status": "completed"},
+        subprocess_detail={"status": "completed", "configured_inference_steps": 35},
         output_video=output_video,
     )
     assert completed_payload["status"] == "completed"
     assert completed_payload["rollouts"][0]["generated_video_path"] == str(output_video)
+    assert completed_payload["rollouts"][0]["generated_video_sha256"] == hashlib.sha256(
+        output_video.read_bytes()
+    ).hexdigest()
+    assert completed_payload["fresh_model_run_steps"] == 1
+    assert completed_payload["configured_inference_steps_per_model_run"] == 35
 
     invalid_video = tmp_path / "placeholder.mp4"
     invalid_video.write_bytes(b"mp4-placeholder")

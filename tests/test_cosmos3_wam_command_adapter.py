@@ -254,7 +254,12 @@ def test_adapter_emits_trusted_schema_with_verified_identity_and_declared_recipe
     assert payload["base_model"] == "Cosmos3-Nano"
     assert payload["learned_wam_model_ran"] is True
     assert payload["fresh_model_run_claimed"] is True
+    assert payload["fresh_model_run_steps"] == 1
+    assert payload["configured_inference_steps_per_model_run"] == 35
     assert payload["rollouts"][0]["base_model"] == "Cosmos3-Nano"
+    assert payload["rollouts"][0]["generated_video_sha256"] == (
+        hashlib.sha256(b"generated mp4").hexdigest()
+    )
     assert payload["rollouts"][0]["success_label_source"] == ("generated_video_requires_review")
     truth = payload["truth_boundary"]
     assert truth["checkpoint_identity_verified_as_cosmos3_nano"] is True
