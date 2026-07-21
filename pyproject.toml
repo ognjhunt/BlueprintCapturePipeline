@@ -38,6 +38,7 @@ dependencies = [
     "cryptography>=46.0.5",
     "defusedxml>=0.7.1",
     "uvicorn>=0.30.0",
+    # Explicit uvicorn WebSocket protocol backend for hosted runtime sessions.
     "websockets>=12.0",
 ]
 
@@ -51,6 +52,7 @@ cloud = [
 ]
 runtime = [
     "opencv-python-headless>=4.10.0",
+    # Optional COLLADA loader discovered by trimesh; no direct package import.
     "pycollada>=0.8",
     "trimesh>=4.4.0",
     "ultralytics>=8.3.0",
@@ -76,6 +78,7 @@ simulation-agents = [
 ]
 retrieval = [
     "torch>=2.2.0",
+    # Retained for upstream vision transforms used by retrieval/model adapters.
     "torchvision>=0.17.0",
     "transformers>=4.40.0",
     "accelerate>=0.30.0",
@@ -119,7 +122,7 @@ dev = [
     # canonical CPU interpreter: pxr (usd-core), mujoco, and boto3 are required
     # by the dry-render/placement/parity/object-store tests. Without these the
     # tests silently skip green instead of running (see CRIT-02 / P0-20 / P0-23
-    # / P1-42 in docs/cpu-work-audit-2026-06-29.md).
+    # / P1-42 in docs/archive/point-in-time/cpu-work-audit-2026-06-29.md).
     "usd-core>=24.0",
     "mujoco>=3.1",
     "boto3>=1.34.0",
@@ -137,7 +140,7 @@ dev = [
 # tools) is always present. This closes the footgun where a bare `uv sync` would
 # UNINSTALL usd-core/mujoco/trimesh and silently re-break the dry-render / placement /
 # parity tests by making them skip green (see CRIT-02 / #5 in
-# docs/cpu-work-audit-2026-06-29.md). Mirrors the [project.optional-dependencies] `dev`
+# docs/archive/point-in-time/cpu-work-audit-2026-06-29.md). Mirrors the [project.optional-dependencies] `dev`
 # extra so `pip install -e '.[dev]'` stays equivalent for non-uv workflows.
 dev = [
     "bandit==1.8.6",

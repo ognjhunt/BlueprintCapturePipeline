@@ -50,7 +50,7 @@ from .groot_oscar_runpod_carrier_volume import (
     verify_runtime_source_release_evidence,
     verify_carrier_volume_admission,
 )
-from .groot_oscar_runpod_model_volume import (
+from .groot_oscar_runpod_volume_watchdog import (
     MODEL_CACHE_PATH,
     VOLUME_NAME_PREFIX,
     WATCHDOG_HANDOFF_SCHEMA_VERSION,
@@ -133,7 +133,7 @@ def _stop_replaced_watchdog(
     argv = [str(item) for item in process_argv_probe(source_pid)]
     canonical = [
         "-m",
-        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
         "watchdog",
         "--state",
         state_path,
@@ -235,7 +235,7 @@ def _retention_source_watchdog_mapping(
     except ValueError:
         return {"watchdog_pid": current_pid}
     expected_prefix = [
-        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
         "watchdog",
         "--state",
     ]
@@ -713,7 +713,7 @@ def retain_verified_model_cache(
     source_state_path = str(Path(str(source_watchdog["watchdog_state_path"])).resolve())
     canonical_suffix = [
         "-m",
-        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
         "watchdog",
         "--state",
         source_state_path,
@@ -933,7 +933,7 @@ def _arm_watchdog(
             [
                 sys.executable,
                 "-m",
-                "blueprint_pipeline.groot_oscar_runpod_model_volume",
+                "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
                 "watchdog",
                 "--state",
                 str(state_path),

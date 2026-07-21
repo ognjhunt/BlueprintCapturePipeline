@@ -26,7 +26,29 @@ def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(monkeypatch,
     calls: dict[str, object] = {}
     monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda root: {"status": "ready", "root": str(root)})
     monkeypatch.setattr(run_e2e, "materialize_capture_bundle", lambda **kwargs: calls.setdefault("materialize", kwargs))
-    monkeypatch.setattr(run_e2e, "run_capture_pipeline", lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]]})
+    evaluation_prep_result = {
+        "manifest_path": "eval/manifest.json",
+        "webapp_sync_result": {"status": "skipped"},
+        "site_package_manifest": {"status": "blocked"},
+        "hosted_review_readiness": {"ready": False},
+        "proof_pack_manifest": {"proof": False},
+        "proof_path_status": {"status": "blocked"},
+    }
+    monkeypatch.setattr(
+        run_e2e,
+        "run_capture_pipeline",
+        lambda **kwargs: {
+            "status": "completed",
+            "lanes": [kwargs["lane"]],
+            "results": [
+                {
+                    "lane": "evaluation_prep",
+                    "status": "completed",
+                    "evaluation_prep_result": evaluation_prep_result,
+                }
+            ],
+        },
+    )
     monkeypatch.setattr(
         run_e2e,
         "run_agent_review",
@@ -40,21 +62,20 @@ def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(monkeypatch,
     monkeypatch.setattr(
         run_e2e,
         "run_evaluation_prep_stage",
-        lambda **kwargs: {
-            "manifest_path": "eval/manifest.json",
-            "webapp_sync_result": {"status": "skipped"},
-            "site_package_manifest": {"status": "blocked"},
-            "hosted_review_readiness": {"ready": False},
-            "proof_pack_manifest": {"proof": False},
-            "proof_path_status": {"status": "blocked"},
-        },
+        lambda **kwargs: pytest.fail("evaluation prep must not run twice"),
     )
-    monkeypatch.setattr(run_e2e, "run_cosmos_zero_shot_validation_lane", lambda **kwargs: {"status": "completed"})
+    monkeypatch.setattr(
+        run_e2e,
+        "_run_legacy_cosmos_predict2_5_validation",
+        lambda **kwargs: {"status": "completed"},
+    )
 
     result = run_e2e.run_end_to_end(
         capture_root=str(capture_root),
         provider="openai",
         pipeline_lane="all",
+        allow_legacy_pipeline_lanes=True,
+        run_agent_review_stage=True,
         run_evaluation_prep=True,
         evaluation_prep_provider="manual",
         run_cosmos_validation=True,
@@ -73,21 +94,32 @@ def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(monkeypatch,
     assert result["hosted_review_readiness"] == {"ready": False}
     assert result["proof_pack_manifest"] == {"proof": False}
     assert result["proof_path_status"] == {"status": "blocked"}
-    assert result["cosmos_validation"] == {"status": "completed"}
+    assert result["support_validation"] == {
+        "backend": "cosmos_predict2_5_legacy",
+        "result": {"status": "completed"},
+    }
     assert calls["materialize"]["raw_prefix_uri"] == "gs://bucket/scenes/site-1/captures/cap-1/raw"
     stage_ledger = json.loads(
         Path(result["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
     )
     assert stage_ledger["schema_version"] == "run_e2e_stage_ledger.v1"
     assert stage_ledger["status"] == "completed"
-    assert stage_ledger["last_completed_stage"] == "cosmos_validation"
+    assert stage_ledger["last_completed_stage"] == "support_validation"
     assert stage_ledger["stages"]["preflight"]["status"] == "completed"
     assert stage_ledger["stages"]["materialization"]["status"] == "completed"
     assert stage_ledger["stages"]["capture_pipeline"]["detail"] == "completed"
     assert stage_ledger["stages"]["agent_review"]["status"] == "completed"
     assert stage_ledger["stages"]["evaluation_prep"]["status"] == "completed"
-    assert stage_ledger["stages"]["cosmos_validation"]["detail"] == "completed"
+    assert stage_ledger["stages"]["support_validation"]["detail"] == "completed"
     assert stage_ledger["stages"]["robot_eval"]["status"] == "skipped"
+    run_summary = json.loads(Path(result["run_summary_path"]).read_text(encoding="utf-8"))
+    assert run_summary["schema_version"] == "pipeline_run_summary.v1"
+    assert run_summary["status"] == "completed"
+    by_stage = {row["stage"]: row for row in run_summary["stage_timings"]}
+    assert by_stage["agent_review"]["outcome_kind"] == "produced"
+    assert by_stage["robot_eval"]["outcome_kind"] == "not_requested"
+    assert by_stage["capture_pipeline"]["duration_seconds"] is not None
+    assert run_summary["spend"]["live_provider_calls_performed"] is False
 
 
 def test_run_end_to_end_blocks_preflight_and_missing_descriptor(monkeypatch, tmp_path: Path) -> None:
@@ -101,6 +133,11 @@ def test_run_end_to_end_blocks_preflight_and_missing_descriptor(monkeypatch, tmp
     assert stage_ledger["status"] == "failed"
     assert stage_ledger["failed_stage"] == "preflight"
     assert stage_ledger["stages"]["preflight"]["error_type"] == "PipelineError"
+    failed_summary = json.loads(
+        (capture_root / "pipeline" / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert failed_summary["status"] == "failed"
+    assert failed_summary["failed_stage"] == "preflight"
 
     monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda _root: {"status": "ready"})
     with pytest.raises(PipelineError, match="Descriptor is missing"):
@@ -134,7 +171,7 @@ def test_run_end_to_end_uses_existing_descriptor_without_optional_lanes(monkeypa
     assert result["hosted_review_readiness"] is None
     assert result["proof_pack_manifest"] is None
     assert result["proof_path_status"] is None
-    assert result["cosmos_validation"] is None
+    assert result["support_validation"] is None
 
 
 def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path: Path) -> None:
@@ -163,7 +200,11 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path:
     monkeypatch.setattr(run_e2e, "run_capture_pipeline", fake_pipeline)
     monkeypatch.setattr(run_e2e, "run_agent_review", fake_review)
 
-    first = run_e2e.run_end_to_end(capture_root=str(capture_root), provider="openai")
+    first = run_e2e.run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        run_agent_review_stage=True,
+    )
     assert first["preflight_status"] == "ready"
     assert calls == {"preflight": 1, "pipeline": 1, "review": 1}
 
@@ -186,6 +227,7 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path:
     second = run_e2e.run_end_to_end(
         capture_root=str(capture_root),
         provider="openai",
+        run_agent_review_stage=True,
         resume_completed_stages=True,
     )
 
@@ -242,7 +284,11 @@ def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
     monkeypatch.setattr(run_e2e, "run_capture_pipeline", fake_pipeline)
     monkeypatch.setattr(run_e2e, "run_agent_review", fake_review)
 
-    first = run_e2e.run_end_to_end(capture_root=str(capture_root), provider="openai")
+    first = run_e2e.run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        run_agent_review_stage=True,
+    )
     first_ledger = json.loads(
         Path(first["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
     )
@@ -252,6 +298,7 @@ def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
     second = run_e2e.run_end_to_end(
         capture_root=str(capture_root),
         provider="openai",
+        run_agent_review_stage=True,
         resume_completed_stages=True,
     )
 
@@ -359,7 +406,7 @@ def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
 
     monkeypatch.setattr(
         run_e2e,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         fake_build_robot_eval_job,
     )
 
@@ -519,6 +566,7 @@ def test_run_e2e_main_success_and_failure(monkeypatch, tmp_path: Path, capsys) -
         assert kwargs["openai_phase2_config"].timeout_seconds == 3
         assert kwargs["openai_phase2_config"].reasoning_effort == "low"
         assert kwargs["run_evaluation_prep"] is True
+        assert kwargs["run_agent_review_stage"] is True
         assert kwargs["run_cosmos_validation"] is True
         assert kwargs["robot_eval_job_request"] == "robot-request.json"
         assert kwargs["robot_eval_job_id"] == "robot-job"
@@ -536,7 +584,10 @@ def test_run_e2e_main_success_and_failure(monkeypatch, tmp_path: Path, capsys) -
             "final_memo_path": "memo.md",
             "final_bundle_path": "bundle.zip",
             "evaluation_prep": {"manifest_path": "eval.json"},
-            "cosmos_validation": {"status": "completed"},
+            "support_validation": {
+                "backend": "cosmos_predict2_5_legacy",
+                "result": {"status": "completed"},
+            },
             "robot_eval_job": {"manifest_path": "robot-job.json"},
             "robot_eval_request_inbox": None,
         }
@@ -561,7 +612,9 @@ def test_run_e2e_main_success_and_failure(monkeypatch, tmp_path: Path, capsys) -
             "--openai-phase2-reasoning-effort",
             "low",
             "--run-evaluation-prep",
+            "--run-agent-review",
             "--run-cosmos-validation",
+            "--allow-legacy-pipeline-lanes",
             "--robot-eval-job-request",
             "robot-request.json",
             "--robot-eval-job-id",
@@ -582,7 +635,7 @@ def test_run_e2e_main_success_and_failure(monkeypatch, tmp_path: Path, capsys) -
     output = capsys.readouterr().out
     assert "preflight_status=ready" in output
     assert "evaluation_prep=eval.json" in output
-    assert "cosmos_validation=completed" in output
+    assert "support_validation=completed" in output
     assert "robot_eval_job=robot-job.json" in output
 
     monkeypatch.setattr(run_e2e, "run_end_to_end", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))

@@ -20,7 +20,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -47,6 +46,7 @@ from .benchmark_protocol import execute_benchmark_protocol_request
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
+from .evaluator_qualification_workflow import build_evaluator_qualification_workflow
 from .evaluation_run import compile_evaluation_run
 from .failure_diagnosis_contract import (
     FAILURE_LABEL_PROOF_EFFECT,
@@ -83,7 +83,7 @@ from .robot_eval_job_request_contract import (
 )
 from .robot_eval_evaluation_run_adapter import (
     build_robot_eval_evaluation_run_spec,
-    execute_legacy_robot_eval_request_as_evaluation_run,
+    execute_robot_eval_request_as_evaluation_run,
     execute_robot_eval_cli_evaluation_run,
 )
 from .scene_asset_preflight import build_scene_asset_preflight
@@ -7982,11 +7982,6 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     effective_simulator_commands = dict(simulator_commands or {})
-    if simulator == "isaac_sim" and not _string(effective_simulator_commands.get("isaac_sim")):
-        effective_simulator_commands["isaac_sim"] = (
-            f"{shlex.quote(sys.executable)} -m "
-            "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval"
-        )
     selected_wam_provider_commands = dict(wam_provider_commands or {})
     policy_manifest, policy_missing_inputs, policy_missing_statuses = _policy_package_manifest(
         request=request,
@@ -9237,6 +9232,37 @@ def build_robot_eval_job(
             ),
         },
     }
+    evaluator_qualification_request = request.get("evaluator_qualification_request")
+    evaluator_qualification: Dict[str, Any] | None = None
+    if evaluator_qualification_request is not None:
+        evaluator_qualification = build_evaluator_qualification_workflow(
+            _mapping(evaluator_qualification_request)
+        )
+        _write_job_json(
+            job_dir,
+            "evaluator_qualification_workflow.json",
+            evaluator_qualification,
+        )
+    run_manifest["evaluator_qualification_status"] = (
+        evaluator_qualification.get("status")
+        if evaluator_qualification is not None
+        else "not_requested"
+    )
+    run_manifest["evaluator_scientific_qualification_status"] = (
+        evaluator_qualification.get("scientific_qualification_status")
+        if evaluator_qualification is not None
+        else "not_requested"
+    )
+    run_manifest["evaluator_qualification_path"] = (
+        "evaluator_qualification_workflow.json"
+        if evaluator_qualification is not None
+        else None
+    )
+    run_manifest["evaluator_qualification_claim_boundary"] = {
+        "optional_support_layer": True,
+        "ordinary_task_eval_completion_requires_qualification": False,
+        "public_launch_claim_requires_qualified_result": True,
+    }
     run_manifest["deterministic_fingerprint"] = _sha_payload(
         {
             "job_id": job_id,
@@ -9269,6 +9295,7 @@ def build_robot_eval_job(
             }
             if wam_eval_result
             else {},
+            "evaluator_qualification": evaluator_qualification or {},
             "live_closure": live_closure,
             "execution_fingerprint": fingerprint_execution_artifacts(
                 robot_pov_manifest,
@@ -9945,7 +9972,7 @@ def run_robot_eval_job_request_inbox(
             queued_dir = job_queue_root / job_id
             ensure_dir(queued_dir)
             write_json(queued_dir / "job_request.json", request)
-            result = execute_legacy_robot_eval_request_as_evaluation_run(
+            result = execute_robot_eval_request_as_evaluation_run(
                 capture_root=request_context.capture_root,
                 job_request=request,
                 job_id=job_id,
@@ -10400,7 +10427,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise ValueError(
                 "--job-request and --job-id are required unless --job-request-inbox is provided"
             )
-        result = execute_legacy_robot_eval_request_as_evaluation_run(
+        result = execute_robot_eval_request_as_evaluation_run(
             capture_root=args.capture_root,
             job_request=args.job_request,
             job_id=args.job_id,

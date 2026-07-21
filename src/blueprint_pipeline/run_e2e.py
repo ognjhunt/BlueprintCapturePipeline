@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 from typing import List, Optional
@@ -26,16 +27,18 @@ from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .preflight_capture import build_capture_preflight_report
 from .robot_eval_evaluation_run_adapter import (
-    execute_legacy_robot_eval_request_as_evaluation_run,
+    execute_robot_eval_request_as_evaluation_run,
 )
 from .robot_eval_job_orchestrator import run_robot_eval_job_request_inbox
-from .synthesis.cosmos_benchmark import run_cosmos_zero_shot_validation_lane
+from .stage_outcome import stage_ledger_outcome_kind
 
 
 logger = logging.getLogger(__name__)
 
 RUN_E2E_STAGE_LEDGER_FILENAME = "run_e2e_stage_ledger.json"
 RUN_E2E_STAGE_LEDGER_SCHEMA_VERSION = "run_e2e_stage_ledger.v1"
+RUN_E2E_RUN_SUMMARY_FILENAME = "run_summary.json"
+RUN_E2E_RUN_SUMMARY_SCHEMA_VERSION = "pipeline_run_summary.v1"
 RUN_E2E_INPUT_FINGERPRINT_SCHEMA_VERSION = CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION
 RUN_E2E_STAGE_RESULT_SNAPSHOT_MAX_BYTES = 512_000
 _SENSITIVE_STAGE_SNAPSHOT_KEY_MARKERS = (
@@ -52,7 +55,7 @@ _RUN_E2E_STAGE_ORDER = (
     "capture_pipeline",
     "agent_review",
     "evaluation_prep",
-    "cosmos_validation",
+    "support_validation",
     "robot_eval",
 )
 
@@ -65,6 +68,53 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _run_legacy_cosmos_predict2_5_validation(
+    *,
+    capture_root: Path,
+    descriptor_gcs_uri: str,
+    cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """Load the retired backend only inside its explicitly admitted compatibility path."""
+
+    from .synthesis.cosmos_benchmark import run_cosmos_zero_shot_validation_lane
+
+    return run_cosmos_zero_shot_validation_lane(
+        capture_root=capture_root,
+        descriptor_gcs_uri=descriptor_gcs_uri,
+        cfg=cfg,
+    )
+
+
+def _pipeline_lane_runs_evaluation_prep(
+    pipeline_lane: str,
+    pipeline_result: Mapping[str, Any],
+) -> bool:
+    if pipeline_lane in {"current", "all", "evaluation_prep", "simulation_automation"}:
+        return True
+    lanes = pipeline_result.get("lanes")
+    return isinstance(lanes, list) and "evaluation_prep" in lanes
+
+
+def _evaluation_prep_result_from_pipeline(
+    pipeline_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    rows = pipeline_result.get("results")
+    if not isinstance(rows, list):
+        return {}
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("lane") != "evaluation_prep":
+            continue
+        nested = row.get("evaluation_prep_result")
+        if isinstance(nested, Mapping):
+            return dict(nested)
+        return {
+            "status": row.get("status") or "completed_in_capture_pipeline",
+            "manifest_path": row.get("manifest_path"),
+            "satisfied_by_capture_pipeline": True,
+        }
+    return {}
+
+
 def _safe_job_id(value: str) -> str:
     cleaned = "".join(
         char if char.isalnum() or char in {"-", "_"} else "-" for char in value
@@ -74,6 +124,63 @@ def _safe_job_id(value: str) -> str:
 
 def _run_e2e_stage_ledger_path(capture_root: Path) -> Path:
     return capture_root / "pipeline" / RUN_E2E_STAGE_LEDGER_FILENAME
+
+
+def _run_e2e_summary_path(capture_root: Path) -> Path:
+    return capture_root / "pipeline" / RUN_E2E_RUN_SUMMARY_FILENAME
+
+
+def _elapsed_seconds(started_at: Any, ended_at: Any) -> float | None:
+    if not isinstance(started_at, str) or not isinstance(ended_at, str):
+        return None
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        ended = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, round((ended - started).total_seconds(), 6))
+
+
+def _run_summary_from_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    stage_rows: list[dict[str, Any]] = []
+    stages = ledger.get("stages")
+    stages = stages if isinstance(stages, Mapping) else {}
+    for stage_name in ledger.get("stage_order") or []:
+        entry = stages.get(stage_name)
+        entry = entry if isinstance(entry, Mapping) else {}
+        stage_rows.append(
+            {
+                "stage": stage_name,
+                "status": entry.get("status") or "pending",
+                "outcome_kind": entry.get("outcome_kind"),
+                "started_at": entry.get("started_at"),
+                "ended_at": (
+                    entry.get("completed_at")
+                    or entry.get("failed_at")
+                    or entry.get("skipped_at")
+                ),
+                "duration_seconds": entry.get("duration_seconds"),
+                "resume_used": entry.get("resume_used") is True,
+            }
+        )
+    return {
+        "schema_version": RUN_E2E_RUN_SUMMARY_SCHEMA_VERSION,
+        "status": ledger.get("status"),
+        "capture_root": ledger.get("capture_root"),
+        "provider": ledger.get("provider"),
+        "pipeline_lane": ledger.get("pipeline_lane"),
+        "started_at": ledger.get("started_at"),
+        "completed_at": ledger.get("completed_at"),
+        "updated_at": ledger.get("updated_at"),
+        "failed_stage": ledger.get("failed_stage"),
+        "stage_timings": stage_rows,
+        "spend": dict(ledger.get("spend") or {}),
+        "claim_boundary": {
+            "requested_budget_is_not_actual_spend": True,
+            "live_provider_calls_are_explicit": True,
+            "missing_actual_gpu_seconds_are_not_zero": True,
+        },
+    }
 
 
 def _capture_input_fingerprint(context: Any) -> dict[str, Any]:
@@ -90,6 +197,7 @@ def _new_run_e2e_stage_ledger(
     capture_root: Path,
     provider: str,
     pipeline_lane: str,
+    run_agent_review_stage: bool,
     run_evaluation_prep: bool,
     run_cosmos_validation: bool,
     robot_eval_requested: bool,
@@ -106,8 +214,9 @@ def _new_run_e2e_stage_ledger(
         "pipeline_lane": pipeline_lane,
         "capture_input_fingerprint": dict(capture_input_fingerprint),
         "requested": {
+            "agent_review": run_agent_review_stage,
             "evaluation_prep": run_evaluation_prep,
-            "cosmos_validation": run_cosmos_validation,
+            "support_validation": run_cosmos_validation,
             "robot_eval": robot_eval_requested,
         },
         "stage_order": list(_RUN_E2E_STAGE_ORDER),
@@ -123,13 +232,15 @@ def _new_run_e2e_stage_ledger(
 
 def _run_e2e_resume_requested(
     *,
+    run_agent_review_stage: bool,
     run_evaluation_prep: bool,
     run_cosmos_validation: bool,
     robot_eval_requested: bool,
 ) -> dict[str, bool]:
     return {
+        "agent_review": run_agent_review_stage,
         "evaluation_prep": run_evaluation_prep,
-        "cosmos_validation": run_cosmos_validation,
+        "support_validation": run_cosmos_validation,
         "robot_eval": robot_eval_requested,
     }
 
@@ -186,6 +297,7 @@ def _write_run_e2e_stage_ledger(
     ledger: Mapping[str, Any],
 ) -> None:
     write_json(_run_e2e_stage_ledger_path(capture_root), ledger)
+    write_json(_run_e2e_summary_path(capture_root), _run_summary_from_ledger(ledger))
 
 
 def _stage_result_status(value: Any) -> str | None:
@@ -260,6 +372,11 @@ def _mark_run_e2e_stage(
     entry = dict(stages.get(stage) if isinstance(stages.get(stage), Mapping) else {})
     entry.setdefault("name", stage)
     entry["status"] = status
+    if status != "running":
+        entry["outcome_kind"] = stage_ledger_outcome_kind(
+            status=status,
+            detail=detail,
+        ).value
     if status == "running":
         entry.setdefault("started_at", now)
         ledger["status"] = "running"
@@ -270,6 +387,10 @@ def _mark_run_e2e_stage(
             entry.setdefault("completed_at", now)
         else:
             entry["completed_at"] = now
+        entry["duration_seconds"] = _elapsed_seconds(
+            entry.get("started_at"),
+            entry.get("completed_at"),
+        )
         ledger["last_completed_stage"] = stage
         ledger["current_stage"] = None
         if result_snapshot is not None:
@@ -282,6 +403,10 @@ def _mark_run_e2e_stage(
     elif status == "failed":
         entry.setdefault("started_at", now)
         entry["failed_at"] = now
+        entry["duration_seconds"] = _elapsed_seconds(
+            entry.get("started_at"),
+            entry.get("failed_at"),
+        )
         ledger["status"] = "failed"
         ledger["failed_stage"] = stage
         ledger["current_stage"] = None
@@ -459,6 +584,8 @@ def run_end_to_end(
     provider: str,
     openai_phase2_config: Optional[OpenAIPhase2Config] = None,
     pipeline_lane: str = "current",
+    allow_legacy_pipeline_lanes: bool = False,
+    run_agent_review_stage: bool = False,
     run_evaluation_prep: bool = False,
     evaluation_prep_provider: str = "manual",
     run_cosmos_validation: bool = False,
@@ -477,6 +604,11 @@ def run_end_to_end(
         raise PipelineError(
             "Pass either robot_eval_job_request or robot_eval_request_inbox, not both."
         )
+    if run_cosmos_validation and not allow_legacy_pipeline_lanes:
+        raise PipelineError(
+            "legacy_cosmos_predict2_5_validation_requires_"
+            "allow_legacy_pipeline_lanes"
+        )
     log_event(
         logger,
         logging.INFO,
@@ -484,6 +616,8 @@ def run_end_to_end(
         capture_root=capture_root,
         provider=provider,
         pipeline_lane=pipeline_lane,
+        allow_legacy_pipeline_lanes=allow_legacy_pipeline_lanes,
+        run_agent_review_stage=run_agent_review_stage,
         run_evaluation_prep=run_evaluation_prep,
         run_cosmos_validation=run_cosmos_validation,
     )
@@ -491,6 +625,7 @@ def run_end_to_end(
     capture_input_fingerprint = _capture_input_fingerprint(context)
     robot_eval_requested = bool(robot_eval_job_request or robot_eval_request_inbox)
     resume_requested = _run_e2e_resume_requested(
+        run_agent_review_stage=run_agent_review_stage,
         run_evaluation_prep=run_evaluation_prep,
         run_cosmos_validation=run_cosmos_validation,
         robot_eval_requested=robot_eval_requested,
@@ -511,6 +646,7 @@ def run_end_to_end(
             capture_root=context.capture_root,
             provider=provider,
             pipeline_lane=pipeline_lane,
+            run_agent_review_stage=run_agent_review_stage,
             run_evaluation_prep=run_evaluation_prep,
             run_cosmos_validation=run_cosmos_validation,
             robot_eval_requested=robot_eval_requested,
@@ -519,6 +655,17 @@ def run_end_to_end(
         if resume_completed_stages:
             stage_ledger["resume_completed_stages_requested"] = True
             stage_ledger["resume_status"] = "no_compatible_completed_stage_ledger"
+    prior_spend = dict(stage_ledger.get("spend") or {})
+    stage_ledger["spend"] = {
+        "requested_budget_usd": robot_eval_budget_usd,
+        "provisioner": robot_eval_provisioner if robot_eval_requested else None,
+        "live_provider_calls_performed": bool(
+            prior_spend.get("live_provider_calls_performed")
+        ),
+        "actual_gpu_seconds": prior_spend.get("actual_gpu_seconds"),
+        "actual_gpu_time_source": prior_spend.get("actual_gpu_time_source"),
+        "cost_control_status": prior_spend.get("cost_control_status"),
+    }
     _write_run_e2e_stage_ledger(context.capture_root, stage_ledger)
 
     def _run_stage(
@@ -676,6 +823,7 @@ def run_end_to_end(
         lambda: run_capture_pipeline(
             descriptor_gcs_uri=context.descriptor_uri,
             lane=pipeline_lane,
+            allow_legacy_lanes=allow_legacy_pipeline_lanes,
             config=PipelineConfig(gcs_root=context.storage_root),
         ),
         artifacts_from_result=lambda value: {
@@ -683,25 +831,54 @@ def run_end_to_end(
             "lanes": value.get("lanes") if isinstance(value, Mapping) else None,
         },
     )
-    review = _run_stage(
-        "agent_review",
-        lambda: run_agent_review(
+    if run_agent_review_stage:
+        review = _run_stage(
+            "agent_review",
+            lambda: run_agent_review(
+                capture_root=context.capture_root,
+                provider_name=provider,
+                mode="qualification",
+                openai_phase2_config=openai_phase2_config,
+            ),
+            artifacts_from_result=lambda value: {
+                "final_memo_path": (
+                    value.get("final_memo_path") if isinstance(value, Mapping) else None
+                ),
+                "final_bundle_path": (
+                    value.get("final_bundle_path") if isinstance(value, Mapping) else None
+                ),
+            },
+        )
+    else:
+        review = {}
+        _mark_run_e2e_stage(
+            stage_ledger,
             capture_root=context.capture_root,
-            provider_name=provider,
-            mode="qualification",
-            openai_phase2_config=openai_phase2_config,
-        ),
-        artifacts_from_result=lambda value: {
-            "final_memo_path": (
-                value.get("final_memo_path") if isinstance(value, Mapping) else None
-            ),
-            "final_bundle_path": (
-                value.get("final_bundle_path") if isinstance(value, Mapping) else None
-            ),
-        },
+            stage="agent_review",
+            status="skipped",
+            detail="optional_trust_layer_not_requested",
+        )
+
+    evaluation_prep_already_ran = _pipeline_lane_runs_evaluation_prep(
+        pipeline_lane,
+        pipeline,
     )
-    evaluation_prep_result = (
-        _run_stage(
+    if run_evaluation_prep and evaluation_prep_already_ran:
+        evaluation_prep_result = _evaluation_prep_result_from_pipeline(pipeline) or {
+            "status": "completed_in_capture_pipeline",
+            "manifest_path": None,
+            "satisfied_by_capture_pipeline": True,
+        }
+        _mark_run_e2e_stage(
+            stage_ledger,
+            capture_root=context.capture_root,
+            stage="evaluation_prep",
+            status="completed",
+            detail="satisfied_by_capture_pipeline",
+            result_snapshot=_json_safe_stage_result_snapshot(evaluation_prep_result),
+        )
+    elif run_evaluation_prep:
+        evaluation_prep_result = _run_stage(
             "evaluation_prep",
             lambda: run_evaluation_prep_stage(
                 capture_root=context.capture_root,
@@ -713,9 +890,8 @@ def run_end_to_end(
                 )
             },
         )
-        if run_evaluation_prep
-        else None
-    )
+    else:
+        evaluation_prep_result = None
     if not run_evaluation_prep:
         _mark_run_e2e_stage(
             stage_ledger,
@@ -724,10 +900,10 @@ def run_end_to_end(
             status="skipped",
             detail="not_requested",
         )
-    cosmos_validation = (
+    support_validation_result = (
         _run_stage(
-            "cosmos_validation",
-            lambda: run_cosmos_zero_shot_validation_lane(
+            "support_validation",
+            lambda: _run_legacy_cosmos_predict2_5_validation(
                 capture_root=context.capture_root,
                 descriptor_gcs_uri=context.descriptor_uri,
                 cfg=PipelineConfig(gcs_root=context.storage_root),
@@ -740,10 +916,18 @@ def run_end_to_end(
         _mark_run_e2e_stage(
             stage_ledger,
             capture_root=context.capture_root,
-            stage="cosmos_validation",
+            stage="support_validation",
             status="skipped",
             detail="not_requested",
         )
+    support_validation = (
+        {
+            "backend": "cosmos_predict2_5_legacy",
+            "result": support_validation_result,
+        }
+        if support_validation_result is not None
+        else None
+    )
     result = {
         "schema_version": "v1",
         "capture_root": str(context.capture_root),
@@ -780,7 +964,7 @@ def run_end_to_end(
             if isinstance(evaluation_prep_result, dict)
             else None
         ),
-        "cosmos_validation": cosmos_validation,
+        "support_validation": support_validation,
         "run_e2e_stage_ledger_path": str(
             _run_e2e_stage_ledger_path(context.capture_root)
         ),
@@ -790,7 +974,7 @@ def run_end_to_end(
     robot_eval_provider_runtime = None
     if robot_eval_job_request:
         def _robot_eval_job_stage() -> dict[str, Any]:
-            return execute_legacy_robot_eval_request_as_evaluation_run(
+            return execute_robot_eval_request_as_evaluation_run(
                 capture_root=context.capture_root,
                 job_request=robot_eval_job_request,
                 job_id=_robot_eval_job_id(
@@ -820,6 +1004,16 @@ def run_end_to_end(
         robot_eval_provider_runtime = _robot_eval_provider_runtime_summary(
             robot_eval_job
         )
+        cost_ledger = _read_job_artifact(robot_eval_job, "gpu_cost_control_ledger.json")
+        stage_ledger["spend"] = {
+            **dict(stage_ledger.get("spend") or {}),
+            "live_provider_calls_performed": bool(
+                cost_ledger.get("live_provider_calls_performed")
+            ),
+            "actual_gpu_seconds": cost_ledger.get("actual_gpu_seconds"),
+            "actual_gpu_time_source": cost_ledger.get("actual_gpu_time_source"),
+            "cost_control_status": cost_ledger.get("status"),
+        }
     elif robot_eval_request_inbox:
         def _robot_eval_inbox_stage() -> dict[str, Any]:
             return run_robot_eval_job_request_inbox(
@@ -863,6 +1057,7 @@ def run_end_to_end(
         stage_ledger,
         capture_root=context.capture_root,
     )
+    result["run_summary_path"] = str(_run_e2e_summary_path(context.capture_root))
     log_event(
         logger,
         logging.INFO,
@@ -872,8 +1067,9 @@ def run_end_to_end(
         preflight_status=result.get("preflight_status"),
         pipeline_status=result.get("pipeline_status"),
         pipeline_lanes=result.get("pipeline_lanes"),
+        agent_review_enabled=run_agent_review_stage,
         evaluation_prep_enabled=run_evaluation_prep,
-        cosmos_validation_enabled=run_cosmos_validation,
+        legacy_support_validation_enabled=run_cosmos_validation,
         robot_eval_job_requested=bool(robot_eval_job_request),
         robot_eval_request_inbox_requested=bool(robot_eval_request_inbox),
     )
@@ -910,11 +1106,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             "all",
         ),
     )
+    parser.add_argument(
+        "--allow-legacy-pipeline-lanes",
+        action="store_true",
+        help="Explicitly admit a deprecated capture-orchestrator lane.",
+    )
     parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
     parser.add_argument("--openai-phase2-model")
     parser.add_argument("--openai-phase2-codex-bin")
     parser.add_argument("--openai-phase2-timeout-seconds", type=int)
     parser.add_argument("--openai-phase2-reasoning-effort")
+    parser.add_argument(
+        "--run-agent-review",
+        action="store_true",
+        help=(
+            "Run the optional agent-review/readiness trust layer. The capture, card, "
+            "package, and Task Evaluation Run product path does not require it."
+        ),
+    )
     evaluation_prep_group = parser.add_mutually_exclusive_group()
     evaluation_prep_group.add_argument(
         "--run-evaluation-prep",
@@ -939,7 +1148,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--run-cosmos-validation",
         action="store_true",
-        help="Legacy optional Cosmos validation path; not part of the current default pipeline.",
+        help=(
+            "Deprecated Cosmos-Predict2.5 support validation. Requires "
+            "--allow-legacy-pipeline-lanes and is not a product stage."
+        ),
     )
     parser.add_argument(
         "--resume-completed-stages",
@@ -999,6 +1211,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             provider=args.provider,
             openai_phase2_config=openai_phase2_config,
             pipeline_lane=args.pipeline_lane,
+            allow_legacy_pipeline_lanes=bool(args.allow_legacy_pipeline_lanes),
+            run_agent_review_stage=bool(args.run_agent_review),
             run_evaluation_prep=bool(args.run_evaluation_prep),
             evaluation_prep_provider=args.evaluation_prep_provider,
             run_cosmos_validation=bool(args.run_cosmos_validation),
@@ -1036,8 +1250,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[run-e2e] final_bundle={result['final_bundle_path']}")
     if result.get("evaluation_prep"):
         print(f"[run-e2e] evaluation_prep={result['evaluation_prep']['manifest_path']}")
-    if result.get("cosmos_validation"):
-        print(f"[run-e2e] cosmos_validation={result['cosmos_validation']['status']}")
+    if result.get("support_validation"):
+        support_result = result["support_validation"].get("result") or {}
+        print(f"[run-e2e] support_validation={support_result.get('status')}")
     if result.get("robot_eval_job"):
         print(f"[run-e2e] robot_eval_job={result['robot_eval_job']['manifest_path']}")
     if result.get("robot_eval_request_inbox"):

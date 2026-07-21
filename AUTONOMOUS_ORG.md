@@ -19,7 +19,8 @@ If this file drifts from those, update this file immediately rather than inventi
 Blueprint remains:
 
 - capture-first
-- world-model-product-first
+- Task-Evaluation-Run and Post-Training-Data-Package product-first
+- world-model backends remain replaceable support infrastructure
 - exact-site package and hosted-access focused
 - rights-safe, privacy-safe, provenance-safe
 - built so Paperclip owns execution state while agents operate on top of software and product systems

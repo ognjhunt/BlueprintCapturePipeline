@@ -3,12 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
+import pytest
+
 from blueprint_pipeline.capture_orchestrator import (
     PipelineConfig,
     _build_derived_lane_result,
     resolve_requested_lanes,
     run_capture_pipeline,
 )
+from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.scenario_variation_instantiator import (
     SCENARIO_VARIATION_NAMES as STANDARD_SCENARIO_VARIATION_NAMES,
 )
@@ -304,6 +307,7 @@ def test_capture_orchestrator_keeps_supported_lanes(monkeypatch, tmp_path: Path)
 
     result = run_capture_pipeline(
         descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        allow_legacy_lanes=True,
         config=PipelineConfig(gcs_root=tmp_path),
     )
     assert result["lanes"] == ["qualification", "scene_memory", "evaluation_prep"]
@@ -1857,6 +1861,7 @@ def test_capture_orchestrator_runs_single_capture_smoke_lane(monkeypatch, tmp_pa
 
     result = run_capture_pipeline(
         descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
+        allow_legacy_lanes=True,
         config=PipelineConfig(gcs_root=tmp_path),
     )
 
@@ -1868,6 +1873,28 @@ def test_capture_orchestrator_runs_single_capture_smoke_lane(monkeypatch, tmp_pa
             "reason": "runtime_unavailable",
         }
     ]
+
+
+def test_capture_orchestrator_rejects_legacy_lane_without_explicit_gate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_orchestrator.resolve_requested_lanes",
+        lambda **_kwargs: ["retrieval_index"],
+    )
+
+    with pytest.raises(
+        PipelineError,
+        match="Legacy capture lanes require explicit allow_legacy_lanes=True",
+    ):
+        run_capture_pipeline(
+            descriptor_gcs_uri=(
+                "gs://bucket/scenes/scene-1/captures/capture-1/"
+                "capture_descriptor.json"
+            ),
+            config=PipelineConfig(gcs_root=tmp_path),
+        )
 
 
 def test_capture_pipeline_preserves_completed_lane_when_later_lane_fails(
@@ -1906,6 +1933,7 @@ def test_capture_pipeline_preserves_completed_lane_when_later_lane_fails(
     result = run_capture_pipeline(
         descriptor_gcs_uri="gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json",
         requested_lanes=["qualification", "retrieval_index"],
+        allow_legacy_lanes=True,
         config=PipelineConfig(gcs_root=tmp_path),
     )
 

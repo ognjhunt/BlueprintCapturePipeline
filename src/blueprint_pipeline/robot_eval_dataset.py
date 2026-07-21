@@ -16,6 +16,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from .artifact_contracts import validate_sellable_artifact
 from .common import ensure_dir, read_json_any, write_json, write_text
 from .local_capture import resolve_local_capture_context
 
@@ -4740,6 +4741,14 @@ def build_real_site_robot_eval_dataset(
     manifest: Dict[str, Any] = {
         "schema_version": ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION,
         "compatibility_schema_version": ROBOT_EVAL_DATASET_SCHEMA_VERSION,
+        "compatibility_alias": {
+            "legacy_filename": "real_site_robot_eval_dataset_manifest.json",
+            "canonical_filename": "robot_eval_dataset_manifest.json",
+            "sunset_not_before": "2026-08-21",
+            "removal_condition": (
+                "all_consumers_confirm_robot_eval_dataset_manifest_json"
+            ),
+        },
         "dataset_version": ROBOT_EVAL_DATASET_VERSION,
         "generated_at": generated_at,
         "scene_id": context.scene_id,
@@ -4867,6 +4876,10 @@ def build_real_site_robot_eval_dataset(
 
     manifest_path = robot_eval_dir / "robot_eval_dataset_manifest.json"
     legacy_manifest_path = robot_eval_dir / "real_site_robot_eval_dataset_manifest.json"
+    validate_sellable_artifact("site_card", site_card)
+    validate_sellable_artifact("task_cards", task_cards)
+    validate_sellable_artifact("scenario_cards", scenario_cards)
+    validate_sellable_artifact("eval_cards", eval_cards)
     write_json(robot_eval_dir / "site_card.json", site_card)
     write_json(robot_eval_dir / "task_cards.json", task_cards)
     write_json(robot_eval_dir / "scenario_cards.json", scenario_cards)

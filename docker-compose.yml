@@ -9,7 +9,7 @@ services:
     volumes:
       - ./configs:/workspace/configs:ro
       - ./data:/workspace/data:ro
-      - ./outputs:/workspace/outputs
+      - ./output:/workspace/output
     environment:
       PYTHONUNBUFFERED: "1"
       BLUEPRINT_ENV: development
@@ -28,7 +28,7 @@ services:
     volumes:
       - ./configs:/workspace/configs:ro
       - ./data:/workspace/data:ro
-      - ./outputs:/workspace/outputs
+      - ./output:/workspace/output
     environment:
       PYTHONUNBUFFERED: "1"
       NVIDIA_VISIBLE_DEVICES: all
@@ -55,7 +55,7 @@ services:
     volumes:
       - ./:/app
       - ./data:/workspace/data:ro
-      - ./outputs:/workspace/outputs
+      - ./output:/workspace/output
     environment:
       PYTHONUNBUFFERED: "1"
       BLUEPRINT_ENV: development

@@ -436,6 +436,10 @@ tests run instead of skipping. For the canonical one-command CPU setup, the
 import probe, and the green-baseline test commands, see
 [docs/DEV_SETUP.md](docs/DEV_SETUP.md).
 
+For the canonical non-secret production environment and the explicit boundary
+between the current product path, local simulation, and paid-provider admission,
+see [docs/PRODUCTION_PIPELINE_PROFILE.md](docs/PRODUCTION_PIPELINE_PROFILE.md).
+
 Run repository commands through the synced environment:
 
 ```bash
@@ -808,7 +812,9 @@ owner command runs, and block when the sync manifest is blocked, plus
 `gpu_vm_sync_manifest` files that checksum the required raw,
 simulation-automation, and run-packet artifacts before a GPU VM handoff.
 
-The older single-VM GPU runbook is still available for legacy downstream world-model work in [docs/GPU_VM_RUNBOOK.md](docs/GPU_VM_RUNBOOK.md), but it is not the active preview, upload, CPU-preflight, or simulation-manifest path.
+The older single-VM GPU runbook is a superseded historical record and is not an
+active preview, upload, CPU-preflight, or simulation-manifest path. Use the
+provider-specific runbooks and the shared `paid_resource_allocator` commands.
 
 For privacy-service bring-up, use the service images under [`deploy/docker/`](deploy/docker) and the Terraform stack under [`deploy/terraform/main.tf`](deploy/terraform/main.tf).
 

@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
-MODEL_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py"
+MODEL_VOLUME_WATCHDOG = (
+    ROOT / "src/blueprint_pipeline/groot_oscar_runpod_volume_watchdog.py"
+)
 STORAGE_VOLUME_ADAPTER = (
     ROOT / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
 )
@@ -357,7 +359,7 @@ def verify() -> list[str]:
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
     gpu = GPU_ADAPTER.read_text(encoding="utf-8")
-    model_volume = MODEL_VOLUME_ADAPTER.read_text(encoding="utf-8")
+    model_volume_watchdog = MODEL_VOLUME_WATCHDOG.read_text(encoding="utf-8")
     storage_volume = STORAGE_VOLUME_ADAPTER.read_text(encoding="utf-8")
     lambda_adapter = LAMBDA_ADAPTER.read_text(encoding="utf-8")
     runpod_preflight = RUNPOD_PREFLIGHT.read_text(encoding="utf-8")
@@ -404,11 +406,10 @@ def verify() -> list[str]:
         )
     ):
         blockers.append("model_volume_ready_handoff_liveness_guard_missing")
-    if (
-        "legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator"
-        not in model_volume
-    ):
-        blockers.append("legacy_gpu_model_volume_preparation_not_hard_disabled")
+    if "_runpod_call(" not in model_volume_watchdog or "def watchdog(" not in model_volume_watchdog:
+        blockers.append("model_volume_watchdog_teardown_surface_missing")
+    if '"POST"' in model_volume_watchdog:
+        blockers.append("model_volume_watchdog_may_create_provider_resources")
     if not all(
         marker in runpod_preflight
         for marker in (

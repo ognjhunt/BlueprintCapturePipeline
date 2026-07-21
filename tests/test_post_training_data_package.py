@@ -2204,6 +2204,10 @@ def test_post_training_data_package_includes_visual_augmentation_support_packet(
         '{"variant_id":"kitchen"}\n',
         encoding="utf-8",
     )
+    _write_json(
+        packet_dir / "visual_augmentation_backend_registry.json",
+        {"backends": []},
+    )
     _write_json(packet_dir / "model_backend_registry.json", {"backends": []})
     _write_json(packet_dir / "visual_distribution_shift_eval_protocol.json", {"status": "ready"})
     _write_json(packet_dir / "claim_boundary.json", {"model_derived_visual_augmentation": True})

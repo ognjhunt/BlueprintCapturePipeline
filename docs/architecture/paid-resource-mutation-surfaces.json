@@ -47,9 +47,9 @@
       "required_markers": ["require_paid_resource_admission", "https://api.digitalocean.com/v2"]
     },
     {
-      "path": "src/blueprint_pipeline/groot_oscar_runpod_model_volume.py",
-      "classification": "hard_disabled_legacy_launcher",
-      "required_markers": ["legacy_gpu_model_volume_preparation_disabled_use_storage_only_allocator", "watchdog_handoff.json"]
+      "path": "src/blueprint_pipeline/groot_oscar_runpod_volume_watchdog.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["claim_transferred_paid_provider_lane_teardown", "watchdog_handoff.json"]
     },
     {
       "path": "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",

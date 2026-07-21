@@ -439,6 +439,7 @@ def test_capture_pipeline_dispatch_and_synthesis_edges(
             "synthesis_coverage_validation",
             "cosmos_single_capture_smoke",
         ],
+        allow_legacy_lanes=True,
         config=cfg,
     )
     assert result["lanes"] == [

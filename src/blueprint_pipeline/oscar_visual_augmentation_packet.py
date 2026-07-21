@@ -549,8 +549,12 @@ def build_oscar_visual_augmentation_packet(
 
     variant_requests_path = resolved_output_dir / "visual_augmentation_variant_requests.jsonl"
     _write_jsonl(variant_requests_path, variants)
-    backend_registry_path = resolved_output_dir / "model_backend_registry.json"
+    backend_registry_path = (
+        resolved_output_dir / "visual_augmentation_backend_registry.json"
+    )
     write_json(backend_registry_path, backend_registry)
+    legacy_backend_registry_path = resolved_output_dir / "model_backend_registry.json"
+    write_json(legacy_backend_registry_path, backend_registry)
     protocol_path = resolved_output_dir / "visual_distribution_shift_eval_protocol.json"
     write_json(protocol_path, distribution_shift_protocol)
     claim_boundary_path = resolved_output_dir / "claim_boundary.json"
@@ -567,6 +571,10 @@ def build_oscar_visual_augmentation_packet(
         "blockers": sorted(set(blockers)),
         "selected_backend_id": selected_backend_id,
         "backend_registry_path": _relative_to(resolved_output_dir, backend_registry_path),
+        "legacy_backend_registry_path": _relative_to(
+            resolved_output_dir,
+            legacy_backend_registry_path,
+        ),
         "variant_requests_path": _relative_to(resolved_output_dir, variant_requests_path),
         "visual_distribution_shift_eval_protocol_path": _relative_to(
             resolved_output_dir,

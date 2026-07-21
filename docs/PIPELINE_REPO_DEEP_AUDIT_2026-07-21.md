@@ -7,6 +7,26 @@ Goal: make this repo navigable and trustworthy for AI agents and human engineers
 Series-A bar — remove what successive pivots left behind, consolidate what drifted apart,
 and name the gaps in the product core. Every removal below states **why** and the evidence.
 
+## Post-audit revalidation and remediation status
+
+The two-commit PR #149 candidate was revalidated against code, tests, command strings,
+current runbooks, and the live SC3 governed ledger before remediation. That pass corrected
+additional false positives: several alleged small orphans and `native_runtime_backend` are
+live operator/runtime surfaces; the paid-path giants have substantial hermetic tests but no
+GPU-marked live-provider proof; the July launch/beta audit trees, the SC3 goal, and the KYC
+decision must remain at their canonical paths while current contracts reference them.
+
+The remediation branch has removed the safe ~12.9k-LOC dead-code set, migrated the live
+model-volume watchdog helpers, gated legacy lanes, deduplicated evaluation prep, made agent
+review opt-in, neutralized the Task Evaluation adapter vocabulary and visual-augmentation
+registry, removed model-specific exporter execution from evaluation prep, and moved the
+retired Cosmos-Predict2.5 `run_e2e` path behind an explicitly admitted lazy compatibility
+adapter. It also wires the model-neutral evaluator workflow into Task Evaluation jobs as an
+optional committed support artifact, adds typed sellable-artifact contracts and strict
+entrypoint settings, writes per-run timing/spend summaries, documents a production profile,
+and adds one CPU end-to-end regression from capture through cards, WebApp projection, and a
+signed/verified Post-Training Data Package archive.
+
 ## Method
 
 Six parallel audit passes over the tree at commit `2edb48b` (#146):
@@ -28,8 +48,9 @@ Conflicting findings between passes were re-verified by hand (grep) before landi
 - Commit `9309f28` (2026-07-15) is a squashed 1,328-file baseline import. Git dates
   before it are meaningless; the ~50 commits since (#82–#147) are the only activity
   signal. ~102 modules touched since 7/15 mark the actively developed surface.
-- Import-graph reachability alone produces **false positives**. Three were caught and
-  are explicitly excluded from removal lists (see "Do NOT remove" below).
+- Import-graph reachability alone produces **false positives**. The post-review pass
+  caught additional command-string, runbook, cross-repo-contract, and test-contract
+  surfaces; all are explicitly excluded below.
 
 ## Headline numbers
 
@@ -38,11 +59,11 @@ Conflicting findings between passes were re-verified by hand (grep) before landi
 | Modules in `src/blueprint_pipeline` | 461 (~440k LOC), flat directory |
 | Console-script entry points | 157 (a third of the package is CLI tails) |
 | Unreachable from any entry point | 34 modules (~19.5k LOC) |
-| Verified-dead removal shortlist | ~16k LOC src + associated tests |
+| Verified-dead removal shortlist | ~12.9k LOC src + associated tests |
 | Deprecate-then-remove (documented operator surface) | ~5.5k LOC src |
 | Campaign-specific code (`g1_*`/`groot_oscar_*`/`oscar_*`/`wam_*`/`unitree_*`/`isaac_*`/`mujoco_*`/`kitchen_*`) | ~195k LOC / 174 files (~46% of package) |
-| `Dict[str, Any]` occurrences | 2,412 |
-| `os.getenv` occurrences in business logic | ~1,971 |
+| Mapping escape hatches in src | 2,463 `Dict[str, Any]` + 3,656 `dict[str, Any]` occurrences |
+| Direct env reads in src | 1,144 `os.getenv` + 554 `os.environ.get` occurrences |
 | docs/ files | 147 (~55 are dated point-in-time records to archive) |
 | scripts/ files | 94 (12 orphaned or stale) |
 
@@ -52,7 +73,7 @@ provider plumbing, campaign machinery, readiness/review layers, or dead pivots.
 
 ---
 
-## P0 — Remove: verified dead code (~16k LOC src, plus tests)
+## P0 — Remove: verified dead code (~12.9k LOC src, plus tests)
 
 Each row was verified: no importers outside the listed cluster, no console-script that
 anything references, no CI workflow, no `python -m` string reference, no worker-bundle
@@ -75,8 +96,8 @@ zero importers, zero tests, no console script, no CI/doc references. This is a
 completed closure campaign's reporting code. (The similarly named
 `live_robot_eval_closure` and `robot_eval_closure_decisions` are live — imported by
 `robot_eval_job_orchestrator` — and stay.)
-*Caveat:* confirm Blueprint-WebApp doesn't shell out to `robot_eval_webapp_projection`
-before deleting that one file.
+The adjacent Blueprint-WebApp and BlueprintCapture checkouts were also searched for
+the three module names before removal; neither contains an invocation.
 
 ### 2. `gpu_campaign_state_machine` + `gpu_campaign_provider_adapters` — 1,221 LOC
 
@@ -109,37 +130,25 @@ own tests — a seam that was built and never wired. Either wire it into the liv
 render path deliberately, or delete it; a dead registry masquerading as a seam is worse
 than no registry. Default: delete (the live path selects renderers without it).
 
-### 6. `cross_repo_first_gpu_readiness` — 2,686 LOC
-
-**Why:** the "first GPU run" milestone concluded and was superseded by the
-`production_gpu_*` reliability program; zero importers, and its only doc references
-live in the superseded 2026-07-03 audit tree. Carries a console script
-(`blueprint-audit-first-gpu-cross-repo-readiness`) and a row in
-`docs/source_governance_policy.json` — remove both in the same change per the
-command-surface rule. **Keep** `first_gpu_run_packet` and `first_gpu_e2e_readiness`
-— imported by the `production_handoff_readiness` console script — and
-`owner_gpu_proof_runner` (imported by a shipped autoresearch evaluator). The
-sample-video trio moved to "Deprecate-then-remove" below (runbook-documented).
-
-### 7. `realistic_readiness_rehearsal` — 1,873 LOC
+### 6. `realistic_readiness_rehearsal` — 1,873 LOC
 
 **Why:** zero importers (verified by hand — one audit pass initially called it an
 "active eval lane" because it *imports* live modules, but nothing imports or invokes
 *it*). Readiness-rehearsal one-off; readiness is doctrinally secondary anyway.
 
-### 8. Small verified orphans — ~1,600 LOC
+### 7. Small verified orphans — ~1,200 LOC
 
 | Module | LOC | Why dead |
 |---|---|---|
 | `synthetic_2d_wam_seed.py` | 467 | test-only; abandoned 2D-seed WAM experiment |
 | `reference_image_utils.py` | 534 | test-only, zero importers |
 | `oscar_isaac_closed_loop_gpu_launch.py` | 170 | zero importers (superseded by the carrier/allocator launch path) |
-| `gear_sonic_container_smoke.py` | 120 | zero refs, no console script |
-| `oscar_action_control_contracts.py` | 109 | test-only |
-| `groot_oscar_cached_footprint.py` | 109 | test-only; only vestigial member of the otherwise-live groot_oscar family |
-| `wam_strict_action_consistency_scorer_client.py` | 88 | client for a scorer module that does not exist in the repo |
 
-### 9. `groot_oscar_runpod_model_volume` disabled stub — ~250 of 466 LOC
+Four modules in the original small-orphan list were false positives and are now in
+the do-not-remove ledger: the GEAR-SONIC container smoke, the SC3 action-control
+contract, the GR00T+OSCAR cached-footprint audit, and the strict scorer service client.
+
+### 8. `groot_oscar_runpod_model_volume` disabled stub — ~250 of 466 LOC
 
 **Why:** the module docstring says it is the "disabled legacy GPU preparation seam";
 `run_model_volume` unconditionally fails with
@@ -149,7 +158,7 @@ watchdog + compat-admission helpers are imported by `runpod_preflight`,
 `runpod_storage_volume`, and `paid_provider_lane_lease` — move those helpers into
 `groot_oscar_runpod_storage_volume` (or a watchdog module), then delete the stub.
 
-### 10. Non-src removals
+### 9. Non-src removals
 
 - **`agent_skills/` (8 files)** — its own README says "legacy drafting notes";
   canonical skill sources live in `skillpacks/` (loaded by `agent_runtime/skill_sync.py`).
@@ -229,18 +238,19 @@ world-model. Rename.
 
 ## P1 — Docs and scripts hygiene
 
-- **Create `docs/archive/` and move ~55 dated point-in-time records**: the
-  already-SUPERSEDED-bannered trees (`specs/launch-audit-2026-07-02/` — 14 files,
-  `beta-launch-audit-2026-07-03/`, `100_BETA_TESTER_LAUNCH_BLOCKER_AUDIT_2026-07-06.md`),
+- **Create `docs/archive/` and move the verified historical subset (~28 records)**:
   the June audits/spikes (arena proof-boundary, live-webapp forwarding, e2e-gpu
   readiness gap, lucky-engine spike, mujoco-live-product-path, COSMOS3 feasibility,
   PIPELINE_CURRENT_PROCESS_AUDIT, SITE_REFERENCE_GROUNDING, cpu-work-audit,
   last-24h launch audit), the G1 kitchen deep-audit pair (2026-07-10), the seven July
   handoff/spec snapshots (`fable-*`, `groot-oscar-release-reliability-hardening`,
-  `isaac-startup-reliability-*`, `kitchen-random-task-e2e-cloud-handoff`), all six
-  `goals/` records, the KYC decision record, and the four implemented `superpowers/`
-  June designs. **Exception:** the SC3 quality-gap ledger set (2026-07-09) is the
-  currently authoritative launch ledger — archive only when launch closes.
+  `isaac-startup-reliability-*`, `kitchen-random-task-e2e-cloud-handoff`), five
+  completed June `goals/` records, and the three implemented June `superpowers/`
+  designs. **Do not archive yet:** the launch-audit and beta-audit trees plus the
+  100-beta audit are digest-bound by the current SC3 ledger; the 2026-07-02 SC3 goal is
+  linked by the current protocol; and the KYC decision is referenced as current by the
+  paid-marketplace gate and operator-evidence example. Move those only after their
+  governing consumers are deliberately retired or migrated.
 - **Keep** the dated-filename docs that are actually script-enforced contracts
   (BETA_CAPACITY/RETENTION/RESIDENCY, CAPTURE_TRUTH_BACKUP_DR + JSON twins) — the date
   is a version stamp, and `scripts/validate_beta_capacity_storage.py` etc. consume them.
@@ -278,14 +288,16 @@ versions, claim boundaries, fail-closed rights/privacy gates (PIPE-01 verified r
    secondary to the product core; the production storage-trigger path already skips
    agent review — give the CLI the same default and move readiness emission behind an
    explicit flag/edge.
-3. **The primary sellable product routes through a module named "legacy"**:
+3. **The primary sellable product routes through a function named "legacy"**:
    run_e2e's only Task-Eval entry is
    `robot_eval_evaluation_run_adapter.execute_legacy_robot_eval_request_as_evaluation_run`.
    Rename the adapter and its entry to the evaluation_run vocabulary — names are
    navigation for agents.
-4. **Duplicate dataset manifest filenames** maintained in parallel
-   (`robot_eval_dataset_manifest.json` + `real_site_robot_eval_dataset_manifest.json`).
-   Pick one, alias the other for one release, delete.
+4. **Dataset manifest compatibility alias needs an expiry.** The canonical
+   `robot_eval_dataset_manifest.json` is already accompanied by the requested
+   one-release `real_site_robot_eval_dataset_manifest.json` legacy alias. Record the
+   removal release and then delete the alias; this is no longer an unfixed duplicate
+   writer design.
 5. **Legacy lanes still routable** in `capture_orchestrator` (`scene_memory`,
    `retrieval_index`, `frame_alignment`, `synthesis_coverage_validation`,
    `cosmos_single_capture_smoke`). Gate them behind an explicit legacy flag or remove
@@ -308,12 +320,15 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    product core).
 3. `native_runtime_backend.py` (2,970 LOC) hard-codes Cosmos-Predict2.5 repo paths
    (`/root/workspace/cosmos-predict2.5`) and a binary `cosmos_i2w | splat_only` split,
-   bypassing the strategy catalog entirely — and is nearly unwired (no deploy target,
-   one env example). Retire or rewrite against the seam; as-is it's ~3k LOC of
-   backend-specific hosted-runtime code nothing deploys.
+   bypassing the strategy catalog entirely. It is not unwired: `native_runtime_service`
+   imports it, `scripts/start_native_runtime_vast.sh` starts it, and the command-safety
+   matrix classifies that startup as live/runtime risk. Rewrite and split it behind the
+   backend seam while preserving the hosted-runtime contract; deletion would break a
+   documented operator surface.
 4. `robot_eval_job_orchestrator.py:7973` auto-defaults the `isaac_sim` simulator
-   command to a specific 5k-LOC G1/3DGS module in the core job path — make the default
-   a config value, not a hard-coded module name.
+   command to a specific 5k-LOC G1/3DGS module in the core job path. Require the
+   command through the existing simulator-command configuration instead of selecting
+   a model-specific module inside the orchestrator.
 5. `post_training_data_package.py:5507` references the OSCAR-specific
    `oscar_visual_augmentation_packet/model_backend_registry.json` filename in the
    package builder (mitigated by the packet emitting a per-run registry — rename to a
@@ -343,10 +358,10 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    `vast_wam_authorized_runner`.
 3. **Monolith splits** (all live, all too big to navigate):
    `robot_eval_job_orchestrator.py` (10,440), `unitree_groot_n17_sonic_vast_persistent_session.py`
-   (10,101, **zero tests**), `post_training_data_package.py` (6,678),
-   `vast_provider_adapter.py` (6,739, zero tests), `qualification.py` (5,560),
-   `evaluation_prep_stage.py` (5,141), `single_g1_kitchen_episode_runpod.py` (4,341,
-   zero tests), `single_g1_kitchen_qualification_session.py` (4,248, zero tests),
+   (10,101), `post_training_data_package.py` (6,678),
+   `vast_provider_adapter.py` (6,739), `qualification.py` (5,560),
+   `evaluation_prep_stage.py` (5,141), `single_g1_kitchen_episode_runpod.py` (4,341),
+   `single_g1_kitchen_qualification_session.py` (4,248),
    `robot_eval_dataset.py` (4,959), `wam_fixture_evaluator.py` (4,605).
 4. **`mujoco_g1_wam_vla_policy_endpoint_eval.py` (12,297 LOC)** — largest module in the
    repo, reachable only via its own console script + tests, zero importers. Decide:
@@ -357,7 +372,7 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    persistent-carrier / storage-volume / carrier-volume). A previous hypothesis called
    them "generations"; the audit shows they are distinct *admitted spend lanes* under
    the canonical `paid_resource_allocator`, each with its own probe-kind. The only true
-   dead generation there is the `runpod_model_volume` stub (P0 #9).
+   dead generation there is the `runpod_model_volume` stub (P0 #8).
 
 ## P2 — Structure: from flat 461 to navigable subpackages
 
@@ -408,26 +423,30 @@ or drop scripts nothing references.
 
 ## P2 — Series-A gaps (what's missing, not what's extra)
 
-1. **Typed artifact contracts.** 2,412 `Dict[str, Any]`s; card/package/manifest schemas
+1. **Typed artifact contracts.** 2,463 `Dict[str, Any]` and 3,656 built-in
+   `dict[str, Any]` occurrences; card/package/manifest schemas
    (`*.v0.1`/`v1`) exist as strings, not as schema definitions — a corrupted upstream
    artifact silently degrades downstream because everything reads
    `_read_optional_mapping(...) or {}`. Start with the sellable boundaries: pydantic
    (already used in `runtime_service_app`) or dataclass models + JSON Schema for
    site/task/scenario/eval cards, `evaluation_run.v1`, and the package export manifest,
    validated at stage boundaries.
-2. **Central config.** ~1,971 scattered `os.getenv` calls; behavior flags are
+2. **Central config.** 1,698 direct env reads (`os.getenv` + `os.environ.get`) in src;
+   behavior flags are
    env-truthy strings; the one `PipelineConfig` dataclass carries only `gcs_root`.
    Introduce a typed settings object loaded once at each entry point.
-3. **One true end-to-end test.** 486 test files (~277k LOC) but they're per-module
+3. **One true end-to-end test.** 489 Python files under `tests/` (~277k LOC) but they're per-module
    contract tests against the committed fixture; there is no single CI assertion
    "capture bundle in → cards + package tar.gz + webapp projection out". Add it (can
    run against `kitchen_task_min`); it becomes the regression net for all later
    restructuring. Also: the `gpu` pytest marker exists but zero tests carry it.
-4. **Zero-test giants on the live paid path**: `unitree_groot_n17_sonic_vast_persistent_session`
-   (10.1k), `vast_provider_adapter` (6.7k), `single_g1_kitchen_episode_runpod` (4.3k),
-   `single_g1_kitchen_qualification_session` (4.2k), and the entire g1_microwave
-   fine-tune group (6.9k LOC, 10 modules, zero test files). These spend real money on
-   real GPUs; they are the most under-tested code in the repo.
+4. **No GPU-marked/live-provider integration lane for the paid path.** The earlier
+   claim that the live paid giants had zero tests was wrong. Dedicated CPU/unit suites
+   exist and are substantial: 80 tests each for the Vast persistent session and Vast
+   adapter, 30 for the RunPod kitchen episode, 37 for kitchen qualification, and 68
+   across ten `g1_microwave_*` test files. The actual gap is that the `gpu` marker has
+   zero uses, so these suites do not prove real provider mutation, GPU runtime startup,
+   artifact collection, or teardown against live infrastructure.
 5. **Error semantics.** Distinguishing "artifact absent by design" from "failed" relies
    on convention (`status: not_requested/failed_closed`) with no shared result type.
    A small shared enum/result helper in `core/` would make fail-closed checks uniform.
@@ -454,6 +473,25 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
   `blueprint_pipeline.frames_layout` (v1/v2 layouts, fail-closed on unknown packing),
   and the BlueprintCapture producer rollout of packed v2 frames is gated on this
   reader being deployed. Import graphs cannot see cross-repo contracts.
+- **`cross_repo_first_gpu_readiness.py`** — another import-graph false positive. Its
+  console command is documented in the root README, the current
+  `FIRST_GPU_E2E_RUNBOOK.md`, and the command-safety matrix; it remains the read-only
+  pre-spend audit that forbids GPU allocation while cross-repo evidence is incomplete.
+  The first successful manipulation run is not yet proven, so the milestone has not
+  concluded in the sense required to retire this guard.
+- **`gear_sonic_container_smoke.py`** — documented as the container-side FABLE-004
+  FK smoke and covered by `tests/test_gear_sonic_container_smoke.py`; absence from the
+  import graph is expected for a `python -m` container command.
+- **`oscar_action_control_contracts.py`** — authoritative evidence in the still-live
+  SC3 quality-gap ledger; `scripts/rebind_quality_gap_ledger_digests.py` and the ledger's
+  required test command name both the module and its dedicated test.
+- **`groot_oscar_cached_footprint.py`** — a current operator command in
+  `docs/runbooks/groot-oscar-thin-release.md`, used to bind image and model-cache disk
+  footprint after exact-release verification.
+- **`wam_strict_action_consistency_scorer_client.py`** — the configured service bridge
+  for the DigitalOcean closed-loop job (`python -m` string reference), with dedicated
+  transport tests. It does not replace the missing first-party Cosmos3 consistency
+  scorer, but it is live external-scorer infrastructure and must remain.
 - **`scripts/build_launch_readiness_packet.py`** — documented in the living
   command-safety matrix as the canonical local launch evidence packet, with a real
   test suite (`tests/test_launch_readiness_packet.py`).
@@ -483,9 +521,9 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
 
 ## Suggested sequencing
 
-1. **PR 1 — dead code removal** (P0 §1–§10): pure deletions + the model-volume helper
+1. **PR 1 — dead code removal** (P0 §1–§9): pure deletions + the model-volume helper
    move, including console-script/governance-ledger entries per the command-surface
-   rule; `pytest` fast lane green is the gate. ~16k LOC src + tests.
+   rule; `pytest` fast lane green is the gate. ~12.9k LOC src + tests.
 2. **PR 2 — docs/scripts hygiene** (P0 doctrine + P1 hygiene): fix the three doctrine
    contradictions, create `docs/archive/`, delete `agent_skills/` + orphaned scripts,
    Makefile/CLAUDE.md/deps fixes. Fold in the deprecate-then-remove decisions (Lambda
@@ -500,6 +538,6 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
    PR with the import-linter contract added as each layer lands, then monolith splits
    and the WAM runner consolidation.
 
-Rough net effect of PRs 1–2 alone: ~20k LOC of code and ~60 stale/contradictory docs
+Rough net effect of PRs 1–2 alone: ~15k LOC of code and ~60 stale/contradictory docs
 out of the tree, zero behavior change, and every remaining module either reachable,
 CI-contracted, or explicitly quarantined.

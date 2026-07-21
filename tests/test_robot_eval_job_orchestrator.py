@@ -729,6 +729,7 @@ def test_minimal_webapp_request_gets_beta_enrichment_without_overwriting_source(
             "capture_id": "capture-1",
         },
         "source_kind": "webapp_route_forwarding_proof",
+        "evaluator_qualification_request": {},
     }
     request_path = tmp_path / "minimal-webapp-request.json"
     _write_json(request_path, request)
@@ -748,6 +749,21 @@ def test_minimal_webapp_request_gets_beta_enrichment_without_overwriting_source(
     validation = _read_json(job_dir / "job_validation.json")
     policy_manifest = _read_json(job_dir / "policy_package_manifest.json")
     run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    evaluator_qualification = _read_json(
+        job_dir / "evaluator_qualification_workflow.json"
+    )
+
+    assert evaluator_qualification["status"] == "blocked"
+    assert run_manifest["evaluator_qualification_status"] == "blocked"
+    assert run_manifest["evaluator_scientific_qualification_status"] == "blocked"
+    assert run_manifest["artifacts"]["evaluator_qualification_workflow"] == (
+        "evaluator_qualification_workflow.json"
+    )
+    assert run_manifest["evaluator_qualification_claim_boundary"] == {
+        "optional_support_layer": True,
+        "ordinary_task_eval_completion_requires_qualification": False,
+        "public_launch_claim_requires_qualified_result": True,
+    }
 
     assert "customer" not in source_request
     assert "robot_profile" not in source_request
@@ -8219,7 +8235,7 @@ def test_robot_eval_inbox_blocked_result_is_unprocessed_and_retries_after_restor
 
     monkeypatch.setattr(
         orchestrator_module,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         blocked_build,
     )
     first = run_robot_eval_job_request_inbox(
@@ -8246,7 +8262,7 @@ def test_robot_eval_inbox_blocked_result_is_unprocessed_and_retries_after_restor
 
     monkeypatch.setattr(
         orchestrator_module,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         completed_build,
     )
     second = run_robot_eval_job_request_inbox(
@@ -8287,7 +8303,7 @@ def test_robot_eval_inbox_lock_prevents_concurrent_duplicate_execution(
 
     monkeypatch.setattr(
         orchestrator_module,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         slow_build,
     )
 
@@ -8326,7 +8342,7 @@ def test_robot_eval_inbox_detects_request_replaced_during_snapshot(
     calls: list[str] = []
     monkeypatch.setattr(
         orchestrator_module,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         lambda **_kwargs: calls.append("build") or {},
     )
 
@@ -8357,7 +8373,7 @@ def test_robot_eval_cli_maps_blocked_and_terminal_results_to_queue_exit_codes(
     }
     monkeypatch.setattr(
         orchestrator_module,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         lambda **_kwargs: dict(result),
     )
     argv = [
@@ -8378,7 +8394,7 @@ def test_robot_eval_cli_maps_blocked_and_terminal_results_to_queue_exit_codes(
 
     monkeypatch.setattr(
         orchestrator_module,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         infrastructure_failure,
     )
     assert orchestrator_module.main(argv) == 70
@@ -10733,7 +10749,7 @@ def test_scheduler_accepts_mujoco_provider_when_selected_cpu_smoke_passes_despit
     ] is True
 
 
-def test_isaac_job_defaults_to_builtin_simulator_command(tmp_path: Path) -> None:
+def test_isaac_job_requires_explicit_simulator_command(tmp_path: Path) -> None:
     capture_root = _build_capture_root(tmp_path)
     _write_robot_eval_cards(capture_root)
     request = _full_job_request(capture_root)
@@ -10757,15 +10773,12 @@ def test_isaac_job_defaults_to_builtin_simulator_command(tmp_path: Path) -> None
     simulator_result = _read_json(job_dir / "simulator_service_result.json")
 
     assert worker_manifest["simulator"] == "isaac_sim"
-    assert "isaac_sim" in worker_manifest["simulator_commands"]
-    assert "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval" in (
-        worker_manifest["simulator_commands"]["isaac_sim"]
-    )
+    assert "isaac_sim" not in worker_manifest["simulator_commands"]
     provider_command = provider_launch["provider_request_shape"]["command"]
-    assert "isaac_sim=" in provider_command
-    assert "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval" in provider_command
+    assert "isaac_sim=" not in provider_command
+    assert "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval" not in provider_command
     assert simulator_result["status"] == "blocked"
-    assert "missing_cli_allow_simulator_execution" in simulator_result["blockers"]
+    assert "missing_simulator_command_isaac_sim" in simulator_result["blockers"]
 
 
 def test_live_provider_launch_blocks_without_versioned_worker_image_ref(

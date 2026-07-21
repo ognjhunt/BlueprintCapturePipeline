@@ -4250,18 +4250,15 @@ def run_evaluation_prep_stage(
     _copy_json(recapture_diff_path, recapture_diff)
 
     cosmos_training_export_path = pipeline_dir / "cosmos_training_export" / "manifest.json"
-    if _env_truthy("BLUEPRINT_ALLOW_LEGACY_COSMOS_EVAL_PREP_EXPORT"):
-        from .synthesis.cosmos_training_export import export_cosmos_training_substrate
-
-        cosmos_training_export = export_cosmos_training_substrate(
-            capture_root=context.capture_root,
-        )
-    else:
-        cosmos_training_export = _read_optional_mapping(cosmos_training_export_path) or {
-            "schema_version": "cosmos_training_export_result.v1",
-            "status": "not_requested",
-            "reason": "legacy_cosmos_eval_prep_auto_export_disabled",
-        }
+    cosmos_training_export = _read_optional_mapping(cosmos_training_export_path) or {
+        "schema_version": "cosmos_training_export_result.v1",
+        "status": "not_requested",
+        "reason": "legacy_cosmos_support_artifact_not_supplied",
+        "claim_boundary": {
+            "evaluation_prep_executes_model_specific_exporters": False,
+            "explicit_external_support_artifact_required": True,
+        },
+    }
     cosmos_training_run = _read_optional_mapping(pipeline_dir / "cosmos_training_export" / "training_run_manifest.json")
     cosmos_zero_shot_benchmark = _read_optional_mapping(
         pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"

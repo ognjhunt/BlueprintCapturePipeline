@@ -677,6 +677,12 @@ def test_robot_eval_dataset_emits_fail_closed_contract(tmp_path: Path) -> None:
     assert first_fingerprint == second_fingerprint
     assert primary_manifest["schema_version"] == "real_site_robot_eval_dataset_manifest.v0.1"
     assert primary_manifest["dataset_version"] == "0.1"
+    assert primary_manifest["compatibility_alias"] == {
+        "legacy_filename": "real_site_robot_eval_dataset_manifest.json",
+        "canonical_filename": "robot_eval_dataset_manifest.json",
+        "sunset_not_before": "2026-08-21",
+        "removal_condition": "all_consumers_confirm_robot_eval_dataset_manifest_json",
+    }
     assert primary_manifest == manifest
     assert manifest["dataset_statuses"] == [
         "capture_grounded_ready",

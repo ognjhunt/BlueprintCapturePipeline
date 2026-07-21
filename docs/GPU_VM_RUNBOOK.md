@@ -1,5 +1,9 @@
 # Legacy GPU VM Runbook
 
+> **SUPERSEDED:** Historical single-VM workflow only. Do not use this as a paid
+> resource launcher. Current allocation must go through
+> `blueprint_pipeline.paid_resource_allocator` and the provider-specific runbook.
+
 This is legacy reference material for the older single-VM site-world/Cosmos
 workflow. It is not the supported path for the current Capture App -> World Labs
 API -> upload -> CPU preflight -> simulation-manifest flow.

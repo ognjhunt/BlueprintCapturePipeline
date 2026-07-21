@@ -26,7 +26,7 @@ from .paid_provider_lane_lease import read_process_argv
 SCHEMA_VERSION = "groot_oscar_runpod_preflight_bundle.v1"
 WATCHDOG_MODULE = "blueprint_pipeline.groot_oscar_runpod_watchdog"
 MODEL_VOLUME_WATCHDOG_MODULE = (
-    "blueprint_pipeline.groot_oscar_runpod_model_volume"
+    "blueprint_pipeline.groot_oscar_runpod_volume_watchdog"
 )
 MODEL_VOLUME_HANDOFF_SCHEMA_VERSION = "groot_oscar_model_volume_watchdog_handoff.v1"
 MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS = 60

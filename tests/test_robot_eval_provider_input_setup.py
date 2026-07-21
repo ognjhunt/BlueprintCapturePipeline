@@ -616,7 +616,7 @@ def test_prepare_provider_inputs_uses_job_builder_uploads_and_status_boundaries(
 
     monkeypatch.setattr(
         setup,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         fake_build_robot_eval_job,
     )
     monkeypatch.setattr(setup, "upload_file", fake_upload_file)

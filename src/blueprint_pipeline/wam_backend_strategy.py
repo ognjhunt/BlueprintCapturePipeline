@@ -27,6 +27,10 @@ COSMOS3_CONSISTENCY_SCORER_MODULES = (
     "blueprint_pipeline.sc3_consistency_scorer",
     "blueprint_pipeline.wam_consistency_scorer",
 )
+COSMOS3_EXTERNAL_SCORER_CLIENT_MODULE = (
+    "blueprint_pipeline.wam_strict_action_consistency_scorer_client"
+)
+COSMOS3_EXTERNAL_SCORER_URL_ENV = "BLUEPRINT_WAM_STRICT_SCORER_URL"
 COSMOS3_PROVIDER_COMMAND_ENVS = (
     "BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND",
 )
@@ -321,10 +325,14 @@ def evaluate_cosmos3_wam_preconditions(
     scorer_modules_present = [
         name for name in COSMOS3_CONSISTENCY_SCORER_MODULES if _module_present(name)
     ]
+    external_scorer_client_configured = bool(
+        _module_present(COSMOS3_EXTERNAL_SCORER_CLIENT_MODULE)
+        and str(os.getenv(COSMOS3_EXTERNAL_SCORER_URL_ENV) or "").strip()
+    )
     scorer_available = (
         bool(consistency_scorer_available)
         if consistency_scorer_available is not None
-        else bool(scorer_modules_present)
+        else bool(scorer_modules_present or external_scorer_client_configured)
     )
     anchors_path = Path(
         str(
@@ -358,6 +366,8 @@ def evaluate_cosmos3_wam_preconditions(
             "passed": scorer_available,
             "detail": {
                 "scorer_modules_present": scorer_modules_present,
+                "external_scorer_client_module": COSMOS3_EXTERNAL_SCORER_CLIENT_MODULE,
+                "external_scorer_service_configured": external_scorer_client_configured,
                 "explicit_flag_used": consistency_scorer_available is not None,
             },
         },

@@ -92,7 +92,7 @@ def test_verified_volume_replacement_rebinds_same_lane_without_owner_gap(
     argv = (
         sys.executable,
         "-m",
-        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
         "watchdog",
         "--state",
         str(state_path),
@@ -681,7 +681,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
         111: (
             sys.executable,
             "-m",
-            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
             "watchdog",
             "--state",
             source["watchdog_state_path"],
@@ -689,7 +689,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
         333: (
             sys.executable,
             "-m",
-            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
             "watchdog",
             "--state",
             retention["watchdog_state_path"],
@@ -764,7 +764,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     argv[555] = (
         sys.executable,
         "-m",
-        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
         "watchdog",
         "--state",
         renewal["watchdog_state_path"],
@@ -800,7 +800,7 @@ def test_verified_cache_rotates_atomically_to_bounded_retention_watchdog(
     argv[666] = (
         sys.executable,
         "-m",
-        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
         "watchdog",
         "--state",
         fenced_watchdog["watchdog_state_path"],

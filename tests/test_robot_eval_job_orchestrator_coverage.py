@@ -534,7 +534,7 @@ def test_robot_eval_job_build_guards_and_inbox_dedupe(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(
         rejo,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         fake_build_robot_eval_job,
     )
     manifest = rejo.run_robot_eval_job_request_inbox(capture_root=capture_root, inbox_dir=inbox)
@@ -678,7 +678,7 @@ def test_robot_eval_job_command_training_evaluation_projection_and_cli_edges(
 
     monkeypatch.setattr(
         rejo,
-        "execute_legacy_robot_eval_request_as_evaluation_run",
+        "execute_robot_eval_request_as_evaluation_run",
         lambda **_kwargs: {"manifest_path": "/tmp/manifest.json", "status": "completed"},
     )
     assert rejo.main(["--capture-root", str(tmp_path), "--job-request", str(tmp_path / "request.json"), "--job-id", "job"]) == 0

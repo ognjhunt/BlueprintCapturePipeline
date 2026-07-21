@@ -10,7 +10,7 @@ help:
 	@echo "Canonical CPU / no-GPU targets (see docs/DEV_SETUP.md):"
 	@echo "  make setup           - uv sync --extra dev (full no-GPU stack: pxr+mujoco+trimesh+opencv+boto3)"
 	@echo "  make verify-env      - import-probe the full CPU stack"
-	@echo "  make test            - run the full CPU test suite ($(PYTHON) -m pytest tests/ -q)"
+	@echo "  make test            - run the fast CPU lane; slow/gpu tests are deselected"
 	@echo "  make test-collect    - collect-only; must report 0 collection errors"
 	@echo "  make test-cpu-subset - fast representative no-GPU green subset"
 

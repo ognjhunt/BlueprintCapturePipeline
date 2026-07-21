@@ -919,7 +919,7 @@ def _model_volume_watchdog_identity_valid(
     except ValueError:
         return False
     if argv[module_index + 1 :] != [
-        "blueprint_pipeline.groot_oscar_runpod_model_volume",
+        "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
         "watchdog",
         "--state",
         str(state_path),
