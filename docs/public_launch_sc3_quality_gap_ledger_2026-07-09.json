@@ -1375,7 +1375,7 @@
             {
               "artifact_id": "DATA-03-AC-01-EV-03",
               "path": "src/blueprint_pipeline/site_reference_database.py",
-              "sha256": "sha256:fe7e879ee666e39f6d3f1b000898816d69f853baa0bd4f6500b11a5d890a54f0",
+              "sha256": "sha256:7901a6c6de9d12056863b793adbdadbd9f39f75adc80ad67e390986ba3da284a",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1391,7 +1391,7 @@
             {
               "artifact_id": "DATA-03-AC-01-EV-04",
               "path": "tests/test_site_reference_database_contract.py",
-              "sha256": "sha256:3566443ddd4a7da0799c145ca0da8545ea2ffe6733207eb00a469d6ab2aac679",
+              "sha256": "sha256:41b88407a5b7a384c2ba24bac85ada573783bda324de0b6651a0ecf7d899b953",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1545,7 +1545,7 @@
             {
               "artifact_id": "DATA-04-AC-01-EV-03",
               "path": "src/blueprint_pipeline/site_reference_database.py",
-              "sha256": "sha256:fe7e879ee666e39f6d3f1b000898816d69f853baa0bd4f6500b11a5d890a54f0",
+              "sha256": "sha256:7901a6c6de9d12056863b793adbdadbd9f39f75adc80ad67e390986ba3da284a",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1561,7 +1561,7 @@
             {
               "artifact_id": "DATA-04-AC-01-EV-04",
               "path": "tests/test_site_reference_database_contract.py",
-              "sha256": "sha256:3566443ddd4a7da0799c145ca0da8545ea2ffe6733207eb00a469d6ab2aac679",
+              "sha256": "sha256:41b88407a5b7a384c2ba24bac85ada573783bda324de0b6651a0ecf7d899b953",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7707,7 +7707,7 @@
             {
               "artifact_id": "DATA-13-AC-01-EV-03",
               "path": "src/blueprint_pipeline/site_reference_database.py",
-              "sha256": "sha256:fe7e879ee666e39f6d3f1b000898816d69f853baa0bd4f6500b11a5d890a54f0",
+              "sha256": "sha256:7901a6c6de9d12056863b793adbdadbd9f39f75adc80ad67e390986ba3da284a",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7723,7 +7723,7 @@
             {
               "artifact_id": "DATA-13-AC-01-EV-04",
               "path": "tests/test_site_reference_database_contract.py",
-              "sha256": "sha256:3566443ddd4a7da0799c145ca0da8545ea2ffe6733207eb00a469d6ab2aac679",
+              "sha256": "sha256:41b88407a5b7a384c2ba24bac85ada573783bda324de0b6651a0ecf7d899b953",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

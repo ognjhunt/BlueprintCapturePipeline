@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -87,6 +88,19 @@ def _record() -> dict[str, object]:
 
 def _evaluation_admission() -> dict[str, object]:
     digest = "a" * 64
+    task_contracts = [
+        {
+            "task_id": "open-door",
+            "criterion_id": "door-angle",
+            "evidence_type": "articulation_state",
+            "tolerance": 0.2,
+            "tolerance_unit": "radian",
+            "evaluator_mapping": "isaac.articulation_transition.v1",
+        }
+    ]
+    task_contract_rows_sha256 = hashlib.sha256(
+        json.dumps(task_contracts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return {
         "schema_version": EVALUATION_SITE_ADMISSION_SCHEMA_VERSION,
         "importer_kind": "scaniverse_assisted_import",
@@ -99,6 +113,17 @@ def _evaluation_admission() -> dict[str, object]:
             "source_bundle_sha256": digest,
             "manifest_sha256": digest,
         },
+        "independent_evidence_verification": {
+            "status": "verified",
+            "independent_of_importer_and_model_backend": True,
+            "verifier_is_importer": False,
+            "verification_method": "offline_evidence_verifier",
+            "verifier_id": "site-admission-verifier",
+            "verifier_version": "2.0.0",
+            "verification_report_sha256": "b" * 64,
+            "source_artifact_index_sha256": "c" * 64,
+            "verified_source_manifest_sha256": digest,
+        },
         "rights_privacy_provenance": {
             "consent_active": True,
             "rights_verified": True,
@@ -106,6 +131,10 @@ def _evaluation_admission() -> dict[str, object]:
             "provenance_verified": True,
             "commercial_sim_evaluation_allowed": True,
             "rights_manifest_sha256": digest,
+            "consent_scope_id": "consent-sim-eval-v1",
+            "privacy_policy_id": "privacy-v1",
+            "provenance_chain_id": "capture-chain-1",
+            "commercial_use_scope": ["sim_evaluation", "buyer_delivery"],
         },
         "metric_coordinate_contract": {
             "scale_status": "verified_metric",
@@ -113,6 +142,11 @@ def _evaluation_admission() -> dict[str, object]:
             "up_axis": "+Z",
             "gravity_m_s2": [0.0, 0.0, -9.81],
             "coordinate_frame_manifest_sha256": digest,
+            "world_frame_id": "world-z-up",
+            "site_frame_id": "site-held-out-site",
+            "capture_frame_id": "capture-1-origin",
+            "scale_evidence_sha256": digest,
+            "gravity_alignment_sha256": digest,
             "uncertainty": {
                 "scale_sigma": 0.001,
                 "translation_sigma_m": 0.002,
@@ -127,41 +161,53 @@ def _evaluation_admission() -> dict[str, object]:
             "reprojection_rmse_px": 0.4,
             "maximum_reprojection_rmse_px": 1.0,
             "calibration_manifest_sha256": digest,
+            "intrinsics_sha256": digest,
+            "extrinsics_sha256": digest,
+            "timestamps_sha256": digest,
         },
         "static_robot_evaluation_viewpoints": [
             {
                 "viewpoint_id": "vp-1",
                 "camera_profile_id": "camera-1",
                 "robot_profile_id": "robot-1",
+                "source_capture_id": "capture-1",
+                "source_frame_id": "frame-1",
                 "derived_from_moving_scan": True,
                 "status": "calibrated_static_viewpoint",
                 "pose_sha256": digest,
+                "source_trajectory_sha256": digest,
             }
         ],
         "robot_camera_embodiment": {
+            "robot_profile_id": "robot-1",
+            "camera_profile_id": "camera-1",
+            "embodiment_id": "embodiment-1",
             "robot_profile_sha256": digest,
             "camera_profile_sha256": digest,
             "embodiment_manifest_sha256": digest,
         },
         "task_scene_grounding": {
             "scene_identity": "scene-1",
-            "task_objects": [{"object_id": "door"}],
-            "articulated_parts": [{"part_id": "door-hinge"}],
-            "target_zones": [{"zone_id": "open-angle"}],
+            "task_objects": [
+                {"object_id": "door", "scene_id": "scene-1", "capture_id": "capture-1"}
+            ],
+            "articulated_parts": [
+                {
+                    "part_id": "door-hinge",
+                    "scene_id": "scene-1",
+                    "capture_id": "capture-1",
+                }
+            ],
+            "target_zones": [
+                {"zone_id": "open-angle", "scene_id": "scene-1", "capture_id": "capture-1"}
+            ],
             "grounding_manifest_sha256": digest,
         },
-        "task_contracts": [
-            {
-                "task_id": "open-door",
-                "criterion_id": "door-angle",
-                "evidence_type": "articulation_state",
-                "tolerance": 0.2,
-                "tolerance_unit": "radian",
-                "evaluator_mapping": "isaac.articulation_transition.v1",
-            }
-        ],
+        "task_contracts": task_contracts,
+        "task_contract_manifest_sha256": digest,
+        "task_contract_rows_sha256": task_contract_rows_sha256,
         "truth_layers": {
-            "visual_geometry": {"status": "verified"},
+            "visual_geometry": {"status": "verified", "evidence_sha256": digest},
             "collision": {"status": "verified", "evidence_sha256": digest},
             "contact": {"status": "verified", "evidence_sha256": digest},
             "dynamics": {"status": "verified", "evidence_sha256": digest},
@@ -182,7 +228,18 @@ def _evaluation_admission() -> dict[str, object]:
         },
         "ood_abstention": {
             "abstention_enabled": True,
-            "axes": [{"axis": "site"}, {"axis": "task"}, {"axis": "embodiment"}],
+            "out_of_distribution_behavior": "abstain",
+            "calibration_manifest_sha256": digest,
+            "axes": [
+                {"axis": "site"},
+                {"axis": "task"},
+                {"axis": "policy_family"},
+                {"axis": "embodiment"},
+                {"axis": "camera"},
+                {"axis": "visual"},
+                {"axis": "dynamics"},
+                {"axis": "contact"},
+            ],
         },
     }
 
@@ -195,6 +252,16 @@ def test_evaluation_site_admission_derives_readiness_across_all_truth_layers() -
     assert result["claim_boundary"]["assisted_import_is_not_evaluation_readiness"] is True
 
 
+def test_legacy_site_admission_schema_cannot_enter_v2_contract() -> None:
+    candidate = _evaluation_admission()
+    candidate["schema_version"] = "evaluation_site_admission.v1"
+
+    result = validate_evaluation_site_admission(candidate)
+
+    assert result["status"] == "blocked"
+    assert "site_admission_schema_missing_or_unsupported" in result["blockers"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_blocker"),
     [
@@ -205,26 +272,124 @@ def test_evaluation_site_admission_derives_readiness_across_all_truth_layers() -
             "metric_scale_not_verified_in_meters",
         ),
         (
-            lambda value: value["camera_time_calibration"].update(
-                {"reprojection_rmse_px": 4.0}
-            ),
+            lambda value: value["camera_time_calibration"].update({"reprojection_rmse_px": 4.0}),
             "camera_reprojection_error_missing_or_above_limit",
         ),
         (
-            lambda value: value["truth_layers"]["collision"].update(
-                {"status": "review_only"}
-            ),
+            lambda value: value["camera_time_calibration"].update({"reprojection_rmse_px": -0.1}),
+            "camera_reprojection_error_missing_or_above_limit",
+        ),
+        (
+            lambda value: value["truth_layers"]["collision"].update({"status": "review_only"}),
             "collision_truth_not_verified",
         ),
         (
-            lambda value: value["frozen_splits"].update(
-                {"train_sites": ["held-out-site"]}
-            ),
+            lambda value: value["frozen_splits"].update({"train_sites": ["held-out-site"]}),
             "site_split_overlap_detected",
         ),
     ],
 )
 def test_assisted_import_cannot_self_declare_evaluation_readiness(
+    mutation,
+    expected_blocker: str,
+) -> None:
+    candidate = _evaluation_admission()
+    mutation(candidate)
+
+    result = validate_evaluation_site_admission(candidate)
+
+    assert result["status"] == "blocked"
+    assert expected_blocker in result["blockers"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_blocker"),
+    [
+        (
+            lambda value: value["static_robot_evaluation_viewpoints"].append("corrupt-row"),
+            "static_robot_evaluation_viewpoints_payload_invalid",
+        ),
+        (
+            lambda value: value["task_scene_grounding"].update(
+                {"scene_identity": "different-scene"}
+            ),
+            "task_scene_grounding_scene_identity_mismatch",
+        ),
+        (
+            lambda value: value["metric_coordinate_contract"].update(
+                {"gravity_m_s2": [0.0, 0.0, 9.81]}
+            ),
+            "gravity_vector_inconsistent_with_up_axis",
+        ),
+        (
+            lambda value: value["ood_abstention"].update(
+                {"out_of_distribution_behavior": "force_decision"}
+            ),
+            "ood_behavior_must_abstain",
+        ),
+        (
+            lambda value: value["independent_evidence_verification"].update(
+                {"verified_source_manifest_sha256": "b" * 64}
+            ),
+            "independent_verification_source_manifest_digest_mismatch",
+        ),
+        (
+            lambda value: value["independent_evidence_verification"].update(
+                {"independent_of_importer_and_model_backend": False}
+            ),
+            "site_evidence_verifier_independence_not_proven",
+        ),
+        (
+            lambda value: value["independent_evidence_verification"].update(
+                {"verification_report_sha256": "a" * 64}
+            ),
+            "independent_verification_artifacts_not_distinct_from_source",
+        ),
+        (
+            lambda value: value["static_robot_evaluation_viewpoints"].append(
+                dict(value["static_robot_evaluation_viewpoints"][0])
+            ),
+            "static_viewpoint_duplicate_identity:1",
+        ),
+        (
+            lambda value: value["task_scene_grounding"]["task_objects"].append(
+                {
+                    "object_id": "door",
+                    "scene_id": "scene-1",
+                    "capture_id": "capture-1",
+                }
+            ),
+            "task_scene_grounding_duplicate_identity:task_objects",
+        ),
+        (
+            lambda value: value["task_scene_grounding"]["task_objects"][0].update(
+                {"scene_id": "stale-scene"}
+            ),
+            "task_scene_grounding_source_identity_mismatch:task_objects:0",
+        ),
+        (
+            lambda value: value.update({"task_contract_rows_sha256": "b" * 64}),
+            "task_contract_rows_digest_mismatch",
+        ),
+        (
+            lambda value: value["independent_evidence_verification"].update(
+                {"verifier_is_importer": True}
+            ),
+            "independent_evidence_verifier_must_not_be_importer",
+        ),
+        (
+            lambda value: value["ood_abstention"].update({"axes": [{"axis": "embodiment"}]}),
+            ("ood_required_axes_missing:camera,contact,dynamics,policy_family,site,task,visual"),
+        ),
+        (
+            lambda value: value["ood_abstention"].update(
+                {"axes": [{"axis": "site"}, {"axis": "task"}]}
+            ),
+            ("ood_required_axes_missing:camera,contact,dynamics,embodiment,policy_family,visual"),
+        ),
+    ],
+)
+def test_site_admission_v2_rejects_malformed_or_contradictory_evidence(
     mutation,
     expected_blocker: str,
 ) -> None:
@@ -293,7 +458,9 @@ def test_site_reference_manifest_contract_is_canonical_v1() -> None:
             }
         ],
         coverage_summary={"coverage_fraction": 0.5},
-        artifact_uris={"site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"},
+        artifact_uris={
+            "site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"
+        },
         readiness={
             "state": "degraded",
             "blockers": ["site_frame_not_established"],
@@ -344,7 +511,9 @@ def test_site_reference_manifest_rejects_invalid_required_shapes(
         validate_site_reference_manifest(missing)
 
 
-def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_fields(tmp_path: Path) -> None:
+def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_fields(
+    tmp_path: Path,
+) -> None:
     storage_root = tmp_path
     site_root = storage_root / "bucket" / "sites" / "site-1" / "reference_memory"
     site_root.mkdir(parents=True)
@@ -373,7 +542,9 @@ def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_f
                 chunk_count=1,
                 captures=[],
                 coverage_summary={"coverage_fraction": 0.25},
-                artifact_uris={"site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"},
+                artifact_uris={
+                    "site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"
+                },
                 readiness={"state": "degraded", "blockers": ["site_frame_not_established"]},
                 site_frame_established=False,
             )
@@ -389,7 +560,9 @@ def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_f
     )
 
     assert projection["storage_class"] == "firestore_summary_safe"
-    assert projection["artifact_uris"]["site_reference_index_uri"].endswith("site_reference_index.jsonl")
+    assert projection["artifact_uris"]["site_reference_index_uri"].endswith(
+        "site_reference_index.jsonl"
+    )
     assert "depth_uri" not in json.dumps(projection)
     assert "embedding_uri" not in json.dumps(projection)
 
