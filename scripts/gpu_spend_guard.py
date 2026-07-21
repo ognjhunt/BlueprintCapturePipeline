@@ -1061,6 +1061,11 @@ def find_protected_pod_ids(
     owner_files: list[_OwnerBinding] = []
     for filename in OWNER_ID_FILENAMES:
         owner_files.extend(_iter_owner_bindings(output_roots, filename))
+    qualification_targets = tuple(
+        str(binding.qualification_manifest_path)
+        for binding in owner_files
+        if binding.qualification_manifest_path is not None
+    )
     for binding in owner_files:
         path = binding.id_path
         launched_id = binding.launched_id
@@ -1071,6 +1076,7 @@ def find_protected_pod_ids(
                     cmd,
                     "--qualification-session-manifest",
                     str(qualification_manifest_path),
+                    candidate_targets=qualification_targets,
                 )
                 for cmd in cmdlines
             ):
@@ -1113,7 +1119,21 @@ def _cmd_references_exact_token(cmd: str, target: str) -> bool:
     return False
 
 
-def _cmd_option_references_exact_path(cmd: str, option: str, target: str) -> bool:
+def _resolved_path_identity(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    try:
+        return path.resolve(strict=True)
+    except OSError:
+        return Path(os.path.abspath(path))
+
+
+def _cmd_option_references_exact_path(
+    cmd: str,
+    option: str,
+    target: str,
+    *,
+    candidate_targets: Sequence[str],
+) -> bool:
     """Whether ``option`` names the exact absolute or component-relative path."""
 
     try:
@@ -1126,21 +1146,14 @@ def _cmd_option_references_exact_path(cmd: str, option: str, target: str) -> boo
             values.append(tokens[index + 1])
         elif token.startswith(f"{option}="):
             values.append(token.split("=", 1)[1])
-    target_path = Path(target).expanduser()
-    try:
-        target_path = target_path.resolve(strict=True)
-    except OSError:
-        target_path = Path(os.path.abspath(target_path))
+    target_path = _resolved_path_identity(target)
     for value in values:
         candidate = Path(value).expanduser()
         # Directory symlink components are supported, but the manifest option
         # itself must not be a symlink because qualification evidence forbids it.
         if candidate.is_symlink():
             continue
-        try:
-            resolved_candidate = candidate.resolve(strict=True)
-        except OSError:
-            resolved_candidate = Path(os.path.abspath(candidate))
+        resolved_candidate = _resolved_path_identity(candidate)
         if resolved_candidate == target_path:
             return True
         if candidate.is_absolute():
@@ -1152,7 +1165,15 @@ def _cmd_option_references_exact_path(cmd: str, option: str, target: str) -> boo
         parts = tuple(part for part in normalized.parts if part not in ("", "."))
         if ".." in parts:
             continue
-        if len(parts) >= 3 and target_path.parts[-len(parts) :] == parts:
+        if len(parts) < 3:
+            continue
+        matching_targets = {
+            resolved
+            for item in candidate_targets
+            if (resolved := _resolved_path_identity(item)).parts[-len(parts) :]
+            == parts
+        }
+        if matching_targets == {target_path}:
             return True
     return False
 

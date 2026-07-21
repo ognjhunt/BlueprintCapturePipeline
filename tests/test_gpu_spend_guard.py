@@ -416,6 +416,27 @@ def test_relative_qualification_manifest_path_is_protected(tmp_path: Path) -> No
     assert protected == {"45483300"}
 
 
+def test_ambiguous_relative_qualification_path_protects_neither_tree(
+    tmp_path: Path,
+) -> None:
+    suffix = Path("output/episode/attempt_047_qualification")
+    first_root = tmp_path / "capture_a"
+    second_root = tmp_path / "capture_b"
+    first_manifest = _write_qualification_owner(first_root / suffix, "45483300")
+    _write_qualification_owner(second_root / suffix, "45483301")
+    relative_manifest = first_manifest.relative_to(first_root)
+
+    protected = guard.find_protected_pod_ids(
+        [first_root, second_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_symlinked_manifest_directory_argument_is_protected(tmp_path: Path) -> None:
     real_root = tmp_path / "capture_volume"
     attempt = real_root / "episode" / "attempt_047_qualification"
