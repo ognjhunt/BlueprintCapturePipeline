@@ -1803,6 +1803,17 @@ def run_storage_model_volume(
                 )
             )
             if terminal:
+                # The final authenticated global inventory is authoritative for
+                # failure cleanup.  In the ambiguous-create case there is no
+                # volume id to delete, so ``volume_teardown`` otherwise retains
+                # its pessimistic initializer even though provider absence and
+                # lane release were independently verified below.
+                volume_teardown = {
+                    **volume_teardown,
+                    "provider_absence_confirmed": True,
+                    "verification_method": "authenticated_global_provider_inventory",
+                    "observed_volume_id": volume_id or None,
+                }
                 if volume_id:
                     close_pending_teardown(
                         pending["path"],
