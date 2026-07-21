@@ -923,8 +923,13 @@ def _validated_qualification_manifest(
             _validate_manifest_binding(source, manifest)
         except Exception:  # noqa: BLE001 - invalid/unavailable binding fails closed
             continue
+        watchdog_deadline_value = manifest.get("watchdog_deadline_epoch")
+        if isinstance(watchdog_deadline_value, bool) or not isinstance(
+            watchdog_deadline_value, (str, int, float)
+        ):
+            continue
         try:
-            watchdog_deadline_epoch = float(manifest.get("watchdog_deadline_epoch"))
+            watchdog_deadline_epoch = float(watchdog_deadline_value)
         except (TypeError, ValueError, OverflowError):
             continue
         if not 0 < watchdog_deadline_epoch < 1e20:
