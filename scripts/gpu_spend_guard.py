@@ -15,8 +15,8 @@ unverified deletion are blockers rather than green empty fleets.
 Safety rails (the whole point of the tool is to never kill live work):
 
 * Default is **dry-run** — it reports and would-reap, but changes nothing.
-* A pod whose id appears in any ``*/object_store_real_run/started_pod_id.txt``
-  under an ``output/.../pipeline/`` tree **that still has a live owning process**
+* A pod whose id appears in a registered render-job owner file, or in a validated
+  persistent-qualification owner file, **that still has a live owning process**
   is never reaped, no matter how stuck it looks. Only orphans whose launching run
   has died are eligible.
 * Healthy booted pods with a live owning process are never auto-reaped.
@@ -821,22 +821,56 @@ OWNER_ID_FILENAMES = (
 def _iter_owner_id_files(
     output_roots: Iterable[Path | str], filename: str
 ) -> list[tuple[Path, str]]:
-    """``(file_path, launched_id)`` for every ``object_store_real_run/<filename>``
-    under a ``pipeline`` tree in any output root."""
+    """Return validated provider-owner id files under configured output roots."""
     found: list[tuple[Path, str]] = []
     seen: set[tuple[str, str]] = set()
     for root in output_roots:
         base = Path(root).expanduser()
         if not base.is_dir():
             continue
-        for path in base.glob(f"**/object_store_real_run/{filename}"):
-            if "pipeline" not in path.parts:
-                continue
+        candidates = list(base.glob(f"**/object_store_real_run/{filename}"))
+        if filename == "started_vast_instance_id.txt":
+            candidates.extend(base.glob(f"**/{filename}"))
+        for path in candidates:
             try:
                 launched_id = path.read_text(encoding="utf-8").strip()
             except OSError:
                 continue
             if not launched_id:
+                continue
+            render_owner = path.parent.name == "object_store_real_run" and (
+                "pipeline" in path.parts
+            )
+            qualification_owner = False
+            if (
+                filename == "started_vast_instance_id.txt"
+                and not path.is_symlink()
+            ):
+                for manifest_path in path.parent.glob("*.json"):
+                    try:
+                        manifest_stat = manifest_path.lstat()
+                        if (
+                            manifest_path.is_symlink()
+                            or manifest_stat.st_size > 1024 * 1024
+                            or stat.S_IMODE(manifest_stat.st_mode) != 0o600
+                        ):
+                            continue
+                        manifest = json.loads(
+                            manifest_path.read_text(encoding="utf-8")
+                        )
+                    except (OSError, UnicodeError, json.JSONDecodeError):
+                        continue
+                    qualification_owner = bool(
+                        isinstance(manifest, Mapping)
+                        and manifest.get("schema_version")
+                        == "single_g1_kitchen_qualification_session.v1"
+                        and manifest.get("provider") == "vast"
+                        and str(manifest.get("instance_id") or "") == launched_id
+                        and manifest.get("continuing_spend") is True
+                    )
+                    if qualification_owner:
+                        break
+            if not render_owner and not qualification_owner:
                 continue
             dedupe_key = (str(path), launched_id)
             if dedupe_key in seen:
@@ -928,13 +962,20 @@ def find_protected_pod_ids(
     for filename in OWNER_ID_FILENAMES:
         owner_files.extend(_iter_owner_id_files(output_roots, filename))
     for path, launched_id in owner_files:
-        job_dir = str(path.parent)  # .../object_store_real_run
-        out_dir = str(path.parent.parent)  # the render job's --out-dir
+        job_dir = str(path.parent)
+        render_out_dir = (
+            str(path.parent.parent)
+            if path.parent.name == "object_store_real_run"
+            else ""
+        )
         for cmd in cmdlines:
             if (
                 launched_id in cmd
-                or _cmd_references_path(cmd, out_dir)
                 or _cmd_references_path(cmd, job_dir)
+                or (
+                    render_out_dir
+                    and _cmd_references_path(cmd, render_out_dir)
+                )
             ):
                 protected.add(launched_id)
                 break

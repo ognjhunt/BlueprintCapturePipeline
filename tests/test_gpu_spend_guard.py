@@ -321,6 +321,86 @@ def test_owned_vast_instance_with_live_owner_is_protected(tmp_path: Path) -> Non
     assert protected == {"778899"}
 
 
+def test_live_persistent_qualification_vast_instance_is_protected(
+    tmp_path: Path,
+) -> None:
+    attempt = tmp_path / "custom_qualification_output"
+    attempt.mkdir(parents=True)
+    (attempt / "started_vast_instance_id.txt").write_text("45483300")
+    manifest = {
+        "schema_version": "single_g1_kitchen_qualification_session.v1",
+        "provider": "vast",
+        "instance_id": "45483300",
+        "continuing_spend": True,
+    }
+    manifest_path = attempt / "arbitrary_session_name.json"
+    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.chmod(0o600)
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+    assert protected == {"45483300"}
+
+
+def test_terminal_persistent_qualification_is_not_protected(tmp_path: Path) -> None:
+    attempt = tmp_path / "single_g1_kitchen_episode" / "attempt_047_qualification"
+    attempt.mkdir(parents=True)
+    (attempt / "started_vast_instance_id.txt").write_text("45483300")
+    manifest_path = attempt / "qualification_session.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "single_g1_kitchen_qualification_session.v1",
+                "provider": "vast",
+                "instance_id": "45483300",
+                "continuing_spend": False,
+            }
+        )
+    )
+    manifest_path.chmod(0o600)
+    protected = guard.find_protected_pod_ids(
+        [tmp_path], process_cmdlines=[f"watcher {manifest_path}"]
+    )
+    assert protected == set()
+
+
+def test_different_live_qualification_attempt_does_not_protect_stale_instance(
+    tmp_path: Path,
+) -> None:
+    episode = tmp_path / "single_g1_kitchen_episode"
+    stale_attempt = episode / "attempt_047_qualification"
+    live_attempt = episode / "attempt_048_qualification"
+    stale_attempt.mkdir(parents=True)
+    live_attempt.mkdir(parents=True)
+    (stale_attempt / "started_vast_instance_id.txt").write_text("45483300")
+    stale_manifest = stale_attempt / "qualification_session.json"
+    stale_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "single_g1_kitchen_qualification_session.v1",
+                "provider": "vast",
+                "instance_id": "45483300",
+                "continuing_spend": True,
+            }
+        )
+    )
+    stale_manifest.chmod(0o600)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {live_attempt / 'qualification_session.json'}"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_started_pod_id_outside_pipeline_dir_is_ignored(tmp_path: Path) -> None:
     job_dir = tmp_path / "scratch" / "object_store_real_run"
     job_dir.mkdir(parents=True)
