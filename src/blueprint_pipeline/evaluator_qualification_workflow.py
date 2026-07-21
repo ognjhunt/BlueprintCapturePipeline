@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 import hashlib
 import json
 import math
@@ -874,10 +875,8 @@ def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
         os.replace(temporary_name, path)
     finally:
         if temporary_name:
-            try:
+            with suppress(OSError):
                 Path(temporary_name).unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def main(argv: Sequence[str] | None = None) -> int:
