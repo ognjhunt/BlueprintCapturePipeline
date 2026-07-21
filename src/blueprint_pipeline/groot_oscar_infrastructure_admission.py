@@ -78,7 +78,7 @@ RUNPOD_S3_DATA_CENTER_IDS = frozenset(
 RUNPOD_S3_VOLUME_DATA_CENTER_IDS = RUNPOD_S3_DATA_CENTER_IDS & RUNPOD_NETWORK_VOLUME_DATA_CENTER_IDS
 
 BUILD_SCHEMA_VERSION = "groot_oscar_build_plane_admission.v1"
-SERVE_SCHEMA_VERSION = "groot_oscar_runpod_serve_plane_admission.v1"
+SERVE_SCHEMA_VERSION = "groot_oscar_runpod_serve_plane_admission.v2"
 LIVE_MACHINE_SCHEMA_VERSION = "blueprint.live_machine_capability.v1"
 CPU_BUILD_EXECUTION_SCHEMA_VERSION = "blueprint.cpu_build_execution_admission.v1"
 MIN_BUILD_FREE_BYTES = 120 * 1024**3

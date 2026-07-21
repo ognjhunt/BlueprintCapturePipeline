@@ -524,6 +524,7 @@ def test_runpod_serve_plane_admits_only_published_volume_ready_worker() -> None:
     )
     assert result["status"] == "admitted"
     assert result["blockers"] == []
+    assert result["schema_version"] == "groot_oscar_runpod_serve_plane_admission.v2"
 
 
 def test_runpod_serve_plane_rejects_release_from_different_source_commit() -> None:
