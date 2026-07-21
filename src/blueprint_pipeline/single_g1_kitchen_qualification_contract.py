@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import copy
 import hashlib
+import json
 import re
 from typing import Any, Mapping
 
 
 RELEASE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_release_binding.v1"
+LAUNCH_REBIND_SCHEMA_VERSION = "single_g1_kitchen_qualification_launch_rebind.v1"
 EMPTY_PATCH_SHA256 = hashlib.sha256(b"").hexdigest()
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _DIGEST_REF_RE = re.compile(r"[^\s@]+@sha256:([0-9a-f]{64})")
@@ -20,6 +24,102 @@ def valid_source_commit(value: object) -> bool:
 def valid_image_binding(image_ref: object, image_digest: object) -> bool:
     match = _DIGEST_REF_RE.fullmatch(str(image_ref or ""))
     return bool(match and image_digest == f"sha256:{match.group(1)}")
+
+
+def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def bind_inputs_to_release(
+    inputs: Mapping[str, Any], release_binding: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Derive an auditable qualification plan without rewriting bundle truth."""
+
+    plan_value = inputs.get("plan")
+    attempt_value = inputs.get("attempt")
+    plan = copy.deepcopy(dict(plan_value)) if isinstance(plan_value, Mapping) else {}
+    attempt = (
+        copy.deepcopy(dict(attempt_value))
+        if isinstance(attempt_value, Mapping)
+        else {}
+    )
+    if plan.get("sealed_active") is not True or plan.get("blockers"):
+        raise ValueError("qualification_source_launch_plan_not_sealed")
+    original_image_ref = str(plan.get("image_ref") or "")
+    match = _DIGEST_REF_RE.fullmatch(original_image_ref)
+    if match is None:
+        raise ValueError("qualification_source_launch_plan_image_not_digest_pinned")
+    original_image_digest = f"sha256:{match.group(1)}"
+    if attempt.get("image_digest") != original_image_digest:
+        raise ValueError("qualification_source_attempt_image_mismatch")
+
+    target_image_ref = str(release_binding.get("image_ref") or "")
+    target_image_digest = str(release_binding.get("image_digest") or "")
+    source_commit = str(release_binding.get("source_commit") or "")
+    if not valid_image_binding(target_image_ref, target_image_digest):
+        raise ValueError("qualification_target_release_image_invalid")
+    if not valid_source_commit(source_commit):
+        raise ValueError("qualification_target_release_source_commit_invalid")
+    bundle_sha256 = str(inputs.get("bundle_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", bundle_sha256):
+        raise ValueError("qualification_source_bundle_digest_invalid")
+
+    binding_body = {
+        "schema_version": LAUNCH_REBIND_SCHEMA_VERSION,
+        "status": "bound",
+        "source_bundle_sha256": bundle_sha256,
+        "source_loaded_plan_sha256": _canonical_sha256(plan),
+        "source_plan_origin": "validated_sealed_bundle_then_loader_derived_runtime_plan",
+        "source_image_ref": original_image_ref,
+        "source_image_digest": original_image_digest,
+        "release_image_ref": target_image_ref,
+        "release_image_digest": target_image_digest,
+        "release_source_commit": source_commit,
+        "source_bundle_preserved": True,
+        "derived_plan_and_attempt_required": True,
+    }
+    binding_sha256 = _canonical_sha256(binding_body)
+    embedded_binding = {**binding_body, "binding_sha256": binding_sha256}
+
+    plan["image_ref"] = target_image_ref
+    plan["qualification_release_rebind"] = embedded_binding
+    attempt["image_digest"] = target_image_digest
+    attempt["qualification_release_rebind"] = embedded_binding
+    attempt_bytes = (json.dumps(attempt, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+    bootstrap_script = str(inputs.get("bootstrap_script") or "")
+    marker = (
+        "cp /workspace/attempt_input_manifest_episode_001.json "
+        "/workspace/attempt_input_manifest.json\n"
+    )
+    if bootstrap_script.count(marker) != 1:
+        raise ValueError("qualification_attempt_manifest_rebind_marker_ambiguous")
+    encoded_attempt = base64.b64encode(attempt_bytes).decode("ascii")
+    replacement = (
+        "python3 - <<'PY'\n"
+        "import base64\n"
+        "from pathlib import Path\n"
+        f"payload = base64.b64decode({encoded_attempt!r}, validate=True)\n"
+        "Path('/workspace/attempt_input_manifest.json').write_bytes(payload)\n"
+        "PY\n"
+    )
+
+    updated = dict(inputs)
+    updated["plan"] = plan
+    updated["attempt"] = attempt
+    updated["bootstrap_script"] = bootstrap_script.replace(marker, replacement, 1)
+    launch_binding = {
+        **embedded_binding,
+        "derived_launch_plan_sha256": _canonical_sha256(plan),
+        "derived_attempt_manifest_sha256": hashlib.sha256(attempt_bytes).hexdigest(),
+        "runtime_attempt_manifest_rebound": True,
+        "raw_source_bundle_modified": False,
+    }
+    updated["qualification_launch_rebind"] = launch_binding
+    return updated, launch_binding
 
 
 def build_release_binding(

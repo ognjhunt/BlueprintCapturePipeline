@@ -99,6 +99,7 @@ from .single_g1_kitchen_qualification_admission import (
     write_standard_artifacts,
 )
 from .single_g1_kitchen_qualification_contract import (
+    bind_inputs_to_release,
     build_release_binding as _release_binding,
     qualification_gate_matrix,
     session_claim_boundary as _session_claim_boundary,
@@ -251,6 +252,13 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
             blockers.append("image")
         if not valid_source_commit(manifest.get("source_commit")):
             blockers.append("source_commit")
+        stored_release = manifest.get("release_binding")
+        if isinstance(stored_release, Mapping):
+            if any(
+                stored_release.get(key) != manifest.get(key)
+                for key in ("image_ref", "image_digest", "source_commit")
+            ):
+                blockers.append("release_binding")
     else:
         # Retained pre-contract sessions remain readable for status/teardown.
         if not valid_image_binding(manifest.get("image_ref"), manifest.get("image_digest")):
@@ -300,6 +308,19 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
         blockers.append("job_dir")
     if blockers:
         raise ValueError("qualification_session_manifest_binding_invalid:" + ",".join(blockers))
+
+
+def _stored_release_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    stored = manifest.get("release_binding")
+    if isinstance(stored, Mapping) and stored:
+        return dict(stored)
+    return {
+        "schema_version": "single_g1_kitchen_qualification_release_binding.v1",
+        "image_ref": manifest.get("image_ref"),
+        "image_digest": manifest.get("image_digest"),
+        "source_commit": manifest.get("source_commit"),
+        "preserved_from_legacy_session_manifest": True,
+    }
 
 
 def _component_wrapper(*, env: Mapping[str, Any], command: list[str]) -> str:
@@ -1834,6 +1855,8 @@ def _manifest_base(
     image_ref: str,
     image_digest: str,
     source_commit: str,
+    release_binding: Mapping[str, Any] | None = None,
+    qualification_launch_rebind: Mapping[str, Any] | None = None,
     release_binding_status: str = "bound",
 ) -> dict[str, Any]:
     return {
@@ -1848,6 +1871,8 @@ def _manifest_base(
         "image_digest": image_digest,
         "source_commit": source_commit,
         "release_binding_status": release_binding_status,
+        "release_binding": dict(release_binding or {}),
+        "qualification_launch_rebind": dict(qualification_launch_rebind or {}),
         "bundle_sha256": BUNDLE_SHA256,
         "launch_session_id": launch_session_id,
         "launch_session_nonce_sha256": _sha256_bytes(launch_session_id.encode("utf-8")),
@@ -1967,9 +1992,17 @@ def _allocate(
     image_ref = str(release_binding.get("image_ref") or "")
     image_digest = str(release_binding.get("image_digest") or "")
     source_commit = str(release_binding.get("source_commit") or "")
+    preserve_existing_bound_release = (
+        bool(existing_manifest)
+        and existing_manifest.get("release_binding_status") == "bound"
+    )
+    stored_release_binding = _stored_release_binding(existing_manifest)
+    effective_release_binding = (
+        stored_release_binding if preserve_existing_bound_release else release_binding
+    )
     existing_release_mismatch = (
         bool(existing_manifest)
-        and existing_manifest.get("release_binding_status") != "blocked"
+        and preserve_existing_bound_release
         and any(
             existing_manifest.get(key) != release_binding.get(key)
             for key in ("image_ref", "image_digest", "source_commit")
@@ -1977,6 +2010,21 @@ def _allocate(
     )
     if existing_release_mismatch:
         blockers.append("qualification_existing_manifest_release_binding_mismatch")
+    qualification_launch_rebind: dict[str, Any] = {}
+    if inputs and not release_blockers:
+        try:
+            inputs, qualification_launch_rebind = bind_inputs_to_release(
+                inputs, effective_release_binding
+            )
+        except ValueError as exc:
+            blockers.append(str(exc))
+    elif preserve_existing_bound_release and inputs:
+        try:
+            inputs, qualification_launch_rebind = bind_inputs_to_release(
+                inputs, effective_release_binding
+            )
+        except ValueError as exc:
+            blockers.append(str(exc))
 
     if existing_manifest:
         prefix = str(existing_manifest["resource_name_prefix"])
@@ -2122,10 +2170,6 @@ def _allocate(
             + (["qualification_bootstrap_staging_required"] if bootstrap_staging_required else [])
         )
     )
-    preserve_existing_bound_release = (
-        bool(existing_manifest)
-        and existing_manifest.get("release_binding_status") == "bound"
-    )
     manifest = _manifest_base(
         root=root,
         resource_name=resource_name,
@@ -2156,6 +2200,12 @@ def _allocate(
             if preserve_existing_bound_release
             else source_commit
         ),
+        release_binding=effective_release_binding,
+        qualification_launch_rebind=(
+            qualification_launch_rebind
+            or existing_manifest.get("qualification_launch_rebind")
+            or {}
+        ),
         release_binding_status=(
             "bound"
             if preserve_existing_bound_release or not release_blockers
@@ -2177,16 +2227,10 @@ def _allocate(
         }
     ]
     _private_write_json(manifest_path, manifest)
-    artifact_release_binding = dict(release_binding)
-    if preserve_existing_bound_release:
-        artifact_release_binding.update(
-            {
-                "image_ref": manifest["image_ref"],
-                "image_digest": manifest["image_digest"],
-                "source_commit": manifest["source_commit"],
-                "preserved_from_session_manifest": True,
-            }
-        )
+    artifact_release_binding = dict(effective_release_binding)
+    release_binding_source = (
+        "session_manifest" if preserve_existing_bound_release else "current_release_evidence"
+    )
     preflight = {
         "schema_version": PREFLIGHT_SCHEMA_VERSION,
         "status": manifest["status"],
@@ -2195,6 +2239,8 @@ def _allocate(
         "image_digest": manifest["image_digest"],
         "source_commit": manifest["source_commit"],
         "release_binding": artifact_release_binding,
+        "release_binding_source": release_binding_source,
+        "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_mode": "ssh_direct",
         "capacity": capacity,
@@ -2226,6 +2272,8 @@ def _allocate(
         "image_digest": manifest["image_digest"],
         "source_commit": manifest["source_commit"],
         "release_binding": artifact_release_binding,
+        "release_binding_source": release_binding_source,
+        "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_session_id": launch_session_id,
         "launch_session_nonce_sha256": manifest["launch_session_nonce_sha256"],
@@ -2502,6 +2550,9 @@ def _refresh_bootstrap(
     inputs = _apply_trained_checkpoint_override(inputs, trained_checkpoint_path)
     if training_dataset not in {None, ""}:
         inputs["finetune_component"] = build_finetune_component(training_dataset)
+    inputs, refresh_launch_rebind = bind_inputs_to_release(
+        inputs, _stored_release_binding(manifest)
+    )
     refresh = _materialize_qualification_refresh_payload(
         manifest_path.parent,
         inputs=inputs,
@@ -2521,6 +2572,7 @@ def _refresh_bootstrap(
         "signed_get_url_stored": False,
         "control_script_unchanged": True,
         "image_bundle_instance_scope_unchanged": True,
+        "qualification_launch_rebind": refresh_launch_rebind,
     }
     existing_pending = manifest.get("pending_refresh")
     pending_matches = isinstance(existing_pending, Mapping) and all(

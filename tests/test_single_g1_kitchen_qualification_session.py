@@ -56,6 +56,9 @@ def _release_evidence(**overrides: object) -> dict:
 def _minimal_inputs() -> dict:
     return {
         "plan": {
+            "sealed_active": True,
+            "blockers": [],
+            "image_ref": "registry.example/source@sha256:" + "1" * 64,
             "env": {"PYTHONPATH": "/workspace/runtime_overlay/package"},
             "groot_server_command": ["/opt/gr00t/server", "--port", "5550"],
             "gear_sonic_controller_command": ["/opt/wbc/deploy.sh", "sim"],
@@ -64,10 +67,15 @@ def _minimal_inputs() -> dict:
                 "/workspace/runtime_overlay/run_patched_isaac_executor.py",
             ],
         },
+        "attempt": {"image_digest": "sha256:" + "1" * 64},
         "route": {"route": []},
         "seed": {"seed": 1001},
         "start_frame": b"exact-frame",
-        "bootstrap_script": "upload_phase inputs_ready\necho exact-episode\n",
+        "bootstrap_script": (
+            "cp /workspace/attempt_input_manifest_episode_001.json "
+            "/workspace/attempt_input_manifest.json\n"
+            "upload_phase inputs_ready\necho exact-episode\n"
+        ),
         "runtime_package_overlay_xz_base64": "runtime-overlay",
         "isaac_runtime_backend_overlay_gzip_base64": "backend-overlay",
         "runtime_package_overlay_sha256": "1" * 64,
@@ -91,6 +99,44 @@ def test_release_binding_accepts_exact_digest_pinned_clean_release() -> None:
     assert binding["image_digest"] == TEST_IMAGE_DIGEST
     assert binding["source_commit"] == TEST_SOURCE_COMMIT
     assert binding["models_externalized"] is True
+
+
+def test_qualification_release_rebind_preserves_source_and_derives_runtime_inputs() -> None:
+    inputs = _minimal_inputs()
+    source_ref = inputs["plan"]["image_ref"]
+    release_binding, blockers = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+
+    rebound, binding = qualification.bind_inputs_to_release(inputs, release_binding)
+
+    assert blockers == []
+    assert inputs["plan"]["image_ref"] == source_ref
+    assert inputs["attempt"]["image_digest"] == "sha256:" + "1" * 64
+    assert rebound["plan"]["image_ref"] == TEST_IMAGE_REF
+    assert rebound["attempt"]["image_digest"] == TEST_IMAGE_DIGEST
+    assert binding["source_image_ref"] == source_ref
+    assert binding["release_image_ref"] == TEST_IMAGE_REF
+    assert binding["source_bundle_sha256"] == qualification.BUNDLE_SHA256
+    assert binding["source_bundle_preserved"] is True
+    assert binding["runtime_attempt_manifest_rebound"] is True
+    assert "cp /workspace/attempt_input_manifest_episode_001.json" not in rebound[
+        "bootstrap_script"
+    ]
+    assert "Path('/workspace/attempt_input_manifest.json').write_bytes(payload)" in rebound[
+        "bootstrap_script"
+    ]
+
+
+def test_qualification_release_rebind_rejects_source_attempt_image_mismatch() -> None:
+    inputs = _minimal_inputs()
+    inputs["attempt"]["image_digest"] = "sha256:" + "9" * 64
+    release_binding, _ = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+
+    with pytest.raises(ValueError, match="qualification_source_attempt_image_mismatch"):
+        qualification.bind_inputs_to_release(inputs, release_binding)
 
 
 @pytest.mark.parametrize(
@@ -172,6 +218,9 @@ def _live_manifest(tmp_path: Path) -> Path:
         image_ref=TEST_IMAGE_REF,
         image_digest=TEST_IMAGE_DIGEST,
         source_commit=TEST_SOURCE_COMMIT,
+        release_binding=qualification._release_binding(
+            _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+        )[0],
     )
     manifest.update(
         {
@@ -1914,7 +1963,11 @@ def test_changed_refresh_payload_forces_restage_before_remote_mutation(
         execute=True,
     )
     first_sha = first["refresh_payload"]["refresh_payload_sha256"]
-    current_inputs["bootstrap_script"] = "upload_phase inputs_ready\necho changed-exact-episode\n"
+    current_inputs["bootstrap_script"] = (
+        "cp /workspace/attempt_input_manifest_episode_001.json "
+        "/workspace/attempt_input_manifest.json\n"
+        "upload_phase inputs_ready\necho changed-exact-episode\n"
+    )
     url_file = tmp_path / "url.txt"
     url_file.write_text("https://objects.example/stale-refresh", encoding="utf-8")
     url_file.chmod(0o600)
@@ -2316,6 +2369,13 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert result["pre_spend_preflight"]["spend_admission_lock"]["required"] is False
     assert observed["spec"].vast_launch_mode == "ssh_direct"
     assert observed["spec"].image == TEST_IMAGE_REF
+    rebound_plan = json.loads(
+        base64.b64decode(
+            observed["spec"].env["BLUEPRINT_SEALED_LAUNCH_PLAN_B64"]
+        )
+    )
+    assert rebound_plan["image_ref"] == TEST_IMAGE_REF
+    assert rebound_plan["qualification_release_rebind"]["source_bundle_preserved"] is True
     assert observed["spec"].env["BLUEPRINT_SOURCE_COMMIT"] == TEST_SOURCE_COMMIT
     assert observed["spec"].env[qualification.VAST_BOOTSTRAP_URL_ENV].startswith("https://")
     assert len(observed["spec"].env[qualification.VAST_BOOTSTRAP_SHA256_ENV]) == 64
@@ -2328,6 +2388,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     )
     assert manifest["image_ref"] == TEST_IMAGE_REF
     assert manifest["source_commit"] == TEST_SOURCE_COMMIT
+    assert manifest["qualification_launch_rebind"]["release_image_ref"] == TEST_IMAGE_REF
     assert manifest["bundle_sha256"] == qualification.BUNDLE_SHA256
     assert manifest["continuing_spend"] is False
     assert manifest["bootstrap"]["arbitrary_remote_command_allowed"] is False
@@ -2349,7 +2410,8 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         assert artifact["image_digest"] == TEST_IMAGE_DIGEST
         assert artifact["source_commit"] == TEST_SOURCE_COMMIT
         assert artifact["release_binding"]["source_commit"] == TEST_SOURCE_COMMIT
-        assert artifact["release_binding"]["preserved_from_session_manifest"] is True
+        assert artifact["release_binding_source"] == "session_manifest"
+        assert artifact["release_binding"]["required_cuda_version"] == "12.8"
 
     changed_source = "c" * 40
     release.write_text(json.dumps(_release_evidence(source_commit=changed_source)))
@@ -2382,7 +2444,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         provider_bootstrap_url_file=secret_url,
     )
     legacy_after = json.loads(legacy_path.read_text())
-    assert legacy_retry["status"] == "blocked"
+    assert legacy_retry["status"] == "dry_run_bound"
     assert legacy_after["release_binding_status"] == "bound"
     assert legacy_after["source_commit"] == TEST_SOURCE_COMMIT
     qualification._load_private_manifest(legacy_path)
