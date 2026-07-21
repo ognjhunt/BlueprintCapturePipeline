@@ -738,6 +738,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "provider_bundle_url_file",
                         "provider_output_put_url_file",
                         "provider_output_get_url_file",
+                        "expected_source_commit",
                     )
                     if not getattr(args, name, None)
                 )
@@ -782,6 +783,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         provider_output_get_url_file=args.provider_output_get_url_file,
                         provider_bootstrap_url_file=args.provider_bootstrap_url_file,
                         release_evidence=args.release_evidence,
+                        expected_source_commit=args.expected_source_commit,
                         provider_launch_request=args.provider_launch_request,
                         preflight_bundle=args.preflight_bundle,
                         admission_out=args.admission_out,

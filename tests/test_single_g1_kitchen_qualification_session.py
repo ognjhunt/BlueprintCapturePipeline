@@ -20,6 +20,39 @@ from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
 
 
+TEST_SOURCE_COMMIT = "a" * 40
+TEST_IMAGE_REF = "registry.example/blueprint-eval@sha256:" + "b" * 64
+TEST_IMAGE_DIGEST = "sha256:" + "b" * 64
+
+
+def _release_evidence(**overrides: object) -> dict:
+    release = {
+        "schema_version": "groot_oscar_thin_remote_build_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "source_commit": TEST_SOURCE_COMMIT,
+        "source_patch_sha256": hashlib.sha256(b"").hexdigest(),
+        "resolved_digest_ref": TEST_IMAGE_REF,
+        "release_image_ref": TEST_IMAGE_REF,
+        "runnable_platform": "linux/amd64",
+        "models_embedded": False,
+        "required_cuda_version": "12.8",
+        "required_cuda_version_source": (
+            "image_config_env:BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION"
+        ),
+        "thin_release_contract_status": "passed",
+        "thin_release_contract": {
+            "schema_version": "groot_oscar_thin_release_image_contract.v1",
+            "status": "passed",
+            "blockers": [],
+            "release_image_ref": TEST_IMAGE_REF,
+            "models_externalized": True,
+        },
+    }
+    release.update(overrides)
+    return release
+
+
 def _minimal_inputs() -> dict:
     return {
         "plan": {
@@ -46,6 +79,42 @@ def _minimal_inputs() -> dict:
         "controller_fk_camera_projection_context_sha256": "5" * 64,
         "bundle_sha256": qualification.BUNDLE_SHA256,
     }
+
+
+def test_release_binding_accepts_exact_digest_pinned_clean_release() -> None:
+    binding, blockers = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+
+    assert blockers == []
+    assert binding["image_ref"] == TEST_IMAGE_REF
+    assert binding["image_digest"] == TEST_IMAGE_DIGEST
+    assert binding["source_commit"] == TEST_SOURCE_COMMIT
+    assert binding["models_externalized"] is True
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_source_commit", "expected_blocker"),
+    [
+        ({"source_commit": "c" * 40}, TEST_SOURCE_COMMIT,
+         "qualification_release_source_commit_mismatch"),
+        ({"resolved_digest_ref": "registry.example/blueprint-eval:latest"},
+         TEST_SOURCE_COMMIT, "qualification_release_image_not_digest_pinned"),
+        ({"source_patch_sha256": "d" * 64}, TEST_SOURCE_COMMIT,
+         "qualification_release_source_patch_not_empty"),
+        ({"status": "blocked"}, TEST_SOURCE_COMMIT,
+         "qualification_release_evidence_not_completed"),
+    ],
+)
+def test_release_binding_rejects_stale_mutable_dirty_or_blocked_release(
+    overrides: dict, expected_source_commit: str, expected_blocker: str
+) -> None:
+    _binding, blockers = qualification._release_binding(
+        _release_evidence(**overrides),
+        expected_source_commit=expected_source_commit,
+    )
+
+    assert expected_blocker in blockers
 
 
 def test_trained_checkpoint_override_is_exact_and_does_not_claim_qualification() -> None:
@@ -100,6 +169,9 @@ def _live_manifest(tmp_path: Path) -> Path:
         launch_session_id=nonce,
         bootstrap=_bootstrap_metadata(),
         deadline_epoch=time.time() + 3600,
+        image_ref=TEST_IMAGE_REF,
+        image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
     )
     manifest.update(
         {
@@ -832,7 +904,10 @@ def test_gate_matrix_keeps_historical_attempt_boundaries_explicit() -> None:
 
 def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> None:
     payload, metadata = qualification._qualification_bootstrap_payload(
-        _minimal_inputs(), "qualification-nonce"
+        _minimal_inputs(),
+        "qualification-nonce",
+        image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
     )
     syntax = subprocess.run(["bash", "-n"], input=payload, capture_output=True, check=False)
 
@@ -872,7 +947,7 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     control = qualification._qualification_control_script(
         launch_session_id="qualification-nonce",
         bundle_sha256=qualification.BUNDLE_SHA256,
-        image_digest=qualification.IMAGE_DIGEST,
+        image_digest=TEST_IMAGE_DIGEST,
     )
     assert "eval " not in control
     assert 'case "$ACTION" in status|tail|gpu-status|run|restart|stop|refresh)' in control
@@ -916,7 +991,7 @@ def test_private_manifest_binds_exact_resource_and_refuses_tampering(tmp_path: P
 
     assert resolved == path
     assert path.stat().st_mode & 0o777 == 0o600
-    assert manifest["image_ref"] == qualification.IMAGE_REF
+    assert manifest["image_ref"] == TEST_IMAGE_REF
     assert manifest["bundle_sha256"] == qualification.BUNDLE_SHA256
     assert manifest["instance_id"] == "12345"
 
@@ -1789,6 +1864,7 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
         provider_output_put_url_file=tmp_path / "missing-put-url.txt",
         provider_output_get_url_file=tmp_path / "missing-get-url.txt",
         release_evidence=tmp_path / "missing-release.json",
+        expected_source_commit=TEST_SOURCE_COMMIT,
         execute=True,
         **outputs,
     )
@@ -2184,7 +2260,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps({"resolved_digest_ref": qualification.IMAGE_REF}))
+    release.write_text(json.dumps(_release_evidence()))
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
 
     common = dict(
@@ -2196,6 +2272,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         provider_output_put_url_file=secret_url,
         provider_output_get_url_file=secret_url,
         release_evidence=release,
+        expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
         admission_out=tmp_path / "admission.json",
@@ -2220,6 +2297,8 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert result["pre_spend_preflight"]["status"] == "PASS"
     assert result["pre_spend_preflight"]["spend_admission_lock"]["required"] is False
     assert observed["spec"].vast_launch_mode == "ssh_direct"
+    assert observed["spec"].image == TEST_IMAGE_REF
+    assert observed["spec"].env["BLUEPRINT_SOURCE_COMMIT"] == TEST_SOURCE_COMMIT
     assert observed["spec"].env[qualification.VAST_BOOTSTRAP_URL_ENV].startswith("https://")
     assert len(observed["spec"].env[qualification.VAST_BOOTSTRAP_SHA256_ENV]) == 64
     manifest = json.loads(manifest_path.read_text())
@@ -2229,11 +2308,24 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         manifest["bootstrap"]["provider_bootstrap_sha256"]
         == staged_manifest["bootstrap"]["provider_bootstrap_sha256"]
     )
-    assert manifest["image_ref"] == qualification.IMAGE_REF
+    assert manifest["image_ref"] == TEST_IMAGE_REF
+    assert manifest["source_commit"] == TEST_SOURCE_COMMIT
     assert manifest["bundle_sha256"] == qualification.BUNDLE_SHA256
     assert manifest["continuing_spend"] is False
     assert manifest["bootstrap"]["arbitrary_remote_command_allowed"] is False
     assert manifest_path.stat().st_mode & 0o777 == 0o600
+
+    changed_source = "c" * 40
+    release.write_text(json.dumps(_release_evidence(source_commit=changed_source)))
+    mismatch = qualification.run_qualification_session(
+        **{**common, "expected_source_commit": changed_source},
+        provider_bootstrap_url_file=secret_url,
+    )
+    preserved = json.loads(manifest_path.read_text())
+    assert mismatch["status"] == "blocked"
+    assert "qualification_existing_manifest_release_binding_mismatch" in mismatch["blockers"]
+    assert preserved["image_ref"] == TEST_IMAGE_REF
+    assert preserved["source_commit"] == TEST_SOURCE_COMMIT
 
 
 def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
@@ -2298,7 +2390,7 @@ def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps({"resolved_digest_ref": qualification.IMAGE_REF}))
+    release.write_text(json.dumps(_release_evidence()))
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
     common = dict(
         action="allocate",
@@ -2309,6 +2401,7 @@ def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
         provider_output_put_url_file=secret_url,
         provider_output_get_url_file=secret_url,
         release_evidence=release,
+        expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
         admission_out=tmp_path / "admission.json",
@@ -2370,7 +2463,7 @@ def test_qualification_allocate_fails_before_provider_on_missing_output_staging_
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
     release.write_text(
-        json.dumps({"resolved_digest_ref": qualification.IMAGE_REF}),
+        json.dumps(_release_evidence()),
         encoding="utf-8",
     )
 
@@ -2384,6 +2477,7 @@ def test_qualification_allocate_fails_before_provider_on_missing_output_staging_
         provider_output_get_url_file=secret_url,
         provider_bootstrap_url_file=secret_url,
         release_evidence=release,
+        expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
         admission_out=tmp_path / "admission.json",
