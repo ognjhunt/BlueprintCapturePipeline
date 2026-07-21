@@ -400,6 +400,22 @@ def test_live_persistent_qualification_vast_instance_is_protected(
     assert protected == {"45483300"}
 
 
+def test_relative_qualification_manifest_path_is_protected(tmp_path: Path) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    relative_manifest = manifest_path.relative_to(tmp_path)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
 def test_terminal_persistent_qualification_is_not_protected(tmp_path: Path) -> None:
     attempt = tmp_path / "single_g1_kitchen_episode" / "attempt_047_qualification"
     manifest_path = _write_qualification_owner(

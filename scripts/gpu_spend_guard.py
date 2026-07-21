@@ -1067,7 +1067,7 @@ def find_protected_pod_ids(
         qualification_manifest_path = binding.qualification_manifest_path
         if qualification_manifest_path is not None:
             if any(
-                _cmd_option_references_exact_value(
+                _cmd_option_references_exact_path(
                     cmd,
                     "--qualification-session-manifest",
                     str(qualification_manifest_path),
@@ -1113,17 +1113,36 @@ def _cmd_references_exact_token(cmd: str, target: str) -> bool:
     return False
 
 
-def _cmd_option_references_exact_value(cmd: str, option: str, target: str) -> bool:
-    """Whether ``option`` names ``target`` as its complete command-line value."""
+def _cmd_option_references_exact_path(cmd: str, option: str, target: str) -> bool:
+    """Whether ``option`` names the exact absolute or component-relative path."""
 
     try:
         tokens = shlex.split(cmd)
     except ValueError:
         tokens = cmd.split()
+    values: list[str] = []
     for index, token in enumerate(tokens):
-        if token == option and index + 1 < len(tokens) and tokens[index + 1] == target:
-            return True
-        if token == f"{option}={target}":
+        if token == option and index + 1 < len(tokens):
+            values.append(tokens[index + 1])
+        elif token.startswith(f"{option}="):
+            values.append(token.split("=", 1)[1])
+    target_path = Path(os.path.abspath(Path(target).expanduser()))
+    for value in values:
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute():
+            if Path(os.path.abspath(candidate)) == target_path:
+                return True
+            continue
+        # ``ps`` exposes argv but not the launcher's cwd portably. Accept only
+        # an unambiguous multi-component suffix; component equality prevents
+        # attempt_047 from aliasing attempt_047_retry.
+        normalized = Path(os.path.normpath(str(candidate)))
+        parts = tuple(part for part in normalized.parts if part not in ("", "."))
+        if ".." in parts:
+            if Path(os.path.abspath(candidate)) == target_path:
+                return True
+            continue
+        if len(parts) >= 3 and target_path.parts[-len(parts) :] == parts:
             return True
     return False
 
