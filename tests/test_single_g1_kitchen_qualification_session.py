@@ -79,7 +79,7 @@ def _minimal_inputs() -> dict:
             "artifacts": {
                 "task_success_contract": {
                     "path": "/source/task_success_contract.json",
-                    "sha256": "6" * 64,
+                    "sha256": "9" * 64,
                     "size_bytes": 459,
                 }
             },
@@ -150,6 +150,12 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert binding["source_bundle_sha256"] == qualification.BUNDLE_SHA256
     assert binding["source_bundle_preserved"] is True
     assert binding["runtime_attempt_manifest_rebound"] is True
+    assert rebound["attempt"]["qualification_source_task_success_contract_sha256"] == (
+        "6" * 64
+    )
+    assert rebound["attempt"]["qualification_runtime_attempt_overlay_base"][
+        "task_success_contract_artifact"
+    ]["value"]["sha256"] == "9" * 64
     rebound_attempt_bytes = (
         json.dumps(rebound["attempt"], indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -173,7 +179,9 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
             "qualification_resolved_task_success_contract_sha256"
         ],
         "size_bytes": 500,
-        "derived_from_sha256": "6" * 64,
+        "derived_from_sha256": runtime_attempt[
+            "qualification_source_task_success_contract_sha256"
+        ],
         "resolution_artifact_path": (
             "/workspace/closed_loop_out/direct_task_contract_resolution.json"
         ),

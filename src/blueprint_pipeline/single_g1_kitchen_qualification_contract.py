@@ -243,9 +243,9 @@ def _restore_runtime_attempt_overlay_base(
     ):
         raise ValueError("qualification_runtime_attempt_resolved_task_contract_mismatch")
     if current_contract != source_contract:
-        source_contract_sha256 = source_contract.get("sha256") or attempt.get(
+        source_contract_sha256 = attempt.get(
             "qualification_source_task_success_contract_sha256"
-        )
+        ) or source_contract.get("sha256")
         if (
             not source_contract_sha256
             or current_contract.get("derived_from_sha256") != source_contract_sha256
