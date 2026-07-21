@@ -14,6 +14,12 @@ AI and engineer orientation maps live under [`docs/architecture/`](docs/architec
 - [`refactor-hotspots.md`](docs/architecture/refactor-hotspots.md)
 - [`evaluation-run-interface.md`](docs/architecture/evaluation-run-interface.md)
 
+The model-neutral, fail-closed composition contract for scientific sim ranking,
+provider execution, buyer delivery, teardown, and billing is documented in
+[`docs/EVALUATOR_QUALIFICATION_WORKFLOW.md`](docs/EVALUATOR_QUALIFICATION_WORKFLOW.md).
+It keeps OSCAR, SC3, Cosmos, future evaluator backends, and compute providers
+replaceable and never inherits paper metrics as Blueprint results.
+
 Robot-team buyers: what a Task Evaluation Run / Post-Training Data Package
 contains, how to verify it, and its claim boundaries are documented in
 [`docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md`](docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md).

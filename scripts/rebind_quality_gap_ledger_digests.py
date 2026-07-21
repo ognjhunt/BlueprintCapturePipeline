@@ -41,7 +41,10 @@ EVIDENCE_OVERRIDES: dict[str, list[tuple[str, str]]] = {
         ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
         ("src/blueprint_pipeline/policy_evaluation_contracts.py", "implementation"),
         ("src/blueprint_pipeline/decision_grade_ranking.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_policy_evaluation_contracts.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
+        ("docs/EVALUATOR_QUALIFICATION_WORKFLOW.md", "policy_or_runbook"),
     ],
     "SC3-22-AC-01": [
         ("docs/external_anchor_candidate_registry_2026-07-20.json", "candidate_registry"),
@@ -61,15 +64,21 @@ EVIDENCE_OVERRIDES: dict[str, list[tuple[str, str]]] = {
 EVIDENCE_EXTENSIONS: dict[str, list[tuple[str, str]]] = {
     "DATA-03-AC-01": [
         ("src/blueprint_pipeline/site_reference_database.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_site_reference_database_contract.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
     ],
     "DATA-04-AC-01": [
         ("src/blueprint_pipeline/site_reference_database.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_site_reference_database_contract.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
     ],
     "DATA-13-AC-01": [
         ("src/blueprint_pipeline/site_reference_database.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_site_reference_database_contract.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
     ],
     "SC3-08-AC-01": [
         ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
@@ -81,23 +90,33 @@ EVIDENCE_EXTENSIONS: dict[str, list[tuple[str, str]]] = {
     "SC3-12-AC-01": [
         ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
         ("src/blueprint_pipeline/decision_grade_ranking.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_policy_evaluation_contracts.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
     ],
     "SC3-20-AC-01": [
         ("src/blueprint_pipeline/decision_grade_ranking.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_policy_evaluation_contracts.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
     ],
     "SC3-21-AC-01": [
         ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
         ("src/blueprint_pipeline/evaluator_runtime_evidence.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_evaluator_runtime_evidence.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
         ("docs/EVALUATOR_RUNTIME_EVIDENCE_CONTRACT.md", "policy_or_runbook"),
+        ("docs/EVALUATOR_QUALIFICATION_WORKFLOW.md", "policy_or_runbook"),
     ],
     "REL-14-AC-01": [
         ("src/blueprint_pipeline/evaluator_evidence_profiles.py", "implementation"),
         ("src/blueprint_pipeline/evaluator_runtime_evidence.py", "implementation"),
+        ("src/blueprint_pipeline/evaluator_qualification_workflow.py", "implementation"),
         ("tests/test_evaluator_runtime_evidence.py", "test_contract"),
+        ("tests/test_evaluator_qualification_workflow.py", "test_contract"),
         ("docs/EVALUATOR_RUNTIME_EVIDENCE_CONTRACT.md", "policy_or_runbook"),
+        ("docs/EVALUATOR_QUALIFICATION_WORKFLOW.md", "policy_or_runbook"),
     ],
     "SC3-10-AC-01": [],
     "SC3-11-AC-01": [],
