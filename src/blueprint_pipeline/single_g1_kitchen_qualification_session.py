@@ -2122,6 +2122,10 @@ def _allocate(
             + (["qualification_bootstrap_staging_required"] if bootstrap_staging_required else [])
         )
     )
+    preserve_existing_bound_release = (
+        bool(existing_manifest)
+        and existing_manifest.get("release_binding_status") != "blocked"
+    )
     manifest = _manifest_base(
         root=root,
         resource_name=resource_name,
@@ -2137,9 +2141,21 @@ def _allocate(
             "overlay_revision": 0, "control_contract_version": CONTROL_CONTRACT_VERSION,
         },
         deadline_epoch=deadline_epoch,
-        image_ref=str(existing_manifest.get("image_ref") or image_ref),
-        image_digest=str(existing_manifest.get("image_digest") or image_digest),
-        source_commit=str(existing_manifest.get("source_commit") or source_commit),
+        image_ref=(
+            str(existing_manifest.get("image_ref"))
+            if preserve_existing_bound_release
+            else image_ref
+        ),
+        image_digest=(
+            str(existing_manifest.get("image_digest"))
+            if preserve_existing_bound_release
+            else image_digest
+        ),
+        source_commit=(
+            str(existing_manifest.get("source_commit"))
+            if preserve_existing_bound_release
+            else source_commit
+        ),
         release_binding_status="bound" if not release_blockers else "blocked",
     )
     manifest["status"] = (

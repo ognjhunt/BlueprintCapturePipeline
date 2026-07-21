@@ -767,6 +767,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 write_json(Path(args.adapter_output), result)
             else:
+                if args.qualification_action == "allocate":
+                    source_blockers, _checkout_commit = _source_checkout_blockers(
+                        args.expected_source_commit or ""
+                    )
+                    if source_blockers:
+                        result = {
+                            "status": "blocked",
+                            "blockers": source_blockers,
+                            "provider_mutations_performed": 0,
+                        }
+                        write_json(Path(args.adapter_output), result)
+                        print(json.dumps({"success": False}, sort_keys=True))
+                        return 2
                 try:
                     result = run_qualification_session(
                         action=args.qualification_action,

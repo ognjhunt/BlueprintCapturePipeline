@@ -1871,6 +1871,9 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
         "execute": True,
         **outputs,
     }
+    Path(request["release_evidence"]).write_text(
+        json.dumps(_release_evidence(source_commit="c" * 40))
+    )
     result = qualification.run_qualification_session(**request)
 
     assert result["status"] == "blocked"
@@ -1879,6 +1882,7 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
     manifest = json.loads((tmp_path / "session.json").read_text())
     _, reloaded = qualification._load_private_manifest(tmp_path / "session.json")
     assert reloaded["release_binding_status"] == "blocked"
+    assert reloaded["source_commit"] == "c" * 40
     assert manifest["bootstrap"]["overlay_revision"] == 0
     assert manifest["bootstrap"]["control_contract_version"] == qualification.CONTROL_CONTRACT_VERSION
 
@@ -1888,6 +1892,7 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
     assert retry["status"] == "blocked"
     assert retry_manifest["release_binding_status"] == "bound"
     assert retry_manifest["image_ref"] == TEST_IMAGE_REF
+    assert retry_manifest["source_commit"] == TEST_SOURCE_COMMIT
 
 
 def test_changed_refresh_payload_forces_restage_before_remote_mutation(
