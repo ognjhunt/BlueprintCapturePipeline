@@ -120,8 +120,8 @@ def _evaluation_admission() -> dict[str, object]:
             "verification_method": "offline_evidence_verifier",
             "verifier_id": "site-admission-verifier",
             "verifier_version": "2.0.0",
-            "verification_report_sha256": digest,
-            "source_artifact_index_sha256": digest,
+            "verification_report_sha256": "b" * 64,
+            "source_artifact_index_sha256": "c" * 64,
             "verified_source_manifest_sha256": digest,
         },
         "rights_privacy_provenance": {
@@ -331,6 +331,12 @@ def test_assisted_import_cannot_self_declare_evaluation_readiness(
             "site_evidence_verifier_independence_not_proven",
         ),
         (
+            lambda value: value["independent_evidence_verification"].update(
+                {"verification_report_sha256": "a" * 64}
+            ),
+            "independent_verification_artifacts_not_distinct_from_source",
+        ),
+        (
             lambda value: value["static_robot_evaluation_viewpoints"].append(
                 dict(value["static_robot_evaluation_viewpoints"][0])
             ),
@@ -351,6 +357,20 @@ def test_assisted_import_cannot_self_declare_evaluation_readiness(
                 {"scene_id": "stale-scene"}
             ),
             "task_scene_grounding_source_identity_mismatch:task_objects:0",
+        ),
+        (
+            lambda value: value.update({"task_contract_rows_sha256": "b" * 64}),
+            "task_contract_rows_digest_mismatch",
+        ),
+        (
+            lambda value: value["independent_evidence_verification"].update(
+                {"verifier_is_importer": True}
+            ),
+            "independent_evidence_verifier_must_not_be_importer",
+        ),
+        (
+            lambda value: value["ood_abstention"].update({"axes": [{"axis": "embodiment"}]}),
+            "ood_required_site_task_axes_missing",
         ),
     ],
 )

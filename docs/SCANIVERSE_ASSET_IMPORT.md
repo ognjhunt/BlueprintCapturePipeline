@@ -80,8 +80,9 @@ following before it derives `evaluation_ready`:
 
 - immutable site, scene, capture, source-bundle, and manifest identities and
   digests
-- an independently produced verification report bound to the exact source
-  manifest and source-artifact index
+- an independently produced verification report, from a verifier distinct from
+  the importer and model backend, bound to the exact source manifest and
+  source-artifact index
 - active consent plus verified rights, privacy, provenance, and commercial
   `sim_evaluation` scope
 - verified metric scale, named world/site/capture coordinate frames, up-axis,
@@ -92,8 +93,8 @@ following before it derives `evaluation_ready`:
   from the moving capture
 - matching robot, camera, and embodiment identities and digests
 - unique scene-bound task objects, articulated parts, target zones, and an
-  exact task-contract manifest containing task/criterion/evidence/tolerance/
-  evaluator mappings
+  exact task-contract manifest plus canonical inline-row digest containing
+  task/criterion/evidence/tolerance/evaluator mappings
 - separate verified evidence for visual geometry, collision, contact, and
   dynamics truth
 - passed site, task, and trajectory deduplication

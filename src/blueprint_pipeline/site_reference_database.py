@@ -206,6 +206,22 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
     for field in ("verification_report_sha256", "source_artifact_index_sha256"):
         if not _admission_digest(verification.get(field)):
             blockers.append(f"independent_evidence_verification_digest_invalid:{field}")
+    verification_report_digest = _admission_normalized_digest(
+        verification.get("verification_report_sha256")
+    )
+    source_artifact_index_digest = _admission_normalized_digest(
+        verification.get("source_artifact_index_sha256")
+    )
+    source_evidence_digests = {
+        _admission_normalized_digest(identity.get(field))
+        for field in ("capture_sha256", "source_bundle_sha256", "manifest_sha256")
+    }
+    if (
+        verification_report_digest in source_evidence_digests
+        or source_artifact_index_digest in source_evidence_digests
+        or verification_report_digest == source_artifact_index_digest
+    ):
+        blockers.append("independent_verification_artifacts_not_distinct_from_source")
     if _admission_normalized_digest(verification.get("verified_source_manifest_sha256")) != (
         _admission_normalized_digest(identity.get("manifest_sha256"))
     ):
