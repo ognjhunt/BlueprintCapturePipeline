@@ -38,7 +38,8 @@ Conflicting findings between passes were re-verified by hand (grep) before landi
 | Modules in `src/blueprint_pipeline` | 461 (~440k LOC), flat directory |
 | Console-script entry points | 157 (a third of the package is CLI tails) |
 | Unreachable from any entry point | 34 modules (~19.5k LOC) |
-| Verified-dead removal shortlist | ~21.5k LOC src + associated tests |
+| Verified-dead removal shortlist | ~16k LOC src + associated tests |
+| Deprecate-then-remove (documented operator surface) | ~5.5k LOC src |
 | Campaign-specific code (`g1_*`/`groot_oscar_*`/`oscar_*`/`wam_*`/`unitree_*`/`isaac_*`/`mujoco_*`/`kitchen_*`) | ~195k LOC / 174 files (~46% of package) |
 | `Dict[str, Any]` occurrences | 2,412 |
 | `os.getenv` occurrences in business logic | ~1,971 |
@@ -51,11 +52,19 @@ provider plumbing, campaign machinery, readiness/review layers, or dead pivots.
 
 ---
 
-## P0 — Remove: verified dead code (~21.5k LOC src, plus tests)
+## P0 — Remove: verified dead code (~16k LOC src, plus tests)
 
 Each row was verified: no importers outside the listed cluster, no console-script that
 anything references, no CI workflow, no `python -m` string reference, no worker-bundle
 inclusion. Delete the module(s) and their dedicated test files.
+
+**Command-surface rule (added after review):** "unreachable by import graph" is not
+sufficient when a module is an installed console script or a command documented in a
+*living* runbook — that is operator surface, not dead code. Rows below that carry a
+console script state so explicitly; the removal PR must delete the pyproject entry,
+update `docs/source_governance_policy.json`, and fix any runbook rows in the same
+change. Modules whose commands living docs still instruct operators to run are listed
+separately under "Deprecate-then-remove", not here.
 
 ### 1. `robot_eval_team_closure` cluster — 2,343 LOC, zero tests
 
@@ -69,23 +78,13 @@ completed closure campaign's reporting code. (The similarly named
 *Caveat:* confirm Blueprint-WebApp doesn't shell out to `robot_eval_webapp_projection`
 before deleting that one file.
 
-### 2. Lambda Labs provider chain — ~2,530 LOC incl. tests
-
-`lambda_provider_adapter.py` (1,729) + `robot_eval_provider_race_launcher.py` + their
-two test files.
-**Why:** the race launcher is the adapter's *sole* consumer and itself has zero
-consumers outside its own test. Superseded by `robot_eval_provider_launcher` +
-the `gpu_render_providers` registry (which covers runpod/vast/digitalocean/gcp/aws —
-Lambda was dropped as a provider). The adapter's legacy mutation CLI is already
-disabled in-file.
-
-### 3. `gpu_campaign_state_machine` + `gpu_campaign_provider_adapters` — 1,221 LOC
+### 2. `gpu_campaign_state_machine` + `gpu_campaign_provider_adapters` — 1,221 LOC
 
 **Why:** zero src consumers, zero script/CI/doc references, test-only. Functionally
 superseded by `production_gpu_campaign_control_plane` + `production_gpu_campaign_budget`
 + `paid_resource_allocator` — the current campaign control generation.
 
-### 4. `real_policy`/`lerobot` policy-family cluster — 3,264 LOC
+### 3. `real_policy`/`lerobot` policy-family cluster — 3,264 LOC
 
 `real_policy_family_eval_harness.py` (852), `real_policy_closed_loop_rollout.py`,
 `lerobot_policy_family.py`, `lerobot_torch_policy_adapter.py`.
@@ -94,7 +93,7 @@ superseded by `production_gpu_campaign_control_plane` + `production_gpu_campaign
 LeRobot code path (`lerobot_episode_export`, `lerobot_export_validation`, used by
 `post_training_data_package`) is unrelated and stays.
 
-### 5. Splat/InteriorGS dead cluster — 2,329 LOC
+### 4. Splat/InteriorGS dead cluster — 2,329 LOC
 
 `interiorgs_task_preflight.py` (970), `splat_scene_bootstrap.py`, `splat_occupancy.py`,
 `splat_depth.py` (163), `splat_robot_composite.py` (115).
@@ -102,7 +101,7 @@ LeRobot code path (`lerobot_episode_export`, `lerobot_export_validation`, used b
 (`gaussian_splat_decode`, `splat_scene_analysis`, `splat_scene_render`,
 `synthesis/depth_splat`, `tools/splat_render`) is separate and stays.
 
-### 6. `splat_backends` registry + `isaac_nurec_export` — 330 LOC
+### 5. `splat_backends` registry + `isaac_nurec_export` — 330 LOC
 
 **Why:** `splat_backends.py` is a backend *registry* (splat_transform, spark,
 threedgrut, particlefield_usd, isaac_nurec, artifixer) that nothing imports except its
@@ -110,44 +109,37 @@ own tests — a seam that was built and never wired. Either wire it into the liv
 render path deliberately, or delete it; a dead registry masquerading as a seam is worse
 than no registry. Default: delete (the live path selects renderers without it).
 
-### 7. First-GPU milestone leftovers — 4,040 LOC
+### 6. `cross_repo_first_gpu_readiness` — 2,686 LOC
 
-`cross_repo_first_gpu_readiness.py` (2,686), `first_gpu_sample_video_stage.py` (795),
-`first_gpu_sample_video_preflight.py` (321), `first_gpu_candidate_audit.py` (238).
 **Why:** the "first GPU run" milestone concluded and was superseded by the
-`production_gpu_*` reliability program; these four have zero consumers (the sample-video
-chain only imports intra-cluster). **Keep** `first_gpu_run_packet` and
-`first_gpu_e2e_readiness` — imported by the `production_handoff_readiness` console
-script — and `owner_gpu_proof_runner` (imported by a shipped autoresearch evaluator).
+`production_gpu_*` reliability program; zero importers, and its only doc references
+live in the superseded 2026-07-03 audit tree. Carries a console script
+(`blueprint-audit-first-gpu-cross-repo-readiness`) and a row in
+`docs/source_governance_policy.json` — remove both in the same change per the
+command-surface rule. **Keep** `first_gpu_run_packet` and `first_gpu_e2e_readiness`
+— imported by the `production_handoff_readiness` console script — and
+`owner_gpu_proof_runner` (imported by a shipped autoresearch evaluator). The
+sample-video trio moved to "Deprecate-then-remove" below (runbook-documented).
 
-### 8. `realistic_readiness_rehearsal` — 1,873 LOC
+### 7. `realistic_readiness_rehearsal` — 1,873 LOC
 
 **Why:** zero importers (verified by hand — one audit pass initially called it an
 "active eval lane" because it *imports* live modules, but nothing imports or invokes
 *it*). Readiness-rehearsal one-off; readiness is doctrinally secondary anyway.
 
-### 9. Small verified orphans — ~1,800 LOC
+### 8. Small verified orphans — ~1,600 LOC
 
 | Module | LOC | Why dead |
 |---|---|---|
 | `synthetic_2d_wam_seed.py` | 467 | test-only; abandoned 2D-seed WAM experiment |
 | `reference_image_utils.py` | 534 | test-only, zero importers |
-| `frames_layout.py` | 212 | unreachable; only a comment in `materialization.py` mentions it |
 | `oscar_isaac_closed_loop_gpu_launch.py` | 170 | zero importers (superseded by the carrier/allocator launch path) |
 | `gear_sonic_container_smoke.py` | 120 | zero refs, no console script |
 | `oscar_action_control_contracts.py` | 109 | test-only |
 | `groot_oscar_cached_footprint.py` | 109 | test-only; only vestigial member of the otherwise-live groot_oscar family |
 | `wam_strict_action_consistency_scorer_client.py` | 88 | client for a scorer module that does not exist in the repo |
 
-### 10. UniFOLM infrastructure one-offs — 1,648 LOC
-
-`unitree_unifolm_gpu_image.py` (851), `unitree_unifolm_runpod_server.py` (797).
-**Why:** per-provider serve one-offs for a backend that has never been run and has had
-zero development since the baseline. Keep the small UniFOLM *policy command contract*
-modules (cataloged candidate in `docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`) so the
-candidate remains cheap to revive; delete the infra shells.
-
-### 11. `groot_oscar_runpod_model_volume` disabled stub — ~250 of 466 LOC
+### 9. `groot_oscar_runpod_model_volume` disabled stub — ~250 of 466 LOC
 
 **Why:** the module docstring says it is the "disabled legacy GPU preparation seam";
 `run_model_volume` unconditionally fails with
@@ -157,7 +149,7 @@ watchdog + compat-admission helpers are imported by `runpod_preflight`,
 `runpod_storage_volume`, and `paid_provider_lane_lease` — move those helpers into
 `groot_oscar_runpod_storage_volume` (or a watchdog module), then delete the stub.
 
-### 12. Non-src removals
+### 10. Non-src removals
 
 - **`agent_skills/` (8 files)** — its own README says "legacy drafting notes";
   canonical skill sources live in `skillpacks/` (loaded by `agent_runtime/skill_sync.py`).
@@ -171,11 +163,48 @@ watchdog + compat-admission helpers are imported by `runpod_preflight`,
   used operator commands, the fix is one line in the relevant runbook.)
 - **3 stale scripts referenced only by dated docs**: `backfill_site_reference_database.py`
   (2026-05-16 audit only), `check_cosmos3_readiness.py` (June feasibility docs only),
-  `prepare_strict_g1_kitchen_bundle.py`, `build_launch_readiness_packet.py` (2026-07-09
-  audit only). Keep `rebind_quality_gap_ledger_digests.py` until the SC3 launch ledger
-  closes — it maintains the live ledger.
+  `prepare_strict_g1_kitchen_bundle.py`. Keep `rebind_quality_gap_ledger_digests.py`
+  until the SC3 launch ledger closes — it maintains the live ledger. (An earlier draft
+  listed `build_launch_readiness_packet.py` here — wrong: it is documented in the
+  living `docs/architecture/command-safety-matrix.md` as the canonical local launch
+  evidence packet and has a real test suite. It stays.)
 
 ---
+
+## P1 — Deprecate-then-remove: dead by import graph, but documented operator surface
+
+These were in the P0 list until review caught that living docs still instruct
+operators to run them. They are still pivot leftovers with no live execution path,
+but removing them is a two-step: decide/announce the deprecation, update the runbook
+and command surface (pyproject entry, `source_governance_policy.json`), then delete.
+
+1. **Lambda Labs failover chain — ~2,530 LOC incl. tests.**
+   `lambda_provider_adapter.py` (1,729) + `robot_eval_provider_race_launcher.py`.
+   Import-dead, but *not* reference-dead: `robot_eval_job_orchestrator.py` maps
+   `lambda_cloud` → `blueprint-run-lambda-provider-adapter` and emits
+   `blueprint-run-robot-eval-provider-race` into `gpu_provider_race_handoff.json` as
+   the customer robot-eval failover path, and `docs/LIVE_PIPELINE_SETUP.md` documents
+   both (failover run + Lambda teardown loop). Lambda is absent from the
+   `gpu_render_providers` registry (runpod/vast/digitalocean/gcp/aws), so the product
+   decision to drop it appears half-made. Finish it: remove the `lambda_cloud` mapping
+   and race-handoff emission from the orchestrator, update LIVE_PIPELINE_SETUP.md,
+   drop the two console scripts, then delete both modules — or consciously keep the
+   failover lane and say so.
+2. **First-GPU sample-video trio — 1,354 LOC.**
+   `first_gpu_sample_video_stage.py` (795), `first_gpu_sample_video_preflight.py`
+   (321), `first_gpu_candidate_audit.py` (238). Zero importers, but their commands are
+   documented steps in `docs/FIRST_GPU_E2E_RUNBOOK.md` (still maintained — updated by
+   #144) and rows in the command-safety matrix. Either the runbook's sample-video
+   staging steps are still how operators seed a first capture (keep all three), or the
+   runbook section is retired along with the modules in one change.
+3. **UniFOLM infrastructure one-offs — 1,648 LOC.**
+   `unitree_unifolm_gpu_image.py` (851), `unitree_unifolm_runpod_server.py` (797).
+   Never-run backend infra with zero development since the baseline, but both are
+   installed CLIs (`blueprint-build-unitree-unifolm-gpu-image`,
+   `blueprint-launch-unitree-unifolm-runpod-server`) with CHANGELOG entries. Keep the
+   small UniFOLM *policy command contract* modules (cataloged candidate in
+   `docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`) so the candidate stays cheap to revive;
+   deprecate and delete the infra shells + their console scripts.
 
 ## P0 — Doctrine contradictions in docs (small, high-leverage)
 
@@ -328,7 +357,7 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    persistent-carrier / storage-volume / carrier-volume). A previous hypothesis called
    them "generations"; the audit shows they are distinct *admitted spend lanes* under
    the canonical `paid_resource_allocator`, each with its own probe-kind. The only true
-   dead generation there is the `runpod_model_volume` stub (P0 #11).
+   dead generation there is the `runpod_model_volume` stub (P0 #9).
 
 ## P2 — Structure: from flat 461 to navigable subpackages
 
@@ -419,6 +448,15 @@ or drop scripts nothing references.
 
 Recorded so the next audit (or an eager agent) doesn't re-flag them:
 
+- **`frames_layout.py`** (212) — looks orphaned (only a comment in
+  `materialization.py` mentions it), but it is the mandated cross-repo bundle-reader
+  contract: `docs/CAPTURE_BRIDGE_CONTRACT.md` requires all frame readers to go through
+  `blueprint_pipeline.frames_layout` (v1/v2 layouts, fail-closed on unknown packing),
+  and the BlueprintCapture producer rollout of packed v2 frames is gated on this
+  reader being deployed. Import graphs cannot see cross-repo contracts.
+- **`scripts/build_launch_readiness_packet.py`** — documented in the living
+  command-safety matrix as the canonical local launch evidence packet, with a real
+  test suite (`tests/test_launch_readiness_packet.py`).
 - **`g1_microwave_finetune_worker.py`** (1,317) — looks orphaned to the import graph,
   but `g1_microwave_finetune_provider_bundle.py:31,95` bundles it **by filename** and
   ships it for execution on remote GPU providers.
@@ -445,11 +483,14 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
 
 ## Suggested sequencing
 
-1. **PR 1 — dead code removal** (P0 §1–§11): pure deletions + the model-volume helper
-   move; `pytest` fast lane green is the gate. ~21.5k LOC src + tests.
+1. **PR 1 — dead code removal** (P0 §1–§10): pure deletions + the model-volume helper
+   move, including console-script/governance-ledger entries per the command-surface
+   rule; `pytest` fast lane green is the gate. ~16k LOC src + tests.
 2. **PR 2 — docs/scripts hygiene** (P0 doctrine + P1 hygiene): fix the three doctrine
    contradictions, create `docs/archive/`, delete `agent_skills/` + orphaned scripts,
-   Makefile/CLAUDE.md/deps fixes.
+   Makefile/CLAUDE.md/deps fixes. Fold in the deprecate-then-remove decisions (Lambda
+   failover lane, first-GPU sample-video runbook steps, UniFOLM infra CLIs) — each is
+   a small product call plus a runbook edit before its deletion lands here or in PR 1.
 3. **PR 3 — core-path fixes** (P1): dedupe evaluation_prep, demote agent_review to
    opt-in on the CLI, rename the "legacy" eval-run adapter, single dataset manifest.
 4. **PR 4 — seam enforcement** (P1 violations): retire/re-seam the Cosmos-Predict2.5
@@ -459,6 +500,6 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
    PR with the import-linter contract added as each layer lands, then monolith splits
    and the WAM runner consolidation.
 
-Rough net effect of PRs 1–2 alone: ~25k LOC of code and ~60 stale/contradictory docs
+Rough net effect of PRs 1–2 alone: ~20k LOC of code and ~60 stale/contradictory docs
 out of the tree, zero behavior change, and every remaining module either reachable,
 CI-contracted, or explicitly quarantined.
