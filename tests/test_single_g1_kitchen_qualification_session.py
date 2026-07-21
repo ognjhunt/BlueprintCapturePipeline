@@ -152,12 +152,6 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     rebound_attempt_bytes = (
         json.dumps(rebound["attempt"], indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
-    assert qualification.collected_attempt_derived_artifact_blockers(
-        rebound_attempt_bytes, rebound["attempt"], binding
-    ) == []
-    assert qualification.collected_attempt_derived_artifact_blockers(
-        rebound_attempt_bytes + b" ", rebound["attempt"], binding
-    ) == ["qualification_collected_attempt_manifest_digest_mismatch"]
     runtime_attempt = json.loads(json.dumps(rebound["attempt"]))
     runtime_attempt.update(
         {
@@ -189,6 +183,26 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert qualification.collected_attempt_derived_artifact_blockers(
         runtime_attempt_bytes, runtime_attempt, binding
     ) == []
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        runtime_attempt_bytes + b" ", runtime_attempt, binding
+    ) == ["qualification_collected_attempt_manifest_digest_mismatch"]
+    stale_contract_attempt = json.loads(json.dumps(runtime_attempt))
+    stale_contract_attempt.pop("prepared_launch_nonce")
+    stale_contract_attempt["artifacts"]["task_success_contract"] = json.loads(
+        json.dumps(
+            rebound["attempt"]["qualification_runtime_attempt_overlay_base"][
+                "task_success_contract_artifact"
+            ]["value"]
+        )
+    )
+    stale_contract_bytes = (
+        json.dumps(stale_contract_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert "qualification_collected_attempt_runtime_overlay_base_invalid" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            stale_contract_bytes, stale_contract_attempt, binding
+        )
+    )
     wrong_contract_attempt = json.loads(json.dumps(runtime_attempt))
     wrong_contract_attempt["artifacts"]["task_success_contract"]["sha256"] = "8" * 64
     wrong_contract_bytes = (

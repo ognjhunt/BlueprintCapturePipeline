@@ -238,11 +238,7 @@ def _restore_runtime_attempt_overlay_base(
         if isinstance(current_contract_value, Mapping)
         else {}
     )
-    runtime_overlay_applied = (
-        attempt.get("prepared_launch_nonce") is not None
-        or current_contract != source_contract
-    )
-    if runtime_overlay_applied and current_contract.get("sha256") != attempt.get(
+    if current_contract.get("sha256") != attempt.get(
         "qualification_resolved_task_success_contract_sha256"
     ):
         raise ValueError("qualification_runtime_attempt_resolved_task_contract_mismatch")
