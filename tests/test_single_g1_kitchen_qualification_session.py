@@ -948,6 +948,7 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
         launch_session_id="qualification-nonce",
         bundle_sha256=qualification.BUNDLE_SHA256,
         image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
     )
     assert "eval " not in control
     assert 'case "$ACTION" in status|tail|gpu-status|run|restart|stop|refresh)' in control
@@ -957,6 +958,8 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     assert "qualification_component_forbidden" in control
     assert "qualification_overlay_file_sha256_mismatch" in control
     assert "qualification_refresh_requires_all_components_stopped" in control
+    assert f"EXPECTED_SOURCE_COMMIT={TEST_SOURCE_COMMIT}" in control
+    assert '"source_commit": sys.argv[11]' in control
     assert 'if [ "$process_state" = Z ]; then return 1; fi' in control
     assert "action=stop component=%s" in control
     assert qualification.REMOTE_REFRESH_INSTALLER in control
@@ -1856,25 +1859,35 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
         "bound_request_out": tmp_path / "bound.json",
         "adapter_output": tmp_path / "result.json",
     }
-    result = qualification.run_qualification_session(
-        action="allocate",
-        session_manifest=tmp_path / "session.json",
-        episode_bundle=tmp_path / "missing-episode.zip",
-        provider_bundle_url_file=tmp_path / "missing-bundle-url.txt",
-        provider_output_put_url_file=tmp_path / "missing-put-url.txt",
-        provider_output_get_url_file=tmp_path / "missing-get-url.txt",
-        release_evidence=tmp_path / "missing-release.json",
-        expected_source_commit=TEST_SOURCE_COMMIT,
-        execute=True,
+    request = {
+        "action": "allocate",
+        "session_manifest": tmp_path / "session.json",
+        "episode_bundle": tmp_path / "missing-episode.zip",
+        "provider_bundle_url_file": tmp_path / "missing-bundle-url.txt",
+        "provider_output_put_url_file": tmp_path / "missing-put-url.txt",
+        "provider_output_get_url_file": tmp_path / "missing-get-url.txt",
+        "release_evidence": tmp_path / "missing-release.json",
+        "expected_source_commit": TEST_SOURCE_COMMIT,
+        "execute": True,
         **outputs,
-    )
+    }
+    result = qualification.run_qualification_session(**request)
 
     assert result["status"] == "blocked"
     assert result["provider_mutations_performed"] == 0
     assert all(path.is_file() for path in outputs.values())
     manifest = json.loads((tmp_path / "session.json").read_text())
+    _, reloaded = qualification._load_private_manifest(tmp_path / "session.json")
+    assert reloaded["release_binding_status"] == "blocked"
     assert manifest["bootstrap"]["overlay_revision"] == 0
     assert manifest["bootstrap"]["control_contract_version"] == qualification.CONTROL_CONTRACT_VERSION
+
+    Path(request["release_evidence"]).write_text(json.dumps(_release_evidence()))
+    retry = qualification.run_qualification_session(**request)
+    _, retry_manifest = qualification._load_private_manifest(tmp_path / "session.json")
+    assert retry["status"] == "blocked"
+    assert retry_manifest["release_binding_status"] == "bound"
+    assert retry_manifest["image_ref"] == TEST_IMAGE_REF
 
 
 def test_changed_refresh_payload_forces_restage_before_remote_mutation(

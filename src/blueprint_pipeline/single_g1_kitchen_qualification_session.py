@@ -233,11 +233,31 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
         blockers.append("schema")
     if manifest.get("provider") != "vast":
         blockers.append("provider")
-    if not valid_image_binding(manifest.get("image_ref"), manifest.get("image_digest")):
-        blockers.append("image")
-    source_commit = manifest.get("source_commit")
-    if source_commit is not None and not valid_source_commit(source_commit):
-        blockers.append("source_commit")
+    release_binding_status = manifest.get("release_binding_status")
+    preallocation_blocked = bool(
+        manifest.get("status") == "blocked"
+        and manifest.get("instance_id") is None
+        and manifest.get("continuing_spend") is False
+    )
+    if release_binding_status == "blocked":
+        if (
+            manifest.get("status") != "blocked"
+            or manifest.get("instance_id") is not None
+            or manifest.get("continuing_spend") is not False
+        ):
+            blockers.append("blocked_release_binding_state")
+    elif release_binding_status == "bound":
+        if not valid_image_binding(manifest.get("image_ref"), manifest.get("image_digest")):
+            blockers.append("image")
+        if not valid_source_commit(manifest.get("source_commit")):
+            blockers.append("source_commit")
+    else:
+        # Retained pre-contract sessions remain readable for status/teardown.
+        if not valid_image_binding(manifest.get("image_ref"), manifest.get("image_digest")):
+            blockers.append("image")
+        source_commit = manifest.get("source_commit")
+        if source_commit is not None and not valid_source_commit(source_commit):
+            blockers.append("source_commit")
     if manifest.get("bundle_sha256") != BUNDLE_SHA256:
         blockers.append("bundle")
     instance_id = str(manifest.get("instance_id") or "")
@@ -254,22 +274,23 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
         blockers.append("launch_nonce")
     bootstrap = manifest.get("bootstrap")
     bootstrap = dict(bootstrap) if isinstance(bootstrap, Mapping) else {}
-    for key in (
-        "provider_bootstrap_sha256",
-        "episode_bootstrap_sha256",
-        "control_script_sha256",
-        "refresh_installer_sha256",
-    ):
-        if not _valid_sha256(bootstrap.get(key)):
-            blockers.append(key)
-    if (
-        bootstrap.get("control_contract_version")
-        not in REFRESH_COMPATIBLE_CONTROL_CONTRACT_VERSIONS
-    ):
-        blockers.append("control_contract_version")
+    if not preallocation_blocked:
+        for key in (
+            "provider_bootstrap_sha256",
+            "episode_bootstrap_sha256",
+            "control_script_sha256",
+            "refresh_installer_sha256",
+        ):
+            if not _valid_sha256(bootstrap.get(key)):
+                blockers.append(key)
+        if (
+            bootstrap.get("control_contract_version")
+            not in REFRESH_COMPATIBLE_CONTROL_CONTRACT_VERSIONS
+        ):
+            blockers.append("control_contract_version")
     if bootstrap.get("episode_auto_run") is not False:
         blockers.append("episode_auto_run")
-    if (
+    if not preallocation_blocked and (
         not isinstance(bootstrap.get("overlay_revision"), int)
         or int(bootstrap.get("overlay_revision") or 0) < 1
     ):
@@ -898,6 +919,7 @@ def _qualification_control_script(
     launch_session_id: str,
     bundle_sha256: str,
     image_digest: str,
+    source_commit: str,
 ) -> str:
     """Return immutable fixed control; mutable overlay digests live in the active binding."""
 
@@ -915,6 +937,7 @@ PROVIDER_BOOTSTRAP=/tmp/blueprint-provider-bootstrap.sh
 REFRESH_INSTALLER={shlex.quote(REMOTE_REFRESH_INSTALLER)}
 REVISIONS={shlex.quote(REMOTE_REVISIONS_DIR)}
 EXPECTED_IMAGE_DIGEST={shlex.quote(image_digest)}
+EXPECTED_SOURCE_COMMIT={shlex.quote(source_commit)}
 EXPECTED_BUNDLE_SHA256={shlex.quote(bundle_sha256)}
 EXPECTED_LAUNCH_SESSION_ID={shlex.quote(launch_session_id)}
 EXPECTED_CONTROL_CONTRACT={shlex.quote(CONTROL_CONTRACT_VERSION)}
@@ -950,7 +973,7 @@ if [ "$ACTION" = run ] || [ "$ACTION" = restart ] || [ "$ACTION" = refresh ]; th
 fi
 
 read -r ACTIVE_REVISION EXPECTED_EPISODE_BOOTSTRAP_SHA256 < <(
-python3 - "$IMMUTABLE_BINDING" "$BINDING" "$PROVIDER_BOOTSTRAP" "$0" "$REFRESH_INSTALLER" "$ACTIVE" "$EXPECTED_IMAGE_DIGEST" "$EXPECTED_BUNDLE_SHA256" "$EXPECTED_LAUNCH_SESSION_ID" "$EXPECTED_CONTROL_CONTRACT" <<'PY'
+python3 - "$IMMUTABLE_BINDING" "$BINDING" "$PROVIDER_BOOTSTRAP" "$0" "$REFRESH_INSTALLER" "$ACTIVE" "$EXPECTED_IMAGE_DIGEST" "$EXPECTED_BUNDLE_SHA256" "$EXPECTED_LAUNCH_SESSION_ID" "$EXPECTED_CONTROL_CONTRACT" "$EXPECTED_SOURCE_COMMIT" <<'PY'
 import hashlib, json, os, pathlib, re, sys
 immutable_path, binding_path, provider_path, control_path, refresh_path, active_path = map(pathlib.Path, sys.argv[1:7])
 for path, mode, reason in (
@@ -966,6 +989,7 @@ expected_immutable = {{
     "schema_version": {IMMUTABLE_BINDING_SCHEMA_VERSION!r},
     "provider_bootstrap_sha256": hashlib.sha256(provider_path.read_bytes()).hexdigest(),
     "image_digest": sys.argv[7],
+    "source_commit": sys.argv[11],
     "bundle_sha256": sys.argv[8],
     "launch_session_id": sys.argv[9],
     "control_contract_version": sys.argv[10],
@@ -1412,6 +1436,7 @@ def _qualification_bootstrap_payload(
         launch_session_id=launch_session_id,
         bundle_sha256=BUNDLE_SHA256,
         image_digest=image_digest,
+        source_commit=source_commit,
     )
     refresh_installer = _qualification_refresh_installer_source()
     control_sha = _sha256_bytes(control_script.encode("utf-8"))
@@ -1809,6 +1834,7 @@ def _manifest_base(
     image_ref: str,
     image_digest: str,
     source_commit: str,
+    release_binding_status: str = "bound",
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1821,6 +1847,7 @@ def _manifest_base(
         "image_ref": image_ref,
         "image_digest": image_digest,
         "source_commit": source_commit,
+        "release_binding_status": release_binding_status,
         "bundle_sha256": BUNDLE_SHA256,
         "launch_session_id": launch_session_id,
         "launch_session_nonce_sha256": _sha256_bytes(launch_session_id.encode("utf-8")),
@@ -1940,9 +1967,13 @@ def _allocate(
     image_ref = str(release_binding.get("image_ref") or "")
     image_digest = str(release_binding.get("image_digest") or "")
     source_commit = str(release_binding.get("source_commit") or "")
-    existing_release_mismatch = bool(existing_manifest) and any(
-        existing_manifest.get(key) != release_binding.get(key)
-        for key in ("image_ref", "image_digest", "source_commit")
+    existing_release_mismatch = (
+        bool(existing_manifest)
+        and existing_manifest.get("release_binding_status") != "blocked"
+        and any(
+            existing_manifest.get(key) != release_binding.get(key)
+            for key in ("image_ref", "image_digest", "source_commit")
+        )
     )
     if existing_release_mismatch:
         blockers.append("qualification_existing_manifest_release_binding_mismatch")
@@ -2109,6 +2140,7 @@ def _allocate(
         image_ref=str(existing_manifest.get("image_ref") or image_ref),
         image_digest=str(existing_manifest.get("image_digest") or image_digest),
         source_commit=str(existing_manifest.get("source_commit") or source_commit),
+        release_binding_status="bound" if not release_blockers else "blocked",
     )
     manifest["status"] = (
         "bootstrap_staging_required"
