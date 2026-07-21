@@ -70,6 +70,38 @@ Niantic/Scaniverse API or prove that programmatic Scaniverse export access is
 available. If Niantic grants Enterprise API access, implement it behind this
 same provider boundary and keep the raw-capture proof hierarchy unchanged.
 
+## Evaluation Admission
+
+`scaniverse_import_manifest.json` is never an evaluation-admission artifact.
+An assisted import may be considered only through the separately versioned
+`evaluation_site_admission.v2` contract validated by
+`validate_evaluation_site_admission`. That verifier requires all of the
+following before it derives `evaluation_ready`:
+
+- immutable site, scene, capture, source-bundle, and manifest identities and
+  digests
+- active consent plus verified rights, privacy, provenance, and commercial
+  `sim_evaluation` scope
+- verified metric scale, coordinate frame, up-axis, gravity alignment, and
+  uncertainty evidence
+- calibrated intrinsics, extrinsics, synchronized timestamps, and a passing
+  bounded reprojection check
+- calibrated static robot viewpoints tied to exact frames and trajectories
+  from the moving capture
+- matching robot, camera, and embodiment identities and digests
+- scene-bound task objects, articulated parts, target zones, and explicit
+  task/criterion/evidence/tolerance/evaluator mappings
+- separate verified evidence for visual geometry, collision, contact, and
+  dynamics truth
+- passed site, task, and trajectory deduplication
+- non-overlapping frozen train/dev/held-out-site splits and explicit OOD
+  abstention behavior
+
+Malformed nested rows, contradictory scene/capture/profile identities, missing
+evidence digests, review-only scale or physics, and forced OOD decisions block
+admission. Evaluation admission remains simulator evidence only; it does not
+prove physical robot performance or real-world policy ordering.
+
 ## Pilot Test Plan
 
 For the first controlled pilot, capture the same site once with BlueprintCapture

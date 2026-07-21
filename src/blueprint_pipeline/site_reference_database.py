@@ -15,7 +15,7 @@ from .common import read_json, utc_now_iso, write_json
 
 SITE_REFERENCE_DATABASE_SCHEMA_VERSION = "site_reference_database.v1"
 WEBAPP_PROJECTION_SCHEMA_VERSION = "site_reference_webapp_projection.v1"
-EVALUATION_SITE_ADMISSION_SCHEMA_VERSION = "evaluation_site_admission.v1"
+EVALUATION_SITE_ADMISSION_SCHEMA_VERSION = "evaluation_site_admission.v2"
 
 REFERENCE_RECORD_REQUIRED_FIELDS = (
     "reference_id",
@@ -98,10 +98,20 @@ def _admission_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _admission_rows(value: Any) -> list[dict[str, Any]]:
+def _admission_rows(value: Any) -> tuple[list[dict[str, Any]], bool]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return []
-    return [dict(item) for item in value if isinstance(item, Mapping)]
+        return [], False
+    if any(not isinstance(item, Mapping) for item in value):
+        return [], False
+    return [dict(item) for item in value], True
+
+
+def _admission_string_list(value: Any) -> tuple[list[str], bool]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return [], False
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        return [], False
+    return [item.strip() for item in value], True
 
 
 def _admission_digest(value: Any) -> bool:
@@ -116,6 +126,24 @@ def _admission_finite(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _gravity_matches_up_axis(gravity: Sequence[Any], up_axis: Any) -> bool:
+    values = [_admission_finite(item) for item in gravity]
+    if any(value is None for value in values):
+        return False
+    vector = [float(value) for value in values if value is not None]
+    magnitude = math.sqrt(sum(value * value for value in vector))
+    expected = {
+        "+Z": (2, -1.0),
+        "-Z": (2, 1.0),
+        "+Y": (1, -1.0),
+        "-Y": (1, 1.0),
+    }.get(up_axis)
+    if expected is None or not 9.0 <= magnitude <= 10.5:
+        return False
+    axis, sign = expected
+    return vector[axis] * sign >= 0.95 * magnitude
 
 
 def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -149,6 +177,14 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
             blockers.append(f"rights_privacy_provenance_not_proven:{field}")
     if not _admission_digest(rights.get("rights_manifest_sha256")):
         blockers.append("rights_manifest_digest_missing_or_invalid")
+    for field in ("consent_scope_id", "privacy_policy_id", "provenance_chain_id"):
+        if not str(rights.get(field) or "").strip():
+            blockers.append(f"rights_privacy_provenance_identity_missing:{field}")
+    commercial_scopes, commercial_scopes_valid = _admission_string_list(
+        rights.get("commercial_use_scope")
+    )
+    if not commercial_scopes_valid or "sim_evaluation" not in commercial_scopes:
+        blockers.append("commercial_use_scope_missing_sim_evaluation")
 
     geometry = _admission_mapping(manifest.get("metric_coordinate_contract"))
     if geometry.get("scale_status") != "verified_metric" or geometry.get("length_unit") != "m":
@@ -163,8 +199,13 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         and all(_admission_finite(item) is not None for item in gravity)
     ):
         blockers.append("gravity_vector_missing_or_invalid")
+    elif not _gravity_matches_up_axis(gravity, geometry.get("up_axis")):
+        blockers.append("gravity_vector_inconsistent_with_up_axis")
     if not _admission_digest(geometry.get("coordinate_frame_manifest_sha256")):
         blockers.append("coordinate_frame_manifest_digest_missing_or_invalid")
+    for field in ("scale_evidence_sha256", "gravity_alignment_sha256"):
+        if not _admission_digest(geometry.get(field)):
+            blockers.append(f"metric_coordinate_evidence_digest_invalid:{field}")
     uncertainty = _admission_mapping(geometry.get("uncertainty"))
     for field in ("scale_sigma", "translation_sigma_m", "rotation_sigma_deg"):
         value = _admission_finite(uncertainty.get(field))
@@ -191,8 +232,15 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         blockers.append("camera_reprojection_error_missing_or_above_limit")
     if not _admission_digest(calibration.get("calibration_manifest_sha256")):
         blockers.append("camera_calibration_manifest_digest_missing_or_invalid")
+    for field in ("intrinsics_sha256", "extrinsics_sha256", "timestamps_sha256"):
+        if not _admission_digest(calibration.get(field)):
+            blockers.append(f"camera_calibration_component_digest_invalid:{field}")
 
-    viewpoints = _admission_rows(manifest.get("static_robot_evaluation_viewpoints"))
+    viewpoints, viewpoints_payload_valid = _admission_rows(
+        manifest.get("static_robot_evaluation_viewpoints")
+    )
+    if not viewpoints_payload_valid:
+        blockers.append("static_robot_evaluation_viewpoints_payload_invalid")
     if not viewpoints:
         blockers.append("static_robot_evaluation_viewpoints_missing")
     for index, viewpoint in enumerate(viewpoints):
@@ -200,13 +248,29 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
             blockers.append(f"static_viewpoint_not_derived_from_scan:{index}")
         if viewpoint.get("status") != "calibrated_static_viewpoint":
             blockers.append(f"static_viewpoint_not_calibrated:{index}")
-        for field in ("viewpoint_id", "camera_profile_id", "robot_profile_id"):
+        for field in (
+            "viewpoint_id",
+            "camera_profile_id",
+            "robot_profile_id",
+            "source_capture_id",
+            "source_frame_id",
+        ):
             if not str(viewpoint.get(field) or "").strip():
                 blockers.append(f"static_viewpoint_missing:{index}:{field}")
+        if (
+            str(viewpoint.get("source_capture_id") or "").strip()
+            != str(identity.get("capture_id") or "").strip()
+        ):
+            blockers.append(f"static_viewpoint_source_capture_mismatch:{index}")
         if not _admission_digest(viewpoint.get("pose_sha256")):
             blockers.append(f"static_viewpoint_pose_digest_invalid:{index}")
+        if not _admission_digest(viewpoint.get("source_trajectory_sha256")):
+            blockers.append(f"static_viewpoint_source_trajectory_digest_invalid:{index}")
 
     embodiment = _admission_mapping(manifest.get("robot_camera_embodiment"))
+    for field in ("robot_profile_id", "camera_profile_id", "embodiment_id"):
+        if not str(embodiment.get(field) or "").strip():
+            blockers.append(f"robot_camera_embodiment_identity_missing:{field}")
     for field in (
         "robot_profile_sha256",
         "camera_profile_sha256",
@@ -214,18 +278,46 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
     ):
         if not _admission_digest(embodiment.get(field)):
             blockers.append(f"robot_camera_embodiment_digest_invalid:{field}")
+    for index, viewpoint in enumerate(viewpoints):
+        if (
+            str(viewpoint.get("robot_profile_id") or "").strip()
+            != str(embodiment.get("robot_profile_id") or "").strip()
+        ):
+            blockers.append(f"static_viewpoint_robot_profile_mismatch:{index}")
+        if (
+            str(viewpoint.get("camera_profile_id") or "").strip()
+            != str(embodiment.get("camera_profile_id") or "").strip()
+        ):
+            blockers.append(f"static_viewpoint_camera_profile_mismatch:{index}")
 
     grounding = _admission_mapping(manifest.get("task_scene_grounding"))
-    for field in ("scene_identity", "task_objects", "articulated_parts", "target_zones"):
-        value = grounding.get(field)
-        if not value or (field != "scene_identity" and not _admission_rows(value)):
+    scene_identity = str(grounding.get("scene_identity") or "").strip()
+    if not scene_identity:
+        blockers.append("task_scene_grounding_missing:scene_identity")
+    elif scene_identity != str(identity.get("scene_id") or "").strip():
+        blockers.append("task_scene_grounding_scene_identity_mismatch")
+    grounding_id_fields = {
+        "task_objects": "object_id",
+        "articulated_parts": "part_id",
+        "target_zones": "zone_id",
+    }
+    for field, identity_field in grounding_id_fields.items():
+        rows, rows_payload_valid = _admission_rows(grounding.get(field))
+        if not rows_payload_valid:
+            blockers.append(f"task_scene_grounding_payload_invalid:{field}")
+        if not rows:
             blockers.append(f"task_scene_grounding_missing:{field}")
+        elif any(not str(row.get(identity_field) or "").strip() for row in rows):
+            blockers.append(f"task_scene_grounding_identity_missing:{field}")
     if not _admission_digest(grounding.get("grounding_manifest_sha256")):
         blockers.append("task_scene_grounding_digest_missing_or_invalid")
 
-    task_contracts = _admission_rows(manifest.get("task_contracts"))
+    task_contracts, task_contracts_payload_valid = _admission_rows(manifest.get("task_contracts"))
+    if not task_contracts_payload_valid:
+        blockers.append("task_contracts_payload_invalid")
     if not task_contracts:
         blockers.append("explicit_task_contracts_missing")
+    task_criterion_ids: set[tuple[str, str]] = set()
     for index, contract in enumerate(task_contracts):
         for field in ("task_id", "criterion_id", "evidence_type", "evaluator_mapping"):
             if not str(contract.get(field) or "").strip():
@@ -233,10 +325,17 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         tolerance = _admission_finite(contract.get("tolerance"))
         if tolerance is None or tolerance < 0 or not str(contract.get("tolerance_unit") or ""):
             blockers.append(f"task_contract_tolerance_invalid:{index}")
+        task_criterion_id = (
+            str(contract.get("task_id") or "").strip(),
+            str(contract.get("criterion_id") or "").strip(),
+        )
+        if task_criterion_id in task_criterion_ids:
+            blockers.append(f"task_contract_duplicate_task_criterion:{index}")
+        task_criterion_ids.add(task_criterion_id)
 
     truth = _admission_mapping(manifest.get("truth_layers"))
     visual = _admission_mapping(truth.get("visual_geometry"))
-    if visual.get("status") != "verified":
+    if visual.get("status") != "verified" or not _admission_digest(visual.get("evidence_sha256")):
         blockers.append("visual_geometry_truth_not_verified")
     for layer in ("collision", "contact", "dynamics"):
         detail = _admission_mapping(truth.get(layer))
@@ -259,10 +358,14 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         blockers.append("evaluation_splits_not_frozen")
     if not _admission_digest(splits.get("split_manifest_sha256")):
         blockers.append("split_manifest_digest_missing_or_invalid")
-    partition_sites = {
-        name: {str(item) for item in splits.get(name, []) or []}
-        for name in ("train_sites", "dev_sites", "held_out_sites")
-    }
+    partition_sites: dict[str, set[str]] = {}
+    for name in ("train_sites", "dev_sites", "held_out_sites"):
+        site_rows, site_rows_valid = _admission_string_list(splits.get(name))
+        if not site_rows_valid:
+            blockers.append(f"site_split_payload_invalid:{name}")
+        if len(site_rows) != len(set(site_rows)):
+            blockers.append(f"site_split_duplicate_site:{name}")
+        partition_sites[name] = set(site_rows)
     if not partition_sites["held_out_sites"]:
         blockers.append("held_out_site_split_missing")
     overlaps = (
@@ -277,8 +380,18 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         blockers.append("site_not_assigned_to_exactly_one_frozen_split")
 
     ood = _admission_mapping(manifest.get("ood_abstention"))
-    if ood.get("abstention_enabled") is not True or not _admission_rows(ood.get("axes")):
+    ood_axes, ood_axes_payload_valid = _admission_rows(ood.get("axes"))
+    if not ood_axes_payload_valid:
+        blockers.append("ood_abstention_axes_payload_invalid")
+    if ood.get("abstention_enabled") is not True or not ood_axes:
         blockers.append("ood_abstention_contract_missing")
+    if ood.get("out_of_distribution_behavior") != "abstain":
+        blockers.append("ood_behavior_must_abstain")
+    if not _admission_digest(ood.get("calibration_manifest_sha256")):
+        blockers.append("ood_calibration_manifest_digest_missing_or_invalid")
+    ood_axis_ids = [str(row.get("axis") or "").strip() for row in ood_axes]
+    if any(not axis for axis in ood_axis_ids) or len(ood_axis_ids) != len(set(ood_axis_ids)):
+        blockers.append("ood_axis_identity_missing_or_duplicate")
 
     blockers = sorted(set(blockers))
     assisted_import = str(manifest.get("importer_kind") or "").startswith("scaniverse")
@@ -382,7 +495,9 @@ def build_reference_record_lineage(
         "privacy_lineage": {
             "privacy_source": privacy_source,
             "privacy_safe_required": True,
-            "privacy_status": "privacy_safe_source" if privacy_source.startswith("privacy/") else "raw_or_unknown_source",
+            "privacy_status": "privacy_safe_source"
+            if privacy_source.startswith("privacy/")
+            else "raw_or_unknown_source",
         },
         "rights_lineage": {
             "rights_source_uri": raw_rights_uri,
@@ -439,8 +554,12 @@ def build_site_reference_summary_projection(
     validation_payload: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a WebApp/Firestore-safe summary projection from local artifacts."""
-    manifest = dict(manifest_payload or _read_optional_json(site_root / "site_reference_manifest.json"))
-    validation = dict(validation_payload or _read_optional_json(site_root / "retrieval_validation.json"))
+    manifest = dict(
+        manifest_payload or _read_optional_json(site_root / "site_reference_manifest.json")
+    )
+    validation = dict(
+        validation_payload or _read_optional_json(site_root / "retrieval_validation.json")
+    )
     counts = {
         "total_reference_frames": int(manifest.get("total_reference_frames") or 0),
         "capture_count": int(manifest.get("capture_count") or 0),
@@ -497,7 +616,9 @@ def build_site_reference_summary_projection(
             "aligned_fraction": validation.get("aligned_fraction"),
         },
         "blockers": readiness["blockers"],
-        "last_updated": str(manifest.get("last_updated") or validation.get("generated_at") or utc_now_iso()),
+        "last_updated": str(
+            manifest.get("last_updated") or validation.get("generated_at") or utc_now_iso()
+        ),
     }
     assert_summary_projection_safe(payload)
     return payload

@@ -106,6 +106,10 @@ def _evaluation_admission() -> dict[str, object]:
             "provenance_verified": True,
             "commercial_sim_evaluation_allowed": True,
             "rights_manifest_sha256": digest,
+            "consent_scope_id": "consent-sim-eval-v1",
+            "privacy_policy_id": "privacy-v1",
+            "provenance_chain_id": "capture-chain-1",
+            "commercial_use_scope": ["sim_evaluation", "buyer_delivery"],
         },
         "metric_coordinate_contract": {
             "scale_status": "verified_metric",
@@ -113,6 +117,8 @@ def _evaluation_admission() -> dict[str, object]:
             "up_axis": "+Z",
             "gravity_m_s2": [0.0, 0.0, -9.81],
             "coordinate_frame_manifest_sha256": digest,
+            "scale_evidence_sha256": digest,
+            "gravity_alignment_sha256": digest,
             "uncertainty": {
                 "scale_sigma": 0.001,
                 "translation_sigma_m": 0.002,
@@ -127,18 +133,27 @@ def _evaluation_admission() -> dict[str, object]:
             "reprojection_rmse_px": 0.4,
             "maximum_reprojection_rmse_px": 1.0,
             "calibration_manifest_sha256": digest,
+            "intrinsics_sha256": digest,
+            "extrinsics_sha256": digest,
+            "timestamps_sha256": digest,
         },
         "static_robot_evaluation_viewpoints": [
             {
                 "viewpoint_id": "vp-1",
                 "camera_profile_id": "camera-1",
                 "robot_profile_id": "robot-1",
+                "source_capture_id": "capture-1",
+                "source_frame_id": "frame-1",
                 "derived_from_moving_scan": True,
                 "status": "calibrated_static_viewpoint",
                 "pose_sha256": digest,
+                "source_trajectory_sha256": digest,
             }
         ],
         "robot_camera_embodiment": {
+            "robot_profile_id": "robot-1",
+            "camera_profile_id": "camera-1",
+            "embodiment_id": "embodiment-1",
             "robot_profile_sha256": digest,
             "camera_profile_sha256": digest,
             "embodiment_manifest_sha256": digest,
@@ -161,7 +176,7 @@ def _evaluation_admission() -> dict[str, object]:
             }
         ],
         "truth_layers": {
-            "visual_geometry": {"status": "verified"},
+            "visual_geometry": {"status": "verified", "evidence_sha256": digest},
             "collision": {"status": "verified", "evidence_sha256": digest},
             "contact": {"status": "verified", "evidence_sha256": digest},
             "dynamics": {"status": "verified", "evidence_sha256": digest},
@@ -182,6 +197,8 @@ def _evaluation_admission() -> dict[str, object]:
         },
         "ood_abstention": {
             "abstention_enabled": True,
+            "out_of_distribution_behavior": "abstain",
+            "calibration_manifest_sha256": digest,
             "axes": [{"axis": "site"}, {"axis": "task"}, {"axis": "embodiment"}],
         },
     }
@@ -195,6 +212,16 @@ def test_evaluation_site_admission_derives_readiness_across_all_truth_layers() -
     assert result["claim_boundary"]["assisted_import_is_not_evaluation_readiness"] is True
 
 
+def test_legacy_site_admission_schema_cannot_enter_v2_contract() -> None:
+    candidate = _evaluation_admission()
+    candidate["schema_version"] = "evaluation_site_admission.v1"
+
+    result = validate_evaluation_site_admission(candidate)
+
+    assert result["status"] == "blocked"
+    assert "site_admission_schema_missing_or_unsupported" in result["blockers"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_blocker"),
     [
@@ -205,26 +232,60 @@ def test_evaluation_site_admission_derives_readiness_across_all_truth_layers() -
             "metric_scale_not_verified_in_meters",
         ),
         (
-            lambda value: value["camera_time_calibration"].update(
-                {"reprojection_rmse_px": 4.0}
-            ),
+            lambda value: value["camera_time_calibration"].update({"reprojection_rmse_px": 4.0}),
             "camera_reprojection_error_missing_or_above_limit",
         ),
         (
-            lambda value: value["truth_layers"]["collision"].update(
-                {"status": "review_only"}
-            ),
+            lambda value: value["truth_layers"]["collision"].update({"status": "review_only"}),
             "collision_truth_not_verified",
         ),
         (
-            lambda value: value["frozen_splits"].update(
-                {"train_sites": ["held-out-site"]}
-            ),
+            lambda value: value["frozen_splits"].update({"train_sites": ["held-out-site"]}),
             "site_split_overlap_detected",
         ),
     ],
 )
 def test_assisted_import_cannot_self_declare_evaluation_readiness(
+    mutation,
+    expected_blocker: str,
+) -> None:
+    candidate = _evaluation_admission()
+    mutation(candidate)
+
+    result = validate_evaluation_site_admission(candidate)
+
+    assert result["status"] == "blocked"
+    assert expected_blocker in result["blockers"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_blocker"),
+    [
+        (
+            lambda value: value["static_robot_evaluation_viewpoints"].append("corrupt-row"),
+            "static_robot_evaluation_viewpoints_payload_invalid",
+        ),
+        (
+            lambda value: value["task_scene_grounding"].update(
+                {"scene_identity": "different-scene"}
+            ),
+            "task_scene_grounding_scene_identity_mismatch",
+        ),
+        (
+            lambda value: value["metric_coordinate_contract"].update(
+                {"gravity_m_s2": [0.0, 0.0, 9.81]}
+            ),
+            "gravity_vector_inconsistent_with_up_axis",
+        ),
+        (
+            lambda value: value["ood_abstention"].update(
+                {"out_of_distribution_behavior": "force_decision"}
+            ),
+            "ood_behavior_must_abstain",
+        ),
+    ],
+)
+def test_site_admission_v2_rejects_malformed_or_contradictory_evidence(
     mutation,
     expected_blocker: str,
 ) -> None:
@@ -293,7 +354,9 @@ def test_site_reference_manifest_contract_is_canonical_v1() -> None:
             }
         ],
         coverage_summary={"coverage_fraction": 0.5},
-        artifact_uris={"site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"},
+        artifact_uris={
+            "site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"
+        },
         readiness={
             "state": "degraded",
             "blockers": ["site_frame_not_established"],
@@ -344,7 +407,9 @@ def test_site_reference_manifest_rejects_invalid_required_shapes(
         validate_site_reference_manifest(missing)
 
 
-def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_fields(tmp_path: Path) -> None:
+def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_fields(
+    tmp_path: Path,
+) -> None:
     storage_root = tmp_path
     site_root = storage_root / "bucket" / "sites" / "site-1" / "reference_memory"
     site_root.mkdir(parents=True)
@@ -373,7 +438,9 @@ def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_f
                 chunk_count=1,
                 captures=[],
                 coverage_summary={"coverage_fraction": 0.25},
-                artifact_uris={"site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"},
+                artifact_uris={
+                    "site_reference_index_uri": "gs://bucket/sites/site-1/reference_memory/site_reference_index.jsonl"
+                },
                 readiness={"state": "degraded", "blockers": ["site_frame_not_established"]},
                 site_frame_established=False,
             )
@@ -389,7 +456,9 @@ def test_webapp_summary_projection_allows_family_uris_but_rejects_dense_record_f
     )
 
     assert projection["storage_class"] == "firestore_summary_safe"
-    assert projection["artifact_uris"]["site_reference_index_uri"].endswith("site_reference_index.jsonl")
+    assert projection["artifact_uris"]["site_reference_index_uri"].endswith(
+        "site_reference_index.jsonl"
+    )
     assert "depth_uri" not in json.dumps(projection)
     assert "embedding_uri" not in json.dumps(projection)
 
