@@ -86,6 +86,11 @@ def _minimal_inputs() -> dict:
         },
         "route": {"route": []},
         "seed": {"seed": 1001},
+        "task_contract": {
+            "schema_version": "task_success_contract.v1",
+            "task_id": "microwave_door",
+            "registered_criteria": [],
+        },
         "start_frame": b"exact-frame",
         "bootstrap_script": (
             "cp /workspace/attempt_input_manifest_episode_001.json "
@@ -169,7 +174,9 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     )
     runtime_attempt["artifacts"]["task_success_contract"] = {
         "path": "/workspace/task_success_contract.json",
-        "sha256": "7" * 64,
+        "sha256": runtime_attempt[
+            "qualification_resolved_task_success_contract_sha256"
+        ],
         "size_bytes": 500,
         "derived_from_sha256": "6" * 64,
         "resolution_artifact_path": (
@@ -182,6 +189,16 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert qualification.collected_attempt_derived_artifact_blockers(
         runtime_attempt_bytes, runtime_attempt, binding
     ) == []
+    wrong_contract_attempt = json.loads(json.dumps(runtime_attempt))
+    wrong_contract_attempt["artifacts"]["task_success_contract"]["sha256"] = "8" * 64
+    wrong_contract_bytes = (
+        json.dumps(wrong_contract_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert "qualification_collected_attempt_runtime_overlay_base_invalid" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            wrong_contract_bytes, wrong_contract_attempt, binding
+        )
+    )
     runtime_attempt["source_commit"] = "3" * 40
     tampered_runtime_bytes = (
         json.dumps(runtime_attempt, indent=2, sort_keys=True) + "\n"
@@ -466,6 +483,7 @@ def _qualification_output_zip(
             ),
             "qualification_derived_launch_plan": derived_plan,
             "qualification_derived_launch_plan_sha256": derived_plan_sha256,
+            "qualification_resolved_task_success_contract_sha256": digest,
             "selected_task_id": "microwave_door",
             "artifacts": {
                 "bundle": {"sha256": manifest["bundle_sha256"]},

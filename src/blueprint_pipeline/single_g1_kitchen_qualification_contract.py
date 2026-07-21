@@ -238,6 +238,14 @@ def _restore_runtime_attempt_overlay_base(
         if isinstance(current_contract_value, Mapping)
         else {}
     )
+    runtime_overlay_applied = (
+        attempt.get("prepared_launch_nonce") is not None
+        or current_contract != source_contract
+    )
+    if runtime_overlay_applied and current_contract.get("sha256") != attempt.get(
+        "qualification_resolved_task_success_contract_sha256"
+    ):
+        raise ValueError("qualification_runtime_attempt_resolved_task_contract_mismatch")
     if current_contract != source_contract:
         source_contract_sha256 = source_contract.get("sha256")
         if (
@@ -391,6 +399,15 @@ def bind_inputs_to_release(
     plan["image_ref"] = target_image_ref
     plan["qualification_release_rebind"] = embedded_binding
     derived_plan_sha256 = _canonical_sha256(plan)
+    task_contract_value = inputs.get("task_contract")
+    if not isinstance(task_contract_value, Mapping):
+        raise ValueError("qualification_resolved_task_contract_missing")
+    resolved_task_contract_bytes = (
+        json.dumps(dict(task_contract_value), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    resolved_task_contract_sha256 = hashlib.sha256(
+        resolved_task_contract_bytes
+    ).hexdigest()
     source_attempt_identity = {
         "source_commit": attempt.get("source_commit"),
         "source_dirty_patch_sha256": attempt.get("source_dirty_patch_sha256"),
@@ -404,6 +421,9 @@ def bind_inputs_to_release(
     attempt["qualification_release_rebind"] = embedded_binding
     attempt["qualification_derived_launch_plan"] = copy.deepcopy(plan)
     attempt["qualification_derived_launch_plan_sha256"] = derived_plan_sha256
+    attempt["qualification_resolved_task_success_contract_sha256"] = (
+        resolved_task_contract_sha256
+    )
     attempt["qualification_runtime_attempt_overlay_base"] = (
         capture_runtime_attempt_overlay_base(attempt)
     )
