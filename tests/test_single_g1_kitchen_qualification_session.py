@@ -304,6 +304,7 @@ def _bind_latest_attempt(
         "episode_bootstrap_sha256": manifest["bootstrap"]["episode_bootstrap_sha256"],
         "bundle_sha256": manifest["bundle_sha256"],
         "overlay_revision": manifest["bootstrap"]["overlay_revision"],
+        "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "dispatched_at": "2026-07-17T00:00:00Z",
         "remote_process_state": remote_process_state,
         "collection_status": "pending",
@@ -324,15 +325,28 @@ def _qualification_output_zip(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     attempt_slug = f"attempt_{sequence:04d}"
     nonce = f"{manifest['launch_session_id']}:{attempt_slug}"
+    latest_attempt = dict(manifest.get("latest_attempt") or {})
+    attempt_binding = (
+        latest_attempt
+        if latest_attempt.get("attempt_sequence") == sequence
+        else {}
+    )
     attempt = {
         "schema_version": "single_g1_kitchen_qualification_attempt.v1",
         "attempt_sequence": sequence,
         "attempt_nonce": nonce,
         "attempt_nonce_sha256": hashlib.sha256(nonce.encode()).hexdigest(),
         "launch_session_id": manifest["launch_session_id"],
-        "episode_bootstrap_sha256": manifest["bootstrap"]["episode_bootstrap_sha256"],
-        "bundle_sha256": manifest["bundle_sha256"],
-        "overlay_revision": manifest["bootstrap"]["overlay_revision"],
+        "episode_bootstrap_sha256": attempt_binding.get(
+            "episode_bootstrap_sha256",
+            manifest["bootstrap"]["episode_bootstrap_sha256"],
+        ),
+        "bundle_sha256": attempt_binding.get(
+            "bundle_sha256", manifest["bundle_sha256"]
+        ),
+        "overlay_revision": attempt_binding.get(
+            "overlay_revision", manifest["bootstrap"]["overlay_revision"]
+        ),
         "stale_outputs_reused": False,
         "raw_secret_values_recorded": False,
     }
@@ -372,7 +386,10 @@ def _qualification_output_zip(
             ],
             "image_digest": manifest["image_digest"],
             "qualification_release_rebind": embedded_launch_rebind(
-                manifest["qualification_launch_rebind"]
+                dict(manifest.get("latest_attempt") or {}).get(
+                    "qualification_launch_rebind",
+                    manifest["qualification_launch_rebind"],
+                )
             ),
             "selected_task_id": "microwave_door",
             "artifacts": {
@@ -1681,6 +1698,52 @@ def test_collect_terminal_success_validates_semantics_and_all_review_media(
     assert persisted["latest_attempt"]["collection_status"] == (
         "collected_terminal_passed"
     )
+
+
+def test_collect_terminal_uses_immutable_attempt_release_binding_after_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    launched = _bind_latest_attempt(
+        manifest_path, remote_process_state="stopped"
+    )
+    _write_output_get_url(tmp_path)
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    refreshed_rebind = dict(manifest["qualification_launch_rebind"])
+    refreshed_rebind["source_loaded_plan_sha256"] = "e" * 64
+    refreshed_rebind["binding_sha256"] = "f" * 64
+    manifest["qualification_launch_rebind"] = refreshed_rebind
+    manifest["bootstrap"]["episode_bootstrap_sha256"] = "a" * 64
+    manifest["bootstrap"]["overlay_revision"] = 2
+    qualification._private_write_json(manifest_path, manifest)
+
+    archive = _qualification_output_zip(
+        manifest_path,
+        phase="runner_done",
+        successful_terminal=True,
+    )
+    monkeypatch.setattr(
+        qualification,
+        "_download_provider_output_archive",
+        lambda _url: archive,
+    )
+
+    result = qualification.run_qualification_session(
+        action="collect",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "collect-after-refresh.json",
+        execute=True,
+    )
+
+    assert result["status"] == "episode_collected_passed_continuing_spend", result[
+        "blockers"
+    ]
+    persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert persisted["latest_attempt"]["qualification_launch_rebind"] == launched[
+        "qualification_launch_rebind"
+    ]
+    assert persisted["qualification_launch_rebind"] == refreshed_rebind
 
 
 def test_collect_terminal_rejects_self_consistent_nonrelease_attempt_identity(

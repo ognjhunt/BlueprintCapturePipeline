@@ -102,6 +102,7 @@ from .single_g1_kitchen_qualification_contract import (
     bind_inputs_to_release,
     build_release_binding as _release_binding,
     collected_attempt_release_blocker,
+    embedded_launch_rebind,
     qualification_gate_matrix,
     release_binding_record_blockers,
     session_claim_boundary as _session_claim_boundary,
@@ -2877,6 +2878,12 @@ def _require_latest_attempt_binding(manifest: Mapping[str, Any]) -> dict[str, An
         "bundle_sha256": str(manifest.get("bundle_sha256") or ""),
         "overlay_revision": overlay_revision,
     }
+    attempt_launch_rebind = latest.get("qualification_launch_rebind")
+    attempt_launch_rebind = (
+        dict(attempt_launch_rebind)
+        if isinstance(attempt_launch_rebind, Mapping)
+        else {}
+    )
     mismatches = [
         key
         for key, expected_value in expected.items()
@@ -2886,11 +2893,33 @@ def _require_latest_attempt_binding(manifest: Mapping[str, Any]) -> dict[str, An
         mismatches.append("attempt_sequence")
     if not _valid_sha256(expected["episode_bootstrap_sha256"]):
         mismatches.append("episode_bootstrap_sha256")
+    release = dict(manifest.get("release_binding") or {})
+    embedded_rebind = embedded_launch_rebind(attempt_launch_rebind)
+    expected_release_rebind = {
+        "schema_version": "single_g1_kitchen_qualification_launch_rebind.v1",
+        "status": "bound",
+        "source_bundle_sha256": manifest.get("bundle_sha256"),
+        "release_image_ref": manifest.get("image_ref"),
+        "release_image_digest": manifest.get("image_digest"),
+        "release_source_commit": manifest.get("source_commit"),
+        "release_source_patch_sha256": release.get("source_patch_sha256"),
+        "source_bundle_preserved": True,
+        "derived_plan_and_attempt_required": True,
+    }
+    mismatches.extend(
+        f"qualification_launch_rebind.{key}"
+        for key, expected_value in expected_release_rebind.items()
+        if embedded_rebind.get(key) != expected_value
+    )
     if mismatches:
         raise ValueError(
             "qualification_latest_attempt_binding_invalid:" + ",".join(sorted(set(mismatches)))
         )
-    return {**latest, **expected}
+    return {
+        **latest,
+        **expected,
+        "qualification_launch_rebind": attempt_launch_rebind,
+    }
 
 
 def _validate_collected_attempt_binding(
@@ -3328,7 +3357,15 @@ def _validate_terminal_collection(
                 "qualification_attempt_input_binding_mismatch:"
                 + ",".join(sorted(mismatches))
             )
-        release_blocker = collected_attempt_release_blocker(attempt_input, manifest)
+        attempt_session = {
+            **manifest,
+            "qualification_launch_rebind": latest.get(
+                "qualification_launch_rebind"
+            ),
+        }
+        release_blocker = collected_attempt_release_blocker(
+            attempt_input, attempt_session
+        )
         if release_blocker:
             blockers.append(release_blocker)
 
@@ -4015,6 +4052,9 @@ def _control(
             ],
             "bundle_sha256": manifest["bundle_sha256"],
             "overlay_revision": manifest["bootstrap"]["overlay_revision"],
+            "qualification_launch_rebind": dict(
+                manifest.get("qualification_launch_rebind") or {}
+            ),
             "dispatched_at": recorded_at,
             "remote_process_state": "running",
             "collection_status": "pending",
