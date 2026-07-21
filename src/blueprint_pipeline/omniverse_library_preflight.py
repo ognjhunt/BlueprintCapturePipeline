@@ -158,7 +158,7 @@ def inspect_usd_features(path: Path) -> dict[str, Any]:
         if path.suffix.lower() in {".usda", ".usd"} and path.stat().st_size <= 2_000_000:
             text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        pass
+        text = ""
     type_names: set[str] = set()
     prim_paths: list[str] = []
     references: list[str] = []
@@ -172,7 +172,9 @@ def inspect_usd_features(path: Path) -> dict[str, Any]:
                 prim_paths.append(str(prim.GetPath()))
                 references.extend(str(item) for item in prim.GetMetadata("references") or [])
     except (ImportError, RuntimeError, TypeError):
-        pass
+        type_names = set()
+        prim_paths = []
+        references = []
     haystack = "\n".join([text, *type_names, *prim_paths, *references]).lower()
     return {
         "inspection_method": "text_and_optional_pxr_composition",

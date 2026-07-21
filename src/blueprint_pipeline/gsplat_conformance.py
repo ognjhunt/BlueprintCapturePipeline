@@ -354,7 +354,12 @@ def main(argv: list[str] | None = None) -> int:
         resource_context_path=args.resource_context,
         resource_closeout_path=args.resource_closeout,
     )
-    print(json.dumps(result, sort_keys=True))
+    print(
+        json.dumps(
+            {"status": result["status"], "blockers": result.get("blockers", [])},
+            sort_keys=True,
+        )
+    )
     return 0 if result["status"] == "conformant_advisory" else 2
 
 
