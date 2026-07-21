@@ -1160,6 +1160,110 @@ def test_gpu_qualification_gpu_status_is_a_successful_control_observation(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_qualification_allocate_requires_independent_source_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "run_qualification_session",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("qualification session reached without source binding")
+        ),
+    )
+    out = tmp_path / "missing-source-binding"
+
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider", "vast",
+            "--probe-kind", allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action", "allocate",
+            "--qualification-session-manifest", str(out / "session.json"),
+            "--episode-bundle", str(out / "episode.zip"),
+            "--provider-bundle-url-file", str(out / "bundle-url.txt"),
+            "--provider-output-put-url-file", str(out / "put-url.txt"),
+            "--provider-output-get-url-file", str(out / "get-url.txt"),
+            "--provider-launch-request", str(out / "request.json"),
+            "--release-evidence", str(out / "release.json"),
+            "--model-cache-evidence", str(out / "models.json"),
+            "--preflight-bundle", str(out / "preflight.json"),
+            "--admission-out", str(out / "admission.json"),
+            "--bound-request-out", str(out / "bound.json"),
+            "--adapter-output", str(out / "result.json"),
+            "--pod-name", "retained-qualification-gpu",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 2
+    result = json.loads((out / "result.json").read_text())
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == [
+        "single_kitchen_qualification_required_arguments_missing:expected_source_commit"
+    ]
+    for name in ("request.json", "preflight.json", "admission.json", "bound.json"):
+        assert json.loads((out / name).read_text()) == result
+    assert json.loads(capsys.readouterr().out) == {"success": False}
+
+
+def test_gpu_qualification_allocate_blocks_mismatched_checkout_before_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "run_qualification_session",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("qualification session reached from a mismatched checkout")
+        ),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_source_checkout_blockers",
+        lambda _expected: (["gpu_canary_checkout_not_origin_main"], "b" * 40),
+    )
+    out = tmp_path / "mismatched-checkout"
+
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider", "vast",
+            "--probe-kind", allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action", "allocate",
+            "--qualification-session-manifest", str(out / "session.json"),
+            "--episode-bundle", str(out / "episode.zip"),
+            "--provider-bundle-url-file", str(out / "bundle-url.txt"),
+            "--provider-output-put-url-file", str(out / "put-url.txt"),
+            "--provider-output-get-url-file", str(out / "get-url.txt"),
+            "--provider-launch-request", str(out / "request.json"),
+            "--release-evidence", str(out / "release.json"),
+            "--model-cache-evidence", str(out / "models.json"),
+            "--preflight-bundle", str(out / "preflight.json"),
+            "--admission-out", str(out / "admission.json"),
+            "--bound-request-out", str(out / "bound.json"),
+            "--adapter-output", str(out / "result.json"),
+            "--pod-name", "retained-qualification-gpu",
+            "--expected-source-commit", "b" * 40,
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 2
+    assert json.loads((out / "result.json").read_text()) == {
+        "status": "blocked",
+        "blockers": ["gpu_canary_checkout_not_origin_main"],
+        "provider_mutations_performed": 0,
+    }
+    for name in ("request.json", "preflight.json", "admission.json", "bound.json"):
+        assert json.loads((out / name).read_text()) == json.loads(
+            (out / "result.json").read_text()
+        )
+    assert json.loads(capsys.readouterr().out) == {"success": False}
+
+
 def test_gpu_qualification_component_stop_is_a_successful_control_action(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

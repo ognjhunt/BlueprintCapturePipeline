@@ -18,11 +18,51 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import single_g1_kitchen_qualification_session as qualification
 from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
+from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
+    capture_runtime_attempt_overlay_base,
+    embedded_launch_rebind,
+)
+
+
+TEST_SOURCE_COMMIT = "a" * 40
+TEST_IMAGE_REF = "registry.example/blueprint-eval@sha256:" + "b" * 64
+TEST_IMAGE_DIGEST = "sha256:" + "b" * 64
+
+
+def _release_evidence(**overrides: object) -> dict:
+    release = {
+        "schema_version": "groot_oscar_thin_remote_build_result.v1",
+        "status": "completed",
+        "blockers": [],
+        "source_commit": TEST_SOURCE_COMMIT,
+        "source_patch_sha256": hashlib.sha256(b"").hexdigest(),
+        "resolved_digest_ref": TEST_IMAGE_REF,
+        "release_image_ref": TEST_IMAGE_REF,
+        "runnable_platform": "linux/amd64",
+        "models_embedded": False,
+        "required_cuda_version": "12.8",
+        "required_cuda_version_source": (
+            "image_config_env:BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION"
+        ),
+        "thin_release_contract_status": "passed",
+        "thin_release_contract": {
+            "schema_version": "groot_oscar_thin_release_image_contract.v1",
+            "status": "passed",
+            "blockers": [],
+            "release_image_ref": TEST_IMAGE_REF,
+            "models_externalized": True,
+        },
+    }
+    release.update(overrides)
+    return release
 
 
 def _minimal_inputs() -> dict:
     return {
         "plan": {
+            "sealed_active": True,
+            "blockers": [],
+            "image_ref": "registry.example/source@sha256:" + "1" * 64,
             "env": {"PYTHONPATH": "/workspace/runtime_overlay/package"},
             "groot_server_command": ["/opt/gr00t/server", "--port", "5550"],
             "gear_sonic_controller_command": ["/opt/wbc/deploy.sh", "sim"],
@@ -31,10 +71,33 @@ def _minimal_inputs() -> dict:
                 "/workspace/runtime_overlay/run_patched_isaac_executor.py",
             ],
         },
+        "attempt": {
+            "image_digest": "sha256:" + "1" * 64,
+            "source_commit": "f" * 40,
+            "source_dirty_patch_sha256": "9" * 64,
+            "launch_nonce": "prepared-source-nonce",
+            "artifacts": {
+                "task_success_contract": {
+                    "path": "/source/task_success_contract.json",
+                    "sha256": "9" * 64,
+                    "size_bytes": 459,
+                }
+            },
+        },
         "route": {"route": []},
         "seed": {"seed": 1001},
+        "task_contract": {
+            "schema_version": "task_success_contract.v1",
+            "task_id": "microwave_door",
+            "registered_criteria": [],
+        },
+        "source_task_contract_sha256": "6" * 64,
         "start_frame": b"exact-frame",
-        "bootstrap_script": "upload_phase inputs_ready\necho exact-episode\n",
+        "bootstrap_script": (
+            "cp /workspace/attempt_input_manifest_episode_001.json "
+            "/workspace/attempt_input_manifest.json\n"
+            "upload_phase inputs_ready\necho exact-episode\n"
+        ),
         "runtime_package_overlay_xz_base64": "runtime-overlay",
         "isaac_runtime_backend_overlay_gzip_base64": "backend-overlay",
         "runtime_package_overlay_sha256": "1" * 64,
@@ -46,6 +109,213 @@ def _minimal_inputs() -> dict:
         "controller_fk_camera_projection_context_sha256": "5" * 64,
         "bundle_sha256": qualification.BUNDLE_SHA256,
     }
+
+
+def test_release_binding_accepts_exact_digest_pinned_clean_release() -> None:
+    binding, blockers = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+
+    assert blockers == []
+    assert binding["image_ref"] == TEST_IMAGE_REF
+    assert binding["image_digest"] == TEST_IMAGE_DIGEST
+    assert binding["source_commit"] == TEST_SOURCE_COMMIT
+    assert binding["models_externalized"] is True
+
+
+def test_qualification_release_rebind_preserves_source_and_derives_runtime_inputs() -> None:
+    inputs = _minimal_inputs()
+    source_ref = inputs["plan"]["image_ref"]
+    release_binding, blockers = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+
+    rebound, binding = qualification.bind_inputs_to_release(inputs, release_binding)
+
+    assert blockers == []
+    assert inputs["plan"]["image_ref"] == source_ref
+    assert inputs["attempt"]["image_digest"] == "sha256:" + "1" * 64
+    assert rebound["plan"]["image_ref"] == TEST_IMAGE_REF
+    assert rebound["attempt"]["image_digest"] == TEST_IMAGE_DIGEST
+    assert rebound["attempt"]["source_commit"] == TEST_SOURCE_COMMIT
+    assert rebound["attempt"]["source_dirty_patch_sha256"] == hashlib.sha256(b"").hexdigest()
+    assert rebound["attempt"]["source_bundle_attempt_identity"] == {
+        "source_commit": "f" * 40,
+        "source_dirty_patch_sha256": "9" * 64,
+        "image_digest": "sha256:" + "1" * 64,
+        "preserved_from_source_bundle": True,
+    }
+    assert binding["source_image_ref"] == source_ref
+    assert binding["release_image_ref"] == TEST_IMAGE_REF
+    assert binding["source_bundle_sha256"] == qualification.BUNDLE_SHA256
+    assert binding["source_bundle_preserved"] is True
+    assert binding["runtime_attempt_manifest_rebound"] is True
+    assert rebound["attempt"]["qualification_source_task_success_contract_sha256"] == (
+        "6" * 64
+    )
+    assert rebound["attempt"]["qualification_runtime_attempt_overlay_base"][
+        "task_success_contract_artifact"
+    ]["value"]["sha256"] == "9" * 64
+    rebound_attempt_bytes = (
+        json.dumps(rebound["attempt"], indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    runtime_attempt = json.loads(json.dumps(rebound["attempt"]))
+    runtime_attempt.update(
+        {
+            "prepared_launch_nonce": "prepared-source-nonce",
+            "allocation_launch_session_id": "qualification-session-1",
+            "launch_nonce": "qualification-session-1:attempt_0001",
+            "qualification_attempt_bound": True,
+            "qualification_attempt_sequence": 1,
+            "qualification_attempt_nonce": "qualification-session-1:attempt_0001",
+            "qualification_attempt_nonce_sha256": hashlib.sha256(
+                b"qualification-session-1:attempt_0001"
+            ).hexdigest(),
+        }
+    )
+    runtime_attempt["artifacts"]["task_success_contract"] = {
+        "path": "/workspace/task_success_contract.json",
+        "sha256": runtime_attempt[
+            "qualification_resolved_task_success_contract_sha256"
+        ],
+        "size_bytes": 500,
+        "derived_from_sha256": runtime_attempt[
+            "qualification_source_task_success_contract_sha256"
+        ],
+        "resolution_artifact_path": (
+            "/workspace/closed_loop_out/direct_task_contract_resolution.json"
+        ),
+    }
+    runtime_attempt_bytes = (
+        json.dumps(runtime_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        runtime_attempt_bytes, runtime_attempt, binding
+    ) == []
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        runtime_attempt_bytes + b" ", runtime_attempt, binding
+    ) == ["qualification_collected_attempt_manifest_digest_mismatch"]
+    stale_contract_attempt = json.loads(json.dumps(runtime_attempt))
+    stale_contract_attempt.pop("prepared_launch_nonce")
+    stale_contract_attempt["artifacts"]["task_success_contract"] = json.loads(
+        json.dumps(
+            rebound["attempt"]["qualification_runtime_attempt_overlay_base"][
+                "task_success_contract_artifact"
+            ]["value"]
+        )
+    )
+    stale_contract_bytes = (
+        json.dumps(stale_contract_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert "qualification_collected_attempt_runtime_overlay_base_invalid" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            stale_contract_bytes, stale_contract_attempt, binding
+        )
+    )
+    source_less_inputs = _minimal_inputs()
+    source_less_inputs["attempt"]["artifacts"].pop("task_success_contract")
+    source_less_rebound, source_less_binding = qualification.bind_inputs_to_release(
+        source_less_inputs, release_binding
+    )
+    source_less_runtime_attempt = json.loads(
+        json.dumps(source_less_rebound["attempt"])
+    )
+    source_less_runtime_attempt.update(
+        {
+            key: value
+            for key, value in runtime_attempt.items()
+            if key
+            in {
+                "prepared_launch_nonce",
+                "allocation_launch_session_id",
+                "launch_nonce",
+                "qualification_attempt_bound",
+                "qualification_attempt_sequence",
+                "qualification_attempt_nonce",
+                "qualification_attempt_nonce_sha256",
+            }
+        }
+    )
+    source_less_runtime_attempt.setdefault("artifacts", {})[
+        "task_success_contract"
+    ] = json.loads(json.dumps(runtime_attempt["artifacts"]["task_success_contract"]))
+    source_less_runtime_bytes = (
+        json.dumps(source_less_runtime_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        source_less_runtime_bytes,
+        source_less_runtime_attempt,
+        source_less_binding,
+    ) == []
+    wrong_contract_attempt = json.loads(json.dumps(runtime_attempt))
+    wrong_contract_attempt["artifacts"]["task_success_contract"]["sha256"] = "8" * 64
+    wrong_contract_bytes = (
+        json.dumps(wrong_contract_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert "qualification_collected_attempt_runtime_overlay_base_invalid" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            wrong_contract_bytes, wrong_contract_attempt, binding
+        )
+    )
+    runtime_attempt["source_commit"] = "3" * 40
+    tampered_runtime_bytes = (
+        json.dumps(runtime_attempt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert "qualification_collected_attempt_manifest_digest_mismatch" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            tampered_runtime_bytes, runtime_attempt, binding
+        )
+    )
+    tampered_attempt = json.loads(json.dumps(rebound["attempt"]))
+    tampered_attempt["qualification_derived_launch_plan"]["image_ref"] = (
+        "registry.example/tampered@sha256:" + "2" * 64
+    )
+    assert "qualification_collected_launch_plan_digest_mismatch" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            rebound_attempt_bytes, tampered_attempt, binding
+        )
+    )
+    assert "cp /workspace/attempt_input_manifest_episode_001.json" not in rebound[
+        "bootstrap_script"
+    ]
+    assert "Path('/workspace/attempt_input_manifest.json').write_bytes(payload)" in rebound[
+        "bootstrap_script"
+    ]
+
+
+def test_qualification_release_rebind_rejects_source_attempt_image_mismatch() -> None:
+    inputs = _minimal_inputs()
+    inputs["attempt"]["image_digest"] = "sha256:" + "9" * 64
+    release_binding, _ = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+
+    with pytest.raises(ValueError, match="qualification_source_attempt_image_mismatch"):
+        qualification.bind_inputs_to_release(inputs, release_binding)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_source_commit", "expected_blocker"),
+    [
+        ({"source_commit": "c" * 40}, TEST_SOURCE_COMMIT,
+         "qualification_release_source_commit_mismatch"),
+        ({"resolved_digest_ref": "registry.example/blueprint-eval:latest"},
+         TEST_SOURCE_COMMIT, "qualification_release_image_not_digest_pinned"),
+        ({"source_patch_sha256": "d" * 64}, TEST_SOURCE_COMMIT,
+         "qualification_release_source_patch_not_empty"),
+        ({"status": "blocked"}, TEST_SOURCE_COMMIT,
+         "qualification_release_evidence_not_completed"),
+    ],
+)
+def test_release_binding_rejects_stale_mutable_dirty_or_blocked_release(
+    overrides: dict, expected_source_commit: str, expected_blocker: str
+) -> None:
+    _binding, blockers = qualification._release_binding(
+        _release_evidence(**overrides),
+        expected_source_commit=expected_source_commit,
+    )
+
+    assert expected_blocker in blockers
 
 
 def test_trained_checkpoint_override_is_exact_and_does_not_claim_qualification() -> None:
@@ -93,6 +363,12 @@ def _bootstrap_metadata() -> dict:
 def _live_manifest(tmp_path: Path) -> Path:
     prefix = qualification.NAME_PREFIX_ROOT + "0123456789"
     nonce = "single-g1-kitchen-qualification-0123456789"
+    release_binding = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )[0]
+    _, launch_rebind = qualification.bind_inputs_to_release(
+        _minimal_inputs(), release_binding
+    )
     manifest = qualification._manifest_base(
         root=tmp_path,
         resource_name=prefix + "-pod",
@@ -100,6 +376,11 @@ def _live_manifest(tmp_path: Path) -> Path:
         launch_session_id=nonce,
         bootstrap=_bootstrap_metadata(),
         deadline_epoch=time.time() + 3600,
+        image_ref=TEST_IMAGE_REF,
+        image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
+        release_binding=release_binding,
+        qualification_launch_rebind=launch_rebind,
     )
     manifest.update(
         {
@@ -133,6 +414,19 @@ def _live_manifest(tmp_path: Path) -> Path:
     return path
 
 
+def test_explicit_bound_manifest_requires_complete_release_record(tmp_path: Path) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop("release_binding")
+    qualification._private_write_json(manifest_path, manifest)
+
+    with pytest.raises(
+        ValueError,
+        match="qualification_session_manifest_binding_invalid:release_binding_missing",
+    ):
+        qualification._load_private_manifest(manifest_path)
+
+
 def _bind_latest_attempt(
     manifest_path: Path,
     *,
@@ -152,6 +446,7 @@ def _bind_latest_attempt(
         "episode_bootstrap_sha256": manifest["bootstrap"]["episode_bootstrap_sha256"],
         "bundle_sha256": manifest["bundle_sha256"],
         "overlay_revision": manifest["bootstrap"]["overlay_revision"],
+        "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "dispatched_at": "2026-07-17T00:00:00Z",
         "remote_process_state": remote_process_state,
         "collection_status": "pending",
@@ -167,19 +462,33 @@ def _qualification_output_zip(
     phase: str,
     sequence: int = 1,
     successful_terminal: bool = False,
+    attempt_input_overrides: dict[str, object] | None = None,
 ) -> bytes:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     attempt_slug = f"attempt_{sequence:04d}"
     nonce = f"{manifest['launch_session_id']}:{attempt_slug}"
+    latest_attempt = dict(manifest.get("latest_attempt") or {})
+    attempt_binding = (
+        latest_attempt
+        if latest_attempt.get("attempt_sequence") == sequence
+        else {}
+    )
     attempt = {
         "schema_version": "single_g1_kitchen_qualification_attempt.v1",
         "attempt_sequence": sequence,
         "attempt_nonce": nonce,
         "attempt_nonce_sha256": hashlib.sha256(nonce.encode()).hexdigest(),
         "launch_session_id": manifest["launch_session_id"],
-        "episode_bootstrap_sha256": manifest["bootstrap"]["episode_bootstrap_sha256"],
-        "bundle_sha256": manifest["bundle_sha256"],
-        "overlay_revision": manifest["bootstrap"]["overlay_revision"],
+        "episode_bootstrap_sha256": attempt_binding.get(
+            "episode_bootstrap_sha256",
+            manifest["bootstrap"]["episode_bootstrap_sha256"],
+        ),
+        "bundle_sha256": attempt_binding.get(
+            "bundle_sha256", manifest["bundle_sha256"]
+        ),
+        "overlay_revision": attempt_binding.get(
+            "overlay_revision", manifest["bootstrap"]["overlay_revision"]
+        ),
         "stale_outputs_reused": False,
         "raw_secret_values_recorded": False,
     }
@@ -202,20 +511,38 @@ def _qualification_output_zip(
         state = "closed_loop_out/isaac_task_state/"
         frames = state + "frames/"
         digest = "d" * 64
-        attempt_input = {
+        derived_plan = {
+            "schema_version": "test.qualification_derived_launch_plan.v1",
+            "sealed_active": True,
+            "image_ref": manifest["image_ref"],
+        }
+        derived_plan_sha256 = hashlib.sha256(
+            json.dumps(
+                derived_plan,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        base_attempt_input = {
             "run_id": "single-g1-kitchen-direct",
             "attempt_id": "single-g1-kitchen-attempt-1",
-            "launch_nonce": nonce,
-            "allocation_launch_session_id": manifest["launch_session_id"],
-            "qualification_attempt_bound": True,
-            "qualification_attempt_sequence": sequence,
-            "qualification_attempt_nonce": nonce,
-            "qualification_attempt_nonce_sha256": hashlib.sha256(
-                nonce.encode()
-            ).hexdigest(),
-            "source_commit": "b" * 40,
-            "source_dirty_patch_sha256": "c" * 64,
+            "launch_nonce": "prepared-source-launch-nonce",
+            "source_commit": manifest["source_commit"],
+            "source_dirty_patch_sha256": manifest["release_binding"][
+                "source_patch_sha256"
+            ],
             "image_digest": manifest["image_digest"],
+            "qualification_release_rebind": embedded_launch_rebind(
+                dict(manifest.get("latest_attempt") or {}).get(
+                    "qualification_launch_rebind",
+                    manifest["qualification_launch_rebind"],
+                )
+            ),
+            "qualification_derived_launch_plan": derived_plan,
+            "qualification_derived_launch_plan_sha256": derived_plan_sha256,
+            "qualification_resolved_task_success_contract_sha256": digest,
+            "qualification_source_task_success_contract_sha256": digest,
             "selected_task_id": "microwave_door",
             "artifacts": {
                 "bundle": {"sha256": manifest["bundle_sha256"]},
@@ -224,9 +551,49 @@ def _qualification_output_zip(
                 "task_success_contract": {"sha256": digest},
             },
         }
-        files["closed_loop_out/attempt_input_manifest.json"] = (
-            json.dumps(attempt_input).encode()
+        base_attempt_input["qualification_runtime_attempt_overlay_base"] = (
+            capture_runtime_attempt_overlay_base(base_attempt_input)
         )
+        base_attempt_input_bytes = (
+            json.dumps(base_attempt_input, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        attempt_input = json.loads(base_attempt_input_bytes)
+        attempt_input.update(
+            {
+                "prepared_launch_nonce": base_attempt_input["launch_nonce"],
+                "launch_nonce": nonce,
+                "allocation_launch_session_id": manifest["launch_session_id"],
+                "qualification_attempt_bound": True,
+                "qualification_attempt_sequence": sequence,
+                "qualification_attempt_nonce": nonce,
+                "qualification_attempt_nonce_sha256": hashlib.sha256(
+                    nonce.encode()
+                ).hexdigest(),
+            }
+        )
+        attempt_input["artifacts"]["task_success_contract"] = {
+            "path": "/workspace/task_success_contract.json",
+            "sha256": digest,
+            "size_bytes": 459,
+            "derived_from_sha256": digest,
+            "resolution_artifact_path": (
+                "/workspace/closed_loop_out/direct_task_contract_resolution.json"
+            ),
+        }
+        attempt_input.update(attempt_input_overrides or {})
+        attempt_input_bytes = (
+            json.dumps(attempt_input, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        files["closed_loop_out/attempt_input_manifest.json"] = attempt_input_bytes
+        latest = dict(manifest.get("latest_attempt") or {})
+        latest_rebind = dict(latest.get("qualification_launch_rebind") or {})
+        latest_rebind["derived_launch_plan_sha256"] = derived_plan_sha256
+        latest_rebind["derived_attempt_manifest_sha256"] = hashlib.sha256(
+            base_attempt_input_bytes
+        ).hexdigest()
+        latest["qualification_launch_rebind"] = latest_rebind
+        manifest["latest_attempt"] = latest
+        qualification._private_write_json(manifest_path, manifest)
         image_digest = str(manifest["image_digest"]).rsplit("@sha256:", 1)[-1]
         image_digest = image_digest.removeprefix("sha256:")
         identity = {
@@ -832,7 +1199,10 @@ def test_gate_matrix_keeps_historical_attempt_boundaries_explicit() -> None:
 
 def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> None:
     payload, metadata = qualification._qualification_bootstrap_payload(
-        _minimal_inputs(), "qualification-nonce"
+        _minimal_inputs(),
+        "qualification-nonce",
+        image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
     )
     syntax = subprocess.run(["bash", "-n"], input=payload, capture_output=True, check=False)
 
@@ -872,7 +1242,8 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     control = qualification._qualification_control_script(
         launch_session_id="qualification-nonce",
         bundle_sha256=qualification.BUNDLE_SHA256,
-        image_digest=qualification.IMAGE_DIGEST,
+        image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
     )
     assert "eval " not in control
     assert 'case "$ACTION" in status|tail|gpu-status|run|restart|stop|refresh)' in control
@@ -882,6 +1253,8 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     assert "qualification_component_forbidden" in control
     assert "qualification_overlay_file_sha256_mismatch" in control
     assert "qualification_refresh_requires_all_components_stopped" in control
+    assert f"EXPECTED_SOURCE_COMMIT={TEST_SOURCE_COMMIT}" in control
+    assert '"source_commit": sys.argv[11]' in control
     assert 'if [ "$process_state" = Z ]; then return 1; fi' in control
     assert "action=stop component=%s" in control
     assert qualification.REMOTE_REFRESH_INSTALLER in control
@@ -916,7 +1289,7 @@ def test_private_manifest_binds_exact_resource_and_refuses_tampering(tmp_path: P
 
     assert resolved == path
     assert path.stat().st_mode & 0o777 == 0o600
-    assert manifest["image_ref"] == qualification.IMAGE_REF
+    assert manifest["image_ref"] == TEST_IMAGE_REF
     assert manifest["bundle_sha256"] == qualification.BUNDLE_SHA256
     assert manifest["instance_id"] == "12345"
 
@@ -1518,6 +1891,88 @@ def test_collect_terminal_success_validates_semantics_and_all_review_media(
     )
 
 
+def test_collect_terminal_uses_immutable_attempt_release_binding_after_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(
+        manifest_path, remote_process_state="stopped"
+    )
+    _write_output_get_url(tmp_path)
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    refreshed_rebind = dict(manifest["qualification_launch_rebind"])
+    refreshed_rebind["source_loaded_plan_sha256"] = "e" * 64
+    refreshed_rebind["binding_sha256"] = "f" * 64
+    manifest["qualification_launch_rebind"] = refreshed_rebind
+    manifest["bootstrap"]["episode_bootstrap_sha256"] = "a" * 64
+    manifest["bootstrap"]["overlay_revision"] = 2
+    qualification._private_write_json(manifest_path, manifest)
+
+    archive = _qualification_output_zip(
+        manifest_path,
+        phase="runner_done",
+        successful_terminal=True,
+    )
+    launched = json.loads(manifest_path.read_text(encoding="utf-8"))[
+        "latest_attempt"
+    ]
+    monkeypatch.setattr(
+        qualification,
+        "_download_provider_output_archive",
+        lambda _url: archive,
+    )
+
+    result = qualification.run_qualification_session(
+        action="collect",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "collect-after-refresh.json",
+        execute=True,
+    )
+
+    assert result["status"] == "episode_collected_passed_continuing_spend", result[
+        "blockers"
+    ]
+    persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert persisted["latest_attempt"]["qualification_launch_rebind"] == launched[
+        "qualification_launch_rebind"
+    ]
+    assert persisted["qualification_launch_rebind"] == refreshed_rebind
+
+
+def test_collect_terminal_rejects_self_consistent_nonrelease_attempt_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(manifest_path, remote_process_state="stopped")
+    _write_output_get_url(tmp_path)
+    archive = _qualification_output_zip(
+        manifest_path,
+        phase="runner_done",
+        successful_terminal=True,
+        attempt_input_overrides={"source_commit": "b" * 40},
+    )
+    monkeypatch.setattr(
+        qualification,
+        "_download_provider_output_archive",
+        lambda _url: archive,
+    )
+
+    result = qualification.run_qualification_session(
+        action="collect",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "collect.json",
+        execute=True,
+    )
+
+    assert result["status"] == "episode_collected_blocked_continuing_spend"
+    assert any(
+        blocker
+        == "qualification_attempt_input_release_binding_mismatch:source_commit"
+        for blocker in result["blockers"]
+    )
+
+
 def test_collected_terminal_blocked_attempt_allows_exact_next_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1762,6 +2217,18 @@ def test_refresh_bootstrap_is_two_phase_digest_bound_and_audit_chained(
     audit = after["refresh_audit_chain"][0]
     assert audit["previous_audit_sha256"] == "0" * 64
     assert len(audit["audit_sha256"]) == 64
+    assert after["qualification_launch_rebind"]["release_source_commit"] == (
+        TEST_SOURCE_COMMIT
+    )
+    assert audit["qualification_launch_rebind"] == after[
+        "qualification_launch_rebind"
+    ]
+    assert after["last_refresh"]["active_qualification_launch_rebind"] == after[
+        "qualification_launch_rebind"
+    ]
+    assert refreshed["qualification_launch_rebind"] == after[
+        "qualification_launch_rebind"
+    ]
     assert signed_url not in manifest_path.read_text()
     assert signed_url not in (tmp_path / "refresh_result.json").read_text()
 
@@ -1781,24 +2248,40 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
         "bound_request_out": tmp_path / "bound.json",
         "adapter_output": tmp_path / "result.json",
     }
-    result = qualification.run_qualification_session(
-        action="allocate",
-        session_manifest=tmp_path / "session.json",
-        episode_bundle=tmp_path / "missing-episode.zip",
-        provider_bundle_url_file=tmp_path / "missing-bundle-url.txt",
-        provider_output_put_url_file=tmp_path / "missing-put-url.txt",
-        provider_output_get_url_file=tmp_path / "missing-get-url.txt",
-        release_evidence=tmp_path / "missing-release.json",
-        execute=True,
+    request = {
+        "action": "allocate",
+        "session_manifest": tmp_path / "session.json",
+        "episode_bundle": tmp_path / "missing-episode.zip",
+        "provider_bundle_url_file": tmp_path / "missing-bundle-url.txt",
+        "provider_output_put_url_file": tmp_path / "missing-put-url.txt",
+        "provider_output_get_url_file": tmp_path / "missing-get-url.txt",
+        "release_evidence": tmp_path / "missing-release.json",
+        "expected_source_commit": TEST_SOURCE_COMMIT,
+        "execute": True,
         **outputs,
+    }
+    Path(request["release_evidence"]).write_text(
+        json.dumps(_release_evidence(source_commit="c" * 40))
     )
+    result = qualification.run_qualification_session(**request)
 
     assert result["status"] == "blocked"
     assert result["provider_mutations_performed"] == 0
     assert all(path.is_file() for path in outputs.values())
     manifest = json.loads((tmp_path / "session.json").read_text())
+    _, reloaded = qualification._load_private_manifest(tmp_path / "session.json")
+    assert reloaded["release_binding_status"] == "blocked"
+    assert reloaded["source_commit"] == "c" * 40
     assert manifest["bootstrap"]["overlay_revision"] == 0
     assert manifest["bootstrap"]["control_contract_version"] == qualification.CONTROL_CONTRACT_VERSION
+
+    Path(request["release_evidence"]).write_text(json.dumps(_release_evidence()))
+    retry = qualification.run_qualification_session(**request)
+    _, retry_manifest = qualification._load_private_manifest(tmp_path / "session.json")
+    assert retry["status"] == "blocked"
+    assert retry_manifest["release_binding_status"] == "bound"
+    assert retry_manifest["image_ref"] == TEST_IMAGE_REF
+    assert retry_manifest["source_commit"] == TEST_SOURCE_COMMIT
 
 
 def test_changed_refresh_payload_forces_restage_before_remote_mutation(
@@ -1820,7 +2303,11 @@ def test_changed_refresh_payload_forces_restage_before_remote_mutation(
         execute=True,
     )
     first_sha = first["refresh_payload"]["refresh_payload_sha256"]
-    current_inputs["bootstrap_script"] = "upload_phase inputs_ready\necho changed-exact-episode\n"
+    current_inputs["bootstrap_script"] = (
+        "cp /workspace/attempt_input_manifest_episode_001.json "
+        "/workspace/attempt_input_manifest.json\n"
+        "upload_phase inputs_ready\necho changed-exact-episode\n"
+    )
     url_file = tmp_path / "url.txt"
     url_file.write_text("https://objects.example/stale-refresh", encoding="utf-8")
     url_file.chmod(0o600)
@@ -2184,7 +2671,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps({"resolved_digest_ref": qualification.IMAGE_REF}))
+    release.write_text(json.dumps(_release_evidence()))
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
 
     common = dict(
@@ -2196,6 +2683,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         provider_output_put_url_file=secret_url,
         provider_output_get_url_file=secret_url,
         release_evidence=release,
+        expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
         admission_out=tmp_path / "admission.json",
@@ -2220,6 +2708,15 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert result["pre_spend_preflight"]["status"] == "PASS"
     assert result["pre_spend_preflight"]["spend_admission_lock"]["required"] is False
     assert observed["spec"].vast_launch_mode == "ssh_direct"
+    assert observed["spec"].image == TEST_IMAGE_REF
+    rebound_plan = json.loads(
+        base64.b64decode(
+            observed["spec"].env["BLUEPRINT_SEALED_LAUNCH_PLAN_B64"]
+        )
+    )
+    assert rebound_plan["image_ref"] == TEST_IMAGE_REF
+    assert rebound_plan["qualification_release_rebind"]["source_bundle_preserved"] is True
+    assert observed["spec"].env["BLUEPRINT_SOURCE_COMMIT"] == TEST_SOURCE_COMMIT
     assert observed["spec"].env[qualification.VAST_BOOTSTRAP_URL_ENV].startswith("https://")
     assert len(observed["spec"].env[qualification.VAST_BOOTSTRAP_SHA256_ENV]) == 64
     manifest = json.loads(manifest_path.read_text())
@@ -2229,11 +2726,68 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         manifest["bootstrap"]["provider_bootstrap_sha256"]
         == staged_manifest["bootstrap"]["provider_bootstrap_sha256"]
     )
-    assert manifest["image_ref"] == qualification.IMAGE_REF
+    assert manifest["image_ref"] == TEST_IMAGE_REF
+    assert manifest["source_commit"] == TEST_SOURCE_COMMIT
+    assert manifest["qualification_launch_rebind"]["release_image_ref"] == TEST_IMAGE_REF
     assert manifest["bundle_sha256"] == qualification.BUNDLE_SHA256
     assert manifest["continuing_spend"] is False
     assert manifest["bootstrap"]["arbitrary_remote_command_allowed"] is False
     assert manifest_path.stat().st_mode & 0o777 == 0o600
+
+    release.write_text("{bad release evidence")
+    bad_retry = qualification.run_qualification_session(
+        **common,
+        provider_bootstrap_url_file=secret_url,
+    )
+    preserved_after_bad_retry = json.loads(manifest_path.read_text())
+    bad_preflight = json.loads(Path(common["preflight_bundle"]).read_text())
+    bad_bound = json.loads(Path(common["bound_request_out"]).read_text())
+    assert bad_retry["status"] == "blocked"
+    assert preserved_after_bad_retry["release_binding_status"] == "bound"
+    assert preserved_after_bad_retry["source_commit"] == TEST_SOURCE_COMMIT
+    for artifact in (bad_preflight, bad_bound):
+        assert artifact["image_ref"] == TEST_IMAGE_REF
+        assert artifact["image_digest"] == TEST_IMAGE_DIGEST
+        assert artifact["source_commit"] == TEST_SOURCE_COMMIT
+        assert artifact["release_binding"]["source_commit"] == TEST_SOURCE_COMMIT
+        assert artifact["release_binding_source"] == "session_manifest"
+        assert artifact["release_binding"]["required_cuda_version"] == "12.8"
+
+    changed_source = "c" * 40
+    release.write_text(json.dumps(_release_evidence(source_commit=changed_source)))
+    mismatch = qualification.run_qualification_session(
+        **{**common, "expected_source_commit": changed_source},
+        provider_bootstrap_url_file=secret_url,
+    )
+    preserved = json.loads(manifest_path.read_text())
+    assert mismatch["status"] == "blocked"
+    assert "qualification_existing_manifest_release_binding_mismatch" in mismatch["blockers"]
+    assert preserved["image_ref"] == TEST_IMAGE_REF
+    assert preserved["source_commit"] == TEST_SOURCE_COMMIT
+
+    legacy_path = tmp_path / "legacy-session.json"
+    legacy_manifest = dict(staged_manifest)
+    legacy_manifest.pop("release_binding_status")
+    legacy_manifest.pop("source_commit")
+    qualification._private_write_json(legacy_path, legacy_manifest)
+    release.write_text(json.dumps(_release_evidence()))
+    legacy_retry = qualification.run_qualification_session(
+        **{
+            **common,
+            "session_manifest": legacy_path,
+            "provider_launch_request": tmp_path / "legacy-provider-request.json",
+            "preflight_bundle": tmp_path / "legacy-preflight.json",
+            "admission_out": tmp_path / "legacy-admission.json",
+            "bound_request_out": tmp_path / "legacy-bound.json",
+            "adapter_output": tmp_path / "legacy-result.json",
+        },
+        provider_bootstrap_url_file=secret_url,
+    )
+    legacy_after = json.loads(legacy_path.read_text())
+    assert legacy_retry["status"] == "dry_run_bound"
+    assert legacy_after["release_binding_status"] == "bound"
+    assert legacy_after["source_commit"] == TEST_SOURCE_COMMIT
+    qualification._load_private_manifest(legacy_path)
 
 
 def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
@@ -2298,7 +2852,7 @@ def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps({"resolved_digest_ref": qualification.IMAGE_REF}))
+    release.write_text(json.dumps(_release_evidence()))
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
     common = dict(
         action="allocate",
@@ -2309,6 +2863,7 @@ def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
         provider_output_put_url_file=secret_url,
         provider_output_get_url_file=secret_url,
         release_evidence=release,
+        expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
         admission_out=tmp_path / "admission.json",
@@ -2370,7 +2925,7 @@ def test_qualification_allocate_fails_before_provider_on_missing_output_staging_
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
     release.write_text(
-        json.dumps({"resolved_digest_ref": qualification.IMAGE_REF}),
+        json.dumps(_release_evidence()),
         encoding="utf-8",
     )
 
@@ -2384,6 +2939,7 @@ def test_qualification_allocate_fails_before_provider_on_missing_output_staging_
         provider_output_get_url_file=secret_url,
         provider_bootstrap_url_file=secret_url,
         release_evidence=release,
+        expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
         admission_out=tmp_path / "admission.json",

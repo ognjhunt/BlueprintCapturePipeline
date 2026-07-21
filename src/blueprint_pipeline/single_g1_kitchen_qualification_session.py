@@ -73,12 +73,9 @@ from .qualification_control_admission import admit_qualification_control_mutatio
 from .single_g1_kitchen_episode_runpod import (
     BUNDLE_SHA256,
     GPU_TYPES,
-    IMAGE_DIGEST,
-    IMAGE_REF,
     ISAAC_RUNTIME_OVERLAY_PAYLOAD_ENV,
     MAX_HOURLY_RATE_USD,
     RUNTIME_PACKAGE_OVERLAY_PAYLOAD_ENV,
-    SOURCE_COMMIT,
     TASK_PROMPT,
     VAST_BOOTSTRAP_SHA256_ENV,
     VAST_BOOTSTRAP_URL_ENV,
@@ -100,6 +97,18 @@ from .safe_outbound_http import request as safe_http_request
 from .single_g1_kitchen_qualification_admission import (
     qualification_pre_spend_preflight,
     write_standard_artifacts,
+)
+from .single_g1_kitchen_qualification_contract import (
+    bind_inputs_to_release,
+    build_release_binding as _release_binding,
+    collected_attempt_derived_artifact_blockers,
+    collected_attempt_release_blocker,
+    qualification_gate_matrix,
+    release_binding_record_blockers,
+    require_latest_attempt_binding as _require_latest_attempt_binding,
+    session_claim_boundary as _session_claim_boundary,
+    valid_image_binding,
+    valid_source_commit,
 )
 
 
@@ -169,142 +178,6 @@ LANE = "single_g1_kitchen_qualification"
 NAME_PREFIX_ROOT = "blueprint-groot-oscar-canary-qualification-"
 
 
-def qualification_gate_matrix() -> list[dict[str, Any]]:
-    """Forward proof ledger, separating historical attempts from future gates."""
-
-    proven_016 = "attempt016_proven"
-    proven_017 = "attempt017_proven"
-    pending = "pending"
-    rows = (
-        (
-            "image_bundle_assets",
-            "Exact sealed image, episode bundle, kitchen assets, and runtime overlays",
-            proven_016,
-            "Exact image/bundle binding, startup asset gate, and image healthcheck passed.",
-            proven_017,
-            "Attempt 017 repeated the exact image, bundle, asset, and runtime-overlay proof.",
-        ),
-        (
-            "groot_checkpoint_server",
-            "GR00T N1.7 SONIC checkpoint preflight and live policy server readiness",
-            proven_016,
-            "Checkpoint preflight passed and the worker advanced beyond GR00T server readiness.",
-            proven_017,
-            "Attempt 017 recorded the live GR00T server ready and accepting the first real query.",
-        ),
-        (
-            "isaac_scene_baseline",
-            "Isaac RTX, kitchen stage, live G1, standing pose, and microwave baseline",
-            proven_016,
-            "Attempt 016 recorded RTX startup, live articulation, standing initialization, and the exact microwave door baseline.",
-            proven_017,
-            "Attempt 017 repeated RTX, kitchen, live G1 standing, and microwave-door baseline proof.",
-        ),
-        (
-            "controller_init_done",
-            "Official GEAR-SONIC controller emits Init Done",
-            pending,
-            "Attempt 016 stopped at official controller readiness.",
-            proven_017,
-            "Attempt 017 recorded the official controller Init Done marker.",
-        ),
-        (
-            "native_dds_freshness",
-            "Native DDS bridge identity, advancing publication count, and fresh Isaac samples",
-            proven_016,
-            "Attempt 016 recorded the compiled ELF-audited bridge and fresh live Isaac snapshots; this did not prove controller readiness.",
-            proven_017,
-            "Attempt 017 recorded the native DDS bridge ready with fresh live Isaac state.",
-        ),
-        (
-            "first_groot_query",
-            "First real GR00T policy query",
-            pending,
-            None,
-            proven_017,
-            "Attempt 017 produced a fresh 40-frame by 78-dimension receding-horizon response from the real initial observation.",
-        ),
-        (
-            "protocol_v4_token_receipt",
-            "Matching protocol-v4 action token received by the official GEAR-SONIC controller",
-            pending,
-            None,
-            proven_017,
-            "Attempt 017 recorded the matching 64D token and hands payload at frame/step 1.",
-        ),
-        (
-            "first_official_action",
-            "First matching official GEAR-SONIC FK/action output produced from the learned policy response",
-            pending,
-            None,
-            "partial_protocol_v4_token_receipt_only",
-            "The matching protocol-v4 token arrived in Attempt 017, but no matching g1_debug/FK output was produced.",
-        ),
-        (
-            "isaac_apply_readback",
-            "First action applied to live Isaac and read back from the same articulation",
-            pending,
-            None,
-            pending,
-            "Attempt 017 failed before an official FK output or Isaac apply/readback.",
-        ),
-        (
-            "first_learned_oscar_transition",
-            "First learned OSCAR/WAM transition",
-            pending,
-            None,
-            pending,
-            "Attempt 017 failed before the first learned OSCAR/WAM transition.",
-        ),
-        (
-            "semantic_microwave_transition",
-            "Microwave door semantic state transition satisfies the task contract",
-            pending,
-            None,
-            pending,
-            "Attempt 017 failed at step 1 before any semantic microwave-door transition.",
-        ),
-        (
-            "ordered_review_render",
-            "Ordered first-person and third-person review render",
-            pending,
-            None,
-            pending,
-            "The startup canary frame is not an ordered episode review render.",
-        ),
-        (
-            "dynamic_termination",
-            "Dynamic task-completion termination or the explicit 48-step safety cap",
-            pending,
-            None,
-            pending,
-            "Attempt 017 terminated on a step-1 component failure, not task completion or the safety cap.",
-        ),
-        (
-            "validated_final_review_upload",
-            "Validated final_review video, ordering evidence, digest, decode, and upload",
-            pending,
-            None,
-            pending,
-            "Attempt 017 final-review validation was blocked and produced no episode MP4.",
-        ),
-    )
-    return [
-        {
-            "gate_id": gate_id,
-            "requirement": requirement,
-            "attempt_016_status": status_016,
-            "attempt_016_evidence_note": note_016,
-            "attempt_017_status": status_017,
-            "attempt_017_evidence_note": note_017,
-            "current_session_status": "pending",
-            "evidence_note": note_017 or note_016,
-            "required_for_full_episode_video": True,
-        }
-        for gate_id, requirement, status_016, note_016, status_017, note_017 in rows
-    ]
-
-
 def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
@@ -365,8 +238,40 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
         blockers.append("schema")
     if manifest.get("provider") != "vast":
         blockers.append("provider")
-    if manifest.get("image_ref") != IMAGE_REF or manifest.get("image_digest") != IMAGE_DIGEST:
-        blockers.append("image")
+    release_binding_status = manifest.get("release_binding_status")
+    preallocation_blocked = bool(
+        manifest.get("status") == "blocked"
+        and manifest.get("instance_id") is None
+        and manifest.get("continuing_spend") is False
+    )
+    if release_binding_status == "blocked":
+        if (
+            manifest.get("status") != "blocked"
+            or manifest.get("instance_id") is not None
+            or manifest.get("continuing_spend") is not False
+        ):
+            blockers.append("blocked_release_binding_state")
+    elif release_binding_status == "bound":
+        if not valid_image_binding(manifest.get("image_ref"), manifest.get("image_digest")):
+            blockers.append("image")
+        if not valid_source_commit(manifest.get("source_commit")):
+            blockers.append("source_commit")
+        stored_release = manifest.get("release_binding")
+        release_record_blockers = release_binding_record_blockers(stored_release)
+        blockers.extend(f"release_binding_{item}" for item in release_record_blockers)
+        if isinstance(stored_release, Mapping) and not release_record_blockers:
+            if any(
+                stored_release.get(key) != manifest.get(key)
+                for key in ("image_ref", "image_digest", "source_commit")
+            ):
+                blockers.append("release_binding")
+    else:
+        # Retained pre-contract sessions remain readable for status/teardown.
+        if not valid_image_binding(manifest.get("image_ref"), manifest.get("image_digest")):
+            blockers.append("image")
+        source_commit = manifest.get("source_commit")
+        if source_commit is not None and not valid_source_commit(source_commit):
+            blockers.append("source_commit")
     if manifest.get("bundle_sha256") != BUNDLE_SHA256:
         blockers.append("bundle")
     instance_id = str(manifest.get("instance_id") or "")
@@ -383,22 +288,23 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
         blockers.append("launch_nonce")
     bootstrap = manifest.get("bootstrap")
     bootstrap = dict(bootstrap) if isinstance(bootstrap, Mapping) else {}
-    for key in (
-        "provider_bootstrap_sha256",
-        "episode_bootstrap_sha256",
-        "control_script_sha256",
-        "refresh_installer_sha256",
-    ):
-        if not _valid_sha256(bootstrap.get(key)):
-            blockers.append(key)
-    if (
-        bootstrap.get("control_contract_version")
-        not in REFRESH_COMPATIBLE_CONTROL_CONTRACT_VERSIONS
-    ):
-        blockers.append("control_contract_version")
+    if not preallocation_blocked:
+        for key in (
+            "provider_bootstrap_sha256",
+            "episode_bootstrap_sha256",
+            "control_script_sha256",
+            "refresh_installer_sha256",
+        ):
+            if not _valid_sha256(bootstrap.get(key)):
+                blockers.append(key)
+        if (
+            bootstrap.get("control_contract_version")
+            not in REFRESH_COMPATIBLE_CONTROL_CONTRACT_VERSIONS
+        ):
+            blockers.append("control_contract_version")
     if bootstrap.get("episode_auto_run") is not False:
         blockers.append("episode_auto_run")
-    if (
+    if not preallocation_blocked and (
         not isinstance(bootstrap.get("overlay_revision"), int)
         or int(bootstrap.get("overlay_revision") or 0) < 1
     ):
@@ -408,6 +314,19 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
         blockers.append("job_dir")
     if blockers:
         raise ValueError("qualification_session_manifest_binding_invalid:" + ",".join(blockers))
+
+
+def _stored_release_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    stored = manifest.get("release_binding")
+    if isinstance(stored, Mapping) and stored:
+        return dict(stored)
+    return {
+        "schema_version": "single_g1_kitchen_qualification_release_binding.v1",
+        "image_ref": manifest.get("image_ref"),
+        "image_digest": manifest.get("image_digest"),
+        "source_commit": manifest.get("source_commit"),
+        "preserved_from_legacy_session_manifest": True,
+    }
 
 
 def _component_wrapper(*, env: Mapping[str, Any], command: list[str]) -> str:
@@ -1027,6 +946,7 @@ def _qualification_control_script(
     launch_session_id: str,
     bundle_sha256: str,
     image_digest: str,
+    source_commit: str,
 ) -> str:
     """Return immutable fixed control; mutable overlay digests live in the active binding."""
 
@@ -1044,6 +964,7 @@ PROVIDER_BOOTSTRAP=/tmp/blueprint-provider-bootstrap.sh
 REFRESH_INSTALLER={shlex.quote(REMOTE_REFRESH_INSTALLER)}
 REVISIONS={shlex.quote(REMOTE_REVISIONS_DIR)}
 EXPECTED_IMAGE_DIGEST={shlex.quote(image_digest)}
+EXPECTED_SOURCE_COMMIT={shlex.quote(source_commit)}
 EXPECTED_BUNDLE_SHA256={shlex.quote(bundle_sha256)}
 EXPECTED_LAUNCH_SESSION_ID={shlex.quote(launch_session_id)}
 EXPECTED_CONTROL_CONTRACT={shlex.quote(CONTROL_CONTRACT_VERSION)}
@@ -1079,7 +1000,7 @@ if [ "$ACTION" = run ] || [ "$ACTION" = restart ] || [ "$ACTION" = refresh ]; th
 fi
 
 read -r ACTIVE_REVISION EXPECTED_EPISODE_BOOTSTRAP_SHA256 < <(
-python3 - "$IMMUTABLE_BINDING" "$BINDING" "$PROVIDER_BOOTSTRAP" "$0" "$REFRESH_INSTALLER" "$ACTIVE" "$EXPECTED_IMAGE_DIGEST" "$EXPECTED_BUNDLE_SHA256" "$EXPECTED_LAUNCH_SESSION_ID" "$EXPECTED_CONTROL_CONTRACT" <<'PY'
+python3 - "$IMMUTABLE_BINDING" "$BINDING" "$PROVIDER_BOOTSTRAP" "$0" "$REFRESH_INSTALLER" "$ACTIVE" "$EXPECTED_IMAGE_DIGEST" "$EXPECTED_BUNDLE_SHA256" "$EXPECTED_LAUNCH_SESSION_ID" "$EXPECTED_CONTROL_CONTRACT" "$EXPECTED_SOURCE_COMMIT" <<'PY'
 import hashlib, json, os, pathlib, re, sys
 immutable_path, binding_path, provider_path, control_path, refresh_path, active_path = map(pathlib.Path, sys.argv[1:7])
 for path, mode, reason in (
@@ -1095,6 +1016,7 @@ expected_immutable = {{
     "schema_version": {IMMUTABLE_BINDING_SCHEMA_VERSION!r},
     "provider_bootstrap_sha256": hashlib.sha256(provider_path.read_bytes()).hexdigest(),
     "image_digest": sys.argv[7],
+    "source_commit": sys.argv[11],
     "bundle_sha256": sys.argv[8],
     "launch_session_id": sys.argv[9],
     "control_contract_version": sys.argv[10],
@@ -1514,7 +1436,11 @@ PY
 
 
 def _qualification_bootstrap_payload(
-    inputs: Mapping[str, Any], launch_session_id: str
+    inputs: Mapping[str, Any],
+    launch_session_id: str,
+    *,
+    image_digest: str,
+    source_commit: str,
 ) -> tuple[bytes, dict[str, Any]]:
     overlay_sources = _qualification_overlay_sources(inputs)
     episode_sha = _sha256_bytes(
@@ -1536,7 +1462,8 @@ def _qualification_bootstrap_payload(
     control_script = _qualification_control_script(
         launch_session_id=launch_session_id,
         bundle_sha256=BUNDLE_SHA256,
-        image_digest=IMAGE_DIGEST,
+        image_digest=image_digest,
+        source_commit=source_commit,
     )
     refresh_installer = _qualification_refresh_installer_source()
     control_sha = _sha256_bytes(control_script.encode("utf-8"))
@@ -1551,7 +1478,8 @@ def _qualification_bootstrap_payload(
     immutable_binding = {
         "schema_version": IMMUTABLE_BINDING_SCHEMA_VERSION,
         "provider_bootstrap_sha256": None,
-        "image_digest": IMAGE_DIGEST,
+        "image_digest": image_digest,
+        "source_commit": source_commit,
         "bundle_sha256": BUNDLE_SHA256,
         "launch_session_id": launch_session_id,
         "control_contract_version": CONTROL_CONTRACT_VERSION,
@@ -1694,9 +1622,19 @@ PY
 
 
 def _materialize_qualification_bootstrap(
-    root: Path, inputs: Mapping[str, Any], launch_session_id: str
+    root: Path,
+    inputs: Mapping[str, Any],
+    launch_session_id: str,
+    *,
+    image_digest: str,
+    source_commit: str,
 ) -> dict[str, Any]:
-    payload, metadata = _qualification_bootstrap_payload(inputs, launch_session_id)
+    payload, metadata = _qualification_bootstrap_payload(
+        inputs,
+        launch_session_id,
+        image_digest=image_digest,
+        source_commit=source_commit,
+    )
     path = root / QUALIFICATION_BOOTSTRAP_NAME
     path.write_bytes(payload)
     path.chmod(0o600)
@@ -1713,7 +1651,7 @@ def _qualification_immutable_binding_from_manifest(
     manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
     bootstrap = dict(manifest.get("bootstrap") or {})
-    return {
+    binding = {
         "schema_version": IMMUTABLE_BINDING_SCHEMA_VERSION,
         "provider_bootstrap_sha256": bootstrap["provider_bootstrap_sha256"],
         "image_digest": manifest["image_digest"],
@@ -1723,6 +1661,9 @@ def _qualification_immutable_binding_from_manifest(
         "control_script_sha256": bootstrap["control_script_sha256"],
         "refresh_installer_sha256": bootstrap["refresh_installer_sha256"],
     }
+    if manifest.get("source_commit") is not None:
+        binding["source_commit"] = manifest["source_commit"]
+    return binding
 
 
 def _materialize_qualification_refresh_payload(
@@ -1909,63 +1850,6 @@ def _wait_for_qualification_attach(
     return connection, observations, host_key, control_probe
 
 
-def _session_claim_boundary() -> dict[str, Any]:
-    return {
-        "allocation_is_not_runtime_readiness": True,
-        "runtime_readiness_is_not_episode_success": True,
-        "video_arrival_is_not_validated_review_video": True,
-        "validated_review_video_is_not_semantic_task_success": True,
-        "current_target": (
-            "One dynamic G1 kitchen episode using real GR00T N1.7 SONIC, the official "
-            "GEAR-SONIC controller, learned OSCAR/WAM, live Isaac action apply/readback, "
-            "semantic microwave-door success, and a validated ordered final review video."
-        ),
-        "prior_persistent_result": {
-            "policy_calls": 2,
-            "learned_wam_transitions": 1,
-            "isaac_kitchen_semantic_success_proven": False,
-            "full_episode_video_proven": False,
-            "must_not_be_promoted_to_current_goal_completion": True,
-        },
-        "attempt_016_result": {
-            "exact_image_assets": True,
-            "groot_server_ready": True,
-            "isaac_rtx_kitchen_g1_baseline": True,
-            "native_dds_freshness": True,
-            "controller_init_done": False,
-            "real_groot_query_proven": False,
-            "learned_oscar_transition_proven": False,
-            "semantic_success_proven": False,
-            "full_episode_video_proven": False,
-            "failure_boundary": "official_controller_readiness",
-        },
-        "attempt_017_result": {
-            "exact_image_assets": True,
-            "groot_server_ready": True,
-            "fresh_action_horizon": {
-                "frame_count": 40,
-                "frame_dimension": 78,
-                "selection_mode": "fresh_receding_horizon_first_frame",
-                "real_initial_observation": True,
-            },
-            "isaac_rtx_kitchen_g1_baseline": True,
-            "controller_init_done": True,
-            "native_dds_ready": True,
-            "protocol_v4_token_receipt_step": 1,
-            "matching_g1_debug_fk_output_proven": False,
-            "isaac_action_apply_readback_proven": False,
-            "learned_oscar_transition_proven": False,
-            "semantic_success_proven": False,
-            "full_episode_video_proven": False,
-            "failure_boundary": (
-                "controller_fk_skeleton_command_nonzero_before_matching_g1_debug_output; "
-                "plain_git_rev_parse_rejected_root_owned_opt_wbc_as_dubious_ownership"
-            ),
-            "must_not_be_promoted_to_current_goal_completion": True,
-        },
-    }
-
-
 def _manifest_base(
     *,
     root: Path,
@@ -1974,6 +1858,12 @@ def _manifest_base(
     launch_session_id: str,
     bootstrap: Mapping[str, Any],
     deadline_epoch: float,
+    image_ref: str,
+    image_digest: str,
+    source_commit: str,
+    release_binding: Mapping[str, Any] | None = None,
+    qualification_launch_rebind: Mapping[str, Any] | None = None,
+    release_binding_status: str = "bound",
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1983,8 +1873,12 @@ def _manifest_base(
         "resource_name": resource_name,
         "resource_name_prefix": resource_name_prefix,
         "job_dir": str(root),
-        "image_ref": IMAGE_REF,
-        "image_digest": IMAGE_DIGEST,
+        "image_ref": image_ref,
+        "image_digest": image_digest,
+        "source_commit": source_commit,
+        "release_binding_status": release_binding_status,
+        "release_binding": dict(release_binding or {}),
+        "qualification_launch_rebind": dict(qualification_launch_rebind or {}),
         "bundle_sha256": BUNDLE_SHA256,
         "launch_session_id": launch_session_id,
         "launch_session_nonce_sha256": _sha256_bytes(launch_session_id.encode("utf-8")),
@@ -2039,6 +1933,7 @@ def _allocate(
     pod_name: str,
     execute: bool,
     identity_file: str,
+    expected_source_commit: str,
     training_dataset: str | Path | None,
     trained_checkpoint_path: str | Path | None,
 ) -> dict[str, Any]:
@@ -2089,12 +1984,53 @@ def _allocate(
             blockers.extend(signed_output_staging_proof["blockers"])
     release_path = Path(release_evidence).expanduser().resolve()
     try:
-        release = json.loads(release_path.read_text(encoding="utf-8"))
+        release_value = json.loads(release_path.read_text(encoding="utf-8"))
+        release = dict(release_value) if isinstance(release_value, Mapping) else {}
+        if not release:
+            blockers.append("qualification_release_evidence_not_object")
     except (OSError, json.JSONDecodeError):
         release = {}
         blockers.append("qualification_release_evidence_missing_or_unreadable")
-    if release and release.get("resolved_digest_ref") != IMAGE_REF:
-        blockers.append("qualification_release_evidence_image_mismatch")
+    release_binding, release_blockers = _release_binding(
+        release, expected_source_commit=expected_source_commit
+    )
+    blockers.extend(release_blockers)
+    image_ref = str(release_binding.get("image_ref") or "")
+    image_digest = str(release_binding.get("image_digest") or "")
+    source_commit = str(release_binding.get("source_commit") or "")
+    preserve_existing_bound_release = (
+        bool(existing_manifest)
+        and existing_manifest.get("release_binding_status") == "bound"
+    )
+    stored_release_binding = _stored_release_binding(existing_manifest)
+    effective_release_binding = (
+        stored_release_binding if preserve_existing_bound_release else release_binding
+    )
+    existing_release_mismatch = (
+        bool(existing_manifest)
+        and preserve_existing_bound_release
+        and any(
+            existing_manifest.get(key) != release_binding.get(key)
+            for key in ("image_ref", "image_digest", "source_commit")
+        )
+    )
+    if existing_release_mismatch:
+        blockers.append("qualification_existing_manifest_release_binding_mismatch")
+    qualification_launch_rebind: dict[str, Any] = {}
+    if inputs and not release_blockers:
+        try:
+            inputs, qualification_launch_rebind = bind_inputs_to_release(
+                inputs, effective_release_binding
+            )
+        except ValueError as exc:
+            blockers.append(str(exc))
+    elif preserve_existing_bound_release and inputs:
+        try:
+            inputs, qualification_launch_rebind = bind_inputs_to_release(
+                inputs, effective_release_binding
+            )
+        except ValueError as exc:
+            blockers.append(str(exc))
 
     if existing_manifest:
         prefix = str(existing_manifest["resource_name_prefix"])
@@ -2111,8 +2047,14 @@ def _allocate(
     bootstrap: dict[str, Any] = {}
     bootstrap_url = ""
     bootstrap_staging_required = False
-    if inputs:
-        bootstrap = _materialize_qualification_bootstrap(root, inputs, launch_session_id)
+    if inputs and image_digest and not existing_release_mismatch:
+        bootstrap = _materialize_qualification_bootstrap(
+            root,
+            inputs,
+            launch_session_id,
+            image_digest=image_digest,
+            source_commit=source_commit,
+        )
         prior_bootstrap = dict(existing_manifest.get("bootstrap") or {})
         bootstrap_changed_since_staging = bool(
             prior_bootstrap
@@ -2154,7 +2096,7 @@ def _allocate(
         nonce_artifact = _materialize_launch_session_nonce(root, launch_session_id)
         spec = build_launch_spec(
             job_dir=root,
-            image_ref=IMAGE_REF,
+            image_ref=image_ref,
             start_frame=start_frame,
             route_payload=inputs["route"],
             task_prompt=TASK_PROMPT,
@@ -2174,7 +2116,7 @@ def _allocate(
         spec.env.update(
             {
                 "NVIDIA_DRIVER_CAPABILITIES": "all",
-                "BLUEPRINT_SOURCE_COMMIT": SOURCE_COMMIT,
+                "BLUEPRINT_SOURCE_COMMIT": source_commit,
                 "BLUEPRINT_SINGLE_EPISODE_ATTEMPT_ID": "episode_001",
                 VAST_BOOTSTRAP_URL_ENV: bootstrap_url,
                 VAST_BOOTSTRAP_SHA256_ENV: bootstrap["provider_bootstrap_sha256"],
@@ -2214,7 +2156,7 @@ def _allocate(
         pre_spend_preflight, pre_spend_blockers = qualification_pre_spend_preflight(
             root=root, capacity=capacity,
             pre_inventory=pre_inventory,
-            image_ref=IMAGE_REF,
+            image_ref=image_ref,
             execute=execute,
         )
         blockers.extend(pre_spend_blockers)
@@ -2240,6 +2182,7 @@ def _allocate(
         resource_name_prefix=prefix,
         launch_session_id=launch_session_id,
         bootstrap=bootstrap
+        or existing_manifest.get("bootstrap")
         or {
             "provider_bootstrap_sha256": "0" * 64,
             "episode_bootstrap_sha256": "0" * 64,
@@ -2248,6 +2191,32 @@ def _allocate(
             "overlay_revision": 0, "control_contract_version": CONTROL_CONTRACT_VERSION,
         },
         deadline_epoch=deadline_epoch,
+        image_ref=(
+            str(existing_manifest.get("image_ref"))
+            if preserve_existing_bound_release
+            else image_ref
+        ),
+        image_digest=(
+            str(existing_manifest.get("image_digest"))
+            if preserve_existing_bound_release
+            else image_digest
+        ),
+        source_commit=(
+            str(existing_manifest.get("source_commit"))
+            if preserve_existing_bound_release
+            else source_commit
+        ),
+        release_binding=effective_release_binding,
+        qualification_launch_rebind=(
+            qualification_launch_rebind
+            or existing_manifest.get("qualification_launch_rebind")
+            or {}
+        ),
+        release_binding_status=(
+            "bound"
+            if preserve_existing_bound_release or not release_blockers
+            else "blocked"
+        ),
     )
     manifest["status"] = (
         "bootstrap_staging_required"
@@ -2264,11 +2233,20 @@ def _allocate(
         }
     ]
     _private_write_json(manifest_path, manifest)
+    artifact_release_binding = dict(effective_release_binding)
+    release_binding_source = (
+        "session_manifest" if preserve_existing_bound_release else "current_release_evidence"
+    )
     preflight = {
         "schema_version": PREFLIGHT_SCHEMA_VERSION,
         "status": manifest["status"],
         "provider": "vast",
-        "image_ref": IMAGE_REF,
+        "image_ref": manifest["image_ref"],
+        "image_digest": manifest["image_digest"],
+        "source_commit": manifest["source_commit"],
+        "release_binding": artifact_release_binding,
+        "release_binding_source": release_binding_source,
+        "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_mode": "ssh_direct",
         "capacity": capacity,
@@ -2296,7 +2274,12 @@ def _allocate(
         "provider": "vast",
         "resource_name": resource_name,
         "resource_name_prefix": prefix,
-        "image_ref": IMAGE_REF,
+        "image_ref": manifest["image_ref"],
+        "image_digest": manifest["image_digest"],
+        "source_commit": manifest["source_commit"],
+        "release_binding": artifact_release_binding,
+        "release_binding_source": release_binding_source,
+        "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_session_id": launch_session_id,
         "launch_session_nonce_sha256": manifest["launch_session_nonce_sha256"],
@@ -2573,6 +2556,9 @@ def _refresh_bootstrap(
     inputs = _apply_trained_checkpoint_override(inputs, trained_checkpoint_path)
     if training_dataset not in {None, ""}:
         inputs["finetune_component"] = build_finetune_component(training_dataset)
+    inputs, refresh_launch_rebind = bind_inputs_to_release(
+        inputs, _stored_release_binding(manifest)
+    )
     refresh = _materialize_qualification_refresh_payload(
         manifest_path.parent,
         inputs=inputs,
@@ -2592,6 +2578,7 @@ def _refresh_bootstrap(
         "signed_get_url_stored": False,
         "control_script_unchanged": True,
         "image_bundle_instance_scope_unchanged": True,
+        "qualification_launch_rebind": refresh_launch_rebind,
     }
     existing_pending = manifest.get("pending_refresh")
     pending_matches = isinstance(existing_pending, Mapping) and all(
@@ -2720,6 +2707,7 @@ def _refresh_bootstrap(
     recorded_at = utc_now_iso()
     if completed:
         bootstrap = dict(manifest["bootstrap"])
+        prior_launch_rebind = dict(manifest.get("qualification_launch_rebind") or {})
         prior_episode_sha = bootstrap["episode_bootstrap_sha256"]
         bootstrap.update(
             {
@@ -2747,9 +2735,12 @@ def _refresh_bootstrap(
                 "image_digest": manifest["image_digest"],
                 "bundle_sha256": manifest["bundle_sha256"],
                 "launch_session_nonce_sha256": manifest["launch_session_nonce_sha256"],
+                "prior_qualification_launch_rebind": prior_launch_rebind,
+                "qualification_launch_rebind": refresh_launch_rebind,
                 "provider_mutation_performed": True,
             },
         )
+        manifest["qualification_launch_rebind"] = refresh_launch_rebind
         manifest["pending_refresh"] = None
         manifest["status"] = "bootstrap_refreshed_continuing_spend"
     else:
@@ -2765,6 +2756,10 @@ def _refresh_bootstrap(
         "episode_bootstrap_sha256": refresh["episode_bootstrap_sha256"],
         "control_status": control.get("status"),
         "audit_sha256": audit.get("audit_sha256") if audit else None,
+        "requested_qualification_launch_rebind": refresh_launch_rebind,
+        "active_qualification_launch_rebind": manifest.get(
+            "qualification_launch_rebind"
+        ),
         "signed_get_url_stored": False,
     }
     manifest.setdefault("history", []).append(
@@ -2786,6 +2781,7 @@ def _refresh_bootstrap(
         "refresh_payload_sha256": refresh["refresh_payload_sha256"],
         "control": control,
         "audit": audit,
+        "qualification_launch_rebind": manifest.get("qualification_launch_rebind"),
         "control_script_unchanged": True,
         "image_bundle_instance_scope_unchanged": True,
         "signed_get_url_stored": False,
@@ -2859,44 +2855,6 @@ def _read_collected_json(path: Path, *, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"qualification_collected_{label}_not_object")
     return dict(value)
-
-
-def _require_latest_attempt_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    value = manifest.get("latest_attempt")
-    latest = dict(value) if isinstance(value, Mapping) else {}
-    try:
-        sequence = int(latest.get("attempt_sequence"))
-        overlay_revision = int(latest.get("overlay_revision"))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("qualification_latest_attempt_binding_missing") from exc
-    attempt_slug = f"attempt_{sequence:04d}"
-    launch_session_id = str(manifest.get("launch_session_id") or "")
-    attempt_nonce = f"{launch_session_id}:{attempt_slug}"
-    expected = {
-        "schema_version": "single_g1_kitchen_qualification_attempt_binding.v1",
-        "attempt_sequence": sequence,
-        "attempt_slug": attempt_slug,
-        "attempt_nonce": attempt_nonce,
-        "attempt_nonce_sha256": _sha256_bytes(attempt_nonce.encode("utf-8")),
-        "launch_session_id": launch_session_id,
-        "episode_bootstrap_sha256": str(latest.get("episode_bootstrap_sha256") or ""),
-        "bundle_sha256": str(manifest.get("bundle_sha256") or ""),
-        "overlay_revision": overlay_revision,
-    }
-    mismatches = [
-        key
-        for key, expected_value in expected.items()
-        if key != "schema_version" and latest.get(key) != expected_value
-    ]
-    if sequence < 1:
-        mismatches.append("attempt_sequence")
-    if not _valid_sha256(expected["episode_bootstrap_sha256"]):
-        mismatches.append("episode_bootstrap_sha256")
-    if mismatches:
-        raise ValueError(
-            "qualification_latest_attempt_binding_invalid:" + ",".join(sorted(set(mismatches)))
-        )
-    return {**latest, **expected}
 
 
 def _validate_collected_attempt_binding(
@@ -3316,6 +3274,13 @@ def _validate_terminal_collection(
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         blockers.append(f"qualification_attempt_input_identity_invalid:{type(exc).__name__}")
     if attempt_input:
+        blockers.extend(
+            collected_attempt_derived_artifact_blockers(
+                attempt_input_path.read_bytes(),
+                attempt_input,
+                dict(latest.get("qualification_launch_rebind") or {}),
+            )
+        )
         expected_qualification = {
             "launch_nonce": latest.get("attempt_nonce"),
             "allocation_launch_session_id": manifest.get("launch_session_id"),
@@ -3334,6 +3299,17 @@ def _validate_terminal_collection(
                 "qualification_attempt_input_binding_mismatch:"
                 + ",".join(sorted(mismatches))
             )
+        attempt_session = {
+            **manifest,
+            "qualification_launch_rebind": latest.get(
+                "qualification_launch_rebind"
+            ),
+        }
+        release_blocker = collected_attempt_release_blocker(
+            attempt_input, attempt_session
+        )
+        if release_blocker:
+            blockers.append(release_blocker)
 
     if expected_trace_count > 0:
         try:
@@ -4018,6 +3994,9 @@ def _control(
             ],
             "bundle_sha256": manifest["bundle_sha256"],
             "overlay_revision": manifest["bootstrap"]["overlay_revision"],
+            "qualification_launch_rebind": dict(
+                manifest.get("qualification_launch_rebind") or {}
+            ),
             "dispatched_at": recorded_at,
             "remote_process_state": "running",
             "collection_status": "pending",
@@ -4193,6 +4172,7 @@ def run_qualification_session(
     provider_output_get_url_file: str | Path | None = None,
     provider_bootstrap_url_file: str | Path | None = None,
     release_evidence: str | Path | None = None,
+    expected_source_commit: str | None = None,
     provider_launch_request: str | Path | None = None,
     preflight_bundle: str | Path | None = None,
     admission_out: str | Path | None = None,
@@ -4214,6 +4194,7 @@ def run_qualification_session(
             "provider_output_put_url_file": provider_output_put_url_file,
             "provider_output_get_url_file": provider_output_get_url_file,
             "release_evidence": release_evidence,
+            "expected_source_commit": expected_source_commit,
             "provider_launch_request": provider_launch_request,
             "preflight_bundle": preflight_bundle,
             "admission_out": admission_out,
@@ -4238,6 +4219,7 @@ def run_qualification_session(
             pod_name=pod_name,
             execute=execute,
             identity_file=identity_file,
+            expected_source_commit=expected_source_commit,
             training_dataset=training_dataset,
             trained_checkpoint_path=trained_checkpoint_path,
         )

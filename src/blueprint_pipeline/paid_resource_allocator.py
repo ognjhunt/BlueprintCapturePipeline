@@ -191,6 +191,21 @@ def _source_checkout_blockers(expected_source_commit: str) -> tuple[list[str], s
     return blockers, checkout_commit
 
 
+def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, result: dict) -> None:
+    """Persist every promised allocation output when source admission blocks."""
+
+    for attribute in (
+        "provider_launch_request",
+        "preflight_bundle",
+        "admission_out",
+        "bound_request_out",
+        "adapter_output",
+    ):
+        value = getattr(args, attribute, None)
+        if value:
+            write_json(Path(value), result)
+
+
 def _configure_detached_model_volume_signal_policy(command: str) -> bool:
     """Keep an explicitly detached paid supervisor alive through local SIGINT.
 
@@ -738,6 +753,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "provider_bundle_url_file",
                         "provider_output_put_url_file",
                         "provider_output_get_url_file",
+                        "expected_source_commit",
                     )
                     if not getattr(args, name, None)
                 )
@@ -764,8 +780,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ],
                     "provider_mutations_performed": 0,
                 }
-                write_json(Path(args.adapter_output), result)
+                if args.qualification_action == "allocate":
+                    _write_blocked_qualification_allocation_outputs(args, result)
+                else:
+                    write_json(Path(args.adapter_output), result)
             else:
+                if args.qualification_action == "allocate":
+                    source_blockers, _checkout_commit = _source_checkout_blockers(
+                        args.expected_source_commit or ""
+                    )
+                    if source_blockers:
+                        result = {
+                            "status": "blocked",
+                            "blockers": source_blockers,
+                            "provider_mutations_performed": 0,
+                        }
+                        _write_blocked_qualification_allocation_outputs(args, result)
+                        print(json.dumps({"success": False}, sort_keys=True))
+                        return 2
                 try:
                     result = run_qualification_session(
                         action=args.qualification_action,
@@ -782,6 +814,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         provider_output_get_url_file=args.provider_output_get_url_file,
                         provider_bootstrap_url_file=args.provider_bootstrap_url_file,
                         release_evidence=args.release_evidence,
+                        expected_source_commit=args.expected_source_commit,
                         provider_launch_request=args.provider_launch_request,
                         preflight_bundle=args.preflight_bundle,
                         admission_out=args.admission_out,

@@ -3418,6 +3418,7 @@ def _load_single_episode_inputs(
         "start_frame": start_frame,
         "attempt": dict(attempt),
         "task_contract": resolved_task_contract,
+        "source_task_contract_sha256": hashlib.sha256(task_contract_raw).hexdigest(),
         "task_contract_resolution": task_contract_resolution,
         "task_prompt": TASK_PROMPT,
         "manipulation_policy_task_compatibility": (
