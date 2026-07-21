@@ -5,7 +5,7 @@
   "updated_at": "2026-07-10T13:13:27+00:00",
   "source_audit": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
   "source_audit_sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
-  "evidence_mapping_sha256": "sha256:900342ddef5b808fc87223ee5063cf13d4929b5c64c43cb2984bc99b9378c4c5",
+  "evidence_mapping_sha256": "sha256:a6d647b4a66aebad22f663e97d21a68999d76a83aa5bb69318ad50b0345259b5",
   "authoritative_for_current_status": true,
   "status_definitions": {
     "open": "No complete, current exit-criteria proof is recorded.",
@@ -1403,11 +1403,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "DATA-03-AC-01-EV-05",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "DATA-03-AC-01-EV-06",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_geometry_stage.py tests/test_site_reference_database_contract.py",
+            "command": "python -m pytest -q tests/test_evaluator_qualification_workflow.py tests/test_geometry_stage.py tests/test_site_reference_database_contract.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -1425,7 +1457,9 @@
               "DATA-03-AC-01-EV-01",
               "DATA-03-AC-01-EV-02",
               "DATA-03-AC-01-EV-03",
-              "DATA-03-AC-01-EV-04"
+              "DATA-03-AC-01-EV-04",
+              "DATA-03-AC-01-EV-05",
+              "DATA-03-AC-01-EV-06"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -1573,11 +1607,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "DATA-04-AC-01-EV-05",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "DATA-04-AC-01-EV-06",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_object_geometry_stage_coverage_edges.py tests/test_site_reference_database_contract.py",
+            "command": "python -m pytest -q tests/test_evaluator_qualification_workflow.py tests/test_object_geometry_stage_coverage_edges.py tests/test_site_reference_database_contract.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -1595,7 +1661,9 @@
               "DATA-04-AC-01-EV-01",
               "DATA-04-AC-01-EV-02",
               "DATA-04-AC-01-EV-03",
-              "DATA-04-AC-01-EV-04"
+              "DATA-04-AC-01-EV-04",
+              "DATA-04-AC-01-EV-05",
+              "DATA-04-AC-01-EV-06"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -4194,11 +4262,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "SC3-12-AC-01-EV-06",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-12-AC-01-EV-07",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_oscar_cosmos_wam_evaluator.py tests/test_policy_evaluation_contracts.py",
+            "command": "python -m pytest -q tests/test_evaluator_qualification_workflow.py tests/test_oscar_cosmos_wam_evaluator.py tests/test_policy_evaluation_contracts.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -4217,7 +4317,9 @@
               "SC3-12-AC-01-EV-02",
               "SC3-12-AC-01-EV-03",
               "SC3-12-AC-01-EV-04",
-              "SC3-12-AC-01-EV-05"
+              "SC3-12-AC-01-EV-05",
+              "SC3-12-AC-01-EV-06",
+              "SC3-12-AC-01-EV-07"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -7202,11 +7304,59 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "REL-14-AC-01-EV-08",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "REL-14-AC-01-EV-09",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "REL-14-AC-01-EV-10",
+              "path": "docs/EVALUATOR_QUALIFICATION_WORKFLOW.md",
+              "sha256": "sha256:3d4b9710a20905080e8a7cc11e419c016742875bb8349796c97f1780063ccdbb",
+              "role": "policy_or_runbook",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_evaluator_runtime_evidence.py tests/test_release_quality_governance.py",
+            "command": "python -m pytest -q tests/test_evaluator_qualification_workflow.py tests/test_evaluator_runtime_evidence.py tests/test_release_quality_governance.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -7227,7 +7377,10 @@
               "REL-14-AC-01-EV-04",
               "REL-14-AC-01-EV-05",
               "REL-14-AC-01-EV-06",
-              "REL-14-AC-01-EV-07"
+              "REL-14-AC-01-EV-07",
+              "REL-14-AC-01-EV-08",
+              "REL-14-AC-01-EV-09",
+              "REL-14-AC-01-EV-10"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -7786,11 +7939,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "DATA-13-AC-01-EV-05",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "DATA-13-AC-01-EV-06",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_camera_geometry_validation.py tests/test_site_reference_database_contract.py",
+            "command": "python -m pytest -q tests/test_camera_geometry_validation.py tests/test_evaluator_qualification_workflow.py tests/test_site_reference_database_contract.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -7808,7 +7993,9 @@
               "DATA-13-AC-01-EV-01",
               "DATA-13-AC-01-EV-02",
               "DATA-13-AC-01-EV-03",
-              "DATA-13-AC-01-EV-04"
+              "DATA-13-AC-01-EV-04",
+              "DATA-13-AC-01-EV-05",
+              "DATA-13-AC-01-EV-06"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -9830,9 +10017,57 @@
             },
             {
               "artifact_id": "SC3-16-AC-01-EV-04",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-16-AC-01-EV-05",
               "path": "tests/test_policy_evaluation_contracts.py",
               "sha256": "sha256:d0c0d9967f2c5ac7ac778dfeb063faae10ad3d29280d227c52bbf2b005ef6929",
               "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-16-AC-01-EV-06",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-16-AC-01-EV-07",
+              "path": "docs/EVALUATOR_QUALIFICATION_WORKFLOW.md",
+              "sha256": "sha256:3d4b9710a20905080e8a7cc11e419c016742875bb8349796c97f1780063ccdbb",
+              "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
               "supports_remediation": true,
@@ -9847,7 +10082,7 @@
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_policy_evaluation_contracts.py",
+            "command": "python -m pytest -q tests/test_evaluator_qualification_workflow.py tests/test_policy_evaluation_contracts.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -9865,7 +10100,10 @@
               "SC3-16-AC-01-EV-01",
               "SC3-16-AC-01-EV-02",
               "SC3-16-AC-01-EV-03",
-              "SC3-16-AC-01-EV-04"
+              "SC3-16-AC-01-EV-04",
+              "SC3-16-AC-01-EV-05",
+              "SC3-16-AC-01-EV-06",
+              "SC3-16-AC-01-EV-07"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -10424,11 +10662,43 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "SC3-20-AC-01-EV-05",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-20-AC-01-EV-06",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_policy_evaluation_contracts.py tests/test_sc3_fidelity_contracts.py",
+            "command": "python -m pytest -q tests/test_evaluator_qualification_workflow.py tests/test_policy_evaluation_contracts.py tests/test_sc3_fidelity_contracts.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -10446,7 +10716,9 @@
               "SC3-20-AC-01-EV-01",
               "SC3-20-AC-01-EV-02",
               "SC3-20-AC-01-EV-03",
-              "SC3-20-AC-01-EV-04"
+              "SC3-20-AC-01-EV-04",
+              "SC3-20-AC-01-EV-05",
+              "SC3-20-AC-01-EV-06"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
@@ -10622,11 +10894,59 @@
               "freshness_status": "current_unbound",
               "commit": null,
               "release_id": null
+            },
+            {
+              "artifact_id": "SC3-21-AC-01-EV-07",
+              "path": "src/blueprint_pipeline/evaluator_qualification_workflow.py",
+              "sha256": "sha256:133efc8b62a6b7f5341c9bb656469f4dd4ed10a092e7b179c4642221088b8223",
+              "role": "implementation",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-21-AC-01-EV-08",
+              "path": "tests/test_evaluator_qualification_workflow.py",
+              "sha256": "sha256:e1abade410794a23f2aaddcd9b1da34c930cbdc8b3275adb073207ef4c6f40cf",
+              "role": "test_contract",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
+            },
+            {
+              "artifact_id": "SC3-21-AC-01-EV-09",
+              "path": "docs/EVALUATOR_QUALIFICATION_WORKFLOW.md",
+              "sha256": "sha256:3d4b9710a20905080e8a7cc11e419c016742875bb8349796c97f1780063ccdbb",
+              "role": "policy_or_runbook",
+              "authoritative": true,
+              "authority": "repository_worktree_digest",
+              "supports_remediation": true,
+              "supports_closure": false,
+              "generated_at": "2026-07-10T13:01:59+00:00",
+              "freshness_evaluated_at": "2026-07-10T13:01:59+00:00",
+              "fresh_until": "2026-08-09T13:01:59+00:00",
+              "freshness_status": "current_unbound",
+              "commit": null,
+              "release_id": null
             }
           ],
           "command_result": {
             "applicable": true,
-            "command": "python -m pytest -q tests/test_evaluator_runtime_evidence.py tests/test_public_scientific_claims.py",
+            "command": "python -m pytest -q tests/test_evaluator_qualification_workflow.py tests/test_evaluator_runtime_evidence.py tests/test_public_scientific_claims.py",
             "status": "not_recorded",
             "exit_code": null,
             "generated_at": null,
@@ -10646,7 +10966,10 @@
               "SC3-21-AC-01-EV-03",
               "SC3-21-AC-01-EV-04",
               "SC3-21-AC-01-EV-05",
-              "SC3-21-AC-01-EV-06"
+              "SC3-21-AC-01-EV-06",
+              "SC3-21-AC-01-EV-07",
+              "SC3-21-AC-01-EV-08",
+              "SC3-21-AC-01-EV-09"
             ],
             "blockers": [
               "acceptance_criterion_not_fully_proven",
