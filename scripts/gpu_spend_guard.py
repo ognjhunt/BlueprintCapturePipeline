@@ -908,7 +908,10 @@ def _validated_qualification_manifest(
         if not isinstance(value, Mapping):
             continue
         manifest = dict(value)
-        source = manifest_path.expanduser().absolute()
+        try:
+            source = manifest_path.parent.resolve(strict=True) / manifest_path.name
+        except OSError:
+            source = manifest_path.expanduser().absolute()
         try:
             _validate_manifest_binding(source, manifest)
         except ValueError:
@@ -1153,10 +1156,9 @@ def _cmd_option_references_exact_path(
         # itself must not be a symlink because qualification evidence forbids it.
         if candidate.is_symlink():
             continue
-        resolved_candidate = _resolved_path_identity(candidate)
-        if resolved_candidate == target_path:
-            return True
         if candidate.is_absolute():
+            if _resolved_path_identity(candidate) == target_path:
+                return True
             continue
         # ``ps`` exposes argv but not the launcher's cwd portably. Accept only
         # an unambiguous multi-component suffix; component equality prevents
