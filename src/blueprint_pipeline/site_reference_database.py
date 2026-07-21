@@ -6,6 +6,8 @@ local contract executable without calling provider or live WebApp services.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import math
 import re
@@ -125,6 +127,20 @@ def _admission_normalized_digest(value: Any) -> str:
     return digest.removeprefix("sha256:")
 
 
+def _admission_canonical_sha256(value: Any) -> str:
+    try:
+        payload = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _admission_finite(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -175,6 +191,13 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
     verification = _admission_mapping(manifest.get("independent_evidence_verification"))
     if verification.get("status") != "verified":
         blockers.append("independent_evidence_verification_not_verified")
+    if verification.get("verifier_is_importer") is not False:
+        blockers.append("independent_evidence_verifier_must_not_be_importer")
+    if verification.get("verification_method") not in {
+        "offline_evidence_verifier",
+        "signed_verifier_attestation",
+    }:
+        blockers.append("independent_evidence_verification_method_invalid")
     if verification.get("independent_of_importer_and_model_backend") is not True:
         blockers.append("site_evidence_verifier_independence_not_proven")
     for field in ("verifier_id", "verifier_version"):
@@ -229,6 +252,12 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
     for field in ("world_frame_id", "site_frame_id", "capture_frame_id"):
         if not str(geometry.get(field) or "").strip():
             blockers.append(f"coordinate_frame_identity_missing:{field}")
+    coordinate_frame_ids = [
+        str(geometry.get(field) or "").strip()
+        for field in ("world_frame_id", "site_frame_id", "capture_frame_id")
+    ]
+    if len(set(coordinate_frame_ids)) != len(coordinate_frame_ids):
+        blockers.append("coordinate_frame_identities_must_be_distinct")
     for field in ("scale_evidence_sha256", "gravity_alignment_sha256"):
         if not _admission_digest(geometry.get(field)):
             blockers.append(f"metric_coordinate_evidence_digest_invalid:{field}")
@@ -353,6 +382,16 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
                 blockers.append(f"task_scene_grounding_identity_missing:{field}")
             if len(row_ids) != len(set(row_ids)):
                 blockers.append(f"task_scene_grounding_duplicate_identity:{field}")
+            for row_index, row in enumerate(rows):
+                if (
+                    str(row.get("scene_id") or "").strip()
+                    != str(identity.get("scene_id") or "").strip()
+                    or str(row.get("capture_id") or "").strip()
+                    != str(identity.get("capture_id") or "").strip()
+                ):
+                    blockers.append(
+                        f"task_scene_grounding_source_identity_mismatch:{field}:{row_index}"
+                    )
     if not _admission_digest(grounding.get("grounding_manifest_sha256")):
         blockers.append("task_scene_grounding_digest_missing_or_invalid")
 
@@ -363,6 +402,13 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
         blockers.append("explicit_task_contracts_missing")
     if not _admission_digest(manifest.get("task_contract_manifest_sha256")):
         blockers.append("task_contract_manifest_digest_missing_or_invalid")
+    task_contract_rows_digest = _admission_canonical_sha256(task_contracts)
+    if not task_contract_rows_digest:
+        blockers.append("task_contract_rows_payload_not_canonicalizable")
+    elif _admission_normalized_digest(manifest.get("task_contract_rows_sha256")) != (
+        task_contract_rows_digest
+    ):
+        blockers.append("task_contract_rows_digest_mismatch")
     task_criterion_ids: set[tuple[str, str]] = set()
     for index, contract in enumerate(task_contracts):
         for field in ("task_id", "criterion_id", "evidence_type", "evaluator_mapping"):
@@ -442,6 +488,8 @@ def validate_evaluation_site_admission(manifest: Mapping[str, Any]) -> dict[str,
     ood_axis_ids = [str(row.get("axis") or "").strip() for row in ood_axes]
     if any(not axis for axis in ood_axis_ids) or len(ood_axis_ids) != len(set(ood_axis_ids)):
         blockers.append("ood_axis_identity_missing_or_duplicate")
+    if not {"site", "task"}.issubset(set(ood_axis_ids)):
+        blockers.append("ood_required_site_task_axes_missing")
 
     blockers = sorted(set(blockers))
     assisted_import = str(manifest.get("importer_kind") or "").startswith("scaniverse")

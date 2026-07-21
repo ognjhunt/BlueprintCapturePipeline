@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -87,6 +88,19 @@ def _record() -> dict[str, object]:
 
 def _evaluation_admission() -> dict[str, object]:
     digest = "a" * 64
+    task_contracts = [
+        {
+            "task_id": "open-door",
+            "criterion_id": "door-angle",
+            "evidence_type": "articulation_state",
+            "tolerance": 0.2,
+            "tolerance_unit": "radian",
+            "evaluator_mapping": "isaac.articulation_transition.v1",
+        }
+    ]
+    task_contract_rows_sha256 = hashlib.sha256(
+        json.dumps(task_contracts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return {
         "schema_version": EVALUATION_SITE_ADMISSION_SCHEMA_VERSION,
         "importer_kind": "scaniverse_assisted_import",
@@ -102,6 +116,8 @@ def _evaluation_admission() -> dict[str, object]:
         "independent_evidence_verification": {
             "status": "verified",
             "independent_of_importer_and_model_backend": True,
+            "verifier_is_importer": False,
+            "verification_method": "offline_evidence_verifier",
             "verifier_id": "site-admission-verifier",
             "verifier_version": "2.0.0",
             "verification_report_sha256": digest,
@@ -172,22 +188,24 @@ def _evaluation_admission() -> dict[str, object]:
         },
         "task_scene_grounding": {
             "scene_identity": "scene-1",
-            "task_objects": [{"object_id": "door"}],
-            "articulated_parts": [{"part_id": "door-hinge"}],
-            "target_zones": [{"zone_id": "open-angle"}],
+            "task_objects": [
+                {"object_id": "door", "scene_id": "scene-1", "capture_id": "capture-1"}
+            ],
+            "articulated_parts": [
+                {
+                    "part_id": "door-hinge",
+                    "scene_id": "scene-1",
+                    "capture_id": "capture-1",
+                }
+            ],
+            "target_zones": [
+                {"zone_id": "open-angle", "scene_id": "scene-1", "capture_id": "capture-1"}
+            ],
             "grounding_manifest_sha256": digest,
         },
-        "task_contracts": [
-            {
-                "task_id": "open-door",
-                "criterion_id": "door-angle",
-                "evidence_type": "articulation_state",
-                "tolerance": 0.2,
-                "tolerance_unit": "radian",
-                "evaluator_mapping": "isaac.articulation_transition.v1",
-            }
-        ],
+        "task_contracts": task_contracts,
         "task_contract_manifest_sha256": digest,
+        "task_contract_rows_sha256": task_contract_rows_sha256,
         "truth_layers": {
             "visual_geometry": {"status": "verified", "evidence_sha256": digest},
             "collision": {"status": "verified", "evidence_sha256": digest},
@@ -320,9 +338,19 @@ def test_assisted_import_cannot_self_declare_evaluation_readiness(
         ),
         (
             lambda value: value["task_scene_grounding"]["task_objects"].append(
-                {"object_id": "door"}
+                {
+                    "object_id": "door",
+                    "scene_id": "scene-1",
+                    "capture_id": "capture-1",
+                }
             ),
             "task_scene_grounding_duplicate_identity:task_objects",
+        ),
+        (
+            lambda value: value["task_scene_grounding"]["task_objects"][0].update(
+                {"scene_id": "stale-scene"}
+            ),
+            "task_scene_grounding_source_identity_mismatch:task_objects:0",
         ),
     ],
 )
