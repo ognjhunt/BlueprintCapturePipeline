@@ -828,6 +828,7 @@ def _rollout_payload(
     model: str,
     checkpoint_identity: Mapping[str, Any],
     source_identity: Mapping[str, Any],
+    configured_inference_steps: int = 0,
 ) -> dict[str, Any]:
     save_root = Path(_string(package_manifest.get("save_root")))
     generated_videos = sorted(path.resolve() for path in save_root.rglob("*.mp4"))
@@ -849,6 +850,7 @@ def _rollout_payload(
                 "base_model": EXPECTED_BASE_MODEL,
                 "model": model,
                 "generated_video_path": str(path),
+                "generated_video_sha256": _sha256_file(path),
                 "source_review_video_path": package_manifest.get("source_review_video_path"),
                 "source_camera": package_manifest.get("source_camera"),
                 "scenario_eval_run_id": package_manifest.get("scenario_eval_run_id"),
@@ -906,6 +908,10 @@ def _rollout_payload(
             "sc3_horizon_execution_trace": horizon_trace,
             "cosmos3_subprocess": dict(subprocess_detail),
             "fresh_model_command_executed_this_invocation": bool(rollouts and subprocess_completed),
+            "fresh_model_run_steps": len(rollouts) if model_ran else 0,
+            "configured_inference_steps_per_model_run": (
+                configured_inference_steps if model_ran else 0
+            ),
             "fresh_model_run_claimed": model_ran,
             "learned_wam_model_ran": model_ran,
             "truth_boundary": {
@@ -1124,6 +1130,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
         model=args.model,
         checkpoint_identity=checkpoint_identity,
         source_identity=source_identity,
+        configured_inference_steps=args.num_steps,
     )
     if subprocess_detail["status"] != "completed" and not payload["rollouts"]:
         payload["status"] = "blocked"
