@@ -13,6 +13,8 @@
     "preregistration_sha256",
     "tasks",
     "action_space",
+    "environment",
+    "evaluator_runtime",
     "scenarios",
     "rollout_protocol",
     "required_episode_evidence",
@@ -35,6 +37,8 @@
       "items": { "$ref": "#/$defs/task" }
     },
     "action_space": { "$ref": "#/$defs/actionSpace" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "evaluator_runtime": { "$ref": "#/$defs/evaluatorRuntime" },
     "scenarios": {
       "type": "array",
       "minItems": 4,
@@ -159,6 +163,73 @@
         "timestamp_semantics": { "type": "string", "minLength": 1 },
         "normalization_manifest_sha256": { "$ref": "#/$defs/sha256" }
       }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site_id",
+        "site_package_sha256",
+        "representation_type",
+        "observation_calibration_sha256",
+        "physics_authority",
+        "same_site_capture"
+      ],
+      "properties": {
+        "site_id": { "$ref": "#/$defs/identifier" },
+        "site_package_sha256": { "$ref": "#/$defs/sha256" },
+        "representation_type": {
+          "enum": ["captured_3dgs_site_memory", "simready_usd", "hybrid", "other"]
+        },
+        "observation_calibration_sha256": { "$ref": "#/$defs/sha256" },
+        "physics_authority": {
+          "enum": ["none", "mujoco", "isaac", "newton", "real_robot"]
+        },
+        "physics_asset_sha256": { "$ref": "#/$defs/sha256" },
+        "same_site_capture": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "physics_authority": { "not": { "const": "none" } } },
+            "required": ["physics_authority"]
+          },
+          "then": { "required": ["physics_asset_sha256"] }
+        }
+      ]
+    },
+    "evaluatorRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluator_id",
+        "evaluator_version",
+        "runner_manifest_sha256",
+        "success_evaluator_sha256",
+        "robot_adapter_sha256",
+        "observation_adapter_sha256",
+        "action_adapter_sha256",
+        "deterministic_seeding"
+      ],
+      "properties": {
+        "evaluator_id": { "$ref": "#/$defs/identifier" },
+        "evaluator_version": { "$ref": "#/$defs/identifier" },
+        "runner_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "container_image_digest": {
+          "type": "string",
+          "pattern": "^.+@sha256:[0-9a-f]{64}$"
+        },
+        "source_revision": { "type": "string", "minLength": 1 },
+        "success_evaluator_sha256": { "$ref": "#/$defs/sha256" },
+        "robot_adapter_sha256": { "$ref": "#/$defs/sha256" },
+        "observation_adapter_sha256": { "$ref": "#/$defs/sha256" },
+        "action_adapter_sha256": { "$ref": "#/$defs/sha256" },
+        "deterministic_seeding": { "const": true }
+      },
+      "anyOf": [
+        { "required": ["container_image_digest"] },
+        { "required": ["source_revision"] }
+      ]
     },
     "generalization": {
       "type": "object",

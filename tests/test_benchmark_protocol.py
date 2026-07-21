@@ -109,6 +109,26 @@ def valid_spec() -> dict:
             "timestamp_semantics": "monotonic_chunk_start_and_per_sample_offsets",
             "normalization_manifest_sha256": DIGEST_B,
         },
+        "environment": {
+            "site_id": "captured-site-drawer",
+            "site_package_sha256": DIGEST_C,
+            "representation_type": "captured_3dgs_site_memory",
+            "observation_calibration_sha256": DIGEST_D,
+            "physics_authority": "mujoco",
+            "physics_asset_sha256": DIGEST_E,
+            "same_site_capture": True,
+        },
+        "evaluator_runtime": {
+            "evaluator_id": "blueprint-wam-runtime",
+            "evaluator_version": "2026.1",
+            "runner_manifest_sha256": DIGEST_A,
+            "source_revision": "refs/tags/blueprint-wam-2026.1",
+            "success_evaluator_sha256": DIGEST_B,
+            "robot_adapter_sha256": DIGEST_C,
+            "observation_adapter_sha256": DIGEST_D,
+            "action_adapter_sha256": DIGEST_E,
+            "deterministic_seeding": True,
+        },
         "scenarios": scenarios,
         "rollout_protocol": {
             "fixed_rollouts_per_scenario_policy": 2,
@@ -197,6 +217,10 @@ def test_valid_spec_compiles_hidden_split_without_public_identifier_leak(tmp_pat
     assert len({row["attempt_id"] for row in compiled["execution_plan"]["attempts"]}) == 8
     assert compiled["evaluation_run_task_scenario_pack"]["adapter_id"] == "benchmark_task_scenario_pack"
     assert compiled["webapp_projection"]["hidden_scenario_identifiers_included"] is False
+    assert (
+        compiled["webapp_projection"]["environment_summary"]["representation_type"]
+        == "captured_3dgs_site_memory"
+    )
     assert (tmp_path / "benchmark_split_manifest.private.json").stat().st_mode & 0o077 == 0
 
 
@@ -350,10 +374,14 @@ def test_invalid_spec_rejects_unfrozen_hidden_and_missing_seen_unseen_axis():
     spec["scenarios"] = [row for row in spec["scenarios"] if row["split"] != "hidden_test"]
     for row in spec["scenarios"]:
         row["generalization"]["camera"] = "seen"
+    spec["environment"]["physics_asset_sha256"] = ""
+    spec["evaluator_runtime"]["deterministic_seeding"] = False
     blockers = validate_benchmark_spec(spec)["blockers"]
     assert "benchmark_must_be_frozen" in blockers
     assert "required_split_missing:hidden_test" in blockers
     assert "seen_unseen_coverage_missing:camera" in blockers
+    assert "environment_physics_asset_digest_required" in blockers
+    assert "evaluator_runtime_deterministic_seeding_required" in blockers
 
 
 def test_benchmark_grade_job_request_compiles_private_plan_and_redacted_projection(

@@ -9,6 +9,10 @@ benchmark or simulator a required product dependency.
 - A frozen `train` / `dev` / `public_test` / `hidden_test` split.
 - Seen and unseen labels for task, scene, object, camera, lighting, and
   embodiment generalization.
+- A digest-pinned site package, observation calibration, physics authority,
+  evaluator runner, success evaluator, and robot/observation/action adapters.
+  A captured 3DGS site-memory and a SimReady USD scene are explicit environment
+  modes; neither can silently stand in for the other.
 - Hidden scenario identifiers and initial conditions stay in private artifacts;
   the public card contains only counts and the committed split digest.
 - Every public baseline has an exact checkpoint digest, adapter-code digest,
@@ -86,6 +90,14 @@ filesystem supports POSIX modes. The public card never includes hidden scenario
 IDs or seeds. `evaluation_run_task_scenario_pack.private.json` binds the plan to
 the provider-neutral Evaluation Run interface through the
 `benchmark_task_scenario_pack@1` adapter.
+
+For the same captured site, use
+`environment.representation_type = captured_3dgs_site_memory` and bind the
+capture/site-package and calibration digests. If contact physics is evaluated,
+also declare the actual `physics_authority` and its asset digest (for example a
+MuJoCo proxy or SimReady USD/Isaac package). A 3DGS alone is observation/site
+evidence, not physics authority; a SimReady USD alone is not proof that the
+rendered observations match the captured site.
 
 ## Produce a report
 
