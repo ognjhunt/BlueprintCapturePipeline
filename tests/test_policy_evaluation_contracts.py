@@ -656,6 +656,23 @@ def test_decision_grade_ranking_rejects_malformed_pairwise_evidence_entries() ->
     assert "pairwise_policy_identity_invalid:0" in result["blockers"]
 
 
+def test_decision_grade_ranking_normalizes_pairwise_policy_ids() -> None:
+    original = _ranking_request()
+    padded = deepcopy(original)
+    padded["pairwise_preferences"][0]["policy_a"] = (
+        f"  {padded['pairwise_preferences'][0]['policy_a']}  "
+    )
+    padded["pairwise_preferences"][0]["policy_b"] = (
+        f"  {padded['pairwise_preferences'][0]['policy_b']}  "
+    )
+
+    expected = build_decision_grade_ranking(original)
+    result = build_decision_grade_ranking(padded)
+
+    assert result["status"] == "decision_grade"
+    assert result["bradley_terry"] == expected["bradley_terry"]
+
+
 def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> None:
     candidate = _ranking_request()
     padded_profile_id = " oscar_roboarena_v2 "

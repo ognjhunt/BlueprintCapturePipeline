@@ -369,9 +369,17 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
     preferences, preferences_payload_valid = _strict_rows(request.get("pairwise_preferences"))
     if not preferences_payload_valid:
         blockers.append("pairwise_preferences_payload_invalid")
+    normalized_preferences: list[dict[str, Any]] = []
     for index, row in enumerate(preferences):
         left_policy_id = str(row.get("policy_a") or "").strip()
         right_policy_id = str(row.get("policy_b") or "").strip()
+        normalized_preferences.append(
+            {
+                **row,
+                "policy_a": left_policy_id,
+                "policy_b": right_policy_id,
+            }
+        )
         if (
             left_policy_id not in policy_ids
             or right_policy_id not in policy_ids
@@ -389,7 +397,7 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
             blockers.append(f"pairwise_evidence_missing:{index}")
         elif any(not _digest(ref.get("sha256")) for ref in evidence_refs):
             blockers.append(f"pairwise_evidence_digest_invalid:{index}")
-    graph_connected = _connected(policy_ids, preferences)
+    graph_connected = _connected(policy_ids, normalized_preferences)
     if not graph_connected:
         blockers.append("bradley_terry_preference_graph_not_connected")
 
@@ -492,7 +500,9 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
         "policy_scorecards": score_rows,
         "bradley_terry": {
             "graph_connected": graph_connected,
-            "ranking": _bradley_terry(policy_ids, preferences) if graph_connected else [],
+            "ranking": _bradley_terry(policy_ids, normalized_preferences)
+            if graph_connected
+            else [],
             "ties_retained": True,
         },
         "bootstrap": {
