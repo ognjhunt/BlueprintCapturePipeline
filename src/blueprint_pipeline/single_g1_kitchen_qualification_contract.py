@@ -93,6 +93,30 @@ def collected_attempt_release_blocker(
     )
 
 
+def collected_attempt_derived_artifact_blockers(
+    attempt_bytes: bytes,
+    attempt: Mapping[str, Any],
+    launch_rebind: Mapping[str, Any],
+) -> list[str]:
+    """Recompute collected attempt and launch-plan digests from retained bytes."""
+
+    blockers: list[str] = []
+    if hashlib.sha256(attempt_bytes).hexdigest() != launch_rebind.get(
+        "derived_attempt_manifest_sha256"
+    ):
+        blockers.append("qualification_collected_attempt_manifest_digest_mismatch")
+    plan_value = attempt.get("qualification_derived_launch_plan")
+    plan = dict(plan_value) if isinstance(plan_value, Mapping) else {}
+    plan_digest = _canonical_sha256(plan) if plan else ""
+    if (
+        not plan
+        or attempt.get("qualification_derived_launch_plan_sha256") != plan_digest
+        or launch_rebind.get("derived_launch_plan_sha256") != plan_digest
+    ):
+        blockers.append("qualification_collected_launch_plan_digest_mismatch")
+    return blockers
+
+
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -233,6 +257,7 @@ def bind_inputs_to_release(
 
     plan["image_ref"] = target_image_ref
     plan["qualification_release_rebind"] = embedded_binding
+    derived_plan_sha256 = _canonical_sha256(plan)
     source_attempt_identity = {
         "source_commit": attempt.get("source_commit"),
         "source_dirty_patch_sha256": attempt.get("source_dirty_patch_sha256"),
@@ -244,6 +269,8 @@ def bind_inputs_to_release(
     attempt["source_dirty_patch_sha256"] = source_patch_sha256
     attempt["image_digest"] = target_image_digest
     attempt["qualification_release_rebind"] = embedded_binding
+    attempt["qualification_derived_launch_plan"] = copy.deepcopy(plan)
+    attempt["qualification_derived_launch_plan_sha256"] = derived_plan_sha256
     attempt_bytes = (json.dumps(attempt, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
     bootstrap_script = str(inputs.get("bootstrap_script") or "")
@@ -269,7 +296,7 @@ def bind_inputs_to_release(
     updated["bootstrap_script"] = bootstrap_script.replace(marker, replacement, 1)
     launch_binding = {
         **embedded_binding,
-        "derived_launch_plan_sha256": _canonical_sha256(plan),
+        "derived_launch_plan_sha256": derived_plan_sha256,
         "derived_attempt_manifest_sha256": hashlib.sha256(attempt_bytes).hexdigest(),
         "runtime_attempt_manifest_rebound": True,
         "raw_source_bundle_modified": False,

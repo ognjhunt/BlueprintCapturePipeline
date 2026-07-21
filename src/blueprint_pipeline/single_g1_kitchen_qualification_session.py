@@ -101,6 +101,7 @@ from .single_g1_kitchen_qualification_admission import (
 from .single_g1_kitchen_qualification_contract import (
     bind_inputs_to_release,
     build_release_binding as _release_binding,
+    collected_attempt_derived_artifact_blockers,
     collected_attempt_release_blocker,
     qualification_gate_matrix,
     release_binding_record_blockers,
@@ -3273,6 +3274,13 @@ def _validate_terminal_collection(
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         blockers.append(f"qualification_attempt_input_identity_invalid:{type(exc).__name__}")
     if attempt_input:
+        blockers.extend(
+            collected_attempt_derived_artifact_blockers(
+                attempt_input_path.read_bytes(),
+                attempt_input,
+                dict(latest.get("qualification_launch_rebind") or {}),
+            )
+        )
         expected_qualification = {
             "launch_nonce": latest.get("attempt_nonce"),
             "allocation_launch_session_id": manifest.get("launch_session_id"),

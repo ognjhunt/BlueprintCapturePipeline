@@ -133,6 +133,24 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert binding["source_bundle_sha256"] == qualification.BUNDLE_SHA256
     assert binding["source_bundle_preserved"] is True
     assert binding["runtime_attempt_manifest_rebound"] is True
+    rebound_attempt_bytes = (
+        json.dumps(rebound["attempt"], indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        rebound_attempt_bytes, rebound["attempt"], binding
+    ) == []
+    assert qualification.collected_attempt_derived_artifact_blockers(
+        rebound_attempt_bytes + b" ", rebound["attempt"], binding
+    ) == ["qualification_collected_attempt_manifest_digest_mismatch"]
+    tampered_attempt = json.loads(json.dumps(rebound["attempt"]))
+    tampered_attempt["qualification_derived_launch_plan"]["image_ref"] = (
+        "registry.example/tampered@sha256:" + "2" * 64
+    )
+    assert "qualification_collected_launch_plan_digest_mismatch" in (
+        qualification.collected_attempt_derived_artifact_blockers(
+            rebound_attempt_bytes, tampered_attempt, binding
+        )
+    )
     assert "cp /workspace/attempt_input_manifest_episode_001.json" not in rebound[
         "bootstrap_script"
     ]
@@ -369,6 +387,19 @@ def _qualification_output_zip(
         state = "closed_loop_out/isaac_task_state/"
         frames = state + "frames/"
         digest = "d" * 64
+        derived_plan = {
+            "schema_version": "test.qualification_derived_launch_plan.v1",
+            "sealed_active": True,
+            "image_ref": manifest["image_ref"],
+        }
+        derived_plan_sha256 = hashlib.sha256(
+            json.dumps(
+                derived_plan,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
         attempt_input = {
             "run_id": "single-g1-kitchen-direct",
             "attempt_id": "single-g1-kitchen-attempt-1",
@@ -391,6 +422,8 @@ def _qualification_output_zip(
                     manifest["qualification_launch_rebind"],
                 )
             ),
+            "qualification_derived_launch_plan": derived_plan,
+            "qualification_derived_launch_plan_sha256": derived_plan_sha256,
             "selected_task_id": "microwave_door",
             "artifacts": {
                 "bundle": {"sha256": manifest["bundle_sha256"]},
@@ -400,9 +433,19 @@ def _qualification_output_zip(
             },
         }
         attempt_input.update(attempt_input_overrides or {})
-        files["closed_loop_out/attempt_input_manifest.json"] = (
-            json.dumps(attempt_input).encode()
-        )
+        attempt_input_bytes = (
+            json.dumps(attempt_input, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        files["closed_loop_out/attempt_input_manifest.json"] = attempt_input_bytes
+        latest = dict(manifest.get("latest_attempt") or {})
+        latest_rebind = dict(latest.get("qualification_launch_rebind") or {})
+        latest_rebind["derived_launch_plan_sha256"] = derived_plan_sha256
+        latest_rebind["derived_attempt_manifest_sha256"] = hashlib.sha256(
+            attempt_input_bytes
+        ).hexdigest()
+        latest["qualification_launch_rebind"] = latest_rebind
+        manifest["latest_attempt"] = latest
+        qualification._private_write_json(manifest_path, manifest)
         image_digest = str(manifest["image_digest"]).rsplit("@sha256:", 1)[-1]
         image_digest = image_digest.removeprefix("sha256:")
         identity = {
@@ -1704,7 +1747,7 @@ def test_collect_terminal_uses_immutable_attempt_release_binding_after_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest_path = _live_manifest(tmp_path)
-    launched = _bind_latest_attempt(
+    _bind_latest_attempt(
         manifest_path, remote_process_state="stopped"
     )
     _write_output_get_url(tmp_path)
@@ -1723,6 +1766,9 @@ def test_collect_terminal_uses_immutable_attempt_release_binding_after_refresh(
         phase="runner_done",
         successful_terminal=True,
     )
+    launched = json.loads(manifest_path.read_text(encoding="utf-8"))[
+        "latest_attempt"
+    ]
     monkeypatch.setattr(
         qualification,
         "_download_provider_output_archive",

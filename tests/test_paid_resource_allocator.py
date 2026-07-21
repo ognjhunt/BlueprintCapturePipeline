@@ -1255,6 +1255,10 @@ def test_gpu_qualification_allocate_blocks_mismatched_checkout_before_session(
         "blockers": ["gpu_canary_checkout_not_origin_main"],
         "provider_mutations_performed": 0,
     }
+    for name in ("request.json", "preflight.json", "admission.json", "bound.json"):
+        assert json.loads((out / name).read_text()) == json.loads(
+            (out / "result.json").read_text()
+        )
     assert json.loads(capsys.readouterr().out) == {"success": False}
 
 

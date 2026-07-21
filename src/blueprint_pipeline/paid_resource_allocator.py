@@ -191,6 +191,21 @@ def _source_checkout_blockers(expected_source_commit: str) -> tuple[list[str], s
     return blockers, checkout_commit
 
 
+def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, result: dict) -> None:
+    """Persist every promised allocation output when source admission blocks."""
+
+    for attribute in (
+        "provider_launch_request",
+        "preflight_bundle",
+        "admission_out",
+        "bound_request_out",
+        "adapter_output",
+    ):
+        value = getattr(args, attribute, None)
+        if value:
+            write_json(Path(value), result)
+
+
 def _configure_detached_model_volume_signal_policy(command: str) -> bool:
     """Keep an explicitly detached paid supervisor alive through local SIGINT.
 
@@ -777,7 +792,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "blockers": source_blockers,
                             "provider_mutations_performed": 0,
                         }
-                        write_json(Path(args.adapter_output), result)
+                        _write_blocked_qualification_allocation_outputs(args, result)
                         print(json.dumps({"success": False}, sort_keys=True))
                         return 2
                 try:
