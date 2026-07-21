@@ -1126,12 +1126,24 @@ def _cmd_option_references_exact_path(cmd: str, option: str, target: str) -> boo
             values.append(tokens[index + 1])
         elif token.startswith(f"{option}="):
             values.append(token.split("=", 1)[1])
-    target_path = Path(os.path.abspath(Path(target).expanduser()))
+    target_path = Path(target).expanduser()
+    try:
+        target_path = target_path.resolve(strict=True)
+    except OSError:
+        target_path = Path(os.path.abspath(target_path))
     for value in values:
         candidate = Path(value).expanduser()
+        # Directory symlink components are supported, but the manifest option
+        # itself must not be a symlink because qualification evidence forbids it.
+        if candidate.is_symlink():
+            continue
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+        except OSError:
+            resolved_candidate = Path(os.path.abspath(candidate))
+        if resolved_candidate == target_path:
+            return True
         if candidate.is_absolute():
-            if Path(os.path.abspath(candidate)) == target_path:
-                return True
             continue
         # ``ps`` exposes argv but not the launcher's cwd portably. Accept only
         # an unambiguous multi-component suffix; component equality prevents
@@ -1139,8 +1151,6 @@ def _cmd_option_references_exact_path(cmd: str, option: str, target: str) -> boo
         normalized = Path(os.path.normpath(str(candidate)))
         parts = tuple(part for part in normalized.parts if part not in ("", "."))
         if ".." in parts:
-            if Path(os.path.abspath(candidate)) == target_path:
-                return True
             continue
         if len(parts) >= 3 and target_path.parts[-len(parts) :] == parts:
             return True

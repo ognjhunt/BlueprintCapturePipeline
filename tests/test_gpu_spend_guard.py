@@ -416,6 +416,25 @@ def test_relative_qualification_manifest_path_is_protected(tmp_path: Path) -> No
     assert protected == {"45483300"}
 
 
+def test_symlinked_manifest_directory_argument_is_protected(tmp_path: Path) -> None:
+    real_root = tmp_path / "capture_volume"
+    attempt = real_root / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    linked_root = tmp_path / "output"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    linked_manifest = linked_root / manifest_path.relative_to(real_root)
+
+    protected = guard.find_protected_pod_ids(
+        [real_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {linked_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
 def test_terminal_persistent_qualification_is_not_protected(tmp_path: Path) -> None:
     attempt = tmp_path / "single_g1_kitchen_episode" / "attempt_047_qualification"
     manifest_path = _write_qualification_owner(
@@ -587,7 +606,7 @@ def test_swapped_qualification_manifest_inode_is_not_protected(
     real_open = guard.os.open
     swapped = False
 
-    def _swap_before_open(path: object, flags: int, mode: int = 0o777) -> int:
+    def _swap_before_open(path: object, flags: int, mode: int = 0o600) -> int:
         nonlocal swapped
         if Path(path) == manifest_path and not swapped:
             swapped = True
