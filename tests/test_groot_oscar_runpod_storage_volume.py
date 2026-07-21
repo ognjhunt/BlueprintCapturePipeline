@@ -926,6 +926,85 @@ def test_duplicate_lane_blocks_before_watchdog_or_provider_mutation(
     assert result["blockers"] == ["already-owned"]
 
 
+def test_ambiguous_create_reports_authoritative_terminal_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_preallocation(monkeypatch)
+
+    class Process:
+        pid = 1234
+
+        @staticmethod
+        def poll():
+            return None
+
+    state = tmp_path / "watchdog_state.json"
+    state.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        storage,
+        "_arm_watchdog",
+        lambda **_kwargs: (
+            Process(),
+            {
+                "armed": True,
+                "pid": Process.pid,
+                "state_path": str(state),
+                "watchdog_nonce": "nonce",
+                "pod_name_prefix": "blueprint-storage-only-no-pod-nonce",
+                "volume_name": "blueprint-groot-oscar-models-nonce",
+                "watchdog_deadline_epoch": 9_999_999_999.0,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        storage,
+        "acquire_paid_provider_lane_lease",
+        lambda **_kwargs: {
+            "status": "acquired",
+            "path": str(tmp_path / "provider.lease.json"),
+            "lease": {"owner_pid": 1},
+        },
+    )
+    monkeypatch.setattr(
+        storage,
+        "release_paid_provider_lane_lease",
+        lambda *_args, **_kwargs: {"status": "released", "released": True},
+    )
+    pending = tmp_path / "pending.json"
+    monkeypatch.setattr(
+        storage,
+        "open_pending_teardown",
+        lambda **_kwargs: {"path": str(pending), "status": "open"},
+    )
+    monkeypatch.setattr(storage, "mark_pending_teardown_ambiguous", lambda *_a, **_k: {})
+    monkeypatch.setattr(storage, "cancel_pending_teardown", lambda *_a, **_k: {})
+    monkeypatch.setattr(storage, "load_pending_teardowns", lambda: [])
+
+    def runpod_call(method, path, *_args, **_kwargs):
+        assert (method, path) == ("POST", "/networkvolumes")
+        return 500, {"error": "provider failure"}
+
+    monkeypatch.setattr(storage, "_runpod_call", runpod_call)
+
+    inputs = _inputs(tmp_path)
+    inputs["hf_token_file"].write_text("hf-token", encoding="utf-8")
+    inputs["hf_token_file"].chmod(0o600)
+    result = run_storage_model_volume(**inputs)
+
+    assert result["status"] == "failed"
+    assert result["volume_id"] is None
+    assert result["failure_volume_teardown"] == {
+        "provider_absence_confirmed": True,
+        "verification_method": "authenticated_global_provider_inventory",
+        "observed_volume_id": None,
+    }
+    handoff_path = inputs["output_dir"] / "watchdog_handoff.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert handoff_path.is_file()
+    assert handoff["status"] == "failure_cleanup_provider_terminal"
+    assert handoff["failure_volume_absence_confirmed"] is True
+
+
 def test_storage_detached_launch_is_single_supervisor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
