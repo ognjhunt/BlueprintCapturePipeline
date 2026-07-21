@@ -416,6 +416,48 @@ def test_relative_qualification_manifest_path_is_protected(tmp_path: Path) -> No
     assert protected == {"45483300"}
 
 
+@pytest.mark.parametrize(
+    "relative_manifest",
+    [
+        "qualification_session.json",
+        "attempt_047_qualification/qualification_session.json",
+    ],
+)
+def test_unique_short_relative_qualification_manifest_path_is_protected(
+    tmp_path: Path,
+    relative_manifest: str,
+) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    _write_qualification_owner(attempt, "45483300")
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_ambiguous_short_relative_qualification_manifest_protects_neither(
+    tmp_path: Path,
+) -> None:
+    _write_qualification_owner(tmp_path / "attempt_a", "45483300")
+    _write_qualification_owner(tmp_path / "attempt_b", "45483301")
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            "--qualification-session-manifest qualification_session.json"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_qualification_hard_ttl_watchdog_is_a_bound_live_owner(tmp_path: Path) -> None:
     attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
     manifest_path = _write_qualification_owner(attempt, "45483300")

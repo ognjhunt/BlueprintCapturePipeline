@@ -1245,14 +1245,16 @@ def _cmd_option_references_exact_path(
             if _resolved_path_identity(candidate) == target_path:
                 return True
             continue
-        # ``ps`` exposes argv but not the launcher's cwd portably. Accept only
-        # an unambiguous multi-component suffix; component equality prevents
-        # attempt_047 from aliasing attempt_047_retry.
+        # ``ps`` exposes argv but not the launcher's cwd portably. Resolve a
+        # relative value against every discovered candidate and accept it only
+        # when its component suffix identifies this one manifest uniquely. A
+        # basename-only value is therefore safe when there is only one matching
+        # qualification, while duplicate basenames remain deliberately
+        # ambiguous. Component equality prevents attempt_047 from aliasing
+        # attempt_047_retry.
         normalized = Path(os.path.normpath(str(candidate)))
         parts = tuple(part for part in normalized.parts if part not in ("", "."))
-        if ".." in parts:
-            continue
-        if len(parts) < 3:
+        if not parts or ".." in parts:
             continue
         matching_targets = set()
         for item in candidate_targets:
