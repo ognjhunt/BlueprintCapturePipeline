@@ -278,6 +278,7 @@ def _write_qualification_owner(
     *,
     continuing_spend: bool = True,
     manifest_name: str = "qualification_session.json",
+    deadline_epoch: float = 2_000_000_000,
 ) -> Path:
     attempt.mkdir(parents=True, exist_ok=True)
     (attempt / "started_vast_instance_id.txt").write_text(instance_id)
@@ -314,7 +315,7 @@ def _write_qualification_owner(
             "overlay_revision": 1,
             "control_contract_version": qualification.CONTROL_CONTRACT_VERSION,
         },
-        deadline_epoch=2_000_000_000,
+        deadline_epoch=deadline_epoch,
         image_ref=image_ref,
         image_digest=image_digest,
         source_commit=source_commit,
@@ -474,6 +475,33 @@ def test_qualification_hard_ttl_watchdog_is_a_bound_live_owner(tmp_path: Path) -
     )
 
     assert protected == {"45483300"}
+
+
+@pytest.mark.parametrize("observed_at", [100.0, 101.0])
+def test_expired_qualification_watchdog_is_not_a_live_owner(
+    tmp_path: Path,
+    observed_at: float,
+) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(
+        attempt,
+        "45483300",
+        deadline_epoch=100.0,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {attempt} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+        now=observed_at,
+    )
+
+    assert protected == set()
 
 
 def test_relative_symlinked_qualification_watchdog_is_a_bound_owner(

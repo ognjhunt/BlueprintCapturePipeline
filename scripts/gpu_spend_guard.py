@@ -1087,6 +1087,7 @@ def find_protected_pod_ids(
     output_roots: Iterable[Path | str],
     *,
     process_cmdlines: Sequence[str],
+    now: float | None = None,
 ) -> set[str]:
     """Launched ids (RunPod pod / Vast instance) that must never be reaped because a
     *live* owning process exists.
@@ -1100,6 +1101,7 @@ def find_protected_pod_ids(
     (eligible for reaping), not protected.
     """
     protected: set[str] = set()
+    observed_at = _now() if now is None else float(now)
     cmdlines = [c for c in process_cmdlines if isinstance(c, str)]
     owner_files: list[_OwnerBinding] = []
     for filename in OWNER_ID_FILENAMES:
@@ -1155,6 +1157,8 @@ def find_protected_pod_ids(
                     "--deadline-epoch",
                     str(binding.qualification_watchdog_deadline_epoch or ""),
                 )
+                and float(binding.qualification_watchdog_deadline_epoch or 0)
+                > observed_at
                 for cmd in cmdlines
             )
             if allocator_owner or watchdog_owner:
