@@ -1,5 +1,62 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-20
+
+### User-Facing
+
+- Added retry-safe, per-lane resume markers keyed to normalized raw capture
+  inputs, so completed lanes can be reused without weakening changed-input or
+  missing-output checks. Raw `scenes/` and `targets/` evidence now transitions
+  to Archive storage instead of deletion (`src/blueprint_pipeline/lane_resume.py`,
+  `deploy/storage/primary-capture-bucket-lifecycle.json`).
+- Added a backward-compatible `frames_index.v2` reader for packed frame archives
+  and stopped materialization from overwriting an existing rich frame index.
+  Added feature-flagged Cloud CDN URL signing, default off with direct-GCS
+  fallback; CDN provisioning and deployment remain unproven owner actions
+  (`src/blueprint_pipeline/frames_layout.py`,
+  `src/blueprint_pipeline/arena_package_delivery_local.py`,
+  `docs/BUYER_DELIVERY_CDN_DESIGN_2026-07-20.md`).
+
+### Employee-Facing
+
+- Generalized the sim-only policy-evaluation stack and separated evaluator
+  evidence profiles from model backends. Rankings now fail closed unless fresh,
+  structured, profile-specific evaluator evidence is identity- and
+  digest-bound; WAM execution, generated review media, and ranking evidence
+  remain distinct claims (`src/blueprint_pipeline/policy_evaluation_contracts.py`,
+  `src/blueprint_pipeline/evaluator_evidence_profiles.py`,
+  `src/blueprint_pipeline/decision_grade_ranking.py`).
+- Hardened real-site evaluation admission by binding independently verified
+  site evidence, task grounding, site-task contracts, and complete
+  out-of-distribution axes. Scaniverse imports and local site records do not by
+  themselves prove live-site evaluation readiness
+  (`src/blueprint_pipeline/site_reference_database.py`,
+  `docs/SCANIVERSE_ASSET_IMPORT.md`).
+- Preserved teardown obligations for ambiguous fine-tune launches while
+  distinguishing pre-create refusals from potentially billable allocation
+  outcomes. Provider absence remains required before ambiguous attempts close
+  (`src/blueprint_pipeline/g1_microwave_finetune_provider_job.py`,
+  `src/blueprint_pipeline/gpu_render_providers.py`).
+- Removed Terraform indexes for the unwritten `captures` collection, retained
+  scale-to-zero GPU defaults with measured model-load telemetry and an
+  in-process runtime cache, and documented modeled warm-pool economics. Applying
+  Terraform, enabling a warm pool, and provisioning the CDN were not performed
+  by these repo changes (`deploy/terraform/main.tf`,
+  `src/blueprint_pipeline/privacy_service_runtime.py`,
+  `docs/GPU_WARM_POOL_ECONOMICS_2026-07-20.md`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains six cleanly committed changes on `main`,
+  `ee403467` through `c8a0f890` (PRs #135, #130, #137, #138, #140, and #141);
+  no attributable uncommitted July 20 source work is recorded.
+- Keep raw capture/provenance truth authoritative. Lane completion, packed-frame
+  readability, startup, model caching, review media, evaluator evidence,
+  ranking admission, real-site admission, provider allocation, teardown,
+  deployment, and physical-robot execution are separate evidence layers. The
+  July 20 contracts and tests do not establish public readiness, a successful
+  live-provider episode, deployed infrastructure, or physical-robot success.
+
 ## 2026-07-17
 
 ### User-Facing
