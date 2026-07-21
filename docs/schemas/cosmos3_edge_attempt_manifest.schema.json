@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/cosmos3_edge_attempt_manifest.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "attempt_count", "expected_attempt_count", "attempts", "blockers", "claim_boundary", "manifest_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "cosmos3_edge_experiment_attempt_manifest.v1"},
+    "status": {"enum": ["completed_advisory", "blocked"]},
+    "attempt_count": {"type": "integer", "minimum": 0},
+    "expected_attempt_count": {"type": "integer", "minimum": 0},
+    "attempts": {"type": "array", "items": {"type": "object"}},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["cosmos3_nano_sc3_qualification_inherited", "structured_physics_truth_proven", "task_success_proven", "rank_fidelity_result_proven", "default_model_change_allowed"],
+      "properties": {
+        "cosmos3_nano_sc3_qualification_inherited": {"const": false},
+        "structured_physics_truth_proven": {"const": false},
+        "task_success_proven": {"const": false},
+        "rank_fidelity_result_proven": {"const": false},
+        "default_model_change_allowed": {"const": false}
+      }
+    },
+    "manifest_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

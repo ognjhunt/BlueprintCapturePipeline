@@ -231,7 +231,10 @@ def _write_scenario_family_library(capture_root: Path) -> None:
                     "scenario_id": "scenario_place_return_in_bin_mobile",
                     "scenario_family": "stockroom_pick_place_robustness",
                     "variations": [
-                        {"variation_id": "lighting_variation", "variation_name": "lighting variation"},
+                        {
+                            "variation_id": "lighting_variation",
+                            "variation_name": "lighting variation",
+                        },
                         {"variation_id": "object_rotation", "variation_name": "object rotation"},
                         {"variation_id": "cart_shifted", "variation_name": "cart shifted"},
                         {"variation_id": "blocked_path", "variation_name": "blocked path"},
@@ -240,7 +243,10 @@ def _write_scenario_family_library(capture_root: Path) -> None:
                         {"variation_id": "occlusion", "variation_name": "occlusion"},
                         {"variation_id": "glare", "variation_name": "glare"},
                         {"variation_id": "missing_label", "variation_name": "missing label"},
-                        {"variation_id": "wrong_object_nearby", "variation_name": "wrong object nearby"},
+                        {
+                            "variation_id": "wrong_object_nearby",
+                            "variation_name": "wrong object nearby",
+                        },
                         {
                             "variation_id": "narrow_approach_angle",
                             "variation_name": "narrow approach angle",
@@ -389,7 +395,9 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
     result = build_simulation_automation(capture_root=capture_root)
 
     automation_root = capture_root / "pipeline" / "simulation_automation"
-    proof_manifest = _read_json(automation_root / "owner_gpu_simulator_execution_proof_manifest.json")
+    proof_manifest = _read_json(
+        automation_root / "owner_gpu_simulator_execution_proof_manifest.json"
+    )
     gpu_handoff = _read_json(automation_root / "gpu_handoff_packet.json")
     proof_boundary = _read_json(automation_root / "proof_boundary.json")
     run_manifest = _read_json(automation_root / "simulation_automation_run_manifest.json")
@@ -417,22 +425,31 @@ def test_owner_gpu_proof_ingestion_validates_required_artifacts_without_robot_cl
     assert "robot_ready" in gpu_handoff["claim_boundary"]["disallowed_claims"]
     assert "simulator load trace" not in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
     assert "action or policy logs" not in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
-    assert "physics/contact validation logs" in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
+    assert (
+        "physics/contact validation logs" in gpu_handoff["claim_boundary"]["proof_upgrade_requires"]
+    )
     assert proof_boundary["simulator_execution_proven"] is True
     assert proof_boundary["isaac_sim_execution_proven"] is True
     assert proof_boundary["isaac_robot_asset_execution_proven"] is True
     assert proof_boundary["owner_gpu_default_policy_execution_proven"] is True
     assert proof_boundary["owner_gpu_sim_robot_pov_evidence_proven"] is True
     assert proof_boundary["rank_fidelity_result_proven"] is False
-    assert "simulator_execution_completed" not in proof_boundary["claim_boundary"]["disallowed_claims"]
-    assert "robot-team policy/action logs beyond the default smoke policy" in proof_boundary["claim_boundary"]["proof_upgrade_requires"]
+    assert (
+        "simulator_execution_completed" not in proof_boundary["claim_boundary"]["disallowed_claims"]
+    )
+    assert (
+        "robot-team policy/action logs beyond the default smoke policy"
+        in proof_boundary["claim_boundary"]["proof_upgrade_requires"]
+    )
     assert run_manifest["owner_gpu_simulator_execution_proven"] is True
     assert run_manifest["simulators_run"] is True
     assert run_manifest["isaac_sim_execution_proven"] is True
     assert run_manifest["isaac_robot_asset_execution_proven"] is True
     assert run_manifest["owner_gpu_default_policy_execution_proven"] is True
     assert run_manifest["owner_gpu_sim_robot_pov_evidence_proven"] is True
-    assert "simulator_execution_completed" not in run_manifest["claim_boundary"]["disallowed_claims"]
+    assert (
+        "simulator_execution_completed" not in run_manifest["claim_boundary"]["disallowed_claims"]
+    )
     assert result["claim_boundary"]["rank_fidelity_result_proven"] is False
 
 
@@ -441,9 +458,7 @@ def test_simulation_automation_surfaces_local_mujoco_g1_without_isaac_claim(
 ) -> None:
     capture_root = _build_capture_root(tmp_path)
     _write_worldlabs_and_marble_artifacts(capture_root)
-    local_smoke_dir = (
-        capture_root / "pipeline" / "simulation_automation" / "mujoco_g1_local_smoke"
-    )
+    local_smoke_dir = capture_root / "pipeline" / "simulation_automation" / "mujoco_g1_local_smoke"
     _write_json(
         local_smoke_dir / "mujoco_g1_local_smoke_manifest.json",
         {
@@ -569,9 +584,9 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         assert smoke_contract["required_env"]["BLUEPRINT_SIMULATOR_OUTPUT"]
         assert "scenario_eval_run_id" in smoke_contract["required_output_fields"]
         assert "scenario_variation_instance_id" in smoke_contract["required_output_fields"]
-        assert smoke_contract["smoke_output_acceptance"][
-            "normalized_attempt_trace_required"
-        ] is True
+        assert (
+            smoke_contract["smoke_output_acceptance"]["normalized_attempt_trace_required"] is True
+        )
         assert smoke_contract["proof_boundary"]["rank_fidelity_result_proven"] is False
         assert plugin["inputs"]["scenario_variation_instances"] == (
             "scenario_variation_instances.json"
@@ -593,8 +608,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         assert plugin["proof_boundary"]["world_model_support_assets_generated"] is False
         assert plugin["proof_boundary"]["rank_fidelity_result_proven"] is False
     assert {
-        record["framework"]: record["status"]
-        for record in simulator_execution["simulator_results"]
+        record["framework"]: record["status"] for record in simulator_execution["simulator_results"]
     } == {
         "isaac_sim": "blocked",
         "isaac_lab_arena": "blocked",
@@ -608,7 +622,10 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     )
     assert training["status"] == "blocked"
     assert training["reason"] == "approval_required"
-    assert training["runner"] == "blueprint_pipeline.synthesis.cosmos_lora_training.run_cosmos_lora_training"
+    assert (
+        training["runner"]
+        == "blueprint_pipeline.synthesis.cosmos_lora_training.run_cosmos_lora_training"
+    )
     assert proof_boundary["simulator_execution_proven"] is False
     assert proof_boundary["rank_fidelity_result_proven"] is False
     assert proof_boundary["training_proof"]["training_completed"] is False
@@ -640,7 +657,9 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
         "owner_gpu_simulator_execution_not_run"
     )
     assert all(
-        detail["proof_boundary"].endswith("does not prove simulator execution or generated-world rank fidelity")
+        detail["proof_boundary"].endswith(
+            "does not prove simulator execution or generated-world rank fidelity"
+        )
         for detail in gpu_handoff["pre_gpu_blocker_details"]
     )
     assert "owner_system_id" in proof_schema["required_fields"]
@@ -656,9 +675,7 @@ def test_simulation_automation_default_is_local_only_and_blocked(tmp_path: Path)
     )
     assert run_manifest["gpu_handoff_packet_path"] == "gpu_handoff_packet.json"
     assert run_manifest["arena_environment_packet_path"] == "arena_environment_packet.json"
-    assert run_manifest["arena_environment_packet_status"] == (
-        "ready_for_owner_arena_pack_review"
-    )
+    assert run_manifest["arena_environment_packet_status"] == ("ready_for_owner_arena_pack_review")
     assert run_manifest["owner_gpu_simulator_execution_proven"] is False
     assert run_manifest["simulators_run"] is False
     assert run_manifest["gpu_training_run"] is False
@@ -735,8 +752,7 @@ def test_simulation_automation_instantiates_scenario_variations_for_all_engine_t
         assert expected_mutation_fields[variation_name] in instance["concrete_mutation"]
         assert set(instance["engine_mutations"]) == set(variation_instances["engine_targets"])
         assert all(
-            mutation["operation_count"] >= 1
-            for mutation in instance["engine_mutations"].values()
+            mutation["operation_count"] >= 1 for mutation in instance["engine_mutations"].values()
         )
 
     assert arena_packet["source_artifacts"]["scenario_variation_instances"] == (
@@ -789,10 +805,7 @@ def test_simulation_automation_respects_site_profile_required_variations(
     build_simulation_automation(capture_root=capture_root)
 
     variation_instances = _read_json(
-        capture_root
-        / "pipeline"
-        / "simulation_automation"
-        / "scenario_variation_instances.json"
+        capture_root / "pipeline" / "simulation_automation" / "scenario_variation_instances.json"
     )
 
     assert variation_instances["required_variation_names"] == [
@@ -805,8 +818,7 @@ def test_simulation_automation_respects_site_profile_required_variations(
     }
     assert variation_instances["instance_count"] == 2
     by_name = {
-        instance["variation_name"]: instance
-        for instance in variation_instances["instances"]
+        instance["variation_name"]: instance for instance in variation_instances["instances"]
     }
     assert "conveyor_motion" in by_name["conveyor_motion"]["concrete_mutation"]
     assert "machine_guarding" in by_name["machine_guarding_state"]["concrete_mutation"]
@@ -829,11 +841,7 @@ def test_missing_simulator_dependency_produces_blocked_result(
     )
 
     result_path = (
-        capture_root
-        / "pipeline"
-        / "simulation_automation"
-        / "simulators"
-        / "mujoco_result.json"
+        capture_root / "pipeline" / "simulation_automation" / "simulators" / "mujoco_result.json"
     )
     mujoco_result = _read_json(result_path)
 
@@ -931,9 +939,7 @@ def test_simulation_live_sdk_operators_log_commands_without_proof_mutation(
         "diagnose_patch_and_test_simulation_automation",
         "pytest tests/test_simulation_automation.py",
     ]
-    assert codex_ledger["operator_ledger"]["tool_call_summaries"][0]["tool_name"] == (
-        "apply_patch"
-    )
+    assert codex_ledger["operator_ledger"]["tool_call_summaries"][0]["tool_name"] == ("apply_patch")
     assert codex_ledger["proof_effect"]["proof_booleans_mutable_by_agent"] is False
 
 
@@ -994,3 +1000,40 @@ def test_evaluation_prep_surfaces_simulation_automation_artifacts_without_overcl
     assert surface["artifact_uris"]["robot_eval_scenario_variation_instances_uri"].endswith(
         "/pipeline/simulation_automation/scenario_variation_instances.json"
     )
+
+
+def test_simulation_plan_surfaces_nvidia_experiments_as_advisory_only(tmp_path: Path) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_worldlabs_and_marble_artifacts(capture_root)
+    _write_json(
+        capture_root / "pipeline" / "sensor_preflight" / "ovrtx_result.json",
+        {"status": "passed_advisory", "rank_fidelity_result_proven": False},
+    )
+    _write_json(
+        capture_root / "pipeline" / "simready" / "rule_calibration.json",
+        {"status": "completed", "authorized_blocking_rule_ids": []},
+    )
+    _write_json(
+        capture_root / "pipeline" / "cosmos3_edge_experiment" / "qualification.json",
+        {"status": "not_qualified", "default_model_change_allowed": False},
+    )
+    _write_json(
+        capture_root / "pipeline" / "omniverse_preflight_benchmark_suite.json",
+        {"status": "completed", "candidate_retention_is_production_qualification": False},
+    )
+    build_simulation_automation(capture_root=capture_root)
+    automation = capture_root / "pipeline" / "simulation_automation"
+    plan = _read_json(automation / "simulation_automation_plan.json")
+    run = _read_json(automation / "simulation_automation_run_manifest.json")
+    experiments = plan["world_model_sources"]["nvidia_siggraph_experiments"]
+    assert experiments["ovrtx_preflight_status"] == "passed_advisory"
+    assert experiments["simready_rule_calibration_status"] == "completed"
+    assert experiments["cosmos3_edge_qualification_status"] == "not_qualified"
+    assert experiments["all_artifacts_advisory_only"] is True
+    assert experiments["rank_fidelity_result_proven"] is False
+    assert plan["automation_scope"]["external_omniverse_preflights_allowed_by_default"] is False
+    assert run["nvidia_siggraph_experiment_artifacts"]["advisory_only"] is True
+    assert run["nvidia_siggraph_experiment_artifacts"]["simready_rule_calibration"]
+    assert run["nvidia_siggraph_experiment_artifacts"]["cosmos3_edge_qualification"]
+    assert run["nvidia_siggraph_experiment_artifacts"]["omniverse_preflight_benchmark_suite"]
+    assert run["rank_fidelity_result_proven"] is False

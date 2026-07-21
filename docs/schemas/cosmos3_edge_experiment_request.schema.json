@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/cosmos3_edge_experiment_request.schema.json",
+  "type": "object",
+  "required": ["schema_version", "scene_id", "capture_id", "cells", "modes", "model_identity", "configuration_sha256", "execution_policy", "request_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "cosmos3_edge_experiment_request.v1"},
+    "scene_id": {"type": "string", "minLength": 1},
+    "capture_id": {"type": "string", "minLength": 1},
+    "cells": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "modes": {"const": ["forward_dynamics", "inverse_dynamics", "reasoning"]},
+    "model_identity": {
+      "type": "object",
+      "required": ["model_id", "parameter_count_billion", "model_revision", "code_revision", "checkpoint_sha256", "inherits_cosmos3_nano_sc3_qualification", "g1_7d_action_encoding_listed_as_supported"],
+      "properties": {
+        "model_id": {"const": "nvidia/Cosmos3-Edge"},
+        "parameter_count_billion": {"const": 4},
+        "checkpoint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inherits_cosmos3_nano_sc3_qualification": {"const": false},
+        "g1_7d_action_encoding_listed_as_supported": {"const": false}
+      }
+    },
+    "configuration_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "execution_policy": {"type": "object"},
+    "request_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

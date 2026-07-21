@@ -1,0 +1,20 @@
+{
+  "schema_version": "nvidia_siggraph_post_conference_source_review.v1",
+  "reviewed_at": null,
+  "reviewer_id": null,
+  "components": [
+    {"component": "simready_foundation", "source_url": "https://github.com/NVIDIA-Omniverse/SimReady-Foundation", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "ovrtx", "source_url": "https://github.com/NVIDIA-Omniverse/ovrtx", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "ovphysx", "source_url": "https://github.com/NVIDIA-Omniverse/PhysX/tree/main/ovphysx", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "ovstage", "source_url": "https://developer.nvidia.com/omniverse", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "agent_toolkit", "source_url": "https://github.com/NVIDIA/AgentIQ", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "cad_to_simready_skill", "source_url": "https://github.com/NVIDIA/skills", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "cosmos3_edge", "source_url": "https://huggingface.co/nvidia/Cosmos3-Edge", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "usd_convert_gsplat", "source_url": "https://github.com/NVIDIA-Omniverse/usd-convert-gsplat", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "content_agents", "source_url": "https://github.com/NVIDIA-Omniverse/Content-Agents", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "simready_blender", "source_url": "https://github.com/NVIDIA-Omniverse/omniverse-labs", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "artifixer", "source_url": "https://github.com/nv-tlabs/artifixer", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "motionbricks_ardy_gpc_newton_research", "source_url": "https://research.nvidia.com/labs/par/motionbricks", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []},
+    {"component": "cosmos_dreams_research", "source_url": "https://research.nvidia.com", "source_revision_or_package_version": "REVERIFY", "license_id": "REVERIFY", "license_compatible": false, "maturity": "REVERIFY", "decision": "REVERIFY", "evidence_urls": []}
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": "nvidia_siggraph_2026_verification_receipt.v1",
+  "generated_at": "2026-07-21T19:41:41Z",
+  "status": "passed",
+  "exit_code": 0,
+  "command": ".venv/bin/pytest -q",
+  "working_directory": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+  "git_head": "2edb48b0205e1f2b7f1182e83fae708f9e8a8abf",
+  "selected_test_count": 4864,
+  "passed_test_count": 4864,
+  "deselected_test_count": 1606,
+  "failed_test_count": 0,
+  "duration_seconds": 1103.38,
+  "preconditions": {
+    "quality_gap_ledger_rebound_after_final_python_and_pyproject_changes": true,
+    "ruff_changed_files_passed": true,
+    "python_compileall_passed": true,
+    "setup_script_bash_syntax_passed": true,
+    "temporary_uv_cache_cleared_for_disk_headroom": true
+  },
+  "claim_boundary": {
+    "local_contract_and_regression_tests_proven": true,
+    "official_nvidia_binary_execution_proven": false,
+    "nvidia_gpu_execution_proven": false,
+    "cosmos3_edge_checkpoint_execution_proven": false,
+    "paid_provider_execution_or_teardown_proven": false,
+    "semantic_or_ranking_success_proven": false,
+    "production_promotion_allowed": false
+  }
+}

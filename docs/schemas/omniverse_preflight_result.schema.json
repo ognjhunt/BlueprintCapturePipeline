@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/omniverse_preflight_result.schema.json",
+  "title": "Omniverse library preflight result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "component",
+    "component_ran",
+    "input_sha256",
+    "configuration_sha256",
+    "repeatable_output_digests",
+    "blockers",
+    "stop_rule_evaluation",
+    "claim_boundary",
+    "result_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"enum": ["ovrtx_preflight_result.v1", "ovphysx_preflight_result.v1"]},
+    "status": {"enum": ["passed_advisory", "blocked"]},
+    "component": {"enum": ["ovrtx", "ovphysx"]},
+    "component_ran": {"type": "boolean"},
+    "input_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "configuration_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "repeatable_output_digests": {"type": "boolean"},
+    "failure_classes_checked": {"type": "array", "items": {"type": "string"}},
+    "required_sensor_metadata_preserved": {"type": ["boolean", "null"]},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "stop_rule_evaluation": {"type": "object"},
+    "claim_boundary": {"type": "object"},
+    "result_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.invalid/schemas/cosmos3_edge_qualification.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "attempt_manifest", "evaluator_runtime_receipt", "scorecard", "configured_evaluator_id", "metrics", "thresholds", "blockers", "claim_boundary", "qualification_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "cosmos3_edge_qualification.v1"},
+    "status": {"enum": ["qualified_advisory", "not_qualified"]},
+    "attempt_manifest": {"type": "object", "required": ["path", "sha256"]},
+    "evaluator_runtime_receipt": {"type": "object", "required": ["path", "sha256"]},
+    "scorecard": {"type": "object", "required": ["path", "sha256"]},
+    "configured_evaluator_id": {"type": ["string", "null"]},
+    "metrics": {"type": "object"},
+    "thresholds": {"type": "object"},
+    "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["edge_blueprint_data_qualification_measured", "cosmos3_nano_qualification_inherited", "structured_physics_truth_proven", "real_world_correlation_proven", "safety_certification_proven", "default_model_change_allowed", "default_change_requires_separate_owner_decision"],
+      "properties": {
+        "cosmos3_nano_qualification_inherited": {"const": false},
+        "structured_physics_truth_proven": {"const": false},
+        "real_world_correlation_proven": {"const": false},
+        "safety_certification_proven": {"const": false},
+        "default_model_change_allowed": {"const": false},
+        "default_change_requires_separate_owner_decision": {"const": true}
+      }
+    },
+    "qualification_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

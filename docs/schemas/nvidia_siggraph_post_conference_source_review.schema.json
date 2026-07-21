@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/nvidia_siggraph_post_conference_source_review.v1.json",
+  "title": "Post-SIGGRAPH source, version, maturity, and license review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "reviewed_at", "reviewer_id", "components"],
+  "properties": {
+    "schema_version": {"const": "nvidia_siggraph_post_conference_source_review.v1"},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "component",
+          "source_url",
+          "source_revision_or_package_version",
+          "license_id",
+          "license_compatible",
+          "maturity",
+          "decision",
+          "evidence_urls"
+        ],
+        "properties": {
+          "component": {"type": "string", "minLength": 1},
+          "source_url": {"type": "string", "minLength": 1},
+          "source_revision_or_package_version": {"type": "string", "minLength": 1},
+          "license_id": {"type": "string", "minLength": 1},
+          "license_compatible": {"type": "boolean"},
+          "maturity": {"type": "string", "minLength": 1},
+          "decision": {"type": "string", "minLength": 1},
+          "evidence_urls": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  }
+}

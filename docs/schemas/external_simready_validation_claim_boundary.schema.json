@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/external_simready_validation_claim_boundary.v1.json",
+  "title": "External SimReady Validation Claim Boundary",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "artifact_purpose",
+    "raw_capture_authority_preserved",
+    "simulator_execution_proven",
+    "physics_contact_validated",
+    "robot_policy_execution_proven",
+    "rank_fidelity_result_proven",
+    "deployment_ready",
+    "real_world_task_success_proven",
+    "public_claim_upgrade_allowed",
+    "advisory_only"
+  ],
+  "properties": {
+    "schema_version": {"const": "external_simready_validation_claim_boundary.v1"},
+    "raw_capture_authority_preserved": {"const": true},
+    "simulator_execution_proven": {"const": false},
+    "physics_contact_validated": {"const": false},
+    "robot_policy_execution_proven": {"const": false},
+    "rank_fidelity_result_proven": {"const": false},
+    "deployment_ready": {"const": false},
+    "real_world_task_success_proven": {"const": false},
+    "public_claim_upgrade_allowed": {"const": false},
+    "advisory_only": {"const": true}
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "nvidia_siggraph_simready_fixture_corpus.v1",
+  "frozen": true,
+  "profile_name": "Prop-Robotics-Neutral",
+  "profile_version": "1.0.0",
+  "cases": [
+    {
+      "case_id": "known_valid_minimal_prop",
+      "path": "simready_valid.usda",
+      "expected_validation_status": "passed_advisory",
+      "expert_expected_error_rule_ids": []
+    },
+    {
+      "case_id": "missing_default_prim",
+      "path": "simready_missing_default_prim.usda",
+      "expected_validation_status": "validation_failed",
+      "expert_expected_error_rule_ids": ["SAMP.001"]
+    }
+  ]
+}

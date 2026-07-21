@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/usd_convert_gsplat_conformance_result.schema.json",
+  "type": "object",
+  "required": ["schema_version", "status", "source_sha256", "blueprint_output_sha256", "oracle_output_sha256", "comparison", "stop_rule_evaluation", "blockers", "claim_boundary"],
+  "properties": {
+    "schema_version": {"const": "usd_convert_gsplat_conformance_result.v1"},
+    "status": {"enum": ["conformant_advisory", "blocked_or_nonconformant"]},
+    "source_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "blueprint_output_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "oracle_output_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "comparison": {"type": "object"},
+    "stop_rule_evaluation": {"type": "object"},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["optional_conformance_oracle_only", "blueprint_particlefield_authoring_replaced", "isaac_or_ovrtx_render_proven", "capture_truth_modified", "rank_fidelity_result_proven"],
+      "properties": {
+        "optional_conformance_oracle_only": {"const": true},
+        "blueprint_particlefield_authoring_replaced": {"const": false},
+        "isaac_or_ovrtx_render_proven": {"const": false},
+        "capture_truth_modified": {"const": false},
+        "rank_fidelity_result_proven": {"const": false}
+      }
+    }
+  },
+  "additionalProperties": true
+}

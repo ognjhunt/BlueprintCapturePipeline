@@ -16,6 +16,7 @@ Built-in backends:
 Adding a framework = ``register_backend(SplatBackend(...))`` with an availability probe and
 a fail-closed ``run`` — no core change required.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -75,6 +76,7 @@ def _node_available() -> bool:
 
 
 # ---------------- built-in backend wrappers (delegate to existing fail-closed impls) ---
+
 
 def _splat_transform_available() -> bool:
     from .gaussian_splat_decode import find_splat_transform_cli
@@ -158,6 +160,7 @@ def _artifixer_run(
     render_trajectory: str = "all_frames",
     python: str = "python",
     timeout_seconds: int = 7200,
+    held_out_manifest=None,
 ) -> dict:
     """NVIDIA ArtiFixer: diffusion artifact-fix / novel-view frames from a sparse 3DGRUT
     reconstruction. Fail-closed wrapper around its documented inference CLI."""
@@ -169,12 +172,19 @@ def _artifixer_run(
         }
     exe = shutil.which(python) or python
     cmd = [
-        exe, "-m", ARTIFIXER_INFERENCE_MODULE,
-        "--evalset", evalset,
-        "--checkpoint_pt", str(checkpoint_pt),
-        "--save_dir", str(save_dir),
-        "--split_path", str(split_path),
-        "--render_trajectory", render_trajectory,
+        exe,
+        "-m",
+        ARTIFIXER_INFERENCE_MODULE,
+        "--evalset",
+        evalset,
+        "--checkpoint_pt",
+        str(checkpoint_pt),
+        "--save_dir",
+        str(save_dir),
+        "--split_path",
+        str(split_path),
+        "--render_trajectory",
+        render_trajectory,
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
@@ -187,41 +197,102 @@ def _artifixer_run(
             "stderr_tail": (proc.stderr or "")[-2000:],
             "command": " ".join(cmd),
         }
-    return {"status": "completed", "save_dir": str(save_dir), "command": " ".join(cmd), "enhancer": "artifixer"}
+    if not held_out_manifest:
+        return {
+            "status": "generated_support_pending_heldout_evaluation",
+            "save_dir": str(save_dir),
+            "command": " ".join(cmd),
+            "enhancer": "artifixer",
+            "blockers": ["artifixer_heldout_real_view_evaluation_required"],
+            "claim_boundary": {
+                "generated_pixels_are_capture_truth": False,
+                "generated_geometry_is_collision_truth": False,
+                "rank_fidelity_result_proven": False,
+            },
+        }
+    from .artifixer_heldout_evaluation import evaluate_artifixer_heldout_views
+
+    evaluation = evaluate_artifixer_heldout_views(
+        manifest_path=held_out_manifest,
+        generated_root=save_dir,
+        output_path=Path(save_dir) / "artifixer_heldout_real_view_evaluation.json",
+    )
+    return {
+        "status": (
+            "completed_generated_support_advisory"
+            if evaluation["status"] == "passed_advisory"
+            else "generated_support_failed_heldout_evaluation"
+        ),
+        "save_dir": str(save_dir),
+        "command": " ".join(cmd),
+        "enhancer": "artifixer",
+        "heldout_evaluation": evaluation,
+        "claim_boundary": evaluation["claim_boundary"],
+    }
 
 
 def _register_builtins() -> None:
-    register_backend(SplatBackend(
-        "splat_transform", "decoder",
-        "PlayCanvas splat-transform: compressed PLY/SPZ -> standard 3DGS PLY",
-        ("node",), _splat_transform_available, _splat_transform_run,
-    ))
-    register_backend(SplatBackend(
-        "spark", "renderer",
-        "Spark.js (three.js) headless reference renderer of the captured scene (local, no GPU)",
-        ("node",), _spark_available, _spark_run,
-    ))
-    register_backend(SplatBackend(
-        "threedgrut", "exporter",
-        "NVIDIA 3dgrut transcode: standard 3DGS PLY -> NuRec USDZ / ParticleField USD",
-        ("threedgrut",), _threedgrut_available, _threedgrut_run,
-    ))
-    register_backend(SplatBackend(
-        "particlefield_usd", "exporter",
-        "Author ParticleField3DGaussianSplat USD (Isaac Sim 6.0 RTX-native) from a standard "
-        "3DGS PLY in pure pxr -- no ncore/3dgrut/NRE",
-        ("pxr",), _particlefield_available, _particlefield_run,
-    ))
-    register_backend(SplatBackend(
-        "isaac_nurec", "renderer",
-        "Isaac Sim RTX / NuRec-3DGUT render of the captured scene (GPU worker)",
-        ("gpu", "isaacsim"), _isaac_nurec_available, _isaac_nurec_run,
-    ))
-    register_backend(SplatBackend(
-        "artifixer", "enhancer",
-        "NVIDIA ArtiFixer: diffusion artifact-fix / novel-view frames from sparse 3DGRUT recon",
-        ("gpu", "artifixer", "checkpoint"), _artifixer_available, _artifixer_run,
-    ))
+    register_backend(
+        SplatBackend(
+            "splat_transform",
+            "decoder",
+            "PlayCanvas splat-transform: compressed PLY/SPZ -> standard 3DGS PLY",
+            ("node",),
+            _splat_transform_available,
+            _splat_transform_run,
+        )
+    )
+    register_backend(
+        SplatBackend(
+            "spark",
+            "renderer",
+            "Spark.js (three.js) headless reference renderer of the captured scene (local, no GPU)",
+            ("node",),
+            _spark_available,
+            _spark_run,
+        )
+    )
+    register_backend(
+        SplatBackend(
+            "threedgrut",
+            "exporter",
+            "NVIDIA 3dgrut transcode: standard 3DGS PLY -> NuRec USDZ / ParticleField USD",
+            ("threedgrut",),
+            _threedgrut_available,
+            _threedgrut_run,
+        )
+    )
+    register_backend(
+        SplatBackend(
+            "particlefield_usd",
+            "exporter",
+            "Author ParticleField3DGaussianSplat USD (Isaac Sim 6.0 RTX-native) from a standard "
+            "3DGS PLY in pure pxr -- no ncore/3dgrut/NRE",
+            ("pxr",),
+            _particlefield_available,
+            _particlefield_run,
+        )
+    )
+    register_backend(
+        SplatBackend(
+            "isaac_nurec",
+            "renderer",
+            "Isaac Sim RTX / NuRec-3DGUT render of the captured scene (GPU worker)",
+            ("gpu", "isaacsim"),
+            _isaac_nurec_available,
+            _isaac_nurec_run,
+        )
+    )
+    register_backend(
+        SplatBackend(
+            "artifixer",
+            "enhancer",
+            "NVIDIA ArtiFixer: diffusion artifact-fix / novel-view frames from sparse 3DGRUT recon",
+            ("gpu", "artifixer", "checkpoint"),
+            _artifixer_available,
+            _artifixer_run,
+        )
+    )
 
 
 _register_builtins()

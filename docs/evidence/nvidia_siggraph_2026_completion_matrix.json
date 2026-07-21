@@ -1,0 +1,381 @@
+{
+  "schema_version": "nvidia_siggraph_2026_completion_matrix.v1",
+  "generated_at": "2026-07-21T19:41:52.952048+00:00",
+  "memo_path": "docs/NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md",
+  "implementation_complete": true,
+  "status": "implementation_complete_external_qualification_pending",
+  "requirements": [
+    {
+      "requirement_id": "phase0.contract_schemas",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "docs/schemas/external_simready_validation_request.schema.json",
+          "sha256": "9a3f919717ae194a8e0dd146f063f7842454c29dc02398727a2eef86efbbd54d"
+        },
+        {
+          "path": "docs/schemas/external_simready_validation_result.schema.json",
+          "sha256": "847c627d014f32e7500328adea9e764613ed4ba5222a473f79ca0cd7c7c9cd2c"
+        },
+        {
+          "path": "docs/schemas/external_simready_validation_claim_boundary.schema.json",
+          "sha256": "d02341aa061fcde12c4c666cca1b92bff90488097662c405d395680adfdf9fc4"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase0.fixture_corpus",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "tests/fixtures/nvidia_siggraph_2026/simready_fixture_corpus.json",
+          "sha256": "1dc5826b95331620c55474b56c3d5e9f8353e6e1dc9f8887e9e7045da90e20db"
+        },
+        {
+          "path": "tests/fixtures/nvidia_siggraph_2026/simready_valid.usda",
+          "sha256": "c5af15b6f378bfe1df377fd39b385e1ec20f1a9927281a95451690de40539a0c"
+        },
+        {
+          "path": "tests/fixtures/nvidia_siggraph_2026/simready_missing_default_prim.usda",
+          "sha256": "932d39001bca9cf4e79b48036d23add68a0eb839ed299308efeae141e9ba7d5b"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase0.local_baseline",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/external_simready_validation.py",
+          "sha256": "80fcd3a6f69b52dd087018d707160082e7ef883ffc3c44ddf99b2f7d8ea00cb3"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase0.post_conference_refresh",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "docs/schemas/nvidia_siggraph_post_conference_source_review.schema.json",
+          "sha256": "7140d2e4afeefd56a3e2e359027309850891da56af7a9ec1479bbb9fb48ae955"
+        },
+        {
+          "path": "docs/nvidia_siggraph_post_conference_source_review.template.json",
+          "sha256": "8e98cf7004177e07187671c42b07beebf6c05ce38afb87b9b9d4547377be51c9"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase0.rule_promotion_calibration",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/simready_rule_calibration.py",
+          "sha256": "4180df7edfc13c70aad5dc530a01987b66ce84f0c32195a2cd3a5d7eb0617151"
+        },
+        {
+          "path": "docs/schemas/simready_rule_calibration.schema.json",
+          "sha256": "60f9f3fac56f37bb9c56e100b5577da52c0393764711bcf525c1538cb9c1042d"
+        },
+        {
+          "path": "tests/test_simready_rule_calibration.py",
+          "sha256": "c9eeebaa2760b438d0c63c84c3903210d136a5a8bc652b2c46acc63b55200bca"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase1.isolated_simready_worker",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/external_simready_validation.py",
+          "sha256": "80fcd3a6f69b52dd087018d707160082e7ef883ffc3c44ddf99b2f7d8ea00cb3"
+        },
+        {
+          "path": "scripts/run_simready_validator_worker.py",
+          "sha256": "70f7326864d2d43b369080c4338fa733113c6625bf961f0fb81b51397d64bc61"
+        },
+        {
+          "path": "scripts/setup_simready_validator_env.sh",
+          "sha256": "acb386e7a2add19ecdbfe0ca080f8032aa0e4580dce9fbd5fbe9215df757180c"
+        },
+        {
+          "path": "tests/test_external_simready_validation.py",
+          "sha256": "8625fe43131aded95af9cbe01b42fdd3df3c91cc88bd6dfe920373638c7e61cf"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase1.immutable_conditioning_proposals",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/nvidia_asset_conditioning_review.py",
+          "sha256": "9966a1044c70388ca83ce16c16e4f1f524dc55713976a35f30afa45ffefe3fd4"
+        },
+        {
+          "path": "docs/schemas/nvidia_asset_conditioning_review.schema.json",
+          "sha256": "ad33141d7a0cfcbbef3f47eadcfa34f634da80bb72665d489c60b93e5e3c6a9d"
+        },
+        {
+          "path": "tests/test_nvidia_asset_conditioning_review.py",
+          "sha256": "f74cfc6a35bcb843a11f847c4239bfa19b5457c9618904dc5223b184050c3d1a"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase2.ovrtx_preflight",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/omniverse_library_preflight.py",
+          "sha256": "f6cf23ca440e23ce58ce8e01d43cf350b8c4bd8b958455a9297795fecf7cfcfe"
+        },
+        {
+          "path": "scripts/run_ovrtx_preflight_worker.py",
+          "sha256": "475e8f2e249b2a7b7786892805dde40f637f70756a28431147e2c1d1f60b8627"
+        },
+        {
+          "path": "docs/schemas/omniverse_preflight_result.schema.json",
+          "sha256": "04c30dc6297e880f8db8f825b7c9096e59de0572b518b8c77e3556fffa80933d"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase2.ovphysx_preflight",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/omniverse_library_preflight.py",
+          "sha256": "f6cf23ca440e23ce58ce8e01d43cf350b8c4bd8b958455a9297795fecf7cfcfe"
+        },
+        {
+          "path": "scripts/run_ovphysx_preflight_worker.py",
+          "sha256": "58105402d91663acdcaf3122a7e600cfdb9b8fb2d70246e2d2c2ba5d7cd2ad39"
+        },
+        {
+          "path": "docs/schemas/omniverse_preflight_result.schema.json",
+          "sha256": "04c30dc6297e880f8db8f825b7c9096e59de0572b518b8c77e3556fffa80933d"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase2.same_scene_benchmark",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "docs/schemas/omniverse_preflight_benchmark_suite.schema.json",
+          "sha256": "1c55b052d77b619bc90a95cf118040cd9ace298a4f51c43661df53b815ccf5b6"
+        },
+        {
+          "path": "tests/test_omniverse_library_preflight.py",
+          "sha256": "f8761feaa418a35f57ab5e364a5d892ab87b1132fe28cda90692327403d74ad7"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase2.paid_resource_closeout",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/nvidia_experiment_resource.py",
+          "sha256": "c6a0484097e361f9f167328db9bf26567675ba3f5d755858b0658e8aa415d555"
+        },
+        {
+          "path": "docs/schemas/nvidia_experiment_resource_context.schema.json",
+          "sha256": "a0cf8e94a364a1eb6350c6009da3b5c785b0deafe8c9fb9139ccb29a73ee25cb"
+        },
+        {
+          "path": "docs/schemas/nvidia_experiment_resource_closeout.schema.json",
+          "sha256": "e421c8a9840e95e0c7ba85cb67d6cd3becf9d9a994f6ab0a0d0ec5befdfe89c5"
+        },
+        {
+          "path": "tests/test_nvidia_experiment_resource.py",
+          "sha256": "a5fe5403342092c8c131a9ac17ff13eacbb6210c59c598088eb732f9e86dc229"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase3.distinct_edge_runtime",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/cosmos3_edge_experiment.py",
+          "sha256": "68cb3fca045ff7ce4b89ed5f498c19cf3e35adad960cb0d15d8f361ce4e7ba9d"
+        },
+        {
+          "path": "scripts/run_cosmos3_edge_worker.py",
+          "sha256": "defc67c7307078ad21ae3b1311e1e2e312486b6286af2408de779aafe2ac4abf"
+        },
+        {
+          "path": "scripts/setup_cosmos3_edge_env.sh",
+          "sha256": "f2afa5047a70ed03849e3fabb4577d0f0d509c2da3a48b864bc2f8259ce995be"
+        },
+        {
+          "path": "tests/test_cosmos3_edge_experiment.py",
+          "sha256": "3035531fe5b7e562c970d37ec29e3bad98750b7cb89e1b0bf83a7810b29ba552"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "phase3.edge_qualification",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/cosmos3_edge_qualification.py",
+          "sha256": "f2ec003d3aead9453f6963f57b9c2333052f29cc8fb1a025de0cce37f9146c7b"
+        },
+        {
+          "path": "docs/schemas/cosmos3_edge_qualification.schema.json",
+          "sha256": "e1c4bd0b7dc88d9f85a8cd4fd1b0f05674d2f055d7124d3fcbd554073b88d46f"
+        },
+        {
+          "path": "tests/test_cosmos3_edge_qualification.py",
+          "sha256": "d7335bb8a1b634ff95fb66a8110e6834b6cc09917b16212dea8953491f569038"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "existing.gsplat_conformance_only",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/gsplat_conformance.py",
+          "sha256": "5630a10e3ba7f13c4d24b334fc64c7fae1fc600a75442239189cd68587d1ac2b"
+        },
+        {
+          "path": "tests/test_gsplat_conformance.py",
+          "sha256": "4554b837c24cd8aca570ccd160e1292bce7f7b5c5b51ed44a760c4dbfb84bddc"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "existing.artifixer_heldout_only",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/artifixer_heldout_evaluation.py",
+          "sha256": "1b4ac7acb5e0973b0102f13e0fc31eea2ffd97c50441915c68185f90c5dcb484"
+        },
+        {
+          "path": "tests/test_artifixer_heldout_evaluation.py",
+          "sha256": "12790b30b57aebc50e2982b80a9364016f777f5fd157fc8ce3d993238a9cb37c"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "governance.component_registry_and_stop_rules",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/nvidia_siggraph_policy.py",
+          "sha256": "cc093f4e812dca319be1f5a6febb4cdcd783e99d2b8312f6059f8c2729261b48"
+        },
+        {
+          "path": "tests/test_nvidia_siggraph_policy.py",
+          "sha256": "08fed11c54ee37d48c8a52c6b4ee13b285e0128571db7052c13ebe2038b08e7c"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "governance.advisory_surface",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "src/blueprint_pipeline/simulation_automation.py",
+          "sha256": "4535c9c5776e93087c0efb4c2835efa38c2ec141715d14e3340410c6dd02eb11"
+        },
+        {
+          "path": "tests/test_simulation_automation.py",
+          "sha256": "82290aeb141a8cceb3d97126daaf2416f278487c7dcec7d7ff467ce4a097db82"
+        }
+      ],
+      "missing_paths": []
+    },
+    {
+      "requirement_id": "documentation.runbook",
+      "implementation_status": "implemented",
+      "evidence": [
+        {
+          "path": "docs/NVIDIA_SIGGRAPH_2026_IMPLEMENTATION_RUNBOOK.md",
+          "sha256": "b6399d5dea165cc20e3726f7e5bb07ba650a43c4a34194b9f1db3a9a997c5f40"
+        },
+        {
+          "path": "docs/NVIDIA_SIGGRAPH_2026_STACK_IMPACT_2026-07-21.md",
+          "sha256": "5feee244a44368e127e7dfdbe784bf22ccdcf792f5d699d152bd8e730922d53e"
+        }
+      ],
+      "missing_paths": []
+    }
+  ],
+  "verification_receipt": {
+    "schema_version": "nvidia_siggraph_2026_verification_receipt.v1",
+    "generated_at": "2026-07-21T19:41:41Z",
+    "status": "passed",
+    "exit_code": 0,
+    "command": ".venv/bin/pytest -q",
+    "working_directory": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+    "git_head": "2edb48b0205e1f2b7f1182e83fae708f9e8a8abf",
+    "selected_test_count": 4864,
+    "passed_test_count": 4864,
+    "deselected_test_count": 1606,
+    "failed_test_count": 0,
+    "duration_seconds": 1103.38,
+    "preconditions": {
+      "quality_gap_ledger_rebound_after_final_python_and_pyproject_changes": true,
+      "ruff_changed_files_passed": true,
+      "python_compileall_passed": true,
+      "setup_script_bash_syntax_passed": true,
+      "temporary_uv_cache_cleared_for_disk_headroom": true
+    },
+    "claim_boundary": {
+      "local_contract_and_regression_tests_proven": true,
+      "official_nvidia_binary_execution_proven": false,
+      "nvidia_gpu_execution_proven": false,
+      "cosmos3_edge_checkpoint_execution_proven": false,
+      "paid_provider_execution_or_teardown_proven": false,
+      "semantic_or_ranking_success_proven": false,
+      "production_promotion_allowed": false
+    },
+    "path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/docs/evidence/nvidia_siggraph_2026_verification_receipt.json",
+    "sha256": "9dd11711d3beca7595cc02f5d6978e7b5a2da356bb524f382de6676064b391ad"
+  },
+  "post_conference_source_review": {
+    "status": "pending_until_2026-07-24_or_later",
+    "evidence": null
+  },
+  "external_qualification_state": {
+    "official_simready_execution": "unproven",
+    "linux_rtx_ovrtx_execution": "unproven",
+    "official_ovphysx_execution": "unproven",
+    "same_scene_isaac_comparison": "unproven",
+    "cosmos3_edge_checkpoint_execution": "unproven",
+    "cosmos3_edge_rank_fidelity": "unproven",
+    "provider_allocation_or_spend": "not_performed_by_implementation"
+  },
+  "blockers": [],
+  "claim_boundary": {
+    "repository_implementation_completeness_only": true,
+    "external_runtime_qualification_proven": false,
+    "semantic_or_ranking_success_proven": false,
+    "provider_teardown_proven_without_attempt": false,
+    "production_promotion_allowed": false
+  },
+  "matrix_fingerprint": "0b8a97bcd8c2e500730a37927d23509326a2b7967d2c77245bf9e9c8e110ae9e"
+}
