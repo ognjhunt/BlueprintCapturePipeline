@@ -228,6 +228,27 @@ def validate_evaluator_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
             blockers.append("sc3_inverse_error_threshold_missing_or_invalid")
         if not recovered_dimensions:
             blockers.append("sc3_recovered_inverse_action_dimensions_missing")
+        recovered_dimension_ids: set[int] = set()
+        for dimension_index, dimension_row in enumerate(recovered_dimensions):
+            dimension_id = dimension_row.get("dimension")
+            maximum_error = _finite(dimension_row.get("maximum_error"))
+            if (
+                isinstance(dimension_id, bool)
+                or not isinstance(dimension_id, int)
+                or dimension_id < 0
+                or dimension_id in recovered_dimension_ids
+            ):
+                blockers.append(f"sc3_recovered_inverse_action_dimension_invalid:{dimension_index}")
+            else:
+                recovered_dimension_ids.add(dimension_id)
+            if not str(dimension_row.get("unit") or "").strip():
+                blockers.append(f"sc3_recovered_inverse_action_unit_missing:{dimension_index}")
+            if maximum_error is None or maximum_error < 0:
+                blockers.append(f"sc3_recovered_inverse_action_error_invalid:{dimension_index}")
+            elif threshold is not None and maximum_error > threshold:
+                blockers.append(
+                    f"sc3_recovered_inverse_action_error_exceeds_threshold:{dimension_index}"
+                )
         inverse_status = row.get("inverse_action_recovery_status")
         if outcome_status == "valid" and inverse_status != "passed":
             blockers.append("sc3_valid_outcome_requires_passed_inverse_recovery")

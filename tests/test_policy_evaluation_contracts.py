@@ -354,6 +354,15 @@ def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -
         "sc3_recovered_inverse_action_dimensions_payload_invalid"
         in validate_evaluator_evidence(malformed_sc3)["blockers"]
     )
+    invalid_sc3_dimensions = deepcopy(sc3)
+    invalid_sc3_dimensions["recovered_inverse_action_dimensions"] = [
+        {"dimension": 0, "unit": "rad", "maximum_error": 0.01},
+        {"dimension": 0, "unit": "", "maximum_error": 0.06},
+    ]
+    invalid_sc3_blockers = validate_evaluator_evidence(invalid_sc3_dimensions)["blockers"]
+    assert "sc3_recovered_inverse_action_dimension_invalid:1" in invalid_sc3_blockers
+    assert "sc3_recovered_inverse_action_unit_missing:1" in invalid_sc3_blockers
+    assert "sc3_recovered_inverse_action_error_exceeds_threshold:1" in invalid_sc3_blockers
     sc3["evaluator_outcome_status"] = "abstained"
     sc3["criterion_result_status"] = "abstained"
     assert (
@@ -495,12 +504,17 @@ def test_decision_grade_ranking_rejects_low_confidence_silent_failure_and_discon
     candidate = _ranking_request()
     candidate["episode_results"][0]["criterion_results"][0]["confidence"] = 0.2
     candidate["episode_results"][0]["criterion_results"][0]["outcome"] = "failure"
+    candidate["episode_results"][0]["criterion_results"][0]["failure_taxonomy"] = "invalid"
+    criterion_digest = _payload_digest(candidate["episode_results"][0]["criterion_results"])
+    candidate["episode_results"][0]["criterion_result_sha256"] = criterion_digest
+    candidate["evaluation_design"]["rows"][0]["criterion_result_sha256"] = criterion_digest
     candidate["pairwise_preferences"] = candidate["pairwise_preferences"][:1]
 
     result = build_decision_grade_ranking(candidate)
 
     assert result["status"] == "blocked"
     assert "low_confidence_criterion_must_abstain:0:0" in result["blockers"]
+    assert "criterion_failure_taxonomy_payload_invalid:0:0" in result["blockers"]
     assert "bradley_terry_preference_graph_not_connected" in result["blockers"]
 
 
@@ -633,11 +647,13 @@ def test_decision_grade_ranking_rejects_malformed_top_level_row_collections() ->
 def test_decision_grade_ranking_rejects_malformed_pairwise_evidence_entries() -> None:
     candidate = _ranking_request()
     candidate["pairwise_preferences"][0]["evidence_refs"].append("corrupt-evidence-ref")
+    candidate["pairwise_preferences"][0]["policy_a"] = "unknown-policy"
 
     result = build_decision_grade_ranking(candidate)
 
     assert result["status"] == "blocked"
     assert "pairwise_evidence_payload_invalid:0" in result["blockers"]
+    assert "pairwise_policy_identity_invalid:0" in result["blockers"]
 
 
 def test_decision_grade_ranking_binds_profile_specific_evidence_digests() -> None:

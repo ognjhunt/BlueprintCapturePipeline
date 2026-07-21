@@ -326,8 +326,18 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
                         f"abstained_evaluator_cannot_emit_decided_criterion:{row_index}:{criterion_index}"
                     )
                 episode_values.append(0.0)
-                taxonomy = [str(item) for item in criterion.get("failure_taxonomy", []) or []]
-                if not taxonomy:
+                raw_taxonomy = criterion.get("failure_taxonomy")
+                taxonomy_payload_valid = bool(
+                    isinstance(raw_taxonomy, Sequence)
+                    and not isinstance(raw_taxonomy, (str, bytes, bytearray))
+                    and all(isinstance(item, str) and item.strip() for item in raw_taxonomy)
+                )
+                taxonomy = [item.strip() for item in raw_taxonomy] if taxonomy_payload_valid else []
+                if not taxonomy_payload_valid:
+                    blockers.append(
+                        f"criterion_failure_taxonomy_payload_invalid:{row_index}:{criterion_index}"
+                    )
+                elif not taxonomy:
                     blockers.append(
                         f"criterion_failure_taxonomy_missing:{row_index}:{criterion_index}"
                     )
@@ -360,6 +370,14 @@ def build_decision_grade_ranking(request: Mapping[str, Any]) -> dict[str, Any]:
     if not preferences_payload_valid:
         blockers.append("pairwise_preferences_payload_invalid")
     for index, row in enumerate(preferences):
+        left_policy_id = str(row.get("policy_a") or "").strip()
+        right_policy_id = str(row.get("policy_b") or "").strip()
+        if (
+            left_policy_id not in policy_ids
+            or right_policy_id not in policy_ids
+            or left_policy_id == right_policy_id
+        ):
+            blockers.append(f"pairwise_policy_identity_invalid:{index}")
         if row.get("label_blinded_and_randomized") is not True:
             blockers.append(f"pairwise_label_not_blinded_randomized:{index}")
         if row.get("outcome") not in {"policy_a", "policy_b", "tie", "inconclusive"}:
