@@ -828,7 +828,12 @@ class _OwnerBinding:
     qualification_manifest_path: Path | None = None
 
 
-def _read_bounded_regular_text(path: Path, *, max_bytes: int) -> str | None:
+def _read_bounded_regular_text(
+    path: Path,
+    *,
+    max_bytes: int,
+    required_mode: int | None = None,
+) -> str | None:
     """Read a small regular file without following a symlink or device node."""
 
     try:
@@ -840,6 +845,10 @@ def _read_bounded_regular_text(path: Path, *, max_bytes: int) -> str | None:
         or not stat.S_ISREG(before.st_mode)
         or before.st_size <= 0
         or before.st_size > max_bytes
+        or (
+            required_mode is not None
+            and stat.S_IMODE(before.st_mode) != required_mode
+        )
     ):
         return None
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -854,6 +863,10 @@ def _read_bounded_regular_text(path: Path, *, max_bytes: int) -> str | None:
             or opened.st_size <= 0
             or opened.st_size > max_bytes
             or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            or (
+                required_mode is not None
+                and stat.S_IMODE(opened.st_mode) != required_mode
+            )
         ):
             return None
         payload = os.read(descriptor, max_bytes + 1)
@@ -877,28 +890,32 @@ def _validated_qualification_manifest(
     # Import lazily so ordinary render-owner scans do not load the qualification
     # runtime and its provider adapters.
     from blueprint_pipeline.single_g1_kitchen_qualification_session import (
-        _load_private_manifest,
+        _validate_manifest_binding,
     )
 
     for manifest_path in sorted(id_path.parent.glob("*.json")):
-        try:
-            metadata = manifest_path.lstat()
-        except OSError:
-            continue
-        if (
-            manifest_path.is_symlink()
-            or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_size <= 0
-            or metadata.st_size > MAX_QUALIFICATION_MANIFEST_BYTES
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-        ):
+        encoded = _read_bounded_regular_text(
+            manifest_path,
+            max_bytes=MAX_QUALIFICATION_MANIFEST_BYTES,
+            required_mode=0o600,
+        )
+        if encoded is None:
             continue
         try:
-            source, manifest = _load_private_manifest(manifest_path)
-        except (OSError, ValueError):
+            value = json.loads(encoded)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, Mapping):
+            continue
+        manifest = dict(value)
+        source = manifest_path.expanduser().absolute()
+        try:
+            _validate_manifest_binding(source, manifest)
+        except ValueError:
             continue
         if (
-            str(manifest.get("instance_id") or "") == launched_id
+            manifest.get("release_binding_status") == "bound"
+            and str(manifest.get("instance_id") or "") == launched_id
             and manifest.get("continuing_spend") is True
         ):
             return source

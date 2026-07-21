@@ -517,6 +517,27 @@ def test_spoofed_partial_qualification_manifest_is_not_protected(
     assert protected == set()
 
 
+def test_legacy_unbound_qualification_manifest_is_not_protected(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "legacy_qualification", "45483300"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("release_binding_status")
+    qualification._private_write_json(manifest_path, manifest)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_symlinked_qualification_manifest_is_not_protected(tmp_path: Path) -> None:
     source_manifest = _write_qualification_owner(
         tmp_path / "source_qualification", "45483300"
@@ -535,6 +556,42 @@ def test_symlinked_qualification_manifest_is_not_protected(tmp_path: Path) -> No
         ],
     )
 
+    assert protected == set()
+
+
+def test_swapped_qualification_manifest_inode_is_not_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "race_qualification", "45483300"
+    )
+    replacement = _write_qualification_owner(
+        tmp_path / "replacement_qualification", "45483300"
+    )
+    real_open = guard.os.open
+    swapped = False
+
+    def _swap_before_open(path: object, flags: int, mode: int = 0o777) -> int:
+        nonlocal swapped
+        if Path(path) == manifest_path and not swapped:
+            swapped = True
+            manifest_path.unlink()
+            manifest_path.symlink_to(replacement)
+        if flags & guard.os.O_CREAT:
+            return real_open(path, flags, mode)
+        return real_open(path, flags)
+
+    monkeypatch.setattr(guard.os, "open", _swap_before_open)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert swapped is True
     assert protected == set()
 
 
