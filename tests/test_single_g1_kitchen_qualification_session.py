@@ -132,6 +132,44 @@ def _external_model_cache_evidence(path: Path) -> Path:
     return path
 
 
+def _embedded_release_evidence(**overrides: object) -> dict:
+    foundation_ref = "registry.example/carrier@sha256:" + "c" * 64
+    release = _release_evidence(
+        models_embedded=True,
+        foundation_model_assets="embedded",
+        foundation_image_ref=foundation_ref,
+        **overrides,
+    )
+    release["thin_release_contract"].update(
+        {
+            "foundation_model_assets": "embedded",
+            "models_externalized": False,
+            "models_embedded_in_foundation": True,
+        }
+    )
+    return release
+
+
+def _embedded_model_assets_evidence(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": MODEL_ASSETS_BINDING_SCHEMA_VERSION,
+                "status": "bound_to_release_foundation",
+                "source_commit": TEST_SOURCE_COMMIT,
+                "release_image_ref": TEST_IMAGE_REF,
+                "foundation_image_ref": (
+                    "registry.example/carrier@sha256:" + "c" * 64
+                ),
+                "external_provider_volume_used": False,
+                "runtime_checkpoint_preflight_required": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_release_binding_accepts_exact_digest_pinned_clean_release() -> None:
     binding, blockers = qualification._release_binding(
         _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
@@ -209,6 +247,25 @@ def test_embedded_model_assets_binding_requires_exact_release_and_foundation() -
     assert mismatch_blockers == [
         "qualification_embedded_model_assets_release_image_ref_mismatch"
     ]
+
+
+def test_external_model_cache_is_rejected_without_vast_delivery_binding(
+    tmp_path: Path,
+) -> None:
+    release_binding, release_blockers = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+    evidence = json.loads(
+        _external_model_cache_evidence(tmp_path / "external-cache.json").read_text()
+    )
+
+    binding, blockers = qualification.build_model_assets_binding(
+        evidence, release_binding
+    )
+
+    assert release_blockers == []
+    assert binding["status"] == "blocked"
+    assert blockers == ["qualification_external_model_cache_vast_delivery_not_bound"]
 
 
 def test_allocate_requires_model_assets_evidence() -> None:
@@ -2762,7 +2819,7 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
         "provider_output_put_url_file": tmp_path / "missing-put-url.txt",
         "provider_output_get_url_file": tmp_path / "missing-get-url.txt",
         "release_evidence": tmp_path / "missing-release.json",
-        "model_cache_evidence": _external_model_cache_evidence(
+        "model_cache_evidence": _embedded_model_assets_evidence(
             tmp_path / "model-cache.json"
         ),
         "expected_source_commit": TEST_SOURCE_COMMIT,
@@ -2770,7 +2827,7 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
         **outputs,
     }
     Path(request["release_evidence"]).write_text(
-        json.dumps(_release_evidence(source_commit="c" * 40))
+        json.dumps(_embedded_release_evidence(source_commit="c" * 40))
     )
     result = qualification.run_qualification_session(**request)
 
@@ -2784,7 +2841,9 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
     assert manifest["bootstrap"]["overlay_revision"] == 0
     assert manifest["bootstrap"]["control_contract_version"] == qualification.CONTROL_CONTRACT_VERSION
 
-    Path(request["release_evidence"]).write_text(json.dumps(_release_evidence()))
+    Path(request["release_evidence"]).write_text(
+        json.dumps(_embedded_release_evidence())
+    )
     retry = qualification.run_qualification_session(**request)
     _, retry_manifest = qualification._load_private_manifest(tmp_path / "session.json")
     assert retry["status"] == "blocked"
@@ -3184,8 +3243,8 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps(_release_evidence()))
-    model_cache = _external_model_cache_evidence(tmp_path / "model-cache.json")
+    release.write_text(json.dumps(_embedded_release_evidence()))
+    model_cache = _embedded_model_assets_evidence(tmp_path / "model-cache.json")
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
 
     common = dict(
@@ -3269,7 +3328,9 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         assert artifact["release_binding"]["required_cuda_version"] == "12.8"
 
     changed_source = "c" * 40
-    release.write_text(json.dumps(_release_evidence(source_commit=changed_source)))
+    release.write_text(
+        json.dumps(_embedded_release_evidence(source_commit=changed_source))
+    )
     mismatch = qualification.run_qualification_session(
         **{**common, "expected_source_commit": changed_source},
         provider_bootstrap_url_file=secret_url,
@@ -3285,7 +3346,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     legacy_manifest.pop("release_binding_status")
     legacy_manifest.pop("source_commit")
     qualification._private_write_json(legacy_path, legacy_manifest)
-    release.write_text(json.dumps(_release_evidence()))
+    release.write_text(json.dumps(_embedded_release_evidence()))
     legacy_retry = qualification.run_qualification_session(
         **{
             **common,
@@ -3367,8 +3428,8 @@ def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps(_release_evidence()))
-    model_cache = _external_model_cache_evidence(tmp_path / "model-cache.json")
+    release.write_text(json.dumps(_embedded_release_evidence()))
+    model_cache = _embedded_model_assets_evidence(tmp_path / "model-cache.json")
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
     common = dict(
         action="allocate",
@@ -3442,10 +3503,10 @@ def test_qualification_allocate_fails_before_provider_on_missing_output_staging_
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
     release.write_text(
-        json.dumps(_release_evidence()),
+        json.dumps(_embedded_release_evidence()),
         encoding="utf-8",
     )
-    model_cache = _external_model_cache_evidence(tmp_path / "model-cache.json")
+    model_cache = _embedded_model_assets_evidence(tmp_path / "model-cache.json")
 
     result = qualification.run_qualification_session(
         action="allocate",

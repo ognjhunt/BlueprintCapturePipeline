@@ -86,6 +86,7 @@ def build_model_assets_binding(
             blockers.append("qualification_external_model_manifest_digest_invalid")
         if not str(evidence.get("cache_root") or "").startswith("/"):
             blockers.append("qualification_external_model_cache_root_invalid")
+        blockers.append("qualification_external_model_cache_vast_delivery_not_bound")
     else:
         blockers.append("qualification_release_model_assets_mode_invalid")
     binding = {
