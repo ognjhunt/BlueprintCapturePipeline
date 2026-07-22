@@ -863,7 +863,10 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
         allow_legacy_lanes=True,
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
     (capture_root / "pipeline" / "signed_access_manifest.json").write_text(
         json.dumps(
@@ -1004,7 +1007,10 @@ def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypa
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
         allow_legacy_lanes=True,
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
@@ -1073,7 +1079,10 @@ def test_iphone_alpha_readiness_is_no_go_when_runtime_url_missing(monkeypatch, t
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
         allow_legacy_lanes=True,
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
@@ -1113,7 +1122,10 @@ def test_meta_glasses_alpha_readiness_is_internal_until_operator_evidence(monkey
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
         allow_legacy_lanes=True,
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
@@ -1167,7 +1179,10 @@ def test_android_alpha_readiness_is_internal_until_operator_evidence(monkeypatch
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
         allow_legacy_lanes=True,
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
 
