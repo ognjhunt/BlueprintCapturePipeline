@@ -309,7 +309,7 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     foundation = (
         ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
     ).read_text(encoding="utf-8")
-    assert "FROM ${ISAAC_SIM_BASE_IMAGE} AS tensorrt-base" in foundation
+    assert "FROM ${ISAAC_SIM_BASE_IMAGE} AS apt-base" in foundation
     assert (
         "ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba"
         in foundation
@@ -341,6 +341,12 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "uv venv /opt/gr00t-venv --python 3.10 --seed" in foundation
     assert "requirements_uv_bootstrap.txt" in foundation
     assert "--require-hashes -r /tmp/requirements_uv_bootstrap.txt" in foundation
+    assert "FROM apt-base AS tensorrt-base" in foundation
+    assert "FROM apt-base AS robot-env-builder" in foundation
+    assert "https://archive.ubuntu.com/ubuntu" in foundation
+    assert "https://security.ubuntu.com/ubuntu" in foundation
+    assert 'Acquire::Retries "10";' in foundation
+    assert 'Acquire::https::Timeout "30";' in foundation
     assert "/tmp/oscar/requirements_minimal.txt" in foundation
     assert "requirements_oscar_foundation.lock" in foundation
     assert "uv pip install --require-hashes" in foundation
