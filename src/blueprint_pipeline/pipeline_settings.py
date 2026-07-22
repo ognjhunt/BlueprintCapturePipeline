@@ -29,6 +29,9 @@ class PipelineSettings:
     gcs_root: Path
     allow_simulator_execution: bool
     allow_gpu_provisioning: bool
+    allow_cosmos_training: bool
+    allow_live_agents_sdk_operators: bool
+    allow_legacy_agents_sdk_job_orchestration: bool
     sim_only_beta_autonomy: bool
     sim_only_beta_default_task_eval: bool
 
@@ -49,6 +52,18 @@ class PipelineSettings:
                 source,
                 "BLUEPRINT_ALLOW_GPU_PROVISIONING",
             ),
+            allow_cosmos_training=_strict_bool(
+                source,
+                "BLUEPRINT_ALLOW_COSMOS_TRAINING",
+            ),
+            allow_live_agents_sdk_operators=_strict_bool(
+                source,
+                "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS",
+            ),
+            allow_legacy_agents_sdk_job_orchestration=_strict_bool(
+                source,
+                "BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION",
+            ),
             sim_only_beta_autonomy=_strict_bool(
                 source,
                 "BLUEPRINT_SIM_ONLY_BETA_AUTONOMY",
@@ -58,3 +73,30 @@ class PipelineSettings:
                 "BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL",
             ),
         )
+
+    def validate_cli_admission(
+        self,
+        *,
+        allow_gpu_provisioning: bool = False,
+        allow_simulator_execution: bool = False,
+        allow_cosmos_training: bool = False,
+        allow_live_agents_sdk_operator: bool = False,
+    ) -> None:
+        """Require environment approval for every mutating CLI admission flag."""
+
+        missing: list[str] = []
+        if allow_gpu_provisioning and not self.allow_gpu_provisioning:
+            missing.append("BLUEPRINT_ALLOW_GPU_PROVISIONING")
+        if allow_simulator_execution and not self.allow_simulator_execution:
+            missing.append("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION")
+        if allow_cosmos_training and not self.allow_cosmos_training:
+            missing.append("BLUEPRINT_ALLOW_COSMOS_TRAINING")
+        if allow_live_agents_sdk_operator and not (
+            self.allow_live_agents_sdk_operators
+            or self.allow_legacy_agents_sdk_job_orchestration
+        ):
+            missing.append("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS")
+        if missing:
+            raise ValueError(
+                "cli_admission_missing_environment_approval:" + ",".join(missing)
+            )

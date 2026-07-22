@@ -25,6 +25,7 @@ from .lane_resume import (
 from .logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
+from .pipeline_settings import PipelineSettings
 from .preflight_capture import build_capture_preflight_report
 from .robot_eval_evaluation_run_adapter import (
     execute_robot_eval_request_as_evaluation_run,
@@ -1185,6 +1186,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Forward the explicit simulator execution gate to the robot-eval job builder.",
     )
     args = parser.parse_args(argv)
+
+    try:
+        settings = PipelineSettings.from_env()
+        settings.validate_cli_admission(
+            allow_gpu_provisioning=bool(
+                args.allow_robot_eval_gpu_provisioning
+            ),
+            allow_simulator_execution=bool(
+                args.allow_robot_eval_simulator_execution
+            ),
+        )
+    except ValueError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "run_e2e.settings_invalid",
+            capture_root=args.capture_root,
+            provider=args.provider,
+            reason=str(exc),
+        )
+        print(f"[run-e2e] FAILED: {exc}")
+        return 1
 
     openai_phase2_config = None
     if any(

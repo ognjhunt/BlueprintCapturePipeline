@@ -692,3 +692,47 @@ def test_robot_eval_job_command_training_evaluation_projection_and_cli_edges(
     with pytest.raises(SystemExit) as entrypoint_exit:
         run_module_as_main("blueprint_pipeline.robot_eval_job_orchestrator")
     assert entrypoint_exit.value.code == 65
+
+
+def test_robot_eval_cli_validates_typed_admission_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        rejo,
+        "execute_robot_eval_request_as_evaluation_run",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    monkeypatch.delenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", raising=False)
+
+    exit_code = rejo.main(
+        [
+            "--capture-root",
+            str(tmp_path),
+            "--job-request",
+            str(tmp_path / "request.json"),
+            "--job-id",
+            "job",
+            "--allow-simulator-execution",
+        ]
+    )
+
+    assert exit_code == 65
+    assert calls == []
+    assert "cli_admission_missing_environment_approval" in capsys.readouterr().out
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "perhaps")
+    assert rejo.main(
+        [
+            "--capture-root",
+            str(tmp_path),
+            "--job-request",
+            str(tmp_path / "request.json"),
+            "--job-id",
+            "job",
+        ]
+    ) == 65
+    assert calls == []
+    assert "invalid_boolean_environment_value" in capsys.readouterr().out

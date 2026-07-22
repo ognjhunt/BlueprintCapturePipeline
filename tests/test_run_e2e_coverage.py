@@ -557,6 +557,8 @@ def test_run_end_to_end_blocks_ambiguous_robot_eval_sources(tmp_path: Path) -> N
 
 def test_run_e2e_main_success_and_failure(monkeypatch, tmp_path: Path, capsys) -> None:
     capture_root = _capture_root(tmp_path)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_SIMULATOR_EXECUTION", "true")
 
     def fake_run_end_to_end(**kwargs):
         assert kwargs["provider"] == "openai"
@@ -651,3 +653,31 @@ def test_run_e2e_main_success_and_failure(monkeypatch, tmp_path: Path, capsys) -
         with pytest.raises(SystemExit) as excinfo:
             runpy.run_module("blueprint_pipeline.run_e2e", run_name="__main__")
     assert excinfo.value.code == 1
+
+
+def test_run_e2e_main_fails_before_work_on_invalid_or_missing_admission(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(run_e2e, "run_end_to_end", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.delenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", raising=False)
+
+    assert run_e2e.main(
+        [
+            "--capture-root",
+            str(capture_root),
+            "--provider",
+            "local",
+            "--allow-robot-eval-gpu-provisioning",
+        ]
+    ) == 1
+    assert calls == []
+    assert "cli_admission_missing_environment_approval" in capsys.readouterr().out
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "sometimes")
+    assert run_e2e.main(
+        ["--capture-root", str(capture_root), "--provider", "local"]
+    ) == 1
+    assert calls == []
+    assert "invalid_boolean_environment_value" in capsys.readouterr().out

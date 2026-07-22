@@ -483,23 +483,26 @@ or drop scripts nothing references.
 
 ## P2 — Series-A gaps (what's missing, not what's extra)
 
-1. **Typed artifact contracts.** 2,463 `Dict[str, Any]` and 3,656 built-in
-   `dict[str, Any]` occurrences; card/package/manifest schemas
-   (`*.v0.1`/`v1`) exist as strings, not as schema definitions — a corrupted upstream
-   artifact silently degrades downstream because everything reads
-   `_read_optional_mapping(...) or {}`. Start with the sellable boundaries: pydantic
-   (already used in `runtime_service_app`) or dataclass models + JSON Schema for
-   site/task/scenario/eval cards, `evaluation_run.v1`, and the package export manifest,
-   validated at stage boundaries.
-2. **Central config.** 1,698 direct env reads (`os.getenv` + `os.environ.get`) in src;
-   behavior flags are
-   env-truthy strings; the one `PipelineConfig` dataclass carries only `gcs_root`.
-   Introduce a typed settings object loaded once at each entry point.
-3. **One true end-to-end test.** 489 Python files under `tests/` (~277k LOC) but they're per-module
-   contract tests against the committed fixture; there is no single CI assertion
-   "capture bundle in → cards + package tar.gz + webapp projection out". Add it (can
-   run against `kitchen_task_min`); it becomes the regression net for all later
-   restructuring. Also: the `gpu` pytest marker exists but zero tests carry it.
+1. **Typed artifact contracts started at the sellable boundaries.** The audit snapshot
+   contained 2,463 `Dict[str, Any]` and 3,656 built-in `dict[str, Any]` occurrences.
+   `artifact_contracts` now defines machine-readable contracts and JSON Schemas for
+   site/task/scenario/eval cards, `evaluation_run.v1`, and the package export manifest;
+   the producing and consuming stage boundaries validate them fail closed. Expanding
+   those types into the thousands of internal campaign/provider mappings remains a
+   broad incremental migration.
+2. **Central config started at product and paid-path entrypoints.** The audit snapshot
+   had 1,698 direct env reads (`os.getenv` + `os.environ.get`) in src. Typed
+   `PipelineSettings` is now loaded once by `capture_orchestrator`, `run_e2e`, and the
+   robot-eval job CLI. GCS root and the simulator, GPU, Cosmos-training, live-agent, and
+   sim-only beta flags use strict boolean parsing; CLI mutation flags require matching
+   environment approval before pipeline/provider execution starts. Provider- and
+   campaign-specific settings plus the remaining direct reads still need incremental
+   migration.
+3. **One true CPU end-to-end regression is implemented.** `test_product_spine_e2e.py`
+   asserts capture bundle input through cards, WebApp projection, and a signed/verified
+   Post-Training Data Package archive. It is the restructuring regression net requested
+   here. The separate `gpu` marker still has zero uses, so this does not supply live
+   provider evidence.
 4. **No GPU-marked/live-provider integration lane for the paid path.** The earlier
    claim that the live paid giants had zero tests was wrong. Dedicated CPU/unit suites
    exist and are substantial: 80 tests each for the Vast persistent session and Vast
@@ -507,9 +510,11 @@ or drop scripts nothing references.
    across ten `g1_microwave_*` test files. The actual gap is that the `gpu` marker has
    zero uses, so these suites do not prove real provider mutation, GPU runtime startup,
    artifact collection, or teardown against live infrastructure.
-5. **Error semantics.** Distinguishing "artifact absent by design" from "failed" relies
-   on convention (`status: not_requested/failed_closed`) with no shared result type.
-   A small shared enum/result helper in `core/` would make fail-closed checks uniform.
+5. **Shared error semantics started.** `stage_outcome` now distinguishes produced,
+   not-requested, unavailable, blocked, and failed outcomes, and `run_e2e` records those
+   normalized kinds in its ledger and fleet summaries. Most older stages still emit
+   ad-hoc status strings, so adoption across the product spine and provider adapters
+   remains incomplete.
 6. **Observability.** Structured `log_event` remains concentrated in orchestrators and
    there is no metrics backend, but the minimum audit target is implemented. Every
    `run_e2e` invocation writes `pipeline/run_summary.json` with stage timings, outcome,

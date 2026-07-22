@@ -59,6 +59,7 @@ from .failure_diagnosis_contract import (
 )
 from .local_capture import resolve_local_capture_context
 from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
+from .pipeline_settings import PipelineSettings
 from .post_training_data_package import build_post_training_data_package_export
 from .canonical_training_quality_pipeline import (
     run_canonical_training_quality_from_request,
@@ -10351,6 +10352,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--allow-live-codex-sdk", action="store_true")
     args = parser.parse_args(argv)
     try:
+        settings = PipelineSettings.from_env()
+        settings.validate_cli_admission(
+            allow_gpu_provisioning=bool(args.allow_gpu_provisioning),
+            allow_simulator_execution=bool(args.allow_simulator_execution),
+            allow_cosmos_training=bool(args.allow_training),
+            allow_live_agents_sdk_operator=bool(args.allow_live_agent_operator),
+        )
         simulator_commands = _parse_simulator_commands(args.simulator_command)
         policy_execution_commands = _parse_policy_execution_commands(args.policy_execution_command)
         wam_provider_commands = parse_wam_provider_commands(args.wam_provider_command)
