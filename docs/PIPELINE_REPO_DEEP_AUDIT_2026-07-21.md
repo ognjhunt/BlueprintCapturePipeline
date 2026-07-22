@@ -323,30 +323,30 @@ evaluation_prep → cards → packages) is coherent and evidence-disciplined —
 versions, claim boundaries, fail-closed rights/privacy gates (PIPE-01 verified real at
 `evaluation_prep_stage.py:3817`). Defects:
 
-1. **`evaluation_prep` runs twice in default `run_e2e`** — once inside lane
-   `current` (stage 3) and again as stage 5 (CLI default `--run-evaluation-prep=True`).
-   Idempotent but wasteful and confusing; make stage 5 a no-op when lane `current`
-   already ran it.
-2. **`agent_review` is a mandatory, non-skippable stage** of the operator CLI (stage 4,
-   before evaluation_prep), and `qualification` writes alpha-readiness summaries,
-   launch bundles, and buyer trust scores inline. Doctrine says readiness/review is
-   secondary to the product core; the production storage-trigger path already skips
-   agent review — give the CLI the same default and move readiness emission behind an
-   explicit flag/edge.
-3. **The primary sellable product routes through a function named "legacy"**:
-   run_e2e's only Task-Eval entry is
-   `robot_eval_evaluation_run_adapter.execute_legacy_robot_eval_request_as_evaluation_run`.
-   Rename the adapter and its entry to the evaluation_run vocabulary — names are
-   navigation for agents.
-4. **Dataset manifest compatibility alias needs an expiry.** The canonical
-   `robot_eval_dataset_manifest.json` is already accompanied by the requested
-   one-release `real_site_robot_eval_dataset_manifest.json` legacy alias. Record the
-   removal release and then delete the alias; this is no longer an unfixed duplicate
-   writer design.
-5. **Legacy lanes still routable** in `capture_orchestrator` (`scene_memory`,
-   `retrieval_index`, `frame_alignment`, `synthesis_coverage_validation`,
-   `cosmos_single_capture_smoke`). Gate them behind an explicit legacy flag or remove
-   the routing.
+1. **Fixed — `evaluation_prep` no longer runs twice in default `run_e2e`.** The stage
+   ledger detects when `current`, `all`, or another selected capture lane already ran
+   evaluation prep, reuses that committed result, and records the later stage as
+   satisfied rather than executing it again. Tests cover both reuse and standalone
+   execution.
+2. **Partially fixed — `agent_review` is opt-in; qualification-side readiness remains
+   to separate.** `run_e2e` now defaults the optional review/trust layer off and records
+   a typed `not_requested` outcome, matching the storage-trigger product path. The
+   larger `qualification` monolith still emits some alpha-readiness, launch, and buyer
+   trust support artifacts inline; extracting those behind a separate readiness edge
+   remains P2 work.
+3. **Fixed — Task Evaluation uses neutral vocabulary.** The primary entry is now
+   `execute_robot_eval_request_as_evaluation_run`. The old function name remains only
+   as a documented one-release compatibility alias and is not used by `run_e2e`.
+4. **Fixed for the compatibility window.** The canonical filename is
+   `robot_eval_dataset_manifest.json`; the legacy
+   `real_site_robot_eval_dataset_manifest.json` writer carries explicit compatibility
+   metadata with `sunset_not_before: 2026-08-21`, and tests bind that deadline. Delete
+   the alias after that date and one compatible release, not before.
+5. **Fixed — legacy lanes require explicit admission.** `capture_orchestrator` and
+   `run_e2e` reject `scene_memory`, `retrieval_index`, `frame_alignment`,
+   `synthesis_coverage_validation`, and `cosmos_single_capture_smoke` unless their
+   respective `--allow-legacy-*` flag is present. Current product lanes never set it
+   implicitly.
 
 ## P1 — Swappable-backend seam violations
 
@@ -356,28 +356,28 @@ env-command process boundary `wam_provider_runtime` → strategy catalog
 selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violations of
 "keep world-model backends swappable":
 
-1. `run_e2e.py:32,728` hard-imports the legacy Cosmos-Predict2.5 lane as a named
-   pipeline stage (`cosmos_validation`) instead of routing through the seam. The
-   catalog itself marks Cosmos-Predict2.5 "no longer under active development" —
-   retire the stage or move it behind the substrate registry.
-2. `evaluation_prep_stage.py:4254` hard-wires `synthesis/cosmos_training_export` into
-   the Post-Training Data Package prep path (model-family-specific export inside the
-   product core).
-3. `native_runtime_backend.py` (2,970 LOC) hard-codes Cosmos-Predict2.5 repo paths
-   (`/root/workspace/cosmos-predict2.5`) and a binary `cosmos_i2w | splat_only` split,
-   bypassing the strategy catalog entirely. It is not unwired: `native_runtime_service`
-   imports it, `scripts/start_native_runtime_vast.sh` starts it, and the command-safety
-   matrix classifies that startup as live/runtime risk. Rewrite and split it behind the
-   backend seam while preserving the hosted-runtime contract; deletion would break a
-   documented operator surface.
-4. `robot_eval_job_orchestrator.py:7973` auto-defaults the `isaac_sim` simulator
-   command to a specific 5k-LOC G1/3DGS module in the core job path. Require the
-   command through the existing simulator-command configuration instead of selecting
-   a model-specific module inside the orchestrator.
-5. `post_training_data_package.py:5507` references the OSCAR-specific
-   `oscar_visual_augmentation_packet/model_backend_registry.json` filename in the
-   package builder (mitigated by the packet emitting a per-run registry — rename to a
-   neutral artifact name).
+1. **Fixed — retired Cosmos-Predict2.5 support is no longer a normal `run_e2e` stage.**
+   Its import is lazy inside a compatibility adapter and execution requires both the
+   legacy support flag and explicit legacy-lane admission. The current product path
+   never loads it.
+2. **Partially fixed — evaluation prep no longer executes a Cosmos exporter.** It only
+   ingests an explicitly pre-existing optional support artifact and otherwise records
+   `not_requested`. However, compatibility fields and paths for Cosmos training and
+   zero-shot artifacts remain hard-coded in the 5k-LOC prep module. Move that optional
+   support discovery behind a neutral backend-artifact registry during the monolith
+   split.
+3. **Partially fixed — native runtime selection is now behind a typed strategy seam.**
+   `site_splat` is the neutral default, `cosmos_wam` is explicit, conflicting old/new
+   settings fail closed, and hard-coded workspace checkout discovery is removed.
+   `native_runtime_backend.py` remains a roughly 3k-LOC live store containing the legacy
+   Cosmos generation helpers; extract those helpers incrementally while preserving the
+   documented runtime-service contract.
+4. **Fixed — simulator commands are configuration-owned.** The orchestrator no longer
+   defaults `isaac_sim` to a G1/3DGS module. Non-fixture execution requires an explicit
+   admitted simulator command and tests bind that fail-closed behavior.
+5. **Fixed with a compatibility alias.** Packages use
+   `visual_augmentation_backend_registry.json`; the packet still emits and the package
+   builder still recognizes `model_backend_registry.json` for one compatibility window.
 6. **Corrected on revalidation — Cosmos3 preference is not permanently asserted or
    impossible to activate.** The first-party scorer modules do not exist, but
    `wam_backend_strategy` also recognizes the live
@@ -387,11 +387,10 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    Tests cover both the default aspirational state and successful activation through
    an explicit scorer or configured external service. Keep the missing first-party
    scorer as a capability gap, not a false catalog-state bug.
-7. The new **model-neutral evaluator layer** (#140–#143: `evaluator_evidence_profiles`,
-   `evaluator_runtime_evidence`, `evaluator_qualification_workflow`,
-   `policy_evaluation_contracts`, `decision_grade_ranking`) is actively developed but
-   **not yet consumed by the orchestrator** — currently an unreachable island (it shows
-   up in the dead-code scan). Wire it in or it becomes next quarter's dead cluster.
+7. **Fixed — the model-neutral evaluator layer is consumed by the orchestrator.** Task
+   Evaluation jobs build and commit `evaluator_qualification_workflow.json`, include it
+   in the job artifact manifest, and preserve its evidence/claim boundaries. Dedicated
+   workflow tests plus orchestrator integration assertions cover the wiring.
 
 ## P2 — Consolidations (duplication from pivots)
 
