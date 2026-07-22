@@ -436,8 +436,11 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    before I/O and removes five expiring Bandit exceptions. Compatibility exports keep
    existing operators stable. All 29 direct staging tests and 90 RunPod/Vast consumer
    tests pass, and the full Bandit gate reports zero high and 63 reviewed medium
-   findings. Provider-specific poll state transitions and teardown execution still need
-   incremental extraction.
+   findings. Vast destroy retries, 404-as-absent handling, bounded backoff, response
+   redaction, continuing-spend semantics, and teardown-manifest construction now live
+   in the directly tested `vast_instance_teardown` contract; compatibility wrappers
+   preserve existing runner monkeypatch and CLI behavior. RunPod teardown execution and
+   both providers' remaining poll state transitions still need incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the

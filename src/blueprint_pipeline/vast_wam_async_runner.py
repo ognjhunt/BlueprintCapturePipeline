@@ -109,6 +109,10 @@ from .vast_provider_adapter import (
     _vast_session_budget_ledger_path,
     _release_vast_launch_lock,
 )
+from .vast_instance_teardown import (
+    build_vast_teardown_manifest,
+    destroy_vast_instance_with_retry as _shared_destroy_vast_instance_with_retry,
+)
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE, DEFAULT_WAM_VAST_LAUNCH_MODE
 from .wam_async_runner_common import (
     deadline_capped_wait_seconds,
@@ -341,71 +345,17 @@ def _destroy_vast_instance_with_retry(
     attempts: int = 3,
     backoff_seconds: float = 3.0,
 ) -> tuple[bool, list[dict[str, Any]]]:
-    """Destroy a Vast instance, retrying transient failures.
+    """Compatibility wrapper over the shared fail-closed Vast teardown primitive."""
 
-    A single failed DELETE must never leave an instance billing. In practice a destroy can be
-    rejected transiently — e.g. the instance is still ``loading`` (observed: a dud offer whose
-    destroy failed once and kept billing until a manual retry), or a momentary network/API
-    error. Retries up to ``attempts`` times with linear backoff; a 404 means the instance is
-    already gone (success). Returns ``(continuing_spend, teardown_actions)`` where
-    ``continuing_spend`` is True only if *every* attempt failed.
-    """
-    teardown_actions: list[dict[str, Any]] = []
-    total = max(1, int(attempts))
-    for attempt in range(1, total + 1):
-        try:
-            delete_status, delete_response = _api_json(
-                method="DELETE",
-                path=f"/instances/{instance_id}/",
-                api_key=api_key,
-                timeout_seconds=30,
-            )
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "http_status_code": delete_status,
-                    "response": _redact_runtime_value(delete_response, [api_key]),
-                    "status": "completed",
-                }
-            )
-            return False, teardown_actions
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                teardown_actions.append(
-                    {
-                        "instance_id": instance_id,
-                        "action": "destroy_instance",
-                        "attempt": attempt,
-                        "http_status_code": exc.code,
-                        "status": "completed",
-                        "reason": "instance_already_absent",
-                    }
-                )
-                return False, teardown_actions
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "http_status_code": exc.code,
-                    "status": "failed",
-                }
-            )
-        except Exception as exc:
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "status": "failed",
-                    "error_type": type(exc).__name__,
-                }
-            )
-        if attempt < total:
-            time.sleep(min(15.0, backoff_seconds * attempt))
-    return True, teardown_actions
+    return _shared_destroy_vast_instance_with_retry(
+        instance_id=instance_id,
+        api_key=api_key,
+        api_request=_api_json,
+        redact_runtime_value=_redact_runtime_value,
+        sleep=time.sleep,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+    )
 
 
 def destroy_async_vast_wam_run(
@@ -462,22 +412,26 @@ def destroy_async_vast_wam_run(
     )
     estimated_cost_usd = round(hourly_rate * elapsed_seconds / 3600.0, 6)
     status = "completed" if not blockers and not continuing_spend else "blocked"
-    manifest = {
-        "schema_version": VAST_TEARDOWN_SCHEMA_VERSION,
-        "generated_at": generated,
-        "status": status,
-        "vast_instance_ids": [instance_id] if instance_id else [],
-        "teardown_actions_performed": teardown_actions,
-        "runner_gpu_teardown_completed": not continuing_spend,
-        "continuing_spend_from_this_run": continuing_spend,
-        "estimated_cost_usd": estimated_cost_usd,
-        "vast_secret_status": vast_secret_status,
-        "blockers": blockers if blockers else ([] if not continuing_spend else ["vast_instance_destroy_failed"]),
-        "zero_continuing_spend_scope": "direct async destroy deleted instance or it was already absent"
-        if not continuing_spend
-        else "teardown failure requires manual Vast console/API verification",
-        "raw_secret_values_recorded": False,
-    }
+    manifest = build_vast_teardown_manifest(
+        schema_version=VAST_TEARDOWN_SCHEMA_VERSION,
+        generated_at=generated,
+        instance_id=instance_id,
+        status=status,
+        teardown_actions=teardown_actions,
+        continuing_spend=continuing_spend,
+        zero_continuing_spend_scope=(
+            "direct async destroy deleted instance or it was already absent"
+            if not continuing_spend
+            else "teardown failure requires manual Vast console/API verification"
+        ),
+        extra_fields={
+            "estimated_cost_usd": estimated_cost_usd,
+            "vast_secret_status": vast_secret_status,
+            "blockers": blockers
+            if blockers
+            else ([] if not continuing_spend else ["vast_instance_destroy_failed"]),
+        },
+    )
     write_json(resolved_job_dir / "vast_teardown_manifest.json", manifest)
     if not continuing_spend:
         state["status"] = "teardown_completed"
@@ -1639,19 +1593,19 @@ def poll_async_vast_wam_run(
         )
         write_json(
             resolved_job_dir / "vast_teardown_manifest.json",
-            {
-                "schema_version": VAST_TEARDOWN_SCHEMA_VERSION,
-                "generated_at": utc_now_iso(),
-                "status": "completed" if not continuing_spend else "blocked",
-                "vast_instance_ids": [instance_id],
-                "teardown_actions_performed": teardown_actions,
-                "runner_gpu_teardown_completed": not continuing_spend,
-                "continuing_spend_from_this_run": continuing_spend,
-                "zero_continuing_spend_scope": "async poll destroyed instance or it was already absent"
-                if not continuing_spend
-                else "teardown failure requires manual Vast console/API verification",
-                "raw_secret_values_recorded": False,
-            },
+            build_vast_teardown_manifest(
+                schema_version=VAST_TEARDOWN_SCHEMA_VERSION,
+                generated_at=utc_now_iso(),
+                instance_id=instance_id,
+                status="completed" if not continuing_spend else "blocked",
+                teardown_actions=teardown_actions,
+                continuing_spend=continuing_spend,
+                zero_continuing_spend_scope=(
+                    "async poll destroyed instance or it was already absent"
+                    if not continuing_spend
+                    else "teardown failure requires manual Vast console/API verification"
+                ),
+            ),
         )
         _append_phase(
             resolved_job_dir,
@@ -1663,16 +1617,14 @@ def poll_async_vast_wam_run(
     else:
         write_json(
             resolved_job_dir / "vast_teardown_manifest.json",
-            {
-                "schema_version": VAST_TEARDOWN_SCHEMA_VERSION,
-                "generated_at": utc_now_iso(),
-                "status": "deferred_async_run_still_active",
-                "vast_instance_ids": [instance_id],
-                "teardown_actions_performed": [],
-                "runner_gpu_teardown_completed": False,
-                "continuing_spend_from_this_run": True,
-                "raw_secret_values_recorded": False,
-            },
+            build_vast_teardown_manifest(
+                schema_version=VAST_TEARDOWN_SCHEMA_VERSION,
+                generated_at=utc_now_iso(),
+                instance_id=instance_id,
+                status="deferred_async_run_still_active",
+                teardown_actions=[],
+                continuing_spend=True,
+            ),
         )
     elapsed_seconds = max(0.0, now_epoch - float(_number(state.get("created_at_epoch")) or now_epoch))
     ledger = _budget_ledger(

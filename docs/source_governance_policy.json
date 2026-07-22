@@ -145,6 +145,9 @@
     "src/blueprint_pipeline/vast_provider_adapter.py": [
       "tests/test_vast_provider_adapter.py"
     ],
+    "src/blueprint_pipeline/vast_instance_teardown.py": [
+      "tests/test_vast_instance_teardown.py"
+    ],
     "src/blueprint_pipeline/wam_derived_observation_harness.py": [
       "tests/test_wam_derived_observation_harness.py"
     ],
