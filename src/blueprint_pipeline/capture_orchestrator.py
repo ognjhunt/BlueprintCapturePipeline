@@ -27,7 +27,7 @@ from .eval_card_ids import (
     _metric_ids_from_methodology,
     _task_ids_from_thresholds,
 )
-from .lane_resume import (
+from .core.lane_resume import (
     lane_ledger_input_fingerprint,
     lane_resume_disabled,
     read_completed_lane_result,

@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
+from blueprint_pipeline.core.lane_resume import (
+    record_lane_completion as canonical_record_lane_completion,
+)
 from blueprint_pipeline.lane_resume import (
     LANE_LEDGER_SCHEMA_VERSION,
     capture_input_fingerprint,
@@ -13,6 +16,10 @@ from blueprint_pipeline.lane_resume import (
     read_completed_lane_result,
     record_lane_completion,
 )
+
+
+def test_lane_resume_compatibility_import_is_canonical_function() -> None:
+    assert record_lane_completion is canonical_record_lane_completion
 
 
 def _capture_root(tmp_path: Path) -> Path:
