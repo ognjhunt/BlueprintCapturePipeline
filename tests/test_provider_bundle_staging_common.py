@@ -11,6 +11,7 @@ from blueprint_pipeline.provider_bundle_staging_common import (
     OUTPUT_ROUTE,
     create_staging_server,
     prepare_provider_bundle_staging,
+    provider_staging_urls,
     read_or_create_staging_token,
     staging_url_with_token,
 )
@@ -47,6 +48,20 @@ def test_staging_url_normalizes_route_and_places_token_only_in_query() -> None:
     assert parsed.path == "/bundle.zip"
     assert parse_qs(parsed.query) == {"token": ["secret-token"]}
     assert parsed.fragment == ""
+
+
+def test_provider_staging_urls_share_one_redacted_token_contract(tmp_path: Path) -> None:
+    token_path = tmp_path / "token"
+    bundle_url, output_url, token_status = provider_staging_urls(
+        "https://staging.example/base",
+        token_path,
+    )
+
+    token = token_path.read_text(encoding="utf-8").strip()
+    assert parse_qs(urlparse(bundle_url).query) == {"token": [token]}
+    assert parse_qs(urlparse(output_url).query) == {"token": [token]}
+    assert token_status["token_recorded_in_manifest"] is False
+    assert token not in str(token_status)
 
 
 def test_provider_neutral_staging_manifest_preserves_secret_boundary(

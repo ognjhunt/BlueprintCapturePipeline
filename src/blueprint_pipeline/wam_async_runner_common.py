@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse, urlsplit, urlunparse
 
 
@@ -74,6 +75,82 @@ class AsyncPollDeadline:
         return self.elapsed_seconds(now_monotonic) >= self.max_wait_seconds
 
 
+@dataclass(frozen=True)
+class AsyncTeardownDecision:
+    """Provider-neutral decision at the poll-to-teardown boundary."""
+
+    effective_requested: bool
+    should_teardown: bool
+    action: str | None
+    teardown_pending: bool
+    automatic_reasons: tuple[str, ...]
+    requested_ready: bool
+    allocation_actionable: bool
+    blockers_present: bool
+
+    def as_manifest(self) -> dict[str, Any]:
+        return {
+            "effective_requested": self.effective_requested,
+            "should_teardown": self.should_teardown,
+            "action": self.action,
+            "teardown_pending": self.teardown_pending,
+            "automatic_reasons": list(self.automatic_reasons),
+            "requested_ready": self.requested_ready,
+            "allocation_actionable": self.allocation_actionable,
+            "blockers_present": self.blockers_present,
+        }
+
+
+def decide_async_teardown(
+    *,
+    explicit_requested: bool,
+    requested_ready: bool,
+    requested_action: str,
+    automatic_reasons: Sequence[str] = (),
+    automatic_action: str = "delete",
+    allocation_actionable: bool = True,
+    blockers_present: bool = False,
+) -> AsyncTeardownDecision:
+    """Derive one fail-closed poll teardown decision for any provider.
+
+    Automatic failure/deadline triggers take precedence over an operator's normal
+    action. An explicit request waits for its provider-specific readiness predicate;
+    automatic triggers do not. ``teardown_pending`` additionally requires a known,
+    actionable allocation and no pre-existing blocker.
+    """
+
+    reasons = tuple(
+        dict.fromkeys(
+            reason.strip()
+            for reason in automatic_reasons
+            if isinstance(reason, str) and reason.strip()
+        )
+    )
+    automatic = bool(reasons)
+    effective_requested = bool(explicit_requested or automatic)
+    should_teardown = bool(automatic or (explicit_requested and requested_ready))
+    action = (
+        automatic_action
+        if automatic
+        else requested_action
+        if explicit_requested
+        else None
+    )
+    teardown_pending = bool(
+        should_teardown and allocation_actionable and not blockers_present
+    )
+    return AsyncTeardownDecision(
+        effective_requested=effective_requested,
+        should_teardown=should_teardown,
+        action=action,
+        teardown_pending=teardown_pending,
+        automatic_reasons=reasons,
+        requested_ready=bool(requested_ready),
+        allocation_actionable=bool(allocation_actionable),
+        blockers_present=bool(blockers_present),
+    )
+
+
 def deadline_capped_wait_seconds(
     *,
     state: Mapping[str, Any],
@@ -103,6 +180,20 @@ def read_json_mapping(path: Path) -> dict[str, Any]:
 
     value = json.loads(path.read_text(encoding="utf-8"))
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def regex_json_string_field(text: str, field: str) -> str:
+    """Salvage one string field from a partially written JSON state artifact."""
+
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*"([^"]*)"', text)
+    return match.group(1) if match else ""
+
+
+def regex_json_number_field(text: str, field: str) -> float | None:
+    """Salvage one non-negative numeric field from partial JSON state."""
+
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*([0-9]+(?:\.[0-9]+)?)', text)
+    return float(match.group(1)) if match else None
 
 
 def redact_provider_url(value: str) -> str:

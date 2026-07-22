@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import urllib.error
@@ -26,10 +25,7 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .provider_bundle_staging_common import (
-    BUNDLE_ROUTE,
-    OUTPUT_ROUTE,
-    read_or_create_staging_token as _read_or_create_token,
-    staging_url_with_token as _url_with_token,
+    provider_staging_urls as _provider_urls,
 )
 from .vast_bundle_staging import (
     DEFAULT_OUTPUT_FILENAME,
@@ -116,7 +112,10 @@ from .wam_async_runner_common import (
     read_json_mapping as _read_json,
     read_sensitive_url_file as _read_sensitive_url_file,
     redact_provider_url as _redact_provider_url,
+    regex_json_number_field as _regex_number,
+    regex_json_string_field as _regex_field,
 )
+from .wam_provider_poll_state import decide_vast_poll_teardown
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip as _inspect_provider_runtime_output_zip,
 )
@@ -217,16 +216,6 @@ def _download_provider_output_zip(
         )
     write_json(job_dir / "vast_provider_output_download_manifest.json", manifest)
     return manifest
-
-
-def _regex_field(text: str, field: str) -> str:
-    match = re.search(rf'"{re.escape(field)}"\s*:\s*"([^"]*)"', text)
-    return match.group(1) if match else ""
-
-
-def _regex_number(text: str, field: str) -> float | None:
-    match = re.search(rf'"{re.escape(field)}"\s*:\s*([0-9]+(?:\.[0-9]+)?)', text)
-    return float(match.group(1)) if match else None
 
 
 def _read_async_state(job_dir: Path) -> dict[str, Any]:
@@ -485,15 +474,6 @@ def destroy_async_vast_wam_run(
         state["continuing_spend_from_this_run"] = False
         write_json(_state_path(resolved_job_dir), state)
     return manifest
-
-
-def _provider_urls(public_base_url: str, token_file: Path) -> tuple[str, str, dict[str, Any]]:
-    token, token_status = _read_or_create_token(token_file)
-    return (
-        _url_with_token(public_base_url, BUNDLE_ROUTE, token),
-        _url_with_token(public_base_url, OUTPUT_ROUTE, token),
-        token_status,
-    )
 
 
 def create_async_vast_wam_run(
@@ -1623,7 +1603,13 @@ def poll_async_vast_wam_run(
         or "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED" in heartbeat_text
         or provider_command.get("provider_runtime_output_zip_received") is True
     )
-    should_teardown = bool(teardown or timed_out or provider_done_or_blocked)
+    teardown_decision = decide_vast_poll_teardown(
+        explicit_requested=teardown,
+        max_live_deadline_expired=timed_out,
+        provider_completed_or_blocked=provider_done_or_blocked,
+        allocation_actionable=bool(instance_id and api_key),
+    )
+    should_teardown = teardown_decision.should_teardown
     teardown_actions: list[dict[str, Any]] = []
     continuing_spend = not should_teardown
     if should_teardown:
@@ -1768,6 +1754,7 @@ def poll_async_vast_wam_run(
         "mp4_count": output_zip_inspection.get("mp4_count"),
         "teardown_requested": teardown,
         "teardown_performed": should_teardown,
+        "teardown_decision": teardown_decision.as_manifest(),
         "continuing_spend_from_this_run": continuing_spend,
         "requested_log_fetch_max_wait_seconds": max_wait_seconds,
         "effective_log_fetch_max_wait_seconds": effective_max_wait_seconds,

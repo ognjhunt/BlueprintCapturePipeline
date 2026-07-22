@@ -6,11 +6,14 @@ import pytest
 
 from blueprint_pipeline.wam_async_runner_common import (
     AsyncPollDeadline,
+    decide_async_teardown,
     deadline_capped_wait_seconds,
     download_url_to_file,
     read_json_mapping,
     read_sensitive_url_file,
     redact_provider_url,
+    regex_json_number_field,
+    regex_json_string_field,
 )
 
 
@@ -50,6 +53,53 @@ def test_paid_deadline_caps_provider_poll_wait() -> None:
     ) == (60, None, False)
 
 
+def test_async_teardown_waits_for_explicit_request_readiness() -> None:
+    decision = decide_async_teardown(
+        explicit_requested=True,
+        requested_ready=False,
+        requested_action="stop",
+        allocation_actionable=True,
+    )
+
+    assert decision.effective_requested is True
+    assert decision.should_teardown is False
+    assert decision.action == "stop"
+    assert decision.teardown_pending is False
+
+
+def test_async_teardown_automatic_failure_forces_delete_when_actionable() -> None:
+    decision = decide_async_teardown(
+        explicit_requested=False,
+        requested_ready=False,
+        requested_action="keep_on_success",
+        automatic_reasons=("runtime_stall", "runtime_stall", "output_validation_failed"),
+        automatic_action="delete",
+        allocation_actionable=True,
+    )
+
+    assert decision.should_teardown is True
+    assert decision.action == "delete"
+    assert decision.teardown_pending is True
+    assert decision.automatic_reasons == (
+        "runtime_stall",
+        "output_validation_failed",
+    )
+
+
+def test_async_teardown_keeps_decision_but_blocks_mutation_without_allocation() -> None:
+    decision = decide_async_teardown(
+        explicit_requested=True,
+        requested_ready=True,
+        requested_action="destroy",
+        allocation_actionable=False,
+        blockers_present=True,
+    )
+
+    assert decision.should_teardown is True
+    assert decision.teardown_pending is False
+    assert decision.as_manifest()["blockers_present"] is True
+
+
 def test_redact_provider_url_removes_query_and_fragment() -> None:
     value = redact_provider_url("https://objects.example/bundle.zip?secret=1#token")
 
@@ -63,6 +113,15 @@ def test_read_json_mapping_rejects_non_object_shape(tmp_path) -> None:
     path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
 
     assert read_json_mapping(path) == {}
+
+
+def test_partial_json_field_salvage_is_bounded_to_requested_fields() -> None:
+    partial = 'prefix "instance_id": 42, "bundle_path": "/tmp/bundle.zip" trailing'
+
+    assert regex_json_number_field(partial, "instance_id") == 42.0
+    assert regex_json_string_field(partial, "bundle_path") == "/tmp/bundle.zip"
+    assert regex_json_number_field(partial, "missing") is None
+    assert regex_json_string_field(partial, "missing") == ""
 
 
 def test_read_sensitive_url_file_reports_metadata_without_echoing_value(tmp_path) -> None:

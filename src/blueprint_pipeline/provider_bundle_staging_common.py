@@ -69,6 +69,20 @@ def staging_url_with_token(base_url: str, route: str, token: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, clean_path, "", query, ""))
 
 
+def provider_staging_urls(
+    public_base_url: str,
+    token_file: Path,
+) -> tuple[str, str, dict[str, Any]]:
+    """Build the token-gated bundle/output URL pair and redacted token metadata."""
+
+    token, token_status = read_or_create_staging_token(token_file)
+    return (
+        staging_url_with_token(public_base_url, BUNDLE_ROUTE, token),
+        staging_url_with_token(public_base_url, OUTPUT_ROUTE, token),
+        token_status,
+    )
+
+
 def redacted_staging_url_path(route: str) -> str:
     """Describe a token-gated route without persisting the staging credential."""
 

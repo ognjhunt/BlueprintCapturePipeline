@@ -81,6 +81,7 @@ from .wam_async_runner_common import (
     read_sensitive_url_file as _read_sensitive_url_file,
     redact_provider_url as _redact_provider_url,
 )
+from . import wam_provider_poll_state as _poll_state
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip as _inspect_provider_runtime_output_zip,
 )
@@ -2425,12 +2426,7 @@ def _stop_pod(
 
 
 def _teardown_action() -> str:
-    action = _string(os.getenv(RUNPOD_WAM_TEARDOWN_ACTION_ENV)).lower()
-    if action in {"stop", "stopped", "preserve", "warm"}:
-        return "stop"
-    if action in {"keep", "keep_running", "keep_on_success", "hot", "hot_reuse"}:
-        return "keep_on_success"
-    return "delete"
+    return _poll_state.normalize_runpod_teardown_action(os.getenv(RUNPOD_WAM_TEARDOWN_ACTION_ENV))
 
 
 def _reliability_phase(passed: bool, blockers: Sequence[str] = (), **fields: Any) -> dict[str, Any]:
@@ -3350,19 +3346,22 @@ def poll_runpod_wam_async_run(
     keepalive_runtime_unhealthy_on_success = bool(
         requested_keep_running_on_success and not keep_running_on_success
     )
-    should_teardown = bool(
-        auto_teardown_failure
-        or (
-            teardown
-            and (output_present or pod_status_is_terminal or runtime_stall_observed)
-            and not keep_running_on_success
-        )
+    teardown_decision = _poll_state.decide_runpod_poll_teardown(
+        explicit_requested=teardown,
+        requested_action=teardown_action,
+        output_present=output_present,
+        provider_terminal=pod_status_is_terminal,
+        runtime_stalled=runtime_stall_observed,
+        runtime_result_failed=runtime_result_failed,
+        output_validation_failed=provider_output_validation_failed,
+        keep_running=keep_running_on_success,
+        allocation_actionable=bool(pod_id and api_key and pod_status != "not_found"),
+        blockers_present=bool(blockers),
     )
-    effective_teardown_action = "delete" if auto_teardown_failure else teardown_action
-    effective_teardown_requested = bool(teardown or auto_teardown_failure)
-    teardown_pending = bool(
-        not blockers and should_teardown and pod_id and api_key and pod_status != "not_found"
-    )
+    should_teardown = teardown_decision.should_teardown
+    effective_teardown_action = teardown_decision.action or teardown_action
+    effective_teardown_requested = teardown_decision.effective_requested
+    teardown_pending = teardown_decision.teardown_pending
     teardown_manifest: dict[str, Any] | None = None
     continuing_spend = bool(
         pod_id
@@ -3458,6 +3457,7 @@ def poll_runpod_wam_async_run(
         if effective_teardown_requested
         else "not_requested",
         "teardown_pending": teardown_pending,
+        "teardown_decision": teardown_decision.as_manifest(),
         "teardown_performed": existing_teardown_completed,
         "requested_keep_running_on_success": requested_keep_running_on_success,
         "keep_running_on_success": keep_running_on_success,

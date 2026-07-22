@@ -408,7 +408,7 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
 ## P2 — Consolidations (duplication from pivots)
 
 1. **WAM async runners**: `runpod_wam_async_runner.py` (3,682) vs
-   `vast_wam_async_runner.py` (1,893) — parallel per-provider implementations of the
+   `vast_wam_async_runner.py` (1,882) — parallel per-provider implementations of the
    same launch/poll/collect lifecycle behind one facade (`wam_compute_providers`,
    1,903), with cross-entanglement (the RunPod runner imports Vast modules). Extract
    the shared lifecycle against the provider-adapter contracts; ~1,500 LOC reduction.
@@ -436,8 +436,15 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    before I/O and removes five expiring Bandit exceptions. Compatibility exports keep
    existing operators stable. All 29 direct staging tests and 90 RunPod/Vast consumer
    tests pass, and the full Bandit gate reports zero high and 63 reviewed medium
-   findings. Provider-specific poll state transitions and teardown execution still need
-   incremental extraction.
+   findings. The poll-to-teardown decision is now shared as a typed
+   `AsyncTeardownDecision`: explicit requests wait for provider readiness, automatic
+   failure/deadline reasons override to the fail-closed action, and mutations require an
+   actionable allocation with no pre-existing blocker. RunPod/Vast-specific evidence
+   mapping is isolated in `wam_provider_poll_state`; partial-state salvage and staging
+   URL-pair construction also moved out of the Vast runner, reducing it by another 11
+   lines. Its 18 direct state-contract tests and all 66 RunPod/Vast async-runner tests
+   pass. Provider status querying, retrying provider API mutations, and teardown-proof
+   persistence still need incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the

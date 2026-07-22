@@ -94,6 +94,9 @@
     "src/blueprint_pipeline/provider_staging_verification.py": [
       "tests/test_provider_staging_verification.py"
     ],
+    "src/blueprint_pipeline/wam_provider_poll_state.py": [
+      "tests/test_wam_provider_poll_state.py"
+    ],
     "src/blueprint_pipeline/qualification.py": [
       "tests/test_qualification_alpha.py"
     ],
