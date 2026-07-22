@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .attempt_closure_projection import project_attempt_closure
 from .common import parse_bool, utc_now_iso
-from .g1_kitchen_attempt_closure import buyer_readout_projection
 from .success_claim_contracts import CLAIM_LADDER
 
 BUYER_PACKAGE_READOUT_SCHEMA_VERSION = "buyer_package_readout.v1"
@@ -303,7 +303,13 @@ def build_buyer_package_readout(
     ledger = _mapping(success_claim_ledger)
     kitchen_closure = _mapping(manifest.get("g1_kitchen_attempt_closure"))
     kitchen_closure_projection = (
-        buyer_readout_projection(kitchen_closure) if kitchen_closure else {}
+        project_attempt_closure(
+            kitchen_closure,
+            expected_schema_version="g1_kitchen_attempt_closure.v1",
+            incomplete_blocker="g1_kitchen_attempt_closure_not_completed",
+        )
+        if kitchen_closure
+        else {}
     )
     manifest_blockers = _string_list(manifest.get("blockers"))
     consent_revoked = (

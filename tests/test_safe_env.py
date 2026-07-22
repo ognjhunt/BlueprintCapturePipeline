@@ -3,7 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from blueprint_pipeline.safe_env import contract_test_env, load_env_files
+from blueprint_pipeline.core.safe_env import contract_test_env, load_env_files
+from blueprint_pipeline.safe_env import load_env_files as compatibility_load_env_files
+
+
+def test_compatibility_import_uses_canonical_env_loader() -> None:
+    assert compatibility_load_env_files is load_env_files
 
 
 def test_load_env_files_applies_local_and_alpha_without_printing_values(

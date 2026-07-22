@@ -94,6 +94,7 @@ def test_native_runtime_low_level_helper_edges(tmp_path: Path, monkeypatch: pyte
     assert nrb._optional_existing_path(str(existing)) == existing.resolve()
 
     monkeypatch.setattr(nrb, "_module_available", lambda name: name == "torch")
+    monkeypatch.setenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", "cosmos_wam")
     monkeypatch.setenv("NATIVE_WORLD_MODEL_READY", "1")
     monkeypatch.setenv("NATIVE_WORLD_MODEL_CHECKPOINT_READY", "1")
     readiness = nrb._runtime_readiness()
@@ -116,6 +117,9 @@ def test_native_runtime_low_level_helper_edges(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setenv("GCS_ROOT", str(tmp_path / "configured-storage"))
     assert nrb._default_storage_root() == (tmp_path / "configured-storage").resolve()
 
+    monkeypatch.delenv("COSMOS_OFFICIAL_REPO_ROOT", raising=False)
+    assert nrb._find_cosmos_repo() is None
+
     repo = tmp_path / "cosmos-repo"
     inference = repo / "examples" / "inference.py"
     python_bin = repo / ".venv" / "bin" / "python"
@@ -127,8 +131,6 @@ def test_native_runtime_low_level_helper_edges(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setenv("COSMOS_OFFICIAL_REPO_ROOT", str(repo))
     assert nrb._find_cosmos_repo() == (repo, python_bin)
 
-    monkeypatch.setattr(nrb, "_COSMOS_REPO_CANDIDATE_PATHS", [str(repo)])
-    monkeypatch.delenv("COSMOS_OFFICIAL_REPO_ROOT", raising=False)
     monkeypatch.setattr(nrb.os, "access", lambda _path, _mode: False)
     assert nrb._find_cosmos_repo() is None
     monkeypatch.setattr(
@@ -251,11 +253,36 @@ def test_native_runtime_low_level_helper_edges(tmp_path: Path, monkeypatch: pyte
     assert nrb._resolve_site_id({}, "scene-1", "capture-1", storage_root, "bucket") == "descriptor-site"
 
 
+def test_runtime_readiness_is_scoped_to_the_selected_strategy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", "site_splat")
+    monkeypatch.delenv("NATIVE_WORLD_MODEL_SYNTHESIS_MODE", raising=False)
+    monkeypatch.delenv("COSMOS_OFFICIAL_REPO_ROOT", raising=False)
+    monkeypatch.setattr(
+        nrb,
+        "_module_available",
+        lambda name: name in {"numpy", "PIL"},
+    )
+
+    readiness = nrb._runtime_readiness()
+    assert readiness["ready"] is True
+    assert readiness["selected_runtime_path"] == "splat_only"
+    assert readiness["cosmos_ready"] is False
+    assert readiness["notes"] == []
+
+    monkeypatch.setattr(nrb, "_module_available", lambda name: name == "numpy")
+    readiness = nrb._runtime_readiness()
+    assert readiness["ready"] is False
+    assert readiness["notes"] == ["missing_site_splat_runtime_packages"]
+
+
 def test_native_runtime_store_state_and_rollout_helpers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path)
+    monkeypatch.setenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", "cosmos_wam")
 
     monkeypatch.setattr(nrb, "_runtime_readiness", lambda: {"ready": False})
     assert store.prewarm_runtime()["status"] == "skipped"
@@ -310,10 +337,14 @@ def test_native_runtime_store_state_and_rollout_helpers(
     assert store._latest_render_path({"latest_render_path": str(render)}) == render
     assert store._latest_render_path({"latest_render_path": str(tmp_path / "missing.png")}) is None
 
+    monkeypatch.delenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", raising=False)
     monkeypatch.setenv("NATIVE_WORLD_MODEL_SYNTHESIS_MODE", "forced_mode")
-    assert store._live_synthesis_mode() == "forced_mode"
+    with pytest.raises(ValueError, match="native_runtime_backend_unknown"):
+        store._live_synthesis_mode()
     monkeypatch.delenv("NATIVE_WORLD_MODEL_SYNTHESIS_MODE", raising=False)
     monkeypatch.setattr(nrb, "_runtime_readiness", lambda: {"ready": True})
+    assert store._live_synthesis_mode() == "splat_only"
+    monkeypatch.setenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", "cosmos_wam")
     assert store._live_synthesis_mode() == "cosmos_i2w"
     monkeypatch.setenv("NATIVE_WORLD_MODEL_ENABLE_TRUTHFUL_PREVIEW", "1")
     assert store._uses_truthful_preview() is True
@@ -1056,6 +1087,7 @@ def test_runtime_info_reports_truthful_selected_render_path(
         "NATIVE_WORLD_MODEL_OUTPUT_PROFILE",
         "NATIVE_WORLD_MODEL_ENABLE_TRUTHFUL_PREVIEW",
         "NATIVE_WORLD_MODEL_SYNTHESIS_MODE",
+        "BLUEPRINT_NATIVE_RUNTIME_BACKEND",
         "NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT",
         "NATIVE_WORLD_MODEL_PRODUCTION_GRADE",
     ):
@@ -1087,6 +1119,7 @@ def test_runtime_info_reports_truthful_selected_render_path(
 
     # A ready cosmos runtime with truthful preview disabled selects cosmos_i2w.
     monkeypatch.setenv("NATIVE_WORLD_MODEL_ENABLE_TRUTHFUL_PREVIEW", "0")
+    monkeypatch.setenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", "cosmos_wam")
     monkeypatch.setattr(nrb, "_runtime_readiness", lambda: _readiness(ready=True))
     info = store.runtime_info(service_version="test")
     assert info["model_identity"]["model_family"] == "cosmos_i2w_native"
@@ -1101,3 +1134,27 @@ def test_runtime_info_reports_truthful_selected_render_path(
     assert info["model_identity"]["model_family"] == "unconfigured"
     assert info["state_guarantees"]["render_source"] == "unconfigured"
     assert info["readiness"]["selected_runtime_path"] == "unconfigured"
+
+
+def test_neutral_runtime_does_not_implicitly_enable_cosmos_refinement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    monkeypatch.setattr(
+        nrb,
+        "_runtime_readiness",
+        lambda: {"ready": True, "cosmos_ready": True},
+    )
+    monkeypatch.setenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", "site_splat")
+    monkeypatch.delenv("NATIVE_WORLD_MODEL_SYNTHESIS_MODE", raising=False)
+    monkeypatch.delenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT", raising=False)
+
+    assert store._uses_truthful_preview() is True
+    assert store._cosmos_refinement_enabled() is False
+
+    monkeypatch.setenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT", "true")
+    assert store._cosmos_refinement_enabled() is True
+
+    monkeypatch.delenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT", raising=False)
+    monkeypatch.setenv("BLUEPRINT_NATIVE_RUNTIME_BACKEND", "cosmos_wam")
+    assert store._cosmos_refinement_enabled() is True

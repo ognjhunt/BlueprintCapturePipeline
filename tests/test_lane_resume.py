@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_pipeline
+from blueprint_pipeline.core.lane_resume import (
+    record_lane_completion as canonical_record_lane_completion,
+)
 from blueprint_pipeline.lane_resume import (
     LANE_LEDGER_SCHEMA_VERSION,
     capture_input_fingerprint,
@@ -13,6 +16,10 @@ from blueprint_pipeline.lane_resume import (
     read_completed_lane_result,
     record_lane_completion,
 )
+
+
+def test_lane_resume_compatibility_import_is_canonical_function() -> None:
+    assert record_lane_completion is canonical_record_lane_completion
 
 
 def _capture_root(tmp_path: Path) -> Path:
@@ -79,6 +86,12 @@ def test_lane_marker_round_trip_returns_stored_result(tmp_path: Path) -> None:
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert marker["schema_version"] == LANE_LEDGER_SCHEMA_VERSION
     assert marker["output_paths"] == [str(manifest_path)]
+    assert marker["outcome"] == {
+        "schema_version": "stage_outcome.v1",
+        "kind": "produced",
+        "reason": None,
+        "artifact": lane_result,
+    }
 
     resumed = read_completed_lane_result(
         capture_root=capture_root,
@@ -86,6 +99,48 @@ def test_lane_marker_round_trip_returns_stored_result(tmp_path: Path) -> None:
         fingerprint=fingerprint,
     )
     assert resumed == lane_result
+
+    # Existing v1 markers predate explicit outcome semantics and remain resumable.
+    marker.pop("outcome")
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    assert read_completed_lane_result(
+        capture_root=capture_root,
+        lane="evaluation_prep",
+        fingerprint=fingerprint,
+    ) == lane_result
+
+
+def test_lane_marker_rejects_nonproduced_or_mismatched_typed_outcome(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    _write_capture_inputs(capture_root)
+    fingerprint = _fingerprint(capture_root)
+    lane_result = {"lane": "qualification", "status": "completed"}
+    record_lane_completion(
+        capture_root=capture_root,
+        lane="qualification",
+        fingerprint=fingerprint,
+        lane_result=lane_result,
+    )
+    marker_path = lane_marker_path(capture_root, "qualification")
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["outcome"]["kind"] = "failed"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    assert read_completed_lane_result(
+        capture_root=capture_root,
+        lane="qualification",
+        fingerprint=fingerprint,
+    ) is None
+
+    marker["outcome"]["kind"] = "produced"
+    marker["outcome"]["artifact"] = {"status": "different"}
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    assert read_completed_lane_result(
+        capture_root=capture_root,
+        lane="qualification",
+        fingerprint=fingerprint,
+    ) is None
 
 
 def test_lane_marker_fingerprint_mismatch_forces_rerun(tmp_path: Path) -> None:

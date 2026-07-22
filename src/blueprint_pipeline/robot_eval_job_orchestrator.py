@@ -20,7 +20,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -44,9 +43,10 @@ from .agent_operator_runtime import (
 from .arena_result_ingest import build_arena_result_ingest
 from .action_normalization import build_action_normalization_from_trace
 from .benchmark_protocol import execute_benchmark_protocol_request
-from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
+from .core.common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import build_episode_specs
+from .evaluator_qualification_workflow import build_evaluator_qualification_workflow
 from .evaluation_run import compile_evaluation_run
 from .failure_diagnosis_contract import (
     FAILURE_LABEL_PROOF_EFFECT,
@@ -59,6 +59,7 @@ from .failure_diagnosis_contract import (
 )
 from .local_capture import resolve_local_capture_context
 from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
+from .core.pipeline_settings import PipelineSettings
 from .post_training_data_package import build_post_training_data_package_export
 from .canonical_training_quality_pipeline import (
     run_canonical_training_quality_from_request,
@@ -83,11 +84,11 @@ from .robot_eval_job_request_contract import (
 )
 from .robot_eval_evaluation_run_adapter import (
     build_robot_eval_evaluation_run_spec,
-    execute_legacy_robot_eval_request_as_evaluation_run,
+    execute_robot_eval_request_as_evaluation_run,
     execute_robot_eval_cli_evaluation_run,
 )
 from .scene_asset_preflight import build_scene_asset_preflight
-from .security_controls import contained_path, strict_identifier
+from .core.security_controls import contained_path, strict_identifier
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
 from .success_claim_contracts import (
@@ -222,7 +223,7 @@ DEFAULT_STARTUP_EXPECTED_OUTPUTS = [
     "stderr_log",
 ]
 OPERATIONS = ("evaluate_only", "train_only", "train_then_evaluate")
-LIVE_GPU_PROVISIONERS = {"vast", "runpod", "lambda_cloud", "gcp"}
+LIVE_GPU_PROVISIONERS = {"vast", "runpod", "gcp"}
 WORKER_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
 WORKER_MANIFEST_URI_ENV = "BLUEPRINT_EVAL_MANIFEST_URI"
 WORKER_ARTIFACT_OUTPUT_URI_ENV = "BLUEPRINT_ARTIFACT_OUTPUT_URI"
@@ -2146,8 +2147,6 @@ def _build_scheduler_decision(
 def _provider_credential_env_vars(provisioner: str) -> List[str]:
     if provisioner == "runpod":
         return ["RUNPOD_API_KEY"]
-    if provisioner == "lambda_cloud":
-        return ["LAMBDA_API_KEY"]
     if provisioner == "vast":
         return ["VAST_API_KEY"]
     if provisioner == "gcp":
@@ -2158,8 +2157,6 @@ def _provider_credential_env_vars(provisioner: str) -> List[str]:
 def _provider_launch_operation(provisioner: str) -> str:
     if provisioner == "runpod":
         return "enqueue_runpod_serverless_or_on_demand_worker"
-    if provisioner == "lambda_cloud":
-        return "launch_lambda_cloud_instance_and_run_worker"
     if provisioner == "vast":
         return "create_vast_instance_and_run_worker"
     if provisioner == "gcp":
@@ -2175,7 +2172,6 @@ def _provider_adapter_command(provisioner: str) -> str | None:
     return {
         "runpod": "blueprint-run-runpod-provider-adapter",
         "vast": "blueprint-run-vast-provider-adapter",
-        "lambda_cloud": "blueprint-run-lambda-provider-adapter",
     }.get(provisioner)
 
 
@@ -2183,7 +2179,6 @@ def _provider_adapter_id(provisioner: str) -> str | None:
     return {
         "runpod": "runpod_provider_adapter.v1",
         "vast": "vast_provider_adapter.v1",
-        "lambda_cloud": "lambda_provider_adapter.v1",
     }.get(provisioner)
 
 
@@ -7982,11 +7977,6 @@ def build_robot_eval_job(
         generated_at=generated_at,
     )
     effective_simulator_commands = dict(simulator_commands or {})
-    if simulator == "isaac_sim" and not _string(effective_simulator_commands.get("isaac_sim")):
-        effective_simulator_commands["isaac_sim"] = (
-            f"{shlex.quote(sys.executable)} -m "
-            "blueprint_pipeline.isaac_g1_site_3dgs_realistic_eval"
-        )
     selected_wam_provider_commands = dict(wam_provider_commands or {})
     policy_manifest, policy_missing_inputs, policy_missing_statuses = _policy_package_manifest(
         request=request,
@@ -9237,6 +9227,37 @@ def build_robot_eval_job(
             ),
         },
     }
+    evaluator_qualification_request = request.get("evaluator_qualification_request")
+    evaluator_qualification: Dict[str, Any] | None = None
+    if evaluator_qualification_request is not None:
+        evaluator_qualification = build_evaluator_qualification_workflow(
+            _mapping(evaluator_qualification_request)
+        )
+        _write_job_json(
+            job_dir,
+            "evaluator_qualification_workflow.json",
+            evaluator_qualification,
+        )
+    run_manifest["evaluator_qualification_status"] = (
+        evaluator_qualification.get("status")
+        if evaluator_qualification is not None
+        else "not_requested"
+    )
+    run_manifest["evaluator_scientific_qualification_status"] = (
+        evaluator_qualification.get("scientific_qualification_status")
+        if evaluator_qualification is not None
+        else "not_requested"
+    )
+    run_manifest["evaluator_qualification_path"] = (
+        "evaluator_qualification_workflow.json"
+        if evaluator_qualification is not None
+        else None
+    )
+    run_manifest["evaluator_qualification_claim_boundary"] = {
+        "optional_support_layer": True,
+        "ordinary_task_eval_completion_requires_qualification": False,
+        "public_launch_claim_requires_qualified_result": True,
+    }
     run_manifest["deterministic_fingerprint"] = _sha_payload(
         {
             "job_id": job_id,
@@ -9269,6 +9290,7 @@ def build_robot_eval_job(
             }
             if wam_eval_result
             else {},
+            "evaluator_qualification": evaluator_qualification or {},
             "live_closure": live_closure,
             "execution_fingerprint": fingerprint_execution_artifacts(
                 robot_pov_manifest,
@@ -9945,7 +9967,7 @@ def run_robot_eval_job_request_inbox(
             queued_dir = job_queue_root / job_id
             ensure_dir(queued_dir)
             write_json(queued_dir / "job_request.json", request)
-            result = execute_legacy_robot_eval_request_as_evaluation_run(
+            result = execute_robot_eval_request_as_evaluation_run(
                 capture_root=request_context.capture_root,
                 job_request=request,
                 job_id=job_id,
@@ -10324,6 +10346,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--allow-live-codex-sdk", action="store_true")
     args = parser.parse_args(argv)
     try:
+        settings = PipelineSettings.from_env()
+        settings.validate_cli_admission(
+            allow_gpu_provisioning=bool(args.allow_gpu_provisioning),
+            allow_simulator_execution=bool(args.allow_simulator_execution),
+            allow_cosmos_training=bool(args.allow_training),
+            allow_live_agents_sdk_operator=bool(args.allow_live_agent_operator),
+        )
         simulator_commands = _parse_simulator_commands(args.simulator_command)
         policy_execution_commands = _parse_policy_execution_commands(args.policy_execution_command)
         wam_provider_commands = parse_wam_provider_commands(args.wam_provider_command)
@@ -10400,7 +10429,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise ValueError(
                 "--job-request and --job-id are required unless --job-request-inbox is provided"
             )
-        result = execute_legacy_robot_eval_request_as_evaluation_run(
+        result = execute_robot_eval_request_as_evaluation_run(
             capture_root=args.capture_root,
             job_request=args.job_request,
             job_id=args.job_id,

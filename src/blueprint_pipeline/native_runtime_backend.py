@@ -23,7 +23,28 @@ from .camera_geometry_validation import (
     validate_se3_matrix,
 )
 from .model_access_env import normalize_model_access_env
-from .security_controls import contained_path, strict_identifier
+from .native_runtime_readiness import (
+    build_native_runtime_readiness,
+    find_configured_cosmos_repo,
+    optional_existing_path as _optional_existing_path,
+)
+from .native_runtime_cosmos_adapter import LegacyCosmosRuntimeAdapter
+from .native_runtime_rollout_state import (
+    chunk_record,
+    current_chunk,
+    ensure_rollout_state,
+    refresh_rollout_playback,
+    remaining_ready_chunks,
+    replace_chunk,
+    should_queue_more_chunks,
+)
+from .native_runtime_strategy import (
+    bind_selected_runtime_identity,
+    cosmos_refinement_enabled,
+    native_runtime_strategy_for_mode,
+    resolve_native_runtime_strategy,
+)
+from .core.security_controls import contained_path, strict_identifier
 from blueprint_contracts.runtime_service_contract import RuntimeMetadata
 from blueprint_contracts.site_world_contract import merge_site_world_definition
 
@@ -70,16 +91,11 @@ def _module_available(name: str) -> bool:
     return bool(importlib.util.find_spec(name))
 
 
-def _optional_existing_path(raw_value: Any) -> Optional[Path]:
-    text = str(raw_value or "").strip()
-    if not text or text.startswith(("gs://", "http://", "https://")):
-        return None
-    path = Path(text).expanduser().resolve()
-    return path if path.exists() else None
-
-
 def _runtime_readiness() -> Dict[str, Any]:
+    strategy = resolve_native_runtime_strategy(os.environ)
     packages = {
+        "numpy": _module_available("numpy"),
+        "PIL": _module_available("PIL"),
         "torch": _module_available("torch"),
         "diffusers": _module_available("diffusers"),
         "cosmos_predict2_5": _module_available("cosmos_predict2_5"),
@@ -87,27 +103,17 @@ def _runtime_readiness() -> Dict[str, Any]:
     model_dir = _optional_existing_path(os.getenv("NATIVE_WORLD_MODEL_PATH"))
     checkpoint_path = _optional_existing_path(os.getenv("NATIVE_WORLD_MODEL_CHECKPOINT_PATH"))
     cosmos_repo = _find_cosmos_repo()
-    package_ready = packages["torch"] and (packages["diffusers"] or packages["cosmos_predict2_5"] or bool(cosmos_repo))
-    model_ready = bool(model_dir) or _env_truthy("NATIVE_WORLD_MODEL_READY") or bool(cosmos_repo)
-    checkpoint_ready = bool(checkpoint_path) or _env_truthy("NATIVE_WORLD_MODEL_CHECKPOINT_READY") or bool(cosmos_repo)
-    notes: list[str] = []
-    if not package_ready:
-        notes.append("missing_native_runtime_packages")
-    if not model_ready:
-        notes.append("native_model_not_provisioned")
-    if not checkpoint_ready:
-        notes.append("native_checkpoint_not_provisioned")
-    return {
-        "ready": package_ready and model_ready and checkpoint_ready,
-        "package_ready": package_ready,
-        "model_ready": model_ready,
-        "checkpoint_ready": checkpoint_ready,
-        "packages": packages,
-        "model_dir": str(model_dir) if model_dir else "",
-        "checkpoint_path": str(checkpoint_path) if checkpoint_path else "",
-        "cosmos_repo": str(cosmos_repo[0]) if cosmos_repo else "",
-        "notes": notes,
-    }
+    return build_native_runtime_readiness(
+        strategy=strategy,
+        packages=packages,
+        model_dir=model_dir,
+        checkpoint_path=checkpoint_path,
+        cosmos_repo=cosmos_repo,
+        model_ready_override=_env_truthy("NATIVE_WORLD_MODEL_READY"),
+        checkpoint_ready_override=_env_truthy(
+            "NATIVE_WORLD_MODEL_CHECKPOINT_READY"
+        ),
+    )
 
 
 def _runtime_blockers(site_world: Mapping[str, Any], health: Mapping[str, Any]) -> list[str]:
@@ -126,14 +132,8 @@ def _runtime_blockers(site_world: Mapping[str, Any], health: Mapping[str, Any]) 
 
 
 # ---------------------------------------------------------------------------
-# Cosmos repo detection
+# Explicit legacy Cosmos repo adapter
 # ---------------------------------------------------------------------------
-
-_COSMOS_REPO_CANDIDATE_PATHS: List[str] = [
-    "/root/workspace/cosmos-predict2.5",
-    str(Path.home() / "workspace" / "cosmos-predict2.5"),
-    str(Path.home() / "cosmos-predict2.5"),
-]
 
 # Per-session locks for Cosmos inference (prevent duplicate runs)
 _COSMOS_LOCKS: Dict[str, threading.RLock] = {}
@@ -173,24 +173,13 @@ def _cosmos_session_lock(session_id: str) -> threading.RLock:
 
 
 def _find_cosmos_repo() -> Optional[Tuple[Path, Path]]:
-    """Return (repo_root, python_bin) or None if not found."""
-    explicit = os.getenv("COSMOS_OFFICIAL_REPO_ROOT", "").strip()
-    candidates = [explicit] + _COSMOS_REPO_CANDIDATE_PATHS if explicit else _COSMOS_REPO_CANDIDATE_PATHS
-    for candidate in candidates:
-        root = Path(candidate).expanduser()
-        inf = root / "examples" / "inference.py"
-        py = root / ".venv" / "bin" / "python"
-        try:
-            if not inf.is_file() or not py.is_file():
-                continue
-            if not os.access(inf, os.R_OK):
-                continue
-            if not os.access(py, os.X_OK):
-                continue
-            return root, py
-        except OSError:
-            continue
-    return None
+    """Return an explicitly configured legacy Cosmos checkout, if valid.
+
+    The hosted runtime must not discover a model family from machine-specific
+    workspace paths. Provider/model selection is configuration, not ambient
+    filesystem state.
+    """
+    return find_configured_cosmos_repo(os.environ)
 
 
 def _default_storage_root() -> Path:
@@ -471,7 +460,9 @@ def _site_reference_runtime_adapter(
         "non_arkit_geometry_sources": geometry_state["sources"],
         "provider_native_geometry_ready": geometry_state["provider_native_geometry_ready"],
         "world_model_ready": bool(retrieval_ready and geometry_state["swm_world_model_ready"]),
-        "selected_runtime_path": "cosmos_i2w" if runtime_readiness.get("ready") else "splat_only",
+        "selected_runtime_path": str(
+            runtime_readiness.get("selected_runtime_path") or "splat_only"
+        ),
         "runtime_adapter_ready": retrieval_ready,
         "backend_ready": bool(runtime_readiness.get("ready")),
         "backend_blockers": backend_blockers,
@@ -767,25 +758,7 @@ class NativeWorldModelRuntimeStore:
         }
 
     def _ensure_rollout(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        rollout = dict(state.get("rollout") or {})
-        defaults = self._rollout_defaults()
-        merged = {**defaults, **rollout}
-        merged["control_intent"] = {
-            **dict(defaults.get("control_intent") or {}),
-            **dict(rollout.get("control_intent") or {}),
-        }
-        merged["trajectory_horizon"] = list(rollout.get("trajectory_horizon") or [])
-        merged["grounding_reference_set"] = list(rollout.get("grounding_reference_set") or [])
-        merged["queued_chunk_ids"] = list(rollout.get("queued_chunk_ids") or [])
-        merged["buffered_chunk_ids"] = list(rollout.get("buffered_chunk_ids") or [])
-        merged["chunks"] = list(rollout.get("chunks") or [])
-        merged["refined_chunk_ids"] = list(rollout.get("refined_chunk_ids") or [])
-        merged["world_state"] = {
-            **dict(defaults.get("world_state") or {}),
-            **dict(rollout.get("world_state") or {}),
-        }
-        state["rollout"] = merged
-        return merged
+        return ensure_rollout_state(state, defaults=self._rollout_defaults())
 
     def _output_profile(self) -> str:
         explicit = str(os.getenv("NATIVE_WORLD_MODEL_OUTPUT_PROFILE") or "").strip().lower()
@@ -802,12 +775,12 @@ class NativeWorldModelRuntimeStore:
         return self._output_profile() in {"swm_preview_refine", "truthful_preview", "preview_refine"}
 
     def _cosmos_refinement_enabled(self) -> bool:
-        explicit = str(os.getenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT") or "").strip().lower()
-        if explicit in {"0", "false", "no", "off"}:
-            return False
-        if explicit in {"1", "true", "yes", "on"}:
-            return bool(_runtime_readiness().get("ready"))
-        return self._uses_truthful_preview() and bool(_runtime_readiness().get("ready"))
+        return cosmos_refinement_enabled(
+            strategy=resolve_native_runtime_strategy(os.environ),
+            readiness=_runtime_readiness(),
+            explicit=os.getenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT"),
+            truthful_preview=self._uses_truthful_preview(),
+        )
 
     def _preview_generation_mode(self) -> str:
         if self._uses_truthful_preview():
@@ -819,17 +792,12 @@ class NativeWorldModelRuntimeStore:
         return max(1, int(os.getenv("NATIVE_WORLD_MODEL_TARGET_READY_CHUNKS", default)))
 
     def _remaining_ready_chunks(self, rollout: Mapping[str, Any]) -> int:
-        buffered = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-        active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
-        active_index = buffered.index(active_chunk_id) if active_chunk_id in buffered else -1
-        return len(buffered) - max(active_index + 1, 0)
+        return remaining_ready_chunks(rollout)
 
     def _should_queue_more_chunks(self, rollout: Mapping[str, Any]) -> bool:
-        if len(list(rollout.get("queued_chunk_ids") or [])) > 0:
-            return False
-        return self._remaining_ready_chunks(rollout) < max(
-            1,
-            int(rollout.get("target_ready_chunks") or self._target_ready_chunks()),
+        return should_queue_more_chunks(
+            rollout,
+            default_target_ready_chunks=self._target_ready_chunks(),
         )
 
     def _cosmos_refinement_settings(self, rollout: Mapping[str, Any]) -> Dict[str, Any]:
@@ -906,32 +874,28 @@ class NativeWorldModelRuntimeStore:
         unconfigured), never a hard-coded cosmos label.
         """
 
-        ready = bool(readiness.get("ready"))
         primary_mode = self._preview_generation_mode()
-        if primary_mode == "cosmos_i2w":
-            if ready:
-                identity = {
-                    "selected_runtime_path": "cosmos_i2w",
-                    "model_family": "cosmos_i2w_native",
-                    "render_source": "cosmos_i2w",
-                }
-            else:
-                identity = {
-                    "selected_runtime_path": "unconfigured",
-                    "model_family": "unconfigured",
-                    "render_source": "unconfigured",
-                }
-        elif primary_mode == "splat_only":
+        strategy = native_runtime_strategy_for_mode(primary_mode)
+        strategy_ready = (
+            bool(readiness.get("cosmos_ready", readiness.get("ready")))
+            if strategy.requires_model_runtime
+            else True
+        )
+        if strategy_ready:
             identity = {
-                "selected_runtime_path": "splat_only",
-                "model_family": "site_splat_truthful_preview",
-                "render_source": "truthful_preview_splat",
+                "backend_id": strategy.backend_id,
+                "selected_runtime_path": strategy.synthesis_mode,
+                "model_family": strategy.model_family,
+                "render_source": strategy.render_source,
+                "legacy_backend": strategy.legacy_backend,
             }
         else:
             identity = {
-                "selected_runtime_path": primary_mode,
-                "model_family": primary_mode,
-                "render_source": primary_mode,
+                "backend_id": strategy.backend_id,
+                "selected_runtime_path": "unconfigured",
+                "model_family": "unconfigured",
+                "render_source": "unconfigured",
+                "legacy_backend": strategy.legacy_backend,
             }
         identity["async_cosmos_refinement_enabled"] = self._cosmos_refinement_enabled()
         return identity
@@ -1019,6 +983,15 @@ class NativeWorldModelRuntimeStore:
     def prewarm_runtime(self) -> Dict[str, Any]:
         with self._prewarm_lock:
             readiness = _runtime_readiness()
+            strategy = resolve_native_runtime_strategy(os.environ)
+            if not strategy.requires_model_runtime:
+                self._prewarm_status = {
+                    "status": "skipped",
+                    "reason": "selected_backend_does_not_require_model_prewarm",
+                    "backend_id": strategy.backend_id,
+                    "checked_at": _utc_now_iso(),
+                }
+                return dict(self._prewarm_status)
             if not bool(readiness.get("ready", False)):
                 self._prewarm_status = {
                     "status": "skipped",
@@ -1287,73 +1260,23 @@ class NativeWorldModelRuntimeStore:
             return []
 
     def _live_synthesis_mode(self) -> str:
-        explicit = str(os.getenv("NATIVE_WORLD_MODEL_SYNTHESIS_MODE") or "").strip()
-        if explicit:
-            return explicit
-        return "cosmos_i2w" if _runtime_readiness().get("ready") else "splat_only"
+        return resolve_native_runtime_strategy(os.environ).synthesis_mode
 
     def _chunk_record(self, rollout: Mapping[str, Any], chunk_id: str) -> Optional[Dict[str, Any]]:
-        for chunk in list(rollout.get("chunks") or []):
-            if str(chunk.get("chunk_id") or "") == chunk_id:
-                return dict(chunk)
-        return None
+        return chunk_record(rollout, chunk_id)
 
     def _replace_chunk(self, rollout: Dict[str, Any], chunk_payload: Mapping[str, Any]) -> None:
-        chunk_id = str(chunk_payload.get("chunk_id") or "")
-        chunks = [dict(item) for item in list(rollout.get("chunks") or []) if str(item.get("chunk_id") or "") != chunk_id]
-        chunks.append(dict(chunk_payload))
-        chunks.sort(key=lambda item: int(item.get("chunk_index") or 0))
-        rollout["chunks"] = chunks[-6:]
+        replace_chunk(rollout, chunk_payload)
 
     def _current_chunk(self, rollout: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-        active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
-        if not active_chunk_id:
-            return None
-        return self._chunk_record(rollout, active_chunk_id)
+        return current_chunk(rollout)
 
     def _refresh_rollout_playback(self, state: Dict[str, Any]) -> None:
-        rollout = self._ensure_rollout(state)
-        now_ms = _utc_now_ms()
-        active_chunk = self._current_chunk(rollout)
-        if active_chunk:
-            activated_at_ms = int(active_chunk.get("activated_at_ms") or 0)
-            chunk_duration_ms = int(active_chunk.get("duration_ms") or rollout.get("chunk_duration_ms") or 0)
-            if activated_at_ms > 0 and chunk_duration_ms > 0 and now_ms - activated_at_ms >= chunk_duration_ms:
-                buffer_ids = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-                try:
-                    index = buffer_ids.index(str(active_chunk.get("chunk_id") or ""))
-                except ValueError:
-                    index = -1
-                next_chunk_id = buffer_ids[index + 1] if index >= 0 and index + 1 < len(buffer_ids) else None
-                if next_chunk_id:
-                    next_chunk = self._chunk_record(rollout, next_chunk_id)
-                    if next_chunk is not None:
-                        next_chunk["activated_at_ms"] = now_ms
-                        self._replace_chunk(rollout, next_chunk)
-                        rollout["active_chunk_id"] = next_chunk_id
-                        rollout["status"] = "playing"
-                        rollout["underrun"] = False
-                        rollout["current_media_type"] = next_chunk.get("media_type")
-                        rollout["current_render_source"] = next_chunk.get("render_source")
-                else:
-                    rollout["status"] = "underrun"
-                    rollout["underrun"] = True
-        if not rollout.get("active_chunk_id"):
-            buffer_ids = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-            if buffer_ids:
-                first_chunk = self._chunk_record(rollout, buffer_ids[0])
-                if first_chunk is not None:
-                    first_chunk["activated_at_ms"] = now_ms
-                    self._replace_chunk(rollout, first_chunk)
-                    rollout["active_chunk_id"] = str(first_chunk.get("chunk_id") or "")
-                    rollout["status"] = "playing"
-                    rollout["underrun"] = False
-                    rollout["current_media_type"] = first_chunk.get("media_type")
-                    rollout["current_render_source"] = first_chunk.get("render_source")
-            elif rollout.get("queued_chunk_ids"):
-                rollout["status"] = "buffering"
-            elif rollout.get("chunk_count", 0) > 0:
-                rollout["status"] = "underrun"
+        refresh_rollout_playback(
+            state,
+            defaults=self._rollout_defaults(),
+            now_ms=_utc_now_ms(),
+        )
 
     def _synthesize_step_async(
         self,
@@ -2159,6 +2082,8 @@ class NativeWorldModelRuntimeStore:
             else None
         )
         runtime_readiness = _runtime_readiness()
+        runtime_identity = self._selected_runtime_identity(runtime_readiness)
+        bind_selected_runtime_identity(runtime_readiness, runtime_identity)
         site_reference_runtime_adapter = _site_reference_runtime_adapter(
             site_id=site_id,
             manifest_path=site_reference_manifest_path,
@@ -2438,99 +2363,38 @@ class NativeWorldModelRuntimeStore:
         """
         return os.getenv("NATIVE_WORLD_MODEL_ALLOW_PREBUILT_BOOTSTRAP_VIDEO", "").strip() == "1"
 
+    def _legacy_cosmos_adapter(self) -> LegacyCosmosRuntimeAdapter:
+        """Bind legacy model support behind the runtime store's stable boundaries."""
+
+        return LegacyCosmosRuntimeAdapter(
+            storage_root=Path(os.getenv("GCS_ROOT", "/root/blueprint-storage")),
+            load_site_world=self.load_site_world,
+            process_runner=subprocess.run,
+            copy_file=shutil.copy2,
+            environment=os.environ,
+        )
+
     def _find_prebuilt_cosmos_video(self, site_world_id: str) -> Optional[Path]:
         """Find a pre-existing Cosmos video from pipeline runs for this site world."""
         if not self._allow_prebuilt_bootstrap_video():
             return None
-        try:
-            sw = self.load_site_world(site_world_id)
-        except FileNotFoundError:
-            return None
-        scene_id = str(sw.get("scene_id") or "").strip()
-        capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
-
-        if scene_id and capture_id:
-            pipeline_base = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id / "pipeline"
-            )
-            candidates: List[Path] = [
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.mp4",
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
-            ]
-            for c in candidates:
-                try:
-                    if c.is_file():
-                        return c
-                except OSError:
-                    continue
-
-        # Global fallback: manual probe output
-        fallback = gcs_root / "manual_cosmos_probe_official" / "blueprint_probe.mp4"
-        try:
-            if fallback.is_file():
-                return fallback
-        except OSError:
-            return None
-        return None
+        return self._legacy_cosmos_adapter().find_prebuilt_video(site_world_id)
 
     def _find_conditioning_frame(self, site_world_id: str) -> Optional[Path]:
         """Find best input frame for on-demand Cosmos I2W inference."""
-        try:
-            sw = self.load_site_world(site_world_id)
-        except FileNotFoundError:
-            return None
-        scene_id = str(sw.get("scene_id") or "").strip()
-        capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
-
-        if scene_id and capture_id:
-            pipeline_base = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id / "pipeline"
-            )
-            candidates: List[Path] = [
-                pipeline_base / "cosmos_single_capture_smoke" / "video_bootstrap_frames" / "frame_0000.jpg",
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
-            ]
-            for c in candidates:
-                try:
-                    if c.is_file():
-                        return c
-                except OSError:
-                    continue
-        return None
+        return self._legacy_cosmos_adapter().find_conditioning_frame(site_world_id)
 
     def _extract_frames_from_video(self, video_path: Path, frames_dir: Path) -> List[Path]:
         """Extract frames from MP4 at 4 fps using ffmpeg."""
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-i", str(video_path),
-                    "-vf", "fps=4",
-                    str(frames_dir / "frame_%04d.png"),
-                    "-y",
-                ],
-                capture_output=True,
-                check=False,
-            )
-        except OSError:
-            return []
-        return sorted(frames_dir.glob("frame_*.png"))
+        return self._legacy_cosmos_adapter().extract_frames_from_video(
+            video_path, frames_dir
+        )
 
     def _extract_single_frame(self, image_path: Path, frames_dir: Path) -> List[Path]:
         """Copy a single image (JPG/PNG) into frames_dir as frame_0001.png."""
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        frame_out = frames_dir / "frame_0001.png"
-        try:
-            img = Image.open(image_path).convert("RGB")
-            img.save(frame_out, format="PNG")
-        except Exception:
-            try:
-                shutil.copy2(image_path, frame_out)
-            except OSError:
-                return []
-        return [frame_out] if frame_out.is_file() else []
+        return self._legacy_cosmos_adapter().extract_single_frame(
+            image_path, frames_dir
+        )
 
     def _ensure_cosmos_frames(self, session_id: str, site_world_id: str) -> List[Path]:
         """
@@ -2609,30 +2473,7 @@ class NativeWorldModelRuntimeStore:
         Checks COSMOS_LORA_CHECKPOINT_PATH env var first, then the standard
         cosmos_training_export/checkpoints/ path under the capture's pipeline dir.
         """
-        explicit = os.getenv("COSMOS_LORA_CHECKPOINT_PATH", "").strip()
-        if explicit:
-            p = Path(explicit)
-            return p if p.is_file() else None
-
-        try:
-            sw = self.load_site_world(site_world_id)
-        except FileNotFoundError:
-            return None
-        scene_id = str(sw.get("scene_id") or "").strip()
-        capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
-        if scene_id and capture_id:
-            adapter = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id
-                / "pipeline" / "cosmos_training_export" / "checkpoints"
-                / "adapter_model.safetensors"
-            )
-            try:
-                if adapter.is_file():
-                    return adapter
-            except OSError:
-                return None
-        return None
+        return self._legacy_cosmos_adapter().find_lora_adapter(site_world_id)
 
     def _run_cosmos_inference_sync(
         self,
@@ -2643,96 +2484,19 @@ class NativeWorldModelRuntimeStore:
         lora_adapter: Optional[Path] = None,
     ) -> List[Path]:
         """Run Cosmos I2W inference synchronously. Returns extracted frame list."""
-        repo_root, python_bin = cosmos_repo
-        cosmos_dir = self._cosmos_dir(session_id)
-        cosmos_dir.mkdir(parents=True, exist_ok=True)
-
-        sample_name = f"cosmos_{session_id[:8]}"
-        asset_path = cosmos_dir / f"{sample_name}.json"
-        output_video = cosmos_dir / f"{sample_name}.mp4"
-        log_path = cosmos_dir / "inference.log"
-
-        # COSMOS_CHUNK_SIZE / COSMOS_CHUNK_OVERLAP are the canonical knobs.
-        # At H100 speeds, 57 frames (~2s) is the target; drop to 33 if generation
-        # takes >1.5s so N+1 is always ready before N ends.
-        # chunk_overlap=4 gives the strongest pseudo-autoregressive conditioning
-        # available at zero FT: the 4 overlap frames become the conditioning head
-        # of the next chunk.
-        cosmos_chunk_size = max(
-            8,
-            int(os.getenv("COSMOS_CHUNK_SIZE") or os.getenv("NATIVE_WORLD_MODEL_CHUNK_FRAMES") or "57"),
+        return self._legacy_cosmos_adapter().run_inference_sync(
+            session_id=session_id,
+            cosmos_repo=cosmos_repo,
+            cond_frame=cond_frame,
+            frames_dir=frames_dir,
+            cosmos_dir=self._cosmos_dir(session_id),
+            status_path=self._cosmos_status_path(session_id),
+            extract_frames=self._extract_frames_from_video,
+            convert_video=self._convert_to_fmp4,
+            write_status=_json_write,
+            timestamp=_utc_now_iso,
+            lora_adapter=lora_adapter,
         )
-        cosmos_chunk_overlap = max(
-            1,
-            int(os.getenv("COSMOS_CHUNK_OVERLAP", "4")),
-        )
-        asset_path.write_text(
-            json.dumps({
-                "inference_type": "image2world",
-                "name": sample_name,
-                "input_path": str(cond_frame.resolve()),
-                "prompt": (
-                    "First-person camera moving through a real indoor workspace. "
-                    "Preserve the existing geometry and continue the scene naturally."
-                ),
-                "num_output_frames": cosmos_chunk_size,
-                "num_steps": 35,
-                "seed": 0,
-                "guidance": 7.0,
-                "enable_autoregressive": False,
-                "chunk_size": cosmos_chunk_size,
-                "chunk_overlap": cosmos_chunk_overlap,
-            }),
-            encoding="utf-8",
-        )
-
-        env = {k: v for k, v in os.environ.items() if isinstance(v, str)}
-        env["PATH"] = str(repo_root / ".venv" / "bin") + ":" + env.get("PATH", "")
-
-        cmd = [
-            str(python_bin),
-            "examples/inference.py",
-            "-i", str(asset_path),
-            "-o", str(cosmos_dir),
-            "--model=2B/post-trained",
-            "--disable-guardrails",
-        ]
-        if lora_adapter and lora_adapter.is_file():
-            cmd += ["--lora-checkpoint", str(lora_adapter)]
-
-        with log_path.open("w", encoding="utf-8") as lf:
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=str(repo_root),
-                    env=env,
-                    stdout=lf,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                )
-            except OSError:
-                return []
-
-        if result.returncode != 0 or not output_video.is_file():
-            return []
-
-        # Re-mux to fMP4 so the runtime can serve it directly to MSE clients.
-        fmp4_video = output_video.with_stem(output_video.stem + "_fmp4")
-        if self._convert_to_fmp4(output_video, fmp4_video):
-            output_video = fmp4_video
-
-        frames = self._extract_frames_from_video(output_video, frames_dir)
-        if frames:
-            _json_write(
-                self._cosmos_status_path(session_id),
-                {
-                    "source": "on_demand_inference",
-                    "video": str(output_video),
-                    "frame_count": len(frames),
-                    "inferred_at": _utc_now_iso(),
-                },
-            )
-        return frames
 
     # ---------------------------------------------------------------------------
     # Render

@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import first_gpu_candidate_audit as candidate_audit
-from blueprint_pipeline import launch_bundle, logging_utils, proof_contracts
+from blueprint_pipeline import launch_bundle, proof_contracts
+from blueprint_pipeline.core import logging_utils
 
 
 def test_launch_bundle_edge_branches_use_descriptor_and_task_fallbacks() -> None:
@@ -124,15 +125,21 @@ def test_logging_utils_sanitizes_sensitive_and_structured_fields(
         logging_utils.log_event(
             logger,
             logging.INFO,
-            "coverage.event",
+            "coverage.event\r\nforged-event",
+            message="coverage message\nforged-message",
             api_key="secret",
             artifact_path=tmp_path / "artifact.json",
+            detail="safe detail\nforged-field\r",
             **{"not-an-identifier": "kept"},
         )
 
     record = caplog.records[-1]
-    assert record.blueprint_event == "coverage.event"
+    assert record.blueprint_event == "coverage.event\\r\\nforged-event"
+    assert "\n" not in record.getMessage()
+    assert "coverage message\\nforged-message" in record.getMessage()
     assert record.blueprint_fields["api_key"] == "<redacted:api-key>"
+    assert record.blueprint_fields["detail"] == "safe detail\\nforged-field\\r"
+    assert "detail='safe detail\\\\nforged-field\\\\r'" in record.getMessage()
     assert record.artifact_path == str(tmp_path / "artifact.json")
     assert not hasattr(record, "not-an-identifier")
 

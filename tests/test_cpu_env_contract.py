@@ -6,7 +6,7 @@ required modules is missing, so a future environment rebuild cannot silently dro
 ``pxr`` (usd-core) or ``mujoco`` and quietly re-skip the dry-render / placement /
 POV-framing gates that those modules guard.
 
-Ground truth (see docs/cpu-work-audit-2026-06-29.md, CRIT-02): the canonical
+Ground truth (see docs/archive/point-in-time/cpu-work-audit-2026-06-29.md, CRIT-02): the canonical
 ``.venv`` collects the whole suite with zero errors and carries PIL. The durable
 gap was that ``pxr`` and ``mujoco`` were absent, so the no-GPU validation gates
 skipped green instead of running. This test encodes the fix: the modules must be

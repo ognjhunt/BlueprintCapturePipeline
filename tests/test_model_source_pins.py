@@ -44,10 +44,12 @@ def test_ml_installer_pins_optional_source_and_model_downloads() -> None:
 def test_native_cosmos_surfaces_export_exact_model_revision() -> None:
     start_script = (ROOT / "scripts" / "start_native_runtime_vast.sh").read_text(encoding="utf-8")
     env_example = (ROOT / "configs" / "native_runtime_vast.env.example").read_text(encoding="utf-8")
-    runbook = (ROOT / "docs" / "GPU_VM_RUNBOOK.md").read_text(encoding="utf-8")
+    archived_runbook = (
+        ROOT / "docs" / "archive" / "runbooks" / "GPU_VM_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
 
     assert COSMOS_MODEL_COMMIT in start_script
     assert COSMOS_MODEL_COMMIT in env_example
-    assert COSMOS_MODEL_COMMIT in runbook
-    assert COSMOS_REPO_COMMIT in runbook
-    assert 'COSMOS_OFFICIAL_REPO_REF="main"' not in runbook
+    assert COSMOS_MODEL_COMMIT in archived_runbook
+    assert COSMOS_REPO_COMMIT in archived_runbook
+    assert 'COSMOS_OFFICIAL_REPO_REF="main"' not in archived_runbook

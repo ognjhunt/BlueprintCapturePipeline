@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import vast_authorized_probe_runner as runner
+from blueprint_pipeline import vast_probe_guards as guards
 
 
 pytestmark = pytest.mark.slow
@@ -22,27 +23,29 @@ def _write_minimal_bundle(path: Path) -> None:
 
 
 def test_authorized_probe_runner_internal_json_reader_edges(tmp_path: Path) -> None:
-    mapping_path = tmp_path / "mapping.json"
-    mapping_path.write_text('{"ready": true}', encoding="utf-8")
     list_path = tmp_path / "list.json"
     list_path.write_text('["not", "a", "mapping"]', encoding="utf-8")
 
-    assert runner._read_json(mapping_path) == {"ready": True}
-    assert runner._read_json(list_path) == {}
-    assert runner._number(True) is None
-    assert runner._number("bad") is None
-    assert runner._number("1.25") == 1.25
-    assert runner._attempt_estimated_cost({"estimated_cost_usd_using_observed_rate": -1}) == 0.0
-    assert runner._attempt_estimated_cost({"estimated_cost_usd": "0.2"}) == 0.2
-    assert runner._attempt_estimated_cost({"estimated_cost_usd": True}) == 0.0
+    assert guards._number(True) is None
+    assert guards._number("bad") is None
+    assert guards._number("1.25") == 1.25
+    assert guards._attempt_estimated_cost(
+        {"estimated_cost_usd_using_observed_rate": -1}
+    ) == 0.0
+    assert guards._attempt_estimated_cost({"estimated_cost_usd": "0.2"}) == 0.2
+    assert guards._attempt_estimated_cost({"estimated_cost_usd": True}) == 0.0
 
     missing_budget = tmp_path / "missing-budget.json"
-    assert runner._session_estimated_cost(missing_budget) == (0.0, None)
+    assert guards._session_estimated_cost(missing_budget) == (0.0, None)
     invalid_budget = tmp_path / "invalid-budget.json"
     invalid_budget.write_text("{", encoding="utf-8")
-    assert runner._session_estimated_cost(invalid_budget) == (
+    assert guards._session_estimated_cost(invalid_budget) == (
         0.0,
         "session_budget_ledger_parse_failed:JSONDecodeError",
+    )
+    assert guards._session_estimated_cost(list_path) == (
+        0.0,
+        "session_budget_ledger_parse_failed:ValueError",
     )
     attempts_budget = tmp_path / "attempts-budget.json"
     attempts_budget.write_text(
@@ -57,11 +60,11 @@ def test_authorized_probe_runner_internal_json_reader_edges(tmp_path: Path) -> N
         ),
         encoding="utf-8",
     )
-    assert runner._session_estimated_cost(attempts_budget) == (0.35, None)
+    assert guards._session_estimated_cost(attempts_budget) == (0.35, None)
     empty_budget = tmp_path / "empty-budget.json"
     empty_budget.write_text(json.dumps({"status": "empty"}), encoding="utf-8")
-    assert runner._session_estimated_cost(empty_budget) == (0.0, None)
-    exhausted = runner._target_spend_guard(
+    assert guards._session_estimated_cost(empty_budget) == (0.0, None)
+    exhausted = guards.target_spend_guard(
         budget_path=attempts_budget,
         target_spend_usd=0.35,
         max_hourly_rate=0.0,
@@ -69,7 +72,7 @@ def test_authorized_probe_runner_internal_json_reader_edges(tmp_path: Path) -> N
         allow_target_spend_overrun=False,
     )
     assert exhausted["blockers"] == ["session_estimated_spend_target_exhausted"]
-    parse_blocked = runner._target_spend_guard(
+    parse_blocked = guards.target_spend_guard(
         budget_path=invalid_budget,
         target_spend_usd=1.0,
         max_hourly_rate=0.0,

@@ -32,7 +32,7 @@ def test_replaced_watchdog_exit_race_is_recorded_as_stopped() -> None:
         process_argv_probe=lambda _pid: (
             "python",
             "-m",
-            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
             "watchdog",
             "--state",
             state_path,
@@ -56,7 +56,7 @@ def test_replaced_watchdog_signal_failure_is_evidence_not_exception() -> None:
         process_argv_probe=lambda _pid: (
             "python",
             "-m",
-            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
             "watchdog",
             "--state",
             state_path,
@@ -328,7 +328,7 @@ def test_retention_resolves_current_watchdog_after_terminal_canary_return(
         process_argv_probe=lambda _pid: (
             "python",
             "-m",
-            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
             "watchdog",
             "--state",
             str(state_path),
@@ -434,7 +434,7 @@ def test_verified_cache_enters_bounded_retention_and_remains_canary_ready(
         return (
             "python",
             "-m",
-            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
             "watchdog",
             "--state",
             str(state.resolve()),

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .artifact_contracts import ArtifactContractError, validate_sellable_artifact
 from .common import read_json, utc_now_iso, write_json
 
 
@@ -411,6 +412,10 @@ def validate_evaluation_run_spec(
     spec = EvaluationRunSpec.from_mapping(value)
     errors: list[str] = []
     warnings: list[str] = []
+    try:
+        validate_sellable_artifact("evaluation_run", value)
+    except ArtifactContractError as exc:
+        errors.append(str(exc))
     if raw_schema != EVALUATION_RUN_SCHEMA_VERSION:
         errors.append(f"schema_version:must_be:{EVALUATION_RUN_SCHEMA_VERSION}")
     if not spec.run_id or not _valid_id(spec.run_id):

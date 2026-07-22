@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from .optional_dependencies import log_missing_optional_dependency
+from .core.optional_dependencies import log_missing_optional_dependency
 
 logger = logging.getLogger(__name__)
 

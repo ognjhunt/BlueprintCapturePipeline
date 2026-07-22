@@ -40,9 +40,9 @@ from .robot_eval_job_orchestrator import (
     _remote_cloud_execution_closure_manifest,
     _run_command_simulator,
 )
-from .robot_eval_evaluation_run_adapter import execute_legacy_robot_eval_request_as_evaluation_run
+from .robot_eval_evaluation_run_adapter import execute_robot_eval_request_as_evaluation_run
 from .runpod_serverless_volume import provider_runtime_local_path
-from .security_controls import (
+from .core.security_controls import (
     fetch_bounded_https,
     origins_from_env,
     prove_path_contained,
@@ -1988,7 +1988,7 @@ def run_robot_eval_worker(
     request_path = worker_dir / "job_request.json"
     write_json(request_path, job_request)
     try:
-        result = execute_legacy_robot_eval_request_as_evaluation_run(
+        result = execute_robot_eval_request_as_evaluation_run(
             capture_root=selected_capture_root,
             job_request=request_path,
             job_id=selected_job_id,

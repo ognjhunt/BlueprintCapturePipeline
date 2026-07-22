@@ -397,7 +397,7 @@
 ### User-Facing
 
 - Closed the seven code-level blockers from
-  `docs/specs/claude-fable-5-hardest-blockers-audit-2026-07-11.md`
+  `docs/archive/specs/claude-fable-5-hardest-blockers-audit-2026-07-11.md`
   (FABLE-001..FABLE-007): the attempt closure now reconstructs every worker
   proof row from hash-verified, Ed25519-attested leaf artifacts instead of
   trusting worker `passed` booleans and never repairs a missing worker
@@ -444,7 +444,7 @@
 - Live-run status and the exact remaining external blockers (sealed-image
   rebuild, spend cap, scorer/semantic-review services, attestation key pins,
   and protected-PR merge approval) are tracked in
-  `docs/specs/fable-remediation-and-live-readiness-2026-07-11.md`.
+  `docs/archive/specs/fable-remediation-and-live-readiness-2026-07-11.md`.
 - The FABLE-001..007 patch series is published as PR #68. `main` branch
   protection is enabled and was negative-tested against direct and force
   pushes; hosted proof must come from every required check passing on the
@@ -472,7 +472,7 @@
   `identity_binding` plus `leaf_artifacts` refs (path, sha256, size, schema,
   Ed25519 attestation role); the host compares and validates - it never
   injects identity or accepts a bare status boolean.
-- `docs/specs/fable-live-run-handoff-2026-07-11.md` is an uncommitted operator
+- `docs/archive/specs/fable-live-run-handoff-2026-07-11.md` is an uncommitted operator
   handoff, not provider proof. It records the sealed-image digest and the
   remaining paid-run setup, while explicitly preserving blocked external
   scorer, semantic-review, and attestation-pin rows.
@@ -516,8 +516,8 @@
   image evidence, visual-mesh geometry provenance, official GEAR-SONIC
   controller/FK adapters, a persistent Isaac task executor, strict external
   action-consistency scorer contracts, and ordered full-episode review-media
-  admission (`docs/G1_KITCHEN_RUN_DEEP_AUDIT_2026-07-10.md`,
-  `docs/G1_KITCHEN_RUN_DEEP_AUDIT_REMEDIATION_2026-07-10.md`,
+  admission (`docs/archive/point-in-time/G1_KITCHEN_RUN_DEEP_AUDIT_2026-07-10.md`,
+  `docs/archive/point-in-time/G1_KITCHEN_RUN_DEEP_AUDIT_REMEDIATION_2026-07-10.md`,
   `src/blueprint_pipeline/g1_kitchen_attempt_closure.py`,
   `src/blueprint_pipeline/gear_sonic_official_zmq_executor.py`,
   `src/blueprint_pipeline/isaac_persistent_task_executor_service.py`,
@@ -1467,7 +1467,7 @@
   `scripts/run_isaac_g1_kitchen_parity_eval.py`,
   `tests/test_isaac_g1_kitchen_parity_runner.py`,
   `tests/test_local_render_preview.py`, and untracked
-  `docs/cpu-work-audit-2026-06-29.md`.
+  `docs/archive/point-in-time/cpu-work-audit-2026-06-29.md`.
 - Local CPU proof on 2026-06-29: `.venv/bin/python -m pytest -q -o
   addopts=''` completed with `2556 passed, 30 skipped, 10 warnings` in
   695.66s. The focused no-spend G1/placement/provider evidence command over
@@ -1632,9 +1632,9 @@
   provider, WAM compute, object-index, generated-video review, and closed-loop
   paths.
 - Added June 27 design/goal docs under
-  `docs/superpowers/specs/2026-06-27-isaac-g1-kitchen-parity-design.md`,
-  `docs/superpowers/specs/2026-06-27-provider-agnostic-wam-compute-design.md`,
-  and `docs/goals/2026-06-27-provider-agnostic-wam-compute-loop.md`.
+  `docs/archive/superpowers/specs/2026-06-27-isaac-g1-kitchen-parity-design.md`,
+  `docs/archive/superpowers/specs/2026-06-27-provider-agnostic-wam-compute-design.md`,
+  and `docs/archive/goals/2026-06-27-provider-agnostic-wam-compute-loop.md`.
 
 ### Future-Agent-Facing
 
@@ -1690,7 +1690,7 @@
   assembly, robot-eval orchestration, policy endpoint boundaries,
   provider-closure audits, RL post-training handoff, OSCAR visual augmentation,
   WAM/perception harnesses, and post-training package generation. Key paths
-  include `docs/last_24h_launch_audit_2026-06-26.md`,
+  include `docs/archive/point-in-time/last_24h_launch_audit_2026-06-26.md`,
   `docs/OSCAR_VISUAL_AUGMENTATION_PACKET.md`,
   `src/blueprint_pipeline/live_pipeline_forwarding_secret_setup.py`,
   `src/blueprint_pipeline/provider_closure_audit.py`,
@@ -1699,7 +1699,7 @@
   `src/blueprint_pipeline/oscar_visual_augmentation_generation_runner.py`.
 - Added simulator-agnostic G1/Isaac contracts and splat tooling through
   `docs/simulator-agnostic-g1-execution-contract.md`,
-  `docs/superpowers/specs/2026-06-26-isaac-splat-render-parity-design.md`,
+  `docs/archive/superpowers/specs/2026-06-26-isaac-splat-render-parity-design.md`,
   `src/blueprint_pipeline/gaussian_splat_decode.py`,
   `src/blueprint_pipeline/splat_scene_analysis.py`,
   `src/blueprint_pipeline/splat_scene_render.py`, and
@@ -1715,7 +1715,7 @@
 - Contract changes: sim-only launch evidence now distinguishes local simulator
   execution, beta release closure, production forwarding, Pipeline intake
   health, robot-team-grade blockers, and optional physical/deployment claim
-  upgrades. Use `docs/last_24h_launch_audit_2026-06-26.md` for the current
+  upgrades. Use `docs/archive/point-in-time/last_24h_launch_audit_2026-06-26.md` for the then-current
   blocker hierarchy instead of stale generated audit JSON.
 - Runtime behavior changes: reference splat rendering can attach display
   evidence to Isaac/G1 evaluation artifacts, but the proof boundary must keep
@@ -1811,7 +1811,7 @@
   evidence.
 - Local caveat: this June 25 entry predates the June 26 stabilization pass. The
   current checkout has broad uncommitted docs, scripts, source, tests, and
-  untracked support files; use `docs/last_24h_launch_audit_2026-06-26.md` for
+  untracked support files; use `docs/archive/point-in-time/last_24h_launch_audit_2026-06-26.md` for
   current worktree evidence.
 
 ## 2026-06-24

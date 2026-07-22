@@ -452,6 +452,7 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
+        allow_legacy_lanes=True,
         config=PipelineConfig(gcs_root=tmp_path),
     )
     pipeline_root_for_marble = capture_root / "pipeline"
@@ -783,6 +784,7 @@ def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_pat
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
+        allow_legacy_lanes=True,
         config=PipelineConfig(gcs_root=tmp_path),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
@@ -828,6 +830,7 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
+        allow_legacy_lanes=True,
         config=PipelineConfig(gcs_root=tmp_path),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")
@@ -899,6 +902,7 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="scene_memory",
+        allow_legacy_lanes=True,
         config=PipelineConfig(gcs_root=tmp_path),
     )
     run_evaluation_prep_stage(capture_root=capture_root, provider_name="manual")

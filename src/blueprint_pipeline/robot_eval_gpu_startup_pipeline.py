@@ -20,11 +20,10 @@ from .provider_worker_contract import (
 GPU_STARTUP_PIPELINE_PLAN_SCHEMA_VERSION = "robot_eval_gpu_startup_pipeline_plan.v1"
 
 LOCAL_PROVISIONERS = {"fixture_local", "local_process", "docker_local"}
-LIVE_GPU_PROVISIONERS = {"runpod", "lambda_cloud", "vast", "gcp"}
-PROVIDER_PRIORITY = ["runpod", "lambda_cloud", "gcp", "vast"]
+LIVE_GPU_PROVISIONERS = {"runpod", "vast", "gcp"}
+PROVIDER_PRIORITY = ["runpod", "gcp", "vast"]
 MANAGED_PROVIDER_PRIORITY = [
     "runpod_secure_cloud",
-    "lambda_cloud",
     "aws_g6",
     "coreweave",
 ]
@@ -115,8 +114,6 @@ def _provider_tier(provisioner: str, startup_policy: Mapping[str, Any]) -> str:
         return explicit
     if provisioner == "runpod":
         return "managed_secure_cloud_preferred"
-    if provisioner == "lambda_cloud":
-        return "managed_lambda_cloud"
     if provisioner == "gcp":
         return "hyperscaler_managed"
     if provisioner == "vast":
@@ -757,7 +754,7 @@ def build_gpu_startup_pipeline_plan(
             "managed_provider_priority": managed_provider_priority,
             "provider_api_priority": provider_priority,
             "near_term_default": "runpod_secure_cloud",
-            "secondary_default": "lambda_cloud",
+            "secondary_default": "gcp",
             "enterprise_fallback": "aws_g6",
             "scale_reserved_capacity_fallback": "coreweave",
             "selected_provider_tier": provider_tier,

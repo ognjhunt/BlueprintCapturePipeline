@@ -14,7 +14,7 @@ on:
       - "tests/fixtures/sim_only_beta_local_capture/**"
       - "tests/test_sim_only_beta_local_gate.py"
   push:
-    branches: ["**"]
+    branches: ["main"]
     paths:
       - ".github/workflows/sim-only-local-gate.yml"
       - "pyproject.toml"

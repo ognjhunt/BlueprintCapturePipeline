@@ -10,14 +10,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .paid_resource_admission import (
@@ -25,14 +24,13 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
+from .provider_bundle_staging_common import (
+    provider_staging_urls as _provider_urls,
+)
 from .vast_bundle_staging import (
-    BUNDLE_ROUTE,
     DEFAULT_OUTPUT_FILENAME,
     DEFAULT_SECRET_ENV_FILE,
     DEFAULT_TOKEN_FILE,
-    OUTPUT_ROUTE,
-    _read_or_create_token,
-    _url_with_token,
     prepare_vast_bundle_staging,
     run_local_staging_self_test,
     verify_public_staging_urls,
@@ -106,9 +104,22 @@ from .vast_provider_adapter import (
     _vast_launch_lock_path,
     _vast_session_budget_ledger_path,
     _release_vast_launch_lock,
-    _inspect_provider_runtime_output_zip,
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE, DEFAULT_WAM_VAST_LAUNCH_MODE
+from .vast_wam_teardown import destroy_vast_instance_with_retry
+from .wam_async_runner_common import (
+    deadline_capped_wait_seconds,
+    download_url_to_file,
+    read_json_mapping as _read_json,
+    read_sensitive_url_file as _read_sensitive_url_file,
+    redact_provider_url as _redact_provider_url,
+    regex_json_number_field as _regex_number,
+    regex_json_string_field as _regex_field,
+)
+from .wam_provider_poll_state import decide_vast_poll_teardown
+from .wam_provider_output import (
+    inspect_provider_runtime_output_zip as _inspect_provider_runtime_output_zip,
+)
 
 
 ASYNC_STATE_SCHEMA_VERSION = "vast_wam_async_state.v1"
@@ -141,69 +152,6 @@ def _state_path(job_dir: Path) -> Path:
     return job_dir / "vast_wam_async_state.json"
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _redact_provider_url(value: str) -> str:
-    parsed = urlparse(value)
-    if not parsed.scheme or not parsed.netloc:
-        return "<redacted-url>" if value else ""
-    query = "REDACTED_QUERY" if parsed.query else ""
-    fragment = "REDACTED_FRAGMENT" if parsed.fragment else ""
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, fragment))
-
-
-def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[str, Any]]:
-    if not _string(path_value):
-        return "", {
-            "label": label,
-            "configured": False,
-            "present": False,
-            "raw_secret_values_recorded": False,
-        }
-    path = Path(path_value).expanduser().resolve()
-    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
-    try:
-        value = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-    except OSError as exc:
-        return "", {
-            "label": label,
-            "configured": True,
-            "path": str(path),
-            "present": path.exists(),
-            "mode": mode,
-            "read_error": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    return value, {
-        "label": label,
-        "configured": True,
-        "path": str(path),
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "value_present": bool(value),
-        "raw_secret_values_recorded": False,
-    }
-
-
-def _deadline_capped_log_wait_seconds(
-    *,
-    state: Mapping[str, Any],
-    requested_max_wait_seconds: int,
-    now_epoch: float,
-) -> tuple[int, float | None, bool]:
-    requested = max(0, int(requested_max_wait_seconds))
-    deadline_epoch = float(_number(state.get("max_live_deadline_epoch")) or 0.0)
-    if deadline_epoch <= 0.0:
-        return requested, None, False
-    seconds_until_deadline = deadline_epoch - now_epoch
-    capped = min(requested, max(0, int(seconds_until_deadline)))
-    return capped, seconds_until_deadline, capped < requested
-
-
 def _url_file_path_from_meta(meta: Any) -> str:
     return _string(_mapping(meta).get("path"))
 
@@ -227,29 +175,27 @@ def _download_provider_output_zip(
         "raw_secret_values_recorded": False,
     }
     if provider_upload_marker_seen and _string(provider_output_get_url) and not output_zip_path.is_file():
-        try:
-            request = urllib.request.Request(
-                _string(provider_output_get_url),
-                headers={"User-Agent": "BlueprintVastAsyncWamRunner/1.0"},
-            )
-            with urllib.request.urlopen(request, timeout=90) as response:
-                output_zip_path.write_bytes(response.read())
-                http_status = int(getattr(response, "status", 200))
+        transfer = download_url_to_file(
+            url=_string(provider_output_get_url),
+            output_path=output_zip_path,
+            user_agent="BlueprintVastAsyncWamRunner/1.0",
+            timeout_seconds=90,
+        )
+        if transfer["status"] == "completed":
             manifest.update(
                 {
                     "status": "completed",
-                    "http_status_code": http_status,
+                    "http_status_code": transfer.get("http_status_code"),
                     "output_zip_present_after_download": output_zip_path.is_file(),
-                    "output_zip_size_bytes": output_zip_path.stat().st_size
-                    if output_zip_path.is_file()
-                    else 0,
+                    "output_zip_size_bytes": transfer.get("downloaded_size_bytes", 0),
                 }
             )
-        except Exception as exc:
+        else:
             manifest.update(
                 {
                     "status": "blocked",
-                    "error_type": type(exc).__name__,
+                    "error_type": transfer.get("error_type"),
+                    "http_status_code": transfer.get("http_status_code"),
                     "blockers": ["provider_output_get_url_download_failed"],
                 }
             )
@@ -271,16 +217,6 @@ def _download_provider_output_zip(
         )
     write_json(job_dir / "vast_provider_output_download_manifest.json", manifest)
     return manifest
-
-
-def _regex_field(text: str, field: str) -> str:
-    match = re.search(rf'"{re.escape(field)}"\s*:\s*"([^"]*)"', text)
-    return match.group(1) if match else ""
-
-
-def _regex_number(text: str, field: str) -> float | None:
-    match = re.search(rf'"{re.escape(field)}"\s*:\s*([0-9]+(?:\.[0-9]+)?)', text)
-    return float(match.group(1)) if match else None
 
 
 def _read_async_state(job_dir: Path) -> dict[str, Any]:
@@ -395,71 +331,15 @@ def _destroy_vast_instance_with_retry(
     attempts: int = 3,
     backoff_seconds: float = 3.0,
 ) -> tuple[bool, list[dict[str, Any]]]:
-    """Destroy a Vast instance, retrying transient failures.
-
-    A single failed DELETE must never leave an instance billing. In practice a destroy can be
-    rejected transiently — e.g. the instance is still ``loading`` (observed: a dud offer whose
-    destroy failed once and kept billing until a manual retry), or a momentary network/API
-    error. Retries up to ``attempts`` times with linear backoff; a 404 means the instance is
-    already gone (success). Returns ``(continuing_spend, teardown_actions)`` where
-    ``continuing_spend`` is True only if *every* attempt failed.
-    """
-    teardown_actions: list[dict[str, Any]] = []
-    total = max(1, int(attempts))
-    for attempt in range(1, total + 1):
-        try:
-            delete_status, delete_response = _api_json(
-                method="DELETE",
-                path=f"/instances/{instance_id}/",
-                api_key=api_key,
-                timeout_seconds=30,
-            )
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "http_status_code": delete_status,
-                    "response": _redact_runtime_value(delete_response, [api_key]),
-                    "status": "completed",
-                }
-            )
-            return False, teardown_actions
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                teardown_actions.append(
-                    {
-                        "instance_id": instance_id,
-                        "action": "destroy_instance",
-                        "attempt": attempt,
-                        "http_status_code": exc.code,
-                        "status": "completed",
-                        "reason": "instance_already_absent",
-                    }
-                )
-                return False, teardown_actions
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "http_status_code": exc.code,
-                    "status": "failed",
-                }
-            )
-        except Exception as exc:
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "status": "failed",
-                    "error_type": type(exc).__name__,
-                }
-            )
-        if attempt < total:
-            time.sleep(min(15.0, backoff_seconds * attempt))
-    return True, teardown_actions
+    return destroy_vast_instance_with_retry(
+        instance_id=instance_id,
+        api_key=api_key,
+        api_call=_api_json,
+        redact_response=_redact_runtime_value,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        sleeper=time.sleep,
+    )
 
 
 def destroy_async_vast_wam_run(
@@ -539,15 +419,6 @@ def destroy_async_vast_wam_run(
         state["continuing_spend_from_this_run"] = False
         write_json(_state_path(resolved_job_dir), state)
     return manifest
-
-
-def _provider_urls(public_base_url: str, token_file: Path) -> tuple[str, str, dict[str, Any]]:
-    token, token_status = _read_or_create_token(token_file)
-    return (
-        _url_with_token(public_base_url, BUNDLE_ROUTE, token),
-        _url_with_token(public_base_url, OUTPUT_ROUTE, token),
-        token_status,
-    )
 
 
 def create_async_vast_wam_run(
@@ -1596,7 +1467,7 @@ def poll_async_vast_wam_run(
         effective_max_wait_seconds,
         seconds_until_max_live_deadline,
         log_wait_deadline_cap_applied,
-    ) = _deadline_capped_log_wait_seconds(
+    ) = deadline_capped_wait_seconds(
         state=state,
         requested_max_wait_seconds=max_wait_seconds,
         now_epoch=poll_started_epoch,
@@ -1677,7 +1548,13 @@ def poll_async_vast_wam_run(
         or "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED" in heartbeat_text
         or provider_command.get("provider_runtime_output_zip_received") is True
     )
-    should_teardown = bool(teardown or timed_out or provider_done_or_blocked)
+    teardown_decision = decide_vast_poll_teardown(
+        explicit_requested=teardown,
+        max_live_deadline_expired=timed_out,
+        provider_completed_or_blocked=provider_done_or_blocked,
+        allocation_actionable=bool(instance_id and api_key),
+    )
+    should_teardown = teardown_decision.should_teardown
     teardown_actions: list[dict[str, Any]] = []
     continuing_spend = not should_teardown
     if should_teardown:
@@ -1822,6 +1699,7 @@ def poll_async_vast_wam_run(
         "mp4_count": output_zip_inspection.get("mp4_count"),
         "teardown_requested": teardown,
         "teardown_performed": should_teardown,
+        "teardown_decision": teardown_decision.as_manifest(),
         "continuing_spend_from_this_run": continuing_spend,
         "requested_log_fetch_max_wait_seconds": max_wait_seconds,
         "effective_log_fetch_max_wait_seconds": effective_max_wait_seconds,

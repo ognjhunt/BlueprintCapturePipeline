@@ -22,7 +22,7 @@ from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
 from .run_e2e import run_end_to_end
-from .security_controls import (
+from .core.security_controls import (
     SecurityValidationError,
     contained_path,
     prove_path_contained,

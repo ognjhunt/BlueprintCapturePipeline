@@ -211,7 +211,6 @@ def build_provider_worker_contract(
                 "runpod",
                 "vast",
                 "gcp",
-                "lambda_cloud",
                 "aws_g6",
                 "coreweave",
             ],

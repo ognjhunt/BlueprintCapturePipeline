@@ -208,11 +208,21 @@ def run_local_bundle_workflow(
     run_qualification: bool = False,
     run_evaluation_prep: bool = False,
     pipeline_lane: str = "current",
+    allow_legacy_pipeline_lanes: bool = False,
 ) -> Dict[str, Any]:
     if run_evaluation_prep and not run_qualification:
         raise PipelineError("--run-evaluation-prep requires --run-qualification")
     if pipeline_lane not in _LOCAL_WORKFLOW_PIPELINE_LANES:
         raise PipelineError(f"Unsupported local workflow pipeline lane: {pipeline_lane}")
+    if (
+        pipeline_lane
+        not in {"current", "qualification", "evaluation_prep", "simulation_automation", "all"}
+        and not allow_legacy_pipeline_lanes
+    ):
+        raise PipelineError(
+            "Legacy local workflow lanes require "
+            "allow_legacy_pipeline_lanes=True"
+        )
 
     capture_root = stage_local_bundle(
         source_bundle=source_bundle,
@@ -244,6 +254,7 @@ def run_local_bundle_workflow(
         qualification_result = run_capture_pipeline(
             descriptor_gcs_uri=context.descriptor_uri,
             lane=pipeline_lane,
+            allow_legacy_lanes=allow_legacy_pipeline_lanes,
             config=PipelineConfig(
                 gcs_root=context.storage_root,
             ),

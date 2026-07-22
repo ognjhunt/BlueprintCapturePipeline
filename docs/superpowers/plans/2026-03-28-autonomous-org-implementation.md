@@ -1,5 +1,10 @@
 # Autonomous Organization Implementation Plan
 
+> **SUPERSEDED (2026-07-21):** Do not execute this pre-pivot plan. It assumes
+> files and product doctrine that are no longer authoritative in this repo.
+> Use `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`, and
+> `AUTONOMOUS_ORG.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Wire Blueprint's 9 new autonomous agents into Paperclip with skill files, steering files, updated plugin webhook routes, and Notion integration — so the full tiered org chart is operational.

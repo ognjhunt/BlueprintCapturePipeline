@@ -34,7 +34,9 @@ from .runpod_wam_async_runner import (
     create_runpod_wam_async_run,
     poll_runpod_wam_async_run,
 )
-from .vast_provider_adapter import _inspect_provider_runtime_output_zip
+from .wam_provider_output import (
+    inspect_provider_runtime_output_zip as _inspect_provider_runtime_output_zip,
+)
 from .vast_wam_async_runner import (
     DEFAULT_HARD_CAP_USD,
     DEFAULT_MAX_HOURLY_RATE,

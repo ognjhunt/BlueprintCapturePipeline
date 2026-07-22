@@ -18,6 +18,7 @@ from blueprint_pipeline.g1_kitchen_evaluation_run_adapter import (
     g1_kitchen_job_kwargs_from_evaluation_run,
 )
 from blueprint_pipeline.robot_eval_evaluation_run_adapter import (
+    execute_robot_eval_request_as_evaluation_run,
     execute_legacy_robot_eval_request_as_evaluation_run,
     robot_eval_job_request_from_evaluation_run,
 )
@@ -290,7 +291,7 @@ def test_legacy_robot_eval_gateway_compiles_spec_before_low_level_builder(
         }
 
     monkeypatch.setattr(orchestrator, "build_robot_eval_job", _fake_builder)
-    result = execute_legacy_robot_eval_request_as_evaluation_run(
+    result = execute_robot_eval_request_as_evaluation_run(
         capture_root=tmp_path / "capture",
         job_request={
             "schema_version": "robot_eval_job_request.v1",
@@ -313,6 +314,13 @@ def test_legacy_robot_eval_gateway_compiles_spec_before_low_level_builder(
     assert (authority / "evaluation_run_spec.json").is_file()
     assert (authority / "evaluation_run_plan.json").is_file()
     assert (authority / "evaluation_run_execution.json").is_file()
+
+
+def test_legacy_robot_eval_entrypoint_is_a_one_release_alias() -> None:
+    assert (
+        execute_legacy_robot_eval_request_as_evaluation_run
+        is execute_robot_eval_request_as_evaluation_run
+    )
 
 
 def test_kitchen_execution_kwargs_come_from_spec_and_reject_core_overrides(

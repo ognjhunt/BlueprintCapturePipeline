@@ -1,7 +1,12 @@
 # Blueprint Autonomous Organization Design Spec
 
+> **SUPERSEDED (2026-07-21):** This pre-pivot design is retained only as a
+> historical record. Its world-model-product-first positioning and Paperclip
+> file assumptions are not current authority. Use `PLATFORM_CONTEXT.md`,
+> `WORLD_MODEL_STRATEGY_CONTEXT.md`, and `AUTONOMOUS_ORG.md`.
+
 **Date:** 2026-03-28
-**Status:** Approved
+**Status:** Superseded historical record
 **Scope:** Full autonomous company — ops, growth, research, engineering
 
 ## Problem

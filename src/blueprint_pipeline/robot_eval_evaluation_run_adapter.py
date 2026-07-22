@@ -441,7 +441,7 @@ class RobotEvalEvaluationRunExecutor:
         }
 
 
-def execute_legacy_robot_eval_request_as_evaluation_run(
+def execute_robot_eval_request_as_evaluation_run(
     *,
     capture_root: str | Path,
     job_request: Mapping[str, Any] | str | Path,
@@ -484,7 +484,7 @@ def execute_legacy_robot_eval_request_as_evaluation_run(
     allow_live_agents_sdk: bool = False,
     allow_live_codex_sdk: bool = False,
 ) -> Mapping[str, Any]:
-    """Route a legacy request through the canonical six-part execution authority."""
+    """Route a robot-eval request through the canonical Evaluation Run authority."""
 
     from .evaluation_run import compile_evaluation_run
     from .robot_eval_job_orchestrator import build_robot_eval_job
@@ -612,6 +612,13 @@ def execute_legacy_robot_eval_request_as_evaluation_run(
         },
     )
     return dict(result)
+
+
+# One-release compatibility alias for callers that still use the pre-generalization
+# name. New product paths use the Evaluation Run vocabulary above.
+execute_legacy_robot_eval_request_as_evaluation_run = (
+    execute_robot_eval_request_as_evaluation_run
+)
 
 
 def execute_robot_eval_cli_evaluation_run(

@@ -29,7 +29,7 @@ from .agent_operator_runtime import (
 )
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .local_capture import resolve_local_capture_context
-from .output_run_transaction import (
+from .core.output_run_transaction import (
     OutputRunTransaction,
     current_output_run_descriptor,
 )

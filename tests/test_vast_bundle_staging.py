@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import provider_bundle_staging_common as staging_common
 from blueprint_pipeline import vast_bundle_staging as staging
 
 
@@ -727,7 +728,7 @@ def test_prepare_vast_bundle_staging_edge_blockers_and_redaction(
         def testzip(self) -> str:
             return "provider_runtime/manifest.json"
 
-    monkeypatch.setattr(staging.zipfile, "ZipFile", FakeZipFile)
+    monkeypatch.setattr(staging_common.zipfile, "ZipFile", FakeZipFile)
     corrupt_member = staging.prepare_vast_bundle_staging(
         job_dir=tmp_path / "corrupt-member",
         bundle_path=bundle,

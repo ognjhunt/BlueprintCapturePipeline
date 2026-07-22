@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import json
 import logging
 import os
@@ -12,12 +11,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from .common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
+from .core.common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .geometry_sources import load_capture_geometry
-from .logging_utils import log_event
+from .core.logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
+from .core.pipeline_settings import PipelineConfig, PipelineSettings
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .eval_card_ids import (
@@ -26,11 +26,15 @@ from .eval_card_ids import (
     _metric_ids_from_methodology,
     _task_ids_from_thresholds,
 )
-from .lane_resume import (
+from .core.lane_resume import (
     lane_ledger_input_fingerprint,
     lane_resume_disabled,
     read_completed_lane_result,
     record_lane_completion,
+)
+from .core.lane_admission import (
+    LEGACY_CAPTURE_LANES,
+    require_legacy_lane_admission,
 )
 from .retrieval_index_stage import run_retrieval_index_stage
 from .robot_eval_job_orchestrator import (
@@ -52,13 +56,6 @@ from .synthesis.synthesize import synthesize_view
 logger = logging.getLogger(__name__)
 
 _CURRENT_PIPELINE_LANES = ("qualification", "evaluation_prep", "simulation_automation")
-_LEGACY_PIPELINE_LANES = (
-    "scene_memory",
-    "retrieval_index",
-    "frame_alignment",
-    "synthesis_coverage_validation",
-    "cosmos_single_capture_smoke",
-)
 _LANE_ORDER = (
     "qualification",
     "scene_memory",
@@ -69,7 +66,7 @@ _LANE_ORDER = (
     "synthesis_coverage_validation",
     "cosmos_single_capture_smoke",
 )
-_SUPPORTED_LANES = {*_CURRENT_PIPELINE_LANES, *_LEGACY_PIPELINE_LANES, "current", "all"}
+_SUPPORTED_LANES = {*_CURRENT_PIPELINE_LANES, *LEGACY_CAPTURE_LANES, "current", "all"}
 _LANE_ALIASES = {
     "robot_eval_dataset": "evaluation_prep",
     "task_evaluation_run": "simulation_automation",
@@ -124,11 +121,6 @@ MUJOCO_G1_MODEL_ROOT_ENV = "BLUEPRINT_MUJOCO_G1_MODEL_ROOT"
 MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV = "BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS"
 MUJOCO_BETA_STEPS_ENV = "BLUEPRINT_MUJOCO_BETA_STEPS"
 MUJOCO_BETA_SKIP_RENDER_ENV = "BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES"
-
-
-@dataclass(frozen=True)
-class PipelineConfig:
-    gcs_root: Path = Path(os.getenv("GCS_ROOT", "/mnt/gcs"))
 
 
 def _normalize_lane_value(raw: Optional[str]) -> Optional[str]:
@@ -1344,6 +1336,7 @@ def run_capture_pipeline(
     descriptor_gcs_uri: str,
     lane: Optional[str] = None,
     requested_lanes: Optional[List[str]] = None,
+    allow_legacy_lanes: bool = False,
     config: Optional[PipelineConfig] = None,
 ) -> Dict[str, Any]:
     cfg = config or PipelineConfig()
@@ -1352,6 +1345,10 @@ def run_capture_pipeline(
         gcs_root=cfg.gcs_root,
         lane=lane,
         requested_lanes=requested_lanes,
+    )
+    require_legacy_lane_admission(
+        lanes,
+        allow_legacy_lanes=allow_legacy_lanes,
     )
     allow_lane_fault_isolation = len(lanes) > 1
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
@@ -1522,7 +1519,10 @@ def run_capture_pipeline(
                 lane="evaluation_prep",
                 source="evaluation_prep_artifacts",
                 qualification_result=qualification,
-                extra_fields={"manifest_path": evaluation_prep_result.get("manifest_path")},
+                extra_fields={
+                    "manifest_path": evaluation_prep_result.get("manifest_path"),
+                    "evaluation_prep_result": dict(evaluation_prep_result),
+                },
             )
             _append_lane_result(selected_lane, lane_result)
             continue
@@ -1898,6 +1898,7 @@ def run_capture_pipeline_for_capture(
     capture_id: str,
     lane: Optional[str] = None,
     requested_lanes: Optional[List[str]] = None,
+    allow_legacy_lanes: bool = False,
     config: Optional[PipelineConfig] = None,
 ) -> Dict[str, Any]:
     cfg = config or PipelineConfig()
@@ -1911,6 +1912,7 @@ def run_capture_pipeline_for_capture(
         descriptor_gcs_uri=str(materialized["descriptor_uri"]),
         lane=lane,
         requested_lanes=requested_lanes,
+        allow_legacy_lanes=allow_legacy_lanes,
         config=cfg,
     )
 
@@ -1934,16 +1936,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             "synthesis_coverage_validation, cosmos_single_capture_smoke"
         ),
     )
+    parser.add_argument(
+        "--allow-legacy-lanes",
+        action="store_true",
+        help=(
+            "Explicitly admit deprecated scene-memory/retrieval/alignment/synthesis/"
+            "Cosmos lanes. Current product lanes do not require this flag."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
+        settings = PipelineSettings.from_env()
+        cfg = PipelineConfig.from_settings(settings)
         if args.descriptor_gcs_uri:
-            cfg = PipelineConfig()
             descriptor_path = resolve_gs_uri_to_path(args.descriptor_gcs_uri, cfg.gcs_root)
             if descriptor_path.exists() or not (args.bucket and args.scene_id and args.capture_id):
                 run_capture_pipeline(
                     descriptor_gcs_uri=args.descriptor_gcs_uri,
                     lane=args.lane,
+                    allow_legacy_lanes=bool(args.allow_legacy_lanes),
                     config=cfg,
                 )
             else:
@@ -1952,6 +1964,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     scene_id=args.scene_id,
                     capture_id=args.capture_id,
                     lane=args.lane,
+                    allow_legacy_lanes=bool(args.allow_legacy_lanes),
                     config=cfg,
                 )
         elif args.bucket and args.scene_id and args.capture_id:
@@ -1960,6 +1973,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 scene_id=args.scene_id,
                 capture_id=args.capture_id,
                 lane=args.lane,
+                allow_legacy_lanes=bool(args.allow_legacy_lanes),
+                config=cfg,
             )
         else:
             parser.error("--descriptor-gcs-uri or --bucket/--scene-id/--capture-id is required")

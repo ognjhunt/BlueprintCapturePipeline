@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
-from .security_controls import (
+from .core.security_controls import (
     exact_https_origin,
     fetch_bounded_https,
     fetch_bounded_service_url,

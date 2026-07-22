@@ -55,6 +55,9 @@
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": [
       "tests/test_mujoco_g1_simulator_command.py"
     ],
+    "src/blueprint_pipeline/mujoco_eval_media.py": [
+      "tests/test_mujoco_eval_media.py"
+    ],
     "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": [
       "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py"
     ],
@@ -84,6 +87,21 @@
     ],
     "src/blueprint_pipeline/post_training_data_package.py": [
       "tests/test_post_training_data_package.py"
+    ],
+    "src/blueprint_pipeline/provider_bundle_staging_common.py": [
+      "tests/test_provider_bundle_staging_common.py"
+    ],
+    "src/blueprint_pipeline/provider_staging_verification.py": [
+      "tests/test_provider_staging_verification.py"
+    ],
+    "src/blueprint_pipeline/wam_provider_poll_state.py": [
+      "tests/test_wam_provider_poll_state.py"
+    ],
+    "src/blueprint_pipeline/vast_wam_teardown.py": [
+      "tests/test_vast_wam_teardown.py"
+    ],
+    "src/blueprint_pipeline/runpod_wam_teardown.py": [
+      "tests/test_runpod_wam_teardown.py"
     ],
     "src/blueprint_pipeline/qualification.py": [
       "tests/test_qualification_alpha.py"
@@ -144,6 +162,9 @@
     ],
     "src/blueprint_pipeline/wam_generated_video_review.py": [
       "tests/test_wam_generated_video_review.py"
+    ],
+    "src/blueprint_pipeline/wam_provider_output.py": [
+      "tests/test_wam_provider_output.py"
     ]
   },
   "claim_boundary": {
@@ -181,7 +202,7 @@
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2198,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6059,
-    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12297,
+    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12110,
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
     "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
@@ -198,7 +219,7 @@
     "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,
     "src/blueprint_pipeline/robot_eval_worker.py": 2356,
     "src/blueprint_pipeline/robot_initial_observation.py": 2909,
-    "src/blueprint_pipeline/runpod_wam_async_runner.py": 3725,
+    "src/blueprint_pipeline/runpod_wam_async_runner.py": 3682,
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2051,
     "src/blueprint_pipeline/scene_wam_policy_episode_packet.py": 3682,
@@ -207,7 +228,7 @@
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4266,
     "src/blueprint_pipeline/site_eval_director.py": 2145,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
-    "src/blueprint_pipeline/vast_provider_adapter.py": 6739,
+    "src/blueprint_pipeline/vast_provider_adapter.py": 6521,
     "src/blueprint_pipeline/wam_derived_observation_harness.py": 3032,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412

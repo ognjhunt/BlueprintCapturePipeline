@@ -36,7 +36,7 @@ from .robot_eval_job_request_contract import (
     ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
     ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
 )
-from .safe_env import load_env_files
+from .core.safe_env import load_env_files
 
 
 LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION = "blueprint_live_pipeline_control_plane_run.v1"

@@ -675,8 +675,6 @@ def test_run_stage_covers_existing_manifest_marble_bridge_cosmos_and_degradation
     monkeypatch.setattr(eps, "write_alpha_readiness_summary", lambda **_kwargs: {"status": "skipped"})
 
     import blueprint_pipeline.robot_eval_dataset as robot_eval_dataset
-    from blueprint_pipeline.synthesis import cosmos_training_export
-
     monkeypatch.setattr(
         robot_eval_dataset,
         "build_real_site_robot_eval_dataset",
@@ -688,17 +686,23 @@ def test_run_stage_covers_existing_manifest_marble_bridge_cosmos_and_degradation
             "rights_packet_status": "missing",
         },
     )
-    monkeypatch.setattr(
-        cosmos_training_export,
-        "export_cosmos_training_substrate",
-        lambda **_kwargs: {"status": "exported"},
-    )
-
     result = eps.run_evaluation_prep_stage(capture_root=context.capture_root, provider_name="manual")
 
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    summary = json.loads(
+        (
+            context.capture_root
+            / "pipeline"
+            / "evaluation_prep"
+            / "evaluation_prep_summary.json"
+        ).read_text(encoding="utf-8")
+    )
     assert result["marble_sim_assets"]["status"] == "bridge_ready"
     assert manifest["status"] == "degraded_but_usable"
+    assert summary["cosmos_training_export_status"] == "not_requested"
+    assert not (
+        context.capture_root / "pipeline" / "cosmos_training_export" / "manifest.json"
+    ).exists()
     assert "scene_memory_bundle:partial" in manifest["degradation_reasons"]
     assert "geometry_bundle:missing" in manifest["degradation_reasons"]
 

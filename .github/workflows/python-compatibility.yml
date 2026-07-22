@@ -14,7 +14,7 @@ on:
       - "src/blueprint_pipeline/**"
       - "tests/**"
   push:
-    branches: ["**"]
+    branches: ["main"]
     paths:
       - ".github/workflows/python-compatibility.yml"
       - "pyproject.toml"
@@ -26,6 +26,10 @@ on:
       - "scripts/verify_dependency_exports.py"
       - "src/blueprint_pipeline/**"
       - "tests/**"
+
+concurrency:
+  group: python-compatibility-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   compatibility:

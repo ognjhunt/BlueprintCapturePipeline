@@ -447,7 +447,10 @@ def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_p
     result = run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="qualification",
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
 
     pipeline_root = capture_root / "pipeline"
@@ -504,7 +507,10 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
     result = run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="qualification",
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
 
     pipeline_root = capture_root / "pipeline"
@@ -848,7 +854,10 @@ def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="qualification",
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
 
     provider_preview_status = json.loads((capture_root / "pipeline" / "provider_preview_status.json").read_text(encoding="utf-8"))
@@ -1017,7 +1026,10 @@ def test_bad_video_review_forces_recapture_and_lower_world_model_fit(monkeypatch
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
         lane="qualification",
-        config=PipelineConfig(gcs_root=tmp_path),
+        config=PipelineConfig(
+            gcs_root=tmp_path,
+            emit_readiness_support_outputs=True,
+        ),
     )
 
     pipeline_root = capture_root / "pipeline"

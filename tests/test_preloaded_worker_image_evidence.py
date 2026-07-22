@@ -3,8 +3,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from blueprint_pipeline.gpu_campaign_state_machine import CampaignConfig
-
 
 def test_g4_self_test_converts_to_campaign_preload_evidence(tmp_path: Path):
     host = tmp_path / "host.json"
@@ -53,20 +51,16 @@ def test_g4_self_test_converts_to_campaign_preload_evidence(tmp_path: Path):
         check=True,
     )
     evidence = json.loads(output.read_text())
-    cfg = CampaignConfig(
-        campaign_id="campaign-1",
-        allocation_key="blueprint-g4",
-        source_sha="5" * 40,
-        image_digest="sha256:" + "7" * 64,
-        hourly_rate_usd=4.5,
-        max_provider_seconds=60,
-        spend_authorization_usd=20,
-        prior_exposure_usd=0,
-        image_total_compressed_bytes=47_101_357_226,
-        image_largest_layer_bytes=14_083_497_680,
-        image_residency_evidence=evidence,
-    )
-    assert cfg.validate() == []
+    assert evidence["schema_version"] == "preloaded_worker_image.v1"
+    assert evidence["source_sha"] == "5" * 40
+    assert evidence["image_digest"] == "sha256:" + "7" * 64
+    assert evidence["allocation_key"] == "blueprint-g4"
+    assert evidence["image_present_before_allocation"] is True
+    assert evidence["local_digest_inspect_passed"] is True
+    assert evidence["runtime_health_preflight_passed"] is True
+    assert evidence["cold_pull_required_during_campaign"] is False
+    assert len(evidence["host_self_test_sha256"]) == 64
+    assert len(evidence["runtime_health_sha256"]) == 64
 
 
 def test_converter_rejects_runtime_health_from_different_digest(tmp_path: Path):

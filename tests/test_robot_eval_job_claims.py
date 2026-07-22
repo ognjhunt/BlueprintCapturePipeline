@@ -10,7 +10,10 @@ from blueprint_pipeline.robot_eval_job_orchestrator import (
     _job_id_from_request,
     build_robot_eval_job,
 )
-from blueprint_pipeline.security_controls import SecurityValidationError
+from blueprint_pipeline.core.security_controls import SecurityValidationError
+from blueprint_pipeline.security_controls import (
+    SecurityValidationError as CompatibilitySecurityValidationError,
+)
 
 
 def test_job_id_traversal_and_cli_request_mismatch_fail_before_writes(
@@ -72,3 +75,7 @@ def test_concurrent_job_claim_has_one_winner_and_never_reuses_namespace(
             request_fingerprint="b" * 64,
             generated_at="2026-07-09T12:00:01Z",
         )
+
+
+def test_security_validation_error_compatibility_import_is_canonical() -> None:
+    assert CompatibilitySecurityValidationError is SecurityValidationError

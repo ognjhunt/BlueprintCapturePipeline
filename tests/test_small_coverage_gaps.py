@@ -12,6 +12,7 @@ from blueprint_pipeline import industrial_ontology, local_capture, model_access_
 from blueprint_pipeline import optional_dependencies, wam_vision_success_judge
 from blueprint_pipeline.agent_runtime import artifacts, contracts
 from blueprint_pipeline.common import PipelineError
+from blueprint_pipeline.core import optional_dependencies as core_optional_dependencies
 from blueprint_pipeline.synthesis import plucker_rays
 
 
@@ -125,6 +126,7 @@ def test_model_access_env_and_optional_dependency_messages(
             extra="llm",
         )
     assert optional_dependencies.install_extra_hint("llm") in message
+    assert optional_dependencies.install_extra_hint is core_optional_dependencies.install_extra_hint
     assert "Feature requires optional dependency `package-a`" in caplog.text
 
 

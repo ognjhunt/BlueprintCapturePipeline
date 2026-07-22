@@ -349,6 +349,7 @@ def test_cosmos3_strategy_state_is_derived_from_machine_checked_preconditions(
     _clear_adapter_env(monkeypatch)
     monkeypatch.delenv("BLUEPRINT_COSMOS3_WAM_PROVIDER_COMMAND", raising=False)
     monkeypatch.delenv("BLUEPRINT_COSMOS3_CALIBRATION_ANCHORS_PATH", raising=False)
+    monkeypatch.delenv("BLUEPRINT_WAM_STRICT_SCORER_URL", raising=False)
 
     row = backend_strategy.get_wam_backend_strategy("cosmos3_wam")
     assert row["aspirational"] is True
@@ -396,6 +397,15 @@ def test_cosmos3_strategy_state_is_derived_from_machine_checked_preconditions(
     assert derived["preconditions_met"] is True
     assert derived["aspirational"] is False
     assert derived["preferred_candidate_state"] == "preferred_configured_candidate"
+
+    monkeypatch.setenv("BLUEPRINT_WAM_STRICT_SCORER_URL", "https://scorer.example")
+    configured_external = backend_strategy.evaluate_cosmos3_wam_preconditions(
+        calibration_anchors_path=anchors_path,
+    )
+    scorer_check = configured_external["checks"]["consistency_scorer_available"]
+    assert scorer_check["passed"] is True
+    assert scorer_check["detail"]["external_scorer_service_configured"] is True
+    assert scorer_check["detail"]["explicit_flag_used"] is False
 
 
 def test_sc3_horizon_trace_validates_runtime_emitted_25_24_16_contract(

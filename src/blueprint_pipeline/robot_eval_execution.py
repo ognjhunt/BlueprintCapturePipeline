@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 from . import robot_eval_calibration as _calibration
 from .common import ensure_dir, read_json_any, resolve_gs_uri_to_path, write_json
 from .robot_initial_observation import build_initial_observation_source_resolution
-from .security_controls import (
+from .core.security_controls import (
     SecurityValidationError,
     fetch_bounded_https,
     json_shape_within_limits,

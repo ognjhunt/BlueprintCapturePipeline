@@ -101,7 +101,7 @@ def _watchdog_argv(pid: int, *, canary_deadline_epoch: float) -> tuple[str, ...]
         return (
             "python",
             "-m",
-            "blueprint_pipeline.groot_oscar_runpod_model_volume",
+            "blueprint_pipeline.groot_oscar_runpod_volume_watchdog",
             "watchdog",
             "--state",
             MODEL_VOLUME_WATCHDOG_STATE,

@@ -110,7 +110,7 @@ from .production_gpu_warm_serve_contract import (
     campaign_budget_reservation_valid as _campaign_budget_reservation_valid,
     external_process_alive as _process_alive,
 )
-from .security_controls import (
+from .core.security_controls import (
     exact_https_origin,
     fetch_bounded_https,
     origins_from_env,

@@ -30,7 +30,7 @@ from .agent_operator_runtime import (
 )
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .local_capture import resolve_local_capture_context
-from .safe_env import load_env_files
+from .core.safe_env import load_env_files
 from .source_metadata import git_source_metadata
 
 

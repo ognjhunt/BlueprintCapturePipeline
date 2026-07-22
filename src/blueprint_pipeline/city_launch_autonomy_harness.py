@@ -26,7 +26,7 @@ from blueprint_pipeline.city_launch_evidence_policy import (
 from blueprint_pipeline.common import write_json as atomic_write_json
 from blueprint_pipeline.common import write_text as atomic_write_text
 from blueprint_pipeline.local_capture import resolve_local_capture_context
-from blueprint_pipeline.safe_env import contract_test_env, load_env_files
+from blueprint_pipeline.core.safe_env import contract_test_env, load_env_files
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CAPTURE_REPO = ROOT.parent / "BlueprintCapture"

@@ -29,7 +29,7 @@ from .robot_eval_job_orchestrator import (
     _remote_cloud_execution_closure_manifest,
 )
 from .robot_eval_evaluation_run_adapter import (
-    execute_legacy_robot_eval_request_as_evaluation_run,
+    execute_robot_eval_request_as_evaluation_run,
 )
 
 
@@ -1305,7 +1305,7 @@ def prepare_robot_eval_provider_inputs(
         "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": "true" if allow_simulator_execution else "",
     }
     with _patched_env(env_values):
-        job_result = execute_legacy_robot_eval_request_as_evaluation_run(
+        job_result = execute_robot_eval_request_as_evaluation_run(
             capture_root=root,
             job_request=Path(job_request).resolve(),
             job_id=job_id,

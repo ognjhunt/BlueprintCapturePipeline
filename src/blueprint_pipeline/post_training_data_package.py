@@ -16,6 +16,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+from .artifact_compatibility import VISUAL_AUGMENTATION_BACKEND_REGISTRY_ARTIFACTS
+from .artifact_contracts import validate_sellable_artifact
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .consent_normalization import (
     CONSENT_ACTIVE_STATUSES,
@@ -27,7 +29,7 @@ from .canonical_training_quality_pipeline import (
     CANONICAL_PIPELINE_SIGNATURE_DOMAIN,
 )
 from .local_capture import resolve_local_capture_context
-from .output_run_transaction import (
+from .core.output_run_transaction import (
     OutputRunTransaction,
     current_output_run_descriptor,
 )
@@ -5503,10 +5505,7 @@ def _build_post_training_data_package_export(
                 "oscar_visual_augmentation_variant_requests",
                 "oscar_visual_augmentation_packet/visual_augmentation_variant_requests.jsonl",
             ),
-            (
-                "oscar_visual_augmentation_backend_registry",
-                "oscar_visual_augmentation_packet/model_backend_registry.json",
-            ),
+            *VISUAL_AUGMENTATION_BACKEND_REGISTRY_ARTIFACTS,
             (
                 "oscar_visual_distribution_shift_eval_protocol",
                 "oscar_visual_augmentation_packet/visual_distribution_shift_eval_protocol.json",
@@ -6570,6 +6569,7 @@ def _build_post_training_data_package_export(
         manifest["claim_boundary"]["buyer_readout_ready"] = (
             buyer_readout["status"] == "buyer_readout_ready_review_required"
         )
+    validate_sellable_artifact("post_training_data_package_export", manifest)
     write_json(resolved_output_dir / "post_training_data_package_export_manifest.json", manifest)
     if (
         archive_signing_preflight.get("status") == "ready"

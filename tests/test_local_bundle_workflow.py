@@ -223,6 +223,7 @@ def test_run_local_bundle_workflow_can_request_scene_memory_lane(
         run_qualification=True,
         run_evaluation_prep=True,
         pipeline_lane="scene_memory",
+        allow_legacy_pipeline_lanes=True,
     )
 
     assert result["pipeline_lane"] == "scene_memory"

@@ -14,7 +14,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from .common import ensure_dir, parse_bool, utc_now_iso, write_json
 from .groot_oscar_runpod_carrier_volume import verify_carrier_volume_admission
@@ -45,6 +45,11 @@ from .runpod_provider_adapter import (
     RUNPOD_API_KEY_ENV,
     RUNPOD_REST_API_BASE,
 )
+from .runpod_wam_teardown import (
+    delete_runpod_pod,
+    stop_runpod_pod,
+    verify_runpod_pod_inactive,
+)
 from .runpod_wam_launch_contract import (
     build_pod_payload as _build_pod_payload,
     confirm_provider_lane_handoff_no_allocation as _confirm_provider_lane_handoff_no_allocation,
@@ -59,20 +64,32 @@ from .secret_artifact_policy import (
     redacted_secret_file_status,
     secret_path_disclosure_policy,
 )
-from .vast_bundle_staging import (
+from .provider_bundle_staging_common import (
     BUNDLE_ROUTE,
+    OUTPUT_ROUTE,
+    read_or_create_staging_token as _read_or_create_token,
+    staging_url_with_token as _url_with_token,
+)
+from .vast_bundle_staging import (
     DEFAULT_OUTPUT_FILENAME,
     DEFAULT_SECRET_ENV_FILE,
     DEFAULT_TOKEN_FILE,
-    OUTPUT_ROUTE,
-    _read_or_create_token,
-    _url_with_token,
     prepare_vast_bundle_staging,
     run_local_staging_self_test,
     verify_public_staging_urls,
 )
-from .vast_provider_adapter import _inspect_provider_runtime_output_zip
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
+from .wam_async_runner_common import (
+    AsyncPollDeadline,
+    download_url_to_file,
+    read_json_mapping as _read_json,
+    read_sensitive_url_file as _read_sensitive_url_file,
+    redact_provider_url as _redact_provider_url,
+)
+from . import wam_provider_poll_state as _poll_state
+from .wam_provider_output import (
+    inspect_provider_runtime_output_zip as _inspect_provider_runtime_output_zip,
+)
 
 
 RUNPOD_WAM_STATE_SCHEMA_VERSION = "runpod_wam_async_state.v1"
@@ -282,15 +299,6 @@ def _runpod_wam_post_marker_timeout_seconds(explicit: int | None = None) -> int:
     return DEFAULT_RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS
 
 
-def _redact_provider_url(value: str) -> str:
-    parsed = urlparse(value)
-    if not parsed.scheme or not parsed.netloc:
-        return "<redacted-url>" if value else ""
-    query = "REDACTED_QUERY" if parsed.query else ""
-    fragment = "REDACTED_FRAGMENT" if parsed.fragment else ""
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, fragment))
-
-
 def _read_unitree_groot_sonic_bundle_input(bundle_path: Path) -> dict[str, Any]:
     if not bundle_path.is_file() or not zipfile.is_zipfile(bundle_path):
         return {}
@@ -403,11 +411,6 @@ def _state_path(job_dir: Path) -> Path:
     return job_dir / "runpod_wam_async_state.json"
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return dict(data) if isinstance(data, Mapping) else {}
-
-
 def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
     env_value = _string(os.getenv(RUNPOD_API_KEY_ENV))
     if env_value:
@@ -451,40 +454,6 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
         "api_key_file_mode_is_0600": mode == "0o600",
     })
     return key, status
-
-
-def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[str, Any]]:
-    if not _string(path_value):
-        return "", {
-            "label": label,
-            "configured": False,
-            "present": False,
-            "raw_secret_values_recorded": False,
-        }
-    path = Path(path_value).expanduser().resolve()
-    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
-    try:
-        value = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-    except OSError as exc:
-        return "", {
-            "label": label,
-            "configured": True,
-            "path": str(path),
-            "present": path.exists(),
-            "mode": mode,
-            "read_error": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    return value, {
-        "label": label,
-        "configured": True,
-        "path": str(path),
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "value_present": bool(value),
-        "raw_secret_values_recorded": False,
-    }
 
 
 def _secret_file_meta(path: Path, *, label: str, source: str) -> dict[str, Any]:
@@ -649,7 +618,7 @@ def _runpod_request(
             "User-Agent": "BlueprintRunPodWamAsyncRunner/1.0",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
         status = int(getattr(response, "status", 200))
         text = response.read().decode("utf-8", errors="replace")
     if not text.strip():
@@ -2255,63 +2224,15 @@ def _delete_pod(
     api_key: str,
     generated_at: str,
 ) -> dict[str, Any]:
-    try:
-        status_code, response = _runpod_request(
-            method="DELETE",
-            path=f"/pods/{pod_id}",
-            api_key=api_key,
-            timeout_seconds=30,
-        )
-        status = "completed" if status_code in {200, 202, 204} else "blocked"
-        blockers: list[str] = [] if status == "completed" else ["runpod_delete_pod_unexpected_status"]
-    except urllib.error.HTTPError as exc:
-        status_code = exc.code
-        response = {}
-        status = "completed" if exc.code in {404, 410} else "blocked"
-        blockers = [] if status == "completed" else ["runpod_delete_pod_http_error"]
-    # The DELETE response is only a request acknowledgement. Teardown proof needs
-    # the provider to report the pod terminal on a state query, so probe it.
-    terminal_state_api_confirmed = False
-    verified_pod_status: str | None = None
-    terminal_state_verification: dict[str, Any] | None = None
-    if status_code in {404, 410}:
-        # The state API already says the allocation does not exist.
-        terminal_state_api_confirmed = True
-        verified_pod_status = "not_found"
-    elif status == "completed":
-        terminal_state_verification = _verify_pod_not_active_after_teardown_error(
-            pod_id=pod_id,
-            api_key=api_key,
-            generated_at=generated_at,
-        )
-        probe_status = _string(terminal_state_verification.get("pod_status"))
-        if probe_status and probe_status not in {"http_error", "status_probe_error"}:
-            verified_pod_status = probe_status
-        terminal_state_api_confirmed = bool(
-            terminal_state_verification.get("spend_released")
-        )
-        if not terminal_state_api_confirmed:
-            blockers = [
-                *blockers,
-                "runpod_delete_terminal_state_not_api_confirmed",
-            ]
-    manifest = {
-        "schema_version": RUNPOD_WAM_DELETE_SCHEMA_VERSION,
-        "generated_at": generated_at,
-        "status": status,
-        "job_dir": str(job_dir),
-        "pod_id": pod_id,
-        "http_status_code": status_code,
-        "response_keys": sorted(response.keys()),
-        "blockers": blockers,
-        "terminal_state_api_confirmed": terminal_state_api_confirmed,
-        "verified_pod_status": verified_pod_status,
-        "terminal_state_verification": terminal_state_verification,
-        "continuing_spend_from_this_run": status != "completed",
-        "raw_secret_values_recorded": False,
-    }
-    write_json(job_dir / "runpod_wam_async_delete_manifest.json", manifest)
-    return manifest
+    return delete_runpod_pod(
+        job_dir=job_dir,
+        pod_id=pod_id,
+        api_key=api_key,
+        generated_at=generated_at,
+        schema_version=RUNPOD_WAM_DELETE_SCHEMA_VERSION,
+        request=_runpod_request,
+        verify_inactive=_verify_pod_not_active_after_teardown_error,
+    )
 
 
 def _verify_pod_not_active_after_teardown_error(
@@ -2320,64 +2241,14 @@ def _verify_pod_not_active_after_teardown_error(
     api_key: str,
     generated_at: str,
 ) -> dict[str, Any]:
-    try:
-        status_code, payload = _runpod_request(
-            method="GET",
-            path=f"/pods/{pod_id}",
-            api_key=api_key,
-            timeout_seconds=20,
-        )
-    except urllib.error.HTTPError as exc:
-        if exc.code in {404, 410}:
-            return {
-                "status": "completed",
-                "generated_at": generated_at,
-                "pod_id": pod_id,
-                "http_status_code": exc.code,
-                "pod_status": "not_found",
-                "spend_released": True,
-                "blockers": [],
-                "raw_secret_values_recorded": False,
-            }
-        return {
-            "status": "blocked",
-            "generated_at": generated_at,
-            "pod_id": pod_id,
-            "http_status_code": exc.code,
-            "pod_status": "http_error",
-            "spend_released": False,
-            "blockers": ["runpod_stop_error_status_probe_http_error"],
-            "raw_secret_values_recorded": False,
-        }
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return {
-            "status": "blocked",
-            "generated_at": generated_at,
-            "pod_id": pod_id,
-            "pod_status": "status_probe_error",
-            "spend_released": False,
-            "blockers": ["runpod_stop_error_status_probe_failed"],
-            "probe_error_type": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    pod_status = _pod_status(payload)
-    pod_status_upper = pod_status.upper()
-    spend_released = bool(
-        pod_status in RUNPOD_TERMINAL_POD_STATUSES
-        or pod_status_upper in RUNPOD_TERMINAL_POD_STATUSES
+    return verify_runpod_pod_inactive(
+        pod_id=pod_id,
+        api_key=api_key,
+        generated_at=generated_at,
+        request=_runpod_request,
+        pod_status_reader=_pod_status,
+        terminal_statuses=RUNPOD_TERMINAL_POD_STATUSES,
     )
-    return {
-        "status": "completed" if spend_released else "blocked",
-        "generated_at": generated_at,
-        "pod_id": pod_id,
-        "http_status_code": status_code,
-        "pod_status": pod_status,
-        "spend_released": spend_released,
-        "blockers": []
-        if spend_released
-        else ["runpod_stop_error_pod_still_active_after_status_probe"],
-        "raw_secret_values_recorded": False,
-    }
 
 
 def _stop_pod(
@@ -2388,86 +2259,21 @@ def _stop_pod(
     generated_at: str,
     record_warm_candidate: bool = True,
 ) -> dict[str, Any]:
-    verification: dict[str, Any] | None = None
-    stop_response_confirmed = False
-    try:
-        status_code, response = _runpod_request(
-            method="POST",
-            path=f"/pods/{pod_id}/stop",
-            api_key=api_key,
-            timeout_seconds=30,
-        )
-        status = "completed" if status_code in {200, 202, 204} else "blocked"
-        stop_response_confirmed = status == "completed"
-        blockers: list[str] = [] if status == "completed" else ["runpod_stop_pod_unexpected_status"]
-    except urllib.error.HTTPError as exc:
-        status_code = exc.code
-        response = {}
-        status = "completed" if exc.code in {404, 410} else "blocked"
-        blockers = [] if status == "completed" else ["runpod_stop_pod_http_error"]
-        if status != "completed":
-            verification = _verify_pod_not_active_after_teardown_error(
-                pod_id=pod_id,
-                api_key=api_key,
-                generated_at=generated_at,
-            )
-            if verification.get("spend_released"):
-                status = "completed"
-                blockers = []
-            else:
-                blockers.extend(str(item) for item in verification.get("blockers") or [])
-    warm_candidate = (
-        _write_stopped_warm_candidate(
-            job_dir=job_dir,
-            pod_id=pod_id,
-            generated_at=generated_at,
-        )
-        if status == "completed" and record_warm_candidate and stop_response_confirmed
-        else {
-            "status": "not_recorded",
-            "reason": "runtime_output_not_successful_for_warm_reuse"
-            if status == "completed" and stop_response_confirmed
-            else "runpod_stop_completion_verified_without_reusable_stopped_pod"
-            if status == "completed"
-            else "runpod_stop_not_completed",
-            "raw_secret_values_recorded": False,
-        }
+    return stop_runpod_pod(
+        job_dir=job_dir,
+        pod_id=pod_id,
+        api_key=api_key,
+        generated_at=generated_at,
+        schema_version=RUNPOD_WAM_STOP_SCHEMA_VERSION,
+        request=_runpod_request,
+        verify_inactive=_verify_pod_not_active_after_teardown_error,
+        write_stopped_warm_candidate=_write_stopped_warm_candidate,
+        record_warm_candidate=record_warm_candidate,
     )
-    manifest = {
-        "schema_version": RUNPOD_WAM_STOP_SCHEMA_VERSION,
-        "generated_at": generated_at,
-        "status": status,
-        "job_dir": str(job_dir),
-        "pod_id": pod_id,
-        "http_status_code": status_code,
-        "stop_error_verification": verification,
-        "response_keys": sorted(response.keys()),
-        "blockers": blockers,
-        "stopped_pod_preserved_for_warm_reuse": bool(
-            status == "completed" and record_warm_candidate and stop_response_confirmed
-        ),
-        "warm_candidate_recording_requested": bool(record_warm_candidate),
-        "warm_candidate": warm_candidate,
-        "warm_candidate_path": warm_candidate.get("path"),
-        "stop_response_confirmed": stop_response_confirmed,
-        "gpu_spend_released_if_provider_honors_stop": status == "completed",
-        "stopped_volume_storage_may_continue_billing": bool(
-            status == "completed" and stop_response_confirmed
-        ),
-        "continuing_spend_from_this_run": status != "completed",
-        "raw_secret_values_recorded": False,
-    }
-    write_json(job_dir / "runpod_wam_async_stop_manifest.json", manifest)
-    return manifest
 
 
 def _teardown_action() -> str:
-    action = _string(os.getenv(RUNPOD_WAM_TEARDOWN_ACTION_ENV)).lower()
-    if action in {"stop", "stopped", "preserve", "warm"}:
-        return "stop"
-    if action in {"keep", "keep_running", "keep_on_success", "hot", "hot_reuse"}:
-        return "keep_on_success"
-    return "delete"
+    return _poll_state.normalize_runpod_teardown_action(os.getenv(RUNPOD_WAM_TEARDOWN_ACTION_ENV))
 
 
 def _reliability_phase(passed: bool, blockers: Sequence[str] = (), **fields: Any) -> dict[str, Any]:
@@ -2681,16 +2487,15 @@ def _download_provider_output_zip(
         manifest.update({"status": "skipped", "reason": "provider_output_get_url_missing"})
         write_json(job_dir / "runpod_wam_output_download_manifest.json", manifest)
         return manifest
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        request = urllib.request.Request(
-            provider_output_get_url,
-            headers={"User-Agent": "BlueprintRunPodWamPoll/1.0"},
-        )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read()
-        output_path.write_bytes(data)
-        valid_zip = bool(data) and zipfile.is_zipfile(output_path)
+    transfer = download_url_to_file(
+        url=provider_output_get_url,
+        output_path=output_path,
+        user_agent="BlueprintRunPodWamPoll/1.0",
+        timeout_seconds=60,
+    )
+    if transfer["status"] == "completed":
+        downloaded_size = int(transfer["downloaded_size_bytes"])
+        valid_zip = downloaded_size > 0 and zipfile.is_zipfile(output_path)
         output_validation = (
             _validate_wam_provider_output_zip(
                 output_path,
@@ -2702,10 +2507,10 @@ def _download_provider_output_zip(
         manifest.update(
             {
                 "status": "completed" if valid_zip else "not_available",
-                "downloaded_size_bytes": len(data),
+                "downloaded_size_bytes": downloaded_size,
                 "output_present": valid_zip,
                 "valid_zip": valid_zip,
-                "empty_download": not bool(data),
+                "empty_download": downloaded_size == 0,
                 "provider_output_validation": output_validation,
                 "provider_output_validation_status": output_validation.get("status")
                 if output_validation
@@ -2720,20 +2525,20 @@ def _download_provider_output_zip(
         )
         if not valid_zip:
             output_path.unlink(missing_ok=True)
-    except urllib.error.HTTPError as exc:
+    elif transfer["status"] == "http_error":
         manifest.update(
             {
                 "status": "not_available",
-                "http_status_code": exc.code,
+                "http_status_code": transfer.get("http_status_code"),
                 "error_type": "HTTPError",
                 "output_present": output_path.is_file(),
             }
         )
-    except Exception as exc:  # pragma: no cover - defensive runtime diagnostics.
+    else:
         manifest.update(
             {
                 "status": "blocked",
-                "error_type": type(exc).__name__,
+                "error_type": transfer.get("error_type"),
                 "output_present": output_path.is_file(),
             }
         )
@@ -3078,8 +2883,11 @@ def poll_runpod_wam_async_run(
     status_code: int | None = None
     pod_payload: dict[str, Any] = {}
     pod_status = "unknown"
-    started_monotonic = time.monotonic()
-    deadline = time.monotonic() + max(0, max_wait_seconds)
+    poll_deadline = AsyncPollDeadline.start(
+        max_wait_seconds=max_wait_seconds,
+        retry_interval_seconds=retry_interval_seconds,
+    )
+    started_monotonic = poll_deadline.started_monotonic
     post_marker_timeout_seconds = _runpod_wam_post_marker_timeout_seconds(
         post_marker_no_progress_timeout_seconds
     )
@@ -3092,7 +2900,7 @@ def poll_runpod_wam_async_run(
     transient_pod_status_error_count = 0
     last_pod_status_error: dict[str, Any] | None = None
     existing_teardown_completed = False
-    while not blockers and time.monotonic() <= deadline:
+    while not blockers and poll_deadline.is_open():
         output_present = output_path.is_file()
         if not output_present and output_get_url:
             download_manifest = _download_provider_output_zip(
@@ -3196,9 +3004,9 @@ def poll_runpod_wam_async_run(
                 if elapsed_since_create <= not_found_grace_seconds:
                     transient_not_found_count += 1
                     pod_status = "pending_api_visibility"
-                    if time.monotonic() + retry_interval_seconds > deadline:
+                    if not poll_deadline.can_retry():
                         break
-                    time.sleep(max(1, retry_interval_seconds))
+                    poll_deadline.wait_for_retry(time.sleep)
                     continue
                 pod_status = "not_found"
             else:
@@ -3215,9 +3023,9 @@ def poll_runpod_wam_async_run(
                 "message_preview": str(exc)[:300],
                 "raw_secret_values_recorded": False,
             }
-            if time.monotonic() + retry_interval_seconds > deadline:
+            if not poll_deadline.can_retry():
                 break
-            time.sleep(max(1, retry_interval_seconds))
+            poll_deadline.wait_for_retry(time.sleep)
             continue
         if output_present:
             break
@@ -3243,9 +3051,9 @@ def poll_runpod_wam_async_run(
             if stall_evaluation.get("should_terminate"):
                 stall_teardown_requested = True
                 break
-        if time.monotonic() + retry_interval_seconds > deadline:
+        if not poll_deadline.can_retry():
             break
-        time.sleep(max(1, retry_interval_seconds))
+        poll_deadline.wait_for_retry(time.sleep)
     output_inspection = _inspect_provider_runtime_output_zip(
         output_path,
         video_extract_dir=resolved_job_dir / "runpod_wam_output_videos",
@@ -3286,8 +3094,8 @@ def poll_runpod_wam_async_run(
     runtime_result_failed = (
         runtime_result_status in RUNPOD_WAM_PROVIDER_OUTPUT_FAILURE_STATUSES
     )
-    elapsed_wait_seconds = max(0.0, time.monotonic() - started_monotonic)
-    wait_deadline_expired = elapsed_wait_seconds >= max(0, max_wait_seconds)
+    elapsed_wait_seconds = poll_deadline.elapsed_seconds()
+    wait_deadline_expired = poll_deadline.expired()
     pod_status_is_active = (
         pod_status in RUNPOD_ACTIVE_POD_STATUSES
         or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES
@@ -3385,19 +3193,22 @@ def poll_runpod_wam_async_run(
     keepalive_runtime_unhealthy_on_success = bool(
         requested_keep_running_on_success and not keep_running_on_success
     )
-    should_teardown = bool(
-        auto_teardown_failure
-        or (
-            teardown
-            and (output_present or pod_status_is_terminal or runtime_stall_observed)
-            and not keep_running_on_success
-        )
+    teardown_decision = _poll_state.decide_runpod_poll_teardown(
+        explicit_requested=teardown,
+        requested_action=teardown_action,
+        output_present=output_present,
+        provider_terminal=pod_status_is_terminal,
+        runtime_stalled=runtime_stall_observed,
+        runtime_result_failed=runtime_result_failed,
+        output_validation_failed=provider_output_validation_failed,
+        keep_running=keep_running_on_success,
+        allocation_actionable=bool(pod_id and api_key and pod_status != "not_found"),
+        blockers_present=bool(blockers),
     )
-    effective_teardown_action = "delete" if auto_teardown_failure else teardown_action
-    effective_teardown_requested = bool(teardown or auto_teardown_failure)
-    teardown_pending = bool(
-        not blockers and should_teardown and pod_id and api_key and pod_status != "not_found"
-    )
+    should_teardown = teardown_decision.should_teardown
+    effective_teardown_action = teardown_decision.action or teardown_action
+    effective_teardown_requested = teardown_decision.effective_requested
+    teardown_pending = teardown_decision.teardown_pending
     teardown_manifest: dict[str, Any] | None = None
     continuing_spend = bool(
         pod_id
@@ -3493,6 +3304,7 @@ def poll_runpod_wam_async_run(
         if effective_teardown_requested
         else "not_requested",
         "teardown_pending": teardown_pending,
+        "teardown_decision": teardown_decision.as_manifest(),
         "teardown_performed": existing_teardown_completed,
         "requested_keep_running_on_success": requested_keep_running_on_success,
         "keep_running_on_success": keep_running_on_success,

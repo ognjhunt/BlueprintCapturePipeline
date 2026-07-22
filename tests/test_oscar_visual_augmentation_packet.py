@@ -118,8 +118,15 @@ def test_oscar_visual_augmentation_packet_writes_swappable_model_derived_packet(
     assert manifest["claim_boundary"] == CLAIM_BOUNDARY
 
     backend_registry = json.loads(
-        (output_dir / "model_backend_registry.json").read_text(encoding="utf-8")
+        (output_dir / "visual_augmentation_backend_registry.json").read_text(
+            encoding="utf-8"
+        )
     )
+    assert manifest["backend_registry_path"] == "visual_augmentation_backend_registry.json"
+    assert manifest["legacy_backend_registry_path"] == "model_backend_registry.json"
+    assert json.loads(
+        (output_dir / "model_backend_registry.json").read_text(encoding="utf-8")
+    ) == backend_registry
     backend_ids = {row["backend_id"] for row in backend_registry["backends"]}
     assert {"oscar_wam", "cosmos_wam", "future_video_wam"} <= backend_ids
     variant_rows = [

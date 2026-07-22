@@ -191,6 +191,7 @@ def _artifact_paths(job_dir: Path) -> Dict[str, str]:
         "hosted_session_takedown_request.json",
         "live_operator_ledger.json",
         "startup_architecture_audit.json",
+        "evaluator_qualification_workflow.json",
         "worker_runtime_manifest.json",
         "worker_runtime_preflight.json",
         "worker_runtime_preflight.stdout.log",

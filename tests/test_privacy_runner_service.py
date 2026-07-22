@@ -481,6 +481,68 @@ def test_http_post_valid_bearer_token_dispatches(monkeypatch) -> None:
     assert calls
 
 
+def test_http_post_rejects_local_path_without_configured_root(monkeypatch) -> None:
+    monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "secret-token")
+    monkeypatch.delenv(service.LOCAL_PATH_ROOT_ENV, raising=False)
+    monkeypatch.setattr(
+        service,
+        "execute_privacy_service_request",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unsafe path must not dispatch")),
+    )
+    body = json.dumps({"input_video_uri": "gs://bucket/in.mov", "output_video_path": "out.mov"}).encode(
+        "utf-8"
+    )
+    with _running_service() as port:
+        status, payload = _request(
+            port,
+            "POST",
+            "/run",
+            body=body,
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    assert status == int(HTTPStatus.BAD_REQUEST)
+    assert payload["reason"] == "local_path_root_not_configured"
+
+
+def test_http_post_contains_local_paths_within_configured_root(monkeypatch, tmp_path: Path) -> None:
+    allowed_root = tmp_path / "privacy-io"
+    allowed_root.mkdir()
+    monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "secret-token")
+    monkeypatch.setenv(service.LOCAL_PATH_ROOT_ENV, str(allowed_root))
+    calls: list[tuple[str, dict]] = []
+    _stub_dispatch(monkeypatch, calls, {"status": "succeeded"})
+
+    safe_body = json.dumps(
+        {"input_video_uri": "gs://bucket/in.mov", "output_video_path": "nested/out.mov"}
+    ).encode("utf-8")
+    with _running_service() as port:
+        status, payload = _request(
+            port,
+            "POST",
+            "/run",
+            body=safe_body,
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    assert status == int(HTTPStatus.OK)
+    assert payload["status"] == "succeeded"
+    assert calls[-1][1]["output_video_path"] == str(allowed_root / "nested" / "out.mov")
+
+    unsafe_body = json.dumps(
+        {"input_video_uri": "gs://bucket/in.mov", "output_video_path": "../escape.mov"}
+    ).encode("utf-8")
+    with _running_service() as port:
+        status, payload = _request(
+            port,
+            "POST",
+            "/run",
+            body=unsafe_body,
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    assert status == int(HTTPStatus.BAD_REQUEST)
+    assert payload["reason"] == "local_path_outside_allowed_root"
+    assert len(calls) == 1
+
+
 def test_http_post_invalid_json_returns_400(monkeypatch) -> None:
     monkeypatch.setenv("PRIVACY_RUNNER_TOKEN", "secret-token")
     monkeypatch.setattr(

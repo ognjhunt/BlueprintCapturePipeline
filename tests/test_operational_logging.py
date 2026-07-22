@@ -86,6 +86,7 @@ def test_run_e2e_logs_start_completion_and_preflight_failure(
             capture_root=str(capture_root),
             provider="openai",
             pipeline_lane="all",
+            run_agent_review_stage=True,
         )
 
     assert result["pipeline_status"] == "completed"
