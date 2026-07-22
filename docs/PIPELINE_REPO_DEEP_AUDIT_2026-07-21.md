@@ -23,9 +23,10 @@ registry, removed model-specific exporter execution from evaluation prep, and mo
 retired Cosmos-Predict2.5 `run_e2e` path behind an explicitly admitted lazy compatibility
 adapter. It also wires the model-neutral evaluator workflow into Task Evaluation jobs as an
 optional committed support artifact, adds typed sellable-artifact contracts and strict
-entrypoint settings, writes per-run timing/spend summaries, documents a production profile,
-and adds one CPU end-to-end regression from capture through cards, WebApp projection, and a
-signed/verified Post-Training Data Package archive.
+entrypoint settings, writes per-run timing/spend summaries and a fail-closed fleet
+aggregator, documents a production profile, and adds one CPU end-to-end regression from
+capture through cards, WebApp projection, and a signed/verified Post-Training Data Package
+archive.
 
 Verification for remediation commit `5bfc2091`: the complete default pytest lane
 passed with **4,656 passed, 1 skipped, and 1,595 deselected**. The previously reported
@@ -509,16 +510,23 @@ or drop scripts nothing references.
 5. **Error semantics.** Distinguishing "artifact absent by design" from "failed" relies
    on convention (`status: not_requested/failed_closed`) with no shared result type.
    A small shared enum/result helper in `core/` would make fail-closed checks uniform.
-6. **Observability.** Structured `log_event` exists in orchestrators only; no metrics,
-   no run-duration/cost aggregation beyond ad-hoc spend ledgers; stage ledgers are
-   per-capture JSON with no fleet view. Minimum: a run-summary artifact per pipeline
-   invocation (stage timings, spend, outcome) and one place that aggregates them.
-7. **A bare deploy produces contracts, not product.** Defaults are fixtures by design
-   (`provisioner="fixture_local"`, `simulator="fixture"`, privacy disabled by default,
-   hosted-session artifacts contract-only, delivery upload off). The claim-boundary
-   honesty is good; what's missing is a single documented "production profile" (env +
-   flags) that turns on the real path, so the difference between demo and production is
-   one profile, not folklore.
+6. **Observability.** Structured `log_event` remains concentrated in orchestrators and
+   there is no metrics backend, but the minimum audit target is implemented. Every
+   `run_e2e` invocation writes `pipeline/run_summary.json` with stage timings, outcome,
+   and spend-evidence fields. `run_summary_aggregation` discovers those summaries under
+   a fleet root, validates every input before counting any of them, and aggregates
+   outcomes, providers, lanes, stage duration coverage, requested budgets, and known GPU
+   seconds. It keeps unknown GPU time distinct from zero and labels requested budget as
+   not actual spend. A durable fleet store/dashboard and broader orchestrator coverage
+   remain follow-ups, not blockers for this minimum filesystem view.
+7. **Production profile implemented; deployment evidence remains external.** Defaults
+   remain fixtures by design (`provisioner="fixture_local"`, `simulator="fixture"`,
+   privacy disabled by default, hosted-session artifacts contract-only, delivery upload
+   off). `configs/production_pipeline.env.example` and
+   `docs/PRODUCTION_PIPELINE_PROFILE.md` now provide one non-secret profile for the real
+   capture path, explicit local MuJoCo evaluation, neutral hosted rendering, fleet
+   summary aggregation, and the paid-resource admission boundary. Loading it is not
+   permission to spend and does not prove a deployment or live provider execution.
 
 ---
 
@@ -573,8 +581,11 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
   Vast qualification, `g1_kitchen_*` proof machinery, `g1_microwave_*`, `paid_*`,
   `production_gpu_*`) — 41 of the 50 post-baseline commits develop this lane; the
   G1 kitchen campaign is **not concluded** (no successful end-to-end manipulation run
-  yet per the 7/10 deep audit). Cross-campaign imports make even the "proof" modules
-  load-bearing (e.g. `buyer_package_readout` imports `g1_kitchen_attempt_closure`).
+  yet per the 7/10 deep audit). Several proof modules remain load-bearing. The prior
+  product-spine violation where `buyer_package_readout` imported
+  `g1_kitchen_attempt_closure` has been removed through the neutral
+  `attempt_closure_projection` contract; it is no longer a reason to preserve that
+  dependency direction.
 - **The evaluator qualification cluster** (#140–#143) — unreachable today because it's
   *new*, not because it's dead (see P1 seam violation #7).
 - **`first_gpu_run_packet`, `first_gpu_e2e_readiness`, `owner_gpu_proof_runner`** —

@@ -19,6 +19,19 @@ contracts, WebApp handoff state, and a run summary. Capture rights, consent,
 privacy, provenance, and requested outputs must be present in the capture bundle;
 the profile does not fabricate or bypass them.
 
+To build a read-only fleet view from capture roots that contain those summaries:
+
+```bash
+python -m blueprint_pipeline.run_summary_aggregation \
+  --root /mnt/gcs/BUCKET/scenes \
+  --output /path/to/pipeline_fleet_run_summary.json
+```
+
+Aggregation fails closed if any discovered `pipeline/run_summary.json` is malformed.
+Requested budgets and known GPU seconds are reported separately; missing GPU time is
+unknown, not zero. The aggregate is operational observability, not provider teardown,
+semantic-success, or ranking evidence.
+
 For a real local MuJoCo Task Evaluation Run, use an explicit simulator command:
 
 ```bash
