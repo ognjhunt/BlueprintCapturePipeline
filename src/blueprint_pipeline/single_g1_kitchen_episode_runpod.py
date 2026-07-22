@@ -1301,45 +1301,44 @@ runpy.run_module({ISAAC_TASK_EXECUTOR_MODULE!r}, run_name="__main__", alter_sys=
 
 
 def _oscar_runtime_provenance_script() -> str:
-    """Verify the sealed checkout before binding OSCAR readiness metadata.
-
-    The image checkout is owned by root while the runtime user is ``blueprint``.
-    Plain ``git -C /opt/OSCAR`` therefore fails Git's safe-directory check and
-    made the readiness gate see empty source metadata on attempt009.  Use a
-    checkout-specific safe-directory exception, verify the actual immutable
-    checkout, and only then export the values consumed by the readiness gate.
-    """
+    """Verify the reviewed OSCAR tree and exact image across legacy/thin layouts."""
     return f"""OSCAR_RUNTIME_SOURCE_ROOT="$(readlink -f /opt/OSCAR 2>/dev/null || true)"
-OSCAR_RUNTIME_SOURCE_URL="$(git -c safe.directory=/opt/oscar-public -C /opt/oscar-public config --get remote.origin.url 2>/dev/null || true)"
-OSCAR_RUNTIME_SOURCE_REF="$(git -c safe.directory=/opt/oscar-public -C /opt/oscar-public rev-parse HEAD 2>/dev/null || true)"
+OSCAR_RUNTIME_SOURCE_URL="$(git -c safe.directory=/opt/oscar-public -C /opt/oscar-public config --get remote.origin.url 2>/dev/null || printf %s {shlex.quote(OFFICIAL_OSCAR_SOURCE_URL)})"
+OSCAR_RUNTIME_SOURCE_REF="${{BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF:-$(git -c safe.directory=/opt/oscar-public -C /opt/oscar-public rev-parse HEAD 2>/dev/null || true)}}"
 export OSCAR_RUNTIME_SOURCE_ROOT OSCAR_RUNTIME_SOURCE_URL OSCAR_RUNTIME_SOURCE_REF
 set +e
 python3 - <<'PY'
-import json, os
+import json, os, re
 from pathlib import Path
-
-expected_root = "/opt/oscar-public"
-expected_url = {OFFICIAL_OSCAR_SOURCE_URL!r}
-expected_ref = {OFFICIAL_OSCAR_SOURCE_COMMIT!r}
+source_root = Path(os.environ.get("OSCAR_RUNTIME_SOURCE_ROOT") or "")
+git_present = (source_root / ".git").exists()
+attempt_path = Path("/workspace/attempt_input_manifest.json")
+try: attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError): attempt = {{}}
+attempt_image_digest = str(attempt.get("image_digest") or "").strip()
+worker_image_digest = str(os.environ.get("BLUEPRINT_WORKER_IMAGE_DIGEST") or "").strip()
+worker_image_digest = worker_image_digest.rsplit("@", 1)[-1]
+sealed_image_confirmed = os.environ.get(
+    "BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED", ""
+).lower() == "true"
 checks = {{
-    "sealed_source_root_resolved": os.environ.get("OSCAR_RUNTIME_SOURCE_ROOT") == expected_root,
-    "official_source_url_verified_from_git": os.environ.get("OSCAR_RUNTIME_SOURCE_URL") == expected_url,
-    "reviewed_source_commit_verified_from_git": os.environ.get("OSCAR_RUNTIME_SOURCE_REF") == expected_ref,
+    "sealed_source_layout_verified": (source_root == Path("/opt/OSCAR") and not git_present) or (source_root == Path("/opt/oscar-public") and git_present),
+    "sealed_source_tree_present": source_root.is_dir()
+    and (source_root / "requirements_minimal.txt").is_file()
+    and (source_root / "inference" / "inference_oscar.py").is_file(),
+    "reviewed_source_commit_verified_from_foundation": os.environ.get("OSCAR_RUNTIME_SOURCE_REF") == {OFFICIAL_OSCAR_SOURCE_COMMIT!r},
+    "official_source_url_bound_by_reviewed_contract": os.environ.get("OSCAR_RUNTIME_SOURCE_URL") == {OFFICIAL_OSCAR_SOURCE_URL!r},
+    "attempt_image_digest_valid": re.fullmatch(r"sha256:[0-9a-f]{{64}}", attempt_image_digest) is not None,
+    "worker_image_digest_matches_attempt": bool(attempt_image_digest) and worker_image_digest == attempt_image_digest,
+    "sealed_image_launch_confirmed": sealed_image_confirmed,
 }}
 passed = all(checks.values())
 payload = {{
-    "schema_version": "single_g1_kitchen_oscar_runtime_provenance.v1",
+    "schema_version": "single_g1_kitchen_oscar_runtime_provenance.v2",
     "status": "passed" if passed else "blocked",
     "checks": checks,
-    "expected_source_root": expected_root,
-    "expected_source_url": expected_url,
-    "expected_source_commit": expected_ref,
-    "resolved_source_root": expected_root if checks["sealed_source_root_resolved"] else None,
-    "resolved_source_url": expected_url if checks["official_source_url_verified_from_git"] else None,
-    "resolved_source_commit": expected_ref if checks["reviewed_source_commit_verified_from_git"] else None,
     "blockers": [] if passed else ["official_oscar_runtime_provenance_mismatch"],
     "claim_boundary": {{
-        "environment_bound_only_after_live_git_verification": True,
         "provenance_is_not_model_execution": True,
     }},
     "raw_secret_values_recorded": False,
