@@ -15,11 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
-    import tomli as tomllib
-
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
 from .paid_resource_admission import (
@@ -29,6 +24,7 @@ from .paid_resource_admission import (
 )
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 from . import safe_outbound_http
+from .toml_compat import load_toml
 
 
 RUNPOD_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "runpod_provider_adapter_result.v1"
@@ -194,8 +190,8 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
             "api_key_config_file_configured": False,
         }
     try:
-        payload = tomllib.loads(config_file.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        payload = load_toml(config_file)
+    except (OSError, ValueError) as exc:
         return "", {
             "api_key_configured": False,
             "api_key_source": RUNPOD_CONFIG_FILE_ENV,

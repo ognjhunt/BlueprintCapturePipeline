@@ -12,6 +12,7 @@ GR00T inference, WAM quality, or task success.
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import os
@@ -189,6 +190,17 @@ def main() -> int:
         payload["main_env_imports"][label] = spec is not None
         if spec is None:
             blockers.append(f"{label}_not_importable")
+
+    # ``find_spec`` only proves that the package exists. Import the exact live
+    # episode entrypoint so a missing transitive runtime dependency fails the
+    # immutable image build instead of consuming a paid GPU allocation.
+    try:
+        importlib.import_module("blueprint_pipeline.oscar_isaac_closed_loop_eval")
+        payload["closed_loop_episode_entrypoint_importable"] = True
+    except Exception as exc:  # pragma: no cover - image-only failure path
+        payload["closed_loop_episode_entrypoint_importable"] = False
+        payload["closed_loop_episode_entrypoint_error_type"] = type(exc).__name__
+        blockers.append("closed_loop_episode_entrypoint_not_importable")
 
     try:
         from gear_sonic.utils.teleop.zmq.zmq_planner_sender import (  # type: ignore

@@ -500,6 +500,8 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "groot_checkpoint_selector_or_nested_processor_not_offline_constructible" in healthcheck
     assert "official_gear_sonic_source_revision_mismatch" in healthcheck
     assert "gear_sonic_zmq_python_runtime_not_importable" in healthcheck
+    assert 'importlib.import_module("blueprint_pipeline.oscar_isaac_closed_loop_eval")' in healthcheck
+    assert "closed_loop_episode_entrypoint_not_importable" in healthcheck
     assert "cuda_compiler_or_development_files_present" in healthcheck
     assert 'wbc_root / ".blueprint-source-revision"' in healthcheck
     assert "model_encoder.onnx" in healthcheck
