@@ -16,6 +16,7 @@ from typing import cast
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE_ROOT = ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
 FOUNDATION = IMAGE_ROOT / "Foundation.Dockerfile"
+OSCAR_CPU_IMPORT_PROBE = IMAGE_ROOT / "oscar_cpu_import_probe.py"
 RELEASE = IMAGE_ROOT / "Release.Dockerfile"
 ENTRYPOINT = IMAGE_ROOT / "thin_release_entrypoint.sh"
 MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
@@ -56,6 +57,7 @@ def _assigned_literal(module: Path, name: str) -> object:
 def verify() -> list[str]:
     blockers: list[str] = []
     foundation = FOUNDATION.read_text(encoding="utf-8")
+    oscar_cpu_import_probe = OSCAR_CPU_IMPORT_PROBE.read_text(encoding="utf-8")
     release = RELEASE.read_text(encoding="utf-8")
     entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
     final_stage = foundation.rsplit("FROM tensorrt-base", 1)[-1]
@@ -76,7 +78,7 @@ def verify() -> list[str]:
         "requirements_oscar_foundation.lock",
         "uv pip install --require-hashes",
         "uv sync --project /tmp/gr00t --active --no-dev --frozen --no-install-project",
-        "PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c \"import inference.inference_oscar\"",
+        "PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python /tmp/oscar_cpu_import_probe.py",
         "Tag: cp36-cp36m-manylinux2010_x86_64",
         "Tag: py3-none-manylinux2010_x86_64",
         "/opt/gr00t-venv/bin/python -c \"from gr00t.policy.gr00t_policy import Gr00tPolicy\"",
@@ -106,6 +108,18 @@ def verify() -> list[str]:
     for fragment in forbidden_foundation_fragments:
         if fragment in foundation:
             blockers.append(f"foundation_forbidden_payload_present:{fragment}")
+    for fragment in (
+        'mock.patch.object(torch.cuda, "current_device", return_value=0)',
+        'importlib.import_module("inference.inference_oscar")',
+        "torch.cuda.current_device is not original_current_device",
+        "BLUEPRINT_OSCAR_CPU_IMPORT_PROBE_PASSED",
+    ):
+        if fragment not in oscar_cpu_import_probe:
+            blockers.append(f"oscar_cpu_import_probe_contract_missing:{fragment}")
+    if "torch.cuda.is_available" in oscar_cpu_import_probe:
+        blockers.append("oscar_cpu_import_probe_must_not_override_gpu_availability")
+    if '-c "import inference.inference_oscar"' in foundation:
+        blockers.append("foundation_uses_gpu_dependent_unscoped_oscar_import_probe")
     if "/opt/robot-venv" in foundation:
         blockers.append("foundation_uses_unproven_consolidated_robot_environment")
     if foundation.count("uv venv /opt/oscar-venv") != 1:
