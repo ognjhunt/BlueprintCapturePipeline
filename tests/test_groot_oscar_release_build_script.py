@@ -96,6 +96,11 @@ def test_release_asset_modes_are_explicit_and_fail_closed() -> None:
     assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in healthcheck
     assert 'and model_asset_mode == "external"' not in healthcheck
     assert "rm -rf /opt/wbc/gear_sonic_deploy/build" in dockerfile
+    assert "BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release" in dockerfile
+    assert (
+        'BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS="${FOUNDATION_MODEL_ASSETS}"'
+        in dockerfile
+    )
 
 
 def test_release_source_overlay_does_not_require_foundation_venv_pip() -> None:
