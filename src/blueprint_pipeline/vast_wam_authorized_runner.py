@@ -29,9 +29,9 @@ from .vast_provider_adapter import (
     run_vast_provider_adapter,
     _vast_session_budget_ledger_path,
 )
-from .vast_authorized_probe_runner import (
-    _staging_verification_guard,
-    _target_spend_guard,
+from .vast_probe_guards import (
+    staging_verification_guard as build_staging_verification_guard,
+    target_spend_guard as build_target_spend_guard,
 )
 from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
 
@@ -178,7 +178,7 @@ def run_vast_wam_authorized_runner(
                 for item in public_staging_verification.get("blockers")
                 or ["public_staging_url_stability_not_proven"]
             )
-    staging_verification_guard = _staging_verification_guard(
+    staging_verification_guard = build_staging_verification_guard(
         verify_staging_urls=verify_staging_urls,
         allow_unverified_public_staging_for_paid_launch=(
             allow_unverified_public_staging_for_paid_launch
@@ -188,7 +188,7 @@ def run_vast_wam_authorized_runner(
     )
     if allow_paid_vast_launch:
         blockers.extend(str(item) for item in staging_verification_guard.get("blockers") or [])
-    target_spend_guard = _target_spend_guard(
+    target_spend_guard = build_target_spend_guard(
         budget_path=resolved_session_budget_ledger,
         target_spend_usd=target_spend_usd,
         max_hourly_rate=max_hourly_rate,

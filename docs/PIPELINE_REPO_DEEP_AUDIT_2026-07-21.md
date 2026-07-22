@@ -406,9 +406,15 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    live in provider-neutral `wam_async_runner_common`; both runners retain their public
    and private call surfaces. Provider artifact transfer is shared as well; all 70
    async-runner tests pass. Poll, collection, and teardown lifecycle extraction remains.
-2. **Single-consumer satellites**: fold `runpod_wam_launch_contract.py` (461) into its
-   sole consumer; fold `vast_authorized_probe_runner.py` (548) into
-   `vast_wam_authorized_runner`.
+2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
+   `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
+   watchdog-handoff, and secret-redaction boundary deliberately extracted from the
+   already 3.7k-LOC async runner; folding it back would worsen the monolith. Likewise,
+   `vast_authorized_probe_runner.py` is an independently executable generic Blueprint
+   bundle probe with fourteen dedicated tests, while `vast_wam_authorized_runner` is a
+   separate WAM-specific lane. Their real coupling bug was the WAM lane importing two
+   private guard functions from the generic runner. Those spend and staging guards now
+   live in neutral `vast_probe_guards`, and both lanes depend on that shared contract.
 3. **Monolith splits** (all live, all too big to navigate):
    `robot_eval_job_orchestrator.py` (10,440), `unitree_groot_n17_sonic_vast_persistent_session.py`
    (10,101), `post_training_data_package.py` (6,678),
