@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.common import write_json
-from blueprint_pipeline.output_run_transaction import (
+from blueprint_pipeline.core.output_run_transaction import (
     OutputRunTransaction,
     verify_output_run_commit,
 )

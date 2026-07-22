@@ -29,7 +29,7 @@ from .canonical_training_quality_pipeline import (
     CANONICAL_PIPELINE_SIGNATURE_DOMAIN,
 )
 from .local_capture import resolve_local_capture_context
-from .output_run_transaction import (
+from .core.output_run_transaction import (
     OutputRunTransaction,
     current_output_run_descriptor,
 )
