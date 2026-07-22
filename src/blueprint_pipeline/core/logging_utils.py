@@ -100,7 +100,8 @@ def log_event(
             extra[key] = value
     clean_message = _single_line_log_text(message or clean_event)
     # The rendered message and every field have record separators escaped above.
-    logger.log(  # codeql[py/log-injection]
+    # codeql[py/log-injection]
+    logger.log(
         level,
         "%s%s",
         clean_message,
