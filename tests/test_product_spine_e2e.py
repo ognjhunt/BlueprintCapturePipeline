@@ -105,6 +105,11 @@ def test_capture_bundle_to_cards_package_archive_and_webapp_projection(
     _write_signing_key(signing_key)
     monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_FILE_ENV, str(signing_key))
     monkeypatch.setenv(package_module.PTDP_SIGNING_KEY_ID_ENV, "product-spine-e2e")
+    # This tiny fixture needs only the measured archive workspace, not the 1 GiB
+    # production reserve. Dedicated resource-preflight tests bind the production
+    # default; keeping that host-capacity concern here would make the product-spine
+    # regression nondeterministic on otherwise healthy, space-constrained CI runners.
+    monkeypatch.setenv(package_module.PTDP_MIN_FREE_HEADROOM_BYTES_ENV, str(1024**2))
 
     job_dir = tmp_path / "robot-eval-job"
     _seed_ready_job(job_dir)
