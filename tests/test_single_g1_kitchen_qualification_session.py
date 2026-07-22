@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import time
@@ -506,6 +507,18 @@ def _qualification_output_zip(
         "closed_loop_out/isaac_task_state/frames/overview_0000.png": b"initial-overview",
         "closed_loop_out/isaac_task_state/frames/robot_pov_0000.png": b"initial-robot-pov",
         "closed_loop_out/qualification_episode.log": b"attempt-bound log\n",
+        "closed_loop_out/qualification_startup_diagnostics.json": json.dumps(
+            {
+                "schema_version": (
+                    "single_g1_kitchen_qualification_startup_diagnostics.v1"
+                ),
+                "startup_phase": phase,
+                "startup_health": "ready_or_terminal",
+                "attempt_sequence": sequence,
+                "attempt_nonce_sha256": attempt["attempt_nonce_sha256"],
+                "raw_secret_values_recorded": False,
+            }
+        ).encode(),
     }
     if successful_terminal:
         episode = "closed_loop_out/episode_001/"
@@ -1249,6 +1262,13 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     assert "eval " not in control
     assert 'case "$ACTION" in status|tail|gpu-status|run|restart|stop|refresh)' in control
     assert "qualification_gpu_snapshot.v1" in control
+    assert "single_g1_kitchen_qualification_startup_diagnostics.v1" in control
+    assert "stall_seconds = int(sys.argv[6])" in control
+    assert str(qualification.QUALIFICATION_STARTUP_STALL_SECONDS) in control
+    assert "startup_health=\" + startup_health" in control
+    assert "phase_age_seconds=\" + str(phase_age)" in control
+    assert "log_bytes=\" + str(log_bytes)" in control
+    assert "root_pid_elapsed_seconds=\" + str(root_pid_elapsed)" in control
     assert "--query-compute-apps=pid,process_name,used_memory" in control
     assert "qualification_action_forbidden" in control
     assert "qualification_component_forbidden" in control
@@ -1282,6 +1302,196 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     assert python_heredocs
     for index, source in enumerate(python_heredocs):
         compile(source, f"<qualification-control-heredoc-{index}>", "exec")
+
+
+def test_fixed_control_startup_diagnostics_keeps_preexecution_phases_stallable(
+    tmp_path: Path,
+) -> None:
+    control = qualification._qualification_control_script(
+        launch_session_id="qualification-nonce",
+        bundle_sha256=qualification.BUNDLE_SHA256,
+        image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
+    )
+    diagnostic_source = next(
+        source
+        for source in re.findall(r"<<'PY'\n(.*?)\nPY", control, flags=re.DOTALL)
+        if "stall_seconds = int(sys.argv[6])" in source
+    )
+    diagnostic_path = tmp_path / "qualification_startup_diagnostics.json"
+    bootstrap_path = tmp_path / "bootstrap.json"
+    log_path = tmp_path / "qualification_episode.log"
+    pid_path = tmp_path / "episode.pid"
+    log_path.write_bytes(b"")
+    pid_path.write_text("99999999\n", encoding="ascii")
+    expected_nonce_sha256 = "a" * 64
+    diagnostic_path.write_text(
+        json.dumps(
+            {
+                "attempt_sequence": 1,
+                "attempt_nonce_sha256": expected_nonce_sha256,
+                "dispatched_at_epoch": int(time.time()),
+            }
+        ),
+        encoding="utf-8",
+    )
+    old_timestamp = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 901)
+    )
+    old_epoch = time.time() - 901
+    bootstrap_path.write_text(
+        json.dumps(
+            {
+                "phase": "container_bash_started",
+                "updated_at": old_timestamp,
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(bootstrap_path, (old_epoch, old_epoch))
+
+    stalled = subprocess.run(
+        [
+            "python",
+            "-c",
+            diagnostic_source,
+            str(diagnostic_path),
+            str(bootstrap_path),
+            str(log_path),
+            str(pid_path),
+            "running",
+            str(qualification.QUALIFICATION_STARTUP_STALL_SECONDS),
+            "1",
+            expected_nonce_sha256,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert stalled.returncode == 0, stalled.stderr
+    assert "startup_phase=container_bash_started" in stalled.stdout
+    assert "startup_health=stalled" in stalled.stdout
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert diagnostic["startup_health"] == "stalled"
+    assert diagnostic["startup_phase_age_seconds"] >= 900
+    assert diagnostic["log_size_bytes"] == 0
+    assert diagnostic["root_pid_state"] == "missing"
+    assert diagnostic["diagnostic_attempt_binding"] == "valid"
+    assert diagnostic["raw_secret_values_recorded"] is False
+
+    bootstrap_path.write_text(
+        json.dumps(
+            {
+                "phase": "isaac_task_executor_ready",
+                "updated_at": old_timestamp,
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(bootstrap_path, (old_epoch, old_epoch))
+    stalled_preexecution = subprocess.run(
+        [
+            "python",
+            "-c",
+            diagnostic_source,
+            str(diagnostic_path),
+            str(bootstrap_path),
+            str(log_path),
+            str(pid_path),
+            "running",
+            str(qualification.QUALIFICATION_STARTUP_STALL_SECONDS),
+            "1",
+            expected_nonce_sha256,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert stalled_preexecution.returncode == 0, stalled_preexecution.stderr
+    assert "startup_health=stalled" in stalled_preexecution.stdout
+
+    bootstrap_path.write_text(
+        json.dumps({"phase": "runner_done", "updated_at": old_timestamp}),
+        encoding="utf-8",
+    )
+    os.utime(bootstrap_path, (old_epoch, old_epoch))
+    terminal = subprocess.run(
+        [
+            "python",
+            "-c",
+            diagnostic_source,
+            str(diagnostic_path),
+            str(bootstrap_path),
+            str(log_path),
+            str(pid_path),
+            "running",
+            str(qualification.QUALIFICATION_STARTUP_STALL_SECONDS),
+            "1",
+            expected_nonce_sha256,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert terminal.returncode == 0, terminal.stderr
+    assert "startup_health=ready_or_terminal" in terminal.stdout
+    assert "diagnostic_binding=valid" in terminal.stdout
+
+    mismatched = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    mismatched["attempt_nonce_sha256"] = "b" * 64
+    diagnostic_path.write_text(json.dumps(mismatched), encoding="utf-8")
+    binding_blocked = subprocess.run(
+        [
+            "python",
+            "-c",
+            diagnostic_source,
+            str(diagnostic_path),
+            str(bootstrap_path),
+            str(log_path),
+            str(pid_path),
+            "running",
+            str(qualification.QUALIFICATION_STARTUP_STALL_SECONDS),
+            "1",
+            expected_nonce_sha256,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert binding_blocked.returncode == 0, binding_blocked.stderr
+    assert "startup_health=stalled" in binding_blocked.stdout
+    assert "diagnostic_binding=missing_or_mismatch" in binding_blocked.stdout
+
+
+def test_startup_diagnostic_parser_blocks_stall_and_attempt_binding_loss() -> None:
+    diagnostics, blockers = qualification.parse_startup_diagnostics(
+        "startup_phase=runner_done startup_health=stalled "
+        "phase_age_seconds=1 log_bytes=0 log_age_seconds=1 "
+        "root_pid=507 root_pid_state=S root_pid_elapsed_seconds=2 "
+        "diagnostic_binding=missing_or_mismatch",
+        observed_at="2026-07-22T00:00:00Z",
+    )
+
+    assert diagnostics is not None
+    assert diagnostics["diagnostic_attempt_binding"] == "missing_or_mismatch"
+    assert blockers == [
+        "qualification_episode_startup_progress_stalled",
+        "qualification_episode_startup_diagnostics_binding_invalid",
+    ]
+
+    pre_dispatch, pre_dispatch_blockers = qualification.parse_startup_diagnostics(
+        "startup_phase=progress_marker_missing startup_health=stopped "
+        "phase_age_seconds=0 log_bytes=0 log_age_seconds=-1 "
+        "root_pid=0 root_pid_state=missing root_pid_elapsed_seconds=-1 "
+        "diagnostic_binding=not_applicable",
+        observed_at="2026-07-22T00:00:00Z",
+    )
+    assert pre_dispatch is not None
+    assert pre_dispatch_blockers == []
 
 
 def test_private_manifest_binds_exact_resource_and_refuses_tampering(tmp_path: Path) -> None:
@@ -1730,7 +1940,11 @@ def test_episode_status_binds_stopped_state_to_exact_current_attempt_identity(
                 f"bootstrap_sha256={latest['episode_bootstrap_sha256']} "
                 f"overlay_revision={latest['overlay_revision']} "
                 f"attempt_sequence={latest['attempt_sequence']} "
-                f"attempt_nonce_sha256={latest['attempt_nonce_sha256']}"
+                f"attempt_nonce_sha256={latest['attempt_nonce_sha256']} "
+                "startup_phase=container_bash_started startup_health=stopped "
+                "phase_age_seconds=901 log_bytes=0 log_age_seconds=901 "
+                "root_pid=507 root_pid_state=S root_pid_elapsed_seconds=902 "
+                "diagnostic_binding=valid"
             ),
             "blockers": [],
         },
@@ -1743,12 +1957,25 @@ def test_episode_status_binds_stopped_state_to_exact_current_attempt_identity(
         execute=True,
     )
 
-    assert result["status"] == "status_observed_continuing_spend"
+    assert result["status"] == "control_blocked_continuing_spend"
     persisted = json.loads(manifest_path.read_text())
     assert persisted["latest_attempt"]["remote_process_state"] == "stopped"
     assert persisted["last_control"]["attempt_sequence"] == 1
     assert persisted["last_control"]["attempt_nonce_sha256"] == latest[
         "attempt_nonce_sha256"
+    ]
+    assert result["startup_diagnostics"]["startup_phase"] == "container_bash_started"
+    assert result["startup_diagnostics"]["startup_health"] == "stopped"
+    assert result["startup_diagnostics"]["root_pid"] == 507
+    assert result["startup_blockers"] == [
+        "qualification_episode_process_stopped_before_terminal_phase"
+    ]
+    assert result["blockers"] == result["startup_blockers"]
+    assert persisted["latest_attempt"]["startup_diagnostics"][
+        "log_size_bytes"
+    ] == 0
+    assert persisted["latest_attempt"]["startup_blockers"] == result[
+        "startup_blockers"
     ]
 
 
@@ -1809,6 +2036,11 @@ def test_collect_intermediate_snapshot_is_attempt_bound_idempotent_and_never_tea
     )
     assert first["artifact_paths"]["overview_frames"]
     assert first["artifact_paths"]["robot_pov_frames"]
+    startup_diagnostics_path = Path(first["artifact_paths"]["startup_diagnostics"])
+    assert startup_diagnostics_path.is_file()
+    assert json.loads(startup_diagnostics_path.read_text(encoding="utf-8"))[
+        "startup_phase"
+    ] == "isaac_task_executor_ready"
     persisted = json.loads(manifest_path.read_text())
     assert persisted["latest_attempt"]["collection_status"] == "pending"
     assert len(persisted["collections"]) == 1

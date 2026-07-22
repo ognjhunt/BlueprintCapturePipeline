@@ -114,6 +114,15 @@ from .single_g1_kitchen_qualification_contract import (
     valid_image_binding,
     valid_source_commit,
 )
+from .single_g1_kitchen_qualification_observability import (
+    STARTUP_STALL_SECONDS as QUALIFICATION_STARTUP_STALL_SECONDS,
+    absolute_collected_artifact_paths as _absolute_collected_artifact_paths,
+    collected_isaac_frames_directory as _collected_isaac_frames_directory,
+    dispatch_diagnostics_shell,
+    parse_startup_diagnostics,
+    relative_collected_artifact_paths as _relative_collected_artifact_paths,
+    status_diagnostics_shell,
+)
 
 
 SCHEMA_VERSION = "single_g1_kitchen_qualification_session.v1"
@@ -123,11 +132,12 @@ REFRESH_PAYLOAD_SCHEMA_VERSION = "single_g1_kitchen_qualification_refresh_payloa
 REFRESH_REQUEST_SCHEMA_VERSION = "single_g1_kitchen_qualification_refresh_request.v1"
 OVERLAY_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_overlay_binding.v1"
 IMMUTABLE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_immutable_binding.v1"
-CONTROL_CONTRACT_VERSION = "fixed_qualification_control_script.v6"
+CONTROL_CONTRACT_VERSION = "fixed_qualification_control_script.v7"
 REFRESH_COMPATIBLE_CONTROL_CONTRACT_VERSIONS = frozenset(
     {
         "fixed_qualification_control_script.v4",
         "fixed_qualification_control_script.v5",
+        "fixed_qualification_control_script.v6",
         CONTROL_CONTRACT_VERSION,
     }
 )
@@ -954,6 +964,10 @@ def _qualification_control_script(
 ) -> str:
     """Return immutable fixed control; mutable overlay digests live in the active binding."""
 
+    dispatch_diagnostics = dispatch_diagnostics_shell()
+    status_diagnostics = status_diagnostics_shell(
+        stall_seconds=QUALIFICATION_STARTUP_STALL_SECONDS
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 umask 077
@@ -1220,6 +1234,7 @@ start_component() {{
   printf '%s\n' "$pid" > "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$STATE/$1.pid"
+  {dispatch_diagnostics}
   printf 'action=run component=%s pid=%s bootstrap_sha256=%s overlay_revision=%s attempt_sequence=%s attempt_nonce_sha256=%s\n' "$1" "$pid" "$EXPECTED_EPISODE_BOOTSTRAP_SHA256" "$ACTIVE_REVISION" "${{ATTEMPT_SEQUENCE:-}}" "${{ATTEMPT_NONCE_SHA256:-}}"
 }}
 
@@ -1248,7 +1263,8 @@ case "$ACTION" in
       attempt_slug=$(printf 'attempt_%04d' "$attempt_sequence")
       attempt_nonce_sha256=$(printf '%s' "$EXPECTED_LAUNCH_SESSION_ID:$attempt_slug" | sha256sum | awk '{{print $1}}')
     fi
-    printf 'action=status component=%s state=%s pids=%s bootstrap_sha256=%s overlay_revision=%s attempt_sequence=%s attempt_nonce_sha256=%s\n' "$COMPONENT" "$state" "$pids" "$EXPECTED_EPISODE_BOOTSTRAP_SHA256" "$ACTIVE_REVISION" "$attempt_sequence" "$attempt_nonce_sha256"
+    {status_diagnostics}
+    printf 'action=status component=%s state=%s pids=%s bootstrap_sha256=%s overlay_revision=%s attempt_sequence=%s attempt_nonce_sha256=%s %s\n' "$COMPONENT" "$state" "$pids" "$EXPECTED_EPISODE_BOOTSTRAP_SHA256" "$ACTIVE_REVISION" "$attempt_sequence" "$attempt_nonce_sha256" "$diagnostics"
     ;;
   tail)
     log=$(log_path "$COMPONENT")
@@ -2985,21 +3001,6 @@ def _copy_initial_artifact(source: Path, destination: Path) -> dict[str, Any] | 
     return {"path": str(destination), "sha256": digest, "size_bytes": len(payload)}
 
 
-def _collected_isaac_frames_directory(collected_root: Path) -> Path | None:
-    candidates = (
-        collected_root / "closed_loop_out" / "isaac_task_state" / "frames",
-        collected_root
-        / "closed_loop_out"
-        / "episode_001"
-        / "isaac_task_state"
-        / "frames",
-    )
-    existing = [path for path in candidates if path.is_dir() and not path.is_symlink()]
-    if len(existing) > 1:
-        raise ValueError("qualification_collected_isaac_frames_directory_ambiguous")
-    return existing[0] if existing else None
-
-
 def _preserve_initial_frames(
     *,
     collected_root: Path,
@@ -3044,75 +3045,6 @@ def _preserve_initial_frames(
         if overview:
             artifacts["overview"] = overview
     return artifacts
-
-
-def _relative_collected_artifact_paths(collected_root: Path) -> dict[str, Any]:
-    frames = _collected_isaac_frames_directory(collected_root)
-
-    def relative_files(pattern: str) -> list[str]:
-        if frames is None:
-            return []
-        return [
-            str(path.relative_to(collected_root))
-            for path in sorted(frames.glob(pattern))
-            if path.is_file() and not path.is_symlink()
-        ]
-
-    episode_dir = collected_root / "closed_loop_out" / "episode_001"
-
-    def relative_file(path: Path) -> str | None:
-        return (
-            str(path.relative_to(collected_root))
-            if path.is_file() and not path.is_symlink()
-            else None
-        )
-
-    log_candidates = (
-        collected_root / "closed_loop_out" / "qualification_episode.log",
-        collected_root / "groot_server.log",
-        collected_root / "gear_sonic_controller.log",
-        collected_root / "gear_sonic_isaac_dds_bridge.log",
-        collected_root / "isaac_task_executor.log",
-        collected_root / "closed_loop_stdout.log",
-        collected_root / "closed_loop_stderr.log",
-    )
-    return {
-        "overview_frames": relative_files("overview_*.png"),
-        "robot_pov_frames": relative_files("robot_pov_*.png"),
-        "final_review_video": relative_file(episode_dir / "final_review.mp4"),
-        "overview_review_video": relative_file(episode_dir / "isaac_overview_review.mp4"),
-        "robot_pov_review_video": relative_file(episode_dir / "isaac_robot_pov_review.mp4"),
-        "wam_prediction_review_video": relative_file(
-            episode_dir / "wam_prediction_review.mp4"
-        ),
-        "final_review_validation": relative_file(
-            episode_dir / "final_review_validation.json"
-        ),
-        "runner_result": relative_file(collected_root / "isaac_runtime_result.json"),
-        "qualification_attempt": relative_file(
-            collected_root / "closed_loop_out" / "qualification_attempt.json"
-        ),
-        "logs": [
-            str(path.relative_to(collected_root))
-            for path in log_candidates
-            if path.is_file() and not path.is_symlink()
-        ],
-    }
-
-
-def _absolute_collected_artifact_paths(
-    collected_root: Path,
-    relative_paths: Mapping[str, Any],
-) -> dict[str, Any]:
-    absolute: dict[str, Any] = {}
-    for key, value in relative_paths.items():
-        if isinstance(value, list):
-            absolute[key] = [str(collected_root / str(item)) for item in value]
-        elif value:
-            absolute[key] = str(collected_root / str(value))
-        else:
-            absolute[key] = None
-    return absolute
 
 
 def _validate_terminal_collection(
@@ -3959,6 +3891,12 @@ def _control(
         r"\battempt_sequence=(\d+)\s+attempt_nonce_sha256=([0-9a-f]{64})\b",
         str(control.get("stdout") or ""),
     )
+    recorded_at = utc_now_iso()
+    startup_diagnostics, startup_blockers = parse_startup_diagnostics(
+        str(control.get("stdout") or ""), observed_at=recorded_at
+    )
+    if startup_blockers:
+        completed = False
     attempt_identity_blocker: str | None = None
     if expected_attempt_sequence is not None:
         if not attempt_match:
@@ -3974,7 +3912,6 @@ def _control(
         status_by_action[action] if completed else "control_blocked_continuing_spend"
     )
     manifest["continuing_spend"] = True
-    recorded_at = utc_now_iso()
     manifest["last_control"] = {
         "action": action,
         "remote_action": remote_action,
@@ -3984,6 +3921,8 @@ def _control(
         "bootstrap_sha256": manifest["bootstrap"]["episode_bootstrap_sha256"],
         "attempt_sequence": int(attempt_match.group(1)) if attempt_match else None,
         "attempt_nonce_sha256": attempt_match.group(2) if attempt_match else None,
+        "startup_diagnostics": startup_diagnostics,
+        "startup_blockers": startup_blockers,
     }
     if completed and expected_attempt_sequence is not None:
         manifest["latest_attempt"] = {
@@ -4025,6 +3964,9 @@ def _control(
         ):
             latest_attempt["remote_process_state"] = status_match.group(1)
             latest_attempt["remote_process_state_observed_at"] = recorded_at
+            if startup_diagnostics is not None:
+                latest_attempt["startup_diagnostics"] = startup_diagnostics
+                latest_attempt["startup_blockers"] = startup_blockers
             manifest["latest_attempt"] = latest_attempt
     manifest.setdefault("history", []).append(
         {
@@ -4034,6 +3976,11 @@ def _control(
         }
     )
     _private_write_json(manifest_path, manifest)
+    result_blockers = list(startup_blockers)
+    if attempt_identity_blocker:
+        result_blockers.append(attempt_identity_blocker)
+    if not completed and not result_blockers:
+        result_blockers.append("qualification_fixed_control_failed")
     result = {
         "schema_version": SCHEMA_VERSION,
         "status": manifest["status"],
@@ -4042,19 +3989,15 @@ def _control(
         "instance_id": instance_id,
         "session_manifest": str(manifest_path),
         "control": control,
+        "startup_diagnostics": startup_diagnostics,
+        "startup_blockers": startup_blockers,
         "continuing_spend": True,
         "provider_mutations_performed": 1
         if action in {"run", "restart-component", "stop-component"}
         else 0,
         "qualification_gate_matrix": manifest["qualification_gate_matrix"],
         "claim_boundary": manifest["claim_boundary"],
-        "blockers": (
-            []
-            if completed
-            else [
-                attempt_identity_blocker or "qualification_fixed_control_failed"
-            ]
-        ),
+        "blockers": result_blockers,
     }
     write_json(result_path, result)
     return result
