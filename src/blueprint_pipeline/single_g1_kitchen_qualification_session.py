@@ -132,6 +132,7 @@ REFRESH_PAYLOAD_SCHEMA_VERSION = "single_g1_kitchen_qualification_refresh_payloa
 REFRESH_REQUEST_SCHEMA_VERSION = "single_g1_kitchen_qualification_refresh_request.v1"
 OVERLAY_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_overlay_binding.v1"
 IMMUTABLE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_immutable_binding.v1"
+MODEL_ASSETS_BINDING_SCHEMA_VERSION = "blueprint.qualification_model_assets_binding.v1"
 CONTROL_CONTRACT_VERSION = "fixed_qualification_control_script.v7"
 REFRESH_COMPATIBLE_CONTROL_CONTRACT_VERSIONS = frozenset(
     {
@@ -244,6 +245,64 @@ def _load_private_manifest(path: str | Path) -> tuple[Path, dict[str, Any]]:
 
 def _valid_sha256(value: Any) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", str(value or "")))
+
+
+def _model_assets_binding(
+    evidence: Mapping[str, Any], release_binding: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Bind admitted model delivery to the exact release before allocation."""
+
+    blockers: list[str] = []
+    mode = str(release_binding.get("model_assets_mode") or "")
+    if mode == "embedded":
+        if evidence.get("schema_version") != MODEL_ASSETS_BINDING_SCHEMA_VERSION:
+            blockers.append("qualification_embedded_model_assets_schema_invalid")
+        if evidence.get("status") != "bound_to_release_foundation":
+            blockers.append("qualification_embedded_model_assets_status_invalid")
+        for key in ("source_commit", "release_image_ref", "foundation_image_ref"):
+            if evidence.get(key) != release_binding.get(
+                "image_ref" if key == "release_image_ref" else key
+            ):
+                blockers.append(f"qualification_embedded_model_assets_{key}_mismatch")
+        if evidence.get("external_provider_volume_used") is not False:
+            blockers.append("qualification_embedded_model_assets_external_volume_invalid")
+        if evidence.get("runtime_checkpoint_preflight_required") is not True:
+            blockers.append("qualification_embedded_model_assets_runtime_preflight_missing")
+    elif mode == "external":
+        if (
+            evidence.get("schema_version")
+            != "groot_oscar_external_model_cache_verification.v2"
+        ):
+            blockers.append("qualification_external_model_cache_schema_invalid")
+        if evidence.get("status") != "passed":
+            blockers.append("qualification_external_model_cache_not_passed")
+        checks = evidence.get("checks")
+        checks = dict(checks) if isinstance(checks, Mapping) else {}
+        if checks.get("models_cached_offline") is not True:
+            blockers.append("qualification_external_models_not_verified_offline")
+        if re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(evidence.get("model_manifest_digest") or ""),
+        ) is None:
+            blockers.append("qualification_external_model_manifest_digest_invalid")
+        if not str(evidence.get("cache_root") or "").startswith("/"):
+            blockers.append("qualification_external_model_cache_root_invalid")
+    else:
+        blockers.append("qualification_release_model_assets_mode_invalid")
+    binding = {
+        "schema_version": MODEL_ASSETS_BINDING_SCHEMA_VERSION,
+        "status": "bound" if not blockers else "blocked",
+        "mode": mode or None,
+        "source_commit": release_binding.get("source_commit"),
+        "release_image_ref": release_binding.get("image_ref"),
+        "foundation_image_ref": release_binding.get("foundation_image_ref"),
+        "evidence_schema_version": evidence.get("schema_version"),
+        "evidence_status": evidence.get("status"),
+        "model_manifest_digest": evidence.get("model_manifest_digest"),
+        "cache_root": evidence.get("cache_root"),
+        "raw_secret_values_recorded": False,
+    }
+    return binding, sorted(set(blockers))
 
 
 def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
@@ -1956,6 +2015,7 @@ def _allocate(
     expected_source_commit: str,
     training_dataset: str | Path | None,
     trained_checkpoint_path: str | Path | None,
+    model_cache_evidence: str | Path | None = None,
 ) -> dict[str, Any]:
     result_path = Path(adapter_output).expanduser().resolve()
     manifest_path = Path(session_manifest).expanduser().resolve()
@@ -2015,6 +2075,27 @@ def _allocate(
         release, expected_source_commit=expected_source_commit
     )
     blockers.extend(release_blockers)
+    model_assets_binding: dict[str, Any] = {}
+    if model_cache_evidence is None:
+        blockers.append("qualification_model_assets_evidence_missing")
+    else:
+        try:
+            model_assets_value = json.loads(
+                Path(model_cache_evidence).expanduser().resolve().read_text(encoding="utf-8")
+            )
+            model_assets_evidence = (
+                dict(model_assets_value)
+                if isinstance(model_assets_value, Mapping)
+                else {}
+            )
+            if not model_assets_evidence:
+                blockers.append("qualification_model_assets_evidence_not_object")
+            model_assets_binding, model_assets_blockers = _model_assets_binding(
+                model_assets_evidence, release_binding
+            )
+            blockers.extend(model_assets_blockers)
+        except (OSError, json.JSONDecodeError):
+            blockers.append("qualification_model_assets_evidence_missing_or_unreadable")
     image_ref = str(release_binding.get("image_ref") or "")
     image_digest = str(release_binding.get("image_digest") or "")
     source_commit = str(release_binding.get("source_commit") or "")
@@ -2244,6 +2325,7 @@ def _allocate(
         else ("dry_run_bound" if not reported_blockers else "blocked")
     )
     manifest["signed_output_staging_proof"] = signed_output_staging_proof
+    manifest["model_assets_binding"] = model_assets_binding
     manifest["history"] = list(existing_manifest.get("history") or []) + [
         {
             "action": "allocate",
@@ -2266,6 +2348,7 @@ def _allocate(
         "source_commit": manifest["source_commit"],
         "release_binding": artifact_release_binding,
         "release_binding_source": release_binding_source,
+        "model_assets_binding": model_assets_binding,
         "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_mode": "ssh_direct",
@@ -2299,6 +2382,7 @@ def _allocate(
         "source_commit": manifest["source_commit"],
         "release_binding": artifact_release_binding,
         "release_binding_source": release_binding_source,
+        "model_assets_binding": model_assets_binding,
         "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_session_id": launch_session_id,
@@ -4134,6 +4218,7 @@ def run_qualification_session(
     provider_output_get_url_file: str | Path | None = None,
     provider_bootstrap_url_file: str | Path | None = None,
     release_evidence: str | Path | None = None,
+    model_cache_evidence: str | Path | None = None,
     expected_source_commit: str | None = None,
     provider_launch_request: str | Path | None = None,
     preflight_bundle: str | Path | None = None,
@@ -4156,6 +4241,7 @@ def run_qualification_session(
             "provider_output_put_url_file": provider_output_put_url_file,
             "provider_output_get_url_file": provider_output_get_url_file,
             "release_evidence": release_evidence,
+            "model_cache_evidence": model_cache_evidence,
             "expected_source_commit": expected_source_commit,
             "provider_launch_request": provider_launch_request,
             "preflight_bundle": preflight_bundle,
@@ -4184,6 +4270,7 @@ def run_qualification_session(
             expected_source_commit=expected_source_commit,
             training_dataset=training_dataset,
             trained_checkpoint_path=trained_checkpoint_path,
+            model_cache_evidence=model_cache_evidence,
         )
     if action == "teardown":
         return _teardown(session_manifest=session_manifest, adapter_output=adapter_output, execute=execute)

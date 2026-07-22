@@ -67,8 +67,20 @@ def release_binding_record_blockers(value: object) -> list[str]:
         "image_config_env:"
     ):
         blockers.append("cuda_source")
-    if binding.get("models_externalized") is not True:
+    model_assets_mode = binding.get("model_assets_mode")
+    if model_assets_mode is None and binding.get("models_externalized") is True:
+        # Retained pre-mode sessions remain readable for status and teardown.
+        model_assets_mode = "external"
+    externalized = binding.get("models_externalized") is True
+    embedded = binding.get("models_embedded_in_foundation") is True
+    if model_assets_mode not in {"external", "embedded"}:
+        blockers.append("model_assets_mode")
+    if model_assets_mode == "external" and not externalized:
         blockers.append("models_externalized")
+    if model_assets_mode == "embedded" and not embedded:
+        blockers.append("models_embedded_in_foundation")
+    if externalized == embedded:
+        blockers.append("model_assets_mode_exclusive")
     if binding.get("release_evidence_status") != "completed":
         blockers.append("release_status")
     if binding.get("thin_release_contract_status") != "passed":
@@ -500,9 +512,6 @@ def build_release_binding(
         blockers.append("qualification_release_image_ref_mismatch")
     if release.get("runnable_platform") != "linux/amd64":
         blockers.append("qualification_release_platform_not_linux_amd64")
-    if release.get("models_embedded") is not False:
-        blockers.append("qualification_release_models_not_externalized")
-
     thin = release.get("thin_release_contract")
     thin = dict(thin) if isinstance(thin, Mapping) else {}
     if thin.get("schema_version") != "groot_oscar_thin_release_image_contract.v1":
@@ -513,8 +522,33 @@ def build_release_binding(
         blockers.append("qualification_thin_release_contract_has_blockers")
     if thin.get("release_image_ref") != image_ref:
         blockers.append("qualification_thin_release_image_mismatch")
-    if thin.get("models_externalized") is not True:
-        blockers.append("qualification_thin_release_models_not_externalized")
+    foundation_model_assets = str(
+        release.get("foundation_model_assets")
+        or thin.get("foundation_model_assets")
+        or (
+            "external"
+            if release.get("models_embedded") is False
+            and thin.get("models_externalized") is True
+            else ""
+        )
+    )
+    externalized = (
+        foundation_model_assets == "external"
+        and release.get("models_embedded") is False
+        and thin.get("models_externalized") is True
+        and thin.get("models_embedded_in_foundation") is not True
+    )
+    embedded = (
+        foundation_model_assets == "embedded"
+        and release.get("models_embedded") is True
+        and thin.get("models_embedded_in_foundation") is True
+        and thin.get("models_externalized") is not True
+    )
+    if not externalized and not embedded:
+        blockers.append("qualification_release_model_assets_mode_invalid")
+    foundation_image_ref = str(release.get("foundation_image_ref") or "")
+    if embedded and _DIGEST_REF_RE.fullmatch(foundation_image_ref) is None:
+        blockers.append("qualification_embedded_foundation_not_digest_pinned")
 
     required_cuda_version = str(release.get("required_cuda_version") or "")
     required_cuda_source = str(release.get("required_cuda_version_source") or "")
@@ -532,8 +566,10 @@ def build_release_binding(
         "runnable_platform": release.get("runnable_platform"),
         "required_cuda_version": required_cuda_version or None,
         "required_cuda_version_source": required_cuda_source or None,
-        "models_externalized": release.get("models_embedded") is False
-        and thin.get("models_externalized") is True,
+        "model_assets_mode": foundation_model_assets or None,
+        "models_externalized": externalized,
+        "models_embedded_in_foundation": embedded,
+        "foundation_image_ref": foundation_image_ref or None,
         "release_evidence_status": release.get("status"),
         "thin_release_contract_status": thin.get("status"),
     }
