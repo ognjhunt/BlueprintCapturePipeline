@@ -49,4 +49,3 @@ def stage_ledger_outcome_kind(*, status: str, detail: str | None = None) -> Outc
     }:
         return OutcomeKind.NOT_REQUESTED
     return OutcomeKind.UNAVAILABLE
-
