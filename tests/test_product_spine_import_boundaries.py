@@ -33,8 +33,8 @@ FORBIDDEN_DEPENDENCY_PREFIXES = (
 )
 
 
-def _local_import_roots(module_name: str) -> set[str]:
-    tree = ast.parse((PACKAGE_ROOT / f"{module_name}.py").read_text(encoding="utf-8"))
+def _path_local_import_roots(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     roots: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -49,6 +49,10 @@ def _local_import_roots(module_name: str) -> set[str]:
     return roots
 
 
+def _local_import_roots(module_name: str) -> set[str]:
+    return _path_local_import_roots(PACKAGE_ROOT / f"{module_name}.py")
+
+
 def test_sellable_product_spine_does_not_import_campaign_readiness_or_provider_code() -> None:
     violations: list[str] = []
     for module_name in PRODUCT_SPINE_MODULES:
@@ -59,4 +63,17 @@ def test_sellable_product_spine_does_not_import_campaign_readiness_or_provider_c
     assert violations == [], (
         "Product artifact contracts must depend on neutral contracts, not campaign, "
         "readiness, or paid-provider implementations: " + ", ".join(violations)
+    )
+
+
+def test_core_subpackage_does_not_import_campaign_readiness_or_provider_code() -> None:
+    violations: list[str] = []
+    for path in sorted((PACKAGE_ROOT / "core").glob("*.py")):
+        for dependency in sorted(_path_local_import_roots(path)):
+            if dependency.startswith(FORBIDDEN_DEPENDENCY_PREFIXES):
+                violations.append(f"core/{path.name}->{dependency}")
+
+    assert violations == [], (
+        "Core primitives must remain provider and campaign neutral: "
+        + ", ".join(violations)
     )

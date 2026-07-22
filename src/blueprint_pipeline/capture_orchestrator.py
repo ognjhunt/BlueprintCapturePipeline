@@ -18,7 +18,7 @@ from .geometry_sources import load_capture_geometry
 from .logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
-from .pipeline_settings import PipelineSettings
+from .core.pipeline_settings import PipelineSettings
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .eval_card_ids import (

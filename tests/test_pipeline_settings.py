@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.capture_orchestrator import PipelineConfig
-from blueprint_pipeline.pipeline_settings import PipelineSettings
+from blueprint_pipeline.core.pipeline_settings import PipelineSettings
+from blueprint_pipeline.pipeline_settings import PipelineSettings as CompatibilitySettings
+
+
+def test_pipeline_settings_compatibility_import_is_canonical_type() -> None:
+    assert CompatibilitySettings is PipelineSettings
 
 
 def test_pipeline_settings_parse_once_with_typed_values() -> None:

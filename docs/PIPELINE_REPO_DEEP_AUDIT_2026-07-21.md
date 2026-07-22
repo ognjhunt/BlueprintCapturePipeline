@@ -477,8 +477,12 @@ prose-only; make CI enforce it.
 that rejects direct campaign, readiness, and paid-provider imports. The first real
 violation was removed by extracting G1 closure projection into a neutral aggregate-
 closure contract; campaign modules now depend inward on that contract, while buyer
-package generation no longer imports G1 campaign code. Physical subpackage moves and
-broader layer coverage remain incremental follow-ups.
+package generation no longer imports G1 campaign code. The first physical package slice
+is also in place: typed settings and shared stage-outcome semantics are canonical under
+`blueprint_pipeline.core`, with compatibility imports at their old paths and a mechanical
+rule preventing the core package from importing campaign, readiness, or provider code.
+Moving the remaining core primitives and adding broader layer coverage remain incremental
+follow-ups.
 
 Do this **after** the P0 removals (moving dead code is wasted work) and incrementally —
 one subpackage per PR with import shims, not a big-bang rename.

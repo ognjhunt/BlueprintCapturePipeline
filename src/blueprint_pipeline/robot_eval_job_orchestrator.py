@@ -59,7 +59,7 @@ from .failure_diagnosis_contract import (
 )
 from .local_capture import resolve_local_capture_context
 from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
-from .pipeline_settings import PipelineSettings
+from .core.pipeline_settings import PipelineSettings
 from .post_training_data_package import build_post_training_data_package_export
 from .canonical_training_quality_pipeline import (
     run_canonical_training_quality_from_request,
