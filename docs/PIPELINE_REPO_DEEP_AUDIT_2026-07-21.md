@@ -41,6 +41,13 @@ the original graph scan was fabricated. The safe removal estimate and P0 ledger 
 have been reduced accordingly. Post-rebase validation is recorded separately from the
 pre-rebase full-suite result.
 
+Post-rebase validation on the reconciled tree includes: 64 NVIDIA/SIGGRAPH integration
+and restored splat/NuRec tests, 6 additional SimReady asset tests, 84 selected core
+overlap tests (artifact/evaluation contracts, `run_e2e`, simulation automation, and the
+CPU product spine), all 198 slow robot-eval orchestrator tests, and all 12 governed SC3
+ledger tests. All passed. These are hermetic results; they do not claim live GPU/provider
+execution, ranking fidelity, deployment, or paid-resource proof.
+
 The first P2 seam slice now puts the hosted native runtime behind a typed strategy
 catalog. `site_splat` is the provider-neutral default; the legacy Cosmos-Predict2.5
 adapter requires explicit `cosmos_wam` selection, conflicting old/new settings fail
@@ -392,8 +399,8 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    is a June superpowers spec) — decide which is the seam and fold the other in.
    **Started:** JSON-state loading, signed-URL file handling, and URL redaction now
    live in provider-neutral `wam_async_runner_common`; both runners retain their public
-   and private call surfaces, and all 69 async-runner tests pass. Transfer, poll,
-   collection, and teardown lifecycle extraction remains.
+   and private call surfaces. Provider artifact transfer is shared as well; all 70
+   async-runner tests pass. Poll, collection, and teardown lifecycle extraction remains.
 2. **Single-consumer satellites**: fold `runpod_wam_launch_contract.py` (461) into its
    sole consumer; fold `vast_authorized_probe_runner.py` (548) into
    `vast_wam_authorized_runner`.
@@ -454,6 +461,13 @@ cards/packaging/eval_runs` must never import `readiness/`, `campaigns/`, or
 `providers/` directly (registry/plugin seams instead — one already half-exists in
 `capture_orchestrator`'s simulator plugin registry). Today the CLAUDE.md rule is
 prose-only; make CI enforce it.
+
+**Started:** the sellable artifact spine now has an AST-enforced dependency contract
+that rejects direct campaign, readiness, and paid-provider imports. The first real
+violation was removed by extracting G1 closure projection into a neutral aggregate-
+closure contract; campaign modules now depend inward on that contract, while buyer
+package generation no longer imports G1 campaign code. Physical subpackage moves and
+broader layer coverage remain incremental follow-ups.
 
 Do this **after** the P0 removals (moving dead code is wasted work) and incrementally —
 one subpackage per PR with import shims, not a big-bang rename.
