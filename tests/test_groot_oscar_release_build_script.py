@@ -114,3 +114,19 @@ def test_release_source_overlay_does_not_require_foundation_venv_pip() -> None:
     assert dockerfile.count("blueprint_pipeline.__file__.startswith") == 1
     assert "from blueprint_pipeline.robot_eval_worker import main" in dockerfile
     assert "chmod 0755 /opt/oscar-venv/bin/blueprint-run-robot-eval-worker" in dockerfile
+
+
+def test_release_repairs_missing_embedded_carrier_opencv_without_mutating_other_dependencies() -> None:
+    dockerfile = RELEASE.read_text(encoding="utf-8")
+    lock = Path(
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_embedded_carrier_opencv.lock"
+    ).read_text(encoding="utf-8")
+
+    assert "if ! /opt/oscar-venv/bin/python -c 'import cv2'; then" in dockerfile
+    assert "/opt/runpod-serverless-venv/bin/python -m pip install" in dockerfile
+    assert '--target "${oscar_site_packages}"' in dockerfile
+    assert "--no-deps --require-hashes" in dockerfile
+    assert "/opt/oscar-venv/bin/python -c 'import cv2; assert cv2.__version__'" in dockerfile
+    assert "opencv-python-headless==4.11.0.86" in lock
+    assert "sha256:0e0a27c19dd1f40ddff94976cfe43066fbbe9dfbb2ec1907d66c19caef42a57b" in lock
