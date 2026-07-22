@@ -233,6 +233,15 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
     assert "bootcmd:" in text
     assert "systemctl restart ssh" not in text.split("package_update:", 1)[0]
     assert "systemctl restart ssh" in text
+    assert "/etc/apt/apt.conf.d/80blueprint-transport" in text
+    assert 'Acquire::Retries "10";' in text
+    assert 'Acquire::http::Timeout "30";' in text
+    assert 'Acquire::https::Timeout "30";' in text
+    assert 'Acquire::http::Pipeline-Depth "0";' in text
+    boot_commands = text.split("package_update:", 1)[0]
+    assert boot_commands.count("https://mirrors.digitalocean.com") == 1
+    assert boot_commands.count("https://security.ubuntu.com") == 1
+    assert boot_commands.count("https://archive.ubuntu.com") == 1
     assert text.splitlines().count("  - docker.io") == 1
     assert "docker-buildx" in text
     assert "docker info" in text
@@ -395,6 +404,7 @@ def test_detached_launch_uses_new_session_and_records_only_nonsecret_metadata(
         run_arguments=["--output-dir", str(tmp_path / "run"), "--allow-paid"],
     )
     assert observed["start_new_session"] is True
+    assert observed["env"]["BLUEPRINT_DETACHED_CPU_BUILD_SUPERVISOR"] == "1"
     assert observed["stdin"] is not None
     assert observed["command"][-1] == "--allow-paid"
     assert result["pid"] == 4321

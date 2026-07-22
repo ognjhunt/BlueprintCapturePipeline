@@ -70,6 +70,7 @@ MODEL_CACHE_RESULT_FILES = (
 CARRIER_PACKET_DIRECTORY = "groot_oscar_carrier_remote_build"
 CARRIER_BUILD_SCRIPT = "remote_build_groot_oscar_carrier.sh"
 CARRIER_RESULT_NAME = "groot_oscar_carrier_remote_build_result.json"
+DETACHED_CPU_BUILD_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_CPU_BUILD_SUPERVISOR"
 
 
 def _safe_archive_member(name: str) -> bool:
@@ -915,10 +916,18 @@ def build_cloud_init(
 ssh_deletekeys: false
 bootcmd:
   - [bash, -c, "printf '%s' '{host_private_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key && chmod 600 /etc/ssh/ssh_host_ed25519_key && printf '%s' '{host_public_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key.pub && chmod 644 /etc/ssh/ssh_host_ed25519_key.pub && rm -f /etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub"]
+  - [bash, -c, "for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do if [ -f $source_file ]; then sed -i 's|http://mirrors.digitalocean.com|https://mirrors.digitalocean.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g; s|http://archive.ubuntu.com|https://archive.ubuntu.com|g' $source_file; fi; done"]
 package_update: true
 packages:
 {package_lines}
 write_files:
+  - path: /etc/apt/apt.conf.d/80blueprint-transport
+    permissions: '0644'
+    content: |
+      Acquire::Retries "10";
+      Acquire::http::Timeout "30";
+      Acquire::https::Timeout "30";
+      Acquire::http::Pipeline-Depth "0";
   - path: /etc/ssh/ssh_host_ed25519_key
     permissions: '0600'
     encoding: b64
@@ -1941,12 +1950,15 @@ def launch_detached_builder(*, output_dir: Path, run_arguments: Sequence[str]) -
         *run_arguments,
     ]
     with log_path.open("ab") as log:
+        supervisor_env = dict(os.environ)
+        supervisor_env[DETACHED_CPU_BUILD_SUPERVISOR_ENV] = "1"
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=supervisor_env,
         )
     payload = {
         "schema_version": DETACHED_LAUNCH_SCHEMA_VERSION,

@@ -136,6 +136,11 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
         "apt_transport_hardening.conf"
         in paths
     )
+    assert (
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "oscar_cpu_import_probe.py"
+        in paths
+    )
     assert "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile" in paths
     assert (
         "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"

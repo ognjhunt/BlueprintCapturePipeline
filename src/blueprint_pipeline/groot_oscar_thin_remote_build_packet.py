@@ -27,6 +27,7 @@ REQUIRED_ROOT_FILES = ("pyproject.toml", "README.md", "LICENSE")
 REQUIRED_IMAGE_FILES = (
     "apt_transport_hardening.conf",
     "Foundation.Dockerfile",
+    "oscar_cpu_import_probe.py",
     "Release.Dockerfile",
     "requirements_robot_runtime.txt",
     "requirements_oscar_foundation.lock",

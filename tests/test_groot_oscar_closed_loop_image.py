@@ -421,10 +421,15 @@ def test_image_installs_and_imports_official_oscar_minimal_requirements():
 
 def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
     dockerfile = (IMAGE_ROOT / "Foundation.Dockerfile").read_text(encoding="utf-8")
+    probe = (IMAGE_ROOT / "oscar_cpu_import_probe.py").read_text(encoding="utf-8")
 
-    assert "worldsim._src.configs.agibot_control.config import make_config" in dockerfile
-    assert "importlib.metadata.version('pytest') == '9.1.1'" in dockerfile
-    assert "assert make_config() is not None" in dockerfile
+    assert "oscar_cpu_import_probe.py /tmp/oscar_cpu_import_probe.py" in dockerfile
+    assert "/opt/oscar-venv/bin/python /tmp/oscar_cpu_import_probe.py" in dockerfile
+    assert '-c "import inference.inference_oscar"' not in dockerfile
+    assert "worldsim._src.configs.agibot_control.config import make_config" not in dockerfile
+    assert '"worldsim._src.configs.agibot_control.config"' in probe
+    assert "config = config_module.make_config()" in probe
+    assert 'importlib.metadata.version("pytest") != "9.1.1"' in probe
     assert "blueprint_pipeline.oscar_runtime_source_provenance seal" in dockerfile
     assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
     assert "find /tmp/oscar -type d -name __pycache__" in dockerfile

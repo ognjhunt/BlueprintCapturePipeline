@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git python3-pip
   && python3 -m pip install --break-system-packages --no-cache-dir --require-hashes -r /tmp/requirements_uv_bootstrap.txt
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_robot_runtime.txt /tmp/requirements_robot_runtime.txt
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_foundation.lock /tmp/requirements_oscar_foundation.lock
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/oscar_cpu_import_probe.py /tmp/oscar_cpu_import_probe.py
 COPY src /tmp/blueprint-build-src
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && git -C /tmp/gr00t fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
@@ -71,8 +72,7 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && sed -i 's/^Tag: cp36-cp36m-manylinux2010_x86_64$/Tag: py3-none-manylinux2010_x86_64/' "${decord_wheel}" \
   && grep -qx 'Tag: py3-none-manylinux2010_x86_64' "${decord_wheel}" \
   && /opt/oscar-venv/bin/python -m pip check \
-  && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import inference.inference_oscar" \
-  && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import importlib.metadata; from worldsim._src.configs.agibot_control.config import make_config; assert importlib.metadata.version('pytest') == '9.1.1'; assert make_config() is not None" \
+  && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python /tmp/oscar_cpu_import_probe.py \
   && find /tmp/oscar -type d -name __pycache__ -prune -exec rm -rf '{}' + \
   && find /tmp/oscar -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
   && PYTHONPATH=/tmp/blueprint-build-src /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance seal \
