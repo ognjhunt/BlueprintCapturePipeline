@@ -27,6 +27,18 @@ def test_cpu_import_probe_scopes_cuda_discovery_patch(tmp_path: Path) -> None:
         "assert observed_device == 0\n",
         encoding="utf-8",
     )
+    config_package = tmp_path / "worldsim" / "_src" / "configs" / "agibot_control"
+    config_package.mkdir(parents=True)
+    for parent in (config_package, *config_package.parents[:3]):
+        (parent / "__init__.py").write_text("", encoding="utf-8")
+    (config_package / "config.py").write_text(
+        "import torch\n"
+        "observed_device = torch.cuda.current_device()\n"
+        "assert observed_device == 0\n"
+        "def make_config():\n"
+        "    return {'device': observed_device}\n",
+        encoding="utf-8",
+    )
     script = (
         Path(__file__).resolve().parents[1]
         / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"

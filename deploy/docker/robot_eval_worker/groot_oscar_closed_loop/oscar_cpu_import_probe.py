@@ -11,6 +11,7 @@ still prove a real CUDA device on the qualification provider.
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 from unittest import mock
 
 import torch
@@ -19,11 +20,19 @@ import torch
 def main() -> int:
     original_current_device = torch.cuda.current_device
     with mock.patch.object(torch.cuda, "current_device", return_value=0):
-        module = importlib.import_module("inference.inference_oscar")
+        inference_module = importlib.import_module("inference.inference_oscar")
+        config_module = importlib.import_module(
+            "worldsim._src.configs.agibot_control.config"
+        )
+        config = config_module.make_config()
     if torch.cuda.current_device is not original_current_device:
         raise RuntimeError("oscar_cpu_import_probe_cuda_patch_not_restored")
-    if not getattr(module, "__file__", None):
+    if not getattr(inference_module, "__file__", None):
         raise RuntimeError("oscar_cpu_import_probe_module_identity_missing")
+    if importlib.metadata.version("pytest") != "9.1.1":
+        raise RuntimeError("oscar_cpu_import_probe_pytest_version_mismatch")
+    if config is None:
+        raise RuntimeError("oscar_cpu_import_probe_dynamic_config_missing")
     print("BLUEPRINT_OSCAR_CPU_IMPORT_PROBE_PASSED")
     return 0
 

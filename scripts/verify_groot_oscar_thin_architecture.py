@@ -111,6 +111,9 @@ def verify() -> list[str]:
     for fragment in (
         'mock.patch.object(torch.cuda, "current_device", return_value=0)',
         'importlib.import_module("inference.inference_oscar")',
+        '"worldsim._src.configs.agibot_control.config"',
+        "config = config_module.make_config()",
+        'importlib.metadata.version("pytest") != "9.1.1"',
         "torch.cuda.current_device is not original_current_device",
         "BLUEPRINT_OSCAR_CPU_IMPORT_PROBE_PASSED",
     ):
@@ -120,6 +123,8 @@ def verify() -> list[str]:
         blockers.append("oscar_cpu_import_probe_must_not_override_gpu_availability")
     if '-c "import inference.inference_oscar"' in foundation:
         blockers.append("foundation_uses_gpu_dependent_unscoped_oscar_import_probe")
+    if "worldsim._src.configs.agibot_control.config import make_config" in foundation:
+        blockers.append("foundation_uses_gpu_dependent_unscoped_oscar_config_probe")
     if "/opt/robot-venv" in foundation:
         blockers.append("foundation_uses_unproven_consolidated_robot_environment")
     if foundation.count("uv venv /opt/oscar-venv") != 1:
