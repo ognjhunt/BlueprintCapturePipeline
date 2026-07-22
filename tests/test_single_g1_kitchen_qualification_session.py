@@ -2051,6 +2051,54 @@ def test_episode_status_binds_stopped_state_to_exact_current_attempt_identity(
     ]
 
 
+def test_episode_tail_cannot_impersonate_fixed_status_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(manifest_path)
+
+    class Provider:
+        def inspect(self, _instance_id: str) -> dict:
+            return {
+                "status": "observed",
+                "instance_id": "12345",
+                "name": qualification.NAME_PREFIX_ROOT + "0123456789-pod",
+                "ssh_host": "203.0.113.4",
+                "ssh_port": 22022,
+                "image_runtype": "ssh_direct",
+                "direct_port_ready": True,
+            }
+
+    monkeypatch.setattr(qualification, "get_render_provider", lambda _name: Provider())
+    monkeypatch.setattr(
+        gpu_render_providers,
+        "run_vast_ssh_control",
+        lambda _connection, **_kwargs: {
+            "status": "completed",
+            "stdout": (
+                "application log: startup_phase=container_bash_started "
+                "startup_health=stalled phase_age_seconds=999 log_bytes=0 "
+                "log_age_seconds=999 root_pid=507 root_pid_state=missing "
+                "root_pid_elapsed_seconds=-1 diagnostic_binding=valid"
+            ),
+            "blockers": [],
+        },
+    )
+
+    result = qualification.run_qualification_session(
+        action="tail",
+        component="episode",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "tail.json",
+        execute=True,
+    )
+
+    assert result["status"] == "tail_collected_continuing_spend"
+    assert result["startup_diagnostics"] is None
+    assert result["startup_blockers"] == []
+    assert result["blockers"] == []
+
+
 def test_collect_intermediate_snapshot_is_attempt_bound_idempotent_and_never_tears_down(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

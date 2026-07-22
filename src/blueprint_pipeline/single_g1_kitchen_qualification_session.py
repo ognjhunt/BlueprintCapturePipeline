@@ -3892,9 +3892,12 @@ def _control(
         str(control.get("stdout") or ""),
     )
     recorded_at = utc_now_iso()
-    startup_diagnostics, startup_blockers = parse_startup_diagnostics(
-        str(control.get("stdout") or ""), observed_at=recorded_at
-    )
+    if action == "status" and resolved_component in {"episode", "bootstrap"}:
+        startup_diagnostics, startup_blockers = parse_startup_diagnostics(
+            str(control.get("stdout") or ""), observed_at=recorded_at
+        )
+    else:
+        startup_diagnostics, startup_blockers = None, []
     if startup_blockers:
         completed = False
     attempt_identity_blocker: str | None = None
