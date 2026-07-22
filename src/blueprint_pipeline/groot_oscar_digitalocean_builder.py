@@ -70,6 +70,7 @@ MODEL_CACHE_RESULT_FILES = (
 CARRIER_PACKET_DIRECTORY = "groot_oscar_carrier_remote_build"
 CARRIER_BUILD_SCRIPT = "remote_build_groot_oscar_carrier.sh"
 CARRIER_RESULT_NAME = "groot_oscar_carrier_remote_build_result.json"
+DETACHED_CPU_BUILD_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_CPU_BUILD_SUPERVISOR"
 
 
 def _safe_archive_member(name: str) -> bool:
@@ -1941,12 +1942,15 @@ def launch_detached_builder(*, output_dir: Path, run_arguments: Sequence[str]) -
         *run_arguments,
     ]
     with log_path.open("ab") as log:
+        supervisor_env = dict(os.environ)
+        supervisor_env[DETACHED_CPU_BUILD_SUPERVISOR_ENV] = "1"
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=supervisor_env,
         )
     payload = {
         "schema_version": DETACHED_LAUNCH_SCHEMA_VERSION,

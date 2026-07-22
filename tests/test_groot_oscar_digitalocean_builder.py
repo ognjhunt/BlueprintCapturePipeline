@@ -395,6 +395,7 @@ def test_detached_launch_uses_new_session_and_records_only_nonsecret_metadata(
         run_arguments=["--output-dir", str(tmp_path / "run"), "--allow-paid"],
     )
     assert observed["start_new_session"] is True
+    assert observed["env"]["BLUEPRINT_DETACHED_CPU_BUILD_SUPERVISOR"] == "1"
     assert observed["stdin"] is not None
     assert observed["command"][-1] == "--allow-paid"
     assert result["pid"] == 4321

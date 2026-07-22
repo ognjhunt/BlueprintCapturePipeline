@@ -17,6 +17,7 @@ from typing import Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_digitalocean_builder import (
+    DETACHED_CPU_BUILD_SUPERVISOR_ENV,
     launch_detached_builder,
     observe_local_machine,
     run_builder,
@@ -206,16 +207,22 @@ def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, re
             write_json(Path(value), result)
 
 
-def _configure_detached_model_volume_signal_policy(command: str) -> bool:
+def _configure_detached_supervisor_signal_policy(command: str) -> bool:
     """Keep an explicitly detached paid supervisor alive through local SIGINT.
 
     SIGTERM remains available for an intentional stop. Provider resources also
     remain bounded by their independent deadline watchdogs.
     """
 
-    if not (
-        command == "model-volume-run" and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
-    ):
+    detached_model_volume = (
+        command == "model-volume-run"
+        and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
+    )
+    detached_cpu_build = (
+        command == "cpu-build-run"
+        and os.getenv(DETACHED_CPU_BUILD_SUPERVISOR_ENV) == "1"
+    )
+    if not (detached_model_volume or detached_cpu_build):
         return False
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -620,7 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
-    _configure_detached_model_volume_signal_policy(args.command)
+    _configure_detached_supervisor_signal_policy(args.command)
     if args.command in {"model-volume", "model-volume-run"} and not (
         args.command == "model-volume" and args.retain_existing_output
     ):

@@ -422,6 +422,7 @@ def test_image_installs_and_imports_official_oscar_minimal_requirements():
 def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
     dockerfile = (IMAGE_ROOT / "Foundation.Dockerfile").read_text(encoding="utf-8")
 
+    assert "patch('torch.cuda.current_device', return_value=0).start()" in dockerfile
     assert "worldsim._src.configs.agibot_control.config import make_config" in dockerfile
     assert "importlib.metadata.version('pytest') == '9.1.1'" in dockerfile
     assert "assert make_config() is not None" in dockerfile
