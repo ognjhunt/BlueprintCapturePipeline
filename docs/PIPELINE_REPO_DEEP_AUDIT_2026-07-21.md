@@ -16,7 +16,7 @@ live operator/runtime surfaces; the paid-path giants have substantial hermetic t
 GPU-marked live-provider proof; the July launch/beta audit trees, the SC3 goal, and the KYC
 decision must remain at their canonical paths while current contracts reference them.
 
-The remediation branch has removed the safe ~12.9k-LOC dead-code set, migrated the live
+The remediation branch has removed the safe ~12.6k-LOC dead-code set, migrated the live
 model-volume watchdog helpers, gated legacy lanes, deduplicated evaluation prep, made agent
 review opt-in, neutralized the Task Evaluation adapter vocabulary and visual-augmentation
 registry, removed model-specific exporter execution from evaluation prep, and moved the
@@ -32,6 +32,14 @@ passed with **4,656 passed, 1 skipped, and 1,595 deselected**. The previously re
 failures were reproduced as host disk-exhaustion effects, then their affected storage,
 materialization, package, product-spine, local-bundle, and governed-ledger modules were
 rerun successfully before the clean full-suite result.
+
+After that verification, `origin/main` advanced through #150/#151. The remediation
+branch was rebased onto `894583dd`; the NVIDIA/SIGGRAPH integration makes
+`splat_backends` and its `isaac_nurec_export` adapter live, so both modules and their
+direct tests were restored. This is a post-audit reachability change, not evidence that
+the original graph scan was fabricated. The safe removal estimate and P0 ledger below
+have been reduced accordingly. Post-rebase validation is recorded separately from the
+pre-rebase full-suite result.
 
 The first P2 seam slice now puts the hosted native runtime behind a typed strategy
 catalog. `site_splat` is the provider-neutral default; the legacy Cosmos-Predict2.5
@@ -74,7 +82,7 @@ Conflicting findings between passes were re-verified by hand (grep) before landi
 | Modules in `src/blueprint_pipeline` | 461 (~440k LOC), flat directory |
 | Console-script entry points | 157 (a third of the package is CLI tails) |
 | Unreachable from any entry point | 34 modules (~19.5k LOC) |
-| Verified-dead removal shortlist | ~12.9k LOC src + associated tests |
+| Verified-dead removal shortlist | ~12.6k LOC src + associated tests |
 | Deprecate-then-remove (documented operator surface) | ~5.5k LOC src |
 | Campaign-specific code (`g1_*`/`groot_oscar_*`/`oscar_*`/`wam_*`/`unitree_*`/`isaac_*`/`mujoco_*`/`kitchen_*`) | ~195k LOC / 174 files (~46% of package) |
 | Mapping escape hatches in src | 2,463 `Dict[str, Any]` + 3,656 `dict[str, Any]` occurrences |
@@ -90,9 +98,10 @@ provider plumbing, campaign machinery, readiness/review layers, or dead pivots.
 
 ## P0 — Remove: verified dead code (~12.9k LOC src, plus tests)
 
-Each row was verified: no importers outside the listed cluster, no console-script that
-anything references, no CI workflow, no `python -m` string reference, no worker-bundle
-inclusion. Delete the module(s) and their dedicated test files.
+Each removal row was verified: no importers outside the listed cluster, no console-script
+that anything references, no CI workflow, no `python -m` string reference, no
+worker-bundle inclusion. Section 5 records a later main-branch reclassification and is
+explicitly excluded from removal.
 
 **Command-surface rule (added after review):** "unreachable by import graph" is not
 sufficient when a module is an installed console script or a command documented in a
@@ -137,13 +146,14 @@ LeRobot code path (`lerobot_episode_export`, `lerobot_export_validation`, used b
 (`gaussian_splat_decode`, `splat_scene_analysis`, `splat_scene_render`,
 `synthesis/depth_splat`, `tools/splat_render`) is separate and stays.
 
-### 5. `splat_backends` registry + `isaac_nurec_export` — 330 LOC
+### 5. Reclassified after #150: `splat_backends` + `isaac_nurec_export` — keep
 
-**Why:** `splat_backends.py` is a backend *registry* (splat_transform, spark,
-threedgrut, particlefield_usd, isaac_nurec, artifixer) that nothing imports except its
-own tests — a seam that was built and never wired. Either wire it into the live splat
-render path deliberately, or delete it; a dead registry masquerading as a seam is worse
-than no registry. Default: delete (the live path selects renderers without it).
+At the audited `2edb48b` snapshot, the registry was test-only and the export adapter was
+reachable only through it. Main commit `449a66bc` (#150) extended the registry for the
+NVIDIA/SIGGRAPH integration and made the 3dgrut/NuRec export adapter part of that live
+swappable-backend surface. The remediation rebase therefore retained both modules and
+restored their direct tests. Re-evaluate reachability only if the NVIDIA integration is
+later removed; they are not deletion candidates now.
 
 ### 6. `realistic_readiness_rehearsal` — 1,873 LOC
 
@@ -482,6 +492,9 @@ or drop scripts nothing references.
 
 Recorded so the next audit (or an eager agent) doesn't re-flag them:
 
+- **`splat_backends.py` + `isaac_nurec_export.py`** — #150 extended the registry
+  for the NVIDIA/SIGGRAPH integration; its 3dgrut exporter imports the NuRec adapter.
+  Both direct test modules are restored and retained after the remediation rebase.
 - **`frames_layout.py`** (212) — looks orphaned (only a comment in
   `materialization.py` mentions it), but it is the mandated cross-repo bundle-reader
   contract: `docs/CAPTURE_BRIDGE_CONTRACT.md` requires all frame readers to go through
