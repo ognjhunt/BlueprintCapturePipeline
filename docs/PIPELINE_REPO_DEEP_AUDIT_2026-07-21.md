@@ -38,9 +38,10 @@ After the first P2 seams were added, the complete combined-tree default lane als
 with **4,736 passed, 1 skipped, and 1,595 deselected in 1:09:41**. This is the newest
 complete-suite result; the smaller count above records the earlier P0/P1 checkpoint.
 
-After that verification, `origin/main` advanced through #150/#151, #148, and #153. The
+After that verification, `origin/main` advanced through #150/#151, #148, #153, and
+#154. The
 remediation branch was first rebased onto `894583dd`, refreshed onto `1974536b`, and
-then rebased again onto current main `95b10eb1`; the NVIDIA/SIGGRAPH integration makes
+then reconciled through current main `d873dd80`; the NVIDIA/SIGGRAPH integration makes
 `splat_backends` and its `isaac_nurec_export` adapter live, so both modules and their
 direct tests were restored. This is a post-audit reachability change, not evidence that
 the original graph scan was fabricated. The safe removal estimate and P0 ledger below
@@ -78,11 +79,11 @@ remained `$0`. No instance was launched: the allocator correctly requires a clea
 and release-evidence binding for the exact `origin/main` commit, while the retained
 qualification image is bound to `fca4712e` plus a non-empty dirty-patch digest and the
 newest clean registry image is bound to audit commit `2edb48b`, not current main
-`95b10eb1`. The normal qualification watchdog contract is bounded to at most `$5.50`,
+`d873dd80`. The normal qualification watchdog contract is bounded to at most `$5.50`,
 but budget authorization does not override source identity. A clean, immutable
-`95b10eb1` image plus its generated thin-release evidence is the concrete prerequisite
-for live GPU startup/teardown proof; startup would still not prove policy quality,
-semantic task success, or ranking fidelity.
+image for the final merged-main commit plus its generated thin-release evidence is the
+concrete prerequisite for live GPU startup/teardown proof; startup would still not
+prove policy quality, semantic task success, or ranking fidelity.
 
 The canonical image build route is independently blocked by provider scope: the
 `paid_resource_allocator cpu-build` execution plane admits only a verified native
@@ -444,7 +445,8 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    (10,101), `post_training_data_package.py` (6,678),
    `vast_provider_adapter.py` (6,739), `qualification.py` (5,560),
    `evaluation_prep_stage.py` (5,141), `single_g1_kitchen_episode_runpod.py` (4,341),
-   `single_g1_kitchen_qualification_session.py` (4,248),
+   `single_g1_kitchen_qualification_session.py` (4,210 after #154 extracted its
+   320-LOC observability contract),
    `robot_eval_dataset.py` (4,959), `wam_fixture_evaluator.py` (4,605).
 4. **`mujoco_g1_wam_vla_policy_endpoint_eval.py` (12,297 LOC)** — largest module in the
    repo, reachable only via its own console script + tests, zero importers. Decide:
@@ -545,7 +547,7 @@ or drop scripts nothing references.
 4. **No GPU-marked/live-provider integration lane for the paid path.** The earlier
    claim that the live paid giants had zero tests was wrong. Dedicated CPU/unit suites
    exist and are substantial: 80 tests each for the Vast persistent session and Vast
-   adapter, 30 for the RunPod kitchen episode, 37 for kitchen qualification, and 68
+   adapter, 30 for the RunPod kitchen episode, 45 for kitchen qualification, and 68
    across ten `g1_microwave_*` test files. The actual gap is that the `gpu` marker has
    zero uses, so these suites do not prove real provider mutation, GPU runtime startup,
    artifact collection, or teardown against live infrastructure.
