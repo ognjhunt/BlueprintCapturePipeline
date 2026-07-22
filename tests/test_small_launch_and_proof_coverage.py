@@ -129,6 +129,7 @@ def test_logging_utils_sanitizes_sensitive_and_structured_fields(
             message="coverage message\nforged-message",
             api_key="secret",
             artifact_path=tmp_path / "artifact.json",
+            detail="safe detail\nforged-field\r",
             **{"not-an-identifier": "kept"},
         )
 
@@ -137,6 +138,8 @@ def test_logging_utils_sanitizes_sensitive_and_structured_fields(
     assert "\n" not in record.getMessage()
     assert "coverage message\\nforged-message" in record.getMessage()
     assert record.blueprint_fields["api_key"] == "<redacted:api-key>"
+    assert record.blueprint_fields["detail"] == "safe detail\\nforged-field\\r"
+    assert "detail='safe detail\\\\nforged-field\\\\r'" in record.getMessage()
     assert record.artifact_path == str(tmp_path / "artifact.json")
     assert not hasattr(record, "not-an-identifier")
 

@@ -90,6 +90,24 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "full-test-lane-executed.json" in workflow
 
 
+def test_pr_workflows_do_not_duplicate_branch_push_runs() -> None:
+    workflow_names = (
+        "ci.yml",
+        "python-compatibility.yml",
+        "sim-only-local-gate.yml",
+    )
+
+    for workflow_name in workflow_names:
+        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
+            encoding="utf-8"
+        )
+        event_block = workflow.split("jobs:", 1)[0]
+        assert "pull_request:" in event_block, workflow_name
+        assert 'branches: ["main"]' in event_block, workflow_name
+        assert 'branches: ["**"]' not in event_block, workflow_name
+        assert "cancel-in-progress: true" in event_block, workflow_name
+
+
 def test_groot_oscar_disk_admission_measures_every_write_filesystem() -> None:
     script = (ROOT / "scripts" / "build_push_groot_oscar_closed_loop_image.sh").read_text(
         encoding="utf-8"

@@ -35,6 +35,12 @@ def _redacted_marker(key: str) -> str:
     return f"<redacted:{normalized or 'sensitive'}>"
 
 
+def _single_line_log_text(value: str) -> str:
+    """Neutralize record separators without discarding diagnostic text."""
+
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 def _sanitize_value(key: str, value: Any) -> Any:
     key_upper = key.upper()
     if any(marker in key_upper for marker in _SENSITIVE_FIELD_MARKERS):
@@ -45,7 +51,7 @@ def _sanitize_value(key: str, value: Any) -> Any:
         lower_value = value.lower()
         if "x-goog-signature=" in lower_value or "signature=" in lower_value:
             return "<redacted:signed-url>"
-        return value
+        return _single_line_log_text(value)
     if isinstance(value, Mapping):
         return {
             str(item_key): _sanitize_value(str(item_key), item_value)
@@ -61,12 +67,6 @@ def _format_fields(fields: Mapping[str, Any]) -> str:
         return ""
     parts = [f"{key}={fields[key]!r}" for key in sorted(fields)]
     return " " + " ".join(parts)
-
-
-def _single_line_log_text(value: str) -> str:
-    """Neutralize record separators without discarding diagnostic text."""
-
-    return str(value).replace("\r", "\\r").replace("\n", "\\n")
 
 
 def log_event(
@@ -100,5 +100,10 @@ def log_event(
             extra[key] = value
     clean_message = _single_line_log_text(message or clean_event)
     # The rendered message and every field have record separators escaped above.
-    # codeql[py/log-injection]
-    logger.log(level, "%s%s", clean_message, _format_fields(clean_fields), extra=extra)
+    logger.log(  # codeql[py/log-injection]
+        level,
+        "%s%s",
+        clean_message,
+        _format_fields(clean_fields),
+        extra=extra,
+    )
