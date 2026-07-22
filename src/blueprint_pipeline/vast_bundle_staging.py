@@ -23,9 +23,16 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .provider_bundle_staging_common import (
+    BUNDLE_ROUTE,
+    HEALTH_ROUTE,
+    OUTPUT_ROUTE,
+    read_or_create_staging_token as _read_or_create_token,
+    staging_url_with_token as _url_with_token,
+)
 from .secret_artifact_policy import (
     redacted_secret_file_status,
     secret_path_disclosure_policy,
@@ -44,48 +51,12 @@ DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_PUBLIC_VERIFY_MAX_WAIT_SECONDS = 120
 DEFAULT_PUBLIC_VERIFY_RETRY_INTERVAL_SECONDS = 5.0
 DEFAULT_PUBLIC_VERIFY_TIMEOUT_SECONDS = 20
-BUNDLE_ROUTE = "/bundle.zip"
-OUTPUT_ROUTE = "/output.zip"
-HEALTH_ROUTE = "/health"
 REDACTED_TOKEN = "<redacted-token>"
 CLOUDFLARED_URL_RE = re.compile(r"https://[-a-zA-Z0-9.]+\.trycloudflare\.com")
 
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _read_or_create_token(path: Path) -> tuple[str, dict[str, Any]]:
-    ensure_dir(path.parent)
-    if path.exists():
-        token = path.read_text(encoding="utf-8").strip()
-        created = False
-    else:
-        token = secrets.token_urlsafe(32)
-        path.write_text(token + "\n", encoding="utf-8")
-        created = True
-    path.chmod(0o600)
-    mode = oct(path.stat().st_mode & 0o777)
-    status = redacted_secret_file_status(
-        path,
-        path_source="staging_token_file",
-        raw_secret_field="token_recorded_in_manifest",
-    )
-    status.update({
-        "created": created,
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "token_recorded_in_manifest": False,
-    })
-    return token, status
-
-
-def _url_with_token(base_url: str, route: str, token: str) -> str:
-    parsed = urlparse(base_url)
-    clean_path = "/" + route.strip("/")
-    query = urlencode({"token": token})
-    return urlunparse((parsed.scheme, parsed.netloc, clean_path, "", query, ""))
 
 
 def _redacted_url_path(route: str) -> str:

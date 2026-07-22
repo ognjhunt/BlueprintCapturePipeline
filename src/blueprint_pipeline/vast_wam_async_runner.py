@@ -25,14 +25,16 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
-from .vast_bundle_staging import (
+from .provider_bundle_staging_common import (
     BUNDLE_ROUTE,
+    OUTPUT_ROUTE,
+    read_or_create_staging_token as _read_or_create_token,
+    staging_url_with_token as _url_with_token,
+)
+from .vast_bundle_staging import (
     DEFAULT_OUTPUT_FILENAME,
     DEFAULT_SECRET_ENV_FILE,
     DEFAULT_TOKEN_FILE,
-    OUTPUT_ROUTE,
-    _read_or_create_token,
-    _url_with_token,
     prepare_vast_bundle_staging,
     run_local_staging_self_test,
     verify_public_staging_urls,
