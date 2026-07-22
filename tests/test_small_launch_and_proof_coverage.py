@@ -125,14 +125,17 @@ def test_logging_utils_sanitizes_sensitive_and_structured_fields(
         logging_utils.log_event(
             logger,
             logging.INFO,
-            "coverage.event",
+            "coverage.event\r\nforged-event",
+            message="coverage message\nforged-message",
             api_key="secret",
             artifact_path=tmp_path / "artifact.json",
             **{"not-an-identifier": "kept"},
         )
 
     record = caplog.records[-1]
-    assert record.blueprint_event == "coverage.event"
+    assert record.blueprint_event == "coverage.event\\r\\nforged-event"
+    assert "\n" not in record.getMessage()
+    assert "coverage message\\nforged-message" in record.getMessage()
     assert record.blueprint_fields["api_key"] == "<redacted:api-key>"
     assert record.artifact_path == str(tmp_path / "artifact.json")
     assert not hasattr(record, "not-an-identifier")

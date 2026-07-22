@@ -53,6 +53,22 @@ PIPELINE_WRITTEN_DESCRIPTOR_METADATA_KEYS = frozenset(
     }
 )
 
+__all__ = [
+    "CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION",
+    "LANE_LEDGER_DIRNAME",
+    "LANE_LEDGER_FINGERPRINT_SCHEMA_VERSION",
+    "LANE_LEDGER_SCHEMA_VERSION",
+    "LANE_RESUME_DISABLED_ENV",
+    "PIPELINE_WRITTEN_DESCRIPTOR_METADATA_KEYS",
+    "capture_input_fingerprint",
+    "lane_ledger_dir",
+    "lane_ledger_input_fingerprint",
+    "lane_marker_path",
+    "lane_resume_disabled",
+    "read_completed_lane_result",
+    "record_lane_completion",
+]
+
 
 def lane_resume_disabled() -> bool:
     return str(os.getenv(LANE_RESUME_DISABLED_ENV) or "").strip().lower() in {

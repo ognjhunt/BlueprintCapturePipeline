@@ -14,7 +14,6 @@ from typing import Any
 
 from .common import utc_now_iso
 from .attempt_closure_projection import (
-    closure_sha256 as closure_sha256,
     project_attempt_closure,
 )
 

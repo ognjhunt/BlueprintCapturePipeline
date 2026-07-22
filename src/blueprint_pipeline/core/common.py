@@ -17,6 +17,38 @@ from typing import Any, Mapping, Tuple
 # stay in lock-step on a single source of truth.
 MAXIMUM_HIDDEN_ZONE_BOUND = 0.35
 
+__all__ = [
+    "GCSUri",
+    "MAXIMUM_HIDDEN_ZONE_BOUND",
+    "PipelineError",
+    "StageError",
+    "ensure_dir",
+    "ensure_local_uri_path",
+    "flatten_scene_paths",
+    "has_nonempty_file",
+    "infer_storage_root_from_scene_path",
+    "is_gs_uri",
+    "join_gs_uri",
+    "maybe_as_dict",
+    "maybe_as_list",
+    "optional_read_json",
+    "parse_bool",
+    "parse_gs_uri",
+    "read_json",
+    "read_json_any",
+    "relative_scene_path",
+    "resolve_gs_uri_to_path",
+    "sha256_file",
+    "to_capture_prefix",
+    "to_pipeline_prefix",
+    "to_scene_prefix",
+    "try_parse_float",
+    "try_parse_int",
+    "utc_now_iso",
+    "write_json",
+    "write_text",
+]
+
 
 @dataclass(frozen=True)
 class GCSUri:
@@ -148,7 +180,9 @@ def infer_storage_root_from_scene_path(path: Path) -> Path:
 
 
 def ensure_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+    # This primitive intentionally creates the exact caller-authorized path;
+    # request-facing callers must apply their own containment boundary first.
+    path.mkdir(parents=True, exist_ok=True)  # lgtm[py/path-injection]
 
 
 def _fsync_directory(path: Path) -> None:

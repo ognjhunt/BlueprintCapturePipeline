@@ -635,6 +635,8 @@ def test_pinned_https_uses_numeric_transport_and_original_hostname_for_sni(
         return raw_socket
 
     class Context:
+        minimum_version = security.ssl.TLSVersion.TLSv1
+
         def wrap_socket(self, sock: object, *, server_hostname: str) -> WrappedSocket:
             sni_calls.append((sock, server_hostname))
             return WrappedSocket()
@@ -652,6 +654,7 @@ def test_pinned_https_uses_numeric_transport_and_original_hostname_for_sni(
 
     assert numeric_calls == [("93.184.216.34", 8443, 5.0)]
     assert sni_calls == [(raw_socket, "policy.example")]
+    assert connection._tls_context.minimum_version == security.ssl.TLSVersion.TLSv1_2
 
 
 def test_pinned_connection_rejects_unexpected_private_peer_before_request(

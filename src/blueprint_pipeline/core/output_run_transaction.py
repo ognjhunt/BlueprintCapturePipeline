@@ -196,12 +196,14 @@ class OutputRunTransaction:
                         },
                     )
                 except OSError:
+                    # Lease diagnostics are best-effort during exception unwind.
                     pass
         finally:
             if self._lock_file is not None:
                 try:
                     os.fsync(self._lock_file.fileno())
                 except OSError:
+                    # Some filesystems cannot fsync the advisory lock file.
                     pass
                 fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
                 self._lock_file.close()

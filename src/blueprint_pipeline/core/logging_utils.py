@@ -63,6 +63,12 @@ def _format_fields(fields: Mapping[str, Any]) -> str:
     return " " + " ".join(parts)
 
 
+def _single_line_log_text(value: str) -> str:
+    """Neutralize record separators without discarding diagnostic text."""
+
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 def log_event(
     logger: logging.Logger,
     level: int,
@@ -79,16 +85,18 @@ def log_event(
     ``extra`` attributes.
     """
 
+    clean_event = _single_line_log_text(event)
     clean_fields = {
         str(key): _sanitize_value(str(key), value)
         for key, value in fields.items()
         if value is not None
     }
     extra: dict[str, Any] = {
-        "blueprint_event": event,
+        "blueprint_event": clean_event,
         "blueprint_fields": clean_fields,
     }
     for key, value in clean_fields.items():
         if key.isidentifier() and key not in _RESERVED_LOG_RECORD_KEYS and key not in extra:
             extra[key] = value
-    logger.log(level, (message or event) + _format_fields(clean_fields), extra=extra)
+    clean_message = _single_line_log_text(message or clean_event)
+    logger.log(level, "%s%s", clean_message, _format_fields(clean_fields), extra=extra)

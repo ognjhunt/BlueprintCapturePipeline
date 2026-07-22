@@ -381,6 +381,10 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         context: ssl.SSLContext | None = None,
     ) -> None:
         tls_context = context or ssl.create_default_context()
+        try:
+            tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        except (AttributeError, ValueError) as exc:
+            raise SecurityValidationError("TLS 1.2 minimum could not be enforced") from exc
         super().__init__(
             host=host,
             port=port,
