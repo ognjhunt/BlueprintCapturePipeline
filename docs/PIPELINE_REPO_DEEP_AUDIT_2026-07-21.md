@@ -431,9 +431,13 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    Provider-neutral staging-manifest preparation now also owns ZIP integrity checks,
    redacted manifest emission, and the mode-0600 secret environment boundary; the Vast
    entrypoint retains its historical schema and filenames as a compatibility wrapper.
-   Compatibility exports keep existing operators stable. The remaining public-staging
-   verification implementation is still Vast-named, and provider-specific poll state
-   transitions and teardown execution still need incremental extraction.
+   Public URL reachability, bounded PUT verification, stability retries, and probe
+   cleanup now live in `provider_staging_verification`; it rejects non-HTTP(S) URLs
+   before I/O and removes five expiring Bandit exceptions. Compatibility exports keep
+   existing operators stable. All 29 direct staging tests and 90 RunPod/Vast consumer
+   tests pass, and the full Bandit gate reports zero high and 63 reviewed medium
+   findings. Provider-specific poll state transitions and teardown execution still need
+   incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the

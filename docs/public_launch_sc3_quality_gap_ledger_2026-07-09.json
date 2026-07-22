@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:5d0fc6cce5981ece0ddd2ca88895bf53d6c0b4a26f805f972c0ee4e0925b9b5f",
+              "sha256": "sha256:646f6ee94fc45f0207dd0f4de9b8c1331ca45b28fb878141fce44dfc266b81f4",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13773,7 +13773,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:a8790d669e8e25e1c0c59966da7574ca84a454e6b2032ac3d1f9452184824671",
+              "sha256": "sha256:29a2ee4298f5852291efb657f010a76276f63d428c6d11588684e910f0f3ae24",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

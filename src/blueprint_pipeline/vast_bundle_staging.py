@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import threading
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
@@ -30,9 +29,17 @@ from .provider_bundle_staging_common import (
     ProviderBundleStagingRequestHandler as _ProviderBundleStagingRequestHandler,
     create_staging_server,
     prepare_provider_bundle_staging,
-    redact_staging_url as _redact_url,
+    redact_staging_url as _redact_url,  # noqa: F401 - compatibility export
     read_or_create_staging_token as _read_or_create_token,
     staging_url_with_token as _url_with_token,
+)
+from .provider_staging_verification import (
+    cleanup_output_probe as _neutral_cleanup_output_probe,
+    head_bundle_url as _neutral_head_bundle_url,
+    probe_exception as _neutral_probe_exception,
+    put_output_probe as _neutral_put_output_probe,
+    validated_http_staging_url,
+    verify_provider_staging_urls,
 )
 from .secret_artifact_policy import secret_path_disclosure_policy
 
@@ -224,11 +231,12 @@ def run_local_staging_self_test(
     checks: list[dict[str, Any]] = []
     blockers: list[str] = []
     try:
-        health = urllib.request.urlopen(f"{base_url}{HEALTH_ROUTE}", timeout=10)
+        health_url = validated_http_staging_url(f"{base_url}{HEALTH_ROUTE}")
+        health = urllib.request.urlopen(health_url, timeout=10)  # nosec B310
         checks.append({"label": "health", "http_status": health.status})
         bundle_url = _url_with_token(base_url, BUNDLE_ROUTE, token)
-        head_request = urllib.request.Request(bundle_url, method="HEAD")
-        head = urllib.request.urlopen(head_request, timeout=10)
+        head_request = urllib.request.Request(validated_http_staging_url(bundle_url), method="HEAD")
+        head = urllib.request.urlopen(head_request, timeout=10)  # nosec B310
         content_length = int(head.headers.get("Content-Length") or "0")
         checks.append(
             {
@@ -242,12 +250,12 @@ def run_local_staging_self_test(
             blockers.append("bundle_head_content_length_mismatch")
         upload_bytes = b"PK\x05\x06" + (b"\x00" * 18)
         put_request = urllib.request.Request(
-            _url_with_token(base_url, OUTPUT_ROUTE, token),
+            validated_http_staging_url(_url_with_token(base_url, OUTPUT_ROUTE, token)),
             data=upload_bytes,
             method="PUT",
             headers={"Content-Type": "application/zip"},
         )
-        put = urllib.request.urlopen(put_request, timeout=10)
+        put = urllib.request.urlopen(put_request, timeout=10)  # nosec B310
         checks.append({"label": "output_put", "http_status": put.status})
         if not resolved_output.is_file() or resolved_output.read_bytes() != upload_bytes:
             blockers.append("output_put_file_not_written")
@@ -278,12 +286,7 @@ def run_local_staging_self_test(
 
 
 def _probe_exception(exc: Exception) -> dict[str, Any]:
-    payload: dict[str, Any] = {"error_type": type(exc).__name__}
-    if isinstance(exc, urllib.error.HTTPError):
-        payload["http_status_code"] = exc.code
-    elif isinstance(exc, urllib.error.URLError):
-        payload["reason_type"] = type(exc.reason).__name__
-    return payload
+    return _neutral_probe_exception(exc)
 
 
 def _head_bundle_url(
@@ -292,41 +295,11 @@ def _head_bundle_url(
     bundle_path: Path | None,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    try:
-        request = urllib.request.Request(bundle_url, method="HEAD")
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            status_code = int(getattr(response, "status", 200))
-            headers = dict(response.headers.items())
-        content_length_text = headers.get("Content-Length")
-        content_length = int(content_length_text) if content_length_text else None
-        probe = {
-            "status": "passed" if 200 <= status_code < 300 else "blocked",
-            "method": "HEAD",
-            "http_status_code": status_code,
-            "content_type": headers.get("Content-Type"),
-            "content_length": content_length,
-            "expected_content_length": (
-                bundle_path.stat().st_size if bundle_path and bundle_path.is_file() else None
-            ),
-        }
-        if not (200 <= status_code < 300):
-            probe["blocker"] = "provider_bundle_fetch_url_unreachable"
-        elif (
-            bundle_path
-            and bundle_path.is_file()
-            and content_length is not None
-            and content_length != bundle_path.stat().st_size
-        ):
-            probe["status"] = "blocked"
-            probe["blocker"] = "provider_bundle_fetch_url_size_mismatch"
-        return probe
-    except Exception as exc:
-        return {
-            "status": "blocked",
-            "method": "HEAD",
-            "blocker": "provider_bundle_fetch_url_unreachable",
-            **_probe_exception(exc),
-        }
+    return _neutral_head_bundle_url(
+        bundle_url=bundle_url,
+        bundle_path=bundle_path,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _put_output_probe(
@@ -335,34 +308,11 @@ def _put_output_probe(
     timeout_seconds: float,
     probe_zip: bytes,
 ) -> dict[str, Any]:
-    try:
-        request = urllib.request.Request(
-            output_put_url,
-            data=probe_zip,
-            method="PUT",
-            headers={"Content-Type": "application/zip"},
-        )
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            status_code = int(getattr(response, "status", 200))
-            response_text = response.read().decode("utf-8", errors="replace")
-        probe = {
-            "status": "passed" if 200 <= status_code < 300 else "blocked",
-            "method": "PUT",
-            "http_status_code": status_code,
-            "probe_bytes": len(probe_zip),
-            "response_preview": response_text[:200],
-        }
-        if not (200 <= status_code < 300):
-            probe["blocker"] = "provider_output_put_url_unwritable"
-        return probe
-    except Exception as exc:
-        return {
-            "status": "blocked",
-            "method": "PUT",
-            "probe_bytes": len(probe_zip),
-            "blocker": "provider_output_put_url_unwritable",
-            **_probe_exception(exc),
-        }
+    return _neutral_put_output_probe(
+        output_put_url=output_put_url,
+        timeout_seconds=timeout_seconds,
+        probe_zip=probe_zip,
+    )
 
 
 def _cleanup_output_probe(
@@ -371,36 +321,11 @@ def _cleanup_output_probe(
     probe_zip: bytes,
     cleanup_output_probe: bool,
 ) -> dict[str, Any]:
-    if not cleanup_output_probe:
-        return {"status": "skipped", "reason": "cleanup_output_probe_false"}
-    if output_path is None:
-        return {"status": "skipped", "reason": "output_path_missing"}
-    if not output_path.exists():
-        return {"status": "skipped", "reason": "output_probe_file_not_present"}
-    try:
-        data = output_path.read_bytes()
-    except Exception as exc:
-        return {
-            "status": "blocked",
-            "reason": "output_probe_file_read_failed",
-            "error_type": type(exc).__name__,
-        }
-    if data != probe_zip:
-        return {
-            "status": "skipped",
-            "reason": "output_path_does_not_match_probe_bytes",
-            "path": str(output_path),
-            "size_bytes": output_path.stat().st_size if output_path.exists() else 0,
-        }
-    try:
-        output_path.unlink()
-    except Exception as exc:
-        return {
-            "status": "blocked",
-            "reason": "output_probe_file_cleanup_failed",
-            "error_type": type(exc).__name__,
-        }
-    return {"status": "removed", "path": str(output_path), "removed_bytes": len(probe_zip)}
+    return _neutral_cleanup_output_probe(
+        output_path=output_path,
+        probe_zip=probe_zip,
+        cleanup_output_probe=cleanup_output_probe,
+    )
 
 
 def verify_public_staging_urls(
@@ -419,168 +344,29 @@ def verify_public_staging_urls(
     require_bundle_fetch_probe: bool = True,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    resolved_job_dir = Path(job_dir).expanduser().resolve()
-    resolved_bundle = Path(bundle_path).expanduser().resolve() if bundle_path else None
-    resolved_output = Path(output_path).expanduser().resolve() if output_path else None
-    ensure_dir(resolved_job_dir)
-    bundle_url = _string(provider_bundle_url)
-    output_put_url = _string(provider_output_put_url)
-    attempts: list[dict[str, Any]] = []
-    blockers: list[str] = []
-    warnings: list[str] = []
-    if not bundle_url:
-        blockers.append("provider_bundle_fetch_url_missing")
-    if not output_put_url:
-        blockers.append("provider_output_put_url_missing")
-    if blockers:
-        manifest = {
-            "schema_version": VAST_PUBLIC_STAGING_VERIFICATION_SCHEMA_VERSION,
-            "generated_at": generated_at or utc_now_iso(),
-            "completed_at": utc_now_iso(),
-            "status": "blocked",
-            "job_dir": str(resolved_job_dir),
-            "provider_bundle_url_redacted": _redact_url(bundle_url) if bundle_url else None,
-            "provider_output_put_url_redacted": _redact_url(output_put_url)
-            if output_put_url
-            else None,
-            "attempt_count": 0,
-            "attempts": attempts,
-            "blockers": blockers,
-            "warnings": warnings,
-            "output_probe_cleanup": {"status": "not_requested"},
-            "raw_secret_values_recorded": False,
-        }
-        write_json(resolved_job_dir / "vast_public_staging_verification.json", manifest)
-        return manifest
-
-    probe_zip = b"PK\x05\x06" + (b"\x00" * 18)
-    started_at = time.monotonic()
-    deadline = started_at + max(0, max_wait_seconds)
-    final_cleanup: dict[str, Any] = {"status": "not_requested"}
-    final_status = "blocked"
-    attempt_number = 0
-    required_successes = max(1, int(required_consecutive_successes))
-    consecutive_successes = 0
-    successful_attempts = 0
-    while True:
-        attempt_number += 1
-        if require_bundle_fetch_probe:
-            bundle_probe = _head_bundle_url(
-                bundle_url=bundle_url,
-                bundle_path=resolved_bundle,
-                timeout_seconds=timeout_seconds,
-            )
-        else:
-            bundle_probe = {
-                "status": "skipped",
-                "method": "HEAD",
-                "reason": "bundle_fetch_replaced_by_inline_transport",
-            }
-        if allow_output_put_probe and (
-            bundle_probe.get("status") == "passed" or not require_bundle_fetch_probe
-        ):
-            output_probe = _put_output_probe(
-                output_put_url=output_put_url,
-                timeout_seconds=timeout_seconds,
-                probe_zip=probe_zip,
-            )
-            if output_probe.get("status") == "passed":
-                final_cleanup = _cleanup_output_probe(
-                    output_path=resolved_output,
-                    probe_zip=probe_zip,
-                    cleanup_output_probe=cleanup_output_probe,
-                )
-                if final_cleanup.get("status") == "blocked":
-                    output_probe = {
-                        **output_probe,
-                        "status": "blocked",
-                        "blocker": final_cleanup.get("reason") or "output_probe_cleanup_failed",
-                    }
-        elif allow_output_put_probe:
-            output_probe = {
-                "status": "blocked",
-                "method": "PUT",
-                "reason": "bundle_probe_must_pass_before_output_put_probe",
-                "blocker": "provider_output_put_url_not_checked",
-            }
-        else:
-            output_probe = {
-                "status": "skipped",
-                "method": "PUT",
-                "reason": "output_put_probe_requires_explicit_allow",
-            }
-            warnings.append("provider_output_put_url_not_mutation_probed")
-        attempt_passed = bundle_probe.get("status") == "passed" and (
-            output_probe.get("status") == "passed" or not allow_output_put_probe
-        )
-        if not require_bundle_fetch_probe:
-            attempt_passed = output_probe.get("status") == "passed" or not allow_output_put_probe
-        if attempt_passed:
-            successful_attempts += 1
-            consecutive_successes += 1
-        else:
-            consecutive_successes = 0
-        attempts.append(
-            {
-                "attempt": attempt_number,
-                "checked_at": utc_now_iso(),
-                "bundle_probe": bundle_probe,
-                "output_put_probe": output_probe,
-                "output_probe_cleanup": final_cleanup,
-                "passed": attempt_passed,
-                "consecutive_successes_after_attempt": consecutive_successes,
-            }
-        )
-        if consecutive_successes >= required_successes:
-            final_status = "passed"
-            blockers = []
-            break
-        now = time.monotonic()
-        if now >= deadline:
-            blockers = []
-            bundle_blocker = bundle_probe.get("blocker")
-            output_blocker = output_probe.get("blocker")
-            if require_bundle_fetch_probe and isinstance(bundle_blocker, str):
-                blockers.append(bundle_blocker)
-            if allow_output_put_probe and isinstance(output_blocker, str):
-                blockers.append(output_blocker)
-            if not blockers:
-                blockers.append(
-                    "public_staging_url_stability_not_proven"
-                    if successful_attempts
-                    else "public_staging_url_verification_failed"
-                )
-            break
-        time.sleep(min(max(0.0, retry_interval_seconds), max(0.0, deadline - now)))
-
-    manifest = {
-        "schema_version": VAST_PUBLIC_STAGING_VERIFICATION_SCHEMA_VERSION,
-        "generated_at": generated_at or utc_now_iso(),
-        "completed_at": utc_now_iso(),
-        "status": final_status,
-        "job_dir": str(resolved_job_dir),
-        "provider_bundle_url_redacted": _redact_url(bundle_url),
-        "provider_output_put_url_redacted": _redact_url(output_put_url),
-        "bundle_path": str(resolved_bundle) if resolved_bundle else None,
-        "output_path": str(resolved_output) if resolved_output else None,
-        "max_wait_seconds": max_wait_seconds,
-        "retry_interval_seconds": retry_interval_seconds,
-        "timeout_seconds": timeout_seconds,
-        "required_consecutive_successes": required_successes,
-        "require_bundle_fetch_probe": require_bundle_fetch_probe,
-        "successful_attempt_count": successful_attempts,
-        "final_consecutive_success_count": consecutive_successes,
-        "allow_output_put_probe": allow_output_put_probe,
-        "cleanup_output_probe": cleanup_output_probe,
-        "attempt_count": len(attempts),
-        "attempts": attempts,
-        "blockers": blockers,
-        "warnings": sorted(set(warnings)),
-        "output_probe_cleanup": final_cleanup,
-        "raw_secret_values_recorded": False,
-    }
-    write_json(resolved_job_dir / "vast_public_staging_verification.json", manifest)
-    return manifest
+    return verify_provider_staging_urls(
+        job_dir=job_dir,
+        provider_bundle_url=provider_bundle_url,
+        provider_output_put_url=provider_output_put_url,
+        bundle_path=bundle_path,
+        output_path=output_path,
+        max_wait_seconds=max_wait_seconds,
+        retry_interval_seconds=retry_interval_seconds,
+        timeout_seconds=timeout_seconds,
+        required_consecutive_successes=required_consecutive_successes,
+        allow_output_put_probe=allow_output_put_probe,
+        cleanup_output_probe_requested=cleanup_output_probe,
+        require_bundle_fetch_probe=require_bundle_fetch_probe,
+        generated_at=generated_at,
+        schema_version=VAST_PUBLIC_STAGING_VERIFICATION_SCHEMA_VERSION,
+        manifest_filename="vast_public_staging_verification.json",
+        head_probe=_head_bundle_url,
+        output_probe=_put_output_probe,
+        cleanup_probe=_cleanup_output_probe,
+        monotonic=time.monotonic,
+        sleep=time.sleep,
+        now_iso=utc_now_iso,
+    )
 
 
 def serve_vast_bundle_staging(

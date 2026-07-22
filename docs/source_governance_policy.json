@@ -91,6 +91,9 @@
     "src/blueprint_pipeline/provider_bundle_staging_common.py": [
       "tests/test_provider_bundle_staging_common.py"
     ],
+    "src/blueprint_pipeline/provider_staging_verification.py": [
+      "tests/test_provider_staging_verification.py"
+    ],
     "src/blueprint_pipeline/qualification.py": [
       "tests/test_qualification_alpha.py"
     ],
