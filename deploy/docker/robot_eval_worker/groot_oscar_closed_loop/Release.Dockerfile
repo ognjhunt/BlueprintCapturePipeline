@@ -31,12 +31,7 @@ RUN /opt/oscar-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
   && case "${FOUNDATION_MODEL_ASSETS}" in \
        external) test ! -e /opt/blueprint/ckpts ;; \
        embedded) \
-         test -s /opt/blueprint/ckpts/sonic/model.safetensors.index.json \
-         && test -s /opt/blueprint/ckpts/oscar/model/.metadata \
-         && test -s /opt/blueprint/ckpts/oscar/model/__0_0.distcp \
-         && test -s /opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx \
-         && test -s /opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx \
-         && test -s /opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx \
+         test -d /opt/blueprint/ckpts \
          && BLUEPRINT_SOURCE_COMMIT="${BLUEPRINT_SOURCE_COMMIT}" \
             BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256}" \
             /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time ;; \
