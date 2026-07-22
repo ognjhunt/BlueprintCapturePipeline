@@ -412,7 +412,7 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
 
 ## P2 — Consolidations (duplication from pivots)
 
-1. **WAM async runners**: `runpod_wam_async_runner.py` (3,680) vs
+1. **WAM async runners**: `runpod_wam_async_runner.py` (3,682) vs
    `vast_wam_async_runner.py` (1,893) — parallel per-provider implementations of the
    same launch/poll/collect lifecycle behind one facade (`wam_compute_providers`,
    1,903), with cross-entanglement (the RunPod runner imports Vast modules). Extract
@@ -429,8 +429,11 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    in `wam_provider_output`; RunPod, Vast async, the compute facade, and the Vast
    adapter all consume it, removing RunPod's import of the 6.5k-LOC Vast adapter.
    Explicit boolean `task_success` now survives summarization while provider-runtime
-   completion remains separately labeled. Provider-specific poll state transitions and
-   teardown execution still need incremental extraction.
+   completion remains separately labeled. Token creation and authenticated staging-URL
+   construction also moved to `provider_bundle_staging_common`, so RunPod no longer
+   imports private token helpers from the Vast staging module. The larger staging
+   manifest/server wrapper is still Vast-named, and provider-specific poll state
+   transitions and teardown execution still need incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the

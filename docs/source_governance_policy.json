@@ -85,6 +85,9 @@
     "src/blueprint_pipeline/post_training_data_package.py": [
       "tests/test_post_training_data_package.py"
     ],
+    "src/blueprint_pipeline/provider_bundle_staging_common.py": [
+      "tests/test_provider_bundle_staging_common.py"
+    ],
     "src/blueprint_pipeline/qualification.py": [
       "tests/test_qualification_alpha.py"
     ],
@@ -201,7 +204,7 @@
     "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,
     "src/blueprint_pipeline/robot_eval_worker.py": 2356,
     "src/blueprint_pipeline/robot_initial_observation.py": 2909,
-    "src/blueprint_pipeline/runpod_wam_async_runner.py": 3680,
+    "src/blueprint_pipeline/runpod_wam_async_runner.py": 3682,
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2051,
     "src/blueprint_pipeline/scene_wam_policy_episode_packet.py": 3682,
