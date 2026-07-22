@@ -58,6 +58,13 @@ then passed separately after only pytest-generated output was removed. These are
 hermetic results; they do not claim live GPU/provider execution, ranking fidelity,
 deployment, or paid-resource proof.
 
+Hosted CodeQL completed successfully on remediation head `d5924445`, proving the scoped
+path/log sanitizer annotations. That run also exposed duplicated branch-push and
+pull-request workflow executions for the same PR head. CI, Python compatibility, and the
+sim-only gate now run branch pushes only on `main`; PR runs use concurrency cancellation.
+Structured logging now escapes record separators recursively in non-sensitive string
+fields as well as in the top-level message, with release/logging contract coverage.
+
 The first P2 seam slice now puts the hosted native runtime behind a typed strategy
 catalog. `site_splat` is the provider-neutral default; the legacy Cosmos-Predict2.5
 adapter requires explicit `cosmos_wam` selection, conflicting old/new settings fail
@@ -407,7 +414,7 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
 
 ## P2 — Consolidations (duplication from pivots)
 
-1. **WAM async runners**: `runpod_wam_async_runner.py` (3,682) vs
+1. **WAM async runners**: `runpod_wam_async_runner.py` (3,529) vs
    `vast_wam_async_runner.py` (1,827) — parallel per-provider implementations of the
    same launch/poll/collect lifecycle behind one facade (`wam_compute_providers`,
    1,903), with cross-entanglement (the RunPod runner imports Vast modules). Extract
@@ -447,8 +454,12 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    already-absent evidence, other failures retry with bounded linear backoff, responses
    are redacted, and exhaustion remains explicit continuing-spend risk. Its four direct
    tests plus all 18 Vast async-runner tests pass, reducing that runner by another 55
-   lines. Provider status querying, RunPod stop/delete execution, and teardown-proof
-   persistence still need incremental extraction.
+   lines. RunPod stop/delete execution and the post-error terminal-state probe now live
+   in `runpod_wam_teardown`; a delete acknowledgement is kept distinct from API-confirmed
+   terminal state, and warm reuse is recorded only after an acknowledged stop. Its six
+   direct tests plus all 48 RunPod async-runner tests pass, reducing that runner by 153
+   lines. Normal provider status polling and teardown-proof persistence still need
+   incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the
