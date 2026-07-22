@@ -1,24 +1,8 @@
-"""Helpers for consistent optional dependency messaging."""
+"""Compatibility imports for optional dependency helpers.
 
-from __future__ import annotations
+New code should import from :mod:`blueprint_pipeline.core.optional_dependencies`.
+"""
 
-import logging
+from .core.optional_dependencies import install_extra_hint, log_missing_optional_dependency
 
-
-def install_extra_hint(extra: str) -> str:
-    return (
-        f"Install optional `{extra}` dependencies with "
-        f"`uv sync --extra {extra}` or `pip install -e .[{extra}]`."
-    )
-
-
-def log_missing_optional_dependency(
-    logger: logging.Logger,
-    *,
-    feature: str,
-    package: str,
-    extra: str,
-) -> str:
-    message = f"{feature} requires optional dependency `{package}`. {install_extra_hint(extra)}"
-    logger.warning(message)
-    return message
+__all__ = ["install_extra_hint", "log_missing_optional_dependency"]

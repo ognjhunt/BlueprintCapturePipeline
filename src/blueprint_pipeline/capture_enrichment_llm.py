@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from .optional_dependencies import log_missing_optional_dependency
+from .core.optional_dependencies import log_missing_optional_dependency
 
 logger = logging.getLogger(__name__)
 
