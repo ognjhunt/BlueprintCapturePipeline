@@ -2324,7 +2324,7 @@
             {
               "artifact_id": "DATA-09-AC-01-EV-01",
               "path": "src/blueprint_pipeline/output_run_transaction.py",
-              "sha256": "sha256:b3e56d0c4c1f935b3d3e13d7c235bd15cd2740d753ecdb8eca1fbf2f721e91eb",
+              "sha256": "sha256:e8864fc20d6ee074567e7ec5eddf7a3c369d30327f468b22bc9e670b23b52ebf",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2340,7 +2340,7 @@
             {
               "artifact_id": "DATA-09-AC-01-EV-02",
               "path": "tests/test_output_run_transaction.py",
-              "sha256": "sha256:36291aea07b7de0008de2c7233a68fee1809d7c4a087462fe2462db8591d7399",
+              "sha256": "sha256:2b1222b2efc9ddd3c3bf89248e230287f76ca7aec79b195d4cb45967d1e25e63",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8770,7 +8770,7 @@
             {
               "artifact_id": "DATA-19-AC-01-EV-02",
               "path": "src/blueprint_pipeline/output_run_transaction.py",
-              "sha256": "sha256:b3e56d0c4c1f935b3d3e13d7c235bd15cd2740d753ecdb8eca1fbf2f721e91eb",
+              "sha256": "sha256:e8864fc20d6ee074567e7ec5eddf7a3c369d30327f468b22bc9e670b23b52ebf",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11236,7 +11236,7 @@
             {
               "artifact_id": "RUN-12-AC-01-EV-01",
               "path": "src/blueprint_pipeline/output_run_transaction.py",
-              "sha256": "sha256:b3e56d0c4c1f935b3d3e13d7c235bd15cd2740d753ecdb8eca1fbf2f721e91eb",
+              "sha256": "sha256:e8864fc20d6ee074567e7ec5eddf7a3c369d30327f468b22bc9e670b23b52ebf",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11268,7 +11268,7 @@
             {
               "artifact_id": "RUN-12-AC-01-EV-03",
               "path": "tests/test_output_run_transaction.py",
-              "sha256": "sha256:36291aea07b7de0008de2c7233a68fee1809d7c4a087462fe2462db8591d7399",
+              "sha256": "sha256:2b1222b2efc9ddd3c3bf89248e230287f76ca7aec79b195d4cb45967d1e25e63",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
