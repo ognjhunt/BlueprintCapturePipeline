@@ -210,6 +210,59 @@ def validate_benchmark_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     if not _digest(action_space.get("normalization_manifest_sha256")):
         blockers.append("action_space_normalization_digest_missing_or_invalid")
 
+    environment = _mapping(spec.get("environment"))
+    if not _valid_id(environment.get("site_id")):
+        blockers.append("environment_site_id_missing_or_invalid")
+    for field in ("site_package_sha256", "observation_calibration_sha256"):
+        if not _digest(environment.get(field)):
+            blockers.append(f"environment_digest_missing_or_invalid:{field}")
+    if environment.get("representation_type") not in {
+        "captured_3dgs_site_memory",
+        "simready_usd",
+        "hybrid",
+        "other",
+    }:
+        blockers.append("environment_representation_type_invalid")
+    if environment.get("physics_authority") not in {
+        "none",
+        "mujoco",
+        "isaac",
+        "newton",
+        "real_robot",
+    }:
+        blockers.append("environment_physics_authority_invalid")
+    if (
+        environment.get("physics_authority") != "none"
+        and not _digest(environment.get("physics_asset_sha256"))
+    ):
+        blockers.append("environment_physics_asset_digest_required")
+    if not isinstance(environment.get("same_site_capture"), bool):
+        blockers.append("environment_same_site_capture_boolean_required")
+
+    evaluator_runtime = _mapping(spec.get("evaluator_runtime"))
+    for field in ("evaluator_id", "evaluator_version"):
+        if not _valid_id(evaluator_runtime.get(field)):
+            blockers.append(f"evaluator_runtime_identity_missing_or_invalid:{field}")
+    for field in (
+        "runner_manifest_sha256",
+        "success_evaluator_sha256",
+        "robot_adapter_sha256",
+        "observation_adapter_sha256",
+        "action_adapter_sha256",
+    ):
+        if not _digest(evaluator_runtime.get(field)):
+            blockers.append(f"evaluator_runtime_digest_missing_or_invalid:{field}")
+    if not (
+        _string(evaluator_runtime.get("source_revision"))
+        or re.fullmatch(
+            r".+@sha256:[0-9a-f]{64}",
+            _string(evaluator_runtime.get("container_image_digest")),
+        )
+    ):
+        blockers.append("evaluator_runtime_exact_source_or_container_required")
+    if evaluator_runtime.get("deterministic_seeding") is not True:
+        blockers.append("evaluator_runtime_deterministic_seeding_required")
+
     scenarios, scenarios_valid = _strict_rows(spec.get("scenarios"))
     if not scenarios_valid or not scenarios:
         blockers.append("benchmark_scenarios_missing_or_invalid")
@@ -333,6 +386,8 @@ def compile_benchmark_protocol(
     candidates = _rows(spec.get("candidate_policies", []))
     policies = baselines + candidates
     rollout_count = int(_mapping(spec.get("rollout_protocol"))["fixed_rollouts_per_scenario_policy"])
+    environment_sha256 = canonical_sha256(_mapping(spec.get("environment")))
+    evaluator_runtime_sha256 = canonical_sha256(_mapping(spec.get("evaluator_runtime")))
 
     split_payload = {
         "schema_version": SPLIT_SCHEMA_VERSION,
@@ -376,6 +431,8 @@ def compile_benchmark_protocol(
                     "seed": scenario["seed"],
                     "rollout_index": rollout_index,
                     "initial_condition_sha256": _digest(scenario["initial_condition_sha256"]),
+                    "environment_sha256": environment_sha256,
+                    "evaluator_runtime_sha256": evaluator_runtime_sha256,
                 }
                 attempts.append(
                     {
@@ -394,6 +451,8 @@ def compile_benchmark_protocol(
         "generated_at": generated_at,
         "frozen_split_sha256": split_payload["frozen_split_sha256"],
         "baseline_registry_sha256": registry["registry_sha256"],
+        "environment_sha256": environment_sha256,
+        "evaluator_runtime_sha256": evaluator_runtime_sha256,
         "fixed_rollouts_per_scenario_policy": rollout_count,
         "attempt_count": len(attempts),
         "attempts": attempts,
@@ -430,6 +489,28 @@ def compile_benchmark_protocol(
         "preregistration_sha256": _digest(spec.get("preregistration_sha256")),
         "tasks": _rows(spec.get("tasks")),
         "action_space": _mapping(spec.get("action_space")),
+        "environment_summary": {
+            "site_id": _mapping(spec.get("environment")).get("site_id"),
+            "representation_type": _mapping(spec.get("environment")).get(
+                "representation_type"
+            ),
+            "physics_authority": _mapping(spec.get("environment")).get(
+                "physics_authority"
+            ),
+            "same_site_capture": _mapping(spec.get("environment")).get(
+                "same_site_capture"
+            ),
+            "environment_sha256": environment_sha256,
+        },
+        "evaluator_runtime_summary": {
+            "evaluator_id": _mapping(spec.get("evaluator_runtime")).get(
+                "evaluator_id"
+            ),
+            "evaluator_version": _mapping(spec.get("evaluator_runtime")).get(
+                "evaluator_version"
+            ),
+            "evaluator_runtime_sha256": evaluator_runtime_sha256,
+        },
         "rollout_protocol": _mapping(spec.get("rollout_protocol")),
         "scoring": _mapping(spec.get("scoring")),
         "required_episode_evidence": _mapping(spec.get("required_episode_evidence")),
@@ -857,6 +938,8 @@ def _webapp_projection(
         "split_summary": card.get("split_summary"),
         "rollout_protocol": card.get("rollout_protocol"),
         "scoring": card.get("scoring"),
+        "environment_summary": card.get("environment_summary"),
+        "evaluator_runtime_summary": card.get("evaluator_runtime_summary"),
         "policy_aggregates": safe_aggregates,
         "breakdowns": safe_breakdowns,
         "evidence_summary": (report or {}).get("evidence_summary"),
@@ -890,6 +973,14 @@ def build_benchmark_report(
         blockers.append("benchmark_results_schema_invalid")
     if _string(plan.get("benchmark_id")) != _string(spec.get("benchmark_id")):
         blockers.append("benchmark_plan_identity_mismatch")
+    if _digest(plan.get("environment_sha256")) != canonical_sha256(
+        _mapping(spec.get("environment"))
+    ):
+        blockers.append("benchmark_plan_environment_mismatch")
+    if _digest(plan.get("evaluator_runtime_sha256")) != canonical_sha256(
+        _mapping(spec.get("evaluator_runtime"))
+    ):
+        blockers.append("benchmark_plan_evaluator_runtime_mismatch")
     plan_rows, plan_valid = _strict_rows(plan.get("attempts"))
     result_rows, results_valid = _strict_rows(results.get("attempts"))
     if not plan_valid:
@@ -915,6 +1006,8 @@ def build_benchmark_report(
             "seed",
             "rollout_index",
             "initial_condition_sha256",
+            "environment_sha256",
+            "evaluator_runtime_sha256",
         ):
             left = _digest(row.get(field)) if field.endswith("sha256") else row.get(field)
             right = _digest(scheduled.get(field)) if field.endswith("sha256") else scheduled.get(field)
