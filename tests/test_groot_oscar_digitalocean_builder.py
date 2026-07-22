@@ -239,9 +239,9 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
     assert 'Acquire::https::Timeout "30";' in text
     assert 'Acquire::http::Pipeline-Depth "0";' in text
     boot_commands = text.split("package_update:", 1)[0]
-    assert "https://mirrors.digitalocean.com" in boot_commands
-    assert "https://security.ubuntu.com" in boot_commands
-    assert "https://archive.ubuntu.com" in boot_commands
+    assert boot_commands.count("https://mirrors.digitalocean.com") == 1
+    assert boot_commands.count("https://security.ubuntu.com") == 1
+    assert boot_commands.count("https://archive.ubuntu.com") == 1
     assert text.splitlines().count("  - docker.io") == 1
     assert "docker-buildx" in text
     assert "docker info" in text
