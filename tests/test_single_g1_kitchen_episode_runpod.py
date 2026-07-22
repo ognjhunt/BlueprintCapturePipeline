@@ -156,6 +156,11 @@ def test_unqualified_manipulation_policy_blocks_before_inventory_capacity_or_lau
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        single_episode,
+        "OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS",
+        frozenset({single_episode.IMAGE_DIGEST}),
+    )
     task_compatibility = single_episode._manipulation_policy_task_compatibility(
         plan={},
         task_id="microwave_door",
@@ -227,6 +232,11 @@ def test_execute_without_current_spend_lock_blocks_before_episode_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        single_episode,
+        "OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS",
+        frozenset({single_episode.IMAGE_DIGEST}),
+    )
     inputs = {
         "plan": {
             "env": {},
@@ -894,6 +904,17 @@ def test_run_single_episode_has_no_external_runtime_patch_transport() -> None:
     } == set(parameters)
 
 
+def test_legacy_direct_episode_image_blocks_before_allocation_without_source_seal() -> None:
+    assert single_episode.IMAGE_DIGEST not in (
+        single_episode.OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS
+    )
+    source = inspect.getsource(single_episode.run_single_episode)
+    assert "single_episode_pinned_image_missing_oscar_runtime_source_seal" in source
+    assert source.index("single_episode_pinned_image_missing_oscar_runtime_source_seal") < (
+        source.index("get_render_provider")
+    )
+
+
 def test_qualification_checkpoint_restore_binds_ordered_parts_without_urls_in_evidence(
     tmp_path: Path,
 ) -> None:
@@ -1463,14 +1484,18 @@ def test_single_episode_bootstrap_requires_live_isaac_frame_and_camera_context(
     assert inputs["plan"]["env"]["BLUEPRINT_OSCAR_WAM_SOURCE_REF"] == (
         single_episode.OFFICIAL_OSCAR_SOURCE_COMMIT
     )
-    assert "single_g1_kitchen_oscar_runtime_provenance.v1" in script
-    assert "git -c safe.directory=/opt/oscar-public" in script
+    assert "blueprint_pipeline.oscar_runtime_source_provenance verify" in script
+    assert "git -c safe.directory=/opt/oscar-public" not in script
+    assert "--seal /opt/blueprint/oscar_source_provenance.json" in script
+    assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_URL" not in script
+    assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF" not in script
     assert "official_oscar_runtime_provenance_mismatch" in script
     assert single_episode.OSCAR_RUNTIME_PROVENANCE_ARTIFACT in script
     assert 'export BLUEPRINT_OSCAR_WAM_SOURCE_URL="$OSCAR_RUNTIME_SOURCE_URL"' in script
     assert 'export BLUEPRINT_OSCAR_WAM_SOURCE_REF="$OSCAR_RUNTIME_SOURCE_REF"' in script
-    assert script.index("single_g1_kitchen_oscar_runtime_provenance.v1") < script.index(
-        "upload_phase inputs_ready"
+    assert "oscar_runtime_source_provenance.py" in single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES
+    assert script.index("blueprint_pipeline.oscar_runtime_source_provenance verify") < (
+        script.index("upload_phase inputs_ready")
     )
     assert "single_g1_kitchen_runtime_patch" not in script
     assert "GEAR_SONIC_SIM_PID" not in script
@@ -1596,8 +1621,8 @@ def test_single_episode_bootstrap_requires_live_isaac_frame_and_camera_context(
     assert sitecustomize_match is not None
     sitecustomize = base64.b64decode(sitecustomize_match.group(1), validate=True).decode("utf-8")
     assert "blueprint_pipeline.__path__.insert(0, OVERLAY_PACKAGE)" in sitecustomize
-    assert script.index("single_g1_kitchen_runtime_package_overlay.v1") < script.index(
-        "single_g1_kitchen_oscar_runtime_provenance.v1"
+    assert script.index("materialized_hash_verified_and_imported") < script.index(
+        "blueprint_pipeline.oscar_runtime_source_provenance verify"
     )
     backend_source = (
         Path(single_episode.__file__).with_name("isaac_runtime_task_backend.py").read_bytes()

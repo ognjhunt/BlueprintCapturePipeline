@@ -24,7 +24,7 @@ FROM ${ISAAC_SIM_BASE_IMAGE} AS robot-env-builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GROOT_SOURCE_URL GROOT_SOURCE_REF OSCAR_SOURCE_URL OSCAR_SOURCE_REF
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python PYTHONDONTWRITEBYTECODE=1
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_uv_bootstrap.txt /tmp/requirements_uv_bootstrap.txt
 RUN apt-get update && apt-get install -y --no-install-recommends git python3-pip python3-venv ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
@@ -57,6 +57,14 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && /opt/oscar-venv/bin/python -m pip check \
   && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import inference.inference_oscar" \
   && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import importlib.metadata; from worldsim._src.configs.agibot_control.config import make_config; assert importlib.metadata.version('pytest') == '9.1.1'; assert make_config() is not None" \
+  && find /tmp/oscar -type d -name __pycache__ -prune -exec rm -rf '{}' + \
+  && find /tmp/oscar -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+  && PYTHONPATH=/tmp/blueprint-build-src /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance seal \
+      --source-root /tmp/oscar \
+      --output /tmp/oscar_source_provenance.json \
+      --source-url "${OSCAR_SOURCE_URL}" \
+      --source-commit "${OSCAR_SOURCE_REF}" \
+      --runtime-source-root /opt/OSCAR \
   && uv venv /opt/gr00t-venv --python 3.10 --seed \
   && VIRTUAL_ENV=/opt/gr00t-venv uv sync --project /tmp/gr00t --active --no-dev --frozen --no-install-project \
   && VIRTUAL_ENV=/opt/gr00t-venv uv pip install --no-deps /tmp/gr00t \
@@ -141,7 +149,7 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG APP_UID=10001
 ARG APP_GID=10001
-ARG GROOT_SOURCE_REF OSCAR_SOURCE_REF WBC_SOURCE_REF TENSORRT_VERSION CUDA_CUDART_VERSION
+ARG GROOT_SOURCE_REF OSCAR_SOURCE_URL OSCAR_SOURCE_REF WBC_SOURCE_REF TENSORRT_VERSION CUDA_CUDART_VERSION
 RUN apt-get update \
   && apt-cache madison libnvinfer10 | awk -v version="${TENSORRT_VERSION}" '$3 == version { found=1 } END { exit !found }' \
   && apt-cache madison cuda-cudart-12-6 | awk -v version="${CUDA_CUDART_VERSION}" '$3 == version { found=1 } END { exit !found }' \
@@ -165,12 +173,13 @@ COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/oscar-venv /opt/o
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/gr00t-venv /opt/gr00t-venv
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/uv-python /opt/uv-python
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/oscar-runtime /opt/OSCAR
+COPY --from=robot-env-builder /tmp/oscar_source_provenance.json /opt/blueprint/oscar_source_provenance.json
 COPY --from=robot-env-builder --chown=blueprint:blueprint /opt/gr00t-runtime /opt/gr00t
 COPY --from=wbc-builder --chown=blueprint:blueprint /opt/wbc-runtime /opt/wbc
 COPY --from=wbc-builder /opt/onnxruntime-runtime /opt/onnxruntime
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/isaac_6_g1_assets.sha256 /opt/blueprint/isaac_6_g1_assets.sha256
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/fetch_pinned_isaac_assets.py /opt/blueprint/fetch_pinned_isaac_assets.py
-ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
     BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8 \
     PYTORCH_ALLOC_CONF=expandable_segments:True PYTHONPATH=/opt/wbc:/opt/OSCAR \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
@@ -187,13 +196,13 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 MUJOCO_GL=osmesa \
     BLUEPRINT_ISAAC_PYTHON=/isaac-sim/python.sh \
     BLUEPRINT_ISAAC_UNITREE_G1_USD=/isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
     BLUEPRINT_FOUNDATION_GROOT_SOURCE_REF=${GROOT_SOURCE_REF} \
-    BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF=${OSCAR_SOURCE_REF} \
     BLUEPRINT_FOUNDATION_WBC_SOURCE_REF=${WBC_SOURCE_REF} \
     BLUEPRINT_GEAR_SONIC_SOURCE_REVISION=${WBC_SOURCE_REF}
 RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
       --manifest /opt/blueprint/isaac_6_g1_assets.sha256 \
       --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
       --output-dir /isaac-sim/Isaac/Robots/Unitree/G1 \
+  && test -s /opt/blueprint/oscar_source_provenance.json \
   && test ! -e /opt/blueprint/ckpts \
   && test ! -d /opt/wbc/.git \
   && test ! -d /opt/OSCAR/.git \
