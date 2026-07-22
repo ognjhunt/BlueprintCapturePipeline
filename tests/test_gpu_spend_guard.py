@@ -875,6 +875,52 @@ def test_qualification_import_failure_preserves_live_bound_watchdog(
     assert protected == {"45483300"}
 
 
+@pytest.mark.parametrize(
+    ("release_field", "invalid_value"),
+    [
+        ("source_patch_sha256", "f" * 64),
+        ("required_cuda_version", ""),
+        ("required_cuda_version_source", ""),
+    ],
+)
+def test_qualification_import_fallback_rejects_noncanonical_release_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    release_field: str,
+    invalid_value: str,
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "qualification", "45483300"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["release_binding"][release_field] = invalid_value
+    qualification._private_write_json(manifest_path, manifest)
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_qualification_import_failure_does_not_protect_spoofed_partial_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
