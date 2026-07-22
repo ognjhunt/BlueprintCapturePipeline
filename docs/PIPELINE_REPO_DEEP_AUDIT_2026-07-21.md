@@ -27,6 +27,21 @@ entrypoint settings, writes per-run timing/spend summaries, documents a producti
 and adds one CPU end-to-end regression from capture through cards, WebApp projection, and a
 signed/verified Post-Training Data Package archive.
 
+Verification for remediation commit `5bfc2091`: the complete default pytest lane
+passed with **4,656 passed, 1 skipped, and 1,595 deselected**. The previously reported
+failures were reproduced as host disk-exhaustion effects, then their affected storage,
+materialization, package, product-spine, local-bundle, and governed-ledger modules were
+rerun successfully before the clean full-suite result.
+
+The first P2 seam slice now puts the hosted native runtime behind a typed strategy
+catalog. `site_splat` is the provider-neutral default; the legacy Cosmos-Predict2.5
+adapter requires explicit `cosmos_wam` selection, conflicting old/new settings fail
+closed, and the runtime no longer discovers a model checkout from hard-coded workspace
+paths. The stable runtime-service contract is unchanged. Selection/readiness/prewarm,
+security, script-pin, and all slow native-service tests pass; extracting the remaining
+Cosmos-specific generation helpers from the 3k-LOC store remains a later incremental
+split, not a safe deletion.
+
 ## Method
 
 Six parallel audit passes over the tree at commit `2edb48b` (#146):

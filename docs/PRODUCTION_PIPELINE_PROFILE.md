@@ -36,6 +36,19 @@ python -m blueprint_pipeline.robot_eval_job_orchestrator \
 `BLUEPRINT_ALLOW_SIMULATOR_EXECUTION=true`, the CLI allow flag, and the explicit
 command are all required. A model-specific simulator is never selected implicitly.
 
+## Hosted support rendering
+
+`BLUEPRINT_NATIVE_RUNTIME_BACKEND=site_splat` is the provider-neutral default. It
+uses capture-grounded truthful-preview rendering behind the stable runtime-service
+contract. A legacy Cosmos-Predict2.5 deployment must explicitly select
+`cosmos_wam` and configure `COSMOS_OFFICIAL_REPO_ROOT`; the runtime no longer
+discovers model repositories from machine-specific workspace paths. The old
+`NATIVE_WORLD_MODEL_SYNTHESIS_MODE=cosmos_i2w` setting remains a compatibility
+alias, and conflicting old/new settings fail closed.
+Capture-grounded `site_splat` deployments do not activate Cosmos refinement
+from ambient model files; refinement requires an explicit
+`NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT=true` opt-in.
+
 ## Paid resources
 
 The base production profile deliberately leaves

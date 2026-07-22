@@ -23,6 +23,10 @@ from .camera_geometry_validation import (
     validate_se3_matrix,
 )
 from .model_access_env import normalize_model_access_env
+from .native_runtime_strategy import (
+    native_runtime_strategy_for_mode,
+    resolve_native_runtime_strategy,
+)
 from .security_controls import contained_path, strict_identifier
 from blueprint_contracts.runtime_service_contract import RuntimeMetadata
 from blueprint_contracts.site_world_contract import merge_site_world_definition
@@ -79,7 +83,10 @@ def _optional_existing_path(raw_value: Any) -> Optional[Path]:
 
 
 def _runtime_readiness() -> Dict[str, Any]:
+    strategy = resolve_native_runtime_strategy(os.environ)
     packages = {
+        "numpy": _module_available("numpy"),
+        "PIL": _module_available("PIL"),
         "torch": _module_available("torch"),
         "diffusers": _module_available("diffusers"),
         "cosmos_predict2_5": _module_available("cosmos_predict2_5"),
@@ -87,18 +94,39 @@ def _runtime_readiness() -> Dict[str, Any]:
     model_dir = _optional_existing_path(os.getenv("NATIVE_WORLD_MODEL_PATH"))
     checkpoint_path = _optional_existing_path(os.getenv("NATIVE_WORLD_MODEL_CHECKPOINT_PATH"))
     cosmos_repo = _find_cosmos_repo()
-    package_ready = packages["torch"] and (packages["diffusers"] or packages["cosmos_predict2_5"] or bool(cosmos_repo))
-    model_ready = bool(model_dir) or _env_truthy("NATIVE_WORLD_MODEL_READY") or bool(cosmos_repo)
-    checkpoint_ready = bool(checkpoint_path) or _env_truthy("NATIVE_WORLD_MODEL_CHECKPOINT_READY") or bool(cosmos_repo)
-    notes: list[str] = []
-    if not package_ready:
-        notes.append("missing_native_runtime_packages")
-    if not model_ready:
-        notes.append("native_model_not_provisioned")
-    if not checkpoint_ready:
-        notes.append("native_checkpoint_not_provisioned")
+    cosmos_package_ready = packages["torch"] and (
+        packages["diffusers"] or packages["cosmos_predict2_5"] or bool(cosmos_repo)
+    )
+    cosmos_model_ready = bool(model_dir) or _env_truthy("NATIVE_WORLD_MODEL_READY") or bool(cosmos_repo)
+    cosmos_checkpoint_ready = (
+        bool(checkpoint_path)
+        or _env_truthy("NATIVE_WORLD_MODEL_CHECKPOINT_READY")
+        or bool(cosmos_repo)
+    )
+    cosmos_notes: list[str] = []
+    if not cosmos_package_ready:
+        cosmos_notes.append("missing_native_runtime_packages")
+    if not cosmos_model_ready:
+        cosmos_notes.append("native_model_not_provisioned")
+    if not cosmos_checkpoint_ready:
+        cosmos_notes.append("native_checkpoint_not_provisioned")
+    cosmos_ready = (
+        cosmos_package_ready and cosmos_model_ready and cosmos_checkpoint_ready
+    )
+    site_splat_package_ready = packages["numpy"] and packages["PIL"]
+    if strategy.requires_model_runtime:
+        package_ready = cosmos_package_ready
+        model_ready = cosmos_model_ready
+        checkpoint_ready = cosmos_checkpoint_ready
+        notes = list(cosmos_notes)
+    else:
+        package_ready = site_splat_package_ready
+        model_ready = True
+        checkpoint_ready = True
+        notes = [] if site_splat_package_ready else ["missing_site_splat_runtime_packages"]
+    selected_ready = package_ready and model_ready and checkpoint_ready
     return {
-        "ready": package_ready and model_ready and checkpoint_ready,
+        "ready": selected_ready,
         "package_ready": package_ready,
         "model_ready": model_ready,
         "checkpoint_ready": checkpoint_ready,
@@ -106,6 +134,13 @@ def _runtime_readiness() -> Dict[str, Any]:
         "model_dir": str(model_dir) if model_dir else "",
         "checkpoint_path": str(checkpoint_path) if checkpoint_path else "",
         "cosmos_repo": str(cosmos_repo[0]) if cosmos_repo else "",
+        "cosmos_package_ready": cosmos_package_ready,
+        "cosmos_model_ready": cosmos_model_ready,
+        "cosmos_checkpoint_ready": cosmos_checkpoint_ready,
+        "cosmos_ready": cosmos_ready,
+        "cosmos_notes": cosmos_notes,
+        "selected_strategy": strategy.to_dict(),
+        "selected_runtime_path": strategy.synthesis_mode,
         "notes": notes,
     }
 
@@ -126,14 +161,8 @@ def _runtime_blockers(site_world: Mapping[str, Any], health: Mapping[str, Any]) 
 
 
 # ---------------------------------------------------------------------------
-# Cosmos repo detection
+# Explicit legacy Cosmos repo adapter
 # ---------------------------------------------------------------------------
-
-_COSMOS_REPO_CANDIDATE_PATHS: List[str] = [
-    "/root/workspace/cosmos-predict2.5",
-    str(Path.home() / "workspace" / "cosmos-predict2.5"),
-    str(Path.home() / "cosmos-predict2.5"),
-]
 
 # Per-session locks for Cosmos inference (prevent duplicate runs)
 _COSMOS_LOCKS: Dict[str, threading.RLock] = {}
@@ -173,24 +202,28 @@ def _cosmos_session_lock(session_id: str) -> threading.RLock:
 
 
 def _find_cosmos_repo() -> Optional[Tuple[Path, Path]]:
-    """Return (repo_root, python_bin) or None if not found."""
+    """Return an explicitly configured legacy Cosmos checkout, if valid.
+
+    The hosted runtime must not discover a model family from machine-specific
+    workspace paths. Provider/model selection is configuration, not ambient
+    filesystem state.
+    """
     explicit = os.getenv("COSMOS_OFFICIAL_REPO_ROOT", "").strip()
-    candidates = [explicit] + _COSMOS_REPO_CANDIDATE_PATHS if explicit else _COSMOS_REPO_CANDIDATE_PATHS
-    for candidate in candidates:
-        root = Path(candidate).expanduser()
-        inf = root / "examples" / "inference.py"
-        py = root / ".venv" / "bin" / "python"
-        try:
-            if not inf.is_file() or not py.is_file():
-                continue
-            if not os.access(inf, os.R_OK):
-                continue
-            if not os.access(py, os.X_OK):
-                continue
-            return root, py
-        except OSError:
-            continue
-    return None
+    if not explicit:
+        return None
+    root = Path(explicit).expanduser()
+    inf = root / "examples" / "inference.py"
+    py = root / ".venv" / "bin" / "python"
+    try:
+        if not inf.is_file() or not py.is_file():
+            return None
+        if not os.access(inf, os.R_OK):
+            return None
+        if not os.access(py, os.X_OK):
+            return None
+        return root, py
+    except OSError:
+        return None
 
 
 def _default_storage_root() -> Path:
@@ -471,7 +504,9 @@ def _site_reference_runtime_adapter(
         "non_arkit_geometry_sources": geometry_state["sources"],
         "provider_native_geometry_ready": geometry_state["provider_native_geometry_ready"],
         "world_model_ready": bool(retrieval_ready and geometry_state["swm_world_model_ready"]),
-        "selected_runtime_path": "cosmos_i2w" if runtime_readiness.get("ready") else "splat_only",
+        "selected_runtime_path": str(
+            runtime_readiness.get("selected_runtime_path") or "splat_only"
+        ),
         "runtime_adapter_ready": retrieval_ready,
         "backend_ready": bool(runtime_readiness.get("ready")),
         "backend_blockers": backend_blockers,
@@ -803,11 +838,23 @@ class NativeWorldModelRuntimeStore:
 
     def _cosmos_refinement_enabled(self) -> bool:
         explicit = str(os.getenv("NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT") or "").strip().lower()
+        readiness = _runtime_readiness()
+        cosmos_ready = bool(readiness.get("cosmos_ready", readiness.get("ready")))
+        strategy = resolve_native_runtime_strategy(os.environ)
         if explicit in {"0", "false", "no", "off"}:
             return False
         if explicit in {"1", "true", "yes", "on"}:
-            return bool(_runtime_readiness().get("ready"))
-        return self._uses_truthful_preview() and bool(_runtime_readiness().get("ready"))
+            return cosmos_ready
+        # A provider-neutral truthful-preview deployment must not start using a
+        # model family merely because its files happen to be present. Preserve
+        # the legacy preview/refine behavior only after Cosmos is selected as
+        # the deployment backend; neutral deployments can still request it
+        # explicitly with NATIVE_WORLD_MODEL_ENABLE_COSMOS_REFINEMENT=true.
+        return (
+            strategy.backend_id == "cosmos_wam"
+            and self._uses_truthful_preview()
+            and cosmos_ready
+        )
 
     def _preview_generation_mode(self) -> str:
         if self._uses_truthful_preview():
@@ -906,32 +953,28 @@ class NativeWorldModelRuntimeStore:
         unconfigured), never a hard-coded cosmos label.
         """
 
-        ready = bool(readiness.get("ready"))
         primary_mode = self._preview_generation_mode()
-        if primary_mode == "cosmos_i2w":
-            if ready:
-                identity = {
-                    "selected_runtime_path": "cosmos_i2w",
-                    "model_family": "cosmos_i2w_native",
-                    "render_source": "cosmos_i2w",
-                }
-            else:
-                identity = {
-                    "selected_runtime_path": "unconfigured",
-                    "model_family": "unconfigured",
-                    "render_source": "unconfigured",
-                }
-        elif primary_mode == "splat_only":
+        strategy = native_runtime_strategy_for_mode(primary_mode)
+        strategy_ready = (
+            bool(readiness.get("cosmos_ready", readiness.get("ready")))
+            if strategy.requires_model_runtime
+            else True
+        )
+        if strategy_ready:
             identity = {
-                "selected_runtime_path": "splat_only",
-                "model_family": "site_splat_truthful_preview",
-                "render_source": "truthful_preview_splat",
+                "backend_id": strategy.backend_id,
+                "selected_runtime_path": strategy.synthesis_mode,
+                "model_family": strategy.model_family,
+                "render_source": strategy.render_source,
+                "legacy_backend": strategy.legacy_backend,
             }
         else:
             identity = {
-                "selected_runtime_path": primary_mode,
-                "model_family": primary_mode,
-                "render_source": primary_mode,
+                "backend_id": strategy.backend_id,
+                "selected_runtime_path": "unconfigured",
+                "model_family": "unconfigured",
+                "render_source": "unconfigured",
+                "legacy_backend": strategy.legacy_backend,
             }
         identity["async_cosmos_refinement_enabled"] = self._cosmos_refinement_enabled()
         return identity
@@ -1019,6 +1062,15 @@ class NativeWorldModelRuntimeStore:
     def prewarm_runtime(self) -> Dict[str, Any]:
         with self._prewarm_lock:
             readiness = _runtime_readiness()
+            strategy = resolve_native_runtime_strategy(os.environ)
+            if not strategy.requires_model_runtime:
+                self._prewarm_status = {
+                    "status": "skipped",
+                    "reason": "selected_backend_does_not_require_model_prewarm",
+                    "backend_id": strategy.backend_id,
+                    "checked_at": _utc_now_iso(),
+                }
+                return dict(self._prewarm_status)
             if not bool(readiness.get("ready", False)):
                 self._prewarm_status = {
                     "status": "skipped",
@@ -1287,10 +1339,7 @@ class NativeWorldModelRuntimeStore:
             return []
 
     def _live_synthesis_mode(self) -> str:
-        explicit = str(os.getenv("NATIVE_WORLD_MODEL_SYNTHESIS_MODE") or "").strip()
-        if explicit:
-            return explicit
-        return "cosmos_i2w" if _runtime_readiness().get("ready") else "splat_only"
+        return resolve_native_runtime_strategy(os.environ).synthesis_mode
 
     def _chunk_record(self, rollout: Mapping[str, Any], chunk_id: str) -> Optional[Dict[str, Any]]:
         for chunk in list(rollout.get("chunks") or []):
@@ -2159,6 +2208,11 @@ class NativeWorldModelRuntimeStore:
             else None
         )
         runtime_readiness = _runtime_readiness()
+        runtime_identity = self._selected_runtime_identity(runtime_readiness)
+        runtime_readiness["selected_runtime_path"] = runtime_identity[
+            "selected_runtime_path"
+        ]
+        runtime_readiness["selected_backend_id"] = runtime_identity["backend_id"]
         site_reference_runtime_adapter = _site_reference_runtime_adapter(
             site_id=site_id,
             manifest_path=site_reference_manifest_path,
