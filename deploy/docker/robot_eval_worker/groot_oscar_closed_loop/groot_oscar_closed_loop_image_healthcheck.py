@@ -341,7 +341,6 @@ def main() -> int:
     )
     thin_release = bool(
         os.environ.get("BLUEPRINT_WORKER_IMAGE_VARIANT") == "groot-oscar-thin-release"
-        and model_asset_mode == "external"
     )
     payload["foundation_model_assets"] = model_asset_mode
     payload["gear_sonic_build_tree_absent"] = not wbc_build.exists()

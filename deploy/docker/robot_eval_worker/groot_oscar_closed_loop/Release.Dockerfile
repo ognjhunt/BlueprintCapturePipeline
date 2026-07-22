@@ -22,6 +22,12 @@ RUN mkdir -p /opt/blueprint/release-src \
        && "${python}" -c "import blueprint_pipeline; assert blueprint_pipeline.__file__.startswith('/opt/blueprint/release-src/')" \
        || exit 1; \
      done \
+  && printf '%s\n' '#!/opt/oscar-venv/bin/python' \
+       'from blueprint_pipeline.robot_eval_worker import main' \
+       'raise SystemExit(main())' \
+       > /opt/oscar-venv/bin/blueprint-run-robot-eval-worker \
+  && chmod 0755 /opt/oscar-venv/bin/blueprint-run-robot-eval-worker \
+  && rm -rf /opt/wbc/gear_sonic_deploy/build \
   && /opt/oscar-venv/bin/python -m venv /opt/runpod-serverless-venv \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements_runpod_serverless.lock \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/requirements_runpod_serverless_sdk.lock \

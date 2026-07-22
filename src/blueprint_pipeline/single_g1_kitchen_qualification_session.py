@@ -1297,7 +1297,16 @@ case "$ACTION" in
     start_component "$COMPONENT"
     ;;
   stop)
-    stop_component "$COMPONENT"
+    if [ "$COMPONENT" = episode ] || [ "$COMPONENT" = bootstrap ]; then
+      stop_component episode
+      stop_component groot_server
+      stop_component gear_sonic_controller
+      stop_component isaac_task_executor
+      stop_component gear_sonic_isaac_dds_bridge
+      stop_component groot_microwave_finetune
+    else
+      stop_component "$COMPONENT"
+    fi
     printf 'action=stop component=%s bootstrap_sha256=%s overlay_revision=%s\n' "$COMPONENT" "$EXPECTED_EPISODE_BOOTSTRAP_SHA256" "$ACTIVE_REVISION"
     ;;
 esac

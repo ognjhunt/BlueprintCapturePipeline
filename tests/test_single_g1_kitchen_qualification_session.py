@@ -1369,6 +1369,16 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     )
     assert "eval " not in control
     assert 'case "$ACTION" in status|tail|gpu-status|run|restart|stop|refresh)' in control
+    stop_case = control[control.index("  stop)\n") : control.index("esac\n", control.index("  stop)\n"))]
+    for component in (
+        "episode",
+        "groot_server",
+        "gear_sonic_controller",
+        "isaac_task_executor",
+        "gear_sonic_isaac_dds_bridge",
+        "groot_microwave_finetune",
+    ):
+        assert f"stop_component {component}" in stop_case
     assert "qualification_gpu_snapshot.v1" in control
     assert "single_g1_kitchen_qualification_startup_diagnostics.v1" in control
     assert "stall_seconds = int(sys.argv[6])" in control
