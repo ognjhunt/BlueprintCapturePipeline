@@ -271,30 +271,27 @@ The follow-up recheck resolved each disposition; none is a safe cluster deletion
    The old launch CLI is deliberately hard-disabled, while guarded poll/probe/delete
    compatibility and the policy command/provider-bundle contracts remain useful.
 
-## P0 — Doctrine contradictions in docs (small, high-leverage)
+## P0 — Doctrine contradictions in docs (fixed)
 
 The current doctrine (PLATFORM_CONTEXT.md, 2026-07-15) is explicit: capture-first;
 Task Evaluation Runs and Post-Training Data Packages are the sellable products; world
-models are swappable internal support, **not** the product. Three places still say the
-opposite — exactly the kind of stale doctrine that misleads agents:
+models are swappable internal support, **not** the product. The three contradictory
+surfaces found by the audit are fixed:
 
-1. `docs/superpowers/specs/2026-03-28-autonomous-org-design.md` — states
-   "world-model-product-first" and site-specific world-model products as Pipeline
-   output; also targets a `.paperclip.yaml` that doesn't exist here. Delete or archive
-   with a superseded banner.
-2. `docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md` — same
-   pre-pivot framing. Same treatment.
-3. **`AUTONOMOUS_ORG.md` (root)** — one bullet still reads "world-model-product-first",
-   contradicting PLATFORM_CONTEXT in a file agents are told to treat as an org anchor.
-   Fix the bullet in place.
+1. `docs/superpowers/specs/2026-03-28-autonomous-org-design.md` has an explicit
+   superseded banner and historical-only status.
+2. `docs/superpowers/plans/2026-03-28-autonomous-org-implementation.md` has the same
+   fail-closed superseded banner.
+3. `AUTONOMOUS_ORG.md` now states capture-first, Task-Evaluation-Run and
+   Post-Training-Data-Package product-first doctrine, with world-model backends as
+   replaceable support infrastructure.
 
-Also: `docs/IOS_SITE_GROUNDED_WORLD_MODEL_SPEC.md` — the body was already reframed to
-the capture-first "Data Package Support Capture Spec", but the filename still says
-world-model. Rename.
+The misleading `docs/IOS_SITE_GROUNDED_WORLD_MODEL_SPEC.md` path was also renamed to
+`docs/IOS_DATA_PACKAGE_SUPPORT_CAPTURE_SPEC.md`, with references updated.
 
-## P1 — Docs and scripts hygiene
+## P1 — Docs and scripts hygiene (fixed or explicitly retained)
 
-- **Create `docs/archive/` and move the verified historical subset (~28 records)**:
+- **Fixed — `docs/archive/` contains the verified historical subset (~28 records)**:
   the June audits/spikes (arena proof-boundary, live-webapp forwarding, e2e-gpu
   readiness gap, lucky-engine spike, mujoco-live-product-path, COSMOS3 feasibility,
   PIPELINE_CURRENT_PROCESS_AUDIT, SITE_REFERENCE_GROUNDING, cpu-work-audit,
@@ -310,22 +307,19 @@ world-model. Rename.
 - **Keep** the dated-filename docs that are actually script-enforced contracts
   (BETA_CAPACITY/RETENTION/RESIDENCY, CAPTURE_TRUTH_BACKUP_DR + JSON twins) — the date
   is a version stamp, and `scripts/validate_beta_capacity_storage.py` etc. consume them.
-- `docs/GPU_VM_RUNBOOK.md` self-labels legacy but is still linked from README — move to
-  archive, fix the link.
-- **Makefile**: `make test` help text claims "full CPU test suite" but pyproject
-  `addopts` deselect slow/gpu — it's the fast lane. Fix the text (the full lane is
-  `scripts/pytest_full.sh`). Makefile references zero scripts; either make it the
-  command surface or delete it in favor of README/CLAUDE.md.
-- **CLAUDE.md**: the "Read first" and evidence-checklist paths use
-  `$HOME/workspace/...` which doesn't resolve in remote/CI environments (repo lives
-  elsewhere). Use repo-relative paths for in-repo docs and mark cross-repo paths as
-  environment-dependent.
-- **Deps** (hygiene is otherwise good — exports are uv-frozen and CI-verified):
-  pin `functions/requirements.txt` (currently range-based, outside the frozen graph);
-  drop or annotate `torchvision` (zero direct imports; only transitively needed) and
-  `pycollada` (zero direct imports); document `websockets` as uvicorn's WS backend.
-- `docker-compose.yml` mounts `./data` and `./outputs` while the code writes `output/`
-  — align the naming.
+- **Fixed — the superseded GPU VM runbook is archived** at
+  `docs/archive/runbooks/GPU_VM_RUNBOOK.md`; no living README or runbook points to the
+  old path.
+- **Fixed — Makefile command truth.** `make test` is labeled as the fast CPU lane and
+  `scripts/pytest_full.sh` is named as the full lane.
+- **Fixed — portable agent paths.** `CLAUDE.md` uses repo-relative in-repo paths and
+  labels the Blueprint-WebApp evidence checklist as environment-dependent.
+- **Fixed — dependency intent and pinning.** `functions/requirements.txt` is exactly
+  pinned; `pycollada` and `torchvision` carry their indirect/upstream rationale; and
+  `websockets` is documented as uvicorn's WebSocket backend. Frozen exports remain
+  CI-verified.
+- **Fixed — compose output naming.** All services mount `./output` at
+  `/workspace/output`; capture input remains the intentional read-only `./data` mount.
 
 ## P1 — Core-path defects (the product spine)
 
@@ -430,10 +424,11 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    adapter all consume it, removing RunPod's import of the 6.5k-LOC Vast adapter.
    Explicit boolean `task_success` now survives summarization while provider-runtime
    completion remains separately labeled. Token creation and authenticated staging-URL
-   construction also moved to `provider_bundle_staging_common`, so RunPod no longer
-   imports private token helpers from the Vast staging module. The larger staging
-   manifest/server wrapper is still Vast-named, and provider-specific poll state
-   transitions and teardown execution still need incremental extraction.
+   construction also moved to `provider_bundle_staging_common`, so RunPod and the Vast
+   probe/authorized/async lanes no longer import private token helpers from the Vast
+   staging server module. The larger staging manifest/server wrapper is still
+   Vast-named, and provider-specific poll state transitions and teardown execution
+   still need incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the
