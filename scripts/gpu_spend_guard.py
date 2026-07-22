@@ -824,6 +824,7 @@ QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION = (
     "single_g1_kitchen_qualification_release_binding.v1"
 )
 QUALIFICATION_NAME_PREFIX_ROOT = "blueprint-groot-oscar-canary-qualification-"
+EMPTY_SOURCE_PATCH_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 @dataclass(frozen=True)
@@ -957,11 +958,15 @@ def _lightweight_qualification_manifest_binding(
     if (
         release_binding.get("schema_version")
         != QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION
+        or release_binding.get("source_patch_sha256") != EMPTY_SOURCE_PATCH_SHA256
         or release_binding.get("runnable_platform") != "linux/amd64"
+        or not str(release_binding.get("required_cuda_version") or "")
+        or not str(release_binding.get("required_cuda_version_source") or "").startswith(
+            "image_config_env:"
+        )
         or release_binding.get("models_externalized") is not True
         or release_binding.get("release_evidence_status") != "completed"
         or release_binding.get("thin_release_contract_status") != "passed"
-        or not _is_lower_hex(release_binding.get("source_patch_sha256"), length=64)
     ):
         return False
 
@@ -1236,6 +1241,9 @@ def find_protected_pod_ids(
         launched_id = binding.launched_id
         qualification_manifest_path = binding.qualification_manifest_path
         if qualification_manifest_path is not None:
+            qualification_deadline_is_live = (
+                float(binding.qualification_watchdog_deadline_epoch or 0) > observed_at
+            )
             allocator_owner = any(
                 _cmd_option_references_exact_path(
                     cmd,
@@ -1269,11 +1277,10 @@ def find_protected_pod_ids(
                     "--deadline-epoch",
                     str(binding.qualification_watchdog_deadline_epoch or ""),
                 )
-                and float(binding.qualification_watchdog_deadline_epoch or 0)
-                > observed_at
+                and qualification_deadline_is_live
                 for cmd in cmdlines
             )
-            if allocator_owner or watchdog_owner:
+            if qualification_deadline_is_live and (allocator_owner or watchdog_owner):
                 protected.add(launched_id)
             continue
         job_dir = str(path.parent)
