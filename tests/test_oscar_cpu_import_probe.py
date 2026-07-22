@@ -7,6 +7,17 @@ from pathlib import Path
 
 
 def test_cpu_import_probe_scopes_cuda_discovery_patch(tmp_path: Path) -> None:
+    torch_package = tmp_path / "torch"
+    torch_package.mkdir()
+    (torch_package / "__init__.py").write_text(
+        "def _current_device():\n"
+        "    raise RuntimeError('real CUDA discovery must stay scoped')\n"
+        "class _Cuda:\n"
+        "    pass\n"
+        "cuda = _Cuda()\n"
+        "cuda.current_device = _current_device\n",
+        encoding="utf-8",
+    )
     package = tmp_path / "inference"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
