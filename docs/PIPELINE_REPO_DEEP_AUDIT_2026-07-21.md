@@ -377,11 +377,15 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    `oscar_visual_augmentation_packet/model_backend_registry.json` filename in the
    package builder (mitigated by the packet emitting a per-run registry — rename to a
    neutral artifact name).
-6. **Cosmos3 "preferred candidate" status can never activate**: `wam_backend_strategy`
-   derives it mechanically, but the required scorer modules
-   (`sc3_consistency_scorer`/`wam_consistency_scorer`) don't exist in the repo. Either
-   build the scorers or stop cataloging cosmos3 as preferred — a permanently
-   aspirational preferred backend is misleading state.
+6. **Corrected on revalidation — Cosmos3 preference is not permanently asserted or
+   impossible to activate.** The first-party scorer modules do not exist, but
+   `wam_backend_strategy` also recognizes the live
+   `wam_strict_action_consistency_scorer_client` when its external scorer URL is
+   configured. Adapter/runtime, scorer, calibration-anchor, and run-gate checks derive
+   the state; without all of them the catalog reports `aspirational`, not preferred.
+   Tests cover both the default aspirational state and successful activation through
+   an explicit scorer or configured external service. Keep the missing first-party
+   scorer as a capability gap, not a false catalog-state bug.
 7. The new **model-neutral evaluator layer** (#140–#143: `evaluator_evidence_profiles`,
    `evaluator_runtime_evidence`, `evaluator_qualification_workflow`,
    `policy_evaluation_contracts`, `decision_grade_ranking`) is actively developed but
@@ -548,8 +552,9 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
   footprint after exact-release verification.
 - **`wam_strict_action_consistency_scorer_client.py`** — the configured service bridge
   for the DigitalOcean closed-loop job (`python -m` string reference), with dedicated
-  transport tests. It does not replace the missing first-party Cosmos3 consistency
-  scorer, but it is live external-scorer infrastructure and must remain.
+  transport tests. It does not implement a first-party Cosmos3 consistency scorer,
+  but it legitimately satisfies the strategy's scorer-availability precondition when
+  an external scorer URL is configured, and must remain.
 - **`scripts/build_launch_readiness_packet.py`** — documented in the living
   command-safety matrix as the canonical local launch evidence packet, with a real
   test suite (`tests/test_launch_readiness_packet.py`).
