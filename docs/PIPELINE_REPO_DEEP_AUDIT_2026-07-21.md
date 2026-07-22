@@ -34,8 +34,13 @@ failures were reproduced as host disk-exhaustion effects, then their affected st
 materialization, package, product-spine, local-bundle, and governed-ledger modules were
 rerun successfully before the clean full-suite result.
 
-After that verification, `origin/main` advanced through #150/#151. The remediation
-branch was rebased onto `894583dd`; the NVIDIA/SIGGRAPH integration makes
+After the first P2 seams were added, the complete combined-tree default lane also passed
+with **4,736 passed, 1 skipped, and 1,595 deselected in 1:09:41**. This is the newest
+complete-suite result; the smaller count above records the earlier P0/P1 checkpoint.
+
+After that verification, `origin/main` advanced through #150/#151 and then #148. The
+remediation branch was first rebased onto `894583dd`, then refreshed onto current main
+`1974536b`; the NVIDIA/SIGGRAPH integration makes
 `splat_backends` and its `isaac_nurec_export` adapter live, so both modules and their
 direct tests were restored. This is a post-audit reachability change, not evidence that
 the original graph scan was fabricated. The safe removal estimate and P0 ledger below
@@ -46,8 +51,11 @@ Post-rebase validation on the reconciled tree includes: 64 NVIDIA/SIGGRAPH integ
 and restored splat/NuRec tests, 6 additional SimReady asset tests, 84 selected core
 overlap tests (artifact/evaluation contracts, `run_e2e`, simulation automation, and the
 CPU product spine), all 198 slow robot-eval orchestrator tests, and all 12 governed SC3
-ledger tests. All passed. These are hermetic results; they do not claim live GPU/provider
-execution, ranking fidelity, deployment, or paid-resource proof.
+ledger tests. A final 318-test seam/core/upstream-overlap selection also passed: 317 in
+one run, while the product-spine archive test correctly failed closed at 100% disk and
+then passed separately after only pytest-generated output was removed. These are
+hermetic results; they do not claim live GPU/provider execution, ranking fidelity,
+deployment, or paid-resource proof.
 
 The first P2 seam slice now puts the hosted native runtime behind a typed strategy
 catalog. `site_splat` is the provider-neutral default; the legacy Cosmos-Predict2.5
@@ -521,9 +529,11 @@ or drop scripts nothing references.
    artifact collection, or teardown against live infrastructure.
 5. **Shared error semantics started.** `stage_outcome` now distinguishes produced,
    not-requested, unavailable, blocked, and failed outcomes, and `run_e2e` records those
-   normalized kinds in its ledger and fleet summaries. Most older stages still emit
-   ad-hoc status strings, so adoption across the product spine and provider adapters
-   remains incomplete.
+   normalized kinds in its ledger and fleet summaries. Production lane-resume markers
+   also bind an explicit typed `produced` outcome to the stored lane result and reject
+   mismatched/non-produced outcomes while retaining compatibility with older v1 markers.
+   Most older stages still emit ad-hoc status strings, so adoption across the product
+   spine and provider adapters remains incomplete.
 6. **Observability.** Structured `log_event` remains concentrated in orchestrators and
    there is no metrics backend, but the minimum audit target is implemented. Every
    `run_e2e` invocation writes `pipeline/run_summary.json` with stage timings, outcome,

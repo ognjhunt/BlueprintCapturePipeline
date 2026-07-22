@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .common import utc_now_iso, write_json
+from .core.stage_outcome import OutcomeKind, StageOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,10 @@ def record_lane_completion(
         "completed_at": utc_now_iso(),
         "capture_input_fingerprint": dict(fingerprint),
         "output_paths": _lane_output_paths(lane_result),
+        "outcome": StageOutcome(
+            kind=OutcomeKind.PRODUCED,
+            artifact=safe_result,
+        ).to_mapping(),
         "lane_result": safe_result,
     }
     try:
@@ -302,6 +307,16 @@ def read_completed_lane_result(
     lane_result = marker.get("lane_result")
     if not isinstance(lane_result, Mapping):
         return None
+    outcome = marker.get("outcome")
+    if outcome is not None:
+        if not isinstance(outcome, Mapping):
+            return None
+        if outcome.get("schema_version") != "stage_outcome.v1":
+            return None
+        if outcome.get("kind") != OutcomeKind.PRODUCED.value:
+            return None
+        if outcome.get("artifact") != lane_result:
+            return None
     outputs = marker.get("output_paths")
     if not isinstance(outputs, list):
         return None
