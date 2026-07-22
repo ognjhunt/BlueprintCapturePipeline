@@ -95,3 +95,14 @@ def test_release_asset_modes_are_explicit_and_fail_closed() -> None:
     healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
     assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in healthcheck
     assert 'and model_asset_mode == "external"' in healthcheck
+
+
+def test_release_source_overlay_does_not_require_foundation_venv_pip() -> None:
+    dockerfile = RELEASE.read_text(encoding="utf-8")
+
+    assert "/opt/oscar-venv/bin/python -m pip install" not in dockerfile
+    assert "/opt/gr00t-venv/bin/python -m pip install" not in dockerfile
+    assert "/isaac-sim/python.sh -m pip install" not in dockerfile
+    assert "/opt/blueprint/release-src" in dockerfile
+    assert "blueprint_release_override.pth" in dockerfile
+    assert dockerfile.count("blueprint_pipeline.__file__.startswith") == 1

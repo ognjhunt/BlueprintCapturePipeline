@@ -14,13 +14,18 @@ COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_runpod
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_runpod_serverless_sdk.lock /tmp/requirements_runpod_serverless_sdk.lock
 COPY --chmod=0755 deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh /opt/blueprint/thin_release_entrypoint.sh
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
-RUN /opt/oscar-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
+RUN mkdir -p /opt/blueprint/release-src \
+  && cp -a /tmp/blueprint-release/src/blueprint_pipeline /opt/blueprint/release-src/ \
+  && for python in /opt/oscar-venv/bin/python /opt/gr00t-venv/bin/python /isaac-sim/python.sh; do \
+       site_packages="$(${python} -c 'import site; print(site.getsitepackages()[0])')" \
+       && printf '%s\n' "import sys; sys.path.insert(0, '/opt/blueprint/release-src')" > "${site_packages}/blueprint_release_override.pth" \
+       && "${python}" -c "import blueprint_pipeline; assert blueprint_pipeline.__file__.startswith('/opt/blueprint/release-src/')" \
+       || exit 1; \
+     done \
   && /opt/oscar-venv/bin/python -m venv /opt/runpod-serverless-venv \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements_runpod_serverless.lock \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/requirements_runpod_serverless_sdk.lock \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
-  && /opt/gr00t-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
-  && /isaac-sim/python.sh -m pip install --no-deps /tmp/blueprint-release \
   && rm -rf /opt/runpod-serverless-venv/lib/python*/site-packages/pip* \
               /opt/runpod-serverless-venv/lib/python*/site-packages/setuptools* \
               /opt/runpod-serverless-venv/lib/python*/site-packages/pkg_resources \
