@@ -55,6 +55,9 @@
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": [
       "tests/test_mujoco_g1_simulator_command.py"
     ],
+    "src/blueprint_pipeline/mujoco_eval_media.py": [
+      "tests/test_mujoco_eval_media.py"
+    ],
     "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": [
       "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py"
     ],
@@ -187,7 +190,7 @@
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2198,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6059,
-    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12297,
+    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12110,
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
     "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,

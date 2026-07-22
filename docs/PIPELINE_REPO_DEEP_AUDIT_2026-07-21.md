@@ -448,11 +448,16 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    `single_g1_kitchen_qualification_session.py` (4,210 after #154 extracted its
    320-LOC observability contract),
    `robot_eval_dataset.py` (4,959), `wam_fixture_evaluator.py` (4,605).
-4. **`mujoco_g1_wam_vla_policy_endpoint_eval.py` (12,297 LOC)** — largest module in the
-   repo, reachable only via its own console script + tests, zero importers. Decide:
-   if the MuJoCo policy-endpoint eval lane is a current product lane, split and test
-   it; if it was a one-time investigation, archive it. Do not leave a 12k-LOC
-   single-file CLI in the flat namespace.
+4. **Live; split `mujoco_g1_wam_vla_policy_endpoint_eval.py` (12,110 LOC)
+   incrementally.** The original "zero importers" statement was wrong. In addition to
+   its console script and dedicated test suites, the current WAM/VLA setup emits this
+   module's command, the GR00T Sonic runtime and preflight route operators to it, and
+   `oscar_cosmos_wam_evaluator` consumes its summary artifact. It is therefore a live
+   MuJoCo policy-evaluation lane, not an archive candidate. Media sampling, playback
+   timing, ffprobe inspection, and grouped result counts are now extracted into the
+   directly tested `mujoco_eval_media` contract. The reduced 12,110-line source budget
+   is enforced with characterization coverage; continue extracting cohesive runtime
+   phases without growing or big-bang moving the file.
 5. **Do NOT consolidate the four groot_oscar RunPod lanes** (serverless /
    persistent-carrier / storage-volume / carrier-volume). A previous hypothesis called
    them "generations"; the audit shows they are distinct *admitted spend lanes* under
