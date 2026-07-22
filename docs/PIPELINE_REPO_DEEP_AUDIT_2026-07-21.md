@@ -63,9 +63,9 @@ remained `$0`. No instance was launched: the allocator correctly requires a clea
 and release-evidence binding for the exact `origin/main` commit, while the retained
 qualification image is bound to `fca4712e` plus a non-empty dirty-patch digest and the
 newest clean registry image is bound to audit commit `2edb48b`, not current main
-`894583dd`. The normal qualification watchdog contract is bounded to at most `$5.50`,
+`1974536b`. The normal qualification watchdog contract is bounded to at most `$5.50`,
 but budget authorization does not override source identity. A clean, immutable
-`894583dd` image plus its generated thin-release evidence is the concrete prerequisite
+`1974536b` image plus its generated thin-release evidence is the concrete prerequisite
 for live GPU startup/teardown proof; startup would still not prove policy quality,
 semantic task success, or ranking fidelity.
 
