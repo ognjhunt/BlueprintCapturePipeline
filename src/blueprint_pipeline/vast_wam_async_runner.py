@@ -106,6 +106,7 @@ from .vast_provider_adapter import (
     _release_vast_launch_lock,
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE, DEFAULT_WAM_VAST_LAUNCH_MODE
+from .vast_wam_teardown import destroy_vast_instance_with_retry
 from .wam_async_runner_common import (
     deadline_capped_wait_seconds,
     download_url_to_file,
@@ -330,71 +331,15 @@ def _destroy_vast_instance_with_retry(
     attempts: int = 3,
     backoff_seconds: float = 3.0,
 ) -> tuple[bool, list[dict[str, Any]]]:
-    """Destroy a Vast instance, retrying transient failures.
-
-    A single failed DELETE must never leave an instance billing. In practice a destroy can be
-    rejected transiently — e.g. the instance is still ``loading`` (observed: a dud offer whose
-    destroy failed once and kept billing until a manual retry), or a momentary network/API
-    error. Retries up to ``attempts`` times with linear backoff; a 404 means the instance is
-    already gone (success). Returns ``(continuing_spend, teardown_actions)`` where
-    ``continuing_spend`` is True only if *every* attempt failed.
-    """
-    teardown_actions: list[dict[str, Any]] = []
-    total = max(1, int(attempts))
-    for attempt in range(1, total + 1):
-        try:
-            delete_status, delete_response = _api_json(
-                method="DELETE",
-                path=f"/instances/{instance_id}/",
-                api_key=api_key,
-                timeout_seconds=30,
-            )
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "http_status_code": delete_status,
-                    "response": _redact_runtime_value(delete_response, [api_key]),
-                    "status": "completed",
-                }
-            )
-            return False, teardown_actions
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                teardown_actions.append(
-                    {
-                        "instance_id": instance_id,
-                        "action": "destroy_instance",
-                        "attempt": attempt,
-                        "http_status_code": exc.code,
-                        "status": "completed",
-                        "reason": "instance_already_absent",
-                    }
-                )
-                return False, teardown_actions
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "http_status_code": exc.code,
-                    "status": "failed",
-                }
-            )
-        except Exception as exc:
-            teardown_actions.append(
-                {
-                    "instance_id": instance_id,
-                    "action": "destroy_instance",
-                    "attempt": attempt,
-                    "status": "failed",
-                    "error_type": type(exc).__name__,
-                }
-            )
-        if attempt < total:
-            time.sleep(min(15.0, backoff_seconds * attempt))
-    return True, teardown_actions
+    return destroy_vast_instance_with_retry(
+        instance_id=instance_id,
+        api_key=api_key,
+        api_call=_api_json,
+        redact_response=_redact_runtime_value,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        sleeper=time.sleep,
+    )
 
 
 def destroy_async_vast_wam_run(

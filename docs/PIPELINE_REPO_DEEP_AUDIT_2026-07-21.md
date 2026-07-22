@@ -408,7 +408,7 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
 ## P2 — Consolidations (duplication from pivots)
 
 1. **WAM async runners**: `runpod_wam_async_runner.py` (3,682) vs
-   `vast_wam_async_runner.py` (1,882) — parallel per-provider implementations of the
+   `vast_wam_async_runner.py` (1,827) — parallel per-provider implementations of the
    same launch/poll/collect lifecycle behind one facade (`wam_compute_providers`,
    1,903), with cross-entanglement (the RunPod runner imports Vast modules). Extract
    the shared lifecycle against the provider-adapter contracts; ~1,500 LOC reduction.
@@ -443,7 +443,11 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    mapping is isolated in `wam_provider_poll_state`; partial-state salvage and staging
    URL-pair construction also moved out of the Vast runner, reducing it by another 11
    lines. Its 18 direct state-contract tests and all 66 RunPod/Vast async-runner tests
-   pass. Provider status querying, retrying provider API mutations, and teardown-proof
+   pass. Vast destroy execution now lives in `vast_wam_teardown`: 404 is authoritative
+   already-absent evidence, other failures retry with bounded linear backoff, responses
+   are redacted, and exhaustion remains explicit continuing-spend risk. Its four direct
+   tests plus all 18 Vast async-runner tests pass, reducing that runner by another 55
+   lines. Provider status querying, RunPod stop/delete execution, and teardown-proof
    persistence still need incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
