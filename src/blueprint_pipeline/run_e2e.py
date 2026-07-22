@@ -22,7 +22,7 @@ from .core.lane_resume import (
     CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION,
     capture_input_fingerprint,
 )
-from .logging_utils import log_event
+from .core.logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .core.pipeline_settings import PipelineSettings

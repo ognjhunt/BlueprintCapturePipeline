@@ -485,11 +485,12 @@ that rejects direct campaign, readiness, and paid-provider imports. The first re
 violation was removed by extracting G1 closure projection into a neutral aggregate-
 closure contract; campaign modules now depend inward on that contract, while buyer
 package generation no longer imports G1 campaign code. The first physical package slice
-is also in place: common filesystem/contracts, typed settings, shared stage-outcome
-semantics, and production lane resume are canonical under `blueprint_pipeline.core`,
-with compatibility imports at their old paths and a mechanical rule preventing the core
-package from importing campaign, readiness, or provider code. Moving the remaining core
-primitives and adding broader layer coverage remain incremental follow-ups.
+is also in place: common filesystem/contracts, structured logging, typed settings, shared
+stage-outcome semantics, and production lane resume are canonical under
+`blueprint_pipeline.core`, with compatibility imports at their old paths and a mechanical
+rule preventing the core package from importing campaign, readiness, or provider code.
+Moving the remaining core primitives and adding broader layer coverage remain incremental
+follow-ups.
 
 Do this **after** the P0 removals (moving dead code is wasted work) and incrementally —
 one subpackage per PR with import shims, not a big-bang rename.

@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import first_gpu_candidate_audit as candidate_audit
-from blueprint_pipeline import launch_bundle, logging_utils, proof_contracts
+from blueprint_pipeline import launch_bundle, proof_contracts
+from blueprint_pipeline.core import logging_utils
 
 
 def test_launch_bundle_edge_branches_use_descriptor_and_task_fallbacks() -> None:

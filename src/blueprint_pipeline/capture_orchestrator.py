@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from .core.common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .geometry_sources import load_capture_geometry
-from .logging_utils import log_event
+from .core.logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .core.pipeline_settings import PipelineSettings
