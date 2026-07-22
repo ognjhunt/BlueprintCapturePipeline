@@ -370,12 +370,13 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    Its import is lazy inside a compatibility adapter and execution requires both the
    legacy support flag and explicit legacy-lane admission. The current product path
    never loads it.
-2. **Partially fixed — evaluation prep no longer executes a Cosmos exporter.** It only
-   ingests an explicitly pre-existing optional support artifact and otherwise records
-   `not_requested`. However, compatibility fields and paths for Cosmos training and
-   zero-shot artifacts remain hard-coded in the 5k-LOC prep module. Move that optional
-   support discovery behind a neutral backend-artifact registry during the monolith
-   split.
+2. **Fixed — optional backend support discovery is registry-owned.** Evaluation prep
+   never executes a Cosmos exporter: it only ingests explicitly pre-existing optional
+   support artifacts and otherwise records `not_requested`. The compatibility paths
+   for Cosmos training and zero-shot artifacts now live in the typed, neutral
+   `backend_support_artifacts` registry rather than the 5k-LOC product stage. Existing
+   compatibility output keys are unchanged; registry and prep integration tests cover
+   missing and supplied artifacts.
 3. **Partially fixed — native runtime selection is now behind a typed strategy seam.**
    `site_splat` is the neutral default, `cosmos_wam` is explicit, conflicting old/new
    settings fail closed, and hard-coded workspace checkout discovery is removed.

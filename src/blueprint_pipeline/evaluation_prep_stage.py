@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .alpha_readiness import sync_webapp_evaluation_prep, write_alpha_readiness_summary
+from .backend_support_artifacts import resolve_backend_support_artifacts
 from .common import PipelineError, ensure_dir, optional_read_json, read_json_any, relative_scene_path, utc_now_iso, write_json
 from .launch_proof_policy import runtime_required
 from .local_capture import resolve_local_capture_context
@@ -127,12 +128,12 @@ def _cosmos_runtime_backend_variants(
     pipeline_dir: Path,
     native_semantics: Mapping[str, Any],
 ) -> Dict[str, Dict[str, Any]]:
-    benchmark_path = pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"
-    export_path = pipeline_dir / "cosmos_training_export" / "manifest.json"
-    training_run_path = pipeline_dir / "cosmos_training_export" / "training_run_manifest.json"
-    benchmark = _read_optional_mapping(benchmark_path)
-    export_manifest = _read_optional_mapping(export_path)
-    training_run = _read_optional_mapping(training_run_path)
+    support = resolve_backend_support_artifacts(
+        pipeline_dir, backend_id="cosmos_predict2_5"
+    )
+    benchmark_path, benchmark, benchmark_relative = support["cosmos_zero_shot_benchmark"]
+    export_path, export_manifest, export_relative = support["cosmos_training_export"]
+    training_run_path, training_run, training_relative = support["cosmos_lora_training"]
     native_primary_ready = bool(native_semantics.get("native_world_model_primary"))
 
     variants: Dict[str, Dict[str, Any]] = {}
@@ -148,7 +149,7 @@ def _cosmos_runtime_backend_variants(
     zero_shot_blockers.append("native_serving_contract_unimplemented")
     variants["cosmos_zero_shot_i2w"] = {
         "backend_id": "cosmos_zero_shot_i2w",
-        "bundle_manifest_uri": _gs_uri(context, "cosmos_zero_shot_validation/cosmos_zero_shot_benchmark.json")
+        "bundle_manifest_uri": _gs_uri(context, benchmark_relative)
         if benchmark_path.is_file()
         else None,
         "adapter_manifest_uri": None,
@@ -165,7 +166,7 @@ def _cosmos_runtime_backend_variants(
             "benchmark_reason": benchmark.get("reason"),
         },
         "conversion": {
-            "benchmark_manifest_uri": _gs_uri(context, "cosmos_zero_shot_validation/cosmos_zero_shot_benchmark.json")
+            "benchmark_manifest_uri": _gs_uri(context, benchmark_relative)
             if benchmark_path.is_file()
             else None,
         },
@@ -188,10 +189,10 @@ def _cosmos_runtime_backend_variants(
     training_launchable = not training_blockers
     variants["cosmos_predict_lora_adapter"] = {
         "backend_id": "cosmos_predict_lora_adapter",
-        "bundle_manifest_uri": _gs_uri(context, "cosmos_training_export/manifest.json")
+        "bundle_manifest_uri": _gs_uri(context, export_relative)
         if export_path.is_file()
         else None,
-        "adapter_manifest_uri": _gs_uri(context, "cosmos_training_export/training_run_manifest.json")
+        "adapter_manifest_uri": _gs_uri(context, training_relative)
         if training_run_path.is_file()
         else None,
         "launchable": training_launchable,
@@ -213,13 +214,13 @@ def _cosmos_runtime_backend_variants(
             "source_mode": export_manifest.get("source_mode"),
         },
         "conversion": {
-            "training_export_manifest_uri": _gs_uri(context, "cosmos_training_export/manifest.json")
+            "training_export_manifest_uri": _gs_uri(context, export_relative)
             if export_path.is_file()
             else None,
-            "benchmark_manifest_uri": _gs_uri(context, "cosmos_zero_shot_validation/cosmos_zero_shot_benchmark.json")
+            "benchmark_manifest_uri": _gs_uri(context, benchmark_relative)
             if benchmark_path.is_file()
             else None,
-            "training_run_manifest_uri": _gs_uri(context, "cosmos_training_export/training_run_manifest.json")
+            "training_run_manifest_uri": _gs_uri(context, training_relative)
             if training_run_path.is_file()
             else None,
             "checkpoint_path": training_run.get("checkpoint_path"),
@@ -4249,20 +4250,12 @@ def run_evaluation_prep_stage(
     recapture_diff_path = eval_dir / "recapture_diff.json"
     _copy_json(recapture_diff_path, recapture_diff)
 
-    cosmos_training_export_path = pipeline_dir / "cosmos_training_export" / "manifest.json"
-    cosmos_training_export = _read_optional_mapping(cosmos_training_export_path) or {
-        "schema_version": "cosmos_training_export_result.v1",
-        "status": "not_requested",
-        "reason": "legacy_cosmos_support_artifact_not_supplied",
-        "claim_boundary": {
-            "evaluation_prep_executes_model_specific_exporters": False,
-            "explicit_external_support_artifact_required": True,
-        },
-    }
-    cosmos_training_run = _read_optional_mapping(pipeline_dir / "cosmos_training_export" / "training_run_manifest.json")
-    cosmos_zero_shot_benchmark = _read_optional_mapping(
-        pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json"
+    backend_support = resolve_backend_support_artifacts(
+        pipeline_dir, backend_id="cosmos_predict2_5"
     )
+    cosmos_training_export_path, cosmos_training_export, _ = backend_support["cosmos_training_export"]
+    cosmos_training_run_path, cosmos_training_run, _ = backend_support["cosmos_lora_training"]
+    cosmos_zero_shot_benchmark_path, cosmos_zero_shot_benchmark, _ = backend_support["cosmos_zero_shot_benchmark"]
     simulation_automation_surface = simulation_automation_evaluation_prep_surface(
         capture_root=context.capture_root,
         eval_dir=eval_dir,
@@ -4546,8 +4539,8 @@ def run_evaluation_prep_stage(
             "compatibility_matrix": _relative_to(eval_dir, compatibility_matrix_path),
             "recapture_diff": _relative_to(eval_dir, recapture_diff_path),
             **(
-                {"cosmos_zero_shot_benchmark": _relative_to(eval_dir, pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json")}
-                if (pipeline_dir / "cosmos_zero_shot_validation" / "cosmos_zero_shot_benchmark.json").is_file()
+                {"cosmos_zero_shot_benchmark": _relative_to(eval_dir, cosmos_zero_shot_benchmark_path)}
+                if cosmos_zero_shot_benchmark_path.is_file()
                 else {}
             ),
             **(
@@ -4556,8 +4549,8 @@ def run_evaluation_prep_stage(
                 else {}
             ),
             **(
-                {"cosmos_lora_training": _relative_to(eval_dir, pipeline_dir / "cosmos_training_export" / "training_run_manifest.json")}
-                if (pipeline_dir / "cosmos_training_export" / "training_run_manifest.json").is_file()
+                {"cosmos_lora_training": _relative_to(eval_dir, cosmos_training_run_path)}
+                if cosmos_training_run_path.is_file()
                 else {}
             ),
             "launchable_export_bundle": _relative_to(eval_dir, launchable_export_bundle_path),
