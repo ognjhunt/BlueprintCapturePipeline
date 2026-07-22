@@ -21,6 +21,7 @@ from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline.groot_oscar_runpod_watchdog import OWNER_TEARDOWN_CANCEL_NAME
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
 from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
+    MODEL_ASSETS_BINDING_SCHEMA_VERSION,
     capture_runtime_attempt_overlay_base,
     embedded_launch_rebind,
 )
@@ -113,6 +114,62 @@ def _minimal_inputs() -> dict:
     }
 
 
+def _external_model_cache_evidence(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "groot_oscar_external_model_cache_verification.v2",
+                "status": "passed",
+                "blockers": [],
+                "model_manifest_digest": "sha256:" + "d" * 64,
+                "cache_root": "/models/blueprint-groot-oscar-v1",
+                "checks": {"models_cached_offline": True},
+                "raw_secret_values_recorded": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _embedded_release_evidence(**overrides: object) -> dict:
+    foundation_ref = "registry.example/carrier@sha256:" + "c" * 64
+    release = _release_evidence(
+        models_embedded=True,
+        foundation_model_assets="embedded",
+        foundation_image_ref=foundation_ref,
+        **overrides,
+    )
+    release["thin_release_contract"].update(
+        {
+            "foundation_model_assets": "embedded",
+            "models_externalized": False,
+            "models_embedded_in_foundation": True,
+        }
+    )
+    return release
+
+
+def _embedded_model_assets_evidence(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": MODEL_ASSETS_BINDING_SCHEMA_VERSION,
+                "status": "bound_to_release_foundation",
+                "source_commit": TEST_SOURCE_COMMIT,
+                "release_image_ref": TEST_IMAGE_REF,
+                "foundation_image_ref": (
+                    "registry.example/carrier@sha256:" + "c" * 64
+                ),
+                "external_provider_volume_used": False,
+                "runtime_checkpoint_preflight_required": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_release_binding_accepts_exact_digest_pinned_clean_release() -> None:
     binding, blockers = qualification._release_binding(
         _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
@@ -123,6 +180,114 @@ def test_release_binding_accepts_exact_digest_pinned_clean_release() -> None:
     assert binding["image_digest"] == TEST_IMAGE_DIGEST
     assert binding["source_commit"] == TEST_SOURCE_COMMIT
     assert binding["models_externalized"] is True
+
+
+def test_release_binding_accepts_exact_embedded_foundation() -> None:
+    foundation_ref = "registry.example/carrier@sha256:" + "c" * 64
+    release = _release_evidence(
+        models_embedded=True,
+        foundation_model_assets="embedded",
+        foundation_image_ref=foundation_ref,
+    )
+    release["thin_release_contract"].update(
+        {
+            "foundation_model_assets": "embedded",
+            "models_externalized": False,
+            "models_embedded_in_foundation": True,
+        }
+    )
+
+    binding, blockers = qualification._release_binding(
+        release, expected_source_commit=TEST_SOURCE_COMMIT
+    )
+
+    assert blockers == []
+    assert binding["model_assets_mode"] == "embedded"
+    assert binding["models_externalized"] is False
+    assert binding["models_embedded_in_foundation"] is True
+    assert binding["foundation_image_ref"] == foundation_ref
+
+
+def test_embedded_model_assets_binding_requires_exact_release_and_foundation() -> None:
+    foundation_ref = "registry.example/carrier@sha256:" + "c" * 64
+    release = _release_evidence(
+        models_embedded=True,
+        foundation_model_assets="embedded",
+        foundation_image_ref=foundation_ref,
+    )
+    release["thin_release_contract"].update(
+        {
+            "foundation_model_assets": "embedded",
+            "models_externalized": False,
+            "models_embedded_in_foundation": True,
+        }
+    )
+    release_binding, release_blockers = qualification._release_binding(
+        release, expected_source_commit=TEST_SOURCE_COMMIT
+    )
+    evidence = {
+        "schema_version": MODEL_ASSETS_BINDING_SCHEMA_VERSION,
+        "status": "bound_to_release_foundation",
+        "source_commit": TEST_SOURCE_COMMIT,
+        "release_image_ref": TEST_IMAGE_REF,
+        "foundation_image_ref": foundation_ref,
+        "external_provider_volume_used": False,
+        "runtime_checkpoint_preflight_required": True,
+    }
+
+    binding, blockers = qualification.build_model_assets_binding(evidence, release_binding)
+
+    assert release_blockers == []
+    assert blockers == []
+    assert binding["status"] == "bound"
+    evidence["release_image_ref"] = "registry.example/wrong@sha256:" + "d" * 64
+    _, mismatch_blockers = qualification.build_model_assets_binding(
+        evidence, release_binding
+    )
+    assert mismatch_blockers == [
+        "qualification_embedded_model_assets_release_image_ref_mismatch"
+    ]
+
+
+def test_external_model_cache_is_rejected_without_vast_delivery_binding(
+    tmp_path: Path,
+) -> None:
+    release_binding, release_blockers = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+    evidence = json.loads(
+        _external_model_cache_evidence(tmp_path / "external-cache.json").read_text()
+    )
+
+    binding, blockers = qualification.build_model_assets_binding(
+        evidence, release_binding
+    )
+
+    assert release_blockers == []
+    assert binding["status"] == "blocked"
+    assert blockers == ["qualification_external_model_cache_vast_delivery_not_bound"]
+
+
+def test_allocate_requires_model_assets_evidence() -> None:
+    with pytest.raises(
+        ValueError,
+        match="qualification_allocate_arguments_missing:model_cache_evidence",
+    ):
+        qualification.run_qualification_session(
+            action="allocate",
+            session_manifest="session.json",
+            episode_bundle="episode.zip",
+            provider_bundle_url_file="bundle.txt",
+            provider_output_put_url_file="put.txt",
+            provider_output_get_url_file="get.txt",
+            release_evidence="release.json",
+            expected_source_commit=TEST_SOURCE_COMMIT,
+            provider_launch_request="request.json",
+            preflight_bundle="preflight.json",
+            admission_out="admission.json",
+            bound_request_out="bound.json",
+            adapter_output="result.json",
+        )
 
 
 def test_qualification_release_rebind_preserves_source_and_derives_runtime_inputs() -> None:
@@ -1261,6 +1426,16 @@ def test_qualification_bootstrap_stages_exact_digest_bound_fixed_control() -> No
     )
     assert "eval " not in control
     assert 'case "$ACTION" in status|tail|gpu-status|run|restart|stop|refresh)' in control
+    stop_case = control[control.index("  stop)\n") : control.index("esac\n", control.index("  stop)\n"))]
+    for component in (
+        "episode",
+        "groot_server",
+        "gear_sonic_controller",
+        "isaac_task_executor",
+        "gear_sonic_isaac_dds_bridge",
+        "groot_microwave_finetune",
+    ):
+        assert f"stop_component {component}" in stop_case
     assert "qualification_gpu_snapshot.v1" in control
     assert "single_g1_kitchen_qualification_startup_diagnostics.v1" in control
     assert "stall_seconds = int(sys.argv[6])" in control
@@ -2644,12 +2819,15 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
         "provider_output_put_url_file": tmp_path / "missing-put-url.txt",
         "provider_output_get_url_file": tmp_path / "missing-get-url.txt",
         "release_evidence": tmp_path / "missing-release.json",
+        "model_cache_evidence": _embedded_model_assets_evidence(
+            tmp_path / "model-cache.json"
+        ),
         "expected_source_commit": TEST_SOURCE_COMMIT,
         "execute": True,
         **outputs,
     }
     Path(request["release_evidence"]).write_text(
-        json.dumps(_release_evidence(source_commit="c" * 40))
+        json.dumps(_embedded_release_evidence(source_commit="c" * 40))
     )
     result = qualification.run_qualification_session(**request)
 
@@ -2663,7 +2841,9 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
     assert manifest["bootstrap"]["overlay_revision"] == 0
     assert manifest["bootstrap"]["control_contract_version"] == qualification.CONTROL_CONTRACT_VERSION
 
-    Path(request["release_evidence"]).write_text(json.dumps(_release_evidence()))
+    Path(request["release_evidence"]).write_text(
+        json.dumps(_embedded_release_evidence())
+    )
     retry = qualification.run_qualification_session(**request)
     _, retry_manifest = qualification._load_private_manifest(tmp_path / "session.json")
     assert retry["status"] == "blocked"
@@ -3063,7 +3243,8 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps(_release_evidence()))
+    release.write_text(json.dumps(_embedded_release_evidence()))
+    model_cache = _embedded_model_assets_evidence(tmp_path / "model-cache.json")
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
 
     common = dict(
@@ -3075,6 +3256,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         provider_output_put_url_file=secret_url,
         provider_output_get_url_file=secret_url,
         release_evidence=release,
+        model_cache_evidence=model_cache,
         expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
@@ -3146,7 +3328,9 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
         assert artifact["release_binding"]["required_cuda_version"] == "12.8"
 
     changed_source = "c" * 40
-    release.write_text(json.dumps(_release_evidence(source_commit=changed_source)))
+    release.write_text(
+        json.dumps(_embedded_release_evidence(source_commit=changed_source))
+    )
     mismatch = qualification.run_qualification_session(
         **{**common, "expected_source_commit": changed_source},
         provider_bootstrap_url_file=secret_url,
@@ -3162,7 +3346,7 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     legacy_manifest.pop("release_binding_status")
     legacy_manifest.pop("source_commit")
     qualification._private_write_json(legacy_path, legacy_manifest)
-    release.write_text(json.dumps(_release_evidence()))
+    release.write_text(json.dumps(_embedded_release_evidence()))
     legacy_retry = qualification.run_qualification_session(
         **{
             **common,
@@ -3244,7 +3428,8 @@ def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
     secret_url.write_text("https://objects.example/artifact?signature=secret")
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
-    release.write_text(json.dumps(_release_evidence()))
+    release.write_text(json.dumps(_embedded_release_evidence()))
+    model_cache = _embedded_model_assets_evidence(tmp_path / "model-cache.json")
     manifest_path = tmp_path / qualification.SESSION_MANIFEST_NAME
     common = dict(
         action="allocate",
@@ -3255,6 +3440,7 @@ def test_qualification_execute_requires_current_paid_spend_lock_before_launch(
         provider_output_put_url_file=secret_url,
         provider_output_get_url_file=secret_url,
         release_evidence=release,
+        model_cache_evidence=model_cache,
         expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
@@ -3317,9 +3503,10 @@ def test_qualification_allocate_fails_before_provider_on_missing_output_staging_
     secret_url.chmod(0o600)
     release = tmp_path / "release.json"
     release.write_text(
-        json.dumps(_release_evidence()),
+        json.dumps(_embedded_release_evidence()),
         encoding="utf-8",
     )
+    model_cache = _embedded_model_assets_evidence(tmp_path / "model-cache.json")
 
     result = qualification.run_qualification_session(
         action="allocate",
@@ -3331,6 +3518,7 @@ def test_qualification_allocate_fails_before_provider_on_missing_output_staging_
         provider_output_get_url_file=secret_url,
         provider_bootstrap_url_file=secret_url,
         release_evidence=release,
+        model_cache_evidence=model_cache,
         expected_source_commit=TEST_SOURCE_COMMIT,
         provider_launch_request=tmp_path / "provider_request.json",
         preflight_bundle=tmp_path / "preflight.json",
@@ -3393,6 +3581,7 @@ def test_allocator_routes_qualification_status_without_episode_inputs(
     assert observed["action"] == "status"
     assert observed["component"] == "episode"
     assert observed["provider_name"] == "vast"
+    assert observed["model_cache_evidence"] == str(tmp_path / "cache.json")
     assert observed["execute"] is True
     assert json.loads(capsys.readouterr().out) == {"success": True}
 

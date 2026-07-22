@@ -1503,7 +1503,8 @@ if located_uv:
     uv_candidates.append(Path(located_uv))
 uv_path = next((candidate for candidate in uv_candidates if candidate.is_file()), None)
 checks["uv_installer_present"] = uv_path is not None
-if uv_path is None:
+checks["uv_installer_required"] = bool(mismatches_before)
+if checks["uv_installer_required"] and uv_path is None:
     blockers.append("oscar_dependency_uv_installer_missing")
 
 install_attempted = bool(mismatches_before) and not blockers
@@ -1749,11 +1750,19 @@ checks["pytest_fresh_module_path_in_dependency_target"] = bool(
     and Path(pytest_fresh_module_path).is_file()
     and Path(pytest_fresh_module_path).is_relative_to(dependency_target.resolve())
 )
+checks["pytest_fresh_module_path_trusted"] = bool(
+    pytest_fresh_module_path
+    and Path(pytest_fresh_module_path).is_file()
+    and (
+        Path(pytest_fresh_module_path).is_relative_to(dependency_target.resolve())
+        or Path(pytest_fresh_module_path).is_relative_to(base_site_packages.resolve())
+    )
+)
 for check_name in (
     "pytest_fresh_subprocess_returncode_zero",
     "pytest_fresh_distribution_version_exact",
     "pytest_fresh_module_version_exact",
-    "pytest_fresh_module_path_in_dependency_target",
+    "pytest_fresh_module_path_trusted",
 ):
     if not checks[check_name]:
         blockers.append(f"oscar_pytest_fresh_subprocess_contract_failed:{{check_name}}")

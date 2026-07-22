@@ -12,6 +12,10 @@ APT_TRANSPORT_HARDENING = Path(
 ENTRYPOINT = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh"
 )
+HEALTHCHECK = Path(
+    "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+    "groot_oscar_closed_loop_image_healthcheck.py"
+)
 RELEASE = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile"
 )
@@ -76,3 +80,37 @@ def test_thin_entrypoint_uses_installed_absolute_worker_executable() -> None:
         "test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker"
         in RELEASE.read_text(encoding="utf-8")
     )
+
+
+def test_release_asset_modes_are_explicit_and_fail_closed() -> None:
+    dockerfile = RELEASE.read_text(encoding="utf-8")
+    entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
+    assert "ARG FOUNDATION_MODEL_ASSETS=external" in dockerfile
+    assert "external) test ! -e /opt/blueprint/ckpts" in dockerfile
+    assert "embedded)" in dockerfile
+    assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in dockerfile
+    assert 'model_asset_mode="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS:-external}"' in entrypoint
+    assert 'elif [[ "$model_asset_mode" == "embedded" ]]' in entrypoint
+    assert "invalid BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in entrypoint
+    healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
+    assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in healthcheck
+    assert 'and model_asset_mode == "external"' not in healthcheck
+    assert "rm -rf /opt/wbc/gear_sonic_deploy/build" in dockerfile
+    assert "BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release" in dockerfile
+    assert (
+        'BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS="${FOUNDATION_MODEL_ASSETS}"'
+        in dockerfile
+    )
+
+
+def test_release_source_overlay_does_not_require_foundation_venv_pip() -> None:
+    dockerfile = RELEASE.read_text(encoding="utf-8")
+
+    assert "/opt/oscar-venv/bin/python -m pip install" not in dockerfile
+    assert "/opt/gr00t-venv/bin/python -m pip install" not in dockerfile
+    assert "/isaac-sim/python.sh -m pip install" not in dockerfile
+    assert "/opt/blueprint/release-src" in dockerfile
+    assert "blueprint_release_override.pth" in dockerfile
+    assert dockerfile.count("blueprint_pipeline.__file__.startswith") == 1
+    assert "from blueprint_pipeline.robot_eval_worker import main" in dockerfile
+    assert "chmod 0755 /opt/oscar-venv/bin/blueprint-run-robot-eval-worker" in dockerfile

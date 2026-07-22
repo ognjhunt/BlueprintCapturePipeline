@@ -105,6 +105,7 @@ def _remote_script(
     min_free_gib: int,
     max_release_bytes: int,
     reuse_foundation_exact: bool = False,
+    foundation_model_assets: str = "external",
 ) -> str:
     foundation_default = shlex.quote(foundation_ref)
     release_default = shlex.quote(release_ref)
@@ -195,6 +196,7 @@ docker buildx build --platform linux/amd64 --progress plain --metadata-file "$re
   --build-arg "FOUNDATION_IMAGE=$foundation_exact" \
   --build-arg "BLUEPRINT_SOURCE_COMMIT={source_commit}" \
   --build-arg "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256={source_patch_sha256}" \
+  --build-arg "FOUNDATION_MODEL_ASSETS={foundation_model_assets}" \
   -f "$context_dir/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile" \
   -t "$release_candidate_ref" --push "$context_dir"
 release_digest="$(python3 -c 'import json,sys;p=json.load(open(sys.argv[1]));print(p.get("containerimage.digest") or p.get("containerimage.descriptor",{{}}).get("digest") or "")' "$release_metadata")"
@@ -236,7 +238,7 @@ from pathlib import Path
 from blueprint_pipeline.thin_release_image_contract import build_thin_release_contract
 root=Path(sys.argv[1]); out=Path(sys.argv[2])
 foundation=json.load(open(root/"foundation_registry_diagnostic.json")); release=json.load(open(root/"release_registry_diagnostic.json"))
-contract=build_thin_release_contract(release,foundation,max_release_bytes=int(sys.argv[5]))
+contract=build_thin_release_contract(release,foundation,max_release_bytes=int(sys.argv[5]),foundation_model_assets={foundation_model_assets!r})
 cuda=release.get("required_cuda_version")
 blockers=[]
 if contract["status"] != "passed": blockers.append("thin_release_contract_not_passed")
@@ -247,9 +249,13 @@ worker_source=(root/"context/src/blueprint_pipeline/groot_oscar_runpod_serverles
 dockerfile=(root/"context/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile").read_text(encoding="utf-8")
 worker_command="blueprint_pipeline.groot_oscar_runpod_serverless_worker" in dockerfile
 sdk_pinned='RUNPOD_SERVERLESS_SDK_VERSION=1.10.1' in dockerfile and runpod_versions==["1.10.1"]
-serverless_contract={{"schema_version":"groot_oscar_runpod_serverless_release_contract.v1","status":"passed" if worker_source and worker_command and sdk_pinned else "blocked","worker_source_packaged":worker_source,"worker_command_packaged":worker_command,"runpod_sdk_versions":runpod_versions,"runpod_sdk_exactly_pinned":sdk_pinned,"models_externalized":contract.get("models_externalized") is True}}
-if serverless_contract["status"] != "passed": blockers.append("runpod_serverless_worker_contract_not_passed")
-payload={{"schema_version":"groot_oscar_thin_remote_build_result.v1","generated_at":datetime.now(timezone.utc).isoformat(),"status":"completed" if not blockers else "blocked","blockers":blockers,"foundation_image_ref":sys.argv[3],"release_image_ref":sys.argv[4],"resolved_digest_ref":sys.argv[4],"runnable_platform":"linux/amd64","required_cuda_version":cuda,"required_cuda_version_source":release.get("required_cuda_version_source"),"source_commit":"{source_commit}","source_patch_sha256":"{source_patch_sha256}","thin_release_contract_status":contract["status"],"thin_release_contract":contract,"serverless_worker_contract":serverless_contract,"models_embedded":False,"raw_secret_values_recorded":False,"claim_boundary":{{"remote_build_is_not_model_cache_verification":True,"remote_build_is_not_provider_startup":True,"remote_build_is_not_task_success":True}}}}
+external_models=contract.get("models_externalized") is True
+embedded_models=contract.get("models_embedded_in_foundation") is True
+serverless_ready=worker_source and worker_command and sdk_pinned and external_models
+serverless_status="not_applicable_embedded_foundation" if embedded_models else ("passed" if serverless_ready else "blocked")
+serverless_contract={{"schema_version":"groot_oscar_runpod_serverless_release_contract.v1","status":serverless_status,"worker_source_packaged":worker_source,"worker_command_packaged":worker_command,"runpod_sdk_versions":runpod_versions,"runpod_sdk_exactly_pinned":sdk_pinned,"models_externalized":external_models,"models_embedded_in_foundation":embedded_models,"embedded_foundation_supported":False}}
+if external_models and serverless_contract["status"] != "passed": blockers.append("runpod_serverless_worker_contract_not_passed")
+payload={{"schema_version":"groot_oscar_thin_remote_build_result.v1","generated_at":datetime.now(timezone.utc).isoformat(),"status":"completed" if not blockers else "blocked","blockers":blockers,"foundation_image_ref":sys.argv[3],"release_image_ref":sys.argv[4],"resolved_digest_ref":sys.argv[4],"runnable_platform":"linux/amd64","required_cuda_version":cuda,"required_cuda_version_source":release.get("required_cuda_version_source"),"source_commit":"{source_commit}","source_patch_sha256":"{source_patch_sha256}","foundation_model_assets":"{foundation_model_assets}","thin_release_contract_status":contract["status"],"thin_release_contract":contract,"serverless_worker_contract":serverless_contract,"models_embedded":contract.get("models_embedded_in_foundation") is True,"raw_secret_values_recorded":False,"claim_boundary":{{"remote_build_is_not_model_cache_verification":True,"remote_build_is_not_provider_startup":True,"remote_build_is_not_task_success":True}}}}
 out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\\n",encoding="utf-8")
 raise SystemExit(0 if payload["status"]=="completed" else 2)
 PY
@@ -276,6 +282,7 @@ def prepare_remote_build_packet(
     min_free_gib: int = 120,
     max_release_bytes: int = 2 * 1024**3,
     reuse_foundation_exact: bool = False,
+    foundation_model_assets: str = "external",
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     root = Path(repo_root).expanduser().resolve()
@@ -291,6 +298,10 @@ def prepare_remote_build_packet(
         ),
         *_versioned_ref_blockers(release_ref, "release"),
     ]
+    if foundation_model_assets not in {"external", "embedded"}:
+        blockers.append("foundation_model_asset_mode_invalid")
+    if foundation_model_assets == "embedded" and not reuse_foundation_exact:
+        blockers.append("embedded_foundation_assets_require_exact_reuse")
     actual_commit = ""
     actual_dirty = True
     try:
@@ -339,7 +350,7 @@ def prepare_remote_build_packet(
     context_manifest = {"schema_version": "groot_oscar_thin_remote_context.v1", "files": rows}
     write_json(packet / "context_manifest.json", context_manifest)
     script = packet / "remote_build_groot_oscar_thin_images.sh"
-    script.write_text(_remote_script(foundation_ref=foundation_ref, release_ref=release_ref, source_commit=source_commit, source_patch_sha256=source_patch_sha256, min_free_gib=min_free_gib, max_release_bytes=max_release_bytes, reuse_foundation_exact=reuse_foundation_exact), encoding="utf-8")
+    script.write_text(_remote_script(foundation_ref=foundation_ref, release_ref=release_ref, source_commit=source_commit, source_patch_sha256=source_patch_sha256, min_free_gib=min_free_gib, max_release_bytes=max_release_bytes, reuse_foundation_exact=reuse_foundation_exact, foundation_model_assets=foundation_model_assets), encoding="utf-8")
     script.chmod(0o755)
     (packet / "README.md").write_text(
         "# GR00T + OSCAR thin remote build\n\nRun `./remote_build_groot_oscar_thin_images.sh` on an authorized linux/amd64 Docker builder with registry access. The packet does not allocate infrastructure or prepare model volumes.\n",
@@ -368,6 +379,7 @@ def prepare_remote_build_packet(
         "min_free_gib": min_free_gib,
         "max_release_delta_bytes": max_release_bytes,
         "reuse_foundation_exact": reuse_foundation_exact,
+        "foundation_model_assets": foundation_model_assets,
         "provider_launch_performed_by_packet": False,
         "supported_execution_planes": {
             "native_linux_amd64_docker_builder": True,
@@ -394,8 +406,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--min-free-gib", type=int, default=120)
     parser.add_argument("--max-release-bytes", type=int, default=2 * 1024**3)
     parser.add_argument("--reuse-foundation-exact", action="store_true")
+    parser.add_argument(
+        "--foundation-model-assets",
+        choices=("external", "embedded"),
+        default="external",
+    )
     args = parser.parse_args(argv)
-    result = prepare_remote_build_packet(output_dir=args.output_dir, repo_root=args.repo_root, foundation_ref=args.foundation_ref, release_ref=args.release_ref, source_commit=args.source_commit, source_patch_sha256=args.source_patch_sha256, source_worktree_dirty=args.source_worktree_dirty, min_free_gib=args.min_free_gib, max_release_bytes=args.max_release_bytes, reuse_foundation_exact=args.reuse_foundation_exact)
+    result = prepare_remote_build_packet(output_dir=args.output_dir, repo_root=args.repo_root, foundation_ref=args.foundation_ref, release_ref=args.release_ref, source_commit=args.source_commit, source_patch_sha256=args.source_patch_sha256, source_worktree_dirty=args.source_worktree_dirty, min_free_gib=args.min_free_gib, max_release_bytes=args.max_release_bytes, reuse_foundation_exact=args.reuse_foundation_exact, foundation_model_assets=args.foundation_model_assets)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "ready" else 2
 

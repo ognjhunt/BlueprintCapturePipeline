@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 
 RELEASE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_release_binding.v1"
+MODEL_ASSETS_BINDING_SCHEMA_VERSION = "blueprint.qualification_model_assets_binding.v1"
 LAUNCH_REBIND_SCHEMA_VERSION = "single_g1_kitchen_qualification_launch_rebind.v1"
 RUNTIME_ATTEMPT_OVERLAY_BASE_SCHEMA_VERSION = (
     "single_g1_kitchen_qualification_runtime_attempt_overlay_base.v1"
@@ -46,6 +47,64 @@ def valid_image_binding(image_ref: object, image_digest: object) -> bool:
     return bool(match and image_digest == f"sha256:{match.group(1)}")
 
 
+def build_model_assets_binding(
+    evidence: Mapping[str, Any], release_binding: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Bind admitted model delivery to the exact release before allocation."""
+
+    blockers: list[str] = []
+    mode = str(release_binding.get("model_assets_mode") or "")
+    if mode == "embedded":
+        if evidence.get("schema_version") != MODEL_ASSETS_BINDING_SCHEMA_VERSION:
+            blockers.append("qualification_embedded_model_assets_schema_invalid")
+        if evidence.get("status") != "bound_to_release_foundation":
+            blockers.append("qualification_embedded_model_assets_status_invalid")
+        for key in ("source_commit", "release_image_ref", "foundation_image_ref"):
+            expected_key = "image_ref" if key == "release_image_ref" else key
+            if evidence.get(key) != release_binding.get(expected_key):
+                blockers.append(f"qualification_embedded_model_assets_{key}_mismatch")
+        if evidence.get("external_provider_volume_used") is not False:
+            blockers.append("qualification_embedded_model_assets_external_volume_invalid")
+        if evidence.get("runtime_checkpoint_preflight_required") is not True:
+            blockers.append("qualification_embedded_model_assets_runtime_preflight_missing")
+    elif mode == "external":
+        if (
+            evidence.get("schema_version")
+            != "groot_oscar_external_model_cache_verification.v2"
+        ):
+            blockers.append("qualification_external_model_cache_schema_invalid")
+        if evidence.get("status") != "passed":
+            blockers.append("qualification_external_model_cache_not_passed")
+        checks = evidence.get("checks")
+        checks = dict(checks) if isinstance(checks, Mapping) else {}
+        if checks.get("models_cached_offline") is not True:
+            blockers.append("qualification_external_models_not_verified_offline")
+        if re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(evidence.get("model_manifest_digest") or ""),
+        ) is None:
+            blockers.append("qualification_external_model_manifest_digest_invalid")
+        if not str(evidence.get("cache_root") or "").startswith("/"):
+            blockers.append("qualification_external_model_cache_root_invalid")
+        blockers.append("qualification_external_model_cache_vast_delivery_not_bound")
+    else:
+        blockers.append("qualification_release_model_assets_mode_invalid")
+    binding = {
+        "schema_version": MODEL_ASSETS_BINDING_SCHEMA_VERSION,
+        "status": "bound" if not blockers else "blocked",
+        "mode": mode or None,
+        "source_commit": release_binding.get("source_commit"),
+        "release_image_ref": release_binding.get("image_ref"),
+        "foundation_image_ref": release_binding.get("foundation_image_ref"),
+        "evidence_schema_version": evidence.get("schema_version"),
+        "evidence_status": evidence.get("status"),
+        "model_manifest_digest": evidence.get("model_manifest_digest"),
+        "cache_root": evidence.get("cache_root"),
+        "raw_secret_values_recorded": False,
+    }
+    return binding, sorted(set(blockers))
+
+
 def release_binding_record_blockers(value: object) -> list[str]:
     binding = dict(value) if isinstance(value, Mapping) else {}
     blockers: list[str] = []
@@ -67,8 +126,20 @@ def release_binding_record_blockers(value: object) -> list[str]:
         "image_config_env:"
     ):
         blockers.append("cuda_source")
-    if binding.get("models_externalized") is not True:
+    model_assets_mode = binding.get("model_assets_mode")
+    if model_assets_mode is None and binding.get("models_externalized") is True:
+        # Retained pre-mode sessions remain readable for status and teardown.
+        model_assets_mode = "external"
+    externalized = binding.get("models_externalized") is True
+    embedded = binding.get("models_embedded_in_foundation") is True
+    if model_assets_mode not in {"external", "embedded"}:
+        blockers.append("model_assets_mode")
+    if model_assets_mode == "external" and not externalized:
         blockers.append("models_externalized")
+    if model_assets_mode == "embedded" and not embedded:
+        blockers.append("models_embedded_in_foundation")
+    if externalized == embedded:
+        blockers.append("model_assets_mode_exclusive")
     if binding.get("release_evidence_status") != "completed":
         blockers.append("release_status")
     if binding.get("thin_release_contract_status") != "passed":
@@ -500,9 +571,6 @@ def build_release_binding(
         blockers.append("qualification_release_image_ref_mismatch")
     if release.get("runnable_platform") != "linux/amd64":
         blockers.append("qualification_release_platform_not_linux_amd64")
-    if release.get("models_embedded") is not False:
-        blockers.append("qualification_release_models_not_externalized")
-
     thin = release.get("thin_release_contract")
     thin = dict(thin) if isinstance(thin, Mapping) else {}
     if thin.get("schema_version") != "groot_oscar_thin_release_image_contract.v1":
@@ -513,8 +581,33 @@ def build_release_binding(
         blockers.append("qualification_thin_release_contract_has_blockers")
     if thin.get("release_image_ref") != image_ref:
         blockers.append("qualification_thin_release_image_mismatch")
-    if thin.get("models_externalized") is not True:
-        blockers.append("qualification_thin_release_models_not_externalized")
+    foundation_model_assets = str(
+        release.get("foundation_model_assets")
+        or thin.get("foundation_model_assets")
+        or (
+            "external"
+            if release.get("models_embedded") is False
+            and thin.get("models_externalized") is True
+            else ""
+        )
+    )
+    externalized = (
+        foundation_model_assets == "external"
+        and release.get("models_embedded") is False
+        and thin.get("models_externalized") is True
+        and thin.get("models_embedded_in_foundation") is not True
+    )
+    embedded = (
+        foundation_model_assets == "embedded"
+        and release.get("models_embedded") is True
+        and thin.get("models_embedded_in_foundation") is True
+        and thin.get("models_externalized") is not True
+    )
+    if not externalized and not embedded:
+        blockers.append("qualification_release_model_assets_mode_invalid")
+    foundation_image_ref = str(release.get("foundation_image_ref") or "")
+    if embedded and _DIGEST_REF_RE.fullmatch(foundation_image_ref) is None:
+        blockers.append("qualification_embedded_foundation_not_digest_pinned")
 
     required_cuda_version = str(release.get("required_cuda_version") or "")
     required_cuda_source = str(release.get("required_cuda_version_source") or "")
@@ -532,8 +625,10 @@ def build_release_binding(
         "runnable_platform": release.get("runnable_platform"),
         "required_cuda_version": required_cuda_version or None,
         "required_cuda_version_source": required_cuda_source or None,
-        "models_externalized": release.get("models_embedded") is False
-        and thin.get("models_externalized") is True,
+        "model_assets_mode": foundation_model_assets or None,
+        "models_externalized": externalized,
+        "models_embedded_in_foundation": embedded,
+        "foundation_image_ref": foundation_image_ref or None,
         "release_evidence_status": release.get("status"),
         "thin_release_contract_status": thin.get("status"),
     }

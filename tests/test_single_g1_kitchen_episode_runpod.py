@@ -430,6 +430,9 @@ def test_oscar_runtime_dependency_repair_binds_full_hashed_writable_closure() ->
     assert "pytest_fresh_distribution_version_exact" in script
     assert "pytest_fresh_module_version_exact" in script
     assert "pytest_fresh_module_path_in_dependency_target" in script
+    assert "pytest_fresh_module_path_trusted" in script
+    assert 'checks["uv_installer_required"] = bool(mismatches_before)' in script
+    assert 'if checks["uv_installer_required"] and uv_path is None:' in script
     assert "oscar_pytest_fresh_subprocess_contract_failed" in script
     assert '[oscar_python, "-c", pytest_fresh_probe_source]' in script
     assert 'pytest_fresh_env["PYTHONPATH"]' in script

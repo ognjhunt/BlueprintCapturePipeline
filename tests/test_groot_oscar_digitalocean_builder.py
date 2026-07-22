@@ -602,6 +602,59 @@ def test_remote_build_results_accept_digest_pinned_serverless_foundation_reuse(
     assert "foundation_buildx_metadata.json" not in verified["required_results"]
 
 
+def test_remote_build_results_accept_exact_embedded_foundation_reuse(
+    tmp_path: Path,
+) -> None:
+    results = tmp_path / "remote_results"
+    results.mkdir()
+    foundation_ref = "registry.example/foundation@sha256:" + "b" * 64
+    release_result = {
+        "status": "completed",
+        "foundation_image_ref": foundation_ref,
+        "serverless_worker_contract": {
+            "status": "not_applicable_embedded_foundation",
+            "worker_source_packaged": True,
+            "worker_command_packaged": True,
+            "runpod_sdk_exactly_pinned": True,
+            "models_externalized": False,
+            "models_embedded_in_foundation": True,
+            "embedded_foundation_supported": False,
+        },
+        "thin_release_contract": {
+            "status": "passed",
+            "foundation_image_ref": foundation_ref,
+            "release_delta_budget_passed": True,
+            "models_externalized": False,
+            "models_embedded_in_foundation": True,
+        },
+    }
+    for name in REMOTE_BUILD_REQUIRED_RESULTS:
+        if name == "foundation_buildx_metadata.json":
+            continue
+        if name == "groot_oscar_thin_remote_build_result.json":
+            payload = release_result
+        elif name == "foundation_registry_diagnostic.json":
+            payload = {
+                "status": "completed",
+                "blockers": [],
+                "image_ref": foundation_ref,
+                "resolved_digest_ref": foundation_ref,
+            }
+        elif name in {
+            "release_supply_chain_manifest.json",
+            "release_supply_chain_disk_admission.json",
+        }:
+            payload = {"status": "passed"}
+        else:
+            payload = {}
+        (results / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    verified = validate_remote_build_results(results)
+    assert verified["status"] == "verified"
+    assert verified["digest_pinned_foundation_reused"] is True
+    assert "foundation_buildx_metadata.json" not in verified["required_results"]
+
+
 def test_run_builder_is_dry_and_does_not_read_secrets_without_paid_gate(
     tmp_path: Path,
 ) -> None:

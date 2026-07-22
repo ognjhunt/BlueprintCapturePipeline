@@ -104,6 +104,7 @@ from .single_g1_kitchen_qualification_admission import (
 )
 from .single_g1_kitchen_qualification_contract import (
     bind_inputs_to_release,
+    build_model_assets_binding,
     build_release_binding as _release_binding,
     collected_attempt_derived_artifact_blockers,
     collected_attempt_release_blocker,
@@ -164,7 +165,7 @@ COMPONENT_ALIASES = {
     "finetune": "groot_microwave_finetune",
 }
 RESTARTABLE_COMPONENTS = ("groot", "controller", "isaac", "bridge")
-STOPPABLE_COMPONENTS = (*RESTARTABLE_COMPONENTS, "finetune")
+STOPPABLE_COMPONENTS = ("episode", *RESTARTABLE_COMPONENTS, "finetune")
 SESSION_MANIFEST_NAME = "qualification_session.json"
 QUALIFICATION_BOOTSTRAP_NAME = "provider_qualification_bootstrap.sh"
 QUALIFICATION_REFRESH_PAYLOAD_NAME = "qualification_refresh_payload.json"
@@ -1296,7 +1297,16 @@ case "$ACTION" in
     start_component "$COMPONENT"
     ;;
   stop)
-    stop_component "$COMPONENT"
+    if [ "$COMPONENT" = episode ] || [ "$COMPONENT" = bootstrap ]; then
+      stop_component episode
+      stop_component groot_server
+      stop_component gear_sonic_controller
+      stop_component isaac_task_executor
+      stop_component gear_sonic_isaac_dds_bridge
+      stop_component groot_microwave_finetune
+    else
+      stop_component "$COMPONENT"
+    fi
     printf 'action=stop component=%s bootstrap_sha256=%s overlay_revision=%s\n' "$COMPONENT" "$EXPECTED_EPISODE_BOOTSTRAP_SHA256" "$ACTIVE_REVISION"
     ;;
 esac
@@ -1956,6 +1966,7 @@ def _allocate(
     expected_source_commit: str,
     training_dataset: str | Path | None,
     trained_checkpoint_path: str | Path | None,
+    model_cache_evidence: str | Path | None = None,
 ) -> dict[str, Any]:
     result_path = Path(adapter_output).expanduser().resolve()
     manifest_path = Path(session_manifest).expanduser().resolve()
@@ -2015,6 +2026,27 @@ def _allocate(
         release, expected_source_commit=expected_source_commit
     )
     blockers.extend(release_blockers)
+    model_assets_binding: dict[str, Any] = {}
+    if model_cache_evidence is None:
+        blockers.append("qualification_model_assets_evidence_missing")
+    else:
+        try:
+            model_assets_value = json.loads(
+                Path(model_cache_evidence).expanduser().resolve().read_text(encoding="utf-8")
+            )
+            model_assets_evidence = (
+                dict(model_assets_value)
+                if isinstance(model_assets_value, Mapping)
+                else {}
+            )
+            if not model_assets_evidence:
+                blockers.append("qualification_model_assets_evidence_not_object")
+            model_assets_binding, model_assets_blockers = build_model_assets_binding(
+                model_assets_evidence, release_binding
+            )
+            blockers.extend(model_assets_blockers)
+        except (OSError, json.JSONDecodeError):
+            blockers.append("qualification_model_assets_evidence_missing_or_unreadable")
     image_ref = str(release_binding.get("image_ref") or "")
     image_digest = str(release_binding.get("image_digest") or "")
     source_commit = str(release_binding.get("source_commit") or "")
@@ -2244,6 +2276,7 @@ def _allocate(
         else ("dry_run_bound" if not reported_blockers else "blocked")
     )
     manifest["signed_output_staging_proof"] = signed_output_staging_proof
+    manifest["model_assets_binding"] = model_assets_binding
     manifest["history"] = list(existing_manifest.get("history") or []) + [
         {
             "action": "allocate",
@@ -2266,6 +2299,7 @@ def _allocate(
         "source_commit": manifest["source_commit"],
         "release_binding": artifact_release_binding,
         "release_binding_source": release_binding_source,
+        "model_assets_binding": model_assets_binding,
         "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_mode": "ssh_direct",
@@ -2299,6 +2333,7 @@ def _allocate(
         "source_commit": manifest["source_commit"],
         "release_binding": artifact_release_binding,
         "release_binding_source": release_binding_source,
+        "model_assets_binding": model_assets_binding,
         "qualification_launch_rebind": manifest["qualification_launch_rebind"],
         "bundle_sha256": inputs.get("bundle_sha256"),
         "launch_session_id": launch_session_id,
@@ -4134,6 +4169,7 @@ def run_qualification_session(
     provider_output_get_url_file: str | Path | None = None,
     provider_bootstrap_url_file: str | Path | None = None,
     release_evidence: str | Path | None = None,
+    model_cache_evidence: str | Path | None = None,
     expected_source_commit: str | None = None,
     provider_launch_request: str | Path | None = None,
     preflight_bundle: str | Path | None = None,
@@ -4156,6 +4192,7 @@ def run_qualification_session(
             "provider_output_put_url_file": provider_output_put_url_file,
             "provider_output_get_url_file": provider_output_get_url_file,
             "release_evidence": release_evidence,
+            "model_cache_evidence": model_cache_evidence,
             "expected_source_commit": expected_source_commit,
             "provider_launch_request": provider_launch_request,
             "preflight_bundle": preflight_bundle,
@@ -4184,6 +4221,7 @@ def run_qualification_session(
             expected_source_commit=expected_source_commit,
             training_dataset=training_dataset,
             trained_checkpoint_path=trained_checkpoint_path,
+            model_cache_evidence=model_cache_evidence,
         )
     if action == "teardown":
         return _teardown(session_manifest=session_manifest, adapter_output=adapter_output, execute=execute)
