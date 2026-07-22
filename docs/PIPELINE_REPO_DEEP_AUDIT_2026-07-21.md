@@ -63,10 +63,11 @@ adapter requires explicit `cosmos_wam` selection, conflicting old/new settings f
 closed, and the runtime no longer discovers a model checkout from hard-coded workspace
 paths. Strategy-aware readiness and refinement admission now live outside the runtime
 store, reducing the grandfathered monolith below its no-growth budget. The stable
-runtime-service contract is unchanged. Selection/readiness/prewarm,
-security, script-pin, and all slow native-service tests pass; extracting the remaining
-Cosmos-specific generation helpers from the 3k-LOC store remains a later incremental
-split, not a safe deletion.
+runtime-service contract is unchanged. Model-family-specific artifact discovery, frame
+normalization, LoRA lookup, and synchronous inference now live in the explicit
+`native_runtime_cosmos_adapter`; compatibility wrappers preserve the store surface and
+32 focused fast/slow native-runtime tests pass. The asynchronous Cosmos session loop is
+the remaining incremental split, not a safe deletion.
 
 Live Vast revalidation was authorized with a hard `$15` cap. A read-only, account-wide
 inventory query returned HTTP 200 with zero non-terminal instances, so observed spend
@@ -79,6 +80,14 @@ but budget authorization does not override source identity. A clean, immutable
 `95b10eb1` image plus its generated thin-release evidence is the concrete prerequisite
 for live GPU startup/teardown proof; startup would still not prove policy quality,
 semantic task success, or ranking fidelity.
+
+The canonical image build route is independently blocked by provider scope: the
+`paid_resource_allocator cpu-build` execution plane admits only a verified native
+Linux builder or DigitalOcean, while this revalidation is authorized for Vast only.
+There is no approved Vast-native image-builder path, and adding an unreviewed nested
+container/build route would bypass the build-plane admission contract. After this PR
+merges, either authorize the existing DigitalOcean builder or provide an admitted
+native Linux builder; then build the exact merged-main image before spending on Vast.
 
 ## Method
 
