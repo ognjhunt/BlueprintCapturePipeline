@@ -9,7 +9,7 @@ neutral ``BLUEPRINT_NATIVE_RUNTIME_BACKEND`` setting.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Mapping
+from typing import Mapping, MutableMapping
 
 
 NATIVE_RUNTIME_STRATEGY_SCHEMA_VERSION = "native_runtime_strategy_catalog.v1"
@@ -114,3 +114,31 @@ def resolve_native_runtime_strategy(
         )
     backend_id = configured_backend or legacy_backend or DEFAULT_NATIVE_RUNTIME_BACKEND
     return _STRATEGIES[backend_id]
+
+
+def cosmos_refinement_enabled(
+    *,
+    strategy: NativeRuntimeStrategy,
+    readiness: Mapping[str, object],
+    explicit: object,
+    truthful_preview: bool,
+) -> bool:
+    """Resolve legacy Cosmos refinement without ambient-provider activation."""
+
+    setting = str(explicit or "").strip().lower()
+    cosmos_ready = bool(readiness.get("cosmos_ready", readiness.get("ready")))
+    if setting in {"0", "false", "no", "off"}:
+        return False
+    if setting in {"1", "true", "yes", "on"}:
+        return cosmos_ready
+    return strategy.backend_id == "cosmos_wam" and truthful_preview and cosmos_ready
+
+
+def bind_selected_runtime_identity(
+    readiness: MutableMapping[str, object],
+    identity: Mapping[str, object],
+) -> None:
+    """Attach neutral strategy identity to a runtime-readiness payload."""
+
+    readiness["selected_runtime_path"] = identity["selected_runtime_path"]
+    readiness["selected_backend_id"] = identity["backend_id"]

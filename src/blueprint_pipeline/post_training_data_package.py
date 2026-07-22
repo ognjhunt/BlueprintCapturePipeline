@@ -16,6 +16,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+from .artifact_compatibility import VISUAL_AUGMENTATION_BACKEND_REGISTRY_ARTIFACTS
 from .artifact_contracts import validate_sellable_artifact
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .consent_normalization import (
@@ -5504,14 +5505,7 @@ def _build_post_training_data_package_export(
                 "oscar_visual_augmentation_variant_requests",
                 "oscar_visual_augmentation_packet/visual_augmentation_variant_requests.jsonl",
             ),
-            (
-                "visual_augmentation_backend_registry",
-                "oscar_visual_augmentation_packet/visual_augmentation_backend_registry.json",
-            ),
-            (
-                "legacy_oscar_visual_augmentation_backend_registry",
-                "oscar_visual_augmentation_packet/model_backend_registry.json",
-            ),
+            *VISUAL_AUGMENTATION_BACKEND_REGISTRY_ARTIFACTS,
             (
                 "oscar_visual_distribution_shift_eval_protocol",
                 "oscar_visual_augmentation_packet/visual_distribution_shift_eval_protocol.json",

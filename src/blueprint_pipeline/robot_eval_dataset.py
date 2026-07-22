@@ -16,9 +16,13 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .artifact_contracts import validate_sellable_artifact
 from .common import ensure_dir, read_json_any, write_json, write_text
 from .local_capture import resolve_local_capture_context
+from .robot_eval_dataset_artifacts import (
+    ROBOT_EVAL_DATASET_MANIFEST_COMPATIBILITY_ALIAS,
+    robot_eval_result_artifact_paths,
+    validate_and_write_robot_eval_cards,
+)
 
 ROBOT_EVAL_DATASET_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v1"
 ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION = "real_site_robot_eval_dataset_manifest.v0.1"
@@ -4741,14 +4745,7 @@ def build_real_site_robot_eval_dataset(
     manifest: Dict[str, Any] = {
         "schema_version": ROBOT_EVAL_DATASET_V01_SCHEMA_VERSION,
         "compatibility_schema_version": ROBOT_EVAL_DATASET_SCHEMA_VERSION,
-        "compatibility_alias": {
-            "legacy_filename": "real_site_robot_eval_dataset_manifest.json",
-            "canonical_filename": "robot_eval_dataset_manifest.json",
-            "sunset_not_before": "2026-08-21",
-            "removal_condition": (
-                "all_consumers_confirm_robot_eval_dataset_manifest_json"
-            ),
-        },
+        "compatibility_alias": ROBOT_EVAL_DATASET_MANIFEST_COMPATIBILITY_ALIAS,
         "dataset_version": ROBOT_EVAL_DATASET_VERSION,
         "generated_at": generated_at,
         "scene_id": context.scene_id,
@@ -4876,14 +4873,13 @@ def build_real_site_robot_eval_dataset(
 
     manifest_path = robot_eval_dir / "robot_eval_dataset_manifest.json"
     legacy_manifest_path = robot_eval_dir / "real_site_robot_eval_dataset_manifest.json"
-    validate_sellable_artifact("site_card", site_card)
-    validate_sellable_artifact("task_cards", task_cards)
-    validate_sellable_artifact("scenario_cards", scenario_cards)
-    validate_sellable_artifact("eval_cards", eval_cards)
-    write_json(robot_eval_dir / "site_card.json", site_card)
-    write_json(robot_eval_dir / "task_cards.json", task_cards)
-    write_json(robot_eval_dir / "scenario_cards.json", scenario_cards)
-    write_json(robot_eval_dir / "eval_cards.json", eval_cards)
+    validate_and_write_robot_eval_cards(
+        robot_eval_dir,
+        site_card=site_card,
+        task_cards=task_cards,
+        scenario_cards=scenario_cards,
+        eval_cards=eval_cards,
+    )
     write_json(robot_eval_dir / "annotation_backlog.json", annotation_backlog)
     write_json(robot_eval_dir / "proof_boundaries.json", proof_boundaries)
     write_json(robot_eval_dir / "robot_task_library.json", task_library)
@@ -4919,32 +4915,10 @@ def build_real_site_robot_eval_dataset(
         "recorded_trace_eval_status": recorded_trace_eval_report["status"],
         "prediction_vs_actual_status": prediction_vs_actual_summary["status"],
         "rights_packet_status": rights_packet["status"],
-        "manifest_path": str(manifest_path.resolve()),
-        "legacy_manifest_path": str(legacy_manifest_path.resolve()),
-        "site_card_path": str((robot_eval_dir / "site_card.json").resolve()),
-        "task_cards_path": str((robot_eval_dir / "task_cards.json").resolve()),
-        "scenario_cards_path": str((robot_eval_dir / "scenario_cards.json").resolve()),
-        "eval_cards_path": str((robot_eval_dir / "eval_cards.json").resolve()),
-        "annotation_backlog_path": str((robot_eval_dir / "annotation_backlog.json").resolve()),
-        "proof_boundaries_path": str((robot_eval_dir / "proof_boundaries.json").resolve()),
-        "methodology_path": str((robot_eval_dir / "eval_methodology_summary.md").resolve()),
-        "prediction_outcome_ledger_path": str(
-            (robot_eval_dir / "prediction_outcome_ledger.json").resolve()
-        ),
-        "prediction_vs_actual_summary_path": str(
-            (robot_eval_dir / "prediction_vs_actual_summary.json").resolve()
-        ),
-        "recorded_trace_eval_report_path": str(
-            (robot_eval_dir / "recorded_trace_eval_report.json").resolve()
-        ),
-        "task_thresholds_path": str((robot_eval_dir / "task_thresholds.json").resolve()),
-        "publication_readiness_path": str(
-            (robot_eval_dir / "publication_readiness.json").resolve()
-        ),
-        "rights_packet_path": str((robot_eval_dir / "rights_packet.json").resolve()),
-        "rights_ledger_path": str((robot_eval_dir / "rights_ledger.json").resolve()),
-        "robot_team_test_submission_modalities_path": str(
-            (robot_eval_dir / "robot_team_test_submission_modalities.json").resolve()
+        **robot_eval_result_artifact_paths(
+            robot_eval_dir,
+            manifest_path=manifest_path,
+            legacy_manifest_path=legacy_manifest_path,
         ),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }

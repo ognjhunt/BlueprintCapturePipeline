@@ -33,6 +33,10 @@ from .core.lane_resume import (
     read_completed_lane_result,
     record_lane_completion,
 )
+from .core.lane_admission import (
+    LEGACY_CAPTURE_LANES,
+    require_legacy_lane_admission,
+)
 from .retrieval_index_stage import run_retrieval_index_stage
 from .robot_eval_job_orchestrator import (
     REQUIRED_ROBOT_EVAL_INPUTS,
@@ -53,13 +57,6 @@ from .synthesis.synthesize import synthesize_view
 logger = logging.getLogger(__name__)
 
 _CURRENT_PIPELINE_LANES = ("qualification", "evaluation_prep", "simulation_automation")
-_LEGACY_PIPELINE_LANES = (
-    "scene_memory",
-    "retrieval_index",
-    "frame_alignment",
-    "synthesis_coverage_validation",
-    "cosmos_single_capture_smoke",
-)
 _LANE_ORDER = (
     "qualification",
     "scene_memory",
@@ -70,7 +67,7 @@ _LANE_ORDER = (
     "synthesis_coverage_validation",
     "cosmos_single_capture_smoke",
 )
-_SUPPORTED_LANES = {*_CURRENT_PIPELINE_LANES, *_LEGACY_PIPELINE_LANES, "current", "all"}
+_SUPPORTED_LANES = {*_CURRENT_PIPELINE_LANES, *LEGACY_CAPTURE_LANES, "current", "all"}
 _LANE_ALIASES = {
     "robot_eval_dataset": "evaluation_prep",
     "task_evaluation_run": "simulation_automation",
@@ -1357,12 +1354,10 @@ def run_capture_pipeline(
         lane=lane,
         requested_lanes=requested_lanes,
     )
-    legacy_lanes = [selected for selected in lanes if selected in _LEGACY_PIPELINE_LANES]
-    if legacy_lanes and not allow_legacy_lanes:
-        raise PipelineError(
-            "Legacy capture lanes require explicit allow_legacy_lanes=True: "
-            + ",".join(legacy_lanes)
-        )
+    require_legacy_lane_admission(
+        lanes,
+        allow_legacy_lanes=allow_legacy_lanes,
+    )
     allow_lane_fault_isolation = len(lanes) > 1
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
     # Production dispatch (storage_trigger -> run_capture_pipeline) bypasses the
