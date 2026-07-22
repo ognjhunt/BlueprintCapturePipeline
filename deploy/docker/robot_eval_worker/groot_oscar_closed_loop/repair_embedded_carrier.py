@@ -12,6 +12,8 @@ from typing import Mapping
 
 COSMOS_REPO = "nvidia/Cosmos-Reason2-2B"
 COSMOS_REVISION = "9ce19a195e423419c349abfc86fd07178b230561"
+SOURCE_REVISION_MARKER = ".blueprint-source-revision"
+OSCAR_SOURCE_SEAL_SCHEMA_VERSION = "blueprint.oscar_runtime_source_seal.v1"
 
 
 def _git_head(root: Path) -> str:
@@ -21,6 +23,45 @@ def _git_head(root: Path) -> str:
         capture_output=True,
         text=True,
     ).stdout.strip().lower()
+
+
+def _sealed_revision(root: Path) -> str:
+    marker = root / SOURCE_REVISION_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        raise RuntimeError(f"embedded carrier source revision evidence missing: {root}")
+    revision = marker.read_text(encoding="utf-8").strip().lower()
+    if not revision:
+        raise RuntimeError(f"embedded carrier source revision marker empty: {root}")
+    return revision
+
+
+def _git_or_sealed_revision(root: Path) -> str:
+    if (root / ".git").exists():
+        return _git_head(root)
+    return _sealed_revision(root)
+
+
+def _oscar_source_revision(root: Path, provenance_path: Path) -> str:
+    if (root / ".git").exists():
+        return _git_head(root)
+    if provenance_path.is_symlink() or not provenance_path.is_file():
+        raise RuntimeError("embedded OSCAR source provenance missing or unsafe")
+    try:
+        loaded = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("embedded OSCAR source provenance unreadable") from exc
+    if not isinstance(loaded, dict):
+        raise RuntimeError("embedded OSCAR source provenance invalid")
+    if (
+        loaded.get("schema_version") != OSCAR_SOURCE_SEAL_SCHEMA_VERSION
+        or loaded.get("status") != "sealed"
+        or loaded.get("git_metadata_required_at_runtime") is not False
+    ):
+        raise RuntimeError("embedded OSCAR source provenance invalid")
+    revision = str(loaded.get("source_commit") or "").strip().lower()
+    if not revision:
+        raise RuntimeError("embedded OSCAR source provenance lacks source commit")
+    return revision
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -35,6 +76,7 @@ def repair(
     roots: Mapping[str, Path] | None = None,
     sonic: Path = Path("/opt/blueprint/ckpts/sonic"),
     models_root: Path = Path("/opt/blueprint/models"),
+    oscar_provenance: Path = Path("/opt/blueprint/oscar_source_provenance.json"),
 ) -> dict:
     roots = dict(
         roots
@@ -51,12 +93,19 @@ def repair(
         "groot": groot_revision.lower(),
         "oscar": oscar_revision.lower(),
     }
-    observed = {name: _git_head(root) for name, root in roots.items()}
+    observed = {
+        "wbc": _git_or_sealed_revision(roots["wbc"]),
+        "groot": _git_or_sealed_revision(roots["groot"]),
+        "oscar": _oscar_source_revision(roots["oscar"], oscar_provenance),
+    }
     if observed != expected:
         raise RuntimeError(f"embedded carrier source revision mismatch: {observed!r}")
 
     (roots["wbc"] / ".blueprint-source-revision").write_text(
         expected["wbc"] + "\n", encoding="utf-8"
+    )
+    (roots["groot"] / ".blueprint-source-revision").write_text(
+        expected["groot"] + "\n", encoding="utf-8"
     )
 
     sonic_config_path = sonic / "config.json"

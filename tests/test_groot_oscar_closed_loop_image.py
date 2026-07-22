@@ -445,6 +445,14 @@ def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
     assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_URL" not in dockerfile
     assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF" not in dockerfile
     assert "test -s /opt/blueprint/oscar_source_provenance.json" in dockerfile
+    assert (
+        "printf '%s\\n' \"${GROOT_SOURCE_REF}\" > "
+        "/tmp/gr00t/.blueprint-source-revision"
+    ) in dockerfile
+    assert (
+        'test "$(cat /opt/gr00t/.blueprint-source-revision)" = "${GROOT_SOURCE_REF}"'
+        in dockerfile
+    )
 
 
 def test_image_seals_the_exact_gear_sonic_deploy_models():
