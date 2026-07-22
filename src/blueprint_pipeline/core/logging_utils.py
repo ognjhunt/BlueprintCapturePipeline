@@ -99,4 +99,6 @@ def log_event(
         if key.isidentifier() and key not in _RESERVED_LOG_RECORD_KEYS and key not in extra:
             extra[key] = value
     clean_message = _single_line_log_text(message or clean_event)
+    # The rendered message and every field have record separators escaped above.
+    # codeql[py/log-injection]
     logger.log(level, "%s%s", clean_message, _format_fields(clean_fields), extra=extra)
