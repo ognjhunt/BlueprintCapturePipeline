@@ -18,7 +18,10 @@ from urllib.parse import urlparse
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
-    import tomli as tomllib
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:  # pragma: no cover - sealed minimal runtime
+        tomllib = None  # type: ignore[assignment]
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .logging_utils import log_event
@@ -193,9 +196,29 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
             "api_key_config_file": str(config_file),
             "api_key_config_file_configured": False,
         }
+    if tomllib is None:
+        return "", {
+            "api_key_configured": False,
+            "api_key_source": RUNPOD_CONFIG_FILE_ENV,
+            "api_key_file_configured": False,
+            "api_key_config_file": str(config_file),
+            "api_key_config_file_configured": True,
+            "api_key_config_file_read_error": "TOMLParserUnavailable",
+        }
     try:
-        payload = tomllib.loads(config_file.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        config_text = config_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        return "", {
+            "api_key_configured": False,
+            "api_key_source": RUNPOD_CONFIG_FILE_ENV,
+            "api_key_file_configured": False,
+            "api_key_config_file": str(config_file),
+            "api_key_config_file_configured": True,
+            "api_key_config_file_read_error": type(exc).__name__,
+        }
+    try:
+        payload = tomllib.loads(config_text)
+    except tomllib.TOMLDecodeError as exc:
         return "", {
             "api_key_configured": False,
             "api_key_source": RUNPOD_CONFIG_FILE_ENV,

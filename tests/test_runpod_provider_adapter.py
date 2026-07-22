@@ -1240,6 +1240,23 @@ def test_runpod_adapter_helper_edges_and_config_read_failures(
     assert meta["api_key_config_file_read_error"] == "TOMLDecodeError"
 
 
+def test_runpod_adapter_import_remains_safe_without_toml_parser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[default]\napi_key = "must-not-be-read"\n', encoding="utf-8")
+    monkeypatch.delenv(RUNPOD_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(RUNPOD_API_KEY_FILE_ENV, raising=False)
+    monkeypatch.setenv(RUNPOD_CONFIG_FILE_ENV, str(config_file))
+    monkeypatch.setattr(adapter, "tomllib", None)
+
+    key, meta = adapter._read_runpod_api_key()
+
+    assert key == ""
+    assert meta["api_key_config_file_read_error"] == "TOMLParserUnavailable"
+
+
 def test_runpod_adapter_pod_env_filters_plaintext_and_forwarded_secret_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
