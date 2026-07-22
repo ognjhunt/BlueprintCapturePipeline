@@ -132,20 +132,11 @@ The launcher runs provider adapter commands serially until one succeeds. It is a
 runtime failover path, not proof that the remote worker completed the simulator
 or produced valid task evidence.
 
-Lambda teardown should use the adapter's verification loop:
-
-```bash
-BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
-blueprint-run-lambda-provider-adapter \
-  --mode terminate-instances \
-  --instance-id <lambda-instance-id> \
-  --allow-lambda-api-call \
-  --teardown-poll-attempts 3
-```
-
-`lambda_provider_teardown_manifest.json` must be `completed` before treating
-the allocation as closed. `termination_unverified` means the provider list still
-showed an active id or verification failed, so billing risk remains open.
+Lambda is not a live fallback candidate: its adapter is retained only for dry-run and
+read-only inventory compatibility, and its mutating CLI modes are hard-disabled.
+Any pre-existing Lambda allocation requires separately authorized provider-console/API
+cleanup plus a fresh read-only zero-inventory check; guest shutdown is not spend
+closure.
 
 ### Sim-Only Beta Profile
 

@@ -125,7 +125,7 @@ Conflicting findings between passes were re-verified by hand (grep) before landi
 | Console-script entry points | 157 (a third of the package is CLI tails) |
 | Unreachable from any entry point | 34 modules (~19.5k LOC) |
 | Verified-dead removal shortlist | ~12.6k LOC src + associated tests |
-| Deprecate-then-remove (documented operator surface) | ~5.5k LOC src |
+| Revalidated documented operator surface (keep/narrow) | ~5.5k LOC src |
 | Campaign-specific code (`g1_*`/`groot_oscar_*`/`oscar_*`/`wam_*`/`unitree_*`/`isaac_*`/`mujoco_*`/`kitchen_*`) | ~195k LOC / 174 files (~46% of package) |
 | Mapping escape hatches in src | 2,463 `Dict[str, Any]` + 3,656 `dict[str, Any]` occurrences |
 | Direct env reads in src | 1,144 `os.getenv` + 554 `os.environ.get` occurrences |
@@ -247,40 +247,29 @@ watchdog + compat-admission helpers are imported by `runpod_preflight`,
 
 ---
 
-## P1 — Deprecate-then-remove: dead by import graph, but documented operator surface
+## P1 — Revalidated operator surfaces: do not bulk-delete
 
-These were in the P0 list until review caught that living docs still instruct
-operators to run them. They are still pivot leftovers with no live execution path,
-but removing them is a two-step: decide/announce the deprecation, update the runbook
-and command surface (pyproject entry, `source_governance_policy.json`), then delete.
+These were in the P0 list until review caught living CLI/runbook or execution evidence.
+The follow-up recheck resolved each disposition; none is a safe cluster deletion.
 
-1. **Lambda Labs failover chain — ~2,530 LOC incl. tests.**
-   `lambda_provider_adapter.py` (1,729) + `robot_eval_provider_race_launcher.py`.
-   Import-dead, but *not* reference-dead: `robot_eval_job_orchestrator.py` maps
-   `lambda_cloud` → `blueprint-run-lambda-provider-adapter` and emits
-   `blueprint-run-robot-eval-provider-race` into `gpu_provider_race_handoff.json` as
-   the customer robot-eval failover path, and `docs/LIVE_PIPELINE_SETUP.md` documents
-   both (failover run + Lambda teardown loop). Lambda is absent from the
-   `gpu_render_providers` registry (runpod/vast/digitalocean/gcp/aws), so the product
-   decision to drop it appears half-made. Finish it: remove the `lambda_cloud` mapping
-   and race-handoff emission from the orchestrator, update LIVE_PIPELINE_SETUP.md,
-   drop the two console scripts, then delete both modules — or consciously keep the
-   failover lane and say so.
-2. **First-GPU sample-video trio — 1,354 LOC.**
+1. **Narrowed — Lambda is read-only compatibility, not a live fallback.** The generic
+   `robot_eval_provider_race_launcher` serves RunPod/Vast failover and stays. Lambda's
+   adapter retains dry-run and read-only inventory compatibility, while its mutation
+   CLI is hard-disabled and no canonical allocator issues its grant. Startup policy and
+   the orchestrator no longer advertise `lambda_cloud` as live; runbooks no longer
+   instruct operators to call the disabled terminate mode.
+2. **Keep — First-GPU sample-video trio (1,354 LOC).**
    `first_gpu_sample_video_stage.py` (795), `first_gpu_sample_video_preflight.py`
    (321), `first_gpu_candidate_audit.py` (238). Zero importers, but their commands are
    documented steps in `docs/FIRST_GPU_E2E_RUNBOOK.md` (still maintained — updated by
    #144) and rows in the command-safety matrix. Either the runbook's sample-video
-   staging steps are still how operators seed a first capture (keep all three), or the
-   runbook section is retired along with the modules in one change.
-3. **UniFOLM infrastructure one-offs — 1,648 LOC.**
-   `unitree_unifolm_gpu_image.py` (851), `unitree_unifolm_runpod_server.py` (797).
-   Never-run backend infra with zero development since the baseline, but both are
-   installed CLIs (`blueprint-build-unitree-unifolm-gpu-image`,
-   `blueprint-launch-unitree-unifolm-runpod-server`) with CHANGELOG entries. Keep the
-   small UniFOLM *policy command contract* modules (cataloged candidate in
-   `docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`) so the candidate stays cheap to revive;
-   deprecate and delete the infra shells + their console scripts.
+   staging steps remain the maintained pre-success path. Since the milestone has not
+   produced a successful manipulation run, all three stay.
+3. **Keep — UniFOLM infrastructure (1,648 LOC).** The initial “never run” verdict was
+   false: `UNITREE_G1_POLICY_ENDPOINT_LANE.md` records completed provider/model
+   execution and replay evidence, and 53 dedicated tests cover the build/server pair.
+   The old launch CLI is deliberately hard-disabled, while guarded poll/probe/delete
+   compatibility and the policy command/provider-bundle contracts remain useful.
 
 ## P0 — Doctrine contradictions in docs (small, high-leverage)
 
@@ -653,9 +642,8 @@ Recorded so the next audit (or an eager agent) doesn't re-flag them:
    rule; `pytest` fast lane green is the gate. ~12.9k LOC src + tests.
 2. **PR 2 — docs/scripts hygiene** (P0 doctrine + P1 hygiene): fix the three doctrine
    contradictions, create `docs/archive/`, delete `agent_skills/` + orphaned scripts,
-   Makefile/CLAUDE.md/deps fixes. Fold in the deprecate-then-remove decisions (Lambda
-   failover lane, first-GPU sample-video runbook steps, UniFOLM infra CLIs) — each is
-   a small product call plus a runbook edit before its deletion lands here or in PR 1.
+   Makefile/CLAUDE.md/deps fixes. Preserve the revalidated first-GPU, generic provider
+   failover, and UniFOLM operator surfaces recorded above.
 3. **PR 3 — core-path fixes** (P1): dedupe evaluation_prep, demote agent_review to
    opt-in on the CLI, rename the "legacy" eval-run adapter, single dataset manifest.
 4. **PR 4 — seam enforcement** (P1 violations): retire/re-seam the Cosmos-Predict2.5

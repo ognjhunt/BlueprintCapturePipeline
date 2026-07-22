@@ -537,8 +537,8 @@ pre-runtime RunPod machine IDs are quarantined within the bounded launch so the
 same failed host is terminated after the first poll instead of consuming another
 full watchdog window.
 
-Lambda Cloud is the second managed-provider lane. Use the Lambda adapter only
-after the job has a `gpu_provider_launch_request.json` with
+Lambda Cloud is retained only as a read-only compatibility inventory lane. Use
+the Lambda adapter only after the job has a `gpu_provider_launch_request.json` with
 `status=request_manifest_ready`, local sim-only prerequisite evidence has passed,
 and the selected worker image is versioned and provider-fetchable. The adapter
 uses Lambda Cloud On-Demand Cloud APIs, not AWS Lambda. The official API uses
@@ -602,28 +602,13 @@ blueprint-run-lambda-provider-adapter \
   --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.ssh_keys.json"
 ```
 
-Lambda read-only inventory commands above remain supported. Public Lambda
-launch mode is hard-disabled until a Lambda resource class is routed through
-`paid_resource_allocator`; do not treat the legacy adapter flags as an
-allocation path. For any pre-existing Lambda instance, cleanup remains an
-operator safety action: terminate it by instance ID and then run
-`list-instances` again for zero-live-instance evidence:
-
-```bash
-BLUEPRINT_ALLOW_LAMBDA_API_CALLS=true \
-LAMBDA_API_KEY_FILE="$HOME/.blueprint-secrets/lambda_api_key" \
-blueprint-run-lambda-provider-adapter \
-  --provider-launch-request "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/gpu_provider_launch_request.json" \
-  --mode terminate-instances \
-  --instance-id "<lambda-instance-id>" \
-  --allow-lambda-api-call \
-  --output-path "$CAPTURE_ROOT/pipeline/robot_eval_jobs/$ROBOT_EVAL_JOB_ID/lambda_provider_adapter_result.terminate.json"
-```
-
-Do not use `sudo shutdown -h now` or `systemctl poweroff` as the closeout proof;
-Lambda documents that those commands leave instances in an alert state and
-billing can continue. Use Lambda terminate plus the follow-up inventory artifact
-for spend closure.
+Lambda read-only inventory commands above remain supported. Lambda launch and
+termination modes are hard-disabled because no Lambda resource class is routed
+through `paid_resource_allocator`; do not treat the legacy adapter flags as an
+allocation or teardown path. Any pre-existing Lambda instance requires separately
+authorized console/API cleanup followed by read-only `list-instances` zero-inventory
+evidence. A guest shutdown is not spend closure because the provider allocation may
+remain billable.
 
 From the WebApp repo, write the redacted forwarding preflight report before
 submitting a request:

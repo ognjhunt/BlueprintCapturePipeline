@@ -223,7 +223,7 @@ DEFAULT_STARTUP_EXPECTED_OUTPUTS = [
     "stderr_log",
 ]
 OPERATIONS = ("evaluate_only", "train_only", "train_then_evaluate")
-LIVE_GPU_PROVISIONERS = {"vast", "runpod", "lambda_cloud", "gcp"}
+LIVE_GPU_PROVISIONERS = {"vast", "runpod", "gcp"}
 WORKER_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
 WORKER_MANIFEST_URI_ENV = "BLUEPRINT_EVAL_MANIFEST_URI"
 WORKER_ARTIFACT_OUTPUT_URI_ENV = "BLUEPRINT_ARTIFACT_OUTPUT_URI"
@@ -2147,8 +2147,6 @@ def _build_scheduler_decision(
 def _provider_credential_env_vars(provisioner: str) -> List[str]:
     if provisioner == "runpod":
         return ["RUNPOD_API_KEY"]
-    if provisioner == "lambda_cloud":
-        return ["LAMBDA_API_KEY"]
     if provisioner == "vast":
         return ["VAST_API_KEY"]
     if provisioner == "gcp":
@@ -2159,8 +2157,6 @@ def _provider_credential_env_vars(provisioner: str) -> List[str]:
 def _provider_launch_operation(provisioner: str) -> str:
     if provisioner == "runpod":
         return "enqueue_runpod_serverless_or_on_demand_worker"
-    if provisioner == "lambda_cloud":
-        return "launch_lambda_cloud_instance_and_run_worker"
     if provisioner == "vast":
         return "create_vast_instance_and_run_worker"
     if provisioner == "gcp":
@@ -2176,7 +2172,6 @@ def _provider_adapter_command(provisioner: str) -> str | None:
     return {
         "runpod": "blueprint-run-runpod-provider-adapter",
         "vast": "blueprint-run-vast-provider-adapter",
-        "lambda_cloud": "blueprint-run-lambda-provider-adapter",
     }.get(provisioner)
 
 
@@ -2184,7 +2179,6 @@ def _provider_adapter_id(provisioner: str) -> str | None:
     return {
         "runpod": "runpod_provider_adapter.v1",
         "vast": "vast_provider_adapter.v1",
-        "lambda_cloud": "lambda_provider_adapter.v1",
     }.get(provisioner)
 
 

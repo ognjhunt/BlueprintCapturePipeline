@@ -72,7 +72,6 @@ def test_runpod_secure_cloud_defaults_to_managed_customer_lane() -> None:
     assert plan["selected_provider_is_marketplace"] is False
     assert plan["managed_provider_policy"]["provider_api_priority"] == [  # type: ignore[index]
         "runpod",
-        "lambda_cloud",
         "gcp",
         "vast",
     ]

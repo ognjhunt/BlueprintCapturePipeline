@@ -10403,13 +10403,10 @@ def test_webapp_execution_request_writes_scheduler_decision_and_blocks_gpu_witho
     assert startup_plan["selected_provider_is_marketplace"] is False
     assert startup_plan["managed_provider_policy"]["provider_api_priority"] == [  # type: ignore[index]
         "runpod",
-        "lambda_cloud",
         "gcp",
         "vast",
     ]
-    assert "lambda_cloud" in startup_plan["managed_provider_policy"][  # type: ignore[index]
-        "managed_provider_priority"
-    ]
+    assert startup_plan["managed_provider_policy"]["secondary_default"] == "gcp"  # type: ignore[index]
     assert startup_plan["marketplace_policy"][  # type: ignore[index]
         "customer_job_marketplace_default"
     ] == "avoid_unless_explicit_strict_preflight_canary"
