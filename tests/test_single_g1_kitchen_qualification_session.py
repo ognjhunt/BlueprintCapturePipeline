@@ -21,6 +21,7 @@ from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline.groot_oscar_runpod_watchdog import OWNER_TEARDOWN_CANCEL_NAME
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
 from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
+    MODEL_ASSETS_BINDING_SCHEMA_VERSION,
     capture_runtime_attempt_overlay_base,
     embedded_launch_rebind,
 )
@@ -187,7 +188,7 @@ def test_embedded_model_assets_binding_requires_exact_release_and_foundation() -
         release, expected_source_commit=TEST_SOURCE_COMMIT
     )
     evidence = {
-        "schema_version": qualification.MODEL_ASSETS_BINDING_SCHEMA_VERSION,
+        "schema_version": MODEL_ASSETS_BINDING_SCHEMA_VERSION,
         "status": "bound_to_release_foundation",
         "source_commit": TEST_SOURCE_COMMIT,
         "release_image_ref": TEST_IMAGE_REF,
@@ -196,13 +197,15 @@ def test_embedded_model_assets_binding_requires_exact_release_and_foundation() -
         "runtime_checkpoint_preflight_required": True,
     }
 
-    binding, blockers = qualification._model_assets_binding(evidence, release_binding)
+    binding, blockers = qualification.build_model_assets_binding(evidence, release_binding)
 
     assert release_blockers == []
     assert blockers == []
     assert binding["status"] == "bound"
     evidence["release_image_ref"] = "registry.example/wrong@sha256:" + "d" * 64
-    _, mismatch_blockers = qualification._model_assets_binding(evidence, release_binding)
+    _, mismatch_blockers = qualification.build_model_assets_binding(
+        evidence, release_binding
+    )
     assert mismatch_blockers == [
         "qualification_embedded_model_assets_release_image_ref_mismatch"
     ]
