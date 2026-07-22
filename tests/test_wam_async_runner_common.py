@@ -5,11 +5,49 @@ import json
 import pytest
 
 from blueprint_pipeline.wam_async_runner_common import (
+    AsyncPollDeadline,
+    deadline_capped_wait_seconds,
     download_url_to_file,
     read_json_mapping,
     read_sensitive_url_file,
     redact_provider_url,
 )
+
+
+def test_async_poll_deadline_centralizes_retry_and_expiry_semantics(
+    monkeypatch,
+) -> None:
+    deadline = AsyncPollDeadline.start(
+        max_wait_seconds=10,
+        retry_interval_seconds=3,
+        started_monotonic=100.0,
+    )
+    waits: list[float] = []
+    monkeypatch.setattr("blueprint_pipeline.wam_async_runner_common.time.sleep", waits.append)
+
+    assert deadline.is_open(109.0) is True
+    assert deadline.can_retry(107.0) is True
+    assert deadline.can_retry(107.1) is False
+    deadline.wait_for_retry()
+    assert waits == [3]
+    assert deadline.elapsed_seconds(111.0) == 11.0
+    assert deadline.expired(110.0) is True
+
+
+def test_paid_deadline_caps_provider_poll_wait() -> None:
+    capped, remaining, applied = deadline_capped_wait_seconds(
+        state={"max_live_deadline_epoch": 125.8},
+        requested_max_wait_seconds=60,
+        now_epoch=100.0,
+    )
+    assert capped == 25
+    assert remaining == pytest.approx(25.8)
+    assert applied is True
+    assert deadline_capped_wait_seconds(
+        state={},
+        requested_max_wait_seconds=60,
+        now_epoch=100.0,
+    ) == (60, None, False)
 
 
 def test_redact_provider_url_removes_query_and_fragment() -> None:

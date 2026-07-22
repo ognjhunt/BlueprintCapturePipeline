@@ -74,6 +74,7 @@ from .vast_bundle_staging import (
 from .vast_provider_adapter import _inspect_provider_runtime_output_zip
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_async_runner_common import (
+    AsyncPollDeadline,
     download_url_to_file,
     read_json_mapping as _read_json,
     read_sensitive_url_file as _read_sensitive_url_file,
@@ -3035,8 +3036,11 @@ def poll_runpod_wam_async_run(
     status_code: int | None = None
     pod_payload: dict[str, Any] = {}
     pod_status = "unknown"
-    started_monotonic = time.monotonic()
-    deadline = time.monotonic() + max(0, max_wait_seconds)
+    poll_deadline = AsyncPollDeadline.start(
+        max_wait_seconds=max_wait_seconds,
+        retry_interval_seconds=retry_interval_seconds,
+    )
+    started_monotonic = poll_deadline.started_monotonic
     post_marker_timeout_seconds = _runpod_wam_post_marker_timeout_seconds(
         post_marker_no_progress_timeout_seconds
     )
@@ -3049,7 +3053,7 @@ def poll_runpod_wam_async_run(
     transient_pod_status_error_count = 0
     last_pod_status_error: dict[str, Any] | None = None
     existing_teardown_completed = False
-    while not blockers and time.monotonic() <= deadline:
+    while not blockers and poll_deadline.is_open():
         output_present = output_path.is_file()
         if not output_present and output_get_url:
             download_manifest = _download_provider_output_zip(
@@ -3153,9 +3157,9 @@ def poll_runpod_wam_async_run(
                 if elapsed_since_create <= not_found_grace_seconds:
                     transient_not_found_count += 1
                     pod_status = "pending_api_visibility"
-                    if time.monotonic() + retry_interval_seconds > deadline:
+                    if not poll_deadline.can_retry():
                         break
-                    time.sleep(max(1, retry_interval_seconds))
+                    poll_deadline.wait_for_retry(time.sleep)
                     continue
                 pod_status = "not_found"
             else:
@@ -3172,9 +3176,9 @@ def poll_runpod_wam_async_run(
                 "message_preview": str(exc)[:300],
                 "raw_secret_values_recorded": False,
             }
-            if time.monotonic() + retry_interval_seconds > deadline:
+            if not poll_deadline.can_retry():
                 break
-            time.sleep(max(1, retry_interval_seconds))
+            poll_deadline.wait_for_retry(time.sleep)
             continue
         if output_present:
             break
@@ -3200,9 +3204,9 @@ def poll_runpod_wam_async_run(
             if stall_evaluation.get("should_terminate"):
                 stall_teardown_requested = True
                 break
-        if time.monotonic() + retry_interval_seconds > deadline:
+        if not poll_deadline.can_retry():
             break
-        time.sleep(max(1, retry_interval_seconds))
+        poll_deadline.wait_for_retry(time.sleep)
     output_inspection = _inspect_provider_runtime_output_zip(
         output_path,
         video_extract_dir=resolved_job_dir / "runpod_wam_output_videos",
@@ -3243,8 +3247,8 @@ def poll_runpod_wam_async_run(
     runtime_result_failed = (
         runtime_result_status in RUNPOD_WAM_PROVIDER_OUTPUT_FAILURE_STATUSES
     )
-    elapsed_wait_seconds = max(0.0, time.monotonic() - started_monotonic)
-    wait_deadline_expired = elapsed_wait_seconds >= max(0, max_wait_seconds)
+    elapsed_wait_seconds = poll_deadline.elapsed_seconds()
+    wait_deadline_expired = poll_deadline.expired()
     pod_status_is_active = (
         pod_status in RUNPOD_ACTIVE_POD_STATUSES
         or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES

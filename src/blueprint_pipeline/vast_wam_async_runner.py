@@ -110,6 +110,7 @@ from .vast_provider_adapter import (
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE, DEFAULT_WAM_VAST_LAUNCH_MODE
 from .wam_async_runner_common import (
+    deadline_capped_wait_seconds,
     download_url_to_file,
     read_json_mapping as _read_json,
     read_sensitive_url_file as _read_sensitive_url_file,
@@ -145,21 +146,6 @@ DEFAULT_WAM_PREFERRED_GPU_KEYWORDS = (
 
 def _state_path(job_dir: Path) -> Path:
     return job_dir / "vast_wam_async_state.json"
-
-
-def _deadline_capped_log_wait_seconds(
-    *,
-    state: Mapping[str, Any],
-    requested_max_wait_seconds: int,
-    now_epoch: float,
-) -> tuple[int, float | None, bool]:
-    requested = max(0, int(requested_max_wait_seconds))
-    deadline_epoch = float(_number(state.get("max_live_deadline_epoch")) or 0.0)
-    if deadline_epoch <= 0.0:
-        return requested, None, False
-    seconds_until_deadline = deadline_epoch - now_epoch
-    capped = min(requested, max(0, int(seconds_until_deadline)))
-    return capped, seconds_until_deadline, capped < requested
 
 
 def _url_file_path_from_meta(meta: Any) -> str:
@@ -1552,7 +1538,7 @@ def poll_async_vast_wam_run(
         effective_max_wait_seconds,
         seconds_until_max_live_deadline,
         log_wait_deadline_cap_applied,
-    ) = _deadline_capped_log_wait_seconds(
+    ) = deadline_capped_wait_seconds(
         state=state,
         requested_max_wait_seconds=max_wait_seconds,
         now_epoch=poll_started_epoch,

@@ -3,12 +3,99 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
-from urllib.parse import urlparse, urlunparse
+from typing import Any, Callable, Mapping
+from urllib.parse import urlparse, urlsplit, urlunparse
+
+
+@dataclass(frozen=True)
+class AsyncPollDeadline:
+    """Provider-neutral monotonic deadline and retry scheduling contract."""
+
+    started_monotonic: float
+    deadline_monotonic: float
+    max_wait_seconds: int
+    retry_interval_seconds: int
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        max_wait_seconds: int,
+        retry_interval_seconds: int,
+        started_monotonic: float | None = None,
+        deadline_base_monotonic: float | None = None,
+    ) -> "AsyncPollDeadline":
+        if started_monotonic is None:
+            started = time.monotonic()
+            deadline_base = (
+                time.monotonic()
+                if deadline_base_monotonic is None
+                else deadline_base_monotonic
+            )
+        else:
+            started = started_monotonic
+            deadline_base = (
+                started
+                if deadline_base_monotonic is None
+                else deadline_base_monotonic
+            )
+        bounded_wait = max(0, int(max_wait_seconds))
+        return cls(
+            started_monotonic=started,
+            deadline_monotonic=deadline_base + bounded_wait,
+            max_wait_seconds=bounded_wait,
+            retry_interval_seconds=max(1, int(retry_interval_seconds)),
+        )
+
+    def is_open(self, now_monotonic: float | None = None) -> bool:
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        return now <= self.deadline_monotonic
+
+    def can_retry(self, now_monotonic: float | None = None) -> bool:
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        return now + self.retry_interval_seconds <= self.deadline_monotonic
+
+    def wait_for_retry(
+        self,
+        sleeper: Callable[[float], None] | None = None,
+    ) -> None:
+        (sleeper or time.sleep)(self.retry_interval_seconds)
+
+    def elapsed_seconds(self, now_monotonic: float | None = None) -> float:
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        return max(0.0, now - self.started_monotonic)
+
+    def expired(self, now_monotonic: float | None = None) -> bool:
+        return self.elapsed_seconds(now_monotonic) >= self.max_wait_seconds
+
+
+def deadline_capped_wait_seconds(
+    *,
+    state: Mapping[str, Any],
+    requested_max_wait_seconds: int,
+    now_epoch: float,
+) -> tuple[int, float | None, bool]:
+    """Cap one provider poll wait to its persisted paid-resource deadline."""
+
+    requested = max(0, int(requested_max_wait_seconds))
+    raw_deadline = state.get("max_live_deadline_epoch")
+    if isinstance(raw_deadline, bool):
+        deadline_epoch = 0.0
+    else:
+        try:
+            deadline_epoch = float(raw_deadline or 0.0)
+        except (TypeError, ValueError):
+            deadline_epoch = 0.0
+    if deadline_epoch <= 0.0:
+        return requested, None, False
+    seconds_until_deadline = deadline_epoch - now_epoch
+    capped = min(requested, max(0, int(seconds_until_deadline)))
+    return capped, seconds_until_deadline, capped < requested
 
 
 def read_json_mapping(path: Path) -> dict[str, Any]:

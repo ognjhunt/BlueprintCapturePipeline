@@ -38,9 +38,9 @@ After the first P2 seams were added, the complete combined-tree default lane als
 with **4,736 passed, 1 skipped, and 1,595 deselected in 1:09:41**. This is the newest
 complete-suite result; the smaller count above records the earlier P0/P1 checkpoint.
 
-After that verification, `origin/main` advanced through #150/#151 and then #148. The
-remediation branch was first rebased onto `894583dd`, then refreshed onto current main
-`1974536b`; the NVIDIA/SIGGRAPH integration makes
+After that verification, `origin/main` advanced through #150/#151, #148, and #153. The
+remediation branch was first rebased onto `894583dd`, refreshed onto `1974536b`, and
+then rebased again onto current main `95b10eb1`; the NVIDIA/SIGGRAPH integration makes
 `splat_backends` and its `isaac_nurec_export` adapter live, so both modules and their
 direct tests were restored. This is a post-audit reachability change, not evidence that
 the original graph scan was fabricated. The safe removal estimate and P0 ledger below
@@ -74,9 +74,9 @@ remained `$0`. No instance was launched: the allocator correctly requires a clea
 and release-evidence binding for the exact `origin/main` commit, while the retained
 qualification image is bound to `fca4712e` plus a non-empty dirty-patch digest and the
 newest clean registry image is bound to audit commit `2edb48b`, not current main
-`1974536b`. The normal qualification watchdog contract is bounded to at most `$5.50`,
+`95b10eb1`. The normal qualification watchdog contract is bounded to at most `$5.50`,
 but budget authorization does not override source identity. A clean, immutable
-`1974536b` image plus its generated thin-release evidence is the concrete prerequisite
+`95b10eb1` image plus its generated thin-release evidence is the concrete prerequisite
 for live GPU startup/teardown proof; startup would still not prove policy quality,
 semantic task success, or ranking fidelity.
 
@@ -417,7 +417,9 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    live in provider-neutral `wam_async_runner_common`; both runners retain their public
    and private call surfaces. Provider artifact transfer is shared, rejects non-HTTPS
    or credential-bearing URLs before I/O, and no longer needs the moved Bandit risk
-   exceptions. Poll, collection, and teardown lifecycle extraction remains.
+   exceptions. Monotonic retry/deadline scheduling and paid-deadline wait capping are
+   now shared as well, with provider-injected sleepers preserving deterministic tests.
+   Poll state transitions, collection, and teardown lifecycle extraction remain.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the
