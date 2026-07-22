@@ -1,5 +1,51 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-21
+
+### User-Facing
+
+- Added model-neutral evaluator runtime-evidence and qualification workflows,
+  plus reproducible benchmark bindings for exact environment, adapter, and
+  evaluator digests. These contracts fail closed on stale or mismatched
+  evidence and do not turn evaluator startup or generated outputs into ranking
+  success (`src/blueprint_pipeline/evaluator_runtime_evidence.py`,
+  `src/blueprint_pipeline/evaluator_qualification_workflow.py`,
+  `src/blueprint_pipeline/benchmark_protocol.py`).
+- Added a provider-neutral NVIDIA simulation integration framework for
+  SimReady validation, Omniverse library preflight, gsplat conformance, Cosmos
+  3 edge experiments, and external worker handoffs. The checked-in completion
+  matrix and receipt describe implemented/tested contracts; they are not proof
+  of deployed NVIDIA services, a successful live-provider run, or physical
+  robot performance (`docs/NVIDIA_SIGGRAPH_2026_IMPLEMENTATION_RUNBOOK.md`,
+  `docs/evidence/nvidia_siggraph_2026_completion_matrix.json`).
+
+### Employee-Facing
+
+- Hardened paid-resource admission and closure: GPU canaries require fresh
+  protected-main source binding, Vast qualification collection is bound to the
+  exact launched release and task contract, model-volume cleanup records
+  terminal evidence, and watchdog cancellation requires exact-attempt plus
+  global provider-zero proof (`src/blueprint_pipeline/paid_resource_allocator.py`,
+  `src/blueprint_pipeline/single_g1_kitchen_qualification_contract.py`,
+  `scripts/gpu_spend_guard.py`).
+- Added Python 3.10-safe TOML loading for sealed runtime paths and narrowed the
+  RunPod adapter/image health-check imports, preserving compatibility without
+  weakening source or runtime identity checks
+  (`src/blueprint_pipeline/toml_compat.py`,
+  `src/blueprint_pipeline/runpod_provider_adapter.py`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains ten first-parent `origin/main` commits,
+  `2ec960d9` through `95b10eb1` (PRs #142–#153, including the July 20 changelog
+  merge); the checkout is clean with `HEAD == main == origin/main`, so no
+  attributable uncommitted July 21 source work is recorded.
+- Keep evaluator evidence, evaluator qualification, benchmark reproducibility,
+  simulation preflight, external worker results, provider allocation, teardown,
+  semantic/ranking success, deployment, and physical-robot execution as
+  separate proof layers. July 21's contracts and test receipts do not establish
+  public readiness or a successful live episode.
+
 ## 2026-07-20
 
 ### User-Facing
