@@ -44,6 +44,8 @@ RUN mkdir -p /opt/blueprint/release-src \
          --index-url https://download.pytorch.org/whl/cu128 \
          --extra-index-url https://pypi.org/simple \
          -r /tmp/requirements_oscar_foundation.lock \
+       && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import transformer_engine_shim_script_text; Path('/tmp/install_transformer_engine_shim.py').write_text(transformer_engine_shim_script_text(), encoding='utf-8')" \
+       && /opt/oscar-venv/bin/python /tmp/install_transformer_engine_shim.py /opt/oscar-public \
        && /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py \
          --wbc-revision "${EMBEDDED_FOUNDATION_WBC_SOURCE_REF}" \
          --groot-revision "${EMBEDDED_FOUNDATION_GROOT_SOURCE_REF}" \
@@ -66,7 +68,7 @@ RUN mkdir -p /opt/blueprint/release-src \
               /opt/runpod-serverless-venv/lib/python*/site-packages/setuptools* \
               /opt/runpod-serverless-venv/lib/python*/site-packages/pkg_resources \
   && find /opt/runpod-serverless-venv -type d -name __pycache__ -prune -exec rm -rf '{}' + \
-  && rm -rf /tmp/blueprint-release /tmp/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless_sdk.lock /tmp/requirements_embedded_carrier_opencv.lock /tmp/requirements_oscar_foundation.lock /tmp/repair_embedded_carrier.py /root/.cache \
+  && rm -rf /tmp/blueprint-release /tmp/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless_sdk.lock /tmp/requirements_embedded_carrier_opencv.lock /tmp/requirements_oscar_foundation.lock /tmp/install_transformer_engine_shim.py /tmp/repair_embedded_carrier.py /root/.cache \
   && test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker \
   && /opt/runpod-serverless-venv/bin/python -m blueprint_pipeline.groot_oscar_runpod_serverless_worker --verify-serverless-runtime \
   && case "${FOUNDATION_MODEL_ASSETS}" in \

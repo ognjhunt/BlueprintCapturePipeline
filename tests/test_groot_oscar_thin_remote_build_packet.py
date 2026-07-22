@@ -187,7 +187,17 @@ def test_release_removes_build_only_serverless_environment_files() -> None:
     assert "-name __pycache__" in release_dockerfile
     assert "requirements_oscar_foundation.lock" in release_dockerfile
     assert "pip --python /opt/oscar-venv/bin/python install" in release_dockerfile
+    assert "transformer_engine_shim_script_text" in release_dockerfile
+    assert (
+        "/tmp/install_transformer_engine_shim.py /opt/oscar-public"
+        in release_dockerfile
+    )
     assert "repair_embedded_carrier.py" in release_dockerfile
+    assert release_dockerfile.index(
+        "/tmp/install_transformer_engine_shim.py /opt/oscar-public"
+    ) < release_dockerfile.index(
+        "&& /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py"
+    )
     assert "BLUEPRINT_GEAR_SONIC_SOURCE_REVISION" in release_dockerfile
     assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in release_dockerfile
     assert "rm -f /usr/local/cuda*/bin/nvcc" in release_dockerfile
