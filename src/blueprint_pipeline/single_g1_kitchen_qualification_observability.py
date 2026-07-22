@@ -17,7 +17,7 @@ def dispatch_diagnostics_shell() -> str:
     """Return fixed shell/Python that binds a dispatch record to one attempt."""
 
     return r'''if [ "$1" = episode ] || [ "$1" = bootstrap ]; then
-    python3 - /workspace/closed_loop_out/qualification_startup_diagnostics.json "$pid" "$ATTEMPT_SEQUENCE" "$ATTEMPT_NONCE_SHA256" "$EXPECTED_LAUNCH_SESSION_ID" <<'PY'
+    python3 - /workspace/closed_loop_out/qualification_startup_diagnostics.json "$pid" "$ATTEMPT_SEQUENCE" "$ATTEMPT_NONCE_SHA256" "$EXPECTED_LAUNCH_SESSION_ID" <<'PY' || printf 'qualification_startup_diagnostics_write_failed\n' >&2
 import json, os, pathlib, sys, time
 path = pathlib.Path(sys.argv[1])
 payload = {

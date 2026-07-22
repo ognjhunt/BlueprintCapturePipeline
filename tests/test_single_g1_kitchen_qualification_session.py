@@ -1539,6 +1539,39 @@ pathlib.Path.read_text = race_read_text
     assert "startup_health=stopped" in raced.stdout
 
 
+def test_dispatch_diagnostics_failure_does_not_wedge_dispatched_attempt(
+    tmp_path: Path,
+) -> None:
+    missing_parent = tmp_path / "removed-output" / "qualification-startup.json"
+    source = qualification.dispatch_diagnostics_shell().replace(
+        "/workspace/closed_loop_out/qualification_startup_diagnostics.json",
+        str(missing_parent),
+    )
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -e\n"
+            "pid=507\n"
+            "ATTEMPT_SEQUENCE=1\n"
+            f"ATTEMPT_NONCE_SHA256={'a' * 64}\n"
+            "EXPECTED_LAUNCH_SESSION_ID=qualification-nonce\n"
+            + source
+            + "\nprintf 'dispatch_identity_can_still_be_emitted\\n'\n",
+            "qualification-dispatch-test",
+            "episode",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "dispatch_identity_can_still_be_emitted" in completed.stdout
+    assert "qualification_startup_diagnostics_write_failed" in completed.stderr
+    assert not missing_parent.exists()
+
+
 def test_startup_diagnostic_parser_blocks_stall_and_attempt_binding_loss() -> None:
     diagnostics, blockers = qualification.parse_startup_diagnostics(
         "startup_phase=runner_done startup_health=stalled "
