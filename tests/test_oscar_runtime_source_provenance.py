@@ -145,3 +145,43 @@ def test_external_source_symlink_is_rejected(tmp_path: Path) -> None:
         assert str(exc) == "oscar_runtime_source_tree_external_symlink_forbidden"
     else:  # pragma: no cover
         raise AssertionError("external source symlink must fail closed")
+
+
+def test_unsealed_runtime_bytecode_cache_blocks(tmp_path: Path, monkeypatch) -> None:
+    source = _git_source(tmp_path)
+    actual_commit = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(provenance, "OFFICIAL_OSCAR_SOURCE_COMMIT", actual_commit)
+    monkeypatch.setattr(provenance, "source_ref_is_official", lambda value: value == actual_commit)
+    monkeypatch.setattr(
+        provenance,
+        "OFFICIAL_OSCAR_RUNTIME_TREE_SHA256",
+        provenance.source_tree_evidence(source)["tree_sha256"],
+    )
+    seal_path = tmp_path / "seal.json"
+    provenance.seal_source_tree(
+        source_root=source,
+        output_path=seal_path,
+        source_commit=actual_commit,
+        runtime_source_root=str(source.resolve()),
+    )
+    (source / ".git").rename(tmp_path / "removed-git")
+    bytecode_dir = source / "__pycache__"
+    bytecode_dir.mkdir()
+    (bytecode_dir / "inference.cpython-310.pyc").write_bytes(b"unsealed-bytecode")
+    monkeypatch.setattr(provenance, "DEFAULT_RUNTIME_SOURCE_ROOT", str(source.resolve()))
+
+    result = provenance.verify_source_tree(
+        source_root=source,
+        seal_path=seal_path,
+        artifact_path=tmp_path / "artifact.json",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["checks"]["runtime_tree_contains_no_unsealed_python_bytecode"] is False
+    assert result["checks"]["runtime_tree_sha256_verified"] is False
+    assert result["blockers"] == ["official_oscar_runtime_provenance_mismatch"]

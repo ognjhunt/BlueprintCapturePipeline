@@ -39,8 +39,9 @@ GIT_EXECUTABLE = "/usr/bin/git"
 OFFICIAL_OSCAR_RUNTIME_TREE_SHA256 = (
     "319f4d415f54afa05159783f388b844363e87b721c38c78e6cbb756162b29f1a"
 )
-_IGNORED_DIRECTORY_NAMES = {".git", ".mypy_cache", ".pytest_cache", "__pycache__"}
-_IGNORED_FILE_SUFFIXES = {".pyc", ".pyo"}
+_IGNORED_DIRECTORY_NAMES = {".git", ".mypy_cache", ".pytest_cache"}
+_FORBIDDEN_BYTECODE_DIRECTORY_NAME = "__pycache__"
+_FORBIDDEN_BYTECODE_FILE_SUFFIXES = {".pyc", ".pyo"}
 
 
 def _canonical_json(value: Any) -> str:
@@ -59,6 +60,11 @@ def _tree_records(source_root: str | Path) -> list[dict[str, Any]]:
         relative = candidate.relative_to(root)
         if any(part in _IGNORED_DIRECTORY_NAMES for part in relative.parts):
             continue
+        if (
+            _FORBIDDEN_BYTECODE_DIRECTORY_NAME in relative.parts
+            or candidate.suffix.lower() in _FORBIDDEN_BYTECODE_FILE_SUFFIXES
+        ):
+            raise ValueError("oscar_runtime_source_tree_python_bytecode_forbidden")
         if candidate.is_symlink():
             if not candidate.resolve().is_relative_to(root):
                 raise ValueError("oscar_runtime_source_tree_external_symlink_forbidden")
@@ -71,8 +77,6 @@ def _tree_records(source_root: str | Path) -> list[dict[str, Any]]:
             )
             continue
         if candidate.is_dir():
-            continue
-        if candidate.suffix in _IGNORED_FILE_SUFFIXES:
             continue
         if not candidate.is_file():
             raise ValueError("oscar_runtime_source_tree_special_file_forbidden")
@@ -169,10 +173,12 @@ def verify_source_tree(
         loaded = {}
     seal = dict(loaded) if isinstance(loaded, dict) else {}
     expected_tree = dict(seal.get("runtime_tree") or {})
+    tree_scan_error: str | None = None
     try:
         actual_tree = source_tree_evidence(root)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
         actual_tree = {}
+        tree_scan_error = str(exc)
     checks = {
         "official_source_url_verified_from_sealed_build_provenance": (
             seal.get("source_url") == OFFICIAL_OSCAR_SOURCE_URL
@@ -183,6 +189,9 @@ def verify_source_tree(
         "runtime_tree_sha256_verified": (
             bool(actual_tree)
             and actual_tree == expected_tree
+        ),
+        "runtime_tree_contains_no_unsealed_python_bytecode": (
+            bool(actual_tree) and tree_scan_error is None
         ),
         "reviewed_runtime_tree_digest_verified": (
             actual_tree.get("tree_sha256") == OFFICIAL_OSCAR_RUNTIME_TREE_SHA256

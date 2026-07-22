@@ -426,6 +426,12 @@ def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
     assert "importlib.metadata.version('pytest') == '9.1.1'" in dockerfile
     assert "assert make_config() is not None" in dockerfile
     assert "blueprint_pipeline.oscar_runtime_source_provenance seal" in dockerfile
+    assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
+    assert "find /tmp/oscar -type d -name __pycache__" in dockerfile
+    assert "-name '*.pyc' -o -name '*.pyo'" in dockerfile
+    assert dockerfile.index("find /tmp/oscar -type d -name __pycache__") < dockerfile.index(
+        "blueprint_pipeline.oscar_runtime_source_provenance seal"
+    )
     assert "--runtime-source-root /opt/OSCAR" in dockerfile
     assert (
         "COPY --from=robot-env-builder /tmp/oscar_source_provenance.json "
