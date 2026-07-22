@@ -9,12 +9,8 @@ GPU instance is created.
 from __future__ import annotations
 
 import argparse
-import http.server
-import json
 import re
-import secrets
 import shutil
-import socketserver
 import subprocess
 import threading
 import time
@@ -22,14 +18,18 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qs, urlparse, urlunparse
+from typing import Any, Sequence
+from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .provider_bundle_staging_common import (
     BUNDLE_ROUTE,
+    DEFAULT_MAX_OUTPUT_BYTES as _DEFAULT_MAX_OUTPUT_BYTES,
+    DEFAULT_STAGING_HOST,
     HEALTH_ROUTE,
     OUTPUT_ROUTE,
+    ProviderBundleStagingRequestHandler as _ProviderBundleStagingRequestHandler,
+    create_staging_server,
     read_or_create_staging_token as _read_or_create_token,
     staging_url_with_token as _url_with_token,
 )
@@ -46,8 +46,9 @@ VAST_CLOUDFLARED_TUNNEL_SCHEMA_VERSION = "vast_cloudflared_tunnel_manifest.v1"
 DEFAULT_TOKEN_FILE = "~/.blueprint-secrets/vast_bundle_staging_token"
 DEFAULT_SECRET_ENV_FILE = "~/.blueprint-secrets/vast_bundle_staging_urls.env"
 DEFAULT_OUTPUT_FILENAME = "vast_provider_runtime_output.zip"
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_HOST = DEFAULT_STAGING_HOST
+DEFAULT_MAX_OUTPUT_BYTES = _DEFAULT_MAX_OUTPUT_BYTES
+VastBundleStagingRequestHandler = _ProviderBundleStagingRequestHandler
 DEFAULT_PUBLIC_VERIFY_MAX_WAIT_SECONDS = 120
 DEFAULT_PUBLIC_VERIFY_RETRY_INTERVAL_SECONDS = 5.0
 DEFAULT_PUBLIC_VERIFY_TIMEOUT_SECONDS = 20
@@ -200,12 +201,14 @@ def _write_secret_env_file(
         path_source="staging_secret_env_file",
         raw_secret_field="raw_secret_values_recorded_in_manifest",
     )
-    status.update({
-        "present": path.is_file(),
-        "mode": oct(path.stat().st_mode & 0o777),
-        "mode_is_0600": (path.stat().st_mode & 0o777) == 0o600,
-        "raw_secret_values_recorded_in_manifest": False,
-    })
+    status.update(
+        {
+            "present": path.is_file(),
+            "mode": oct(path.stat().st_mode & 0o777),
+            "mode_is_0600": (path.stat().st_mode & 0o777) == 0o600,
+            "raw_secret_values_recorded_in_manifest": False,
+        }
+    )
     return status
 
 
@@ -319,142 +322,6 @@ def prepare_vast_bundle_staging(
     }
     write_json(resolved_job_dir / "vast_bundle_staging_manifest.json", manifest)
     return manifest
-
-
-class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-
-class VastBundleStagingRequestHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "BlueprintVastBundleStaging/1.0"
-
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
-        return None
-
-    @property
-    def _bundle_path(self) -> Path:
-        return self.server.bundle_path  # type: ignore[attr-defined]
-
-    @property
-    def _output_path(self) -> Path:
-        return self.server.output_path  # type: ignore[attr-defined]
-
-    @property
-    def _token(self) -> str:
-        return self.server.token  # type: ignore[attr-defined]
-
-    @property
-    def _max_output_bytes(self) -> int:
-        return self.server.max_output_bytes  # type: ignore[attr-defined]
-
-    def _authorized(self) -> bool:
-        parsed = urlparse(self.path)
-        token_values = parse_qs(parsed.query).get("token") or []
-        return bool(self._token and token_values and secrets.compare_digest(token_values[0], self._token))
-
-    def _send_json(self, status: int, payload: Mapping[str, Any]) -> None:
-        data = json.dumps(dict(payload), sort_keys=True).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(data)
-
-    def _serve_bundle(self, *, head_only: bool) -> None:
-        if not self._authorized():
-            self._send_json(403, {"ok": False, "error": "forbidden"})
-            return
-        if not self._bundle_path.is_file():
-            self._send_json(404, {"ok": False, "error": "bundle_missing"})
-            return
-        size = self._bundle_path.stat().st_size
-        self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Length", str(size))
-        self.end_headers()
-        if not head_only:
-            with self._bundle_path.open("rb") as handle:
-                shutil.copyfileobj(handle, self.wfile)
-
-    def do_HEAD(self) -> None:
-        if urlparse(self.path).path == BUNDLE_ROUTE:
-            self._serve_bundle(head_only=True)
-            return
-        self._send_json(404, {"ok": False, "error": "not_found"})
-
-    def do_GET(self) -> None:
-        path = urlparse(self.path).path
-        if path == HEALTH_ROUTE:
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "bundle_present": self._bundle_path.is_file(),
-                    "output_parent_present": self._output_path.parent.is_dir(),
-                },
-            )
-            return
-        if path == BUNDLE_ROUTE:
-            self._serve_bundle(head_only=False)
-            return
-        self._send_json(404, {"ok": False, "error": "not_found"})
-
-    def do_PUT(self) -> None:
-        if urlparse(self.path).path != OUTPUT_ROUTE:
-            self._send_json(404, {"ok": False, "error": "not_found"})
-            return
-        if not self._authorized():
-            self._send_json(403, {"ok": False, "error": "forbidden"})
-            return
-        content_length = int(self.headers.get("Content-Length") or "0")
-        if content_length <= 0:
-            self._send_json(400, {"ok": False, "error": "empty_upload"})
-            return
-        if content_length > self._max_output_bytes:
-            self._send_json(413, {"ok": False, "error": "upload_too_large"})
-            return
-        ensure_dir(self._output_path.parent)
-        temp_path = self._output_path.with_suffix(self._output_path.suffix + ".tmp")
-        remaining = content_length
-        with temp_path.open("wb") as handle:
-            while remaining > 0:
-                chunk = self.rfile.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                handle.write(chunk)
-                remaining -= len(chunk)
-        if remaining:
-            temp_path.unlink(missing_ok=True)
-            self._send_json(400, {"ok": False, "error": "short_upload"})
-            return
-        temp_path.replace(self._output_path)
-        self._send_json(
-            200,
-            {
-                "ok": True,
-                "output_path": str(self._output_path),
-                "bytes_written": content_length,
-            },
-        )
-
-
-def create_staging_server(
-    *,
-    bundle_path: str | Path,
-    output_path: str | Path,
-    token: str,
-    host: str = DEFAULT_HOST,
-    port: int = 0,
-    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
-) -> http.server.HTTPServer:
-    server = _ThreadingHTTPServer((host, port), VastBundleStagingRequestHandler)
-    server.bundle_path = Path(bundle_path).expanduser().resolve()  # type: ignore[attr-defined]
-    server.output_path = Path(output_path).expanduser().resolve()  # type: ignore[attr-defined]
-    server.token = token  # type: ignore[attr-defined]
-    server.max_output_bytes = max_output_bytes  # type: ignore[attr-defined]
-    return server
 
 
 def run_local_staging_self_test(
@@ -572,9 +439,7 @@ def _head_bundle_url(
             "content_type": headers.get("Content-Type"),
             "content_length": content_length,
             "expected_content_length": (
-                bundle_path.stat().st_size
-                if bundle_path and bundle_path.is_file()
-                else None
+                bundle_path.stat().st_size if bundle_path and bundle_path.is_file() else None
             ),
         }
         if not (200 <= status_code < 300):
@@ -762,8 +627,7 @@ def verify_public_staging_urls(
                     output_probe = {
                         **output_probe,
                         "status": "blocked",
-                        "blocker": final_cleanup.get("reason")
-                        or "output_probe_cleanup_failed",
+                        "blocker": final_cleanup.get("reason") or "output_probe_cleanup_failed",
                     }
         elif allow_output_put_probe:
             output_probe = {
@@ -783,9 +647,7 @@ def verify_public_staging_urls(
             output_probe.get("status") == "passed" or not allow_output_put_probe
         )
         if not require_bundle_fetch_probe:
-            attempt_passed = (
-                output_probe.get("status") == "passed" or not allow_output_put_probe
-            )
+            attempt_passed = output_probe.get("status") == "passed" or not allow_output_put_probe
         if attempt_passed:
             successful_attempts += 1
             consecutive_successes += 1
@@ -946,7 +808,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             secret_env_file=args.secret_env_file,
             output_path=args.output_path,
         )
-        print(f"[vast-bundle-staging] manifest={Path(args.job_dir).resolve() / 'vast_bundle_staging_manifest.json'}")
+        print(
+            f"[vast-bundle-staging] manifest={Path(args.job_dir).resolve() / 'vast_bundle_staging_manifest.json'}"
+        )
         print(f"[vast-bundle-staging] status={manifest.get('status')}")
         blockers = manifest.get("blockers") or []
         if blockers:
@@ -959,7 +823,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=args.output_path,
             token_file=args.token_file,
         )
-        print(f"[vast-bundle-staging] self_test={Path(args.job_dir).resolve() / 'vast_bundle_staging_self_test.json'}")
+        print(
+            f"[vast-bundle-staging] self_test={Path(args.job_dir).resolve() / 'vast_bundle_staging_self_test.json'}"
+        )
         print(f"[vast-bundle-staging] status={manifest.get('status')}")
         return 0 if manifest.get("status") == "passed" else 1
     if args.command == "verify-public":
@@ -977,7 +843,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allow_output_put_probe=not args.no_output_put_probe,
             cleanup_output_probe=not args.no_cleanup_output_probe,
         )
-        print(f"[vast-bundle-staging] public_verification={Path(args.job_dir).resolve() / 'vast_public_staging_verification.json'}")
+        print(
+            f"[vast-bundle-staging] public_verification={Path(args.job_dir).resolve() / 'vast_public_staging_verification.json'}"
+        )
         print(f"[vast-bundle-staging] status={manifest.get('status')}")
         blockers = manifest.get("blockers") or []
         if blockers:
@@ -990,7 +858,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             cloudflared_path=args.cloudflared_path,
             startup_timeout_seconds=args.startup_timeout_seconds,
         )
-        print(f"[vast-bundle-staging] cloudflared_tunnel={Path(args.job_dir).resolve() / 'vast_cloudflared_tunnel_manifest.json'}")
+        print(
+            f"[vast-bundle-staging] cloudflared_tunnel={Path(args.job_dir).resolve() / 'vast_cloudflared_tunnel_manifest.json'}"
+        )
         print(f"[vast-bundle-staging] status={manifest.get('status')}")
         if manifest.get("public_base_url"):
             print(f"[vast-bundle-staging] public_base_url={manifest.get('public_base_url')}")
