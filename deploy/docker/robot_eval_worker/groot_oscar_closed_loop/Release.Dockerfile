@@ -8,11 +8,16 @@ ARG BLUEPRINT_SOURCE_COMMIT
 ARG BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256
 ARG FOUNDATION_MODEL_ASSETS=external
 ARG RUNPOD_SERVERLESS_SDK_VERSION=1.10.1
+ARG EMBEDDED_FOUNDATION_WBC_SOURCE_REF=6d8e931b9b10a4db2d8e7aba3ad6d5da3529ff3b
+ARG EMBEDDED_FOUNDATION_GROOT_SOURCE_REF=e5749287857afd97b78f1147166137de29746392
+ARG EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF=4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb
 COPY pyproject.toml README.md LICENSE /tmp/blueprint-release/
 COPY src /tmp/blueprint-release/src
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless.lock
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_runpod_serverless_sdk.lock /tmp/requirements_runpod_serverless_sdk.lock
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_embedded_carrier_opencv.lock /tmp/requirements_embedded_carrier_opencv.lock
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_foundation.lock /tmp/requirements_oscar_foundation.lock
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/repair_embedded_carrier.py /tmp/repair_embedded_carrier.py
 COPY --chmod=0755 deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh /opt/blueprint/thin_release_entrypoint.sh
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
 RUN mkdir -p /opt/blueprint/release-src \
@@ -33,6 +38,24 @@ RUN mkdir -p /opt/blueprint/release-src \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements_runpod_serverless.lock \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/requirements_runpod_serverless_sdk.lock \
   && /opt/runpod-serverless-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
+  && if [ "${FOUNDATION_MODEL_ASSETS}" = embedded ]; then \
+       /opt/runpod-serverless-venv/bin/python -m pip --python /opt/oscar-venv/bin/python install \
+         --no-cache-dir --require-hashes \
+         --index-url https://download.pytorch.org/whl/cu128 \
+         --extra-index-url https://pypi.org/simple \
+         -r /tmp/requirements_oscar_foundation.lock \
+       && /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py \
+         --wbc-revision "${EMBEDDED_FOUNDATION_WBC_SOURCE_REF}" \
+         --groot-revision "${EMBEDDED_FOUNDATION_GROOT_SOURCE_REF}" \
+         --oscar-revision "${EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF}" \
+         --output /opt/blueprint/embedded_carrier_repair.json \
+       && oscar_site_packages="$(/opt/oscar-venv/bin/python -c 'import site; print(site.getsitepackages()[0])')" \
+       && printf '%s\n' '/opt/wbc' > "${oscar_site_packages}/blueprint_gear_sonic_runtime.pth" \
+       && rm -f /usr/local/cuda*/bin/nvcc \
+       && rm -rf /usr/local/cuda*/include /usr/local/cuda*/lib64/stubs /usr/local/cuda*/targets/*/include /usr/local/cuda*/targets/*/lib/stubs \
+       && find /usr/local/cuda* -type f -name '*.a' -delete \
+       && rm -rf /opt/wbc/.git /opt/gr00t/.git /opt/oscar-public/.git; \
+     fi \
   && oscar_site_packages="$(/opt/oscar-venv/bin/python -c 'import site; print(site.getsitepackages()[0])')" \
   && if ! /opt/oscar-venv/bin/python -c 'import cv2'; then \
        /opt/runpod-serverless-venv/bin/python -m pip install --no-cache-dir --no-deps --require-hashes \
@@ -43,7 +66,7 @@ RUN mkdir -p /opt/blueprint/release-src \
               /opt/runpod-serverless-venv/lib/python*/site-packages/setuptools* \
               /opt/runpod-serverless-venv/lib/python*/site-packages/pkg_resources \
   && find /opt/runpod-serverless-venv -type d -name __pycache__ -prune -exec rm -rf '{}' + \
-  && rm -rf /tmp/blueprint-release /tmp/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless_sdk.lock /tmp/requirements_embedded_carrier_opencv.lock /root/.cache \
+  && rm -rf /tmp/blueprint-release /tmp/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless_sdk.lock /tmp/requirements_embedded_carrier_opencv.lock /tmp/requirements_oscar_foundation.lock /tmp/repair_embedded_carrier.py /root/.cache \
   && test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker \
   && /opt/runpod-serverless-venv/bin/python -m blueprint_pipeline.groot_oscar_runpod_serverless_worker --verify-serverless-runtime \
   && case "${FOUNDATION_MODEL_ASSETS}" in \
@@ -54,16 +77,22 @@ RUN mkdir -p /opt/blueprint/release-src \
             BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256}" \
             BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release \
             BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS="${FOUNDATION_MODEL_ASSETS}" \
+            BLUEPRINT_GEAR_SONIC_SOURCE_REVISION="${EMBEDDED_FOUNDATION_WBC_SOURCE_REF}" \
+            PYTHONPATH=/opt/wbc:/opt/OSCAR \
             /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time ;; \
        *) echo "invalid FOUNDATION_MODEL_ASSETS=${FOUNDATION_MODEL_ASSETS}" >&2; exit 2 ;; \
      esac
 ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
     BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS=${FOUNDATION_MODEL_ASSETS} \
+    BLUEPRINT_GEAR_SONIC_SOURCE_REVISION=${EMBEDDED_FOUNDATION_WBC_SOURCE_REF} \
+    BLUEPRINT_FOUNDATION_GROOT_SOURCE_REF=${EMBEDDED_FOUNDATION_GROOT_SOURCE_REF} \
+    BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF=${EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF} \
     BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker \
     BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release \
     BLUEPRINT_SIMULATOR_FRAMEWORK=isaac_sim \
     BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6 \
+    PYTHONPATH=/opt/wbc:/opt/OSCAR \
     BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_SEALED_IMAGE_CONFIRMED=true
 USER blueprint
 WORKDIR /workspace

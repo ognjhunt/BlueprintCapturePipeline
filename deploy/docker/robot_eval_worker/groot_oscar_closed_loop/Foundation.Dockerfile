@@ -86,6 +86,7 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && VIRTUAL_ENV=/opt/gr00t-venv uv pip install --no-deps /tmp/gr00t \
   && /opt/gr00t-venv/bin/python -m pip check \
   && /opt/gr00t-venv/bin/python -c "from gr00t.policy.gr00t_policy import Gr00tPolicy" \
+  && printf '%s\n' "${GROOT_SOURCE_REF}" > /tmp/gr00t/.blueprint-source-revision \
   && rm -rf /opt/oscar-venv/.git /opt/gr00t-venv/.git /root/.cache /tmp/gr00t/.git /tmp/oscar/.git \
   && mkdir -p /opt/oscar-runtime \
   && cp -a /tmp/oscar/. /opt/oscar-runtime/ \
@@ -219,6 +220,7 @@ RUN /opt/oscar-venv/bin/python /opt/blueprint/fetch_pinned_isaac_assets.py \
       --base-url https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/ \
       --output-dir /isaac-sim/Isaac/Robots/Unitree/G1 \
   && test -s /opt/blueprint/oscar_source_provenance.json \
+  && test "$(cat /opt/gr00t/.blueprint-source-revision)" = "${GROOT_SOURCE_REF}" \
   && test ! -e /opt/blueprint/ckpts \
   && test ! -d /opt/wbc/.git \
   && test ! -d /opt/OSCAR/.git \

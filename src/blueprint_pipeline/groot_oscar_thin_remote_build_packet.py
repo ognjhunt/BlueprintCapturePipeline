@@ -32,6 +32,7 @@ REQUIRED_IMAGE_FILES = (
     "requirements_robot_runtime.txt",
     "requirements_oscar_foundation.lock",
     "requirements_embedded_carrier_opencv.lock",
+    "repair_embedded_carrier.py",
     "requirements_runpod_serverless.in",
     "requirements_runpod_serverless.lock",
     "requirements_runpod_serverless_sdk.lock",
