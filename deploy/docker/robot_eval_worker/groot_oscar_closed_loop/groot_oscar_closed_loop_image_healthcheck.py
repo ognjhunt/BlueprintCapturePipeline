@@ -336,7 +336,14 @@ def main() -> int:
     if not all(wbc_asset_checks.values()):
         blockers.append("official_gear_sonic_deployment_assets_missing")
     wbc_build = wbc_root / "gear_sonic_deploy/build"
-    thin_release = os.environ.get("BLUEPRINT_WORKER_IMAGE_VARIANT") == "groot-oscar-thin-release"
+    model_asset_mode = os.environ.get(
+        "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS", "external"
+    )
+    thin_release = bool(
+        os.environ.get("BLUEPRINT_WORKER_IMAGE_VARIANT") == "groot-oscar-thin-release"
+        and model_asset_mode == "external"
+    )
+    payload["foundation_model_assets"] = model_asset_mode
     payload["gear_sonic_build_tree_absent"] = not wbc_build.exists()
     payload["gear_sonic_build_tree_writable"] = (
         False if thin_release else _dir_writable_by_current_user(wbc_build)

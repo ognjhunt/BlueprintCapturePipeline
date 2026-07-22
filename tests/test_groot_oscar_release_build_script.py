@@ -12,6 +12,10 @@ APT_TRANSPORT_HARDENING = Path(
 ENTRYPOINT = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh"
 )
+HEALTHCHECK = Path(
+    "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+    "groot_oscar_closed_loop_image_healthcheck.py"
+)
 RELEASE = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile"
 )
@@ -88,3 +92,6 @@ def test_release_asset_modes_are_explicit_and_fail_closed() -> None:
     assert 'model_asset_mode="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS:-external}"' in entrypoint
     assert 'elif [[ "$model_asset_mode" == "embedded" ]]' in entrypoint
     assert "invalid BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in entrypoint
+    healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
+    assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in healthcheck
+    assert 'and model_asset_mode == "external"' in healthcheck
