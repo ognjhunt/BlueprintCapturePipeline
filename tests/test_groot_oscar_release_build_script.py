@@ -6,6 +6,9 @@ PACKET = Path("src/blueprint_pipeline/groot_oscar_thin_remote_build_packet.py")
 FOUNDATION = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
 )
+APT_TRANSPORT_HARDENING = Path(
+    "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/apt_transport_hardening.conf"
+)
 ENTRYPOINT = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh"
 )
@@ -44,6 +47,25 @@ def test_foundation_uses_runtime_only_wbc_multistage_closure() -> None:
     assert "cuda-compiler" not in text[runtime:]
     assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in text
     assert "BLUEPRINT_GEAR_SONIC_SOURCE_REVISION=${WBC_SOURCE_REF}" in text
+
+
+def test_foundation_retries_package_fetches_and_uses_tls_ubuntu_mirrors() -> None:
+    dockerfile = FOUNDATION.read_text(encoding="utf-8")
+    apt_config = APT_TRANSPORT_HARDENING.read_text(encoding="utf-8")
+
+    assert 'Acquire::Retries "10";' in apt_config
+    assert 'Acquire::http::Timeout "30";' in apt_config
+    assert 'Acquire::https::Timeout "30";' in apt_config
+    assert 'Acquire::http::Pipeline-Depth "0";' in apt_config
+    assert 'Acquire::https::Pipeline-Depth "0";' in apt_config
+    assert dockerfile.count(
+        "COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "apt_transport_hardening.conf"
+    ) == 2
+    assert dockerfile.count("find /etc/apt -maxdepth 2") == 2
+    assert "https://archive.ubuntu.com/ubuntu" in dockerfile
+    assert "https://security.ubuntu.com/ubuntu" in dockerfile
+    assert "http://(archive|security)\\.ubuntu\\.com/ubuntu" in dockerfile
 
 
 def test_thin_entrypoint_uses_installed_absolute_worker_executable() -> None:

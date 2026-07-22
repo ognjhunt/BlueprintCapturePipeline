@@ -14,6 +14,14 @@ ARG CUDA_CUDART_VERSION=12.6.77-1
 
 FROM ${ISAAC_SIM_BASE_IMAGE} AS tensorrt-base
 USER root
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/apt_transport_hardening.conf \
+  /etc/apt/apt.conf.d/80blueprint-transport-hardening
+RUN find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) \
+      -exec sed -i \
+        -e 's#http://archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' \
+        -e 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' \
+        '{}' + \
+  && ! grep -RqsE 'http://(archive|security)\.ubuntu\.com/ubuntu' /etc/apt
 ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba \
   https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
   /tmp/cuda-keyring.deb
@@ -25,6 +33,14 @@ USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GROOT_SOURCE_URL GROOT_SOURCE_REF OSCAR_SOURCE_URL OSCAR_SOURCE_REF
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python PYTHONDONTWRITEBYTECODE=1
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/apt_transport_hardening.conf \
+  /etc/apt/apt.conf.d/80blueprint-transport-hardening
+RUN find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) \
+      -exec sed -i \
+        -e 's#http://archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' \
+        -e 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' \
+        '{}' + \
+  && ! grep -RqsE 'http://(archive|security)\.ubuntu\.com/ubuntu' /etc/apt
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_uv_bootstrap.txt /tmp/requirements_uv_bootstrap.txt
 RUN apt-get update && apt-get install -y --no-install-recommends git python3-pip python3-venv ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
