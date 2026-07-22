@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from blueprint_pipeline.wam_async_runner_common import (
     download_url_to_file,
     read_json_mapping,
@@ -71,3 +73,26 @@ def test_download_url_to_file_does_not_record_signed_url(tmp_path, monkeypatch) 
     assert result["downloaded_size_bytes"] == len(b"provider-output")
     assert output.read_bytes() == b"provider-output"
     assert url not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///tmp/provider-output.zip",
+        "http://objects.example/output.zip",
+        "https://user:password@objects.example/output.zip",
+    ],
+)
+def test_download_url_to_file_rejects_unsafe_url_schemes_and_credentials(
+    tmp_path,
+    url: str,
+) -> None:
+    result = download_url_to_file(
+        url=url,
+        output_path=tmp_path / "output.zip",
+        user_agent="BlueprintTest/1.0",
+        timeout_seconds=10,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["error_type"] == "ValueError"

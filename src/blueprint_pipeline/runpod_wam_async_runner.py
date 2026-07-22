@@ -607,7 +607,7 @@ def _runpod_request(
             "User-Agent": "BlueprintRunPodWamAsyncRunner/1.0",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
         status = int(getattr(response, "status", 200))
         text = response.read().decode("utf-8", errors="replace")
     if not text.strip():

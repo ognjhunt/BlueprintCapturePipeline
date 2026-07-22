@@ -61,7 +61,9 @@ The first P2 seam slice now puts the hosted native runtime behind a typed strate
 catalog. `site_splat` is the provider-neutral default; the legacy Cosmos-Predict2.5
 adapter requires explicit `cosmos_wam` selection, conflicting old/new settings fail
 closed, and the runtime no longer discovers a model checkout from hard-coded workspace
-paths. The stable runtime-service contract is unchanged. Selection/readiness/prewarm,
+paths. Strategy-aware readiness and refinement admission now live outside the runtime
+store, reducing the grandfathered monolith below its no-growth budget. The stable
+runtime-service contract is unchanged. Selection/readiness/prewarm,
 security, script-pin, and all slow native-service tests pass; extracting the remaining
 Cosmos-specific generation helpers from the 3k-LOC store remains a later incremental
 split, not a safe deletion.
@@ -411,8 +413,9 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    is a June superpowers spec) — decide which is the seam and fold the other in.
    **Started:** JSON-state loading, signed-URL file handling, and URL redaction now
    live in provider-neutral `wam_async_runner_common`; both runners retain their public
-   and private call surfaces. Provider artifact transfer is shared as well; all 70
-   async-runner tests pass. Poll, collection, and teardown lifecycle extraction remains.
+   and private call surfaces. Provider artifact transfer is shared, rejects non-HTTPS
+   or credential-bearing URLs before I/O, and no longer needs the moved Bandit risk
+   exceptions. Poll, collection, and teardown lifecycle extraction remains.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the
@@ -505,7 +508,9 @@ or drop scripts nothing references.
    contained 2,463 `Dict[str, Any]` and 3,656 built-in `dict[str, Any]` occurrences.
    `artifact_contracts` now defines machine-readable contracts and JSON Schemas for
    site/task/scenario/eval cards, `evaluation_run.v1`, and the package export manifest;
-   the producing and consuming stage boundaries validate them fail closed. Expanding
+   the producing and consuming stage boundaries validate them fail closed. Card
+   validation/serialization and dataset compatibility/path projection are now outside
+   the 4.9k-LOC dataset builder, which is below its enforced no-growth budget. Expanding
    those types into the thousands of internal campaign/provider mappings remains a
    broad incremental migration.
 2. **Central config started at product and paid-path entrypoints.** The audit snapshot
