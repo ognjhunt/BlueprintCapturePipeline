@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -32,6 +32,7 @@ class PipelineSettings:
     allow_cosmos_training: bool
     allow_live_agents_sdk_operators: bool
     allow_legacy_agents_sdk_job_orchestration: bool
+    emit_readiness_support_outputs: bool
     sim_only_beta_autonomy: bool
     sim_only_beta_default_task_eval: bool
 
@@ -63,6 +64,10 @@ class PipelineSettings:
             allow_legacy_agents_sdk_job_orchestration=_strict_bool(
                 source,
                 "BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION",
+            ),
+            emit_readiness_support_outputs=_strict_bool(
+                source,
+                "BLUEPRINT_EMIT_READINESS_SUPPORT_OUTPUTS",
             ),
             sim_only_beta_autonomy=_strict_bool(
                 source,
@@ -101,3 +106,17 @@ class PipelineSettings:
                 "cli_admission_missing_environment_approval:" + ",".join(missing)
             )
 
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    """Entrypoint configuration passed explicitly into capture stages."""
+
+    gcs_root: Path = field(default_factory=lambda: PipelineSettings.from_env().gcs_root)
+    emit_readiness_support_outputs: bool = False
+
+    @classmethod
+    def from_settings(cls, settings: PipelineSettings) -> "PipelineConfig":
+        return cls(
+            gcs_root=settings.gcs_root,
+            emit_readiness_support_outputs=settings.emit_readiness_support_outputs,
+        )

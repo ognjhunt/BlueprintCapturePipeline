@@ -910,7 +910,6 @@ def _patch_pipeline_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(q, "sync_webapp_pipeline_attachment", lambda **_kwargs: {"status": "skipped"})
     monkeypatch.setattr(q, "write_pipeline_sync_result", lambda **_kwargs: None)
-    monkeypatch.setattr(q, "write_alpha_readiness_summary", lambda **_kwargs: None)
 
 
 def test_run_qualification_pipeline_disabled_preflight_and_llm_outputs(
@@ -939,10 +938,13 @@ def test_run_qualification_pipeline_disabled_preflight_and_llm_outputs(
 
     pipeline_dir = storage_root / "scenes" / "scene-1" / "captures" / "capture-1" / "pipeline"
     assert result["status"] == "completed"
+    assert result["readiness_support_outputs_emitted"] is False
     assert json.loads((pipeline_dir / "runtime_preflight_report.json").read_text())["status"] == "skipped"
     assert json.loads((pipeline_dir / "task_targets.json").read_text())["inference_mode"] == "disabled"
     assert (pipeline_dir / "qualification_weakness_summary.json").is_file()
     assert (pipeline_dir / "recapture_instructions.json").is_file()
+    assert not (pipeline_dir / "buyer_trust_score.json").exists()
+    assert not (pipeline_dir / "qualification_summary.json").exists()
 
 
 def test_run_qualification_pipeline_object_index_stage_failure_is_nonfatal(

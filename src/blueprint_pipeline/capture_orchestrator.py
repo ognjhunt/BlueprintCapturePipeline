@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
 import json
 import logging
 import os
@@ -18,7 +17,7 @@ from .geometry_sources import load_capture_geometry
 from .core.logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
-from .core.pipeline_settings import PipelineSettings
+from .core.pipeline_settings import PipelineConfig, PipelineSettings
 from .qualification import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .eval_card_ids import (
@@ -122,13 +121,6 @@ MUJOCO_G1_MODEL_ROOT_ENV = "BLUEPRINT_MUJOCO_G1_MODEL_ROOT"
 MUJOCO_ALLOW_FETCH_G1_ASSETS_ENV = "BLUEPRINT_MUJOCO_ALLOW_FETCH_G1_ASSETS"
 MUJOCO_BETA_STEPS_ENV = "BLUEPRINT_MUJOCO_BETA_STEPS"
 MUJOCO_BETA_SKIP_RENDER_ENV = "BLUEPRINT_MUJOCO_BETA_SKIP_RENDER_FRAMES"
-
-
-@dataclass(frozen=True)
-class PipelineConfig:
-    gcs_root: Path = field(
-        default_factory=lambda: PipelineSettings.from_env().gcs_root
-    )
 
 
 def _normalize_lane_value(raw: Optional[str]) -> Optional[str]:
@@ -1956,7 +1948,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         settings = PipelineSettings.from_env()
-        cfg = PipelineConfig(gcs_root=settings.gcs_root)
+        cfg = PipelineConfig.from_settings(settings)
         if args.descriptor_gcs_uri:
             descriptor_path = resolve_gs_uri_to_path(args.descriptor_gcs_uri, cfg.gcs_root)
             if descriptor_path.exists() or not (args.bucket and args.scene_id and args.capture_id):

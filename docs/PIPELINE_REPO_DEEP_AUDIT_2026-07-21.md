@@ -338,12 +338,13 @@ versions, claim boundaries, fail-closed rights/privacy gates (PIPE-01 verified r
    evaluation prep, reuses that committed result, and records the later stage as
    satisfied rather than executing it again. Tests cover both reuse and standalone
    execution.
-2. **Partially fixed — `agent_review` is opt-in; qualification-side readiness remains
-   to separate.** `run_e2e` now defaults the optional review/trust layer off and records
-   a typed `not_requested` outcome, matching the storage-trigger product path. The
-   larger `qualification` monolith still emits some alpha-readiness, launch, and buyer
-   trust support artifacts inline; extracting those behind a separate readiness edge
-   remains P2 work.
+2. **Fixed — review and trust outputs are explicit support edges.** `run_e2e` defaults
+   agent review off and records a typed `not_requested` outcome. Qualification now
+   computes its core evidence/routing state without writing alpha-readiness, launch, or
+   buyer-trust projections unless the typed
+   `BLUEPRINT_EMIT_READINESS_SUPPORT_OUTPUTS` setting is explicitly true. The optional
+   writer and WebApp projection live outside the qualification monolith; tests bind both
+   the default no-output path and the admitted support path.
 3. **Fixed — Task Evaluation uses neutral vocabulary.** The primary entry is now
    `execute_robot_eval_request_as_evaluation_run`. The old function name remains only
    as a documented one-release compatibility alias and is not used by `run_e2e`.
@@ -491,7 +492,7 @@ closure contract; campaign modules now depend inward on that contract, while buy
 package generation no longer imports G1 campaign code. The first physical package slice
 is also in place: common filesystem/contracts, structured logging, optional-dependency
 messaging, typed settings, shared stage-outcome semantics, legacy-lane admission, and
-production lane resume are canonical under
+production lane resume and output-run transaction/commit semantics are canonical under
 `blueprint_pipeline.core`, with compatibility imports at their old paths and a mechanical
 rule preventing the core package from importing campaign, readiness, or provider code.
 Moving the remaining core primitives and adding broader layer coverage remain incremental

@@ -19,6 +19,12 @@ contracts, WebApp handoff state, and a run summary. Capture rights, consent,
 privacy, provenance, and requested outputs must be present in the capture bundle;
 the profile does not fabricate or bypass them.
 
+Qualification launch summaries, buyer trust scores, and alpha-readiness projections
+are an optional support edge and remain off in the base profile. Set
+`BLUEPRINT_EMIT_READINESS_SUPPORT_OUTPUTS=true` only for a deployment that explicitly
+consumes those review/trust artifacts. The core qualification record and rights,
+privacy, provenance, card, and package boundaries do not require that opt-in.
+
 To build a read-only fleet view from capture roots that contain those summaries:
 
 ```bash

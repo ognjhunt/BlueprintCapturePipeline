@@ -23,6 +23,7 @@ def test_pipeline_settings_parse_once_with_typed_values() -> None:
             "BLUEPRINT_ALLOW_COSMOS_TRAINING": "on",
             "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS": "0",
             "BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION": "yes",
+            "BLUEPRINT_EMIT_READINESS_SUPPORT_OUTPUTS": "true",
             "BLUEPRINT_SIM_ONLY_BETA_AUTONOMY": "1",
             "BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL": "yes",
         }
@@ -34,6 +35,7 @@ def test_pipeline_settings_parse_once_with_typed_values() -> None:
     assert settings.allow_cosmos_training is True
     assert settings.allow_live_agents_sdk_operators is False
     assert settings.allow_legacy_agents_sdk_job_orchestration is True
+    assert settings.emit_readiness_support_outputs is True
     assert settings.sim_only_beta_autonomy is True
     assert settings.sim_only_beta_default_task_eval is True
 

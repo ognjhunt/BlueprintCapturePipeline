@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .capture_bridge import CaptureDescriptor
 from .capture_enrichment_llm import build_capture_enrichment_runner
-from .alpha_readiness import write_alpha_readiness_summary, write_pipeline_sync_result
+from .alpha_readiness import write_pipeline_sync_result
 from .canonical_site_package import write_blueprint_canonical_site_package
 from .common import (
     MAXIMUM_HIDDEN_ZONE_BOUND,
@@ -46,6 +46,7 @@ from .object_index_artifacts import resolve_current_object_index_artifacts
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
 from .proof_contracts import build_rights_provenance_review
+from . import qualification_support_outputs as support_outputs
 from .runtime_layer_grounding import build_presentation_variance_policy, with_grounding_fields
 from .scene_semantics import infer_capture_fidelity_review
 from .task_targets import infer_task_targets, write_task_targets
@@ -4378,6 +4379,7 @@ def run_qualification_pipeline(
     capture_id = "unknown_capture"
     pipeline_prefix = "_pipeline_failures"
     pipeline_dir = config.gcs_root / pipeline_prefix
+    emit_support_outputs = bool(getattr(config, "emit_readiness_support_outputs", False))
     ensure_dir(pipeline_dir)
 
     try:
@@ -5281,12 +5283,11 @@ def run_qualification_pipeline(
             capturer_payout_recommendation=capturer_payout_recommendation,
             provenance_summary=provenance_summary,
         )
-        write_json(pipeline_dir / "qualification_summary.json", launch_bundle["qualification_summary"])
-        write_json(pipeline_dir / "capture_quality_summary.json", launch_bundle["capture_quality_summary"])
-        write_json(pipeline_dir / "rights_and_compliance_summary.json", launch_bundle["rights_and_compliance_summary"])
-        write_json(pipeline_dir / "buyer_trust_score.json", launch_bundle["buyer_trust_score"])
-        write_json(pipeline_dir / "recapture_requirements.json", launch_bundle["recapture_requirements"])
-        write_json(pipeline_dir / "provider_preview_status.json", launch_bundle["provider_preview_status"])
+        support_outputs.write_qualification_support_outputs(
+            pipeline_dir=pipeline_dir,
+            launch_bundle=launch_bundle,
+            enabled=emit_support_outputs,
+        )
         rights_provenance_review = build_rights_provenance_review(
             rights_summary=launch_bundle["rights_and_compliance_summary"],
             privacy_processing=privacy_processing,
@@ -5303,9 +5304,11 @@ def run_qualification_pipeline(
                 else None
             ),
             artifact_uris={
-                "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
                 "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
                 "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
+                **support_outputs.qualification_rights_support_artifact_uris(
+                    bucket, pipeline_prefix, emit_support_outputs
+                ),
             },
             required_use_classes=rights_required_use_classes,
         )
@@ -5369,14 +5372,13 @@ def run_qualification_pipeline(
             "readiness_decision_uri": quality_report["artifacts"].get("readiness_decision"),
             "readiness_report_uri": quality_report["artifacts"].get("readiness_report"),
             "qualification_quality_report_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_quality_report.json",
-            "qualification_summary_uri": f"gs://{bucket}/{pipeline_prefix}/qualification_summary.json",
-            "capture_quality_summary_uri": f"gs://{bucket}/{pipeline_prefix}/capture_quality_summary.json",
-            "rights_and_compliance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/rights_and_compliance_summary.json",
-            "buyer_trust_score_uri": f"gs://{bucket}/{pipeline_prefix}/buyer_trust_score.json",
             "world_model_fit_summary_uri": f"gs://{bucket}/{pipeline_prefix}/world_model_fit_summary.json",
             "capturer_payout_recommendation_uri": f"gs://{bucket}/{pipeline_prefix}/capturer_payout_recommendation.json",
-            "recapture_requirements_uri": f"gs://{bucket}/{pipeline_prefix}/recapture_requirements.json",
-            "provider_preview_status_uri": f"gs://{bucket}/{pipeline_prefix}/provider_preview_status.json",
+            **support_outputs.qualification_support_artifact_uris(
+                bucket=bucket,
+                pipeline_prefix=pipeline_prefix,
+                enabled=emit_support_outputs,
+            ),
             "privacy_processing_manifest_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_processing_manifest.json",
             "privacy_verification_report_uri": f"gs://{bucket}/{pipeline_prefix}/privacy_verification_report.json",
             "provenance_summary_uri": f"gs://{bucket}/{pipeline_prefix}/provenance_summary.json",
@@ -5423,10 +5425,11 @@ def run_qualification_pipeline(
             "qualification_state": qualification_state,
             "opportunity_state": opportunity_state,
             "alpha_scoring_status": capture_fidelity_review.get("status"),
-            "buyer_trust_score": buyer_trust_score,
-            "qualification_summary": launch_bundle["qualification_summary"],
-            "capture_quality_summary": launch_bundle["capture_quality_summary"],
-            "rights_and_compliance": launch_bundle["rights_and_compliance_summary"],
+            **support_outputs.qualification_support_webapp_projection(
+                buyer_trust_score=buyer_trust_score,
+                launch_bundle=launch_bundle,
+                enabled=emit_support_outputs,
+            ),
             "privacy_processing": {
                 "status": privacy_processing.get("status"),
                 "mode": privacy_processing.get("mode"),
@@ -5443,10 +5446,6 @@ def run_qualification_pipeline(
                     else {}
                 ),
             },
-            "missing_evidence": launch_bundle["recapture_requirements"]["missing_evidence"],
-            "recapture_required": launch_bundle["recapture_requirements"]["required"],
-            "recapture_recommendations": launch_bundle["recapture_requirements"].get("recommendations"),
-            "preview_status": launch_bundle["preview_status"],
             "provider_run": provider_run,
             "provider_preview_labeling": (
                 dict(provider_run.get("labeling"))
@@ -5516,7 +5515,7 @@ def run_qualification_pipeline(
             stage="qualification",
             result=webapp_sync_result,
         )
-        write_alpha_readiness_summary(capture_root=capture_root)
+        support_outputs.write_alpha_readiness_summary_if_enabled(capture_root, emit_support_outputs)
 
         return {
             "status": "completed",
@@ -5527,6 +5526,7 @@ def run_qualification_pipeline(
             "readiness_state": qualification_record.get("readiness_state"),
             "completeness_status": scorecard.get("completeness_status"),
             "match_ready": opportunity_handoff.get("match_ready"),
+            "readiness_support_outputs_emitted": emit_support_outputs,
             "webapp_sync_result_uri": f"gs://{bucket}/{pipeline_prefix}/webapp_sync_result.json",
         }
 
