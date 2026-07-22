@@ -124,17 +124,28 @@ root_pid = 0
 root_pid_state = "missing"
 root_pid_elapsed = -1
 if safe_regular(pid_path):
-    raw_pid = pid_path.read_text(encoding="ascii", errors="ignore").strip()
+    try:
+        raw_pid = pid_path.read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        raw_pid = ""
     if raw_pid.isdigit():
         root_pid = int(raw_pid)
         stat_path = pathlib.Path(f"/proc/{root_pid}/stat")
         if safe_regular(stat_path):
-            fields = stat_path.read_text(encoding="ascii", errors="replace").split()
-            if len(fields) >= 22:
-                root_pid_state = fields[2]
-                uptime = float(pathlib.Path("/proc/uptime").read_text().split()[0])
-                ticks = int(os.sysconf("SC_CLK_TCK"))
-                root_pid_elapsed = max(0, int(uptime - (int(fields[21]) / ticks)))
+            try:
+                fields = stat_path.read_text(
+                    encoding="ascii", errors="replace"
+                ).split()
+                if len(fields) >= 22:
+                    uptime = float(pathlib.Path("/proc/uptime").read_text().split()[0])
+                    ticks = int(os.sysconf("SC_CLK_TCK"))
+                    root_pid_state = fields[2]
+                    root_pid_elapsed = max(
+                        0, int(uptime - (int(fields[21]) / ticks))
+                    )
+            except (OSError, ValueError, IndexError):
+                root_pid_state = "missing"
+                root_pid_elapsed = -1
 
 diagnostic.update({
     "schema_version": "single_g1_kitchen_qualification_startup_diagnostics.v1",

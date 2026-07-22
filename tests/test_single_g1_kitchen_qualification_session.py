@@ -1467,6 +1467,78 @@ def test_fixed_control_startup_diagnostics_keeps_preexecution_phases_stallable(
     assert "diagnostic_binding=missing_or_mismatch" in binding_blocked.stdout
 
 
+def test_fixed_control_startup_diagnostics_handles_proc_exit_race(
+    tmp_path: Path,
+) -> None:
+    control = qualification._qualification_control_script(
+        launch_session_id="qualification-nonce",
+        bundle_sha256=qualification.BUNDLE_SHA256,
+        image_digest=TEST_IMAGE_DIGEST,
+        source_commit=TEST_SOURCE_COMMIT,
+    )
+    diagnostic_source = next(
+        source
+        for source in re.findall(r"<<'PY'\n(.*?)\nPY", control, flags=re.DOTALL)
+        if "stall_seconds = int(sys.argv[6])" in source
+    )
+    parent_pid = os.getpid()
+    proc_stat_path = f"/proc/{parent_pid}/stat"
+    race_source = diagnostic_source.replace(
+        "now = int(time.time())",
+        """now = int(time.time())
+original_read_text = pathlib.Path.read_text
+def race_read_text(path, *args, **kwargs):
+    if str(path) == __PROC_STAT_PATH__:
+        raise FileNotFoundError(__PROC_STAT_PATH__)
+    return original_read_text(path, *args, **kwargs)
+pathlib.Path.read_text = race_read_text
+""".replace("__PROC_STAT_PATH__", repr(proc_stat_path)),
+        1,
+    )
+    diagnostic_path = tmp_path / "qualification_startup_diagnostics.json"
+    bootstrap_path = tmp_path / "bootstrap.json"
+    log_path = tmp_path / "qualification_episode.log"
+    pid_path = tmp_path / "episode.pid"
+    diagnostic_path.write_text(
+        json.dumps(
+            {
+                "attempt_sequence": 1,
+                "attempt_nonce_sha256": "a" * 64,
+                "dispatched_at_epoch": int(time.time()),
+            }
+        ),
+        encoding="utf-8",
+    )
+    bootstrap_path.write_text(json.dumps({"phase": "container_bash_started"}))
+    log_path.write_bytes(b"")
+    pid_path.write_text(f"{parent_pid}\n", encoding="ascii")
+
+    raced = subprocess.run(
+        [
+            "python",
+            "-c",
+            race_source,
+            str(diagnostic_path),
+            str(bootstrap_path),
+            str(log_path),
+            str(pid_path),
+            "stopped",
+            str(qualification.QUALIFICATION_STARTUP_STALL_SECONDS),
+            "1",
+            "a" * 64,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert raced.returncode == 0, raced.stderr
+    assert f"root_pid={parent_pid}" in raced.stdout
+    assert "root_pid_state=missing" in raced.stdout
+    assert "root_pid_elapsed_seconds=-1" in raced.stdout
+    assert "startup_health=stopped" in raced.stdout
+
+
 def test_startup_diagnostic_parser_blocks_stall_and_attempt_binding_loss() -> None:
     diagnostics, blockers = qualification.parse_startup_diagnostics(
         "startup_phase=runner_done startup_health=stalled "
