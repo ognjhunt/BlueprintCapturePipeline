@@ -1466,6 +1466,8 @@ def test_single_episode_bootstrap_requires_live_isaac_frame_and_camera_context(
     assert "blueprint_pipeline.oscar_runtime_source_provenance verify" in script
     assert "git -c safe.directory=/opt/oscar-public" not in script
     assert "--seal /opt/blueprint/oscar_source_provenance.json" in script
+    assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_URL" not in script
+    assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF" not in script
     assert "official_oscar_runtime_provenance_mismatch" in script
     assert single_episode.OSCAR_RUNTIME_PROVENANCE_ARTIFACT in script
     assert 'export BLUEPRINT_OSCAR_WAM_SOURCE_URL="$OSCAR_RUNTIME_SOURCE_URL"' in script

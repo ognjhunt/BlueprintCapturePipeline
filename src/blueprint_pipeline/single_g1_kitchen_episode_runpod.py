@@ -1307,8 +1307,9 @@ def _oscar_runtime_provenance_script() -> str:
 
     The thin foundation intentionally excludes Git and ``.git`` metadata.  Its
     build stage instead seals the reviewed origin/commit together with the
-    post-patch runtime tree.  Recompute that tree here and bind it to the exact
-    foundation environment before exporting evaluator provenance.
+    post-patch runtime tree.  Recompute that tree here and compare it with the
+    independently reviewed digest embedded in the verifier before exporting
+    evaluator provenance. Mutable launch environment is not an authority.
     """
     return f"""OSCAR_RUNTIME_SOURCE_ROOT=/opt/OSCAR
 OSCAR_RUNTIME_SOURCE_URL={OFFICIAL_OSCAR_SOURCE_URL!r}
@@ -1318,9 +1319,7 @@ set +e
 /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance verify \
   --source-root /opt/OSCAR \
   --seal /opt/blueprint/oscar_source_provenance.json \
-  --artifact {OSCAR_RUNTIME_PROVENANCE_ARTIFACT!r} \
-  --foundation-source-url "${{BLUEPRINT_FOUNDATION_OSCAR_SOURCE_URL:-}}" \
-  --foundation-source-commit "${{BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF:-}}"
+  --artifact {OSCAR_RUNTIME_PROVENANCE_ARTIFACT!r}
 OSCAR_RUNTIME_PROVENANCE_RC=$?
 set -e
 if [ "$OSCAR_RUNTIME_PROVENANCE_RC" -ne 0 ]; then

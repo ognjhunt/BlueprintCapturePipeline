@@ -32,6 +32,13 @@ RUNTIME_ARTIFACT_SCHEMA_VERSION = "single_g1_kitchen_oscar_runtime_provenance.v1
 DEFAULT_RUNTIME_SOURCE_ROOT = "/opt/OSCAR"
 DEFAULT_SEAL_PATH = "/opt/blueprint/oscar_source_provenance.json"
 GIT_EXECUTABLE = "/usr/bin/git"
+# Exact tree produced by OFFICIAL_OSCAR_SOURCE_COMMIT after the reviewed
+# Foundation TransformerEngine compatibility patch.  This independent runtime
+# expectation prevents a mutable launch environment or self-consistent forged
+# seal from choosing a different tree.
+OFFICIAL_OSCAR_RUNTIME_TREE_SHA256 = (
+    "319f4d415f54afa05159783f388b844363e87b721c38c78e6cbb756162b29f1a"
+)
 _IGNORED_DIRECTORY_NAMES = {".git", ".mypy_cache", ".pytest_cache", "__pycache__"}
 _IGNORED_FILE_SUFFIXES = {".pyc", ".pyo"}
 
@@ -124,6 +131,8 @@ def seal_source_tree(
     if not source_ref_is_official(source_commit) or resolved_commit != source_commit:
         raise ValueError("oscar_build_source_commit_mismatch")
     tree = source_tree_evidence(root)
+    if tree["tree_sha256"] != OFFICIAL_OSCAR_RUNTIME_TREE_SHA256:
+        raise ValueError("oscar_build_runtime_tree_digest_mismatch")
     payload = {
         "schema_version": SEAL_SCHEMA_VERSION,
         "status": "sealed",
@@ -148,8 +157,6 @@ def verify_source_tree(
     source_root: str | Path,
     seal_path: str | Path,
     artifact_path: str | Path,
-    foundation_source_url: str,
-    foundation_source_commit: str,
 ) -> dict[str, Any]:
     root = Path(source_root).resolve()
     seal_file = Path(seal_path)
@@ -167,10 +174,6 @@ def verify_source_tree(
     except (OSError, ValueError):
         actual_tree = {}
     checks = {
-        "foundation_environment_binding_verified": (
-            source_url_is_official(foundation_source_url)
-            and foundation_source_commit == OFFICIAL_OSCAR_SOURCE_COMMIT
-        ),
         "official_source_url_verified_from_sealed_build_provenance": (
             seal.get("source_url") == OFFICIAL_OSCAR_SOURCE_URL
         ),
@@ -180,6 +183,11 @@ def verify_source_tree(
         "runtime_tree_sha256_verified": (
             bool(actual_tree)
             and actual_tree == expected_tree
+        ),
+        "reviewed_runtime_tree_digest_verified": (
+            actual_tree.get("tree_sha256") == OFFICIAL_OSCAR_RUNTIME_TREE_SHA256
+            and expected_tree.get("tree_sha256")
+            == OFFICIAL_OSCAR_RUNTIME_TREE_SHA256
         ),
         "sealed_source_root_resolved": (
             str(root) == str(seal.get("runtime_source_root") or "")
@@ -243,8 +251,6 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--source-root", default=DEFAULT_RUNTIME_SOURCE_ROOT)
     verify.add_argument("--seal", default=DEFAULT_SEAL_PATH)
     verify.add_argument("--artifact", required=True)
-    verify.add_argument("--foundation-source-url", required=True)
-    verify.add_argument("--foundation-source-commit", required=True)
     return parser
 
 
@@ -263,8 +269,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_root=args.source_root,
         seal_path=args.seal,
         artifact_path=args.artifact,
-        foundation_source_url=args.foundation_source_url,
-        foundation_source_commit=args.foundation_source_commit,
     )
     return 0 if result["status"] == "passed" else 1
 

@@ -431,7 +431,8 @@ def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
         "COPY --from=robot-env-builder /tmp/oscar_source_provenance.json "
         "/opt/blueprint/oscar_source_provenance.json"
     ) in dockerfile
-    assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_URL=${OSCAR_SOURCE_URL}" in dockerfile
+    assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_URL" not in dockerfile
+    assert "BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF" not in dockerfile
     assert "test -s /opt/blueprint/oscar_source_provenance.json" in dockerfile
 
 

@@ -42,6 +42,11 @@ def test_seal_and_verify_runtime_tree_without_git(tmp_path: Path, monkeypatch) -
     ).stdout.strip()
     monkeypatch.setattr(provenance, "OFFICIAL_OSCAR_SOURCE_COMMIT", actual_commit)
     monkeypatch.setattr(provenance, "source_ref_is_official", lambda value: value == actual_commit)
+    monkeypatch.setattr(
+        provenance,
+        "OFFICIAL_OSCAR_RUNTIME_TREE_SHA256",
+        provenance.source_tree_evidence(source)["tree_sha256"],
+    )
     seal_path = tmp_path / "seal.json"
     artifact_path = tmp_path / "artifact.json"
     provenance.seal_source_tree(
@@ -56,8 +61,6 @@ def test_seal_and_verify_runtime_tree_without_git(tmp_path: Path, monkeypatch) -
         source_root=source,
         seal_path=seal_path,
         artifact_path=artifact_path,
-        foundation_source_url=OFFICIAL_OSCAR_SOURCE_URL,
-        foundation_source_commit=actual_commit,
     )
     assert result["status"] == "passed"
     assert result["checks"]["runtime_tree_sha256_verified"] is True
@@ -75,6 +78,11 @@ def test_runtime_tree_tampering_blocks(tmp_path: Path, monkeypatch) -> None:
     ).stdout.strip()
     monkeypatch.setattr(provenance, "OFFICIAL_OSCAR_SOURCE_COMMIT", actual_commit)
     monkeypatch.setattr(provenance, "source_ref_is_official", lambda value: value == actual_commit)
+    monkeypatch.setattr(
+        provenance,
+        "OFFICIAL_OSCAR_RUNTIME_TREE_SHA256",
+        provenance.source_tree_evidence(source)["tree_sha256"],
+    )
     seal_path = tmp_path / "seal.json"
     provenance.seal_source_tree(
         source_root=source,
@@ -88,15 +96,15 @@ def test_runtime_tree_tampering_blocks(tmp_path: Path, monkeypatch) -> None:
         source_root=source,
         seal_path=seal_path,
         artifact_path=tmp_path / "artifact.json",
-        foundation_source_url=OFFICIAL_OSCAR_SOURCE_URL,
-        foundation_source_commit=actual_commit,
     )
     assert result["status"] == "blocked"
     assert result["checks"]["runtime_tree_sha256_verified"] is False
     assert result["blockers"] == ["official_oscar_runtime_provenance_mismatch"]
 
 
-def test_forged_seal_and_foundation_environment_block(tmp_path: Path, monkeypatch) -> None:
+def test_self_consistent_forged_seal_with_unreviewed_tree_blocks(
+    tmp_path: Path, monkeypatch
+) -> None:
     source = tmp_path / "runtime-source"
     source.mkdir()
     (source / "inference.py").write_text("MODEL = 'oscar'\n", encoding="utf-8")
@@ -120,11 +128,9 @@ def test_forged_seal_and_foundation_environment_block(tmp_path: Path, monkeypatc
         source_root=source,
         seal_path=seal_path,
         artifact_path=tmp_path / "artifact.json",
-        foundation_source_url="https://example.invalid/forged.git",
-        foundation_source_commit="0" * 40,
     )
     assert result["status"] == "blocked"
-    assert result["checks"]["foundation_environment_binding_verified"] is False
+    assert result["checks"]["reviewed_runtime_tree_digest_verified"] is False
 
 
 def test_external_source_symlink_is_rejected(tmp_path: Path) -> None:
