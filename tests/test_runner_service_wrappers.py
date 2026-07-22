@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 from http import HTTPStatus
+from pathlib import Path
 from types import MethodType
 
 from blueprint_pipeline import privacy_runner_service, video_to_world_runner_service
@@ -325,3 +326,62 @@ def test_video_to_world_runner_service_auth_get_post_and_main(monkeypatch) -> No
     monkeypatch.setenv("PORT", "not-an-int")
     assert video_to_world_runner_service.main() == 0
     assert started["address"] == ("127.0.0.1", 8080)
+
+
+def test_video_to_world_runner_rejects_local_paths_without_root(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "secret")
+    monkeypatch.delenv("VIDEO_TO_WORLD_RUNNER_LOCAL_PATH_ROOT", raising=False)
+    handler, response = _handler(
+        video_to_world_runner_service._Handler,
+        path="/run",
+        body={"geometry_root_path": "/tmp/geometry"},
+        headers={"Authorization": "Bearer secret"},
+    )
+    handler.do_POST()
+    assert response["status"] == HTTPStatus.BAD_REQUEST
+    assert _payload(handler)["reason"] == "local_path_root_not_configured"
+
+
+def test_video_to_world_runner_contains_local_paths(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    allowed_root = tmp_path / "video-to-world-io"
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "secret")
+    monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_LOCAL_PATH_ROOT", str(allowed_root))
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        video_to_world_runner_service,
+        "execute_video_to_world_request",
+        lambda body: calls.append(dict(body)) or {"status": "succeeded"},
+    )
+
+    handler, response = _handler(
+        video_to_world_runner_service._Handler,
+        path="/run",
+        body={
+            "input_video_path": "inputs/capture.mp4",
+            "input_video_uri": "gs://trusted/input.mp4",
+            "geometry_root_path": "geometry",
+            "dynamic_mask_manifest_path": "masks/manifest.json",
+        },
+        headers={"Authorization": "Bearer secret"},
+    )
+    handler.do_POST()
+    assert response["status"] == HTTPStatus.OK
+    assert calls == [
+        {
+            "input_video_path": str(allowed_root / "inputs" / "capture.mp4"),
+            "input_video_uri": "gs://trusted/input.mp4",
+            "geometry_root_path": str(allowed_root / "geometry"),
+            "dynamic_mask_manifest_path": str(allowed_root / "masks" / "manifest.json"),
+        }
+    ]
+
+    handler, response = _handler(
+        video_to_world_runner_service._Handler,
+        path="/run",
+        body={"input_video_uri": "../../outside.mp4"},
+        headers={"Authorization": "Bearer secret"},
+    )
+    handler.do_POST()
+    assert response["status"] == HTTPStatus.BAD_REQUEST
+    assert _payload(handler)["reason"] == "local_path_outside_allowed_root"
+    assert len(calls) == 1

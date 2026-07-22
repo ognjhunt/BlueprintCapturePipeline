@@ -153,6 +153,8 @@ The services support both mounted GCS paths and direct `gs://` URIs.
 The geometry path uses a dedicated `video-to-world` service with:
 
 - `VIDEO_TO_WORLD_RUNNER_TOKEN`
+- `VIDEO_TO_WORLD_RUNNER_LOCAL_PATH_ROOT` when an HTTP request uses local
+  filesystem inputs or outputs; all such paths must resolve beneath this root
 - `VIDEO_TO_WORLD_PIPELINE_PRESET` or `VIDEO_TO_WORLD_COMMAND_TEMPLATE`
 - `VIDEO_TO_WORLD_COMMAND_TIMEOUT_SECONDS`
 
