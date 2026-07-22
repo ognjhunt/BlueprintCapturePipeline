@@ -131,6 +131,11 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     )
     paths = {row["path"] for row in context_manifest["files"]}
     assert "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile" in paths
+    assert (
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "apt_transport_hardening.conf"
+        in paths
+    )
     assert "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile" in paths
     assert (
         "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"

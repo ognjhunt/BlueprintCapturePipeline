@@ -25,6 +25,7 @@ SCHEMA_VERSION = "groot_oscar_thin_remote_build_packet.v1"
 PACKET_DIRNAME = "groot_oscar_thin_remote_build"
 REQUIRED_ROOT_FILES = ("pyproject.toml", "README.md", "LICENSE")
 REQUIRED_IMAGE_FILES = (
+    "apt_transport_hardening.conf",
     "Foundation.Dockerfile",
     "Release.Dockerfile",
     "requirements_robot_runtime.txt",
