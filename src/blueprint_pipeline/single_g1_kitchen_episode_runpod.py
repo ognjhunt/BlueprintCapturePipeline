@@ -87,6 +87,11 @@ IMAGE_REF = (
     "ab8fbccb714242b55811aa5142933001dfba76d56b5cc29dead4d0bdf1346e88"
 )
 IMAGE_DIGEST = IMAGE_REF.rsplit("@", 1)[-1]
+# The checked-in legacy direct-lane image predates the build-time OSCAR source
+# seal.  Keep this reviewed allowlist empty until that exact pin is replaced by
+# a seal-capable image; release-bound qualification sessions use their explicit
+# build result instead of this static pin.
+OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS: frozenset[str] = frozenset()
 BUNDLE_SHA256 = "e3274f1468fb998e48779d7865c67e2d58f2ed4eb14f41886c2d14438ed98692"
 SOURCE_COMMIT = "fca4712e6bb78bf251512cead5ee7787ed2fb249"
 SEALED_SONIC_CHECKPOINT_REPO = "LucaFrat/groot-bs16"
@@ -3773,6 +3778,8 @@ def run_single_episode(
     ensure_dir(root)
     bundle_path = Path(episode_bundle).expanduser().resolve()
     blockers: list[str] = []
+    if IMAGE_DIGEST not in OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS:
+        blockers.append("single_episode_pinned_image_missing_oscar_runtime_source_seal")
     manipulation_policy_task_compatibility: dict[str, Any] = {}
     qualification_checkpoint_restore: dict[str, Any] = {}
     qualification_checkpoint_part_get_urls: list[str] = []

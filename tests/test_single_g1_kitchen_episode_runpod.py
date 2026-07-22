@@ -156,6 +156,11 @@ def test_unqualified_manipulation_policy_blocks_before_inventory_capacity_or_lau
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        single_episode,
+        "OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS",
+        frozenset({single_episode.IMAGE_DIGEST}),
+    )
     task_compatibility = single_episode._manipulation_policy_task_compatibility(
         plan={},
         task_id="microwave_door",
@@ -227,6 +232,11 @@ def test_execute_without_current_spend_lock_blocks_before_episode_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        single_episode,
+        "OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS",
+        frozenset({single_episode.IMAGE_DIGEST}),
+    )
     inputs = {
         "plan": {
             "env": {},
@@ -892,6 +902,17 @@ def test_run_single_episode_has_no_external_runtime_patch_transport() -> None:
         "qualification_checkpoint_report",
         "qualification_checkpoint_part_stage_dirs",
     } == set(parameters)
+
+
+def test_legacy_direct_episode_image_blocks_before_allocation_without_source_seal() -> None:
+    assert single_episode.IMAGE_DIGEST not in (
+        single_episode.OSCAR_RUNTIME_SOURCE_SEAL_CAPABLE_IMAGE_DIGESTS
+    )
+    source = inspect.getsource(single_episode.run_single_episode)
+    assert "single_episode_pinned_image_missing_oscar_runtime_source_seal" in source
+    assert source.index("single_episode_pinned_image_missing_oscar_runtime_source_seal") < (
+        source.index("get_render_provider")
+    )
 
 
 def test_qualification_checkpoint_restore_binds_ordered_parts_without_urls_in_evidence(
