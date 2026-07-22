@@ -1301,7 +1301,7 @@ def test_gpu_qualification_component_stop_is_a_successful_control_action(
             "--qualification-action",
             "stop-component",
             "--qualification-component",
-            "isaac",
+            "episode",
             "--qualification-session-manifest",
             str(out / "session.json"),
             "--provider-launch-request",

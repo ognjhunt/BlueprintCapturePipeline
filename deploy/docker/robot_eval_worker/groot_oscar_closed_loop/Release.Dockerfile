@@ -6,6 +6,7 @@ FROM ${FOUNDATION_IMAGE}
 USER root
 ARG BLUEPRINT_SOURCE_COMMIT
 ARG BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256
+ARG FOUNDATION_MODEL_ASSETS=external
 ARG RUNPOD_SERVERLESS_SDK_VERSION=1.10.1
 COPY pyproject.toml README.md LICENSE /tmp/blueprint-release/
 COPY src /tmp/blueprint-release/src
@@ -27,9 +28,23 @@ RUN /opt/oscar-venv/bin/python -m pip install --no-deps /tmp/blueprint-release \
   && rm -rf /tmp/blueprint-release /tmp/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless_sdk.lock /root/.cache \
   && test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker \
   && /opt/runpod-serverless-venv/bin/python -m blueprint_pipeline.groot_oscar_runpod_serverless_worker --verify-serverless-runtime \
-  && test ! -e /opt/blueprint/ckpts
+  && case "${FOUNDATION_MODEL_ASSETS}" in \
+       external) test ! -e /opt/blueprint/ckpts ;; \
+       embedded) \
+         test -s /opt/blueprint/ckpts/sonic/model.safetensors.index.json \
+         && test -s /opt/blueprint/ckpts/oscar/model/.metadata \
+         && test -s /opt/blueprint/ckpts/oscar/model/__0_0.distcp \
+         && test -s /opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx \
+         && test -s /opt/wbc/gear_sonic_deploy/policy/release/model_decoder.onnx \
+         && test -s /opt/wbc/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx \
+         && BLUEPRINT_SOURCE_COMMIT="${BLUEPRINT_SOURCE_COMMIT}" \
+            BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256}" \
+            /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time ;; \
+       *) echo "invalid FOUNDATION_MODEL_ASSETS=${FOUNDATION_MODEL_ASSETS}" >&2; exit 2 ;; \
+     esac
 ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256=${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256} \
+    BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS=${FOUNDATION_MODEL_ASSETS} \
     BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker \
     BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release \
     BLUEPRINT_SIMULATOR_FRAMEWORK=isaac_sim \

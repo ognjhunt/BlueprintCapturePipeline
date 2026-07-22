@@ -775,7 +775,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 missing.append("restartable_qualification_component")
             if args.qualification_action == "stop-component" and (
                 args.qualification_component
-                not in {"groot", "controller", "isaac", "bridge", "finetune"}
+                not in {
+                    "episode",
+                    "groot",
+                    "controller",
+                    "isaac",
+                    "bridge",
+                    "finetune",
+                }
             ):
                 missing.append("stoppable_qualification_component")
             if missing:

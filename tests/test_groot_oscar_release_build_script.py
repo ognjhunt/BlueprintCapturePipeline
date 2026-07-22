@@ -76,3 +76,15 @@ def test_thin_entrypoint_uses_installed_absolute_worker_executable() -> None:
         "test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker"
         in RELEASE.read_text(encoding="utf-8")
     )
+
+
+def test_release_asset_modes_are_explicit_and_fail_closed() -> None:
+    dockerfile = RELEASE.read_text(encoding="utf-8")
+    entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
+    assert "ARG FOUNDATION_MODEL_ASSETS=external" in dockerfile
+    assert "external) test ! -e /opt/blueprint/ckpts" in dockerfile
+    assert "embedded)" in dockerfile
+    assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in dockerfile
+    assert 'model_asset_mode="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS:-external}"' in entrypoint
+    assert 'elif [[ "$model_asset_mode" == "embedded" ]]' in entrypoint
+    assert "invalid BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in entrypoint

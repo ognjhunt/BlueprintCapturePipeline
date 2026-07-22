@@ -20,6 +20,25 @@ def test_measures_only_layers_above_cached_foundation() -> None:
     result = build_thin_release_contract(release, foundation, max_release_bytes=1_000)
     assert result["status"] == "passed"
     assert result["release_delta_compressed_size_bytes"] == 500
+    assert result["models_externalized"] is True
+    assert result["models_embedded_in_foundation"] is False
+
+
+def test_records_embedded_foundation_assets_without_calling_them_external() -> None:
+    foundation = _diagnostic("foundation@sha256:" + "a" * 64, [("sha256:base", 20_000)])
+    release = _diagnostic(
+        "release@sha256:" + "b" * 64,
+        [("sha256:base", 20_000), ("sha256:code", 500)],
+    )
+    result = build_thin_release_contract(
+        release,
+        foundation,
+        max_release_bytes=1_000,
+        foundation_model_assets="embedded",
+    )
+    assert result["status"] == "passed"
+    assert result["models_externalized"] is False
+    assert result["models_embedded_in_foundation"] is True
 
 
 def test_reads_native_registry_diagnostic_layer_size_field() -> None:

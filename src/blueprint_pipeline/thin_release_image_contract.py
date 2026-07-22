@@ -33,8 +33,11 @@ def build_thin_release_contract(
     foundation: Mapping[str, Any],
     *,
     max_release_bytes: int = 2 * 1024**3,
+    foundation_model_assets: str = "external",
 ) -> dict[str, Any]:
     blockers: list[str] = []
+    if foundation_model_assets not in {"external", "embedded"}:
+        blockers.append("foundation_model_asset_mode_invalid")
     release_layer_rows = _layer_rows(release)
     release_layers = dict(release_layer_rows)
     foundation_layer_rows = _layer_rows(foundation)
@@ -74,7 +77,9 @@ def build_thin_release_contract(
         "release_delta_largest_layer_size_bytes": max(delta.values()) if delta else 0,
         "release_delta_budget_bytes": max_release_bytes,
         "release_delta_budget_passed": within_budget,
-        "models_externalized": True,
+        "foundation_model_assets": foundation_model_assets,
+        "models_externalized": foundation_model_assets == "external",
+        "models_embedded_in_foundation": foundation_model_assets == "embedded",
         "claim_boundary": {
             "cached_foundation_bytes_are_not_frequently_pulled_release_bytes": True,
             "release_size_is_not_live_startup_proof": True,

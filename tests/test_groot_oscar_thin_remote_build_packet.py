@@ -72,6 +72,7 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
     script = Path(result["run_script_path"]).read_text(encoding="utf-8")
     assert script.count("docker buildx build") == 2
     assert "FOUNDATION_IMAGE=$foundation_exact" in script
+    assert 'FOUNDATION_MODEL_ASSETS=external' in script
     assert "thin_release_image_contract" in script
     assert 'release.get("required_cuda_version")' in script
     assert '"required_cuda_version":"12.6"' not in script
@@ -201,6 +202,45 @@ def test_packet_can_reuse_exact_foundation_and_build_only_thin_release(
     assert "reused foundation digest changed" in script
     assert 'imagetools create --tag "$foundation_ref"' not in script
     subprocess.run(["bash", "-n", result["run_script_path"]], check=True)
+
+
+def test_packet_can_bind_an_exact_embedded_model_foundation(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    foundation = "registry.example/blueprint/foundation@sha256:" + "e" * 64
+    result = prepare_remote_build_packet(
+        output_dir=tmp_path / "out",
+        repo_root=root,
+        foundation_ref=foundation,
+        release_ref="registry.example/blueprint/release:embedded-qualification",
+        source_commit=_head(root),
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
+        source_worktree_dirty=False,
+        reuse_foundation_exact=True,
+        foundation_model_assets="embedded",
+    )
+
+    assert result["status"] == "ready"
+    assert result["foundation_model_assets"] == "embedded"
+    script = Path(result["run_script_path"]).read_text(encoding="utf-8")
+    assert 'FOUNDATION_MODEL_ASSETS=embedded' in script
+    assert 'foundation_model_assets=\'embedded\'' in script
+    assert '"models_embedded":contract.get("models_embedded_in_foundation") is True' in script
+
+
+def test_packet_refuses_embedded_assets_on_a_new_unverified_foundation(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    result = prepare_remote_build_packet(
+        output_dir=tmp_path / "out",
+        repo_root=root,
+        foundation_ref="registry.example/blueprint/foundation:versioned",
+        release_ref="registry.example/blueprint/release:embedded-qualification",
+        source_commit=_head(root),
+        source_patch_sha256=hashlib.sha256(b"").hexdigest(),
+        source_worktree_dirty=False,
+        foundation_model_assets="embedded",
+    )
+    assert result["status"] == "blocked"
+    assert "embedded_foundation_assets_require_exact_reuse" in result["blockers"]
 
 
 def test_packet_build_outputs_require_promotable_tags() -> None:

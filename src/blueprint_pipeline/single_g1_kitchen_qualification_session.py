@@ -164,7 +164,7 @@ COMPONENT_ALIASES = {
     "finetune": "groot_microwave_finetune",
 }
 RESTARTABLE_COMPONENTS = ("groot", "controller", "isaac", "bridge")
-STOPPABLE_COMPONENTS = (*RESTARTABLE_COMPONENTS, "finetune")
+STOPPABLE_COMPONENTS = ("episode", *RESTARTABLE_COMPONENTS, "finetune")
 SESSION_MANIFEST_NAME = "qualification_session.json"
 QUALIFICATION_BOOTSTRAP_NAME = "provider_qualification_bootstrap.sh"
 QUALIFICATION_REFRESH_PAYLOAD_NAME = "qualification_refresh_payload.json"
