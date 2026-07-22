@@ -422,9 +422,16 @@ def test_image_installs_and_imports_official_oscar_minimal_requirements():
 def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
     dockerfile = (IMAGE_ROOT / "Foundation.Dockerfile").read_text(encoding="utf-8")
 
+    assert "from unittest.mock import patch" in dockerfile
+    assert "patch('torch.cuda.current_device', return_value=0)" in dockerfile
+    assert "cuda_device.start()" in dockerfile
     assert "worldsim._src.configs.agibot_control.config import make_config" in dockerfile
     assert "importlib.metadata.version('pytest') == '9.1.1'" in dockerfile
     assert "assert make_config() is not None" in dockerfile
+    assert "cuda_device.stop()" in dockerfile
+    assert dockerfile.index("cuda_device.start()") < dockerfile.index(
+        "worldsim._src.configs.agibot_control.config import make_config"
+    )
     assert "blueprint_pipeline.oscar_runtime_source_provenance seal" in dockerfile
     assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
     assert "find /tmp/oscar -type d -name __pycache__" in dockerfile

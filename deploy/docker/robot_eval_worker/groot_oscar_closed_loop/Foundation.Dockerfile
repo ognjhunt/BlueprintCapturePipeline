@@ -48,6 +48,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends git python3-pip
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_robot_runtime.txt /tmp/requirements_robot_runtime.txt
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_foundation.lock /tmp/requirements_oscar_foundation.lock
 COPY src /tmp/blueprint-build-src
+# OSCAR selects a CUDA device while importing its dynamic config. The image is
+# assembled on a CPU builder, so isolate only that eager device lookup below;
+# the final image healthcheck and paid GPU qualification still use real CUDA.
 RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && git -C /tmp/gr00t fetch --depth 1 origin "${GROOT_SOURCE_REF}" \
   && git -C /tmp/gr00t checkout --detach FETCH_HEAD \
@@ -72,7 +75,7 @@ RUN git clone --filter=blob:none "${GROOT_SOURCE_URL}" /tmp/gr00t \
   && grep -qx 'Tag: py3-none-manylinux2010_x86_64' "${decord_wheel}" \
   && /opt/oscar-venv/bin/python -m pip check \
   && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import inference.inference_oscar" \
-  && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import importlib.metadata; from worldsim._src.configs.agibot_control.config import make_config; assert importlib.metadata.version('pytest') == '9.1.1'; assert make_config() is not None" \
+  && PYTHONPATH=/tmp/oscar /opt/oscar-venv/bin/python -c "import importlib.metadata; from unittest.mock import patch; cuda_device = patch('torch.cuda.current_device', return_value=0); cuda_device.start(); from worldsim._src.configs.agibot_control.config import make_config; assert importlib.metadata.version('pytest') == '9.1.1'; assert make_config() is not None; cuda_device.stop()" \
   && find /tmp/oscar -type d -name __pycache__ -prune -exec rm -rf '{}' + \
   && find /tmp/oscar -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
   && PYTHONPATH=/tmp/blueprint-build-src /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance seal \
