@@ -225,6 +225,8 @@ def test_packet_can_bind_an_exact_embedded_model_foundation(tmp_path: Path) -> N
     assert 'FOUNDATION_MODEL_ASSETS=embedded' in script
     assert 'foundation_model_assets=\'embedded\'' in script
     assert '"models_embedded":contract.get("models_embedded_in_foundation") is True' in script
+    assert 'serverless_status="not_applicable_embedded_foundation"' in script
+    assert '"embedded_foundation_supported":False' in script
 
 
 def test_packet_refuses_embedded_assets_on_a_new_unverified_foundation(tmp_path: Path) -> None:

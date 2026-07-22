@@ -54,16 +54,35 @@ def validate_remote_build_results(results_dir: Path) -> dict[str, Any]:
     thin_release = thin_release if isinstance(thin_release, Mapping) else {}
     foundation_ref = str(result_preview.get("foundation_image_ref") or "")
     digest = foundation_ref.rsplit("@sha256:", 1)[-1]
+    external_model_assets = bool(
+        thin_release.get("models_externalized") is True
+        and thin_release.get("models_embedded_in_foundation") is not True
+    )
+    embedded_model_assets = bool(
+        thin_release.get("models_embedded_in_foundation") is True
+        and thin_release.get("models_externalized") is not True
+    )
+    serverless_mode_valid = bool(
+        (
+            external_model_assets
+            and serverless.get("status") == "passed"
+            and serverless.get("models_externalized") is True
+        )
+        or (
+            embedded_model_assets
+            and serverless.get("status") == "not_applicable_embedded_foundation"
+            and serverless.get("embedded_foundation_supported") is False
+        )
+    )
     reused_digest_foundation = bool(
         result_preview.get("status") == "completed"
-        and serverless.get("status") == "passed"
+        and serverless_mode_valid
         and serverless.get("worker_source_packaged") is True
         and serverless.get("worker_command_packaged") is True
         and serverless.get("runpod_sdk_exactly_pinned") is True
-        and serverless.get("models_externalized") is True
         and thin_release.get("status") == "passed"
         and thin_release.get("release_delta_budget_passed") is True
-        and thin_release.get("models_externalized") is True
+        and (external_model_assets or embedded_model_assets)
         and thin_release.get("foundation_image_ref") == foundation_ref
         and foundation_diagnostic.get("status") == "completed"
         and not foundation_diagnostic.get("blockers")

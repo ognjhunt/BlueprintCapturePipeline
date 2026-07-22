@@ -249,9 +249,12 @@ worker_source=(root/"context/src/blueprint_pipeline/groot_oscar_runpod_serverles
 dockerfile=(root/"context/deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile").read_text(encoding="utf-8")
 worker_command="blueprint_pipeline.groot_oscar_runpod_serverless_worker" in dockerfile
 sdk_pinned='RUNPOD_SERVERLESS_SDK_VERSION=1.10.1' in dockerfile and runpod_versions==["1.10.1"]
-model_assets_bound=contract.get("models_externalized") is True or contract.get("models_embedded_in_foundation") is True
-serverless_contract={{"schema_version":"groot_oscar_runpod_serverless_release_contract.v1","status":"passed" if worker_source and worker_command and sdk_pinned and model_assets_bound else "blocked","worker_source_packaged":worker_source,"worker_command_packaged":worker_command,"runpod_sdk_versions":runpod_versions,"runpod_sdk_exactly_pinned":sdk_pinned,"models_externalized":contract.get("models_externalized") is True,"models_embedded_in_foundation":contract.get("models_embedded_in_foundation") is True}}
-if serverless_contract["status"] != "passed": blockers.append("runpod_serverless_worker_contract_not_passed")
+external_models=contract.get("models_externalized") is True
+embedded_models=contract.get("models_embedded_in_foundation") is True
+serverless_ready=worker_source and worker_command and sdk_pinned and external_models
+serverless_status="not_applicable_embedded_foundation" if embedded_models else ("passed" if serverless_ready else "blocked")
+serverless_contract={{"schema_version":"groot_oscar_runpod_serverless_release_contract.v1","status":serverless_status,"worker_source_packaged":worker_source,"worker_command_packaged":worker_command,"runpod_sdk_versions":runpod_versions,"runpod_sdk_exactly_pinned":sdk_pinned,"models_externalized":external_models,"models_embedded_in_foundation":embedded_models,"embedded_foundation_supported":False}}
+if external_models and serverless_contract["status"] != "passed": blockers.append("runpod_serverless_worker_contract_not_passed")
 payload={{"schema_version":"groot_oscar_thin_remote_build_result.v1","generated_at":datetime.now(timezone.utc).isoformat(),"status":"completed" if not blockers else "blocked","blockers":blockers,"foundation_image_ref":sys.argv[3],"release_image_ref":sys.argv[4],"resolved_digest_ref":sys.argv[4],"runnable_platform":"linux/amd64","required_cuda_version":cuda,"required_cuda_version_source":release.get("required_cuda_version_source"),"source_commit":"{source_commit}","source_patch_sha256":"{source_patch_sha256}","foundation_model_assets":"{foundation_model_assets}","thin_release_contract_status":contract["status"],"thin_release_contract":contract,"serverless_worker_contract":serverless_contract,"models_embedded":contract.get("models_embedded_in_foundation") is True,"raw_secret_values_recorded":False,"claim_boundary":{{"remote_build_is_not_model_cache_verification":True,"remote_build_is_not_provider_startup":True,"remote_build_is_not_task_success":True}}}}
 out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\\n",encoding="utf-8")
 raise SystemExit(0 if payload["status"]=="completed" else 2)
