@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import urllib.request
+import zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -9,6 +10,7 @@ from blueprint_pipeline.provider_bundle_staging_common import (
     BUNDLE_ROUTE,
     OUTPUT_ROUTE,
     create_staging_server,
+    prepare_provider_bundle_staging,
     read_or_create_staging_token,
     staging_url_with_token,
 )
@@ -45,6 +47,61 @@ def test_staging_url_normalizes_route_and_places_token_only_in_query() -> None:
     assert parsed.path == "/bundle.zip"
     assert parse_qs(parsed.query) == {"token": ["secret-token"]}
     assert parsed.fragment == ""
+
+
+def test_provider_neutral_staging_manifest_preserves_secret_boundary(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle_path, "w") as archive:
+        archive.writestr("request.json", "{}")
+    token_path = tmp_path / "secrets" / "token"
+    secret_env_path = tmp_path / "secrets" / "staging.env"
+
+    manifest = prepare_provider_bundle_staging(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle_path,
+        public_base_url="https://staging.example/base?discard=this",
+        token_file=token_path,
+        secret_env_file=secret_env_path,
+        generated_at="2026-07-22T00:00:00+00:00",
+    )
+
+    assert manifest["schema_version"] == "provider_bundle_staging_manifest.v1"
+    assert manifest["status"] == "ready"
+    assert manifest["base_url_redacted"] == "https://staging.example/base?REDACTED_QUERY"
+    assert manifest["bundle_url_path"] == "/bundle.zip?token=<redacted-token>"
+    assert manifest["output_put_url_path"] == "/output.zip?token=<redacted-token>"
+    assert manifest["raw_secret_values_recorded"] is False
+    token = token_path.read_text(encoding="utf-8").strip()
+    assert token
+    assert token not in str(manifest)
+    assert token in secret_env_path.read_text(encoding="utf-8")
+    assert oct(secret_env_path.stat().st_mode & 0o777) == "0o600"
+    assert (tmp_path / "job" / "provider_bundle_staging_manifest.json").is_file()
+
+
+def test_provider_neutral_staging_manifest_fails_closed_for_bad_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "not-a-zip.zip"
+    bundle_path.write_text("not a zip", encoding="utf-8")
+
+    manifest = prepare_provider_bundle_staging(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle_path,
+        public_base_url=None,
+        token_file=tmp_path / "secrets" / "token",
+        secret_env_file=tmp_path / "secrets" / "staging.env",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "public_base_url_missing" in manifest["blockers"]
+    assert any(
+        str(blocker).startswith("provider_runtime_bundle_zip_inspection_failed:")
+        for blocker in manifest["blockers"]
+    )
+    assert manifest["provider_fetchable_bundle_uri_ready"] is False
 
 
 def test_provider_neutral_server_serves_bundle_and_accepts_bounded_output(

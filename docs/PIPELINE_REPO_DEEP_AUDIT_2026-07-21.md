@@ -428,9 +428,12 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    construction, and the token-gated local bundle/output server now live in
    `provider_bundle_staging_common`, so RunPod and the Vast probe/authorized/async lanes
    no longer depend on private token or server implementation from a Vast-named module.
-   Compatibility exports keep existing operators stable. The remaining staging
-   manifest/public-verification wrapper is still Vast-named, and provider-specific poll
-   state transitions and teardown execution still need incremental extraction.
+   Provider-neutral staging-manifest preparation now also owns ZIP integrity checks,
+   redacted manifest emission, and the mode-0600 secret environment boundary; the Vast
+   entrypoint retains its historical schema and filenames as a compatibility wrapper.
+   Compatibility exports keep existing operators stable. The remaining public-staging
+   verification implementation is still Vast-named, and provider-specific poll state
+   transitions and teardown execution still need incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the

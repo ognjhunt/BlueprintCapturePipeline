@@ -16,10 +16,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import zipfile
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .provider_bundle_staging_common import (
@@ -30,13 +29,12 @@ from .provider_bundle_staging_common import (
     OUTPUT_ROUTE,
     ProviderBundleStagingRequestHandler as _ProviderBundleStagingRequestHandler,
     create_staging_server,
+    prepare_provider_bundle_staging,
+    redact_staging_url as _redact_url,
     read_or_create_staging_token as _read_or_create_token,
     staging_url_with_token as _url_with_token,
 )
-from .secret_artifact_policy import (
-    redacted_secret_file_status,
-    secret_path_disclosure_policy,
-)
+from .secret_artifact_policy import secret_path_disclosure_policy
 
 
 VAST_BUNDLE_STAGING_SCHEMA_VERSION = "vast_bundle_staging_manifest.v1"
@@ -58,26 +56,6 @@ CLOUDFLARED_URL_RE = re.compile(r"https://[-a-zA-Z0-9.]+\.trycloudflare\.com")
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _redacted_url_path(route: str) -> str:
-    return f"/{route.strip('/')}?token={REDACTED_TOKEN}"
-
-
-def _redact_url(value: str) -> str:
-    parsed = urlparse(value)
-    if not parsed.query:
-        return value
-    return urlunparse(
-        (
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            "",
-            "REDACTED_QUERY",
-            "",
-        )
-    )
 
 
 def start_cloudflared_tunnel(
@@ -178,40 +156,6 @@ def start_cloudflared_tunnel(
     return manifest
 
 
-def _write_secret_env_file(
-    *,
-    path: Path,
-    provider_bundle_url: str,
-    provider_output_put_url: str,
-) -> dict[str, Any]:
-    ensure_dir(path.parent)
-    path.write_text(
-        "\n".join(
-            [
-                f"BLUEPRINT_EVAL_MANIFEST_URI={provider_bundle_url}",
-                f"BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL={provider_output_put_url}",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    path.chmod(0o600)
-    status = redacted_secret_file_status(
-        path,
-        path_source="staging_secret_env_file",
-        raw_secret_field="raw_secret_values_recorded_in_manifest",
-    )
-    status.update(
-        {
-            "present": path.is_file(),
-            "mode": oct(path.stat().st_mode & 0o777),
-            "mode_is_0600": (path.stat().st_mode & 0o777) == 0o600,
-            "raw_secret_values_recorded_in_manifest": False,
-        }
-    )
-    return status
-
-
 def prepare_vast_bundle_staging(
     *,
     job_dir: str | Path,
@@ -222,13 +166,6 @@ def prepare_vast_bundle_staging(
     output_path: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    resolved_job_dir = Path(job_dir).expanduser().resolve()
-    resolved_bundle = Path(bundle_path).expanduser().resolve()
-    resolved_output = (
-        Path(output_path).expanduser().resolve()
-        if output_path
-        else resolved_job_dir / DEFAULT_OUTPUT_FILENAME
-    )
     resolved_token_file = (
         Path(token_file).expanduser().resolve()
         if token_file
@@ -239,89 +176,19 @@ def prepare_vast_bundle_staging(
         if secret_env_file
         else Path(DEFAULT_SECRET_ENV_FILE).expanduser().resolve()
     )
-    ensure_dir(resolved_job_dir)
-    token, token_status = _read_or_create_token(resolved_token_file)
-    base_url = _string(public_base_url)
-    provider_bundle_url = _url_with_token(base_url, BUNDLE_ROUTE, token) if base_url else ""
-    provider_output_put_url = _url_with_token(base_url, OUTPUT_ROUTE, token) if base_url else ""
-    blockers: list[str] = []
-    warnings: list[str] = []
-    if not resolved_bundle.is_file():
-        blockers.append("provider_runtime_bundle_missing")
-    if not base_url:
-        blockers.append("public_base_url_missing")
-    elif urlparse(base_url).scheme not in {"http", "https"}:
-        blockers.append("public_base_url_scheme_not_http")
-    elif urlparse(base_url).hostname in {"127.0.0.1", "localhost"}:
-        warnings.append("local_base_url_not_provider_fetchable_from_vast")
-    if not token:
-        blockers.append("staging_token_missing")
-    secret_env_status = None
-    if provider_bundle_url and provider_output_put_url:
-        secret_env_status = _write_secret_env_file(
-            path=resolved_secret_env_file,
-            provider_bundle_url=provider_bundle_url,
-            provider_output_put_url=provider_output_put_url,
-        )
-    bundle_zip_entry_count = 0
-    bundle_zip_parse_error = None
-    bundle_zip_testzip_result = None
-    if resolved_bundle.is_file():
-        try:
-            with zipfile.ZipFile(resolved_bundle) as archive:
-                bundle_zip_entry_count = len(archive.namelist())
-                bundle_zip_testzip_result = archive.testzip()
-        except Exception as exc:
-            bundle_zip_parse_error = f"{type(exc).__name__}:{str(exc)[:300]}"
-            blockers.append(f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}")
-    if bundle_zip_testzip_result is not None:
-        blockers.append("provider_runtime_bundle_zip_integrity_failed")
-    cloudflared_path = shutil.which("cloudflared")
-    manifest = {
-        "schema_version": VAST_BUNDLE_STAGING_SCHEMA_VERSION,
-        "generated_at": generated_at or utc_now_iso(),
-        "status": "ready" if not blockers else "blocked",
-        "job_dir": str(resolved_job_dir),
-        "bundle_path": str(resolved_bundle),
-        "bundle_present": resolved_bundle.is_file(),
-        "bundle_size_bytes": resolved_bundle.stat().st_size if resolved_bundle.is_file() else 0,
-        "bundle_zip_entry_count": bundle_zip_entry_count,
-        "bundle_zip_parse_error": bundle_zip_parse_error,
-        "bundle_zip_testzip_result": bundle_zip_testzip_result,
-        "bundle_zip_integrity_passed": (
-            resolved_bundle.is_file()
-            and bundle_zip_parse_error is None
-            and bundle_zip_testzip_result is None
-        ),
-        "output_path": str(resolved_output),
-        "token_file": token_status,
-        "secret_env_file": secret_env_status,
-        "secret_artifact_policy": secret_path_disclosure_policy(),
-        "base_url_redacted": _redact_url(base_url) if base_url else None,
-        "bundle_url_path": _redacted_url_path(BUNDLE_ROUTE),
-        "output_put_url_path": _redacted_url_path(OUTPUT_ROUTE),
-        "provider_bundle_url_present": bool(provider_bundle_url),
-        "provider_output_put_url_present": bool(provider_output_put_url),
-        "provider_fetchable_bundle_uri_ready": bool(provider_bundle_url and not blockers),
-        "provider_output_callback_ready": bool(provider_output_put_url and not blockers),
-        "cloudflared_available": bool(cloudflared_path),
-        "cloudflared_path": cloudflared_path,
-        "suggested_local_server": {
-            "host": DEFAULT_HOST,
-            "bundle_route": BUNDLE_ROUTE,
-            "output_route": OUTPUT_ROUTE,
-            "health_route": HEALTH_ROUTE,
-        },
-        "privacy_boundary": (
-            "Token-gated staging for a bounded provider run only. Raw tokenized URLs are "
-            "written only to the chmod 600 secret env file when a base URL is supplied."
-        ),
-        "blockers": blockers,
-        "warnings": warnings,
-        "raw_secret_values_recorded": False,
-    }
-    write_json(resolved_job_dir / "vast_bundle_staging_manifest.json", manifest)
-    return manifest
+    return prepare_provider_bundle_staging(
+        job_dir=job_dir,
+        bundle_path=bundle_path,
+        public_base_url=public_base_url,
+        token_file=resolved_token_file,
+        secret_env_file=resolved_secret_env_file,
+        output_path=output_path,
+        generated_at=generated_at,
+        schema_version=VAST_BUNDLE_STAGING_SCHEMA_VERSION,
+        manifest_filename="vast_bundle_staging_manifest.json",
+        default_output_filename=DEFAULT_OUTPUT_FILENAME,
+        local_base_url_warning="local_base_url_not_provider_fetchable_from_vast",
+    )
 
 
 def run_local_staging_self_test(
