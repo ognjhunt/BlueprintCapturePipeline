@@ -66,8 +66,11 @@ store, reducing the grandfathered monolith below its no-growth budget. The stabl
 runtime-service contract is unchanged. Model-family-specific artifact discovery, frame
 normalization, LoRA lookup, and synchronous inference now live in the explicit
 `native_runtime_cosmos_adapter`; compatibility wrappers preserve the store surface and
-32 focused fast/slow native-runtime tests pass. The asynchronous Cosmos session loop is
-the remaining incremental split, not a safe deletion.
+32 focused fast/slow native-runtime tests pass. Pure rollout merging, buffer-depth
+decisions, bounded chunk replacement, and playback transitions now live in
+`native_runtime_rollout_state` with direct contract tests. The asynchronous generation,
+session ownership, and media-production loop is the remaining incremental split, not a
+safe deletion.
 
 Live Vast revalidation was authorized with a hard `$15` cap. A read-only, account-wide
 inventory query returned HTTP 200 with zero non-terminal instances, so observed spend
@@ -394,9 +397,10 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    normalization, and synchronous inference logic now lives in the explicit
    `native_runtime_cosmos_adapter`, with the runtime store's existing methods retained
    as compatibility wrappers. This reduced `native_runtime_backend.py` from 2,955 to
-   2,795 LOC without changing its service contract. The remaining asynchronous Cosmos
-   generation/session state loop is still embedded in the live store and needs
-   incremental extraction.
+   2,734 LOC without changing its service contract. Pure rollout/chunk/playback state
+   transitions are also isolated in `native_runtime_rollout_state`. The remaining
+   asynchronous Cosmos generation, session ownership, and media-production loop is
+   still embedded in the live store and needs incremental extraction.
 4. **Fixed — simulator commands are configuration-owned.** The orchestrator no longer
    defaults `isaac_sim` to a G1/3DGS module. Non-fixture execution requires an explicit
    admitted simulator command and tests bind that fail-closed behavior.

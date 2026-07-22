@@ -29,6 +29,15 @@ from .native_runtime_readiness import (
     optional_existing_path as _optional_existing_path,
 )
 from .native_runtime_cosmos_adapter import LegacyCosmosRuntimeAdapter
+from .native_runtime_rollout_state import (
+    chunk_record,
+    current_chunk,
+    ensure_rollout_state,
+    refresh_rollout_playback,
+    remaining_ready_chunks,
+    replace_chunk,
+    should_queue_more_chunks,
+)
 from .native_runtime_strategy import (
     bind_selected_runtime_identity,
     cosmos_refinement_enabled,
@@ -749,25 +758,7 @@ class NativeWorldModelRuntimeStore:
         }
 
     def _ensure_rollout(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        rollout = dict(state.get("rollout") or {})
-        defaults = self._rollout_defaults()
-        merged = {**defaults, **rollout}
-        merged["control_intent"] = {
-            **dict(defaults.get("control_intent") or {}),
-            **dict(rollout.get("control_intent") or {}),
-        }
-        merged["trajectory_horizon"] = list(rollout.get("trajectory_horizon") or [])
-        merged["grounding_reference_set"] = list(rollout.get("grounding_reference_set") or [])
-        merged["queued_chunk_ids"] = list(rollout.get("queued_chunk_ids") or [])
-        merged["buffered_chunk_ids"] = list(rollout.get("buffered_chunk_ids") or [])
-        merged["chunks"] = list(rollout.get("chunks") or [])
-        merged["refined_chunk_ids"] = list(rollout.get("refined_chunk_ids") or [])
-        merged["world_state"] = {
-            **dict(defaults.get("world_state") or {}),
-            **dict(rollout.get("world_state") or {}),
-        }
-        state["rollout"] = merged
-        return merged
+        return ensure_rollout_state(state, defaults=self._rollout_defaults())
 
     def _output_profile(self) -> str:
         explicit = str(os.getenv("NATIVE_WORLD_MODEL_OUTPUT_PROFILE") or "").strip().lower()
@@ -801,17 +792,12 @@ class NativeWorldModelRuntimeStore:
         return max(1, int(os.getenv("NATIVE_WORLD_MODEL_TARGET_READY_CHUNKS", default)))
 
     def _remaining_ready_chunks(self, rollout: Mapping[str, Any]) -> int:
-        buffered = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-        active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
-        active_index = buffered.index(active_chunk_id) if active_chunk_id in buffered else -1
-        return len(buffered) - max(active_index + 1, 0)
+        return remaining_ready_chunks(rollout)
 
     def _should_queue_more_chunks(self, rollout: Mapping[str, Any]) -> bool:
-        if len(list(rollout.get("queued_chunk_ids") or [])) > 0:
-            return False
-        return self._remaining_ready_chunks(rollout) < max(
-            1,
-            int(rollout.get("target_ready_chunks") or self._target_ready_chunks()),
+        return should_queue_more_chunks(
+            rollout,
+            default_target_ready_chunks=self._target_ready_chunks(),
         )
 
     def _cosmos_refinement_settings(self, rollout: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1277,67 +1263,20 @@ class NativeWorldModelRuntimeStore:
         return resolve_native_runtime_strategy(os.environ).synthesis_mode
 
     def _chunk_record(self, rollout: Mapping[str, Any], chunk_id: str) -> Optional[Dict[str, Any]]:
-        for chunk in list(rollout.get("chunks") or []):
-            if str(chunk.get("chunk_id") or "") == chunk_id:
-                return dict(chunk)
-        return None
+        return chunk_record(rollout, chunk_id)
 
     def _replace_chunk(self, rollout: Dict[str, Any], chunk_payload: Mapping[str, Any]) -> None:
-        chunk_id = str(chunk_payload.get("chunk_id") or "")
-        chunks = [dict(item) for item in list(rollout.get("chunks") or []) if str(item.get("chunk_id") or "") != chunk_id]
-        chunks.append(dict(chunk_payload))
-        chunks.sort(key=lambda item: int(item.get("chunk_index") or 0))
-        rollout["chunks"] = chunks[-6:]
+        replace_chunk(rollout, chunk_payload)
 
     def _current_chunk(self, rollout: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-        active_chunk_id = str(rollout.get("active_chunk_id") or "").strip()
-        if not active_chunk_id:
-            return None
-        return self._chunk_record(rollout, active_chunk_id)
+        return current_chunk(rollout)
 
     def _refresh_rollout_playback(self, state: Dict[str, Any]) -> None:
-        rollout = self._ensure_rollout(state)
-        now_ms = _utc_now_ms()
-        active_chunk = self._current_chunk(rollout)
-        if active_chunk:
-            activated_at_ms = int(active_chunk.get("activated_at_ms") or 0)
-            chunk_duration_ms = int(active_chunk.get("duration_ms") or rollout.get("chunk_duration_ms") or 0)
-            if activated_at_ms > 0 and chunk_duration_ms > 0 and now_ms - activated_at_ms >= chunk_duration_ms:
-                buffer_ids = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-                try:
-                    index = buffer_ids.index(str(active_chunk.get("chunk_id") or ""))
-                except ValueError:
-                    index = -1
-                next_chunk_id = buffer_ids[index + 1] if index >= 0 and index + 1 < len(buffer_ids) else None
-                if next_chunk_id:
-                    next_chunk = self._chunk_record(rollout, next_chunk_id)
-                    if next_chunk is not None:
-                        next_chunk["activated_at_ms"] = now_ms
-                        self._replace_chunk(rollout, next_chunk)
-                        rollout["active_chunk_id"] = next_chunk_id
-                        rollout["status"] = "playing"
-                        rollout["underrun"] = False
-                        rollout["current_media_type"] = next_chunk.get("media_type")
-                        rollout["current_render_source"] = next_chunk.get("render_source")
-                else:
-                    rollout["status"] = "underrun"
-                    rollout["underrun"] = True
-        if not rollout.get("active_chunk_id"):
-            buffer_ids = [str(item) for item in list(rollout.get("buffered_chunk_ids") or []) if str(item)]
-            if buffer_ids:
-                first_chunk = self._chunk_record(rollout, buffer_ids[0])
-                if first_chunk is not None:
-                    first_chunk["activated_at_ms"] = now_ms
-                    self._replace_chunk(rollout, first_chunk)
-                    rollout["active_chunk_id"] = str(first_chunk.get("chunk_id") or "")
-                    rollout["status"] = "playing"
-                    rollout["underrun"] = False
-                    rollout["current_media_type"] = first_chunk.get("media_type")
-                    rollout["current_render_source"] = first_chunk.get("render_source")
-            elif rollout.get("queued_chunk_ids"):
-                rollout["status"] = "buffering"
-            elif rollout.get("chunk_count", 0) > 0:
-                rollout["status"] = "underrun"
+        refresh_rollout_playback(
+            state,
+            defaults=self._rollout_defaults(),
+            now_ms=_utc_now_ms(),
+        )
 
     def _synthesize_step_async(
         self,
