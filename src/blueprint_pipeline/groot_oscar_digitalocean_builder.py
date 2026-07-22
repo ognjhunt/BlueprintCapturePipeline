@@ -915,10 +915,18 @@ def build_cloud_init(
 ssh_deletekeys: false
 bootcmd:
   - [bash, -c, "printf '%s' '{host_private_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key && chmod 600 /etc/ssh/ssh_host_ed25519_key && printf '%s' '{host_public_b64}' | base64 -d > /etc/ssh/ssh_host_ed25519_key.pub && chmod 644 /etc/ssh/ssh_host_ed25519_key.pub && rm -f /etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub"]
+  - [bash, -c, "for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do if [ -f $source_file ]; then sed -i 's|http://mirrors.digitalocean.com|https://mirrors.digitalocean.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g; s|http://archive.ubuntu.com|https://archive.ubuntu.com|g' $source_file; fi; done"]
 package_update: true
 packages:
 {package_lines}
 write_files:
+  - path: /etc/apt/apt.conf.d/80blueprint-transport
+    permissions: '0644'
+    content: |
+      Acquire::Retries "10";
+      Acquire::http::Timeout "30";
+      Acquire::https::Timeout "30";
+      Acquire::http::Pipeline-Depth "0";
   - path: /etc/ssh/ssh_host_ed25519_key
     permissions: '0600'
     encoding: b64
