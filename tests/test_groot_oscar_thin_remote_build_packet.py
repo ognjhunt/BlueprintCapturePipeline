@@ -163,6 +163,11 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
         "requirements_embedded_carrier_opencv.lock"
         in paths
     )
+    assert (
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "repair_embedded_carrier.py"
+        in paths
+    )
     assert "src/blueprint_pipeline/thin_release_image_contract.py" in paths
     with tarfile.open(result["tarball_path"], "r:gz") as archive:
         names = set(archive.getnames())
@@ -180,6 +185,13 @@ def test_release_removes_build_only_serverless_environment_files() -> None:
 
     assert "site-packages/pip*" in release_dockerfile
     assert "-name __pycache__" in release_dockerfile
+    assert "requirements_oscar_foundation.lock" in release_dockerfile
+    assert "pip --python /opt/oscar-venv/bin/python install" in release_dockerfile
+    assert "repair_embedded_carrier.py" in release_dockerfile
+    assert "BLUEPRINT_GEAR_SONIC_SOURCE_REVISION" in release_dockerfile
+    assert "PYTHONPATH=/opt/wbc:/opt/OSCAR" in release_dockerfile
+    assert "rm -f /usr/local/cuda*/bin/nvcc" in release_dockerfile
+    assert "find /usr/local/cuda* -type f -name '*.a' -delete" in release_dockerfile
 
 
 def test_packet_can_reuse_exact_foundation_and_build_only_thin_release(
