@@ -20,6 +20,10 @@ from .gpu_render_providers import get_render_provider
 
 SCHEMA_VERSION = "groot_oscar_runpod_canary_watchdog.v1"
 EVIDENCE_NAME = "groot_oscar_runpod_canary_watchdog.json"
+OWNER_TEARDOWN_CANCEL_NAME = "groot_oscar_runpod_canary_watchdog_cancel.json"
+OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION = (
+    "groot_oscar_runpod_canary_watchdog_cancel.v1"
+)
 SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 
@@ -29,6 +33,69 @@ def _provider_name(value: Any) -> str:
     if name not in SUPPORTED_PROVIDERS:
         raise ValueError(f"watchdog_provider_unsupported:{name}")
     return name
+
+
+def _owner_teardown_cancel_request(
+    *, root: Path, pod_name_prefix: str, provider_name: str
+) -> dict[str, Any]:
+    """Load a private, exact-prefix cancellation request from owner teardown.
+
+    The request is only a prompt to perform the watchdog's normal provider API
+    teardown/absence verification early. It never turns file contents into a
+    provider-terminal claim by themselves.
+    """
+
+    path = root / OWNER_TEARDOWN_CANCEL_NAME
+    try:
+        metadata = path.lstat()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or metadata.st_size > 16 * 1024
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    if (
+        payload.get("schema_version") != OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
+        or payload.get("requested_by") != "qualification_owner_teardown"
+        or payload.get("provider") != provider_name
+        or payload.get("pod_name_prefix") != pod_name_prefix
+        or not str(payload.get("instance_id") or "").strip()
+        or payload.get("provider_absence_confirmed") is not True
+        or payload.get("provider_absence_evidence")
+        != "provider_api_exact_id_prefix_and_global_inventory"
+    ):
+        return {}
+    return dict(payload)
+
+
+def write_owner_teardown_cancel_request(
+    *, root: Path, pod_name_prefix: str, provider_name: str, instance_id: str
+) -> dict[str, Any]:
+    """Persist the private request that makes the hard-TTL watchdog exit early."""
+
+    payload = {
+        "schema_version": OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION,
+        "requested_at": utc_now_iso(),
+        "requested_by": "qualification_owner_teardown",
+        "provider": provider_name,
+        "instance_id": instance_id,
+        "pod_name_prefix": pod_name_prefix,
+        "provider_absence_confirmed": True,
+        "provider_absence_evidence": (
+            "provider_api_exact_id_prefix_and_global_inventory"
+        ),
+        "raw_secret_values_recorded": False,
+    }
+    path = root / OWNER_TEARDOWN_CANCEL_NAME
+    write_json(path, payload)
+    os.chmod(path, 0o600)
+    return payload
 
 
 def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, Any]:
@@ -550,26 +617,138 @@ def run_watchdog(
         deadline_epoch=deadline_epoch,
         provider_name=resolved_provider,
     )
+    owner_teardown_cancel: dict[str, Any] = {}
+    cancel_zero_result: dict[str, Any] = {}
     while clock() < deadline_epoch:
-        sleeper(min(10.0, max(0.0, deadline_epoch - clock())))
-    try:
-        provider = provider_factory(resolved_provider)
-    except Exception as exc:  # noqa: BLE001 - evidence must survive provider init failure
-        result = {
-            **dict(armed),
-            "status": "teardown_unverified",
-            "completed_at": utc_now_iso(),
-            "provider_absence_confirmed": False,
-            "provider_mutations_performed": 0,
-            "teardown_error_type": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    else:
-        result = terminate_canary_resources(
-            provider=provider,
+        cancel_candidate = _owner_teardown_cancel_request(
+            root=root,
             pod_name_prefix=pod_name_prefix,
-            armed=armed,
             provider_name=resolved_provider,
+        )
+        if cancel_candidate:
+            recorded_vast_instance: dict[str, Any] = {}
+            recorded_vast_verification: dict[str, Any] = {}
+            try:
+                cancel_provider = provider_factory(resolved_provider)
+                first_zero = _billable_inventory(
+                    provider=cancel_provider,
+                    provider_name=resolved_provider,
+                    name_prefix=pod_name_prefix,
+                )
+                first_global_zero = _billable_inventory(
+                    provider=cancel_provider,
+                    provider_name=resolved_provider,
+                    name_prefix="",
+                )
+                second_zero = _billable_inventory(
+                    provider=cancel_provider,
+                    provider_name=resolved_provider,
+                    name_prefix=pod_name_prefix,
+                )
+                second_global_zero = _billable_inventory(
+                    provider=cancel_provider,
+                    provider_name=resolved_provider,
+                    name_prefix="",
+                )
+                exact_contract_zero = True
+                if resolved_provider == "vast":
+                    recorded_vast_instance = _recorded_vast_instance(
+                        armed=armed,
+                        pod_name_prefix=pod_name_prefix,
+                    )
+                    recorded_id = str(
+                        recorded_vast_instance.get("instance_id") or ""
+                    ).strip()
+                    cancel_id = str(cancel_candidate.get("instance_id") or "").strip()
+                    exact_inspects = [
+                        _safe_vast_inspect_evidence(cancel_provider.inspect(recorded_id)),
+                        _safe_vast_inspect_evidence(cancel_provider.inspect(recorded_id)),
+                    ] if (
+                        recorded_vast_instance.get("status") == "recorded"
+                        and recorded_id == cancel_id
+                    ) else []
+                    exact_contract_zero = bool(
+                        len(exact_inspects) == 2
+                        and all(
+                            _vast_instance_absence_proven(row, recorded_id)
+                            for row in exact_inspects
+                        )
+                    )
+                    recorded_vast_verification = {
+                        "status": "absent" if exact_contract_zero else "unverified",
+                        "instance_id": recorded_id or None,
+                        "provider_absence_confirmed": exact_contract_zero,
+                        "inspect_attempts": exact_inspects,
+                        "provider_mutations_performed": 0,
+                    }
+            except Exception:  # noqa: BLE001 - hard-deadline protection remains armed
+                first_zero = {}
+                first_global_zero = {}
+                second_zero = {}
+                second_global_zero = {}
+                exact_contract_zero = False
+            independently_zero = all(
+                inventory.get("api_confirmed") is True
+                and inventory.get("live_resource_count") == 0
+                for inventory in (
+                    first_zero,
+                    first_global_zero,
+                    second_zero,
+                    second_global_zero,
+                )
+            ) and exact_contract_zero
+            if independently_zero:
+                owner_teardown_cancel = cancel_candidate
+                cancel_zero_result = {
+                    **armed,
+                    "status": "provider_terminal",
+                    "completed_at": utc_now_iso(),
+                    "initial_inventory": first_zero,
+                    "initial_global_inventory": first_global_zero,
+                    "terminations": [],
+                    "final_inventory": second_zero,
+                    "final_global_inventory": second_global_zero,
+                    "provider_absence_confirmed": True,
+                    "provider_mutations_performed": 0,
+                    "teardown_error_type": None,
+                    "raw_secret_values_recorded": False,
+                }
+                if resolved_provider == "vast":
+                    cancel_zero_result["recorded_vast_instance"] = (
+                        recorded_vast_instance
+                    )
+                    cancel_zero_result["recorded_vast_instance_teardown"] = (
+                        recorded_vast_verification
+                    )
+                break
+        sleeper(min(10.0, max(0.0, deadline_epoch - clock())))
+    if cancel_zero_result:
+        result = cancel_zero_result
+    else:
+        try:
+            provider = provider_factory(resolved_provider)
+        except Exception as exc:  # noqa: BLE001 - evidence survives init failure
+            result = {
+                **dict(armed),
+                "status": "teardown_unverified",
+                "completed_at": utc_now_iso(),
+                "provider_absence_confirmed": False,
+                "provider_mutations_performed": 0,
+                "teardown_error_type": type(exc).__name__,
+                "raw_secret_values_recorded": False,
+            }
+        else:
+            result = terminate_canary_resources(
+                provider=provider,
+                pod_name_prefix=pod_name_prefix,
+                armed=armed,
+                provider_name=resolved_provider,
+            )
+    result["owner_teardown_cancel_requested"] = bool(owner_teardown_cancel)
+    result["owner_teardown_cancel_request_valid"] = bool(owner_teardown_cancel)
+    if owner_teardown_cancel:
+        result["provider_mutation_trigger"] = (
+            "owner_teardown_cancel_request_after_provider_zero"
         )
     receipt_path = root / "provider_lane_handoff_receipt.json"
     receipt: dict[str, Any] = {}

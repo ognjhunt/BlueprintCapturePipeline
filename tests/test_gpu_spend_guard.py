@@ -9,6 +9,7 @@ threshold (reaped with ``--reap``), and an owned pod with a live owning process
 
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import single_g1_kitchen_qualification_session as qualification
 from scripts import gpu_spend_guard as guard
 
 
@@ -270,6 +272,67 @@ def _make_started_pod_id_file(root: Path, pod_id: str) -> Path:
     return out_dir
 
 
+def _write_qualification_owner(
+    attempt: Path,
+    instance_id: str,
+    *,
+    continuing_spend: bool = True,
+    manifest_name: str = "qualification_session.json",
+    deadline_epoch: float = 2_000_000_000,
+) -> Path:
+    attempt.mkdir(parents=True, exist_ok=True)
+    (attempt / "started_vast_instance_id.txt").write_text(instance_id)
+    digest = "b" * 64
+    image_ref = f"registry.example/blueprint-eval@sha256:{digest}"
+    image_digest = f"sha256:{digest}"
+    source_commit = "a" * 40
+    release_binding = {
+        "schema_version": "single_g1_kitchen_qualification_release_binding.v1",
+        "image_ref": image_ref,
+        "image_digest": image_digest,
+        "source_commit": source_commit,
+        "source_patch_sha256": hashlib.sha256(b"").hexdigest(),
+        "runnable_platform": "linux/amd64",
+        "required_cuda_version": "12.8",
+        "required_cuda_version_source": "image_config_env:test",
+        "models_externalized": True,
+        "release_evidence_status": "completed",
+        "thin_release_contract_status": "passed",
+    }
+    prefix = qualification.NAME_PREFIX_ROOT + "test-owner"
+    nonce = "single-g1-kitchen-qualification-test-owner"
+    manifest = qualification._manifest_base(
+        root=attempt,
+        resource_name=prefix + "-instance",
+        resource_name_prefix=prefix,
+        launch_session_id=nonce,
+        bootstrap={
+            "provider_bootstrap_sha256": "1" * 64,
+            "episode_bootstrap_sha256": "2" * 64,
+            "control_script_sha256": "3" * 64,
+            "refresh_installer_sha256": "4" * 64,
+            "component_script_sha256s": {},
+            "overlay_revision": 1,
+            "control_contract_version": qualification.CONTROL_CONTRACT_VERSION,
+        },
+        deadline_epoch=deadline_epoch,
+        image_ref=image_ref,
+        image_digest=image_digest,
+        source_commit=source_commit,
+        release_binding=release_binding,
+    )
+    manifest.update(
+        {
+            "status": "allocated_ready_continuing_spend",
+            "instance_id": instance_id,
+            "continuing_spend": continuing_spend,
+        }
+    )
+    manifest_path = attempt / manifest_name
+    qualification._private_write_json(manifest_path, manifest)
+    return manifest_path
+
+
 def test_owned_pod_with_live_owner_is_protected(tmp_path: Path) -> None:
     out_dir = _make_started_pod_id_file(tmp_path, "pod-owned")
     cmdlines = [
@@ -319,6 +382,721 @@ def test_owned_vast_instance_with_live_owner_is_protected(tmp_path: Path) -> Non
     ]
     protected = guard.find_protected_pod_ids([tmp_path], process_cmdlines=cmdlines)
     assert protected == {"778899"}
+
+
+def test_live_persistent_qualification_vast_instance_is_protected(
+    tmp_path: Path,
+) -> None:
+    attempt = tmp_path / "custom_qualification_output"
+    manifest_path = _write_qualification_owner(
+        attempt, "45483300", manifest_name="arbitrary_session_name.json"
+    )
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+    assert protected == {"45483300"}
+
+
+def test_relative_qualification_manifest_path_is_protected(tmp_path: Path) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    relative_manifest = manifest_path.relative_to(tmp_path)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+@pytest.mark.parametrize(
+    "relative_manifest",
+    [
+        "qualification_session.json",
+        "attempt_047_qualification/qualification_session.json",
+    ],
+)
+def test_unique_short_relative_qualification_manifest_path_is_protected(
+    tmp_path: Path,
+    relative_manifest: str,
+) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    _write_qualification_owner(attempt, "45483300")
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_ambiguous_short_relative_qualification_manifest_protects_neither(
+    tmp_path: Path,
+) -> None:
+    _write_qualification_owner(tmp_path / "attempt_a", "45483300")
+    _write_qualification_owner(tmp_path / "attempt_b", "45483301")
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            "--qualification-session-manifest qualification_session.json"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_qualification_hard_ttl_watchdog_is_a_bound_live_owner(tmp_path: Path) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {attempt} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+@pytest.mark.parametrize("observed_at", [100.0, 101.0])
+def test_expired_qualification_watchdog_is_not_a_live_owner(
+    tmp_path: Path,
+    observed_at: float,
+) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(
+        attempt,
+        "45483300",
+        deadline_epoch=100.0,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {attempt} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+        now=observed_at,
+    )
+
+    assert protected == set()
+
+
+@pytest.mark.parametrize("observed_at", [100.0, 101.0])
+def test_expired_qualification_allocator_is_not_a_live_owner(
+    tmp_path: Path,
+    observed_at: float,
+) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(
+        attempt,
+        "45483300",
+        deadline_epoch=100.0,
+    )
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+        now=observed_at,
+    )
+
+    assert protected == set()
+
+
+def test_relative_symlinked_qualification_watchdog_is_a_bound_owner(
+    tmp_path: Path,
+) -> None:
+    real_root = tmp_path / "capture_volume"
+    attempt = real_root / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    linked_root = tmp_path / "output"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    relative_out_dir = Path("output") / attempt.relative_to(real_root)
+
+    protected = guard.find_protected_pod_ids(
+        [linked_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {relative_out_dir} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_ambiguous_relative_qualification_watchdog_protects_neither_tree(
+    tmp_path: Path,
+) -> None:
+    suffix = Path("output/episode/attempt_047_qualification")
+    first_manifest = _write_qualification_owner(
+        tmp_path / "capture_a" / suffix, "45483300"
+    )
+    _write_qualification_owner(tmp_path / "capture_b" / suffix, "45483301")
+    manifest = json.loads(first_manifest.read_text(encoding="utf-8"))
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path / "capture_a", tmp_path / "capture_b"],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {suffix} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {manifest['watchdog_deadline_epoch']} --provider vast"
+        ],
+    )
+
+    assert protected == set()
+
+
+@pytest.mark.parametrize(
+    ("module", "out_dir_suffix", "prefix_suffix", "provider", "deadline_delta"),
+    [
+        ("blueprint_pipeline.unrelated_watchdog", "", "", "vast", 0.0),
+        (
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "_retry",
+            "",
+            "vast",
+            0.0,
+        ),
+        (
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "",
+            "-other",
+            "vast",
+            0.0,
+        ),
+        ("blueprint_pipeline.groot_oscar_runpod_watchdog", "", "", "runpod", 0.0),
+        ("blueprint_pipeline.groot_oscar_runpod_watchdog", "", "", "vast", 1.0),
+    ],
+)
+def test_qualification_watchdog_owner_requires_exact_bound_identity(
+    tmp_path: Path,
+    module: str,
+    out_dir_suffix: str,
+    prefix_suffix: str,
+    provider: str,
+    deadline_delta: float,
+) -> None:
+    attempt = tmp_path / "output" / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    deadline = float(manifest["watchdog_deadline_epoch"]) + deadline_delta
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            f"python -m {module} --out-dir {attempt}{out_dir_suffix} "
+            f"--pod-name-prefix {manifest['resource_name_prefix']}{prefix_suffix} "
+            f"--deadline-epoch {deadline} "
+            f"--provider {provider}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_ambiguous_relative_qualification_path_protects_neither_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suffix = Path("output/episode/attempt_047_qualification")
+    first_root = tmp_path / "capture_a"
+    second_root = tmp_path / "capture_b"
+    first_manifest = _write_qualification_owner(first_root / suffix, "45483300")
+    _write_qualification_owner(second_root / suffix, "45483301")
+    relative_manifest = first_manifest.relative_to(first_root)
+    monkeypatch.chdir(first_root)
+
+    protected = guard.find_protected_pod_ids(
+        [first_root, second_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_symlinked_manifest_directory_argument_is_protected(tmp_path: Path) -> None:
+    real_root = tmp_path / "capture_volume"
+    attempt = real_root / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    linked_root = tmp_path / "output"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    linked_manifest = linked_root / manifest_path.relative_to(real_root)
+
+    protected = guard.find_protected_pod_ids(
+        [linked_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {linked_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_relative_symlinked_manifest_directory_argument_is_protected(
+    tmp_path: Path,
+) -> None:
+    real_root = tmp_path / "capture_volume"
+    attempt = real_root / "episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(attempt, "45483300")
+    linked_root = tmp_path / "output"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    relative_manifest = Path("output") / manifest_path.relative_to(real_root)
+
+    protected = guard.find_protected_pod_ids(
+        [linked_root],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {relative_manifest}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_terminal_persistent_qualification_is_not_protected(tmp_path: Path) -> None:
+    attempt = tmp_path / "single_g1_kitchen_episode" / "attempt_047_qualification"
+    manifest_path = _write_qualification_owner(
+        attempt,
+        "45483300",
+        continuing_spend=False,
+    )
+    protected = guard.find_protected_pod_ids(
+        [tmp_path], process_cmdlines=[f"watcher {manifest_path}"]
+    )
+    assert protected == set()
+
+
+def test_different_live_qualification_attempt_does_not_protect_stale_instance(
+    tmp_path: Path,
+) -> None:
+    episode = tmp_path / "single_g1_kitchen_episode"
+    stale_attempt = episode / "attempt_047_qualification"
+    live_attempt = episode / "attempt_048_qualification"
+    live_attempt.mkdir(parents=True)
+    _write_qualification_owner(stale_attempt, "45483300")
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {live_attempt / 'qualification_session.json'}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_qualification_prefix_alias_does_not_protect_stale_instance(
+    tmp_path: Path,
+) -> None:
+    stale_attempt = tmp_path / "attempt_047"
+    retry_attempt = tmp_path / "attempt_047_retry"
+    _write_qualification_owner(stale_attempt, "45483300")
+    retry_manifest = retry_attempt / "qualification_session.json"
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {retry_manifest}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_qualification_requires_manifest_option_not_incidental_path(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_qualification_owner(tmp_path / "qualification", "45483300")
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path], process_cmdlines=[f"diagnostic --input {manifest_path}"]
+    )
+
+    assert protected == set()
+
+
+def test_qualification_owner_id_file_must_be_small_regular_file(
+    tmp_path: Path,
+) -> None:
+    symlink_attempt = tmp_path / "symlink_owner"
+    symlink_attempt.mkdir()
+    target = tmp_path / "target_id.txt"
+    target.write_text("45483300")
+    (symlink_attempt / "started_vast_instance_id.txt").symlink_to(target)
+    oversized_attempt = tmp_path / "oversized_owner"
+    oversized_attempt.mkdir()
+    (oversized_attempt / "started_vast_instance_id.txt").write_text("1" * 1025)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            f"worker {symlink_attempt / 'qualification_session.json'}",
+            f"worker {oversized_attempt / 'qualification_session.json'}",
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_qualification_import_failure_does_not_disable_spend_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = tmp_path / "qualification"
+    attempt.mkdir()
+    (attempt / "started_vast_instance_id.txt").write_text("45483300")
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {attempt / 'qualification_session.json'}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_qualification_import_failure_preserves_bound_allocator_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "qualification", "45483300"
+    )
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_qualification_import_failure_preserves_live_bound_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = tmp_path / "qualification"
+    manifest_path = _write_qualification_owner(
+        attempt,
+        "45483300",
+        deadline_epoch=2_000_000_000,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {attempt} --provider vast "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {float(manifest['watchdog_deadline_epoch'])}"
+        ],
+        now=1_900_000_000,
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_qualification_import_failure_does_not_protect_spoofed_partial_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = tmp_path / "qualification"
+    attempt.mkdir()
+    (attempt / "started_vast_instance_id.txt").write_text("45483300")
+    manifest_path = attempt / "qualification_session.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "single_g1_kitchen_qualification_session.v1",
+                "provider": "vast",
+                "instance_id": "45483300",
+                "continuing_spend": True,
+            }
+        )
+    )
+    manifest_path.chmod(0o600)
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
+@pytest.mark.parametrize(
+    ("release_field", "invalid_value"),
+    [
+        ("source_patch_sha256", "f" * 64),
+        ("required_cuda_version", ""),
+        ("required_cuda_version_source", ""),
+        ("required_cuda_version_source", "review_only"),
+    ],
+)
+def test_qualification_import_failure_requires_canonical_release_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    release_field: str,
+    invalid_value: str,
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "qualification", "45483300"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["release_binding"][release_field] = invalid_value
+    manifest_path.write_text(json.dumps(manifest))
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_qualification_validation_failure_does_not_disable_spend_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "qualification", "45483300"
+    )
+    monkeypatch.setattr(
+        qualification,
+        "_validate_manifest_binding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("qualification validator unavailable")
+        ),
+    )
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_spoofed_partial_qualification_manifest_is_not_protected(
+    tmp_path: Path,
+) -> None:
+    attempt = tmp_path / "spoofed_qualification"
+    attempt.mkdir()
+    (attempt / "started_vast_instance_id.txt").write_text("45483300")
+    manifest_path = attempt / "qualification_session.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "single_g1_kitchen_qualification_session.v1",
+                "provider": "vast",
+                "instance_id": "45483300",
+                "continuing_spend": True,
+            }
+        )
+    )
+    manifest_path.chmod(0o600)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest={manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_legacy_unbound_qualification_manifest_is_not_protected(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "legacy_qualification", "45483300"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("release_binding_status")
+    qualification._private_write_json(manifest_path, manifest)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_symlinked_qualification_manifest_is_not_protected(tmp_path: Path) -> None:
+    source_manifest = _write_qualification_owner(
+        tmp_path / "source_qualification", "45483300"
+    )
+    symlink_attempt = tmp_path / "symlink_qualification"
+    symlink_attempt.mkdir()
+    (symlink_attempt / "started_vast_instance_id.txt").write_text("45483300")
+    symlink_manifest = symlink_attempt / "qualification_session.json"
+    symlink_manifest.symlink_to(source_manifest)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {symlink_manifest}"
+        ],
+    )
+
+    assert protected == set()
+
+
+def test_swapped_qualification_manifest_inode_is_not_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "race_qualification", "45483300"
+    )
+    replacement = _write_qualification_owner(
+        tmp_path / "replacement_qualification", "45483300"
+    )
+    real_open = guard.os.open
+    swapped = False
+
+    def _swap_before_open(path: object, flags: int, mode: int = 0o600) -> int:
+        nonlocal swapped
+        if Path(path) == manifest_path and not swapped:
+            swapped = True
+            manifest_path.unlink()
+            manifest_path.symlink_to(replacement)
+        if flags & guard.os.O_CREAT:
+            return real_open(path, flags, mode)
+        return real_open(path, flags)
+
+    monkeypatch.setattr(guard.os, "open", _swap_before_open)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert swapped is True
+    assert protected == set()
 
 
 def test_started_pod_id_outside_pipeline_dir_is_ignored(tmp_path: Path) -> None:

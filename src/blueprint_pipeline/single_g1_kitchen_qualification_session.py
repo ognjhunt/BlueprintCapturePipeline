@@ -45,7 +45,11 @@ from .gpu_render_providers import (
     get_render_provider,
 )
 from .groot_oscar_digitalocean_closed_loop_job import build_launch_spec
-from .groot_oscar_runpod_watchdog import arm_watchdog, terminate_canary_resources
+from .groot_oscar_runpod_watchdog import (
+    arm_watchdog,
+    terminate_canary_resources,
+    write_owner_teardown_cancel_request,
+)
 from .groot_oscar_episode_review import _collect_isaac_execution_frames
 from .g1_microwave_groot_finetune_component import (
     REMOTE_FINAL_CHECKPOINT,
@@ -4096,6 +4100,16 @@ def _teardown(
         and global_inventory.get("live_resource_count") == 0
     )
     absence_proven = exact_and_prefix_absent and global_absent
+    watchdog_cancel_request = (
+        write_owner_teardown_cancel_request(
+            root=manifest_path.parent,
+            pod_name_prefix=str(manifest["resource_name_prefix"]),
+            provider_name="vast",
+            instance_id=instance_id,
+        )
+        if absence_proven
+        else {}
+    )
     pending_path = str(manifest.get("pending_teardown_record") or "")
     pending: dict[str, Any] = {}
     if absence_proven and pending_path:
@@ -4125,6 +4139,7 @@ def _teardown(
             else manifest.get("pending_teardown_status"),
             "teardown": teardown,
             "final_global_inventory": global_inventory,
+            "watchdog_cancel_request": watchdog_cancel_request or None,
         }
     )
     manifest.setdefault("history", []).append(
@@ -4148,6 +4163,7 @@ def _teardown(
         "pending_teardown_status": manifest.get("pending_teardown_status"),
         "continuing_spend": manifest["continuing_spend"],
         "provider_mutations_performed": teardown.get("provider_mutations_performed", 0),
+        "watchdog_cancel_request": watchdog_cancel_request or None,
         "blockers": []
         if absence_proven
         else ["qualification_teardown_exact_prefix_global_absence_not_proven"],

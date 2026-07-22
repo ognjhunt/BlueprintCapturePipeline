@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import single_g1_kitchen_qualification_session as qualification
 from blueprint_pipeline import gpu_render_providers
+from blueprint_pipeline.groot_oscar_runpod_watchdog import OWNER_TEARDOWN_CANCEL_NAME
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
 from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
     capture_runtime_attempt_overlay_base,
@@ -2579,6 +2580,10 @@ def test_teardown_closes_only_after_exact_prefix_and_global_absence(
     assert result["status"] == "teardown_completed_provider_zero"
     assert result["continuing_spend"] is False
     assert result["pending_teardown_status"] == "closed"
+    assert result["watchdog_cancel_request"]["provider_absence_confirmed"] is True
+    cancel_path = tmp_path / OWNER_TEARDOWN_CANCEL_NAME
+    assert cancel_path.stat().st_mode & 0o777 == 0o600
+    assert json.loads(cancel_path.read_text()) == result["watchdog_cancel_request"]
     assert close_calls[0][1]["exact_id_absence_confirmed"] is True
     assert close_calls[0][1]["name_prefix_absence_confirmed"] is True
     assert close_calls[0][1]["global_inventory_absence_confirmed"] is True

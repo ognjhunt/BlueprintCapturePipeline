@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 from blueprint_pipeline import groot_oscar_runpod_watchdog as watchdog_module
 from blueprint_pipeline.groot_oscar_runpod_watchdog import (
     run_watchdog,
@@ -499,6 +501,337 @@ def test_independent_watchdog_never_mutates_provider_before_hard_deadline(
         for event, observed_at in events
         if event in {"provider_factory", "inventory"}
     )
+
+
+def test_owner_teardown_cancel_runs_zero_verification_before_deadline(
+    tmp_path, monkeypatch
+) -> None:
+    now = 100.0
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-attempt-"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now)
+    cancel = {
+        "schema_version": watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION,
+        "requested_by": "qualification_owner_teardown",
+        "provider": "runpod",
+        "instance_id": "pod-terminated",
+        "pod_name_prefix": prefix,
+        "provider_absence_confirmed": True,
+        "provider_absence_evidence": (
+            "provider_api_exact_id_prefix_and_global_inventory"
+        ),
+    }
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(json.dumps(cancel), encoding="utf-8")
+    cancel_path.chmod(0o600)
+    events: list[str] = []
+
+    class Provider:
+        name = "runpod"
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            events.append(f"inventory:{name_prefix}")
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now,
+        sleeper=lambda _seconds: pytest.fail("valid cancellation must not sleep"),
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["owner_teardown_cancel_requested"] is True
+    assert result["owner_teardown_cancel_request_valid"] is True
+    assert result["provider_mutation_trigger"] == (
+        "owner_teardown_cancel_request_after_provider_zero"
+    )
+    assert events == [
+        f"inventory:{prefix}",
+        "inventory:",
+        f"inventory:{prefix}",
+        "inventory:",
+    ]
+
+
+def test_owner_teardown_cancel_requires_global_provider_zero(
+    tmp_path, monkeypatch
+) -> None:
+    now = {"value": 100.0}
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-attempt-"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now["value"])
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
+                ),
+                "requested_by": "qualification_owner_teardown",
+                "provider": "runpod",
+                "instance_id": "pod-terminated",
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+    observed: list[tuple[float, str]] = []
+
+    class Provider:
+        name = "runpod"
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            observed.append((now["value"], name_prefix))
+            count = 1 if name_prefix == "" else 0
+            return {
+                "api_confirmed": True,
+                "live_resource_count": count,
+                "resources": ([{"instance_id": "unrelated-live"}] if count else []),
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now["value"],
+        sleeper=lambda seconds: now.__setitem__("value", now["value"] + seconds),
+    )
+
+    assert result["owner_teardown_cancel_requested"] is False
+    assert any(name_prefix == "" for _, name_prefix in observed)
+    assert all(
+        observed_at < deadline
+        for observed_at, name_prefix in observed
+        if name_prefix == ""
+    )
+
+
+def test_vast_owner_cancel_requires_exact_recorded_id_absence(
+    tmp_path, monkeypatch
+) -> None:
+    now = 100.0
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-qualification-attempt-"
+    instance_id = "45483300"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now)
+    monkeypatch.setattr(
+        watchdog_module,
+        "_vast_billable_inventory",
+        lambda **_kwargs: {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+    )
+    (tmp_path / "started_vast_instance_id.txt").write_text(instance_id)
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
+                ),
+                "requested_by": "qualification_owner_teardown",
+                "provider": "vast",
+                "instance_id": instance_id,
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+
+    class Provider:
+        name = "vast"
+
+        def inspect(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            return {
+                "status": "absent",
+                "provider": "vast",
+                "http": 404,
+                "instance_id": instance_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_name="vast",
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now,
+        sleeper=lambda _seconds: pytest.fail("exact zero must cancel immediately"),
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_mutations_performed"] == 0
+    assert result["recorded_vast_instance_teardown"][
+        "provider_absence_confirmed"
+    ] is True
+    assert len(result["recorded_vast_instance_teardown"]["inspect_attempts"]) == 2
+
+
+def test_vast_owner_cancel_does_not_hide_recorded_contract(
+    tmp_path, monkeypatch
+) -> None:
+    now = {"value": 100.0}
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-qualification-attempt-"
+    instance_id = "45483300"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now["value"])
+    monkeypatch.setattr(
+        watchdog_module,
+        "_vast_billable_inventory",
+        lambda **_kwargs: {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+    )
+    (tmp_path / "started_vast_instance_id.txt").write_text(instance_id)
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
+                ),
+                "requested_by": "qualification_owner_teardown",
+                "provider": "vast",
+                "instance_id": instance_id,
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+    terminate_times: list[float] = []
+
+    class Provider:
+        name = "vast"
+
+        def inspect(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            return {
+                "status": "observed",
+                "provider": "vast",
+                "http": 200,
+                "instance_id": instance_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": False,
+                "actual_status": "exited",
+            }
+
+        def terminate(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            terminate_times.append(now["value"])
+            return {"status": "stopped", "http": 204}
+
+    provider = Provider()
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_name="vast",
+        provider_factory=lambda _name: provider,
+        clock=lambda: now["value"],
+        sleeper=lambda seconds: now.__setitem__("value", now["value"] + seconds),
+    )
+
+    assert result["owner_teardown_cancel_requested"] is False
+    assert terminate_times
+    assert all(observed_at >= deadline for observed_at in terminate_times)
+
+
+def test_owner_teardown_cancel_never_terminates_live_resource_before_deadline(
+    tmp_path, monkeypatch
+) -> None:
+    now = {"value": 100.0}
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-attempt-"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now["value"])
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
+                ),
+                "requested_by": "qualification_owner_teardown",
+                "provider": "runpod",
+                "instance_id": "pod-active",
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+    terminate_times: list[float] = []
+
+    class Provider:
+        name = "runpod"
+
+        def __init__(self) -> None:
+            self.ids = ["pod-active"]
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            assert name_prefix == prefix
+            return {
+                "api_confirmed": True,
+                "live_resource_count": len(self.ids),
+                "resources": [{"instance_id": item} for item in self.ids],
+            }
+
+        def terminate(self, instance_id: str) -> dict:
+            terminate_times.append(now["value"])
+            assert now["value"] >= deadline
+            self.ids.remove(instance_id)
+            return {"status": "terminated"}
+
+    provider = Provider()
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_factory=lambda _name: provider,
+        clock=lambda: now["value"],
+        sleeper=lambda seconds: now.__setitem__("value", now["value"] + seconds),
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["owner_teardown_cancel_requested"] is False
+    assert terminate_times == [deadline]
 
 
 def test_watchdog_reaps_every_name_bound_resource_and_proves_absence() -> None:
