@@ -9,6 +9,12 @@ import pytest
 
 from blueprint_pipeline import arena_package_delivery_local as delivery
 from blueprint_pipeline import common
+from blueprint_pipeline.core import common as core_common
+
+
+def test_common_compatibility_import_uses_canonical_core_helpers() -> None:
+    assert common.PipelineError is core_common.PipelineError
+    assert common.write_json is core_common.write_json
 
 
 def test_common_uri_path_json_and_parse_helpers(tmp_path: Path) -> None:

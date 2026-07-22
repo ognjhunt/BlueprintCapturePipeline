@@ -26,7 +26,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from ..common import utc_now_iso, write_json
+from .common import utc_now_iso, write_json
 from .stage_outcome import OutcomeKind, StageOutcome
 
 logger = logging.getLogger(__name__)

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from .common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
+from .core.common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .geometry_sources import load_capture_geometry
 from .logging_utils import log_event
