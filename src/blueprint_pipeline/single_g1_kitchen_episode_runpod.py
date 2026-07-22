@@ -227,6 +227,8 @@ CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT_PATH = (
 )
 RUNTIME_PACKAGE_OVERLAY_MODULES = (
     "groot_oscar_episode_review.py",
+    "oscar_official_release.py",
+    "oscar_runtime_source_provenance.py",
     "oscar_runtime_asset_contract.py",
     "unitree_groot_n17_sonic_policy_server_command.py",
     "oscar_isaac_closed_loop_eval.py",
@@ -1301,54 +1303,24 @@ runpy.run_module({ISAAC_TASK_EXECUTOR_MODULE!r}, run_name="__main__", alter_sys=
 
 
 def _oscar_runtime_provenance_script() -> str:
-    """Verify the sealed checkout before binding OSCAR readiness metadata.
+    """Verify the builder-sealed source tree before OSCAR execution.
 
-    The image checkout is owned by root while the runtime user is ``blueprint``.
-    Plain ``git -C /opt/OSCAR`` therefore fails Git's safe-directory check and
-    made the readiness gate see empty source metadata on attempt009.  Use a
-    checkout-specific safe-directory exception, verify the actual immutable
-    checkout, and only then export the values consumed by the readiness gate.
+    The thin foundation intentionally excludes Git and ``.git`` metadata.  Its
+    build stage instead seals the reviewed origin/commit together with the
+    post-patch runtime tree.  Recompute that tree here and bind it to the exact
+    foundation environment before exporting evaluator provenance.
     """
-    return f"""OSCAR_RUNTIME_SOURCE_ROOT="$(readlink -f /opt/OSCAR 2>/dev/null || true)"
-OSCAR_RUNTIME_SOURCE_URL="$(git -c safe.directory=/opt/oscar-public -C /opt/oscar-public config --get remote.origin.url 2>/dev/null || true)"
-OSCAR_RUNTIME_SOURCE_REF="$(git -c safe.directory=/opt/oscar-public -C /opt/oscar-public rev-parse HEAD 2>/dev/null || true)"
+    return f"""OSCAR_RUNTIME_SOURCE_ROOT=/opt/OSCAR
+OSCAR_RUNTIME_SOURCE_URL={OFFICIAL_OSCAR_SOURCE_URL!r}
+OSCAR_RUNTIME_SOURCE_REF={OFFICIAL_OSCAR_SOURCE_COMMIT!r}
 export OSCAR_RUNTIME_SOURCE_ROOT OSCAR_RUNTIME_SOURCE_URL OSCAR_RUNTIME_SOURCE_REF
 set +e
-python3 - <<'PY'
-import json, os
-from pathlib import Path
-
-expected_root = "/opt/oscar-public"
-expected_url = {OFFICIAL_OSCAR_SOURCE_URL!r}
-expected_ref = {OFFICIAL_OSCAR_SOURCE_COMMIT!r}
-checks = {{
-    "sealed_source_root_resolved": os.environ.get("OSCAR_RUNTIME_SOURCE_ROOT") == expected_root,
-    "official_source_url_verified_from_git": os.environ.get("OSCAR_RUNTIME_SOURCE_URL") == expected_url,
-    "reviewed_source_commit_verified_from_git": os.environ.get("OSCAR_RUNTIME_SOURCE_REF") == expected_ref,
-}}
-passed = all(checks.values())
-payload = {{
-    "schema_version": "single_g1_kitchen_oscar_runtime_provenance.v1",
-    "status": "passed" if passed else "blocked",
-    "checks": checks,
-    "expected_source_root": expected_root,
-    "expected_source_url": expected_url,
-    "expected_source_commit": expected_ref,
-    "resolved_source_root": expected_root if checks["sealed_source_root_resolved"] else None,
-    "resolved_source_url": expected_url if checks["official_source_url_verified_from_git"] else None,
-    "resolved_source_commit": expected_ref if checks["reviewed_source_commit_verified_from_git"] else None,
-    "blockers": [] if passed else ["official_oscar_runtime_provenance_mismatch"],
-    "claim_boundary": {{
-        "environment_bound_only_after_live_git_verification": True,
-        "provenance_is_not_model_execution": True,
-    }},
-    "raw_secret_values_recorded": False,
-}}
-path = Path({OSCAR_RUNTIME_PROVENANCE_ARTIFACT!r})
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
-raise SystemExit(0 if passed else 1)
-PY
+/opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance verify \
+  --source-root /opt/OSCAR \
+  --seal /opt/blueprint/oscar_source_provenance.json \
+  --artifact {OSCAR_RUNTIME_PROVENANCE_ARTIFACT!r} \
+  --foundation-source-url "${{BLUEPRINT_FOUNDATION_OSCAR_SOURCE_URL:-}}" \
+  --foundation-source-commit "${{BLUEPRINT_FOUNDATION_OSCAR_SOURCE_REF:-}}"
 OSCAR_RUNTIME_PROVENANCE_RC=$?
 set -e
 if [ "$OSCAR_RUNTIME_PROVENANCE_RC" -ne 0 ]; then
