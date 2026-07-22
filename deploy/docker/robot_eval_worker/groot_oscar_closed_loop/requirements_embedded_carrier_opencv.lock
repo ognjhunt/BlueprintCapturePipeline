@@ -1,0 +1,7 @@
+# Compatibility repair for the exact embedded-model carrier used by the Vast
+# qualification lane. The legacy /opt/oscar-venv omitted cv2, while current
+# foundations already provide it. Release.Dockerfile installs this wheel only
+# when importing cv2 fails, with dependencies disabled so the carrier's sealed
+# NumPy/Torch closure is preserved.
+opencv-python-headless==4.11.0.86 \
+    --hash=sha256:0e0a27c19dd1f40ddff94976cfe43066fbbe9dfbb2ec1907d66c19caef42a57b

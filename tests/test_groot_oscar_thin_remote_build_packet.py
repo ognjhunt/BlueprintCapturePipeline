@@ -158,6 +158,11 @@ def test_packet_binds_minimal_context_and_exact_build_flow(tmp_path: Path) -> No
         "requirements_runpod_serverless_sdk.lock"
         in paths
     )
+    assert (
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_embedded_carrier_opencv.lock"
+        in paths
+    )
     assert "src/blueprint_pipeline/thin_release_image_contract.py" in paths
     with tarfile.open(result["tarball_path"], "r:gz") as archive:
         names = set(archive.getnames())
