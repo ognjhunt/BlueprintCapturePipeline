@@ -18,10 +18,10 @@ from blueprint_pipeline import (
     robot_eval_execution as ree,
     robot_eval_job_orchestrator as rejo,
     robot_eval_worker as rew,
-    security_controls as security,
     video_to_world_runner_service,
 )
 from blueprint_pipeline.common import PipelineError
+from blueprint_pipeline.core import security_controls as security
 from blueprint_pipeline.native_runtime_backend import (
     NativeRuntimeConfig,
     NativeWorldModelRuntimeStore,

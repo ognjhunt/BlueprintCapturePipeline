@@ -88,7 +88,7 @@ from .robot_eval_evaluation_run_adapter import (
     execute_robot_eval_cli_evaluation_run,
 )
 from .scene_asset_preflight import build_scene_asset_preflight
-from .security_controls import contained_path, strict_identifier
+from .core.security_controls import contained_path, strict_identifier
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
 from .success_claim_contracts import (

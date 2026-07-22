@@ -34,7 +34,7 @@ from .native_runtime_strategy import (
     native_runtime_strategy_for_mode,
     resolve_native_runtime_strategy,
 )
-from .security_controls import contained_path, strict_identifier
+from .core.security_controls import contained_path, strict_identifier
 from blueprint_contracts.runtime_service_contract import RuntimeMetadata
 from blueprint_contracts.site_world_contract import merge_site_world_definition
 

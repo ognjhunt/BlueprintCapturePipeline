@@ -42,7 +42,7 @@ from .robot_eval_job_orchestrator import (
 )
 from .robot_eval_evaluation_run_adapter import execute_robot_eval_request_as_evaluation_run
 from .runpod_serverless_volume import provider_runtime_local_path
-from .security_controls import (
+from .core.security_controls import (
     fetch_bounded_https,
     origins_from_env,
     prove_path_contained,

@@ -491,9 +491,9 @@ violation was removed by extracting G1 closure projection into a neutral aggrega
 closure contract; campaign modules now depend inward on that contract, while buyer
 package generation no longer imports G1 campaign code. The first physical package slice
 is also in place: common filesystem/contracts, structured logging, safe environment
-loading, optional-dependency messaging, typed settings, shared stage-outcome semantics,
-legacy-lane admission, production lane resume, and output-run transaction/commit
-semantics are canonical under
+loading, fail-closed identifier/path/URL security controls, optional-dependency messaging,
+typed settings, shared stage-outcome semantics, legacy-lane admission, production lane
+resume, and output-run transaction/commit semantics are canonical under
 `blueprint_pipeline.core`, with compatibility imports at their old paths and a mechanical
 rule preventing the core package from importing campaign, readiness, or provider code.
 Moving the remaining core primitives and adding broader layer coverage remain incremental

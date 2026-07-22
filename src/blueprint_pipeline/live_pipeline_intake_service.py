@@ -34,7 +34,7 @@ from .live_pipeline_control_plane import (
     WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
 )
 from .live_pipeline_input_intake import build_live_pipeline_input_intake
-from .security_controls import json_shape_within_limits, strict_identifier
+from .core.security_controls import json_shape_within_limits, strict_identifier
 
 
 DEFAULT_MANIFEST_PATH = (

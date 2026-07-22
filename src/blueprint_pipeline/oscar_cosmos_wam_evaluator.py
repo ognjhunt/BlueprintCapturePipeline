@@ -42,7 +42,7 @@ from .failure_diagnosis_contract import (
 )
 from .secret_artifact_policy import redacted_secret_file_status_from_env
 from .sc3_fidelity_contracts import validate_trusted_ed25519_attestation
-from .security_controls import (
+from .core.security_controls import (
     SecurityValidationError,
     fetch_bounded_service_url,
     json_shape_within_limits,
