@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .paid_resource_admission import (
@@ -109,6 +109,11 @@ from .vast_provider_adapter import (
     _inspect_provider_runtime_output_zip,
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE, DEFAULT_WAM_VAST_LAUNCH_MODE
+from .wam_async_runner_common import (
+    read_json_mapping as _read_json,
+    read_sensitive_url_file as _read_sensitive_url_file,
+    redact_provider_url as _redact_provider_url,
+)
 
 
 ASYNC_STATE_SCHEMA_VERSION = "vast_wam_async_state.v1"
@@ -139,54 +144,6 @@ DEFAULT_WAM_PREFERRED_GPU_KEYWORDS = (
 
 def _state_path(job_dir: Path) -> Path:
     return job_dir / "vast_wam_async_state.json"
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _redact_provider_url(value: str) -> str:
-    parsed = urlparse(value)
-    if not parsed.scheme or not parsed.netloc:
-        return "<redacted-url>" if value else ""
-    query = "REDACTED_QUERY" if parsed.query else ""
-    fragment = "REDACTED_FRAGMENT" if parsed.fragment else ""
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, fragment))
-
-
-def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[str, Any]]:
-    if not _string(path_value):
-        return "", {
-            "label": label,
-            "configured": False,
-            "present": False,
-            "raw_secret_values_recorded": False,
-        }
-    path = Path(path_value).expanduser().resolve()
-    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
-    try:
-        value = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-    except OSError as exc:
-        return "", {
-            "label": label,
-            "configured": True,
-            "path": str(path),
-            "present": path.exists(),
-            "mode": mode,
-            "read_error": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    return value, {
-        "label": label,
-        "configured": True,
-        "path": str(path),
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "value_present": bool(value),
-        "raw_secret_values_recorded": False,
-    }
 
 
 def _deadline_capped_log_wait_seconds(

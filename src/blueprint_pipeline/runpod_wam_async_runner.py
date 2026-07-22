@@ -14,7 +14,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from .common import ensure_dir, parse_bool, utc_now_iso, write_json
 from .groot_oscar_runpod_carrier_volume import verify_carrier_volume_admission
@@ -73,6 +73,11 @@ from .vast_bundle_staging import (
 )
 from .vast_provider_adapter import _inspect_provider_runtime_output_zip
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
+from .wam_async_runner_common import (
+    read_json_mapping as _read_json,
+    read_sensitive_url_file as _read_sensitive_url_file,
+    redact_provider_url as _redact_provider_url,
+)
 
 
 RUNPOD_WAM_STATE_SCHEMA_VERSION = "runpod_wam_async_state.v1"
@@ -282,15 +287,6 @@ def _runpod_wam_post_marker_timeout_seconds(explicit: int | None = None) -> int:
     return DEFAULT_RUNPOD_WAM_POST_MARKER_NO_PROGRESS_TIMEOUT_SECONDS
 
 
-def _redact_provider_url(value: str) -> str:
-    parsed = urlparse(value)
-    if not parsed.scheme or not parsed.netloc:
-        return "<redacted-url>" if value else ""
-    query = "REDACTED_QUERY" if parsed.query else ""
-    fragment = "REDACTED_FRAGMENT" if parsed.fragment else ""
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, fragment))
-
-
 def _read_unitree_groot_sonic_bundle_input(bundle_path: Path) -> dict[str, Any]:
     if not bundle_path.is_file() or not zipfile.is_zipfile(bundle_path):
         return {}
@@ -403,11 +399,6 @@ def _state_path(job_dir: Path) -> Path:
     return job_dir / "runpod_wam_async_state.json"
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return dict(data) if isinstance(data, Mapping) else {}
-
-
 def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
     env_value = _string(os.getenv(RUNPOD_API_KEY_ENV))
     if env_value:
@@ -451,40 +442,6 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
         "api_key_file_mode_is_0600": mode == "0o600",
     })
     return key, status
-
-
-def _read_sensitive_url_file(path_value: str, *, label: str) -> tuple[str, dict[str, Any]]:
-    if not _string(path_value):
-        return "", {
-            "label": label,
-            "configured": False,
-            "present": False,
-            "raw_secret_values_recorded": False,
-        }
-    path = Path(path_value).expanduser().resolve()
-    mode = oct(path.stat().st_mode & 0o777) if path.exists() else None
-    try:
-        value = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-    except OSError as exc:
-        return "", {
-            "label": label,
-            "configured": True,
-            "path": str(path),
-            "present": path.exists(),
-            "mode": mode,
-            "read_error": type(exc).__name__,
-            "raw_secret_values_recorded": False,
-        }
-    return value, {
-        "label": label,
-        "configured": True,
-        "path": str(path),
-        "present": path.is_file(),
-        "mode": mode,
-        "mode_is_0600": mode == "0o600",
-        "value_present": bool(value),
-        "raw_secret_values_recorded": False,
-    }
 
 
 def _secret_file_meta(path: Path, *, label: str, source: str) -> dict[str, Any]:

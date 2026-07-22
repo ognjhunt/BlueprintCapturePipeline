@@ -50,6 +50,18 @@ security, script-pin, and all slow native-service tests pass; extracting the rem
 Cosmos-specific generation helpers from the 3k-LOC store remains a later incremental
 split, not a safe deletion.
 
+Live Vast revalidation was authorized with a hard `$15` cap. A read-only, account-wide
+inventory query returned HTTP 200 with zero non-terminal instances, so observed spend
+remained `$0`. No instance was launched: the allocator correctly requires a clean image
+and release-evidence binding for the exact `origin/main` commit, while the retained
+qualification image is bound to `fca4712e` plus a non-empty dirty-patch digest and the
+newest clean registry image is bound to audit commit `2edb48b`, not current main
+`894583dd`. The normal qualification watchdog contract is bounded to at most `$5.50`,
+but budget authorization does not override source identity. A clean, immutable
+`894583dd` image plus its generated thin-release evidence is the concrete prerequisite
+for live GPU startup/teardown proof; startup would still not prove policy quality,
+semantic task success, or ranking fidelity.
+
 ## Method
 
 Six parallel audit passes over the tree at commit `2edb48b` (#146):
@@ -378,6 +390,10 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    the shared lifecycle against the provider-adapter contracts; ~1,500 LOC reduction.
    Note `wam_compute_providers` itself overlaps `wam_provider_runtime` (its design doc
    is a June superpowers spec) — decide which is the seam and fold the other in.
+   **Started:** JSON-state loading, signed-URL file handling, and URL redaction now
+   live in provider-neutral `wam_async_runner_common`; both runners retain their public
+   and private call surfaces, and all 69 async-runner tests pass. Transfer, poll,
+   collection, and teardown lifecycle extraction remains.
 2. **Single-consumer satellites**: fold `runpod_wam_launch_contract.py` (461) into its
    sole consumer; fold `vast_authorized_probe_runner.py` (548) into
    `vast_wam_authorized_runner`.
