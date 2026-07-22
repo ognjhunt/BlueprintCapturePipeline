@@ -71,7 +71,6 @@ from .vast_bundle_staging import (
     run_local_staging_self_test,
     verify_public_staging_urls,
 )
-from .vast_provider_adapter import _inspect_provider_runtime_output_zip
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_async_runner_common import (
     AsyncPollDeadline,
@@ -79,6 +78,9 @@ from .wam_async_runner_common import (
     read_json_mapping as _read_json,
     read_sensitive_url_file as _read_sensitive_url_file,
     redact_provider_url as _redact_provider_url,
+)
+from .wam_provider_output import (
+    inspect_provider_runtime_output_zip as _inspect_provider_runtime_output_zip,
 )
 
 
