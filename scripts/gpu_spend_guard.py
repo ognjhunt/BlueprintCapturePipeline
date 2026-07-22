@@ -819,6 +819,11 @@ OWNER_ID_FILENAMES = (
 )
 MAX_OWNER_ID_BYTES = 1024
 MAX_QUALIFICATION_MANIFEST_BYTES = 2 * 1024 * 1024
+QUALIFICATION_SESSION_SCHEMA_VERSION = "single_g1_kitchen_qualification_session.v1"
+QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION = (
+    "single_g1_kitchen_qualification_release_binding.v1"
+)
+QUALIFICATION_NAME_PREFIX_ROOT = "blueprint-groot-oscar-canary-qualification-"
 
 
 @dataclass(frozen=True)
@@ -885,6 +890,103 @@ def _read_bounded_regular_text(
         return None
 
 
+def _is_lower_hex(value: object, *, length: int) -> bool:
+    text = str(value or "")
+    return len(text) == length and all(character in "0123456789abcdef" for character in text)
+
+
+def _lightweight_qualification_manifest_binding(
+    source: Path,
+    manifest: Mapping[str, Any],
+    *,
+    launched_id: str,
+) -> bool:
+    """Conservatively recognize a live owner when the full runtime cannot import.
+
+    This is a protection-only fallback, not a release/admission validator. It repeats
+    the immutable identity fields needed to avoid reaping live work from a lightweight
+    ops environment. Any uncertainty returns ``False``; the normal runtime validator
+    remains authoritative whenever it is importable.
+    """
+
+    if (
+        manifest.get("schema_version") != QUALIFICATION_SESSION_SCHEMA_VERSION
+        or manifest.get("provider") != "vast"
+        or manifest.get("release_binding_status") != "bound"
+        or str(manifest.get("instance_id") or "") != launched_id
+        or manifest.get("continuing_spend") is not True
+    ):
+        return False
+    try:
+        if Path(str(manifest.get("job_dir") or "")).expanduser().resolve() != source.parent:
+            return False
+    except OSError:
+        return False
+
+    prefix = str(manifest.get("resource_name_prefix") or "")
+    resource_name = str(manifest.get("resource_name") or "")
+    if not prefix.startswith(QUALIFICATION_NAME_PREFIX_ROOT) or not resource_name.startswith(
+        prefix
+    ):
+        return False
+
+    nonce = str(manifest.get("launch_session_id") or "")
+    if not nonce or manifest.get("launch_session_nonce_sha256") != hashlib.sha256(
+        nonce.encode("utf-8")
+    ).hexdigest():
+        return False
+
+    image_digest = str(manifest.get("image_digest") or "")
+    image_ref = str(manifest.get("image_ref") or "")
+    source_commit = str(manifest.get("source_commit") or "")
+    if (
+        not image_digest.startswith("sha256:")
+        or not _is_lower_hex(image_digest.removeprefix("sha256:"), length=64)
+        or not image_ref.endswith("@" + image_digest)
+        or not _is_lower_hex(source_commit, length=40)
+        or not _is_lower_hex(manifest.get("bundle_sha256"), length=64)
+    ):
+        return False
+
+    release_binding = manifest.get("release_binding")
+    if not isinstance(release_binding, Mapping) or any(
+        release_binding.get(key) != manifest.get(key)
+        for key in ("image_ref", "image_digest", "source_commit")
+    ):
+        return False
+    if (
+        release_binding.get("schema_version")
+        != QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION
+        or release_binding.get("runnable_platform") != "linux/amd64"
+        or release_binding.get("models_externalized") is not True
+        or release_binding.get("release_evidence_status") != "completed"
+        or release_binding.get("thin_release_contract_status") != "passed"
+        or not _is_lower_hex(release_binding.get("source_patch_sha256"), length=64)
+    ):
+        return False
+
+    bootstrap = manifest.get("bootstrap")
+    if not isinstance(bootstrap, Mapping):
+        return False
+    for key in (
+        "provider_bootstrap_sha256",
+        "episode_bootstrap_sha256",
+        "control_script_sha256",
+        "refresh_installer_sha256",
+    ):
+        if not _is_lower_hex(bootstrap.get(key), length=64):
+            return False
+    if (
+        bootstrap.get("episode_auto_run") is not False
+        or isinstance(bootstrap.get("overlay_revision"), bool)
+        or not isinstance(bootstrap.get("overlay_revision"), int)
+        or int(bootstrap.get("overlay_revision") or 0) < 1
+        or not str(bootstrap.get("control_contract_version") or "")
+    ):
+        return False
+    return True
+
+
 def _validated_qualification_manifest(
     id_path: Path, launched_id: str
 ) -> tuple[Path, Path, str, str] | None:
@@ -892,12 +994,14 @@ def _validated_qualification_manifest(
 
     # Import lazily so ordinary render-owner scans do not load the qualification
     # runtime and its provider adapters.
+    validator = None
     try:
         from blueprint_pipeline.single_g1_kitchen_qualification_session import (
             _validate_manifest_binding,
         )
-    except Exception:  # noqa: BLE001 - an optional owner must not disable the guard
-        return None
+        validator = _validate_manifest_binding
+    except Exception:  # noqa: BLE001 - use protection-only lightweight binding below
+        pass
 
     for manifest_path in sorted(id_path.parent.glob("*.json")):
         encoded = _read_bounded_regular_text(
@@ -919,10 +1023,18 @@ def _validated_qualification_manifest(
             source = manifest_path.parent.resolve(strict=True) / manifest_path.name
         except OSError:
             source = manifest_path.expanduser().absolute()
-        try:
-            _validate_manifest_binding(source, manifest)
-        except Exception:  # noqa: BLE001 - invalid/unavailable binding fails closed
-            continue
+        if validator is None:
+            if not _lightweight_qualification_manifest_binding(
+                source,
+                manifest,
+                launched_id=launched_id,
+            ):
+                continue
+        else:
+            try:
+                validator(source, manifest)
+            except Exception:  # noqa: BLE001 - invalid binding is never an owner
+                continue
         watchdog_deadline_value = manifest.get("watchdog_deadline_epoch")
         if isinstance(watchdog_deadline_value, bool) or not isinstance(
             watchdog_deadline_value, (str, int, float)

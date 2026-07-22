@@ -780,6 +780,121 @@ def test_qualification_import_failure_does_not_disable_spend_guard(
     assert protected == set()
 
 
+def test_qualification_import_failure_preserves_bound_allocator_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "qualification", "45483300"
+    )
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_qualification_import_failure_preserves_live_bound_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = tmp_path / "qualification"
+    manifest_path = _write_qualification_owner(
+        attempt,
+        "45483300",
+        deadline_epoch=2_000_000_000,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.groot_oscar_runpod_watchdog "
+            f"--out-dir {attempt} --provider vast "
+            f"--pod-name-prefix {manifest['resource_name_prefix']} "
+            f"--deadline-epoch {float(manifest['watchdog_deadline_epoch'])}"
+        ],
+        now=1_900_000_000,
+    )
+
+    assert protected == {"45483300"}
+
+
+def test_qualification_import_failure_does_not_protect_spoofed_partial_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = tmp_path / "qualification"
+    attempt.mkdir()
+    (attempt / "started_vast_instance_id.txt").write_text("45483300")
+    manifest_path = attempt / "qualification_session.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "single_g1_kitchen_qualification_session.v1",
+                "provider": "vast",
+                "instance_id": "45483300",
+                "continuing_spend": True,
+            }
+        )
+    )
+    manifest_path.chmod(0o600)
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == set()
+
+
 def test_qualification_validation_failure_does_not_disable_spend_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
