@@ -147,8 +147,13 @@ if safe_regular(pid_path):
                 root_pid_state = "missing"
                 root_pid_elapsed = -1
 
-diagnostic.update({
+dispatch_record = diagnostic
+diagnostic = {
     "schema_version": "single_g1_kitchen_qualification_startup_diagnostics.v1",
+    "launch_session_id": dispatch_record.get("launch_session_id"),
+    "attempt_sequence": dispatch_record.get("attempt_sequence"),
+    "attempt_nonce_sha256": dispatch_record.get("attempt_nonce_sha256"),
+    "dispatched_at_epoch": dispatch_record.get("dispatched_at_epoch"),
     "startup_phase": phase,
     "startup_phase_source": phase_source,
     "startup_health": startup_health,
@@ -156,14 +161,14 @@ diagnostic.update({
     "startup_stall_threshold_seconds": stall_seconds,
     "diagnostic_attempt_binding": diagnostic_binding,
     "remote_process_state": process_state,
-    "root_pid": root_pid or diagnostic.get("root_pid"),
+    "root_pid": root_pid or dispatch_record.get("root_pid"),
     "root_pid_state": root_pid_state,
     "root_pid_elapsed_seconds": root_pid_elapsed,
     "log_size_bytes": log_bytes,
     "log_age_seconds": log_age,
     "observed_at_epoch": now,
     "raw_secret_values_recorded": False,
-})
+}
 temporary = diagnostic_path.with_name(
     "." + diagnostic_path.name + "." + str(os.getpid()) + ".tmp"
 )

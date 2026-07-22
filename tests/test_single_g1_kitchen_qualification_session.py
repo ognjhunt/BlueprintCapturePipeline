@@ -1331,6 +1331,7 @@ def test_fixed_control_startup_diagnostics_keeps_preexecution_phases_stallable(
                 "attempt_sequence": 1,
                 "attempt_nonce_sha256": expected_nonce_sha256,
                 "dispatched_at_epoch": int(time.time()),
+                "unexpected_remote_field": "must-not-survive-allowlist",
             }
         ),
         encoding="utf-8",
@@ -1379,6 +1380,7 @@ def test_fixed_control_startup_diagnostics_keeps_preexecution_phases_stallable(
     assert diagnostic["root_pid_state"] == "missing"
     assert diagnostic["diagnostic_attempt_binding"] == "valid"
     assert diagnostic["raw_secret_values_recorded"] is False
+    assert "unexpected_remote_field" not in diagnostic
 
     bootstrap_path.write_text(
         json.dumps(
