@@ -381,9 +381,13 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
 3. **Partially fixed — native runtime selection is now behind a typed strategy seam.**
    `site_splat` is the neutral default, `cosmos_wam` is explicit, conflicting old/new
    settings fail closed, and hard-coded workspace checkout discovery is removed.
-   `native_runtime_backend.py` remains a roughly 3k-LOC live store containing the legacy
-   Cosmos generation helpers; extract those helpers incrementally while preserving the
-   documented runtime-service contract.
+   Model-family-specific prebuilt-video, conditioning-frame, LoRA checkpoint, frame
+   normalization, and synchronous inference logic now lives in the explicit
+   `native_runtime_cosmos_adapter`, with the runtime store's existing methods retained
+   as compatibility wrappers. This reduced `native_runtime_backend.py` from 2,955 to
+   2,795 LOC without changing its service contract. The remaining asynchronous Cosmos
+   generation/session state loop is still embedded in the live store and needs
+   incremental extraction.
 4. **Fixed — simulator commands are configuration-owned.** The orchestrator no longer
    defaults `isaac_sim` to a G1/3DGS module. Non-fixture execution requires an explicit
    admitted simulator command and tests bind that fail-closed behavior.

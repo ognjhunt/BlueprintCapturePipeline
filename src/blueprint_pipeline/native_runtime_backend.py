@@ -28,6 +28,7 @@ from .native_runtime_readiness import (
     find_configured_cosmos_repo,
     optional_existing_path as _optional_existing_path,
 )
+from .native_runtime_cosmos_adapter import LegacyCosmosRuntimeAdapter
 from .native_runtime_strategy import (
     bind_selected_runtime_identity,
     cosmos_refinement_enabled,
@@ -2423,99 +2424,38 @@ class NativeWorldModelRuntimeStore:
         """
         return os.getenv("NATIVE_WORLD_MODEL_ALLOW_PREBUILT_BOOTSTRAP_VIDEO", "").strip() == "1"
 
+    def _legacy_cosmos_adapter(self) -> LegacyCosmosRuntimeAdapter:
+        """Bind legacy model support behind the runtime store's stable boundaries."""
+
+        return LegacyCosmosRuntimeAdapter(
+            storage_root=Path(os.getenv("GCS_ROOT", "/root/blueprint-storage")),
+            load_site_world=self.load_site_world,
+            process_runner=subprocess.run,
+            copy_file=shutil.copy2,
+            environment=os.environ,
+        )
+
     def _find_prebuilt_cosmos_video(self, site_world_id: str) -> Optional[Path]:
         """Find a pre-existing Cosmos video from pipeline runs for this site world."""
         if not self._allow_prebuilt_bootstrap_video():
             return None
-        try:
-            sw = self.load_site_world(site_world_id)
-        except FileNotFoundError:
-            return None
-        scene_id = str(sw.get("scene_id") or "").strip()
-        capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
-
-        if scene_id and capture_id:
-            pipeline_base = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id / "pipeline"
-            )
-            candidates: List[Path] = [
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.mp4",
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
-            ]
-            for c in candidates:
-                try:
-                    if c.is_file():
-                        return c
-                except OSError:
-                    continue
-
-        # Global fallback: manual probe output
-        fallback = gcs_root / "manual_cosmos_probe_official" / "blueprint_probe.mp4"
-        try:
-            if fallback.is_file():
-                return fallback
-        except OSError:
-            return None
-        return None
+        return self._legacy_cosmos_adapter().find_prebuilt_video(site_world_id)
 
     def _find_conditioning_frame(self, site_world_id: str) -> Optional[Path]:
         """Find best input frame for on-demand Cosmos I2W inference."""
-        try:
-            sw = self.load_site_world(site_world_id)
-        except FileNotFoundError:
-            return None
-        scene_id = str(sw.get("scene_id") or "").strip()
-        capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
-
-        if scene_id and capture_id:
-            pipeline_base = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id / "pipeline"
-            )
-            candidates: List[Path] = [
-                pipeline_base / "cosmos_single_capture_smoke" / "video_bootstrap_frames" / "frame_0000.jpg",
-                pipeline_base / "cosmos_single_capture_smoke" / "renders" / "video_bootstrap_0000.jpg",
-            ]
-            for c in candidates:
-                try:
-                    if c.is_file():
-                        return c
-                except OSError:
-                    continue
-        return None
+        return self._legacy_cosmos_adapter().find_conditioning_frame(site_world_id)
 
     def _extract_frames_from_video(self, video_path: Path, frames_dir: Path) -> List[Path]:
         """Extract frames from MP4 at 4 fps using ffmpeg."""
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-i", str(video_path),
-                    "-vf", "fps=4",
-                    str(frames_dir / "frame_%04d.png"),
-                    "-y",
-                ],
-                capture_output=True,
-                check=False,
-            )
-        except OSError:
-            return []
-        return sorted(frames_dir.glob("frame_*.png"))
+        return self._legacy_cosmos_adapter().extract_frames_from_video(
+            video_path, frames_dir
+        )
 
     def _extract_single_frame(self, image_path: Path, frames_dir: Path) -> List[Path]:
         """Copy a single image (JPG/PNG) into frames_dir as frame_0001.png."""
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        frame_out = frames_dir / "frame_0001.png"
-        try:
-            img = Image.open(image_path).convert("RGB")
-            img.save(frame_out, format="PNG")
-        except Exception:
-            try:
-                shutil.copy2(image_path, frame_out)
-            except OSError:
-                return []
-        return [frame_out] if frame_out.is_file() else []
+        return self._legacy_cosmos_adapter().extract_single_frame(
+            image_path, frames_dir
+        )
 
     def _ensure_cosmos_frames(self, session_id: str, site_world_id: str) -> List[Path]:
         """
@@ -2594,30 +2534,7 @@ class NativeWorldModelRuntimeStore:
         Checks COSMOS_LORA_CHECKPOINT_PATH env var first, then the standard
         cosmos_training_export/checkpoints/ path under the capture's pipeline dir.
         """
-        explicit = os.getenv("COSMOS_LORA_CHECKPOINT_PATH", "").strip()
-        if explicit:
-            p = Path(explicit)
-            return p if p.is_file() else None
-
-        try:
-            sw = self.load_site_world(site_world_id)
-        except FileNotFoundError:
-            return None
-        scene_id = str(sw.get("scene_id") or "").strip()
-        capture_id = str(sw.get("capture_id") or "").strip()
-        gcs_root = Path(os.getenv("GCS_ROOT", "/root/blueprint-storage"))
-        if scene_id and capture_id:
-            adapter = (
-                gcs_root / "vast-local" / "scenes" / scene_id / "captures" / capture_id
-                / "pipeline" / "cosmos_training_export" / "checkpoints"
-                / "adapter_model.safetensors"
-            )
-            try:
-                if adapter.is_file():
-                    return adapter
-            except OSError:
-                return None
-        return None
+        return self._legacy_cosmos_adapter().find_lora_adapter(site_world_id)
 
     def _run_cosmos_inference_sync(
         self,
@@ -2628,96 +2545,19 @@ class NativeWorldModelRuntimeStore:
         lora_adapter: Optional[Path] = None,
     ) -> List[Path]:
         """Run Cosmos I2W inference synchronously. Returns extracted frame list."""
-        repo_root, python_bin = cosmos_repo
-        cosmos_dir = self._cosmos_dir(session_id)
-        cosmos_dir.mkdir(parents=True, exist_ok=True)
-
-        sample_name = f"cosmos_{session_id[:8]}"
-        asset_path = cosmos_dir / f"{sample_name}.json"
-        output_video = cosmos_dir / f"{sample_name}.mp4"
-        log_path = cosmos_dir / "inference.log"
-
-        # COSMOS_CHUNK_SIZE / COSMOS_CHUNK_OVERLAP are the canonical knobs.
-        # At H100 speeds, 57 frames (~2s) is the target; drop to 33 if generation
-        # takes >1.5s so N+1 is always ready before N ends.
-        # chunk_overlap=4 gives the strongest pseudo-autoregressive conditioning
-        # available at zero FT: the 4 overlap frames become the conditioning head
-        # of the next chunk.
-        cosmos_chunk_size = max(
-            8,
-            int(os.getenv("COSMOS_CHUNK_SIZE") or os.getenv("NATIVE_WORLD_MODEL_CHUNK_FRAMES") or "57"),
+        return self._legacy_cosmos_adapter().run_inference_sync(
+            session_id=session_id,
+            cosmos_repo=cosmos_repo,
+            cond_frame=cond_frame,
+            frames_dir=frames_dir,
+            cosmos_dir=self._cosmos_dir(session_id),
+            status_path=self._cosmos_status_path(session_id),
+            extract_frames=self._extract_frames_from_video,
+            convert_video=self._convert_to_fmp4,
+            write_status=_json_write,
+            timestamp=_utc_now_iso,
+            lora_adapter=lora_adapter,
         )
-        cosmos_chunk_overlap = max(
-            1,
-            int(os.getenv("COSMOS_CHUNK_OVERLAP", "4")),
-        )
-        asset_path.write_text(
-            json.dumps({
-                "inference_type": "image2world",
-                "name": sample_name,
-                "input_path": str(cond_frame.resolve()),
-                "prompt": (
-                    "First-person camera moving through a real indoor workspace. "
-                    "Preserve the existing geometry and continue the scene naturally."
-                ),
-                "num_output_frames": cosmos_chunk_size,
-                "num_steps": 35,
-                "seed": 0,
-                "guidance": 7.0,
-                "enable_autoregressive": False,
-                "chunk_size": cosmos_chunk_size,
-                "chunk_overlap": cosmos_chunk_overlap,
-            }),
-            encoding="utf-8",
-        )
-
-        env = {k: v for k, v in os.environ.items() if isinstance(v, str)}
-        env["PATH"] = str(repo_root / ".venv" / "bin") + ":" + env.get("PATH", "")
-
-        cmd = [
-            str(python_bin),
-            "examples/inference.py",
-            "-i", str(asset_path),
-            "-o", str(cosmos_dir),
-            "--model=2B/post-trained",
-            "--disable-guardrails",
-        ]
-        if lora_adapter and lora_adapter.is_file():
-            cmd += ["--lora-checkpoint", str(lora_adapter)]
-
-        with log_path.open("w", encoding="utf-8") as lf:
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=str(repo_root),
-                    env=env,
-                    stdout=lf,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                )
-            except OSError:
-                return []
-
-        if result.returncode != 0 or not output_video.is_file():
-            return []
-
-        # Re-mux to fMP4 so the runtime can serve it directly to MSE clients.
-        fmp4_video = output_video.with_stem(output_video.stem + "_fmp4")
-        if self._convert_to_fmp4(output_video, fmp4_video):
-            output_video = fmp4_video
-
-        frames = self._extract_frames_from_video(output_video, frames_dir)
-        if frames:
-            _json_write(
-                self._cosmos_status_path(session_id),
-                {
-                    "source": "on_demand_inference",
-                    "video": str(output_video),
-                    "frame_count": len(frames),
-                    "inferred_at": _utc_now_iso(),
-                },
-            )
-        return frames
 
     # ---------------------------------------------------------------------------
     # Render
