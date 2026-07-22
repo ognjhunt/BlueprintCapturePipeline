@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 import pytest
 
 from blueprint_pipeline import runpod_provider_adapter as adapter
+from blueprint_pipeline import toml_compat
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     PaidResourceAdmissionGrant,
@@ -1249,7 +1250,7 @@ def test_runpod_adapter_import_remains_safe_without_toml_parser(
     monkeypatch.delenv(RUNPOD_API_KEY_ENV, raising=False)
     monkeypatch.delenv(RUNPOD_API_KEY_FILE_ENV, raising=False)
     monkeypatch.setenv(RUNPOD_CONFIG_FILE_ENV, str(config_file))
-    monkeypatch.setattr(adapter, "tomllib", None)
+    monkeypatch.setattr(toml_compat, "_tomllib", None)
 
     key, meta = adapter._read_runpod_api_key()
 
