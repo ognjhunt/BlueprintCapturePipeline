@@ -11,6 +11,9 @@ from blueprint_pipeline.core.output_run_transaction import (
     OutputRunTransaction,
     verify_output_run_commit,
 )
+from blueprint_pipeline.output_run_transaction import (
+    OutputRunTransaction as CompatibilityOutputRunTransaction,
+)
 
 
 def test_output_run_commit_binds_exact_inventory_and_detects_mutation(
@@ -105,3 +108,7 @@ def test_concurrent_runs_are_serialized_and_never_mix(tmp_path: Path) -> None:
         expected_request_fingerprint="second",
     )
     assert verification["status"] == "passed"
+
+
+def test_compatibility_import_uses_canonical_transaction_type() -> None:
+    assert CompatibilityOutputRunTransaction is OutputRunTransaction
