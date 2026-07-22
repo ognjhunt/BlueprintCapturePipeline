@@ -18,6 +18,14 @@ def test_cpu_import_probe_scopes_cuda_discovery_patch(tmp_path: Path) -> None:
         "cuda.current_device = _current_device\n",
         encoding="utf-8",
     )
+    pytest_dist_info = tmp_path / "pytest-9.1.1.dist-info"
+    pytest_dist_info.mkdir()
+    (pytest_dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\n"
+        "Name: pytest\n"
+        "Version: 9.1.1\n",
+        encoding="utf-8",
+    )
     package = tmp_path / "inference"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
