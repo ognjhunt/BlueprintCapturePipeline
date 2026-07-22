@@ -79,6 +79,7 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     workflow = (ROOT / ".github" / "workflows" / "full-test-lane.yml").read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
+    assert "cancel-in-progress: true" in workflow
     assert "pytest_args" not in workflow
     assert "inputs.pytest" not in workflow
     assert "extra_args" not in workflow
