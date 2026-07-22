@@ -74,6 +74,7 @@ from .vast_bundle_staging import (
 from .vast_provider_adapter import _inspect_provider_runtime_output_zip
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE
 from .wam_async_runner_common import (
+    download_url_to_file,
     read_json_mapping as _read_json,
     read_sensitive_url_file as _read_sensitive_url_file,
     redact_provider_url as _redact_provider_url,
@@ -2638,16 +2639,15 @@ def _download_provider_output_zip(
         manifest.update({"status": "skipped", "reason": "provider_output_get_url_missing"})
         write_json(job_dir / "runpod_wam_output_download_manifest.json", manifest)
         return manifest
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        request = urllib.request.Request(
-            provider_output_get_url,
-            headers={"User-Agent": "BlueprintRunPodWamPoll/1.0"},
-        )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read()
-        output_path.write_bytes(data)
-        valid_zip = bool(data) and zipfile.is_zipfile(output_path)
+    transfer = download_url_to_file(
+        url=provider_output_get_url,
+        output_path=output_path,
+        user_agent="BlueprintRunPodWamPoll/1.0",
+        timeout_seconds=60,
+    )
+    if transfer["status"] == "completed":
+        downloaded_size = int(transfer["downloaded_size_bytes"])
+        valid_zip = downloaded_size > 0 and zipfile.is_zipfile(output_path)
         output_validation = (
             _validate_wam_provider_output_zip(
                 output_path,
@@ -2659,10 +2659,10 @@ def _download_provider_output_zip(
         manifest.update(
             {
                 "status": "completed" if valid_zip else "not_available",
-                "downloaded_size_bytes": len(data),
+                "downloaded_size_bytes": downloaded_size,
                 "output_present": valid_zip,
                 "valid_zip": valid_zip,
-                "empty_download": not bool(data),
+                "empty_download": downloaded_size == 0,
                 "provider_output_validation": output_validation,
                 "provider_output_validation_status": output_validation.get("status")
                 if output_validation
@@ -2677,20 +2677,20 @@ def _download_provider_output_zip(
         )
         if not valid_zip:
             output_path.unlink(missing_ok=True)
-    except urllib.error.HTTPError as exc:
+    elif transfer["status"] == "http_error":
         manifest.update(
             {
                 "status": "not_available",
-                "http_status_code": exc.code,
+                "http_status_code": transfer.get("http_status_code"),
                 "error_type": "HTTPError",
                 "output_present": output_path.is_file(),
             }
         )
-    except Exception as exc:  # pragma: no cover - defensive runtime diagnostics.
+    else:
         manifest.update(
             {
                 "status": "blocked",
-                "error_type": type(exc).__name__,
+                "error_type": transfer.get("error_type"),
                 "output_present": output_path.is_file(),
             }
         )

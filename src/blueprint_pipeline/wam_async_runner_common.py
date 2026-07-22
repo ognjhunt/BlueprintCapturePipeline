@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse, urlunparse
@@ -62,3 +64,43 @@ def read_sensitive_url_file(
         "value_present": bool(value),
         "raw_secret_values_recorded": False,
     }
+
+
+def download_url_to_file(
+    *,
+    url: str,
+    output_path: Path,
+    user_agent: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Download one provider artifact without recording its signed source URL."""
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            data = response.read()
+            http_status = int(getattr(response, "status", 200))
+        output_path.write_bytes(data)
+        return {
+            "status": "completed",
+            "http_status_code": http_status,
+            "downloaded_size_bytes": len(data),
+            "output_present": output_path.is_file(),
+            "raw_secret_values_recorded": False,
+        }
+    except urllib.error.HTTPError as exc:
+        return {
+            "status": "http_error",
+            "http_status_code": exc.code,
+            "error_type": "HTTPError",
+            "output_present": output_path.is_file(),
+            "raw_secret_values_recorded": False,
+        }
+    except Exception as exc:  # pragma: no cover - provider/network diagnostics.
+        return {
+            "status": "blocked",
+            "error_type": type(exc).__name__,
+            "output_present": output_path.is_file(),
+            "raw_secret_values_recorded": False,
+        }

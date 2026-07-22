@@ -110,6 +110,7 @@ from .vast_provider_adapter import (
 )
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE, DEFAULT_WAM_VAST_LAUNCH_MODE
 from .wam_async_runner_common import (
+    download_url_to_file,
     read_json_mapping as _read_json,
     read_sensitive_url_file as _read_sensitive_url_file,
     redact_provider_url as _redact_provider_url,
@@ -184,29 +185,27 @@ def _download_provider_output_zip(
         "raw_secret_values_recorded": False,
     }
     if provider_upload_marker_seen and _string(provider_output_get_url) and not output_zip_path.is_file():
-        try:
-            request = urllib.request.Request(
-                _string(provider_output_get_url),
-                headers={"User-Agent": "BlueprintVastAsyncWamRunner/1.0"},
-            )
-            with urllib.request.urlopen(request, timeout=90) as response:
-                output_zip_path.write_bytes(response.read())
-                http_status = int(getattr(response, "status", 200))
+        transfer = download_url_to_file(
+            url=_string(provider_output_get_url),
+            output_path=output_zip_path,
+            user_agent="BlueprintVastAsyncWamRunner/1.0",
+            timeout_seconds=90,
+        )
+        if transfer["status"] == "completed":
             manifest.update(
                 {
                     "status": "completed",
-                    "http_status_code": http_status,
+                    "http_status_code": transfer.get("http_status_code"),
                     "output_zip_present_after_download": output_zip_path.is_file(),
-                    "output_zip_size_bytes": output_zip_path.stat().st_size
-                    if output_zip_path.is_file()
-                    else 0,
+                    "output_zip_size_bytes": transfer.get("downloaded_size_bytes", 0),
                 }
             )
-        except Exception as exc:
+        else:
             manifest.update(
                 {
                     "status": "blocked",
-                    "error_type": type(exc).__name__,
+                    "error_type": transfer.get("error_type"),
+                    "http_status_code": transfer.get("http_status_code"),
                     "blockers": ["provider_output_get_url_download_failed"],
                 }
             )
