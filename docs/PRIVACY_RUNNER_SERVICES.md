@@ -84,6 +84,7 @@ Pipeline-level controls (read directly by `privacy_processing.py`):
 | `PRIVACY_PIPELINE_ENABLED` | gate that turns privacy post-processing on |
 | `PRIVACY_FAIL_CLOSED` | fail-closed policy flag, defaults to true |
 | `PRIVACY_RUNNER_TOKEN` | bearer token added as `Authorization` on runner HTTP calls |
+| `PRIVACY_RUNNER_LOCAL_PATH_ROOT` | optional containment root required before HTTP requests may use any local input/output path; `gs://` destinations do not require it |
 | `BLUEPRINT_CLOUD_RUN_IAM_AUTH_ENABLED` | add `X-Serverless-Authorization` ID-token auth for private Cloud Run runners |
 | `PRIVACY_LOCAL_FULL_FRAME_REDACTION_ENABLED` | enable the local, full-frame redaction proof path (legacy alias `BLUEPRINT_PRIVACY_LOCAL_FULL_FRAME_REDACTION`) |
 

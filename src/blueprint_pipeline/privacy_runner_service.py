@@ -16,6 +16,36 @@ from .privacy_service_runtime import execute_privacy_service_request
 
 logger = logging.getLogger(__name__)
 DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024
+LOCAL_PATH_ROOT_ENV = "PRIVACY_RUNNER_LOCAL_PATH_ROOT"
+_LOCAL_PATH_FIELDS = frozenset(
+    {
+        "arkit_confidence_dir_path",
+        "arkit_depth_dir_path",
+        "confidence_manifest_path",
+        "confidence_output_dir_path",
+        "deepprivacy2_model_path",
+        "depth_anything_model_path",
+        "depth_manifest_path",
+        "depth_output_dir_path",
+        "input_video_path",
+        "masks_dir_path",
+        "output_json_path",
+        "output_video_path",
+        "sam3_weights_path",
+        "vip_model_path",
+    }
+)
+_OUTPUT_URI_FIELDS = frozenset(
+    {
+        "confidence_output_prefix_uri",
+        "depth_output_prefix_uri",
+        "masks_prefix_uri",
+        "output_confidence_manifest_uri",
+        "output_depth_manifest_uri",
+        "output_json_uri",
+        "output_video_uri",
+    }
+)
 
 
 def _service_kind() -> str:
@@ -39,6 +69,40 @@ def _max_request_bytes() -> int:
     except ValueError:
         value = DEFAULT_MAX_REQUEST_BYTES
     return max(1, min(value, 64 * 1024 * 1024))
+
+
+def _validated_local_path(value: str, *, root: str) -> str:
+    """Normalize an HTTP-supplied path and contain it within the configured root."""
+
+    base_path = os.path.realpath(root)
+    full_path = os.path.realpath(os.path.join(base_path, value))
+    if full_path != base_path and not full_path.startswith(base_path + os.sep):
+        raise ValueError("local_path_outside_allowed_root")
+    return full_path
+
+
+def _validated_request_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Return an HTTP-safe body with every local filesystem path contained."""
+
+    normalized = dict(body)
+    local_values: list[tuple[str, str]] = []
+    for key in _LOCAL_PATH_FIELDS:
+        value = str(normalized.get(key) or "").strip()
+        if value:
+            local_values.append((key, value))
+    for key in _OUTPUT_URI_FIELDS:
+        value = str(normalized.get(key) or "").strip()
+        if value and not value.startswith("gs://"):
+            local_values.append((key, value))
+    if not local_values:
+        return normalized
+
+    root = str(os.getenv(LOCAL_PATH_ROOT_ENV) or "").strip()
+    if not root:
+        raise ValueError("local_path_root_not_configured")
+    for key, value in local_values:
+        normalized[key] = _validated_local_path(value, root=root)
+    return normalized
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -185,6 +249,24 @@ class _Handler(BaseHTTPRequestHandler):
                 status_code=int(HTTPStatus.BAD_REQUEST),
                 runner_kind=_service_kind(),
                 reason="invalid_payload",
+            )
+            return
+
+        try:
+            body = _validated_request_body(body)
+        except ValueError as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"status": "failed", "reason": str(exc)},
+            )
+            log_event(
+                logger,
+                logging.WARNING,
+                "privacy_runner.request_rejected",
+                path=self.path,
+                status_code=int(HTTPStatus.BAD_REQUEST),
+                runner_kind=_service_kind(),
+                reason=str(exc),
             )
             return
 

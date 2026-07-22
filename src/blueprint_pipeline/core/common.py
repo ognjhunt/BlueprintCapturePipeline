@@ -182,7 +182,6 @@ def infer_storage_root_from_scene_path(path: Path) -> Path:
 def ensure_dir(path: Path) -> None:
     # This primitive intentionally creates the exact caller-authorized path;
     # request-facing callers must apply their own containment boundary first.
-    # codeql[py/path-injection]
     path.mkdir(parents=True, exist_ok=True)
 
 
