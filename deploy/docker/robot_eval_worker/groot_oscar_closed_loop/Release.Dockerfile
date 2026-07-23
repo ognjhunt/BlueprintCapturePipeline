@@ -52,6 +52,15 @@ RUN mkdir -p /opt/blueprint/release-src \
        && rm -rf "${oscar_site_packages}/transformer_engine" \
        && test -d "${oscar_site_packages}/transformer_engine-2.0.0.dist-info" \
        && test ! -e "${oscar_site_packages}/transformer_engine" \
+       && find /opt/oscar-public -type d -name __pycache__ -prune -exec rm -rf '{}' + \
+       && find /opt/oscar-public -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+       && PYTHONPATH=/opt/blueprint/release-src \
+          /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance normalize \
+            --source-root /opt/oscar-public \
+            --existing-seal /opt/blueprint/oscar_source_provenance.json \
+            --output /opt/blueprint/oscar_source_provenance.json \
+            --runtime-source-root /opt/oscar-public \
+       && chmod 0444 /opt/blueprint/oscar_source_provenance.json \
        && /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py \
          --wbc-revision "${EMBEDDED_FOUNDATION_WBC_SOURCE_REF}" \
          --groot-revision "${EMBEDDED_FOUNDATION_GROOT_SOURCE_REF}" \
