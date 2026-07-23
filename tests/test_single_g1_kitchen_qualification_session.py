@@ -2579,6 +2579,45 @@ def test_collect_terminal_uses_immutable_attempt_release_binding_after_refresh(
     assert persisted["qualification_launch_rebind"] == refreshed_rebind
 
 
+def test_collect_refuses_legacy_attempt_without_bootstrap_command_proof(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(manifest_path, remote_process_state="stopped")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    attempt_rebind = manifest["latest_attempt"]["qualification_launch_rebind"]
+    for key in (
+        "source_bootstrap_gear_sonic_controller_command_sha256",
+        "release_bootstrap_gear_sonic_controller_command_sha256",
+        "bootstrap_gear_sonic_controller_command_rebound",
+    ):
+        attempt_rebind.pop(key)
+    rebind_body = embedded_launch_rebind(attempt_rebind)
+    rebind_body.pop("binding_sha256")
+    attempt_rebind["binding_sha256"] = hashlib.sha256(
+        json.dumps(
+            rebind_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    qualification._private_write_json(manifest_path, manifest)
+
+    result = qualification.run_qualification_session(
+        action="collect",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "collect-stale-rebind.json",
+        execute=True,
+    )
+
+    assert result["status"] == "episode_collection_refused_continuing_spend"
+    assert result["provider_mutations_performed"] == 0
+    assert "source_bootstrap_gear_sonic_controller_command_sha256" in (
+        result["blockers"][0]
+    )
+
+
 def test_collect_terminal_rejects_self_consistent_nonrelease_attempt_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
