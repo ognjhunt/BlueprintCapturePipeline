@@ -15,14 +15,14 @@
   exit races and diagnostic failures, including component state, log tails,
   GPU/process observations, and continuing-spend blockers
   (`src/blueprint_pipeline/single_g1_kitchen_qualification_observability.py`).
-- **Uncommitted July 22 work:** added a model-neutral RoboWorld-inspired 0--5
+- Added a model-neutral RoboWorld-inspired 0--5
   task-progress evaluator with explicit world-model failure stages,
   criterion-scoped camera authority,
   judge confidence/abstention, evidence and model/prompt/calibration digests,
   and preservation through the existing WAM success-label normalization path
   (`src/blueprint_pipeline/roboworld_evaluator.py`,
   `docs/ROBOWORLD_EVALUATOR_INTEGRATION.md`).
-- **Uncommitted July 22 work:** added comparison-only segment aggregation for
+- Added comparison-only segment aggregation for
   terminal, mean, minimum, maximum, regression-aware, and stable-maintenance
   scores. Maximum remains experimental and cannot become the default without
   a measured ablation.
@@ -40,12 +40,12 @@
   and independent resource watchdog controls
   (`deploy/docker/robot_eval_worker/groot_oscar_closed_loop/apt_transport_hardening.conf`,
   `src/blueprint_pipeline/paid_resource_allocator.py`).
-- **Uncommitted July 22 work:** added an executable blinded GPT/Gemini/human
+- Added an executable blinded GPT/Gemini/human
   calibration study with confusion, confidence calibration, false-success,
   policy-rank, and task/view/contact/artifact bias reports, plus hierarchical
   policy/site/task/initial-condition uncertainty, trial-count convergence, and
   leave-one-out sensitivity (`src/blueprint_pipeline/benchmark_uncertainty.py`).
-- **Uncommitted July 22 work:** added frozen schemas and tracked
+- Added frozen schemas and tracked
   evaluator/admission artifacts. The current RoboWorld admission status is
   `awaiting_upstream_release`; paper-only Step Forcing reimplementation and
   backend integration remain deferred until licensed code, weights, and
@@ -53,11 +53,11 @@
 
 ### Future-Agent-Facing
 
-- The committed America/Chicago window contains six commits,
+- The original America/Chicago window contained six commits,
   `d873dd80` through `35ea6a3f` (including the July 21 changelog merge).
   The RoboWorld evaluator, uncertainty tooling, schemas, tests, and this
-  expanded July 22 entry remain uncommitted local work and must not be reported
-  as merged or deployed.
+  expanded July 22 entry were prepared locally afterward and are included in
+  the subsequent source publish. They must not be reported as deployed.
 - RoboWorld's reported `0.989` Pearson, `0.970` progress-rubric Spearman,
   `0.922` binary-score Spearman, and `0.862` wrist-as-success Spearman values
   are external paper context only. They are not Blueprint measurements.

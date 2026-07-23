@@ -53,7 +53,7 @@ from .policy_model_runtime_proofs import (
     discover_openvla_provider_smoke_proof,
     discover_unitree_unifolm_provider_smoke_proof,
 )
-from .roboworld_evaluator import validate_progress_score
+from .roboworld_evaluator import normalize_wam_progress_label, wam_progress_label_counts
 from .wam_backend_strategy import (
     build_wam_backend_strategy_manifest,
     get_wam_backend_strategy,
@@ -3206,11 +3206,6 @@ def _normalize_wam_success_labels(
     raw_labels = [
         dict(item) for item in command_payload.get("labels", []) or [] if isinstance(item, Mapping)
     ]
-    configured_progress_profile = (
-        dict(command_payload.get("progress_evaluator_profile"))
-        if isinstance(command_payload.get("progress_evaluator_profile"), Mapping)
-        else None
-    )
     inference_input_sha256 = success_label_inference_input_sha256(
         rollouts,
         criterion_ids=sorted(required_criterion_ids),
@@ -3256,29 +3251,8 @@ def _normalize_wam_success_labels(
         # A non-boolean verdict is a review gap, not a quiet "uncertain" pass-through:
         # it must keep the label set below review grade.
         strict_boolean_verdict = success_value is not None
-        progress_evaluation_source = item.get("progress_evaluation")
-        progress_evaluation: dict[str, Any] | None = None
-        progress_profile_requested = (
-            _string(item.get("evaluation_profile_id")) == "roboworld_progress_v1"
-            or isinstance(progress_evaluation_source, Mapping)
-        )
-        if isinstance(progress_evaluation_source, Mapping):
-            progress_evaluation = validate_progress_score(
-                progress_evaluation_source,
-                profile=configured_progress_profile,
-            )
-            blockers.extend(
-                f"wam_progress_evaluation:{blocker}"
-                for blocker in _string_list(progress_evaluation.get("blockers"))
-            )
-            progress_score = progress_evaluation.get("task_progress_score")
-            if progress_evaluation.get("status") == "validated":
-                if progress_score == 5 and success_value is not True:
-                    blockers.append("wam_progress_score_success_verdict_mismatch")
-                if isinstance(progress_score, int) and progress_score < 5 and success_value is True:
-                    blockers.append("wam_progress_score_noncompletion_verdict_mismatch")
-        elif progress_profile_requested:
-            blockers.append("wam_progress_evaluation_missing_for_requested_profile")
+        progress_contract = normalize_wam_progress_label(command_payload, item, success_value)
+        blockers.extend(progress_contract["blockers"])
         confidence_value = item.get("confidence")
         confidence = (
             float(confidence_value)
@@ -3394,30 +3368,7 @@ def _normalize_wam_success_labels(
                 ),
                 "success": success_value,
                 "confidence": confidence,
-                "evaluation_profile_id": (
-                    "roboworld_progress_v1" if progress_profile_requested else None
-                ),
-                "progress_evaluation": progress_evaluation,
-                "task_progress_score": (
-                    progress_evaluation.get("task_progress_score")
-                    if progress_evaluation
-                    else None
-                ),
-                "policy_progress_stage": (
-                    progress_evaluation.get("policy_progress_stage")
-                    if progress_evaluation
-                    else None
-                ),
-                "world_model_failure_stage": (
-                    progress_evaluation.get("world_model_failure_stage")
-                    if progress_evaluation
-                    else None
-                ),
-                "world_model_failure_detected": (
-                    progress_evaluation.get("world_model_failure_detected")
-                    if progress_evaluation
-                    else None
-                ),
+                **progress_contract["label_fields"],
                 "calibrated_confidence_floor": calibrated_confidence_floor,
                 "calibration_contract": calibration,
                 "calibrated_confidence_passed": calibrated_confidence_passed,
@@ -3499,14 +3450,7 @@ def _normalize_wam_success_labels(
     review_grade_label_count = sum(
         1 for row in labels if row.get("authoritative_task_success_label") is True
     )
-    progress_profile_label_count = sum(
-        1 for row in labels if row.get("evaluation_profile_id") == "roboworld_progress_v1"
-    )
-    validated_progress_label_count = sum(
-        1
-        for row in labels
-        if _mapping(row.get("progress_evaluation")).get("status") == "validated"
-    )
+    progress_counts = wam_progress_label_counts(labels)
     status = "completed" if labels and not blockers else "blocked"
     return {
         "schema_version": "wam_success_labels.v1",
@@ -3530,8 +3474,7 @@ def _normalize_wam_success_labels(
             and review_grade_label_count == len(labels)
         ),
         "review_grade_label_count": review_grade_label_count,
-        "progress_profile_label_count": progress_profile_label_count,
-        "validated_progress_label_count": validated_progress_label_count,
+        **progress_counts,
         "calibrated_confidence_floor": WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE,
         "expected_rollout_count": len(rollout_ids),
         "exact_rollout_label_coverage": bool(

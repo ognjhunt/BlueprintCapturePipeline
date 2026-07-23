@@ -1148,6 +1148,73 @@ def build_roboworld_admission_checklist(evidence: Mapping[str, Any]) -> dict[str
     return checklist
 
 
+def normalize_wam_progress_label(
+    command_payload: Mapping[str, Any],
+    label: Mapping[str, Any],
+    success_value: bool | None,
+) -> dict[str, Any]:
+    """Validate optional progress evidence and return normalized label fields."""
+
+    configured_profile = _mapping(command_payload.get("progress_evaluator_profile")) or None
+    progress_source = label.get("progress_evaluation")
+    requested = (
+        _string(label.get("evaluation_profile_id")) == "roboworld_progress_v1"
+        or isinstance(progress_source, Mapping)
+    )
+    evaluation = (
+        validate_progress_score(progress_source, profile=configured_profile)
+        if isinstance(progress_source, Mapping)
+        else None
+    )
+    blockers = [
+        f"wam_progress_evaluation:{blocker}"
+        for blocker in _rows_or_strings(evaluation.get("blockers") if evaluation else [])
+    ]
+    if evaluation and evaluation.get("status") == "validated":
+        progress_score = evaluation.get("task_progress_score")
+        if progress_score == 5 and success_value is not True:
+            blockers.append("wam_progress_score_success_verdict_mismatch")
+        if isinstance(progress_score, int) and progress_score < 5 and success_value is True:
+            blockers.append("wam_progress_score_noncompletion_verdict_mismatch")
+    elif requested and evaluation is None:
+        blockers.append("wam_progress_evaluation_missing_for_requested_profile")
+    return {
+        "blockers": blockers,
+        "label_fields": {
+            "evaluation_profile_id": "roboworld_progress_v1" if requested else None,
+            "progress_evaluation": evaluation,
+            "task_progress_score": evaluation.get("task_progress_score") if evaluation else None,
+            "policy_progress_stage": evaluation.get("policy_progress_stage") if evaluation else None,
+            "world_model_failure_stage": (
+                evaluation.get("world_model_failure_stage") if evaluation else None
+            ),
+            "world_model_failure_detected": (
+                evaluation.get("world_model_failure_detected") if evaluation else None
+            ),
+        },
+    }
+
+
+def wam_progress_label_counts(labels: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Summarize requested and validated progress-profile label coverage."""
+
+    return {
+        "progress_profile_label_count": sum(
+            row.get("evaluation_profile_id") == "roboworld_progress_v1" for row in labels
+        ),
+        "validated_progress_label_count": sum(
+            _mapping(row.get("progress_evaluation")).get("status") == "validated"
+            for row in labels
+        ),
+    }
+
+
+def _rows_or_strings(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [_string(item) for item in value if _string(item)]
+
+
 def _load_mapping(path: str | Path) -> dict[str, Any]:
     value = read_json_any(Path(path))
     if not isinstance(value, Mapping):
