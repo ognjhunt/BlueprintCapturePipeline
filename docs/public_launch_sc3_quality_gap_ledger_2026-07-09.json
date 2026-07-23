@@ -13198,7 +13198,7 @@
             {
               "artifact_id": "P2-02-AC-01-EV-01",
               "path": ".github/workflows/sim-only-local-gate.yml",
-              "sha256": "sha256:0341adef72c70809dee1a5b6579efcee8bdec7abc3360148e55a31bb0c7f8de2",
+              "sha256": "sha256:2cb894b04aea78d6044a00ca916fee94fcba08ef892a949c74f81a7943442c42",
               "role": "workflow_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

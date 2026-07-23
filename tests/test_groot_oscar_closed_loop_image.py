@@ -539,6 +539,7 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert 'payload["isaac_python_import_stderr_tail"]' in healthcheck
     assert "import inference.inference_oscar" in healthcheck
     assert "worldsim._src.configs.agibot_control.config import make_config" in healthcheck
+    assert "importlib.metadata.version('transformer-engine') == '2.0.0'" in healthcheck
     assert "importlib.metadata.version('pytest') == '9.1.1'" in healthcheck
     assert 'payload["oscar_dynamic_config_constructible"]' in healthcheck
     assert "oscar_inference_dynamic_config_not_importable" in healthcheck

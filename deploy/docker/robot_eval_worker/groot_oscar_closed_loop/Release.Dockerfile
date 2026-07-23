@@ -41,15 +41,20 @@ RUN mkdir -p /opt/blueprint/release-src \
   && if [ "${FOUNDATION_MODEL_ASSETS}" = embedded ]; then \
        /opt/runpod-serverless-venv/bin/python -m pip --python /opt/oscar-venv/bin/python install \
          --no-cache-dir --require-hashes \
-         --index-url https://download.pytorch.org/whl/cu128 \
+       --index-url https://download.pytorch.org/whl/cu128 \
          --extra-index-url https://pypi.org/simple \
          -r /tmp/requirements_oscar_foundation.lock \
+       && oscar_site_packages="$(/opt/oscar-venv/bin/python -c 'import site; print(site.getsitepackages()[0])')" \
+       && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import transformer_engine_shim_script_text; Path('/tmp/install_transformer_engine_shim.py').write_text(transformer_engine_shim_script_text(), encoding='utf-8')" \
+       && /opt/oscar-venv/bin/python /tmp/install_transformer_engine_shim.py "${oscar_site_packages}" \
+       && rm -rf "${oscar_site_packages}/transformer_engine" \
+       && test -d "${oscar_site_packages}/transformer_engine-2.0.0.dist-info" \
+       && test ! -e "${oscar_site_packages}/transformer_engine" \
        && /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py \
          --wbc-revision "${EMBEDDED_FOUNDATION_WBC_SOURCE_REF}" \
          --groot-revision "${EMBEDDED_FOUNDATION_GROOT_SOURCE_REF}" \
          --oscar-revision "${EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF}" \
          --output /opt/blueprint/embedded_carrier_repair.json \
-       && oscar_site_packages="$(/opt/oscar-venv/bin/python -c 'import site; print(site.getsitepackages()[0])')" \
        && printf '%s\n' '/opt/wbc' > "${oscar_site_packages}/blueprint_gear_sonic_runtime.pth" \
        && rm -f /usr/local/cuda*/bin/nvcc \
        && rm -rf /usr/local/cuda*/include /usr/local/cuda*/lib64/stubs /usr/local/cuda*/targets/*/include /usr/local/cuda*/targets/*/lib/stubs \
@@ -66,7 +71,7 @@ RUN mkdir -p /opt/blueprint/release-src \
               /opt/runpod-serverless-venv/lib/python*/site-packages/setuptools* \
               /opt/runpod-serverless-venv/lib/python*/site-packages/pkg_resources \
   && find /opt/runpod-serverless-venv -type d -name __pycache__ -prune -exec rm -rf '{}' + \
-  && rm -rf /tmp/blueprint-release /tmp/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless_sdk.lock /tmp/requirements_embedded_carrier_opencv.lock /tmp/requirements_oscar_foundation.lock /tmp/repair_embedded_carrier.py /root/.cache \
+  && rm -rf /tmp/blueprint-release /tmp/requirements_runpod_serverless.lock /tmp/requirements_runpod_serverless_sdk.lock /tmp/requirements_embedded_carrier_opencv.lock /tmp/requirements_oscar_foundation.lock /tmp/install_transformer_engine_shim.py /tmp/repair_embedded_carrier.py /root/.cache \
   && test -x /opt/oscar-venv/bin/blueprint-run-robot-eval-worker \
   && /opt/runpod-serverless-venv/bin/python -m blueprint_pipeline.groot_oscar_runpod_serverless_worker --verify-serverless-runtime \
   && case "${FOUNDATION_MODEL_ASSETS}" in \

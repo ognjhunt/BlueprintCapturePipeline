@@ -252,6 +252,7 @@ def main() -> int:
                         "import importlib.metadata; "
                         "import inference.inference_oscar; "
                         "from worldsim._src.configs.agibot_control.config import make_config; "
+                        "assert importlib.metadata.version('transformer-engine') == '2.0.0'; "
                         "assert importlib.metadata.version('pytest') == '9.1.1'; "
                         "assert make_config() is not None; "
                         "print('BLUEPRINT_OSCAR_DYNAMIC_CONFIG_OK')"
