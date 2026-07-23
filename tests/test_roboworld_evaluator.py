@@ -216,6 +216,17 @@ def test_all_segment_strategies_are_reported_and_maximum_is_not_default() -> Non
     assert result["maximum_selected_as_default"] is False
 
 
+def test_invalid_segment_index_returns_blocked_aggregation_instead_of_raising() -> None:
+    malformed = _score(5)
+    malformed["segment_index"] = "not-an-index"
+
+    result = aggregate_segment_scores([malformed])
+
+    assert result["status"] == "blocked"
+    assert "segment_indices_missing_or_invalid" in result["blockers"]
+    assert result["selected_score"] is None
+
+
 def test_stable_success_requires_adjacent_terminal_frame_maintenance() -> None:
     unstable = aggregate_segment_scores(
         [_score(5, segment_index=0, frame_scores=[5, 5, 4])]

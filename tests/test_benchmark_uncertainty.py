@@ -129,3 +129,18 @@ def test_uncertainty_report_fails_closed_on_unaccepted_or_duplicate_rows() -> No
     assert "uncertainty_reference_not_independently_accepted:0" in report["blockers"]
     assert "uncertainty_attempt_ids_duplicate" in report["blockers"]
     assert report["confidence_intervals"] == {}
+
+
+def test_uncertainty_report_fails_closed_without_computing_malformed_rows() -> None:
+    request = _request()
+    request["rows"][0].pop("predicted_score")
+
+    report = build_benchmark_uncertainty_report(request)
+
+    assert report["status"] == "blocked"
+    assert "uncertainty_predicted_score_invalid:0" in report["blockers"]
+    assert all(value is None for value in report["point_metrics"].values())
+    assert report["confidence_intervals"] == {}
+    assert report["convergence"] == []
+    assert report["leave_one_policy_out"] == []
+    assert report["leave_one_task_family_out"] == []

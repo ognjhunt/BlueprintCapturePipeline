@@ -412,7 +412,9 @@ def build_benchmark_uncertainty_report(request: Mapping[str, Any]) -> dict[str, 
     rows, payload_valid = _strict_rows(request.get("rows"))
     if not payload_valid or not rows:
         blockers.append("uncertainty_rows_missing_or_invalid")
-    blockers.extend(_validate_rows(rows))
+    row_blockers = _validate_rows(rows)
+    blockers.extend(row_blockers)
+    rows_usable = bool(payload_valid and rows and not row_blockers)
     rows = sorted(rows, key=lambda row: _string(row.get("attempt_id")))
     bootstrap = _mapping(request.get("bootstrap"))
     seed = _integer(bootstrap.get("seed"), minimum=0)
@@ -428,7 +430,11 @@ def build_benchmark_uncertainty_report(request: Mapping[str, Any]) -> dict[str, 
     if subsample_replicates is None:
         blockers.append("uncertainty_convergence_subsample_replicates_missing_or_invalid")
         subsample_replicates = 200
-    point_metrics = _metrics(rows) if len(rows) >= 3 else {metric: None for metric in METRIC_NAMES}
+    point_metrics = (
+        _metrics(rows)
+        if rows_usable and len(rows) >= 3
+        else {metric: None for metric in METRIC_NAMES}
+    )
     intervals: dict[str, Any] = {}
     bootstrap_detail: dict[str, Any] = {
         "method": BOOTSTRAP_METHOD,
@@ -445,7 +451,7 @@ def build_benchmark_uncertainty_report(request: Mapping[str, Any]) -> dict[str, 
         seed=seed,
         trial_counts=request.get("convergence_trial_counts"),
         subsample_replicates=subsample_replicates,
-    ) if rows else []
+    ) if rows_usable else []
     blockers = sorted(set(blockers))
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -484,9 +490,9 @@ def build_benchmark_uncertainty_report(request: Mapping[str, Any]) -> dict[str, 
             }
             for row in convergence
         ],
-        "leave_one_policy_out": _leave_one_out(rows, axis="policy_id") if rows else [],
+        "leave_one_policy_out": _leave_one_out(rows, axis="policy_id") if rows_usable else [],
         "leave_one_task_family_out": _leave_one_out(rows, axis="task_family_id")
-        if rows
+        if rows_usable
         else [],
         "claim_eligibility": {
             "minimum_bootstrap_replicates": DEFAULT_BOOTSTRAP_REPLICATES,

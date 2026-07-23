@@ -528,11 +528,19 @@ def aggregate_segment_scores(
         if validation.get("status") == "abstained"
     )
     indices = [validation.get("segment_index") for validation in validations]
-    if any(_integer(index, minimum=0) is None for index in indices):
+    valid_indices = [
+        normalized
+        for index in indices
+        if (normalized := _integer(index, minimum=0)) is not None
+    ]
+    if len(valid_indices) != len(indices):
         blockers.append("segment_indices_missing_or_invalid")
-    if len(indices) != len(set(indices)):
+    if len(valid_indices) != len(set(valid_indices)):
         blockers.append("segment_indices_duplicate")
-    ordered = sorted(validations, key=lambda row: int(row.get("segment_index") or 0))
+    ordered = sorted(
+        validations,
+        key=lambda row: _integer(row.get("segment_index"), minimum=0) or 0,
+    )
     values = [
         int(row["task_progress_score"])
         for row in ordered
@@ -582,7 +590,7 @@ def aggregate_segment_scores(
     if default_strategy == "maximum_experimental":
         blockers.append("maximum_segment_aggregation_cannot_be_default")
     blockers = sorted(set(blockers))
-    selected_value = aggregations.get(default_strategy)
+    selected_value = aggregations.get(default_strategy) if not blockers else None
     result = {
         "schema_version": "segment_aggregation_result.v1",
         "status": "complete" if not blockers else "blocked",
