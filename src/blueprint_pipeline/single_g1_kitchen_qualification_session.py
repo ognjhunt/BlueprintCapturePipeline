@@ -3480,7 +3480,24 @@ def _collect(
         write_json(result_path, result)
         return result
 
-    latest = _require_latest_attempt_binding(manifest)
+    try:
+        latest = _require_latest_attempt_binding(manifest)
+    except ValueError as exc:
+        result = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "episode_collection_refused_continuing_spend",
+            "action": "collect",
+            "session_manifest": str(manifest_path),
+            "continuing_spend": manifest.get("continuing_spend") is True,
+            "provider_mutations_performed": 0,
+            "blockers": [str(exc)],
+            "claim_boundary": (
+                "Collection was refused before downloading provider output because "
+                "the immutable attempt binding was invalid."
+            ),
+        }
+        write_json(result_path, result)
+        return result
     signed_get_url = _read_secret_url_file(manifest_path.parent / "provider_output_get_url.txt")
     archive = _download_provider_output_archive(signed_get_url)
     _validate_provider_output_archive_limits(archive)

@@ -25,6 +25,7 @@ from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
     OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND,
     capture_runtime_attempt_overlay_base,
     embedded_launch_rebind,
+    require_latest_attempt_binding,
 )
 
 
@@ -98,6 +99,9 @@ def _minimal_inputs() -> dict:
         "source_task_contract_sha256": "6" * 64,
         "start_frame": b"exact-frame",
         "bootstrap_script": (
+            "/opt/oscar-venv/bin/python -m "
+            "blueprint_pipeline.gear_sonic_process_supervisor supervise -- "
+            "/opt/wbc/deploy.sh sim > /workspace/gear_sonic_controller.log 2>&1 &\n"
             "cp /workspace/attempt_input_manifest_episode_001.json "
             "/workspace/attempt_input_manifest.json\n"
             "upload_phase inputs_ready\necho exact-episode\n"
@@ -327,9 +331,27 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert binding["runtime_attempt_manifest_rebound"] is True
     assert binding["gear_sonic_controller_runtime_mode"] == "prebuilt_release_binary"
     assert binding["gear_sonic_controller_command_rebound"] is True
+    assert binding["bootstrap_gear_sonic_controller_command_rebound"] is True
     assert binding["source_gear_sonic_controller_command_sha256"] != binding[
         "release_gear_sonic_controller_command_sha256"
     ]
+    assert binding[
+        "source_bootstrap_gear_sonic_controller_command_sha256"
+    ] != binding["release_bootstrap_gear_sonic_controller_command_sha256"]
+    assert "/opt/wbc/deploy.sh" not in rebound["bootstrap_script"]
+    rebound_controller_shell = (
+        "/opt/oscar-venv/bin/python -m "
+        "blueprint_pipeline.gear_sonic_process_supervisor supervise -- "
+        "bash -lc 'cd /opt/wbc/gear_sonic_deploy && source scripts/setup_env.sh "
+        "&& exec ./target/release/g1_deploy_onnx_ref lo "
+        "policy/release/model_decoder.onnx reference/example "
+        "--obs-config policy/release/observation_config.yaml "
+        "--encoder-file policy/release/model_encoder.onnx "
+        "--planner-file planner/target_vel/V2/planner_sonic.onnx "
+        "--input-type zmq_manager --output-type zmq --zmq-host localhost "
+        "--disable-crc-check'"
+    )
+    assert rebound["bootstrap_script"].count(rebound_controller_shell) == 1
     assert rebound["attempt"]["qualification_source_task_success_contract_sha256"] == (
         "6" * 64
     )
@@ -634,6 +656,47 @@ def _bind_latest_attempt(
     manifest["latest_attempt"] = latest
     qualification._private_write_json(manifest_path, manifest)
     return latest
+
+
+def test_latest_attempt_rejects_legacy_rebind_without_bootstrap_command_proof(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    latest = dict(manifest["latest_attempt"])
+    rebind = dict(latest["qualification_launch_rebind"])
+    for key in (
+        "source_gear_sonic_controller_command_sha256",
+        "release_gear_sonic_controller_command_sha256",
+        "gear_sonic_controller_runtime_mode",
+        "gear_sonic_controller_command_rebound",
+        "source_bootstrap_gear_sonic_controller_command_sha256",
+        "release_bootstrap_gear_sonic_controller_command_sha256",
+        "bootstrap_gear_sonic_controller_command_rebound",
+    ):
+        rebind.pop(key)
+    rebind_body = dict(rebind)
+    rebind_body.pop("binding_sha256")
+    rebind["binding_sha256"] = hashlib.sha256(
+        json.dumps(
+            rebind_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    latest["qualification_launch_rebind"] = rebind
+    manifest["latest_attempt"] = latest
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "qualification_launch_rebind."
+            "source_bootstrap_gear_sonic_controller_command_sha256"
+        ),
+    ):
+        require_latest_attempt_binding(manifest)
 
 
 def _qualification_output_zip(
@@ -2516,6 +2579,45 @@ def test_collect_terminal_uses_immutable_attempt_release_binding_after_refresh(
     assert persisted["qualification_launch_rebind"] == refreshed_rebind
 
 
+def test_collect_refuses_legacy_attempt_without_bootstrap_command_proof(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(manifest_path, remote_process_state="stopped")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    attempt_rebind = manifest["latest_attempt"]["qualification_launch_rebind"]
+    for key in (
+        "source_bootstrap_gear_sonic_controller_command_sha256",
+        "release_bootstrap_gear_sonic_controller_command_sha256",
+        "bootstrap_gear_sonic_controller_command_rebound",
+    ):
+        attempt_rebind.pop(key)
+    rebind_body = embedded_launch_rebind(attempt_rebind)
+    rebind_body.pop("binding_sha256")
+    attempt_rebind["binding_sha256"] = hashlib.sha256(
+        json.dumps(
+            rebind_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    qualification._private_write_json(manifest_path, manifest)
+
+    result = qualification.run_qualification_session(
+        action="collect",
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "collect-stale-rebind.json",
+        execute=True,
+    )
+
+    assert result["status"] == "episode_collection_refused_continuing_spend"
+    assert result["provider_mutations_performed"] == 0
+    assert "source_bootstrap_gear_sonic_controller_command_sha256" in (
+        result["blockers"][0]
+    )
+
+
 def test_collect_terminal_rejects_self_consistent_nonrelease_attempt_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2885,6 +2987,9 @@ def test_changed_refresh_payload_forces_restage_before_remote_mutation(
     )
     first_sha = first["refresh_payload"]["refresh_payload_sha256"]
     current_inputs["bootstrap_script"] = (
+        "/opt/oscar-venv/bin/python -m "
+        "blueprint_pipeline.gear_sonic_process_supervisor supervise -- "
+        "/opt/wbc/deploy.sh sim > /workspace/gear_sonic_controller.log 2>&1 &\n"
         "cp /workspace/attempt_input_manifest_episode_001.json "
         "/workspace/attempt_input_manifest.json\n"
         "upload_phase inputs_ready\necho changed-exact-episode\n"
