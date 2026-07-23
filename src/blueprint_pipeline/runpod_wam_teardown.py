@@ -92,8 +92,9 @@ def delete_runpod_pod(
     request: RunPodRequest,
     verify_inactive: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
-    """Delete one pod and separately verify provider-terminal state."""
+    """Delete one pod and fail closed unless provider state proves it terminal."""
 
+    mutation_error_type: str | None = None
     try:
         status_code, response = request(
             method="DELETE",
@@ -101,15 +102,21 @@ def delete_runpod_pod(
             api_key=api_key,
             timeout_seconds=30,
         )
-        status = "completed" if status_code in {200, 202, 204} else "blocked"
+        request_acknowledged = status_code in {200, 202, 204}
         blockers: list[str] = (
-            [] if status == "completed" else ["runpod_delete_pod_unexpected_status"]
+            [] if request_acknowledged else ["runpod_delete_pod_unexpected_status"]
         )
     except urllib.error.HTTPError as exc:
         status_code = exc.code
         response = {}
-        status = "completed" if exc.code in {404, 410} else "blocked"
-        blockers = [] if status == "completed" else ["runpod_delete_pod_http_error"]
+        request_acknowledged = exc.code in {404, 410}
+        blockers = [] if request_acknowledged else ["runpod_delete_pod_http_error"]
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        status_code = None
+        response = {}
+        request_acknowledged = False
+        mutation_error_type = type(exc).__name__
+        blockers = ["runpod_delete_pod_transport_error"]
 
     terminal_state_api_confirmed = False
     verified_pod_status: str | None = None
@@ -117,7 +124,7 @@ def delete_runpod_pod(
     if status_code in {404, 410}:
         terminal_state_api_confirmed = True
         verified_pod_status = "not_found"
-    elif status == "completed":
+    else:
         terminal_state_verification = verify_inactive(
             pod_id=pod_id,
             api_key=api_key,
@@ -129,8 +136,11 @@ def delete_runpod_pod(
         terminal_state_api_confirmed = bool(
             terminal_state_verification.get("spend_released")
         )
-        if not terminal_state_api_confirmed:
-            blockers = [*blockers, "runpod_delete_terminal_state_not_api_confirmed"]
+        if terminal_state_api_confirmed:
+            blockers = []
+        elif request_acknowledged:
+            blockers.append("runpod_delete_terminal_state_not_api_confirmed")
+    status = "completed" if terminal_state_api_confirmed else "blocked"
     manifest = {
         "schema_version": schema_version,
         "generated_at": generated_at,
@@ -138,12 +148,13 @@ def delete_runpod_pod(
         "job_dir": str(job_dir),
         "pod_id": pod_id,
         "http_status_code": status_code,
+        "mutation_error_type": mutation_error_type,
         "response_keys": sorted(response.keys()),
-        "blockers": blockers,
+        "blockers": sorted(set(blockers)),
         "terminal_state_api_confirmed": terminal_state_api_confirmed,
         "verified_pod_status": verified_pod_status,
         "terminal_state_verification": terminal_state_verification,
-        "continuing_spend_from_this_run": status != "completed",
+        "continuing_spend_from_this_run": not terminal_state_api_confirmed,
         "raw_secret_values_recorded": False,
     }
     write_json(job_dir / "runpod_wam_async_delete_manifest.json", manifest)
@@ -166,6 +177,7 @@ def stop_runpod_pod(
 
     verification: dict[str, Any] | None = None
     stop_response_confirmed = False
+    mutation_error_type: str | None = None
     try:
         status_code, response = request(
             method="POST",
@@ -183,17 +195,23 @@ def stop_runpod_pod(
         response = {}
         status = "completed" if exc.code in {404, 410} else "blocked"
         blockers = [] if status == "completed" else ["runpod_stop_pod_http_error"]
-        if status != "completed":
-            verification = verify_inactive(
-                pod_id=pod_id,
-                api_key=api_key,
-                generated_at=generated_at,
-            )
-            if verification.get("spend_released"):
-                status = "completed"
-                blockers = []
-            else:
-                blockers.extend(str(item) for item in verification.get("blockers") or [])
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        status_code = None
+        response = {}
+        status = "blocked"
+        mutation_error_type = type(exc).__name__
+        blockers = ["runpod_stop_pod_transport_error"]
+    if status != "completed":
+        verification = verify_inactive(
+            pod_id=pod_id,
+            api_key=api_key,
+            generated_at=generated_at,
+        )
+        if verification.get("spend_released"):
+            status = "completed"
+            blockers = []
+        else:
+            blockers.extend(str(item) for item in verification.get("blockers") or [])
     warm_candidate = (
         write_stopped_warm_candidate(
             job_dir=job_dir,
@@ -218,9 +236,10 @@ def stop_runpod_pod(
         "job_dir": str(job_dir),
         "pod_id": pod_id,
         "http_status_code": status_code,
+        "mutation_error_type": mutation_error_type,
         "stop_error_verification": verification,
         "response_keys": sorted(response.keys()),
-        "blockers": blockers,
+        "blockers": sorted(set(blockers)),
         "stopped_pod_preserved_for_warm_reuse": bool(
             status == "completed" and record_warm_candidate and stop_response_confirmed
         ),

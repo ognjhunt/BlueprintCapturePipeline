@@ -71,7 +71,8 @@ def test_delete_runpod_pod_requires_terminal_state_confirmation(tmp_path: Path) 
         },
     )
 
-    assert manifest["status"] == "completed"
+    assert manifest["status"] == "blocked"
+    assert manifest["continuing_spend_from_this_run"] is True
     assert manifest["terminal_state_api_confirmed"] is False
     assert "runpod_delete_terminal_state_not_api_confirmed" in manifest["blockers"]
     assert (tmp_path / "runpod_wam_async_delete_manifest.json").is_file()
@@ -145,3 +146,78 @@ def test_stop_runpod_pod_error_can_be_recovered_only_by_terminal_probe(
     assert manifest["warm_candidate"]["reason"] == (
         "runpod_stop_completion_verified_without_reusable_stopped_pod"
     )
+
+
+def test_delete_acknowledgement_without_terminal_state_keeps_spend_open(
+    tmp_path: Path,
+) -> None:
+    manifest = delete_runpod_pod(
+        job_dir=tmp_path,
+        pod_id="pod-active",
+        api_key="secret",
+        generated_at="now",
+        schema_version="delete.v1",
+        request=lambda **_kwargs: (202, {}),
+        verify_inactive=lambda **_kwargs: {
+            "status": "blocked",
+            "pod_status": "RUNNING",
+            "spend_released": False,
+            "blockers": ["runpod_stop_error_pod_still_active_after_status_probe"],
+        },
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["continuing_spend_from_this_run"] is True
+    assert manifest["terminal_state_api_confirmed"] is False
+    assert "runpod_delete_terminal_state_not_api_confirmed" in manifest["blockers"]
+
+
+def test_delete_transport_error_can_still_prove_provider_absence(tmp_path: Path) -> None:
+    def request(**_kwargs: object) -> tuple[int, dict[str, object]]:
+        raise urllib.error.URLError("connection reset")
+
+    manifest = delete_runpod_pod(
+        job_dir=tmp_path,
+        pod_id="pod-gone",
+        api_key="secret",
+        generated_at="now",
+        schema_version="delete.v1",
+        request=request,
+        verify_inactive=lambda **_kwargs: {
+            "status": "completed",
+            "pod_status": "not_found",
+            "spend_released": True,
+            "blockers": [],
+        },
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["mutation_error_type"] == "URLError"
+    assert manifest["continuing_spend_from_this_run"] is False
+    assert manifest["blockers"] == []
+
+
+def test_stop_transport_error_is_persisted_as_open_spend(tmp_path: Path) -> None:
+    def request(**_kwargs: object) -> tuple[int, dict[str, object]]:
+        raise TimeoutError("provider timeout")
+
+    manifest = stop_runpod_pod(
+        job_dir=tmp_path,
+        pod_id="pod-unknown",
+        api_key="secret",
+        generated_at="now",
+        schema_version="stop.v1",
+        request=request,
+        verify_inactive=lambda **_kwargs: {
+            "status": "blocked",
+            "pod_status": "status_probe_error",
+            "spend_released": False,
+            "blockers": ["runpod_stop_error_status_probe_failed"],
+        },
+        write_stopped_warm_candidate=lambda **_kwargs: {"status": "recorded"},
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["mutation_error_type"] == "TimeoutError"
+    assert manifest["continuing_spend_from_this_run"] is True
+    assert manifest["warm_candidate"]["status"] == "not_recorded"
