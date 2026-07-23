@@ -539,10 +539,28 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert 'payload["isaac_python_import_stderr_tail"]' in healthcheck
     assert "import inference.inference_oscar" in healthcheck
     assert "worldsim._src.configs.agibot_control.config import make_config" in healthcheck
+    assert '"/opt/blueprint/oscar_cpu_import_probe.py"' in healthcheck
+    assert '"cpu_build_current_device_discovery_stub"' in healthcheck
+    assert '"live_cuda_runtime"' in healthcheck
+    assert 'payload["oscar_dynamic_config_live_cuda_proven"]' in healthcheck
     assert "importlib.metadata.version('transformer-engine') == '2.0.0'" in healthcheck
     assert "importlib.metadata.version('pytest') == '9.1.1'" in healthcheck
     assert 'payload["oscar_dynamic_config_constructible"]' in healthcheck
     assert "oscar_inference_dynamic_config_not_importable" in healthcheck
+
+    cpu_probe = (IMAGE_ROOT / "oscar_cpu_import_probe.py").read_text(encoding="utf-8")
+    assert 'importlib.metadata.version("transformer-engine") != "2.0.0"' in cpu_probe
+
+    release_dockerfile = (IMAGE_ROOT / "Release.Dockerfile").read_text(encoding="utf-8")
+    assert (
+        "oscar_cpu_import_probe.py /opt/blueprint/oscar_cpu_import_probe.py"
+        in release_dockerfile
+    )
+    full_dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert (
+        "oscar_cpu_import_probe.py /opt/blueprint/oscar_cpu_import_probe.py"
+        in full_dockerfile
+    )
 
 
 def test_isaac_backend_uses_supported_isaac_6_articulation_api():

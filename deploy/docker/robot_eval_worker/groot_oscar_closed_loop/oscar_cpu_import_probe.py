@@ -31,6 +31,8 @@ def main() -> int:
         raise RuntimeError("oscar_cpu_import_probe_module_identity_missing")
     if importlib.metadata.version("pytest") != "9.1.1":
         raise RuntimeError("oscar_cpu_import_probe_pytest_version_mismatch")
+    if importlib.metadata.version("transformer-engine") != "2.0.0":
+        raise RuntimeError("oscar_cpu_import_probe_transformer_engine_version_mismatch")
     if config is None:
         raise RuntimeError("oscar_cpu_import_probe_dynamic_config_missing")
     print("BLUEPRINT_OSCAR_CPU_IMPORT_PROBE_PASSED")

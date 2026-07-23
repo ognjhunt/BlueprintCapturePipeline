@@ -20,6 +20,7 @@ COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/repair_embedded_carrier.py /tmp/repair_embedded_carrier.py
 COPY --chmod=0755 deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh /opt/blueprint/thin_release_entrypoint.sh
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/oscar_cpu_import_probe.py /opt/blueprint/oscar_cpu_import_probe.py
 RUN mkdir -p /opt/blueprint/release-src \
   && cp -a /tmp/blueprint-release/src/blueprint_pipeline /opt/blueprint/release-src/ \
   && for python in /opt/oscar-venv/bin/python /opt/gr00t-venv/bin/python /isaac-sim/python.sh; do \
