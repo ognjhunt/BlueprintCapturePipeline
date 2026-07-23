@@ -189,12 +189,15 @@ def test_release_removes_build_only_serverless_environment_files() -> None:
     assert "pip --python /opt/oscar-venv/bin/python install" in release_dockerfile
     assert "transformer_engine_shim_script_text" in release_dockerfile
     assert (
-        "/tmp/install_transformer_engine_shim.py /opt/oscar-public"
+        '/tmp/install_transformer_engine_shim.py "${oscar_site_packages}"'
         in release_dockerfile
     )
+    assert "/tmp/install_transformer_engine_shim.py /opt/oscar-public" not in release_dockerfile
+    assert 'rm -rf "${oscar_site_packages}/transformer_engine"' in release_dockerfile
+    assert 'test ! -e "${oscar_site_packages}/transformer_engine"' in release_dockerfile
     assert "repair_embedded_carrier.py" in release_dockerfile
     assert release_dockerfile.index(
-        "/tmp/install_transformer_engine_shim.py /opt/oscar-public"
+        '/tmp/install_transformer_engine_shim.py "${oscar_site_packages}"'
     ) < release_dockerfile.index(
         "&& /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py"
     )
