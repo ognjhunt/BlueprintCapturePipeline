@@ -1993,40 +1993,30 @@ set +e
 {_scoped_oscar_python_command()} - <<'PY'
 import json
 import os
-import time
 from pathlib import Path
 
 from blueprint_pipeline.oscar_runtime_asset_contract import (
     asset_contract_payload,
-    prepare_runtime_asset_cache,
+    prepare_runtime_asset_cache_with_retries,
 )
 
 cache_root = Path({OSCAR_RUNTIME_ASSET_CACHE_ROOT!r})
 artifact_path = Path({OSCAR_RUNTIME_ASSET_PREPARE_ARTIFACT!r})
-prepare_attempts = []
 try:
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    runtime_evidence = {{}}
-    for attempt_number, retry_delay_seconds in enumerate((0, 10, 30), start=1):
-        if retry_delay_seconds:
-            time.sleep(retry_delay_seconds)
-        runtime_evidence = prepare_runtime_asset_cache(cache_root, token=token)
-        prepare_attempts.append(
-            {{
-                "attempt_number": attempt_number,
-                "status": runtime_evidence.get("status"),
-                "blockers": list(runtime_evidence.get("blockers") or []),
-                "retry_delay_seconds": retry_delay_seconds,
-            }}
-        )
-        if runtime_evidence.get("status") == "passed":
-            break
+    prepare_result = prepare_runtime_asset_cache_with_retries(cache_root, token=token)
+    runtime_evidence = prepare_result["runtime_asset_evidence"]
 except Exception as exc:
     runtime_evidence = {{
         "schema_version": "oscar_runtime_asset_evidence.v1",
         "status": "blocked",
         "blockers": [f"single_episode_runtime_asset_prepare_exception:{{type(exc).__name__}}"],
         "raw_secret_values_recorded": False,
+    }}
+    prepare_result = {{
+        "prepare_attempts": [],
+        "prepare_attempt_count": 0,
+        "bounded_resume_retry_enabled": True,
     }}
 passed = runtime_evidence.get("status") == "passed"
 payload = {{
@@ -2036,9 +2026,9 @@ payload = {{
     "cache_root": str(cache_root),
     "asset_contract": asset_contract_payload(),
     "runtime_asset_evidence": runtime_evidence,
-    "prepare_attempts": prepare_attempts,
-    "prepare_attempt_count": len(prepare_attempts),
-    "bounded_resume_retry_enabled": True,
+    "prepare_attempts": prepare_result["prepare_attempts"],
+    "prepare_attempt_count": prepare_result["prepare_attempt_count"],
+    "bounded_resume_retry_enabled": prepare_result["bounded_resume_retry_enabled"],
     "claim_boundary": {{
         "runtime_auxiliary_assets_byte_verified": passed,
         "oscar_checkpoint_loaded": False,

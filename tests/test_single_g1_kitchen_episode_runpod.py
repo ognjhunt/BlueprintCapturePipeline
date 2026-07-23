@@ -622,10 +622,10 @@ def test_oscar_runtime_assets_prepare_once_then_fail_closed_offline_preflight() 
     )
     assert single_episode.OSCAR_RUNTIME_ASSET_PREPARE_ARTIFACT in script
     assert single_episode.OSCAR_RUNTIME_ASSET_PREFLIGHT_ARTIFACT in script
-    assert "runtime_evidence = prepare_runtime_asset_cache" in script
-    assert "enumerate((0, 10, 30), start=1)" in script
-    assert '"bounded_resume_retry_enabled": True' in script
-    assert '"prepare_attempt_count": len(prepare_attempts)' in script
+    assert "prepare_runtime_asset_cache_with_retries" in script
+    assert 'runtime_evidence = prepare_result["runtime_asset_evidence"]' in script
+    assert '"bounded_resume_retry_enabled": prepare_result[' in script
+    assert '"prepare_attempt_count": prepare_result[' in script
     assert "offline_evidence = offline_preflight(" in script
     assert "processor_probe=True" in script
     assert "dcp_metadata_probe=True" in script
@@ -640,7 +640,7 @@ def test_oscar_runtime_assets_prepare_once_then_fail_closed_offline_preflight() 
         assert f"export {name}={shlex.quote(value)}" in script
 
     prepare_started = "upload_phase oscar_runtime_asset_prepare_started"
-    prepare_call = "runtime_evidence = prepare_runtime_asset_cache"
+    prepare_call = "prepare_result = prepare_runtime_asset_cache_with_retries"
     prepared = "upload_phase oscar_runtime_assets_prepared"
     offline_export = "export HF_HUB_OFFLINE=1"
     offline_call = "offline_evidence = offline_preflight("

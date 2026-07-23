@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -675,6 +676,48 @@ def prepare_runtime_asset_cache(
     return evidence
 
 
+def prepare_runtime_asset_cache_with_retries(
+    cache_root: Path | str = DEFAULT_RUNTIME_MODEL_CACHE_ROOT,
+    *,
+    token: str | None = None,
+    retry_delays_seconds: Sequence[int] = (0, 10, 30),
+    sleeper: Any = time.sleep,
+) -> dict[str, Any]:
+    """Resume the pinned cache through a small, observable retry budget."""
+
+    if (
+        not retry_delays_seconds
+        or len(retry_delays_seconds) > 3
+        or any(type(delay) is not int or delay < 0 or delay > 60 for delay in retry_delays_seconds)
+    ):
+        raise ValueError("oscar_runtime_asset_retry_schedule_invalid")
+    attempts: list[dict[str, Any]] = []
+    evidence: dict[str, Any] = {}
+    for attempt_number, retry_delay_seconds in enumerate(retry_delays_seconds, start=1):
+        if retry_delay_seconds:
+            sleeper(retry_delay_seconds)
+        evidence = prepare_runtime_asset_cache(cache_root, token=token)
+        attempts.append(
+            {
+                "attempt_number": attempt_number,
+                "status": evidence.get("status"),
+                "blockers": list(evidence.get("blockers") or []),
+                "retry_delay_seconds": retry_delay_seconds,
+            }
+        )
+        if evidence.get("status") == "passed":
+            break
+    return {
+        "status": evidence.get("status"),
+        "blockers": list(evidence.get("blockers") or []),
+        "runtime_asset_evidence": evidence,
+        "prepare_attempts": attempts,
+        "prepare_attempt_count": len(attempts),
+        "bounded_resume_retry_enabled": True,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def verify_oscar_dcp_checkpoint(
     checkpoint_root: Path | str = DEFAULT_OSCAR_CHECKPOINT_ROOT,
     *,
@@ -913,6 +956,7 @@ __all__ = [
     "offline_preflight",
     "offline_runtime_environment",
     "prepare_runtime_asset_cache",
+    "prepare_runtime_asset_cache_with_retries",
     "render_offline_export_script",
     "render_offline_preflight_script",
     "render_prepare_once_script",
