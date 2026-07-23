@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -185,3 +186,39 @@ def test_unsealed_runtime_bytecode_cache_blocks(tmp_path: Path, monkeypatch) -> 
     assert result["checks"]["runtime_tree_contains_no_unsealed_python_bytecode"] is False
     assert result["checks"]["runtime_tree_sha256_verified"] is False
     assert result["blockers"] == ["official_oscar_runtime_provenance_mismatch"]
+
+
+def test_missing_runtime_seal_reports_actionable_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "runtime-source"
+    source.mkdir()
+    (source / "inference.py").write_text("MODEL = 'oscar'\n", encoding="utf-8")
+    monkeypatch.setattr(provenance, "DEFAULT_RUNTIME_SOURCE_ROOT", str(source.resolve()))
+    monkeypatch.setattr(
+        provenance,
+        "OFFICIAL_OSCAR_RUNTIME_TREE_SHA256",
+        provenance.source_tree_evidence(source)["tree_sha256"],
+    )
+    missing_seal = tmp_path / "missing-seal.json"
+
+    result = provenance.verify_source_tree(
+        source_root=source,
+        seal_path=missing_seal,
+        artifact_path=tmp_path / "artifact.json",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["official_oscar_runtime_provenance_mismatch"]
+    assert result["diagnostics"] == {
+        "configured_source_root": str(source),
+        "resolved_source_root": str(source.resolve()),
+        "source_root_is_directory": True,
+        "source_root_was_symlink": False,
+        "seal_path": str(missing_seal),
+        "seal_file_exists": False,
+        "seal_file_is_symlink": False,
+        "seal_load_error_type": "OSError",
+        "runtime_tree_scan_error": None,
+        "runtime_effective_uid": os.geteuid(),
+    }

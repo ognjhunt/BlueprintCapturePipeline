@@ -162,15 +162,18 @@ def verify_source_tree(
     seal_path: str | Path,
     artifact_path: str | Path,
 ) -> dict[str, Any]:
-    root = Path(source_root).resolve()
+    configured_root = Path(source_root)
+    root = configured_root.resolve()
     seal_file = Path(seal_path)
     blockers: list[str] = []
+    seal_load_error_type: str | None = None
     try:
         if seal_file.is_symlink() or not seal_file.is_file():
             raise OSError("unsafe seal path")
         loaded = json.loads(seal_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         loaded = {}
+        seal_load_error_type = type(exc).__name__
     seal = dict(loaded) if isinstance(loaded, dict) else {}
     expected_tree = dict(seal.get("runtime_tree") or {})
     tree_scan_error: str | None = None
@@ -231,6 +234,18 @@ def verify_source_tree(
         ),
         "runtime_tree": actual_tree or None,
         "sealed_runtime_tree": expected_tree or None,
+        "diagnostics": {
+            "configured_source_root": str(configured_root),
+            "resolved_source_root": str(root),
+            "source_root_is_directory": root.is_dir(),
+            "source_root_was_symlink": configured_root.is_symlink(),
+            "seal_path": str(seal_file),
+            "seal_file_exists": seal_file.is_file(),
+            "seal_file_is_symlink": seal_file.is_symlink(),
+            "seal_load_error_type": seal_load_error_type,
+            "runtime_tree_scan_error": tree_scan_error,
+            "runtime_effective_uid": os.geteuid(),
+        },
         "blockers": blockers,
         "claim_boundary": {
             "build_time_git_identity_bound_to_runtime_tree": passed,

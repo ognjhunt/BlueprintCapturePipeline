@@ -4,6 +4,7 @@
 ARG FOUNDATION_IMAGE
 FROM ${FOUNDATION_IMAGE}
 USER root
+ENV PYTHONDONTWRITEBYTECODE=1
 ARG BLUEPRINT_SOURCE_COMMIT
 ARG BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256
 ARG FOUNDATION_MODEL_ASSETS=external
@@ -56,11 +57,27 @@ RUN mkdir -p /opt/blueprint/release-src \
          --groot-revision "${EMBEDDED_FOUNDATION_GROOT_SOURCE_REF}" \
          --oscar-revision "${EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF}" \
          --output /opt/blueprint/embedded_carrier_repair.json \
+       && test -L /opt/OSCAR \
+       && test "$(readlink -f /opt/OSCAR)" = /opt/oscar-public \
+       && rm /opt/OSCAR \
+       && mv /opt/oscar-public /opt/OSCAR \
+       && test -d /opt/OSCAR \
+       && test ! -L /opt/OSCAR \
+       && find /opt/OSCAR -type d -name __pycache__ -prune -exec rm -rf '{}' + \
+       && find /opt/OSCAR -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+       && PYTHONPATH=/opt/blueprint/release-src \
+          /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance seal \
+            --source-root /opt/OSCAR \
+            --output /opt/blueprint/oscar_source_provenance.json \
+            --source-url https://github.com/wuzy2115/oscar-public.git \
+            --source-commit "${EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF}" \
+            --runtime-source-root /opt/OSCAR \
+       && chmod 0444 /opt/blueprint/oscar_source_provenance.json \
        && printf '%s\n' '/opt/wbc' > "${oscar_site_packages}/blueprint_gear_sonic_runtime.pth" \
        && rm -f /usr/local/cuda*/bin/nvcc \
        && rm -rf /usr/local/cuda*/include /usr/local/cuda*/lib64/stubs /usr/local/cuda*/targets/*/include /usr/local/cuda*/targets/*/lib/stubs \
        && find /usr/local/cuda* -type f -name '*.a' -delete \
-       && rm -rf /opt/wbc/.git /opt/gr00t/.git /opt/oscar-public/.git; \
+       && rm -rf /opt/wbc/.git /opt/gr00t/.git /opt/OSCAR/.git; \
      fi \
   && oscar_site_packages="$(/opt/oscar-venv/bin/python -c 'import site; print(site.getsitepackages()[0])')" \
   && if ! /opt/oscar-venv/bin/python -c 'import cv2'; then \
@@ -79,13 +96,14 @@ RUN mkdir -p /opt/blueprint/release-src \
        external) test ! -e /opt/blueprint/ckpts ;; \
        embedded) \
          test -d /opt/blueprint/ckpts \
-         && BLUEPRINT_SOURCE_COMMIT="${BLUEPRINT_SOURCE_COMMIT}" \
-            BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256}" \
-            BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release \
-            BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS="${FOUNDATION_MODEL_ASSETS}" \
-            BLUEPRINT_GEAR_SONIC_SOURCE_REVISION="${EMBEDDED_FOUNDATION_WBC_SOURCE_REF}" \
-            PYTHONPATH=/opt/wbc:/opt/OSCAR \
-            /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time ;; \
+         && runuser -u blueprint -- env \
+              BLUEPRINT_SOURCE_COMMIT="${BLUEPRINT_SOURCE_COMMIT}" \
+              BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="${BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256}" \
+              BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release \
+              BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS="${FOUNDATION_MODEL_ASSETS}" \
+              BLUEPRINT_GEAR_SONIC_SOURCE_REVISION="${EMBEDDED_FOUNDATION_WBC_SOURCE_REF}" \
+              PYTHONPATH=/opt/blueprint/release-src:/opt/wbc:/opt/OSCAR \
+              /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time ;; \
        *) echo "invalid FOUNDATION_MODEL_ASSETS=${FOUNDATION_MODEL_ASSETS}" >&2; exit 2 ;; \
      esac
 ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \

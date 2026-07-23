@@ -623,6 +623,9 @@ def test_oscar_runtime_assets_prepare_once_then_fail_closed_offline_preflight() 
     assert single_episode.OSCAR_RUNTIME_ASSET_PREPARE_ARTIFACT in script
     assert single_episode.OSCAR_RUNTIME_ASSET_PREFLIGHT_ARTIFACT in script
     assert "runtime_evidence = prepare_runtime_asset_cache" in script
+    assert "enumerate((0, 10, 30), start=1)" in script
+    assert '"bounded_resume_retry_enabled": True' in script
+    assert '"prepare_attempt_count": len(prepare_attempts)' in script
     assert "offline_evidence = offline_preflight(" in script
     assert "processor_probe=True" in script
     assert "dcp_metadata_probe=True" in script
