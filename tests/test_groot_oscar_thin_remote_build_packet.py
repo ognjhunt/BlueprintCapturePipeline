@@ -192,13 +192,17 @@ def test_release_removes_build_only_serverless_environment_files() -> None:
         '/tmp/install_transformer_engine_shim.py "${oscar_site_packages}"'
         in release_dockerfile
     )
-    assert "/tmp/install_transformer_engine_shim.py /opt/oscar-public" not in release_dockerfile
+    legacy_source_upgrade = (
+        "/opt/oscar-venv/bin/python /tmp/install_transformer_engine_shim.py "
+        "/opt/oscar-public"
+    )
+    assert legacy_source_upgrade in release_dockerfile
     assert 'rm -rf "${oscar_site_packages}/transformer_engine"' in release_dockerfile
     assert 'test ! -e "${oscar_site_packages}/transformer_engine"' in release_dockerfile
     assert "repair_embedded_carrier.py" in release_dockerfile
     assert release_dockerfile.index(
         '/tmp/install_transformer_engine_shim.py "${oscar_site_packages}"'
-    ) < release_dockerfile.index(
+    ) < release_dockerfile.index(legacy_source_upgrade) < release_dockerfile.index(
         "&& /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py"
     )
     assert "BLUEPRINT_GEAR_SONIC_SOURCE_REVISION" in release_dockerfile

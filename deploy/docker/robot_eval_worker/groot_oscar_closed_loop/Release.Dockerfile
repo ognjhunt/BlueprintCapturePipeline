@@ -52,6 +52,7 @@ RUN mkdir -p /opt/blueprint/release-src \
        && rm -rf "${oscar_site_packages}/transformer_engine" \
        && test -d "${oscar_site_packages}/transformer_engine-2.0.0.dist-info" \
        && test ! -e "${oscar_site_packages}/transformer_engine" \
+       && /opt/oscar-venv/bin/python /tmp/install_transformer_engine_shim.py /opt/oscar-public \
        && find /opt/oscar-public -type d -name __pycache__ -prune -exec rm -rf '{}' + \
        && find /opt/oscar-public -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
        && PYTHONPATH=/opt/blueprint/release-src \
