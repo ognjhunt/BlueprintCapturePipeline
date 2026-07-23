@@ -455,12 +455,12 @@ def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
     )
 
 
-def test_embedded_release_reseals_legacy_oscar_before_deleting_git_metadata():
+def test_embedded_release_normalizes_sealed_git_free_legacy_oscar():
     dockerfile = (IMAGE_ROOT / "Release.Dockerfile").read_text(encoding="utf-8")
 
     normalize = 'test "$(readlink -f /opt/OSCAR)" = /opt/oscar-public'
     cleanup = "find /opt/OSCAR -type d -name __pycache__"
-    seal = "blueprint_pipeline.oscar_runtime_source_provenance seal"
+    seal = "blueprint_pipeline.oscar_runtime_source_provenance normalize"
     delete_git = "rm -rf /opt/wbc/.git /opt/gr00t/.git /opt/OSCAR/.git"
     assert "ENV PYTHONDONTWRITEBYTECODE=1" in dockerfile
     assert "test -L /opt/OSCAR" in dockerfile
@@ -475,8 +475,11 @@ def test_embedded_release_reseals_legacy_oscar_before_deleting_git_metadata():
     ) in dockerfile
     assert seal in dockerfile
     assert "--source-root /opt/OSCAR" in dockerfile
+    assert (
+        "--existing-seal /opt/blueprint/oscar_source_provenance.json"
+        in dockerfile
+    )
     assert "--output /opt/blueprint/oscar_source_provenance.json" in dockerfile
-    assert '--source-commit "${EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF}"' in dockerfile
     assert "--runtime-source-root /opt/OSCAR" in dockerfile
     assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in dockerfile
     assert (

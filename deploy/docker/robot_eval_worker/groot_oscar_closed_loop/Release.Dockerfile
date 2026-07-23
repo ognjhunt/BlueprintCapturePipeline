@@ -66,11 +66,10 @@ RUN mkdir -p /opt/blueprint/release-src \
        && find /opt/OSCAR -type d -name __pycache__ -prune -exec rm -rf '{}' + \
        && find /opt/OSCAR -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
        && PYTHONPATH=/opt/blueprint/release-src \
-          /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance seal \
+          /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance normalize \
             --source-root /opt/OSCAR \
+            --existing-seal /opt/blueprint/oscar_source_provenance.json \
             --output /opt/blueprint/oscar_source_provenance.json \
-            --source-url https://github.com/wuzy2115/oscar-public.git \
-            --source-commit "${EMBEDDED_FOUNDATION_OSCAR_SOURCE_REF}" \
             --runtime-source-root /opt/OSCAR \
        && chmod 0444 /opt/blueprint/oscar_source_provenance.json \
        && printf '%s\n' '/opt/wbc' > "${oscar_site_packages}/blueprint_gear_sonic_runtime.pth" \
