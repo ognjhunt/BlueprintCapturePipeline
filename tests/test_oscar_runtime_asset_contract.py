@@ -83,6 +83,59 @@ def test_contract_pins_exact_oscar_dcp_bytes_and_digest() -> None:
     assert len(payload["contract_digest"]) == 71
 
 
+def test_runtime_asset_prepare_retries_resume_and_stop_after_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    results = [
+        {"status": "blocked", "blockers": ["transient_download"]},
+        {"status": "passed", "blockers": [], "prepare_action": "reused_verified_cache"},
+    ]
+    calls: list[tuple[Path | str, str | None]] = []
+    sleeps: list[int] = []
+
+    def fake_prepare(cache_root: Path | str, *, token: str | None = None) -> dict:
+        calls.append((cache_root, token))
+        return results.pop(0)
+
+    monkeypatch.setattr(contract, "prepare_runtime_asset_cache", fake_prepare)
+    result = contract.prepare_runtime_asset_cache_with_retries(
+        tmp_path,
+        token="secret",
+        retry_delays_seconds=(0, 10, 30),
+        sleeper=sleeps.append,
+    )
+
+    assert result["status"] == "passed"
+    assert result["runtime_asset_evidence"]["prepare_action"] == "reused_verified_cache"
+    assert result["prepare_attempt_count"] == 2
+    assert result["prepare_attempts"] == [
+        {
+            "attempt_number": 1,
+            "status": "blocked",
+            "blockers": ["transient_download"],
+            "retry_delay_seconds": 0,
+        },
+        {
+            "attempt_number": 2,
+            "status": "passed",
+            "blockers": [],
+            "retry_delay_seconds": 10,
+        },
+    ]
+    assert calls == [(tmp_path, "secret"), (tmp_path, "secret")]
+    assert sleeps == [10]
+    assert result["raw_secret_values_recorded"] is False
+
+
+@pytest.mark.parametrize("schedule", [(), (-1,), (0, 61), (0, 1, 2, 3)])
+def test_runtime_asset_prepare_retry_schedule_is_bounded(schedule: tuple[int, ...]) -> None:
+    with pytest.raises(ValueError, match="oscar_runtime_asset_retry_schedule_invalid"):
+        contract.prepare_runtime_asset_cache_with_retries(
+            "/tmp/runtime-assets",
+            retry_delays_seconds=schedule,
+        )
+
+
 def _runtime_license_admission() -> dict:
     return {
         "schema_version": contract.RUNTIME_LICENSE_ADMISSION_SCHEMA_VERSION,

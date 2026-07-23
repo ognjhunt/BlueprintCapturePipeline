@@ -14,14 +14,25 @@ import gzip
 import hashlib
 import json
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping, cast
 
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from blueprint_pipeline.oscar_runtime_asset_contract import (  # noqa: E402
+    REASON1_REPO_ID,
+    REASON1_REVISION,
+    REASON1_SNAPSHOT_FILES,
+    WAN_VAE_FILE,
+    WAN_VAE_REPO_ID,
+    WAN_VAE_REVISION,
+)
+
 IMAGE_ROOT = ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
 FOUNDATION = IMAGE_ROOT / "Foundation.Dockerfile"
 MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
@@ -133,6 +144,21 @@ ALLOWED_HTTPS_HOSTS = frozenset(
     }
 )
 AuthorizedFetch = Callable[[str, str], bytes]
+
+AUXILIARY_MODEL_PINS = (
+    (
+        "oscar_reason1",
+        REASON1_REPO_ID,
+        REASON1_REVISION,
+        REASON1_SNAPSHOT_FILES,
+    ),
+    (
+        "oscar_wan_vae",
+        WAN_VAE_REPO_ID,
+        WAN_VAE_REVISION,
+        (WAN_VAE_FILE,),
+    ),
+)
 
 
 def _assigned_literal(module: Path, name: str) -> object:
@@ -308,6 +334,13 @@ def verify_static() -> list[str]:
             blockers.append(f"model_revision_not_immutable:{name}")
         if not required_files.get(name):
             blockers.append(f"model_required_files_empty:{name}")
+    for name, _repository, revision, files in AUXILIARY_MODEL_PINS:
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            blockers.append(f"auxiliary_model_revision_not_immutable:{name}")
+        if not files:
+            blockers.append(f"auxiliary_model_required_files_empty:{name}")
+        if any(item.size_bytes <= 0 for item in files):
+            blockers.append(f"auxiliary_model_required_file_size_invalid:{name}")
     return sorted(set(blockers))
 
 
@@ -581,6 +614,77 @@ def verify_live(
         "provider_volume_verified": False,
         "model_bytes_downloaded_or_hashed": False,
         "claim_boundary": "metadata sizing is not offline model-cache verification",
+    }
+
+    auxiliary_bytes = 0
+    auxiliary_files = 0
+    for name, repository, revision, pinned_files in AUXILIARY_MODEL_PINS:
+        required_paths = tuple(item.relative_path for item in pinned_files)
+        expected_sizes = {item.relative_path: item.size_bytes for item in pinned_files}
+        try:
+            metadata = _json_object(
+                fetch(
+                    f"https://huggingface.co/api/models/{repository}/revision/"
+                    f"{revision}?blobs=true"
+                )
+            )
+            actual_revision = metadata.get("sha")
+            available, missing, invalid_sizes, model_bytes = (
+                summarize_required_model_metadata(
+                    metadata.get("siblings", []), required_paths
+                )
+            )
+            size_mismatches = sorted(
+                path
+                for path, expected_size in expected_sizes.items()
+                if path in available
+                and path not in invalid_sizes
+                and available[path].get("size") != expected_size
+            )
+            auxiliary_bytes += model_bytes
+            auxiliary_files += len(required_paths)
+            checks[f"runtime_asset:{name}"] = {
+                "repository": repository,
+                "revision": actual_revision,
+                "required": len(required_paths),
+                "required_bytes": model_bytes,
+                "missing": missing,
+                "invalid_sizes": invalid_sizes,
+                "size_mismatches": size_mismatches,
+                "metadata_access_proven_before_paid_allocation": True,
+            }
+            if actual_revision != revision:
+                blockers.append(f"runtime_asset_revision_mismatch:{name}")
+            blockers.extend(
+                f"runtime_asset_file_unavailable:{name}:{path}" for path in missing
+            )
+            blockers.extend(
+                f"runtime_asset_file_size_unavailable:{name}:{path}"
+                for path in invalid_sizes
+            )
+            blockers.extend(
+                f"runtime_asset_file_size_mismatch:{name}:{path}"
+                for path in size_mismatches
+            )
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            urllib.error.URLError,
+        ) as exc:
+            blockers.append(
+                f"runtime_asset_revision_unavailable:{name}:{type(exc).__name__}"
+            )
+    checks["runtime_auxiliary_asset_plan"] = {
+        "required_files": auxiliary_files,
+        "required_bytes": auxiliary_bytes,
+        "remote_metadata_access_verified": not any(
+            blocker.startswith("runtime_asset_") for blocker in blockers
+        ),
+        "model_bytes_downloaded_or_hashed": False,
+        "claim_boundary": (
+            "remote metadata access is not downloaded offline-cache verification"
+        ),
     }
 
     return sorted(set(blockers)), checks

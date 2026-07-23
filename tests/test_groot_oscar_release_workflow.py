@@ -5,10 +5,14 @@ from pathlib import Path
 import pytest
 
 from scripts.verify_groot_oscar_live_prerequisites import (
+    AUXILIARY_MODEL_PINS,
     _AllowlistedRedirectHandler,
     _verify_isaac_base_image,
     summarize_required_model_metadata,
     verify_static,
+)
+from blueprint_pipeline.oscar_runtime_asset_contract import (
+    RUNTIME_AUXILIARY_ASSET_TOTAL_SIZE_BYTES,
 )
 from scripts.verify_groot_oscar_thin_architecture import verify
 
@@ -93,6 +97,25 @@ def test_model_metadata_sizing_fails_closed_for_missing_or_unknown_sizes() -> No
     assert missing == ["tokenizer.json"]
     assert invalid_sizes == ["config.json"]
     assert required_bytes == 123
+
+
+def test_live_prerequisite_gate_covers_every_oscar_auxiliary_runtime_byte() -> None:
+    assert {name for name, _repo, _revision, _files in AUXILIARY_MODEL_PINS} == {
+        "oscar_reason1",
+        "oscar_wan_vae",
+    }
+    assert all(
+        len(revision) == 40
+        for _name, _repo, revision, _files in AUXILIARY_MODEL_PINS
+    )
+    assert (
+        sum(
+            item.size_bytes
+            for _name, _repo, _revision, files in AUXILIARY_MODEL_PINS
+            for item in files
+        )
+        == RUNTIME_AUXILIARY_ASSET_TOTAL_SIZE_BYTES
+    )
 
 
 def test_prerequisite_redirect_handler_reapplies_outbound_allowlist() -> None:

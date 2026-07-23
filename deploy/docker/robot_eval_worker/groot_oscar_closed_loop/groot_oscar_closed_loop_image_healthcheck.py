@@ -70,6 +70,12 @@ MAIN_ENV_MODULES = {
     "PIL": "pillow",
     "huggingface_hub": "huggingface_hub",
 }
+OSCAR_SOURCE_PROVENANCE_SEAL = Path(
+    os.environ.get(
+        "BLUEPRINT_OSCAR_SOURCE_PROVENANCE_SEAL",
+        "/opt/blueprint/oscar_source_provenance.json",
+    )
+)
 
 
 def _dir_has_files(path: Path) -> bool:
@@ -166,6 +172,9 @@ def main() -> int:
         blockers.append("blueprint_source_dirty_patch_sha256_missing")
     if args.require_cuda and re.fullmatch(r"sha256:[0-9a-f]{64}", worker_image_digest) is None:
         blockers.append("blueprint_worker_image_digest_missing_or_invalid")
+    payload["python_bytecode_writes_disabled"] = bool(sys.dont_write_bytecode)
+    if not sys.dont_write_bytecode:
+        blockers.append("python_bytecode_writes_not_disabled")
 
     # --- main env: torch (from base) ---
     try:
@@ -230,6 +239,85 @@ def main() -> int:
     payload["cuda_compiler_and_development_files_removed"] = not cuda_development_markers
     if cuda_development_markers:
         blockers.append("cuda_compiler_or_development_files_present")
+
+    # Verify the exact Git-reviewed OSCAR tree and builder-produced seal as the
+    # real runtime user before importing OSCAR. This deliberately runs before
+    # the dynamic-config probe so inherited or newly written bytecode cannot
+    # hide a release-image provenance defect until a paid GPU starts.
+    provenance_artifact: Path | None = None
+    try:
+        from blueprint_pipeline.oscar_runtime_source_provenance import (
+            verify_source_tree,
+        )
+
+        provenance_artifact = (
+            Path("/tmp")
+            / f"blueprint_oscar_runtime_source_provenance_healthcheck_{os.getpid()}.json"
+        )
+        oscar_runtime_provenance = verify_source_tree(
+            source_root=OSCAR_REPO,
+            seal_path=OSCAR_SOURCE_PROVENANCE_SEAL,
+            artifact_path=provenance_artifact,
+        )
+    except (ImportError, OSError, ValueError) as exc:
+        oscar_runtime_provenance = {
+            "status": "blocked",
+            "blockers": ["official_oscar_runtime_provenance_mismatch"],
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    finally:
+        if provenance_artifact is not None:
+            provenance_artifact.unlink(missing_ok=True)
+    payload["oscar_runtime_source_provenance"] = oscar_runtime_provenance
+    if oscar_runtime_provenance.get("status") != "passed":
+        blockers.extend(
+            str(value)
+            for value in (
+                oscar_runtime_provenance.get("blockers")
+                or ["official_oscar_runtime_provenance_mismatch"]
+            )
+        )
+
+    # The embedded OSCAR repository is not a self-contained checkpoint. Hash
+    # every DCP byte and parse its distributed-checkpoint metadata on the CPU
+    # builder so a missing, truncated, or unreadable checkpoint never first
+    # appears after a paid GPU allocation.
+    model_asset_mode = os.environ.get(
+        "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS", "external"
+    )
+    if model_asset_mode == "embedded":
+        try:
+            from blueprint_pipeline.oscar_runtime_asset_contract import (
+                verify_oscar_dcp_checkpoint,
+            )
+
+            oscar_checkpoint_dcp_preflight = verify_oscar_dcp_checkpoint(
+                OSCAR_CHECKPOINT,
+                load_metadata=True,
+            )
+        except (ImportError, OSError, ValueError) as exc:
+            oscar_checkpoint_dcp_preflight = {
+                "status": "blocked",
+                "blockers": ["oscar_dcp_build_preflight_failed"],
+                "error_type": type(exc).__name__,
+                "raw_secret_values_recorded": False,
+            }
+        if oscar_checkpoint_dcp_preflight.get("status") != "passed":
+            blockers.extend(
+                str(value)
+                for value in (
+                    oscar_checkpoint_dcp_preflight.get("blockers")
+                    or ["oscar_dcp_build_preflight_failed"]
+                )
+            )
+    else:
+        oscar_checkpoint_dcp_preflight = {
+            "status": "not_applicable_external_model_assets",
+            "blockers": [],
+            "raw_secret_values_recorded": False,
+        }
+    payload["oscar_checkpoint_dcp_preflight"] = oscar_checkpoint_dcp_preflight
 
     # --- OSCAR source on PYTHONPATH ---
     oscar_entrypoint = Path(OSCAR_REPO) / "inference" / "inference_oscar.py"
@@ -351,9 +439,6 @@ def main() -> int:
     if not all(wbc_asset_checks.values()):
         blockers.append("official_gear_sonic_deployment_assets_missing")
     wbc_build = wbc_root / "gear_sonic_deploy/build"
-    model_asset_mode = os.environ.get(
-        "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS", "external"
-    )
     thin_release = bool(
         os.environ.get("BLUEPRINT_WORKER_IMAGE_VARIANT") == "groot-oscar-thin-release"
     )

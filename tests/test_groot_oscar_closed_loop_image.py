@@ -455,6 +455,52 @@ def test_foundation_image_constructs_oscar_dynamic_config_with_locked_pytest():
     )
 
 
+def test_embedded_release_normalizes_sealed_git_free_legacy_oscar():
+    dockerfile = (IMAGE_ROOT / "Release.Dockerfile").read_text(encoding="utf-8")
+
+    normalize = 'test "$(readlink -f /opt/OSCAR)" = /opt/oscar-public'
+    cleanup = "find /opt/OSCAR -type d -name __pycache__"
+    seal = "blueprint_pipeline.oscar_runtime_source_provenance normalize"
+    delete_git = "rm -rf /opt/wbc/.git /opt/gr00t/.git /opt/OSCAR/.git"
+    assert "ENV PYTHONDONTWRITEBYTECODE=1" in dockerfile
+    assert "test -L /opt/OSCAR" in dockerfile
+    assert normalize in dockerfile
+    assert "rm /opt/OSCAR" in dockerfile
+    assert "mv /opt/oscar-public /opt/OSCAR" in dockerfile
+    assert "test ! -L /opt/OSCAR" in dockerfile
+    assert cleanup in dockerfile
+    assert (
+        "find /opt/OSCAR -type f "
+        "\\( -name '*.pyc' -o -name '*.pyo' \\) -delete"
+    ) in dockerfile
+    assert seal in dockerfile
+    assert "--source-root /opt/OSCAR" in dockerfile
+    assert (
+        "--existing-seal /opt/blueprint/oscar_source_provenance.json"
+        in dockerfile
+    )
+    assert "--output /opt/blueprint/oscar_source_provenance.json" in dockerfile
+    assert "--runtime-source-root /opt/OSCAR" in dockerfile
+    assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in dockerfile
+    assert (
+        dockerfile.index(normalize)
+        < dockerfile.index(cleanup)
+        < dockerfile.index(seal)
+        < dockerfile.index(delete_git)
+    )
+
+
+def test_embedded_release_healthcheck_runs_as_exact_runtime_user():
+    dockerfile = (IMAGE_ROOT / "Release.Dockerfile").read_text(encoding="utf-8")
+
+    assert "runuser -u blueprint -- env" in dockerfile
+    assert "PYTHONPATH=/opt/blueprint/release-src:/opt/wbc:/opt/OSCAR" in dockerfile
+    assert (
+        "/opt/oscar-venv/bin/python "
+        "/opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time"
+    ) in dockerfile
+
+
 def test_image_seals_the_exact_gear_sonic_deploy_models():
     dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "GEAR_SONIC_CHECKPOINT_REPO=nvidia/GEAR-SONIC" in dockerfile
@@ -547,6 +593,16 @@ def test_image_healthcheck_enforces_runtime_service_dependencies():
     assert "importlib.metadata.version('pytest') == '9.1.1'" in healthcheck
     assert 'payload["oscar_dynamic_config_constructible"]' in healthcheck
     assert "oscar_inference_dynamic_config_not_importable" in healthcheck
+    assert "verify_source_tree" in healthcheck
+    assert "official_oscar_runtime_provenance_mismatch" in healthcheck
+    assert 'payload["oscar_runtime_source_provenance"]' in healthcheck
+    assert "provenance_artifact.unlink(missing_ok=True)" in healthcheck
+    assert "verify_oscar_dcp_checkpoint" in healthcheck
+    assert "load_metadata=True" in healthcheck
+    assert 'payload["oscar_checkpoint_dcp_preflight"]' in healthcheck
+    assert "oscar_dcp_build_preflight_failed" in healthcheck
+    assert 'payload["python_bytecode_writes_disabled"]' in healthcheck
+    assert "python_bytecode_writes_not_disabled" in healthcheck
 
     cpu_probe = (IMAGE_ROOT / "oscar_cpu_import_probe.py").read_text(encoding="utf-8")
     assert 'importlib.metadata.version("transformer-engine") != "2.0.0"' in cpu_probe

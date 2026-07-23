@@ -156,21 +156,73 @@ def seal_source_tree(
     return payload
 
 
+def normalize_sealed_source_tree(
+    *,
+    source_root: str | Path,
+    existing_seal_path: str | Path,
+    output_path: str | Path,
+    runtime_source_root: str = DEFAULT_RUNTIME_SOURCE_ROOT,
+) -> dict[str, Any]:
+    """Rebind an already sealed, Git-free carrier tree to its final runtime path."""
+
+    existing_path = Path(existing_seal_path)
+    if existing_path.is_symlink() or not existing_path.is_file():
+        raise ValueError("oscar_existing_source_seal_missing_or_unsafe")
+    try:
+        loaded = json.loads(existing_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("oscar_existing_source_seal_unreadable") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("oscar_existing_source_seal_invalid")
+    existing = dict(loaded)
+    tree = source_tree_evidence(source_root)
+    if (
+        existing.get("schema_version") != SEAL_SCHEMA_VERSION
+        or existing.get("status") != "sealed"
+        or existing.get("source_url") != OFFICIAL_OSCAR_SOURCE_URL
+        or existing.get("source_commit") != OFFICIAL_OSCAR_SOURCE_COMMIT
+        or existing.get("git_metadata_required_at_runtime") is not False
+        or existing.get("runtime_tree") != tree
+        or tree.get("tree_sha256") != OFFICIAL_OSCAR_RUNTIME_TREE_SHA256
+    ):
+        raise ValueError("oscar_existing_source_seal_mismatch")
+    payload = {
+        "schema_version": SEAL_SCHEMA_VERSION,
+        "status": "sealed",
+        "source_url": OFFICIAL_OSCAR_SOURCE_URL,
+        "source_commit": OFFICIAL_OSCAR_SOURCE_COMMIT,
+        "runtime_source_root": runtime_source_root,
+        "runtime_tree": tree,
+        "runtime_tree_stage": "reviewed_source_plus_foundation_runtime_patch",
+        "git_metadata_required_at_runtime": False,
+        "raw_secret_values_recorded": False,
+    }
+    target = Path(output_path)
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise ValueError("oscar_source_seal_output_path_unsafe")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
 def verify_source_tree(
     *,
     source_root: str | Path,
     seal_path: str | Path,
     artifact_path: str | Path,
 ) -> dict[str, Any]:
-    root = Path(source_root).resolve()
+    configured_root = Path(source_root)
+    root = configured_root.resolve()
     seal_file = Path(seal_path)
     blockers: list[str] = []
+    seal_load_error_type: str | None = None
     try:
         if seal_file.is_symlink() or not seal_file.is_file():
             raise OSError("unsafe seal path")
         loaded = json.loads(seal_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         loaded = {}
+        seal_load_error_type = type(exc).__name__
     seal = dict(loaded) if isinstance(loaded, dict) else {}
     expected_tree = dict(seal.get("runtime_tree") or {})
     tree_scan_error: str | None = None
@@ -231,6 +283,18 @@ def verify_source_tree(
         ),
         "runtime_tree": actual_tree or None,
         "sealed_runtime_tree": expected_tree or None,
+        "diagnostics": {
+            "configured_source_root": str(configured_root),
+            "resolved_source_root": str(root),
+            "source_root_is_directory": root.is_dir(),
+            "source_root_was_symlink": configured_root.is_symlink(),
+            "seal_path": str(seal_file),
+            "seal_file_exists": seal_file.is_file(),
+            "seal_file_is_symlink": seal_file.is_symlink(),
+            "seal_load_error_type": seal_load_error_type,
+            "runtime_tree_scan_error": tree_scan_error,
+            "runtime_effective_uid": os.geteuid(),
+        },
         "blockers": blockers,
         "claim_boundary": {
             "build_time_git_identity_bound_to_runtime_tree": passed,
@@ -256,6 +320,11 @@ def _parser() -> argparse.ArgumentParser:
     seal.add_argument("--source-url", default=OFFICIAL_OSCAR_SOURCE_URL)
     seal.add_argument("--source-commit", default=OFFICIAL_OSCAR_SOURCE_COMMIT)
     seal.add_argument("--runtime-source-root", default=DEFAULT_RUNTIME_SOURCE_ROOT)
+    normalize = subparsers.add_parser("normalize")
+    normalize.add_argument("--source-root", required=True)
+    normalize.add_argument("--existing-seal", required=True)
+    normalize.add_argument("--output", required=True)
+    normalize.add_argument("--runtime-source-root", default=DEFAULT_RUNTIME_SOURCE_ROOT)
     verify = subparsers.add_parser("verify")
     verify.add_argument("--source-root", default=DEFAULT_RUNTIME_SOURCE_ROOT)
     verify.add_argument("--seal", default=DEFAULT_SEAL_PATH)
@@ -271,6 +340,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=args.output,
             source_url=args.source_url,
             source_commit=args.source_commit,
+            runtime_source_root=args.runtime_source_root,
+        )
+        return 0
+    if args.command == "normalize":
+        normalize_sealed_source_tree(
+            source_root=args.source_root,
+            existing_seal_path=args.existing_seal,
+            output_path=args.output,
             runtime_source_root=args.runtime_source_root,
         )
         return 0
