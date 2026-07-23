@@ -361,6 +361,15 @@ def test_groot_oscar_foundation_enables_and_pins_tensorrt_repository() -> None:
     assert "test ! -d /opt/wbc/gear_sonic_deploy/build" in foundation
 
 
+def test_groot_oscar_release_restates_required_cuda_metadata() -> None:
+    release = (
+        ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.8" in release
+    assert "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION=12.6" not in release
+
+
 def test_groot_oscar_small_carrier_matches_foundation_runtime_link_surface() -> None:
     carrier = (
         ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Carrier.Dockerfile"
