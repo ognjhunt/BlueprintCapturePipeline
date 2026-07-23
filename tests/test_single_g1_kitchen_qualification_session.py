@@ -98,6 +98,9 @@ def _minimal_inputs() -> dict:
         "source_task_contract_sha256": "6" * 64,
         "start_frame": b"exact-frame",
         "bootstrap_script": (
+            "/opt/oscar-venv/bin/python -m "
+            "blueprint_pipeline.gear_sonic_process_supervisor supervise -- "
+            "/opt/wbc/deploy.sh sim > /workspace/gear_sonic_controller.log 2>&1 &\n"
             "cp /workspace/attempt_input_manifest_episode_001.json "
             "/workspace/attempt_input_manifest.json\n"
             "upload_phase inputs_ready\necho exact-episode\n"
@@ -327,9 +330,27 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert binding["runtime_attempt_manifest_rebound"] is True
     assert binding["gear_sonic_controller_runtime_mode"] == "prebuilt_release_binary"
     assert binding["gear_sonic_controller_command_rebound"] is True
+    assert binding["bootstrap_gear_sonic_controller_command_rebound"] is True
     assert binding["source_gear_sonic_controller_command_sha256"] != binding[
         "release_gear_sonic_controller_command_sha256"
     ]
+    assert binding[
+        "source_bootstrap_gear_sonic_controller_command_sha256"
+    ] != binding["release_bootstrap_gear_sonic_controller_command_sha256"]
+    assert "/opt/wbc/deploy.sh" not in rebound["bootstrap_script"]
+    rebound_controller_shell = (
+        "/opt/oscar-venv/bin/python -m "
+        "blueprint_pipeline.gear_sonic_process_supervisor supervise -- "
+        "bash -lc 'cd /opt/wbc/gear_sonic_deploy && source scripts/setup_env.sh "
+        "&& exec ./target/release/g1_deploy_onnx_ref lo "
+        "policy/release/model_decoder.onnx reference/example "
+        "--obs-config policy/release/observation_config.yaml "
+        "--encoder-file policy/release/model_encoder.onnx "
+        "--planner-file planner/target_vel/V2/planner_sonic.onnx "
+        "--input-type zmq_manager --output-type zmq --zmq-host localhost "
+        "--disable-crc-check'"
+    )
+    assert rebound["bootstrap_script"].count(rebound_controller_shell) == 1
     assert rebound["attempt"]["qualification_source_task_success_contract_sha256"] == (
         "6" * 64
     )
@@ -2885,6 +2906,9 @@ def test_changed_refresh_payload_forces_restage_before_remote_mutation(
     )
     first_sha = first["refresh_payload"]["refresh_payload_sha256"]
     current_inputs["bootstrap_script"] = (
+        "/opt/oscar-venv/bin/python -m "
+        "blueprint_pipeline.gear_sonic_process_supervisor supervise -- "
+        "/opt/wbc/deploy.sh sim > /workspace/gear_sonic_controller.log 2>&1 &\n"
         "cp /workspace/attempt_input_manifest_episode_001.json "
         "/workspace/attempt_input_manifest.json\n"
         "upload_phase inputs_ready\necho changed-exact-episode\n"

@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import re
+import shlex
 from typing import Any, Mapping
 
 
@@ -47,6 +48,13 @@ OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND = (
     "--planner-file planner/target_vel/V2/planner_sonic.onnx "
     "--input-type zmq_manager --output-type zmq --zmq-host localhost "
     "--disable-crc-check",
+)
+GEAR_SONIC_PROCESS_SUPERVISOR_COMMAND = (
+    "/opt/oscar-venv/bin/python",
+    "-m",
+    "blueprint_pipeline.gear_sonic_process_supervisor",
+    "supervise",
+    "--",
 )
 
 
@@ -465,6 +473,48 @@ def bind_inputs_to_release(
         raise ValueError("qualification_source_gear_sonic_controller_command_invalid")
     source_controller_command = list(source_controller_value)
     release_controller_command = list(OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND)
+    bootstrap_script = str(inputs.get("bootstrap_script") or "")
+    source_bootstrap_controller_command = (
+        source_controller_command
+        if tuple(
+            source_controller_command[: len(GEAR_SONIC_PROCESS_SUPERVISOR_COMMAND)]
+        )
+        == GEAR_SONIC_PROCESS_SUPERVISOR_COMMAND
+        else [
+            *GEAR_SONIC_PROCESS_SUPERVISOR_COMMAND,
+            *source_controller_command,
+        ]
+    )
+    release_bootstrap_controller_command = [
+        *GEAR_SONIC_PROCESS_SUPERVISOR_COMMAND,
+        *release_controller_command,
+    ]
+    source_bootstrap_controller_shell = shlex.join(
+        source_bootstrap_controller_command
+    )
+    release_bootstrap_controller_shell = shlex.join(
+        release_bootstrap_controller_command
+    )
+    if bootstrap_script.count(source_bootstrap_controller_shell) != 1:
+        raise ValueError(
+            "qualification_bootstrap_source_gear_sonic_controller_command_ambiguous"
+        )
+    rebound_bootstrap_script = bootstrap_script.replace(
+        source_bootstrap_controller_shell,
+        release_bootstrap_controller_shell,
+        1,
+    )
+    if rebound_bootstrap_script.count(release_bootstrap_controller_shell) != 1:
+        raise ValueError(
+            "qualification_bootstrap_release_gear_sonic_controller_command_ambiguous"
+        )
+    if (
+        source_bootstrap_controller_shell != release_bootstrap_controller_shell
+        and source_bootstrap_controller_shell in rebound_bootstrap_script
+    ):
+        raise ValueError(
+            "qualification_bootstrap_source_gear_sonic_controller_command_retained"
+        )
 
     binding_body = {
         "schema_version": LAUNCH_REBIND_SCHEMA_VERSION,
@@ -489,6 +539,16 @@ def bind_inputs_to_release(
         "gear_sonic_controller_runtime_mode": "prebuilt_release_binary",
         "gear_sonic_controller_command_rebound": (
             source_controller_command != release_controller_command
+        ),
+        "source_bootstrap_gear_sonic_controller_command_sha256": _canonical_sha256(
+            {"command": source_bootstrap_controller_command}
+        ),
+        "release_bootstrap_gear_sonic_controller_command_sha256": _canonical_sha256(
+            {"command": release_bootstrap_controller_command}
+        ),
+        "bootstrap_gear_sonic_controller_command_rebound": (
+            source_bootstrap_controller_command
+            != release_bootstrap_controller_command
         ),
     }
     binding_sha256 = _canonical_sha256(binding_body)
@@ -539,12 +599,11 @@ def bind_inputs_to_release(
     )
     attempt_bytes = (json.dumps(attempt, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
-    bootstrap_script = str(inputs.get("bootstrap_script") or "")
     marker = (
         "cp /workspace/attempt_input_manifest_episode_001.json "
         "/workspace/attempt_input_manifest.json\n"
     )
-    if bootstrap_script.count(marker) != 1:
+    if rebound_bootstrap_script.count(marker) != 1:
         raise ValueError("qualification_attempt_manifest_rebind_marker_ambiguous")
     encoded_attempt = base64.b64encode(attempt_bytes).decode("ascii")
     replacement = (
@@ -559,7 +618,9 @@ def bind_inputs_to_release(
     updated = dict(inputs)
     updated["plan"] = plan
     updated["attempt"] = attempt
-    updated["bootstrap_script"] = bootstrap_script.replace(marker, replacement, 1)
+    updated["bootstrap_script"] = rebound_bootstrap_script.replace(
+        marker, replacement, 1
+    )
     launch_binding = {
         **embedded_binding,
         "derived_launch_plan_sha256": derived_plan_sha256,
