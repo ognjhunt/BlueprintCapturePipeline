@@ -243,21 +243,32 @@ def main() -> int:
         oscar_env["PYTHONPATH"] = os.pathsep.join(
             value for value in (OSCAR_REPO, oscar_env.get("PYTHONPATH", "").strip()) if value
         )
+        if args.build_time:
+            oscar_dynamic_config_command = [
+                sys.executable,
+                "/opt/blueprint/oscar_cpu_import_probe.py",
+            ]
+            payload["oscar_dynamic_config_probe_mode"] = (
+                "cpu_build_current_device_discovery_stub"
+            )
+        else:
+            oscar_dynamic_config_command = [
+                sys.executable,
+                "-c",
+                (
+                    "import importlib.metadata; "
+                    "import inference.inference_oscar; "
+                    "from worldsim._src.configs.agibot_control.config import make_config; "
+                    "assert importlib.metadata.version('transformer-engine') == '2.0.0'; "
+                    "assert importlib.metadata.version('pytest') == '9.1.1'; "
+                    "assert make_config() is not None; "
+                    "print('BLUEPRINT_OSCAR_DYNAMIC_CONFIG_OK')"
+                ),
+            ]
+            payload["oscar_dynamic_config_probe_mode"] = "live_cuda_runtime"
         try:
             oscar_dynamic_config = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    (
-                        "import importlib.metadata; "
-                        "import inference.inference_oscar; "
-                        "from worldsim._src.configs.agibot_control.config import make_config; "
-                        "assert importlib.metadata.version('transformer-engine') == '2.0.0'; "
-                        "assert importlib.metadata.version('pytest') == '9.1.1'; "
-                        "assert make_config() is not None; "
-                        "print('BLUEPRINT_OSCAR_DYNAMIC_CONFIG_OK')"
-                    ),
-                ],
+                oscar_dynamic_config_command,
                 cwd=OSCAR_REPO,
                 env=oscar_env,
                 capture_output=True,
@@ -269,6 +280,9 @@ def main() -> int:
             payload["oscar_dynamic_config_error_type"] = type(exc).__name__
     payload["oscar_dynamic_config_constructible"] = bool(
         oscar_dynamic_config is not None and oscar_dynamic_config.returncode == 0
+    )
+    payload["oscar_dynamic_config_live_cuda_proven"] = bool(
+        not args.build_time and payload["oscar_dynamic_config_constructible"]
     )
     if oscar_dynamic_config is not None:
         payload["oscar_dynamic_config_returncode"] = oscar_dynamic_config.returncode

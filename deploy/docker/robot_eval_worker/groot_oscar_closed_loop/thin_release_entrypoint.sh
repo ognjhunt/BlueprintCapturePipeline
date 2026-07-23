@@ -35,7 +35,7 @@ if [[ "$model_asset_mode" == "external" ]]; then
 elif [[ "$model_asset_mode" == "embedded" ]]; then
   export BLUEPRINT_GROOT_OSCAR_OSCAR_CHECKPOINT=/opt/blueprint/ckpts/oscar
   export BLUEPRINT_GROOT_OSCAR_SONIC_CHECKPOINT=/opt/blueprint/ckpts/sonic
-  /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time >/dev/null
+  /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --require-cuda >/dev/null
 else
   echo "invalid BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS=$model_asset_mode" >&2
   exit 2

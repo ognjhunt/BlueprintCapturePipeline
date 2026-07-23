@@ -38,6 +38,14 @@ def main() -> int:
         raise ValueError("runtime health schema is invalid")
     if health.get("status") != "passed" or health.get("blockers") not in (None, []):
         raise ValueError("sealed runtime health preflight did not pass")
+    if health.get("build_time") is not False:
+        raise ValueError("runtime health must come from a live runtime probe")
+    if health.get("torch_cuda_available") is not True:
+        raise ValueError("runtime health did not prove live CUDA availability")
+    if health.get("oscar_dynamic_config_probe_mode") != "live_cuda_runtime":
+        raise ValueError("runtime health did not use the live CUDA OSCAR probe")
+    if health.get("oscar_dynamic_config_live_cuda_proven") is not True:
+        raise ValueError("runtime health did not prove the live CUDA OSCAR config")
 
     source_sha = str(host.get("worker_source_sha") or "")
     image_digest = str(host.get("preloaded_worker_image_digest") or "")

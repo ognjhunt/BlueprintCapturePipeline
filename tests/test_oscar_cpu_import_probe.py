@@ -26,6 +26,14 @@ def test_cpu_import_probe_scopes_cuda_discovery_patch(tmp_path: Path) -> None:
         "Version: 9.1.1\n",
         encoding="utf-8",
     )
+    transformer_engine_dist_info = tmp_path / "transformer_engine-2.0.0.dist-info"
+    transformer_engine_dist_info.mkdir()
+    (transformer_engine_dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\n"
+        "Name: transformer-engine\n"
+        "Version: 2.0.0\n",
+        encoding="utf-8",
+    )
     package = tmp_path / "inference"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")

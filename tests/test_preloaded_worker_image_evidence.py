@@ -27,6 +27,10 @@ def test_g4_self_test_converts_to_campaign_preload_evidence(tmp_path: Path):
                 "schema_version": "groot_oscar_closed_loop_image_healthcheck.v1",
                 "status": "passed",
                 "blockers": [],
+                "build_time": False,
+                "torch_cuda_available": True,
+                "oscar_dynamic_config_probe_mode": "live_cuda_runtime",
+                "oscar_dynamic_config_live_cuda_proven": True,
                 "worker_image_digest": "sha256:" + "7" * 64,
                 "runtime_metadata": {"source_commit": "5" * 40},
             }
@@ -82,6 +86,10 @@ def test_converter_rejects_runtime_health_from_different_digest(tmp_path: Path):
                 "schema_version": "groot_oscar_closed_loop_image_healthcheck.v1",
                 "status": "passed",
                 "blockers": [],
+                "build_time": False,
+                "torch_cuda_available": True,
+                "oscar_dynamic_config_probe_mode": "live_cuda_runtime",
+                "oscar_dynamic_config_live_cuda_proven": True,
                 "worker_image_digest": "sha256:" + "8" * 64,
                 "runtime_metadata": {"source_commit": "5" * 40},
             }
@@ -146,3 +154,45 @@ def test_converter_rejects_failed_runtime_health(tmp_path: Path):
     )
     assert result.returncode != 0
     assert "runtime health preflight did not pass" in result.stderr
+
+
+def test_converter_rejects_build_time_health_as_runtime_proof(tmp_path: Path):
+    host = tmp_path / "host.json"
+    health = tmp_path / "health.json"
+    host.write_text(
+        json.dumps({"schema_version": "blueprint_g4_host_self_test.v1", "status": "passed"})
+    )
+    health.write_text(
+        json.dumps(
+            {
+                "schema_version": "groot_oscar_closed_loop_image_healthcheck.v1",
+                "status": "passed",
+                "blockers": [],
+                "build_time": True,
+                "torch_cuda_available": False,
+                "oscar_dynamic_config_probe_mode": "cpu_build_current_device_discovery_stub",
+                "oscar_dynamic_config_live_cuda_proven": False,
+            }
+        )
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_preloaded_worker_image_evidence.py",
+            "--host-self-test",
+            str(host),
+            "--runtime-health",
+            str(health),
+            "--allocation-key",
+            "blueprint-g4",
+            "--host-image-id",
+            "g4-host-1",
+            "--output",
+            str(tmp_path / "out.json"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "must come from a live runtime probe" in result.stderr

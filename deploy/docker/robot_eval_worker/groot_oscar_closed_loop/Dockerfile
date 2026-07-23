@@ -420,6 +420,7 @@ RUN rm -f /usr/local/cuda*/bin/nvcc \
 #    a root-only healthcheck cannot see runtime-user exec/traversal failures
 #    (uv interpreter under /root, group-restricted /isaac-sim).
 COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/groot_oscar_closed_loop_image_healthcheck.py /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/oscar_cpu_import_probe.py /opt/blueprint/oscar_cpu_import_probe.py
 RUN runuser -u blueprint -- /opt/oscar-venv/bin/python /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py --build-time
 
 # Name-only USER: the explicit `USER user:group` form makes the runtime skip

@@ -17,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 IMAGE_ROOT = ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop"
 FOUNDATION = IMAGE_ROOT / "Foundation.Dockerfile"
 OSCAR_CPU_IMPORT_PROBE = IMAGE_ROOT / "oscar_cpu_import_probe.py"
+FULL_IMAGE = IMAGE_ROOT / "Dockerfile"
 RELEASE = IMAGE_ROOT / "Release.Dockerfile"
+HEALTHCHECK = IMAGE_ROOT / "groot_oscar_closed_loop_image_healthcheck.py"
 ENTRYPOINT = IMAGE_ROOT / "thin_release_entrypoint.sh"
 MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
 ADMISSION = ROOT / "src/blueprint_pipeline/groot_oscar_infrastructure_admission.py"
@@ -58,7 +60,9 @@ def verify() -> list[str]:
     blockers: list[str] = []
     foundation = FOUNDATION.read_text(encoding="utf-8")
     oscar_cpu_import_probe = OSCAR_CPU_IMPORT_PROBE.read_text(encoding="utf-8")
+    full_image = FULL_IMAGE.read_text(encoding="utf-8")
     release = RELEASE.read_text(encoding="utf-8")
+    healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
     entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
     final_stage = foundation.rsplit("FROM tensorrt-base", 1)[-1]
 
@@ -114,6 +118,7 @@ def verify() -> list[str]:
         '"worldsim._src.configs.agibot_control.config"',
         "config = config_module.make_config()",
         'importlib.metadata.version("pytest") != "9.1.1"',
+        'importlib.metadata.version("transformer-engine") != "2.0.0"',
         "torch.cuda.current_device is not original_current_device",
         "BLUEPRINT_OSCAR_CPU_IMPORT_PROBE_PASSED",
     ):
@@ -151,6 +156,7 @@ def verify() -> list[str]:
         "FROM ${FOUNDATION_IMAGE}",
         "BLUEPRINT_WORKER_IMAGE_VARIANT=groot-oscar-thin-release",
         "test ! -e /opt/blueprint/ckpts",
+        "oscar_cpu_import_probe.py /opt/blueprint/oscar_cpu_import_probe.py",
     )
     for fragment in required_release_fragments:
         if fragment not in release:
@@ -158,8 +164,22 @@ def verify() -> list[str]:
     for fragment in ("snapshot_download", "hf_hub_download", "model.safetensors"):
         if fragment in release:
             blockers.append(f"thin_release_embeds_model_acquisition:{fragment}")
+    if "oscar_cpu_import_probe.py /opt/blueprint/oscar_cpu_import_probe.py" not in full_image:
+        blockers.append("full_image_cpu_import_probe_not_supplied")
+    for fragment in (
+        'if args.build_time:',
+        '"/opt/blueprint/oscar_cpu_import_probe.py"',
+        '"cpu_build_current_device_discovery_stub"',
+        '"live_cuda_runtime"',
+    ):
+        if fragment not in healthcheck:
+            blockers.append(f"image_healthcheck_cpu_gpu_probe_split_missing:{fragment}")
     if "groot_oscar_model_cache activate" not in entrypoint:
         blockers.append("thin_release_offline_model_activation_missing")
+    if "groot_oscar_closed_loop_image_healthcheck.py --require-cuda" not in entrypoint:
+        blockers.append("thin_release_runtime_live_cuda_healthcheck_missing")
+    if "groot_oscar_closed_loop_image_healthcheck.py --build-time" in entrypoint:
+        blockers.append("thin_release_runtime_uses_build_time_healthcheck")
     if "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST" not in entrypoint:
         blockers.append("thin_release_expected_model_manifest_digest_missing")
     if "--expected-manifest-digest" not in entrypoint:

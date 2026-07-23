@@ -91,6 +91,8 @@ def test_release_asset_modes_are_explicit_and_fail_closed() -> None:
     assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in dockerfile
     assert 'model_asset_mode="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS:-external}"' in entrypoint
     assert 'elif [[ "$model_asset_mode" == "embedded" ]]' in entrypoint
+    assert "groot_oscar_closed_loop_image_healthcheck.py --require-cuda" in entrypoint
+    assert "groot_oscar_closed_loop_image_healthcheck.py --build-time" not in entrypoint
     assert "invalid BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in entrypoint
     healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
     assert "BLUEPRINT_GROOT_OSCAR_FOUNDATION_MODEL_ASSETS" in healthcheck
