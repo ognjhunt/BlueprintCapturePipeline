@@ -163,29 +163,40 @@ def normalize_sealed_source_tree(
     output_path: str | Path,
     runtime_source_root: str = DEFAULT_RUNTIME_SOURCE_ROOT,
 ) -> dict[str, Any]:
-    """Rebind an already sealed, Git-free carrier tree to its final runtime path."""
+    """Bind an exact reviewed, Git-free carrier tree to its final runtime path.
+
+    Older embedded foundations may predate the seal artifact.  Absence is
+    admissible only when the complete live tree independently matches the
+    reviewed runtime digest.  An existing seal remains mandatory evidence when
+    present and must agree byte-for-byte with the observed tree.
+    """
 
     existing_path = Path(existing_seal_path)
-    if existing_path.is_symlink() or not existing_path.is_file():
-        raise ValueError("oscar_existing_source_seal_missing_or_unsafe")
-    try:
-        loaded = json.loads(existing_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("oscar_existing_source_seal_unreadable") from exc
-    if not isinstance(loaded, dict):
-        raise ValueError("oscar_existing_source_seal_invalid")
-    existing = dict(loaded)
-    tree = source_tree_evidence(source_root)
-    if (
-        existing.get("schema_version") != SEAL_SCHEMA_VERSION
-        or existing.get("status") != "sealed"
-        or existing.get("source_url") != OFFICIAL_OSCAR_SOURCE_URL
-        or existing.get("source_commit") != OFFICIAL_OSCAR_SOURCE_COMMIT
-        or existing.get("git_metadata_required_at_runtime") is not False
-        or existing.get("runtime_tree") != tree
-        or tree.get("tree_sha256") != OFFICIAL_OSCAR_RUNTIME_TREE_SHA256
+    if existing_path.is_symlink() or (
+        existing_path.exists() and not existing_path.is_file()
     ):
+        raise ValueError("oscar_existing_source_seal_missing_or_unsafe")
+    tree = source_tree_evidence(source_root)
+    if tree.get("tree_sha256") != OFFICIAL_OSCAR_RUNTIME_TREE_SHA256:
         raise ValueError("oscar_existing_source_seal_mismatch")
+    existing_seal_present = existing_path.is_file()
+    if existing_seal_present:
+        try:
+            loaded = json.loads(existing_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("oscar_existing_source_seal_unreadable") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError("oscar_existing_source_seal_invalid")
+        existing = dict(loaded)
+        if (
+            existing.get("schema_version") != SEAL_SCHEMA_VERSION
+            or existing.get("status") != "sealed"
+            or existing.get("source_url") != OFFICIAL_OSCAR_SOURCE_URL
+            or existing.get("source_commit") != OFFICIAL_OSCAR_SOURCE_COMMIT
+            or existing.get("git_metadata_required_at_runtime") is not False
+            or existing.get("runtime_tree") != tree
+        ):
+            raise ValueError("oscar_existing_source_seal_mismatch")
     payload = {
         "schema_version": SEAL_SCHEMA_VERSION,
         "status": "sealed",
@@ -194,6 +205,11 @@ def normalize_sealed_source_tree(
         "runtime_source_root": runtime_source_root,
         "runtime_tree": tree,
         "runtime_tree_stage": "reviewed_source_plus_foundation_runtime_patch",
+        "normalization_identity_basis": (
+            "existing_seal_and_independent_reviewed_tree_digest"
+            if existing_seal_present
+            else "independent_reviewed_tree_digest"
+        ),
         "git_metadata_required_at_runtime": False,
         "raw_secret_values_recorded": False,
     }

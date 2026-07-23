@@ -459,6 +459,9 @@ def test_embedded_release_normalizes_sealed_git_free_legacy_oscar():
     dockerfile = (IMAGE_ROOT / "Release.Dockerfile").read_text(encoding="utf-8")
 
     normalize = 'test "$(readlink -f /opt/OSCAR)" = /opt/oscar-public'
+    pre_repair_cleanup = "find /opt/oscar-public -type d -name __pycache__"
+    pre_repair_source = "--source-root /opt/oscar-public"
+    repair = "&& /opt/oscar-venv/bin/python /tmp/repair_embedded_carrier.py"
     cleanup = "find /opt/OSCAR -type d -name __pycache__"
     seal = "blueprint_pipeline.oscar_runtime_source_provenance normalize"
     delete_git = "rm -rf /opt/wbc/.git /opt/gr00t/.git /opt/OSCAR/.git"
@@ -468,12 +471,16 @@ def test_embedded_release_normalizes_sealed_git_free_legacy_oscar():
     assert "rm /opt/OSCAR" in dockerfile
     assert "mv /opt/oscar-public /opt/OSCAR" in dockerfile
     assert "test ! -L /opt/OSCAR" in dockerfile
+    assert pre_repair_cleanup in dockerfile
+    assert pre_repair_source in dockerfile
+    assert "--runtime-source-root /opt/oscar-public" in dockerfile
     assert cleanup in dockerfile
     assert (
         "find /opt/OSCAR -type f "
         "\\( -name '*.pyc' -o -name '*.pyo' \\) -delete"
     ) in dockerfile
     assert seal in dockerfile
+    assert dockerfile.count(seal) == 2
     assert "--source-root /opt/OSCAR" in dockerfile
     assert (
         "--existing-seal /opt/blueprint/oscar_source_provenance.json"
@@ -483,9 +490,12 @@ def test_embedded_release_normalizes_sealed_git_free_legacy_oscar():
     assert "--runtime-source-root /opt/OSCAR" in dockerfile
     assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in dockerfile
     assert (
-        dockerfile.index(normalize)
+        dockerfile.index(pre_repair_cleanup)
+        < dockerfile.index(pre_repair_source)
+        < dockerfile.index(repair)
+        < dockerfile.index(normalize)
         < dockerfile.index(cleanup)
-        < dockerfile.index(seal)
+        < dockerfile.rindex(seal)
         < dockerfile.index(delete_git)
     )
 
