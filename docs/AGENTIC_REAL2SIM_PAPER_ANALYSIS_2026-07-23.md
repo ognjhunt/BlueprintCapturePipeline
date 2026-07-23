@@ -240,8 +240,9 @@ evidence-ledger boundaries, exactly like the NVIDIA components.
 - The **model-bill-only cost framing** as a headline. Blueprint already accounts
   for GPU/provider cost through the paid-resource allocator and cost-control
   ledgers; do not quote a model-token figure as total cost.
-- Do not present any paper metric (48%, or SC3's 0.929) as a Blueprint result —
-  `PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT` already forbids this pattern.
+- Do not present any paper metric (the paper's 48% success rate, or SC3-Eval's
+  0.929) as a Blueprint result; these are **not Blueprint measurements**, and
+  `PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md` already forbids restating them.
 
 ## Recommended bounded experiment: physical-prior proposals
 
