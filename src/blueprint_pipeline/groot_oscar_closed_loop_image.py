@@ -34,6 +34,9 @@ from .oscar_cosmos_wam_evaluator import (
     WAM_SUCCESS_LABEL_GATE_ENV,
 )
 from .oscar_official_release import OFFICIAL_OSCAR_HF_REVISION
+from .single_g1_kitchen_qualification_contract import (
+    OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND,
+)
 
 # --------------------------------------------------------------------------- #
 # configuration keys
@@ -363,22 +366,9 @@ def build_sealed_launch_plan(
         "--initial-state-output",
         initial_g1_sonic_state_path,
     ]
-    plan["gear_sonic_controller_command"] = [
-        "bash",
-        "-lc",
-        " ".join(
-            [
-                "cd /opt/wbc/gear_sonic_deploy && source scripts/setup_env.sh && exec",
-                "./target/release/g1_deploy_onnx_ref lo",
-                "policy/release/model_decoder.onnx reference/example",
-                "--obs-config policy/release/observation_config.yaml",
-                "--encoder-file policy/release/model_encoder.onnx",
-                "--planner-file planner/target_vel/V2/planner_sonic.onnx",
-                "--input-type zmq_manager --output-type zmq --zmq-host localhost",
-                "--disable-crc-check",
-            ]
-        ),
-    ]
+    plan["gear_sonic_controller_command"] = list(
+        OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND
+    )
     plan["closed_loop_command"] = [
         DEFAULT_OSCAR_VENV_PYTHON,
         "-m",

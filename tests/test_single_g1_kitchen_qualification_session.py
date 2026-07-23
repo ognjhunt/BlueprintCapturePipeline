@@ -22,6 +22,7 @@ from blueprint_pipeline.groot_oscar_runpod_watchdog import OWNER_TEARDOWN_CANCEL
 from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
 from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
     MODEL_ASSETS_BINDING_SCHEMA_VERSION,
+    OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND,
     capture_runtime_attempt_overlay_base,
     embedded_launch_rebind,
 )
@@ -301,8 +302,15 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
 
     assert blockers == []
     assert inputs["plan"]["image_ref"] == source_ref
+    assert inputs["plan"]["gear_sonic_controller_command"] == [
+        "/opt/wbc/deploy.sh",
+        "sim",
+    ]
     assert inputs["attempt"]["image_digest"] == "sha256:" + "1" * 64
     assert rebound["plan"]["image_ref"] == TEST_IMAGE_REF
+    assert rebound["plan"]["gear_sonic_controller_command"] == list(
+        OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND
+    )
     assert rebound["attempt"]["image_digest"] == TEST_IMAGE_DIGEST
     assert rebound["attempt"]["source_commit"] == TEST_SOURCE_COMMIT
     assert rebound["attempt"]["source_dirty_patch_sha256"] == hashlib.sha256(b"").hexdigest()
@@ -317,6 +325,11 @@ def test_qualification_release_rebind_preserves_source_and_derives_runtime_input
     assert binding["source_bundle_sha256"] == qualification.BUNDLE_SHA256
     assert binding["source_bundle_preserved"] is True
     assert binding["runtime_attempt_manifest_rebound"] is True
+    assert binding["gear_sonic_controller_runtime_mode"] == "prebuilt_release_binary"
+    assert binding["gear_sonic_controller_command_rebound"] is True
+    assert binding["source_gear_sonic_controller_command_sha256"] != binding[
+        "release_gear_sonic_controller_command_sha256"
+    ]
     assert rebound["attempt"]["qualification_source_task_success_contract_sha256"] == (
         "6" * 64
     )
