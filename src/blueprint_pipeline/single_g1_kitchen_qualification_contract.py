@@ -36,6 +36,18 @@ _LAUNCH_ONLY_REBIND_FIELDS = frozenset(
 EMPTY_PATCH_SHA256 = hashlib.sha256(b"").hexdigest()
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _DIGEST_REF_RE = re.compile(r"[^\s@]+@sha256:([0-9a-f]{64})")
+OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND = (
+    "bash",
+    "-lc",
+    "cd /opt/wbc/gear_sonic_deploy && source scripts/setup_env.sh && exec "
+    "./target/release/g1_deploy_onnx_ref lo "
+    "policy/release/model_decoder.onnx reference/example "
+    "--obs-config policy/release/observation_config.yaml "
+    "--encoder-file policy/release/model_encoder.onnx "
+    "--planner-file planner/target_vel/V2/planner_sonic.onnx "
+    "--input-type zmq_manager --output-type zmq --zmq-host localhost "
+    "--disable-crc-check",
+)
 
 
 def valid_source_commit(value: object) -> bool:
@@ -446,6 +458,13 @@ def bind_inputs_to_release(
     bundle_sha256 = str(inputs.get("bundle_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", bundle_sha256):
         raise ValueError("qualification_source_bundle_digest_invalid")
+    source_controller_value = plan.get("gear_sonic_controller_command")
+    if not isinstance(source_controller_value, list) or not all(
+        isinstance(item, str) and item for item in source_controller_value
+    ):
+        raise ValueError("qualification_source_gear_sonic_controller_command_invalid")
+    source_controller_command = list(source_controller_value)
+    release_controller_command = list(OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND)
 
     binding_body = {
         "schema_version": LAUNCH_REBIND_SCHEMA_VERSION,
@@ -461,11 +480,27 @@ def bind_inputs_to_release(
         "release_source_patch_sha256": source_patch_sha256,
         "source_bundle_preserved": True,
         "derived_plan_and_attempt_required": True,
+        "source_gear_sonic_controller_command_sha256": _canonical_sha256(
+            {"command": source_controller_command}
+        ),
+        "release_gear_sonic_controller_command_sha256": _canonical_sha256(
+            {"command": release_controller_command}
+        ),
+        "gear_sonic_controller_runtime_mode": "prebuilt_release_binary",
+        "gear_sonic_controller_command_rebound": (
+            source_controller_command != release_controller_command
+        ),
     }
     binding_sha256 = _canonical_sha256(binding_body)
     embedded_binding = {**binding_body, "binding_sha256": binding_sha256}
 
     plan["image_ref"] = target_image_ref
+    # Qualification bundles are immutable inputs and may retain an older
+    # deploy.sh launcher. The release foundation deliberately strips the CUDA
+    # development toolchain after compiling and validating this binary, so a
+    # runtime rebuild is unsupported. Preserve and hash the source command
+    # above, then bind execution to the prebuilt release binary.
+    plan["gear_sonic_controller_command"] = release_controller_command
     plan["qualification_release_rebind"] = embedded_binding
     derived_plan_sha256 = _canonical_sha256(plan)
     task_contract_value = inputs.get("task_contract")
