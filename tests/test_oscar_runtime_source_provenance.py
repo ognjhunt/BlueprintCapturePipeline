@@ -104,7 +104,61 @@ def test_normalize_sealed_runtime_tree_without_git(tmp_path: Path, monkeypatch) 
     assert result["source_commit"] == actual_commit
     assert result["runtime_source_root"] == "/opt/OSCAR"
     assert result["runtime_tree"] == provenance.source_tree_evidence(source)
+    assert (
+        result["normalization_identity_basis"]
+        == "existing_seal_and_independent_reviewed_tree_digest"
+    )
     assert json.loads(normalized_seal.read_text(encoding="utf-8")) == result
+
+
+def test_normalize_exact_runtime_tree_without_git_or_existing_seal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "runtime-source"
+    source.mkdir()
+    (source / "inference.py").write_text("MODEL = 'oscar'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        provenance,
+        "OFFICIAL_OSCAR_RUNTIME_TREE_SHA256",
+        provenance.source_tree_evidence(source)["tree_sha256"],
+    )
+    normalized_seal = tmp_path / "release-seal.json"
+
+    result = provenance.normalize_sealed_source_tree(
+        source_root=source,
+        existing_seal_path=tmp_path / "missing-foundation-seal.json",
+        output_path=normalized_seal,
+        runtime_source_root="/opt/OSCAR",
+    )
+
+    assert result["source_url"] == OFFICIAL_OSCAR_SOURCE_URL
+    assert result["source_commit"] == provenance.OFFICIAL_OSCAR_SOURCE_COMMIT
+    assert result["runtime_tree"] == provenance.source_tree_evidence(source)
+    assert (
+        result["normalization_identity_basis"]
+        == "independent_reviewed_tree_digest"
+    )
+    assert json.loads(normalized_seal.read_text(encoding="utf-8")) == result
+
+
+def test_normalize_missing_seal_rejects_unreviewed_runtime_tree(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "runtime-source"
+    source.mkdir()
+    (source / "inference.py").write_text("MODEL = 'forged'\n", encoding="utf-8")
+
+    try:
+        provenance.normalize_sealed_source_tree(
+            source_root=source,
+            existing_seal_path=tmp_path / "missing-foundation-seal.json",
+            output_path=tmp_path / "release-seal.json",
+            runtime_source_root="/opt/OSCAR",
+        )
+    except ValueError as exc:
+        assert str(exc) == "oscar_existing_source_seal_mismatch"
+    else:  # pragma: no cover
+        raise AssertionError("an unreviewed tree without a seal must fail closed")
 
 
 def test_normalize_rejects_forged_existing_seal(tmp_path: Path, monkeypatch) -> None:
