@@ -25,6 +25,7 @@ from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
     OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND,
     capture_runtime_attempt_overlay_base,
     embedded_launch_rebind,
+    require_latest_attempt_binding,
 )
 
 
@@ -655,6 +656,47 @@ def _bind_latest_attempt(
     manifest["latest_attempt"] = latest
     qualification._private_write_json(manifest_path, manifest)
     return latest
+
+
+def test_latest_attempt_rejects_legacy_rebind_without_bootstrap_command_proof(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _live_manifest(tmp_path)
+    _bind_latest_attempt(manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    latest = dict(manifest["latest_attempt"])
+    rebind = dict(latest["qualification_launch_rebind"])
+    for key in (
+        "source_gear_sonic_controller_command_sha256",
+        "release_gear_sonic_controller_command_sha256",
+        "gear_sonic_controller_runtime_mode",
+        "gear_sonic_controller_command_rebound",
+        "source_bootstrap_gear_sonic_controller_command_sha256",
+        "release_bootstrap_gear_sonic_controller_command_sha256",
+        "bootstrap_gear_sonic_controller_command_rebound",
+    ):
+        rebind.pop(key)
+    rebind_body = dict(rebind)
+    rebind_body.pop("binding_sha256")
+    rebind["binding_sha256"] = hashlib.sha256(
+        json.dumps(
+            rebind_body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    latest["qualification_launch_rebind"] = rebind
+    manifest["latest_attempt"] = latest
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "qualification_launch_rebind."
+            "source_bootstrap_gear_sonic_controller_command_sha256"
+        ),
+    ):
+        require_latest_attempt_binding(manifest)
 
 
 def _qualification_output_zip(

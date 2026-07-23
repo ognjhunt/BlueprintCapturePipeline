@@ -411,6 +411,76 @@ def require_latest_attempt_binding(manifest: Mapping[str, Any]) -> dict[str, Any
         for key, expected_value in expected_rebind.items()
         if embedded_rebind.get(key) != expected_value
     )
+    command_digest_keys = (
+        "source_gear_sonic_controller_command_sha256",
+        "release_gear_sonic_controller_command_sha256",
+        "source_bootstrap_gear_sonic_controller_command_sha256",
+        "release_bootstrap_gear_sonic_controller_command_sha256",
+    )
+    for key in command_digest_keys:
+        if re.fullmatch(r"[0-9a-f]{64}", str(embedded_rebind.get(key) or "")) is None:
+            mismatches.append(f"qualification_launch_rebind.{key}")
+    expected_release_controller_sha256 = _canonical_sha256(
+        {"command": list(OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND)}
+    )
+    expected_release_bootstrap_sha256 = _canonical_sha256(
+        {
+            "command": [
+                *GEAR_SONIC_PROCESS_SUPERVISOR_COMMAND,
+                *OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND,
+            ]
+        }
+    )
+    if (
+        embedded_rebind.get("release_gear_sonic_controller_command_sha256")
+        != expected_release_controller_sha256
+    ):
+        mismatches.append(
+            "qualification_launch_rebind.release_gear_sonic_controller_command_sha256"
+        )
+    if (
+        embedded_rebind.get("release_bootstrap_gear_sonic_controller_command_sha256")
+        != expected_release_bootstrap_sha256
+    ):
+        mismatches.append(
+            "qualification_launch_rebind."
+            "release_bootstrap_gear_sonic_controller_command_sha256"
+        )
+    if (
+        embedded_rebind.get("gear_sonic_controller_runtime_mode")
+        != "prebuilt_release_binary"
+    ):
+        mismatches.append(
+            "qualification_launch_rebind.gear_sonic_controller_runtime_mode"
+        )
+    command_rebound = embedded_rebind.get("gear_sonic_controller_command_rebound")
+    bootstrap_command_rebound = embedded_rebind.get(
+        "bootstrap_gear_sonic_controller_command_rebound"
+    )
+    if not isinstance(command_rebound, bool):
+        mismatches.append(
+            "qualification_launch_rebind.gear_sonic_controller_command_rebound"
+        )
+    elif command_rebound != (
+        embedded_rebind.get("source_gear_sonic_controller_command_sha256")
+        != embedded_rebind.get("release_gear_sonic_controller_command_sha256")
+    ):
+        mismatches.append(
+            "qualification_launch_rebind.gear_sonic_controller_command_rebound"
+        )
+    if not isinstance(bootstrap_command_rebound, bool):
+        mismatches.append(
+            "qualification_launch_rebind."
+            "bootstrap_gear_sonic_controller_command_rebound"
+        )
+    elif bootstrap_command_rebound != (
+        embedded_rebind.get("source_bootstrap_gear_sonic_controller_command_sha256")
+        != embedded_rebind.get("release_bootstrap_gear_sonic_controller_command_sha256")
+    ):
+        mismatches.append(
+            "qualification_launch_rebind."
+            "bootstrap_gear_sonic_controller_command_rebound"
+        )
     rebind_body = dict(embedded_rebind)
     binding_sha256 = rebind_body.pop("binding_sha256", None)
     if binding_sha256 != _canonical_sha256(rebind_body):
