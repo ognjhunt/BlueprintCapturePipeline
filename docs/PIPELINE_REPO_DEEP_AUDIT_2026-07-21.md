@@ -456,10 +456,12 @@ selectable: fixture, OSCAR, Cosmos3 (candidate), MuJoCo, Isaac, pybullet. Violat
    tests plus all 18 Vast async-runner tests pass, reducing that runner by another 55
    lines. RunPod stop/delete execution and the post-error terminal-state probe now live
    in `runpod_wam_teardown`; a delete acknowledgement is kept distinct from API-confirmed
-   terminal state, and warm reuse is recorded only after an acknowledged stop. Its six
-   direct tests plus all 48 RunPod async-runner tests pass, reducing that runner by 153
-   lines. Normal provider status polling and teardown-proof persistence still need
-   incremental extraction.
+   terminal state, transport failures still trigger a provider-state recovery probe,
+   and warm reuse is recorded only after an acknowledged stop. A delete acknowledgement
+   no longer suppresses continuing-spend risk unless a provider query proves the pod
+   terminal or absent. Its nine direct tests plus all 48 RunPod async-runner tests pass,
+   reducing that runner by 153 lines. Normal provider status polling and teardown-proof
+   persistence still need incremental extraction.
 2. **Corrected on revalidation — do not fold the alleged single-consumer satellites.**
    `runpod_wam_launch_contract.py` is a cohesive carrier-volume admission, pod-payload,
    watchdog-handoff, and secret-redaction boundary deliberately extracted from the

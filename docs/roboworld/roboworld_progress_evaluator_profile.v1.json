@@ -1,0 +1,144 @@
+{
+  "claim_boundary": {
+    "generated_video_score_is_not_physical_robot_success": true,
+    "progress_score_is_not_rank_fidelity_measurement": true,
+    "public_claim_upgrade_allowed": false,
+    "step_forcing_or_roboworld_model_reproduced": false,
+    "view_authority_is_evaluator_configuration_not_sensor_truth": true
+  },
+  "frozen": true,
+  "profile_id": "roboworld_progress_v1",
+  "profile_sha256": "80b8224a0d77b29264eadb4b383682f8b48dddd4076bd223f7fc0211d6eed709",
+  "profile_version": "1.0.0",
+  "required_score_fields": [
+    "task_progress_score",
+    "policy_progress_stage",
+    "world_model_failure_stage",
+    "world_model_failure_detected",
+    "criterion_evidence_refs",
+    "judge_confidence",
+    "judge_abstained",
+    "prompt_sha256",
+    "judge_model_sha256",
+    "calibration_set_sha256"
+  ],
+  "rubric": [
+    {
+      "allowed_world_model_failure_stages": [
+        "none",
+        "before_approach"
+      ],
+      "meaning": "failure_or_irrelevant_behavior",
+      "policy_progress_stage": "no_task_directed_behavior",
+      "score": 0,
+      "world_model_failure_required": false
+    },
+    {
+      "allowed_world_model_failure_stages": [
+        "during_approach"
+      ],
+      "meaning": "model_failure_during_task_directed_approach",
+      "policy_progress_stage": "approach",
+      "score": 1,
+      "world_model_failure_required": true,
+      "world_model_failure_stage": "during_approach"
+    },
+    {
+      "allowed_world_model_failure_stages": [
+        "none"
+      ],
+      "meaning": "task_directed_approach_without_target_interaction",
+      "policy_progress_stage": "approach",
+      "score": 2,
+      "world_model_failure_required": false
+    },
+    {
+      "allowed_world_model_failure_stages": [
+        "upon_contact"
+      ],
+      "meaning": "model_failure_at_or_immediately_after_target_contact",
+      "policy_progress_stage": "target_contact",
+      "score": 3,
+      "world_model_failure_required": true,
+      "world_model_failure_stage": "upon_contact"
+    },
+    {
+      "allowed_world_model_failure_stages": [
+        "none",
+        "during_interaction"
+      ],
+      "meaning": "substantial_valid_progress_or_model_failure_during_interaction",
+      "policy_progress_stage": "near_completion",
+      "score": 4,
+      "world_model_failure_required": false
+    },
+    {
+      "allowed_world_model_failure_stages": [
+        "none"
+      ],
+      "meaning": "task_goal_visibly_achieved_and_stably_maintained",
+      "policy_progress_stage": "completed",
+      "score": 5,
+      "world_model_failure_required": false
+    }
+  ],
+  "schema_version": "roboworld_progress_evaluator_profile.v1",
+  "segment_aggregation": {
+    "default_strategy": "terminal",
+    "maximum_is_experimental": true,
+    "sample_rate_hz": 1.0,
+    "selection_requires_ablation": true,
+    "stable_maintenance_adjacent_frame_count": 2,
+    "strategies": [
+      "progress_then_regression_aware",
+      "terminal",
+      "mean",
+      "minimum",
+      "maximum_experimental",
+      "stable_maintenance"
+    ]
+  },
+  "source_method": {
+    "name": "RoboWorld-inspired task-progress evaluation",
+    "paper": "arXiv:2607.01060v4",
+    "paper_metrics_are_not_blueprint_measurements": true,
+    "reported_evaluator_ablation": {
+      "binary_success_spearman": 0.922,
+      "task_progress_spearman": 0.97,
+      "values_are_external_context_only": true,
+      "wrist_as_success_authority_spearman": 0.862
+    },
+    "step_forcing_implemented": false
+  },
+  "view_authority": {
+    "criterion_overrides": [],
+    "override_requirements": {
+      "calibration_set_sha256_required": true,
+      "independently_accepted": true,
+      "reason_required": true,
+      "task_specific": true
+    },
+    "views": [
+      {
+        "allowed_roles": [
+          "task_progress",
+          "task_completion"
+        ],
+        "view_id": "fixed_external_left"
+      },
+      {
+        "allowed_roles": [
+          "task_progress",
+          "task_completion"
+        ],
+        "view_id": "fixed_external_right"
+      },
+      {
+        "allowed_roles": [
+          "world_model_failure_detection"
+        ],
+        "view_id": "wrist"
+      }
+    ]
+  }
+}

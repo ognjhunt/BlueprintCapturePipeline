@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/roboworld_progress_evaluator_profile.v1.json",
+  "title": "RoboWorld-inspired progress evaluator profile",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "frozen",
+    "source_method",
+    "rubric",
+    "view_authority",
+    "segment_aggregation",
+    "required_score_fields",
+    "claim_boundary",
+    "profile_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "roboworld_progress_evaluator_profile.v1" },
+    "profile_id": { "const": "roboworld_progress_v1" },
+    "profile_version": { "type": "string", "minLength": 1 },
+    "frozen": { "const": true },
+    "source_method": { "type": "object" },
+    "rubric": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "score",
+          "policy_progress_stage",
+          "allowed_world_model_failure_stages",
+          "world_model_failure_required",
+          "meaning"
+        ],
+        "properties": {
+          "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+          "policy_progress_stage": { "$ref": "#/$defs/progressStage" },
+          "world_model_failure_stage": { "$ref": "#/$defs/failureStage" },
+          "allowed_world_model_failure_stages": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/failureStage" }
+          },
+          "world_model_failure_required": { "type": "boolean" },
+          "meaning": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "view_authority": {
+      "type": "object",
+      "required": ["views", "criterion_overrides", "override_requirements"],
+      "properties": {
+        "views": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/viewAuthority" }
+        },
+        "criterion_overrides": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              { "$ref": "#/$defs/viewAuthority" },
+              {
+                "required": [
+                  "criterion_id",
+                  "independently_accepted",
+                  "calibration_set_sha256",
+                  "reason"
+                ]
+              }
+            ]
+          }
+        },
+        "override_requirements": { "type": "object" }
+      }
+    },
+    "segment_aggregation": {
+      "type": "object",
+      "required": [
+        "sample_rate_hz",
+        "default_strategy",
+        "maximum_is_experimental",
+        "stable_maintenance_adjacent_frame_count",
+        "strategies",
+        "selection_requires_ablation"
+      ],
+      "properties": {
+        "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 },
+        "default_strategy": {
+          "enum": [
+            "progress_then_regression_aware",
+            "terminal",
+            "mean",
+            "minimum",
+            "stable_maintenance"
+          ]
+        },
+        "maximum_is_experimental": { "const": true },
+        "stable_maintenance_adjacent_frame_count": { "type": "integer", "minimum": 2 },
+        "strategies": {
+          "type": "array",
+          "contains": { "const": "maximum_experimental" }
+        },
+        "selection_requires_ablation": { "const": true }
+      }
+    },
+    "required_score_fields": { "type": "array", "items": { "type": "string" } },
+    "claim_boundary": { "type": "object" },
+    "profile_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" },
+    "progressStage": {
+      "enum": [
+        "no_task_directed_behavior",
+        "approach",
+        "target_contact",
+        "target_interaction",
+        "near_completion",
+        "completed"
+      ]
+    },
+    "failureStage": {
+      "enum": [
+        "none",
+        "before_approach",
+        "during_approach",
+        "upon_contact",
+        "during_interaction",
+        "after_completion"
+      ]
+    },
+    "viewAuthority": {
+      "type": "object",
+      "required": ["view_id", "allowed_roles"],
+      "properties": {
+        "view_id": { "type": "string", "minLength": 1 },
+        "criterion_id": { "type": "string", "minLength": 1 },
+        "allowed_roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "task_progress",
+              "task_completion",
+              "world_model_failure_detection"
+            ]
+          }
+        },
+        "independently_accepted": { "type": "boolean" },
+        "calibration_set_sha256": { "$ref": "#/$defs/sha256" },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

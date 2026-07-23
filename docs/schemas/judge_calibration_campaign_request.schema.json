@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/judge_calibration_campaign_request.v1.json",
+  "title": "Blinded multi-judge calibration campaign request",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "campaign_version",
+    "frozen",
+    "sample_manifest_sha256",
+    "samples"
+  ],
+  "properties": {
+    "schema_version": { "const": "judge_calibration_campaign_request.v1" },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "campaign_version": { "type": "string", "minLength": 1 },
+    "frozen": { "const": true },
+    "sample_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "sample_id",
+          "policy_id",
+          "task_id",
+          "view_condition",
+          "contact_stage",
+          "artifact_type",
+          "human_reference",
+          "judge_outputs"
+        ],
+        "properties": {
+          "sample_id": { "type": "string", "minLength": 1 },
+          "policy_id": { "type": "string", "minLength": 1 },
+          "task_id": { "type": "string", "minLength": 1 },
+          "view_condition": { "type": "string", "minLength": 1 },
+          "contact_stage": { "type": "string", "minLength": 1 },
+          "artifact_type": { "type": "string", "minLength": 1 },
+          "human_reference": { "$ref": "#/$defs/humanReference" },
+          "judge_outputs": {
+            "type": "array",
+            "minItems": 2,
+            "items": { "$ref": "#/$defs/judgeOutput" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" },
+    "humanReference": {
+      "type": "object",
+      "required": [
+        "score",
+        "reviewer_count",
+        "blinded_to_policy_identity",
+        "randomized_order",
+        "label_artifact_sha256"
+      ],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "reviewer_count": { "type": "integer", "minimum": 2 },
+        "blinded_to_policy_identity": { "const": true },
+        "randomized_order": { "const": true },
+        "label_artifact_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "judgeOutput": {
+      "type": "object",
+      "required": [
+        "judge_id",
+        "judge_family",
+        "score",
+        "confidence",
+        "abstained",
+        "blinded_to_policy_identity",
+        "randomized_order",
+        "prompt_sha256",
+        "judge_model_sha256",
+        "calibration_set_sha256"
+      ],
+      "properties": {
+        "judge_id": { "type": "string", "minLength": 1 },
+        "judge_family": { "type": "string", "minLength": 1 },
+        "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "abstained": { "type": "boolean" },
+        "blinded_to_policy_identity": { "const": true },
+        "randomized_order": { "const": true },
+        "prompt_sha256": { "$ref": "#/$defs/sha256" },
+        "judge_model_sha256": { "$ref": "#/$defs/sha256" },
+        "calibration_set_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

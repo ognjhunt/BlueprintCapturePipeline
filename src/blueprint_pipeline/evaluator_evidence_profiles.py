@@ -81,6 +81,25 @@ EVALUATOR_EVIDENCE_PROFILES: dict[str, dict[str, Any]] = {
         "requires_sc3_multiview": True,
         "requires_oscar_action_skeleton_chain": False,
     },
+    "roboworld_progress_v1": {
+        "family": "roboworld_inspired_progress_evaluator",
+        "required_digest_fields": (
+            "progress_profile_manifest_sha256",
+            "view_authority_manifest_sha256",
+            "judge_calibration_set_sha256",
+            "segment_aggregation_report_sha256",
+        ),
+        "required_status_fields": {
+            "progress_rubric_status": ("validated",),
+            "view_authority_status": ("validated",),
+            "judge_calibration_status": ("accepted",),
+            "segment_aggregation_status": ("measured",),
+        },
+        "requires_sc3_multiview": False,
+        "requires_oscar_action_skeleton_chain": False,
+        "step_forcing_backend_required": False,
+        "paper_metrics_inherited": False,
+    },
 }
 
 _SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")

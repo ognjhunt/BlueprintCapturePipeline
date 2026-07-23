@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/benchmark_uncertainty_report.v1.json",
+  "title": "Hierarchical benchmark uncertainty report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "study_id",
+    "study_version",
+    "status",
+    "frozen",
+    "benchmark_spec_sha256",
+    "attempt_ledger_sha256",
+    "reference_manifest_sha256",
+    "coverage",
+    "point_metrics",
+    "confidence_intervals",
+    "bootstrap",
+    "convergence",
+    "policy_rank_stability_vs_coverage",
+    "leave_one_policy_out",
+    "leave_one_task_family_out",
+    "claim_eligibility",
+    "blockers",
+    "claim_boundary",
+    "report_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "benchmark_uncertainty_report.v1" },
+    "status": { "enum": ["measured", "blocked"] },
+    "frozen": { "const": true },
+    "benchmark_spec_sha256": { "$ref": "#/$defs/sha256" },
+    "attempt_ledger_sha256": { "$ref": "#/$defs/sha256" },
+    "reference_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "coverage": { "type": "object" },
+    "point_metrics": { "$ref": "#/$defs/metrics" },
+    "confidence_intervals": { "type": "object" },
+    "bootstrap": {
+      "type": "object",
+      "required": ["method", "seed", "requested_replicate_count", "successful_replicate_count"],
+      "properties": {
+        "method": { "const": "policy_site_task_initial_condition_hierarchical_percentile.v1" },
+        "seed": { "type": "integer", "minimum": 0 },
+        "requested_replicate_count": { "type": "integer", "minimum": 1 },
+        "successful_replicate_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "convergence": { "type": "array" },
+    "policy_rank_stability_vs_coverage": { "type": "array" },
+    "leave_one_policy_out": { "type": "array" },
+    "leave_one_task_family_out": { "type": "array" },
+    "claim_eligibility": { "type": "object" },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "claim_boundary": { "type": "object" },
+    "report_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" },
+    "metrics": {
+      "type": "object",
+      "required": ["pearson", "spearman", "kendall_tau_b", "pairwise_ordering_accuracy", "mmrv"]
+    }
+  }
+}

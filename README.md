@@ -20,6 +20,14 @@ provider execution, buyer delivery, teardown, and billing is documented in
 It keeps OSCAR, SC3, Cosmos, future evaluator backends, and compute providers
 replaceable and never inherits paper metrics as Blueprint results.
 
+The model-neutral RoboWorld-inspired progress rubric, criterion-scoped view
+authority, segment-aggregation ablations, blinded judge-calibration campaign,
+hierarchical uncertainty report, and frozen future-backend admission boundary
+are documented in
+[`docs/ROBOWORLD_EVALUATOR_INTEGRATION.md`](docs/ROBOWORLD_EVALUATOR_INTEGRATION.md).
+This evaluator work does not implement Step Forcing or inherit RoboWorld's
+published rank-correlation results.
+
 Robot-team buyers: what a Task Evaluation Run / Post-Training Data Package
 contains, how to verify it, and its claim boundaries are documented in
 [`docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md`](docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md).

@@ -1,0 +1,27 @@
+{
+  "schema_version": "roboworld_admission_evidence.v1",
+  "paper_version": "arXiv:2607.01060v4",
+  "observed_at": "2026-07-22T00:00:00Z",
+  "source_status": {
+    "project_page": "https://byeongguks.github.io/RoboWorld/",
+    "public_project_repository": "https://github.com/byeongGuks/RoboWorld",
+    "project_page_states_code_coming_soon": true,
+    "public_repository_contains_project_site_not_model_implementation": true,
+    "release_date_announced": false
+  },
+  "upstream_release": {
+    "code_released": false,
+    "weights_released": false
+  },
+  "diagnostic_reproduction": {
+    "executed": false
+  },
+  "published_result_reproduction": {
+    "executed": false,
+    "policy_count": 0,
+    "rollout_count": 0
+  },
+  "blueprint_comparison": {
+    "executed": false
+  }
+}

@@ -53,6 +53,7 @@ from .policy_model_runtime_proofs import (
     discover_openvla_provider_smoke_proof,
     discover_unitree_unifolm_provider_smoke_proof,
 )
+from .roboworld_evaluator import normalize_wam_progress_label, wam_progress_label_counts
 from .wam_backend_strategy import (
     build_wam_backend_strategy_manifest,
     get_wam_backend_strategy,
@@ -3250,6 +3251,8 @@ def _normalize_wam_success_labels(
         # A non-boolean verdict is a review gap, not a quiet "uncertain" pass-through:
         # it must keep the label set below review grade.
         strict_boolean_verdict = success_value is not None
+        progress_contract = normalize_wam_progress_label(command_payload, item, success_value)
+        blockers.extend(progress_contract["blockers"])
         confidence_value = item.get("confidence")
         confidence = (
             float(confidence_value)
@@ -3365,6 +3368,7 @@ def _normalize_wam_success_labels(
                 ),
                 "success": success_value,
                 "confidence": confidence,
+                **progress_contract["label_fields"],
                 "calibrated_confidence_floor": calibrated_confidence_floor,
                 "calibration_contract": calibration,
                 "calibrated_confidence_passed": calibrated_confidence_passed,
@@ -3446,6 +3450,7 @@ def _normalize_wam_success_labels(
     review_grade_label_count = sum(
         1 for row in labels if row.get("authoritative_task_success_label") is True
     )
+    progress_counts = wam_progress_label_counts(labels)
     status = "completed" if labels and not blockers else "blocked"
     return {
         "schema_version": "wam_success_labels.v1",
@@ -3469,6 +3474,7 @@ def _normalize_wam_success_labels(
             and review_grade_label_count == len(labels)
         ),
         "review_grade_label_count": review_grade_label_count,
+        **progress_counts,
         "calibrated_confidence_floor": WAM_SUCCESS_LABEL_MIN_CALIBRATED_CONFIDENCE,
         "expected_rollout_count": len(rollout_ids),
         "exact_rollout_label_coverage": bool(
