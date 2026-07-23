@@ -63,7 +63,10 @@ overrides a blocked authoritative episode manifest.
 ## Model and benchmark boundary
 
 Generic evaluators, OSCAR/RoboArena-inspired adapters, SC3-inspired scorers,
-Cosmos, and future world models use replaceable versioned profiles. Compute
+Cosmos, the model-neutral `roboworld_progress_v1` rubric/view-authority profile,
+and future world models use replaceable versioned profiles. The RoboWorld-inspired
+profile can grade progress and model-error stage for any admitted WAM; it does
+not require or imply a Step Forcing backend. Compute
 providers are execution locations, not evaluator identities. SC3-Eval reports
 overall closed-loop Pearson correlation 0.929 across seven policies. This is
 not a Blueprint measurement. Without independently accepted frozen external

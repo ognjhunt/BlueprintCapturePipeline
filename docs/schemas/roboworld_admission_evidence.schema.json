@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/roboworld_admission_evidence.v1.json",
+  "title": "RoboWorld admission evidence",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "paper_version",
+    "upstream_release",
+    "diagnostic_reproduction",
+    "published_result_reproduction",
+    "blueprint_comparison"
+  ],
+  "properties": {
+    "schema_version": { "const": "roboworld_admission_evidence.v1" },
+    "paper_version": { "const": "arXiv:2607.01060v4" },
+    "upstream_release": {
+      "type": "object",
+      "required": ["code_released", "weights_released"],
+      "properties": {
+        "code_released": { "type": "boolean" },
+        "weights_released": { "type": "boolean" }
+      }
+    },
+    "diagnostic_reproduction": {
+      "type": "object",
+      "required": ["executed"],
+      "properties": { "executed": { "type": "boolean" } }
+    },
+    "published_result_reproduction": {
+      "type": "object",
+      "required": ["executed"],
+      "properties": { "executed": { "type": "boolean" } }
+    },
+    "blueprint_comparison": {
+      "type": "object",
+      "required": ["executed"],
+      "properties": { "executed": { "type": "boolean" } }
+    }
+  }
+}

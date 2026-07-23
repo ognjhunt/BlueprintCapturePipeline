@@ -18,6 +18,7 @@ from blueprint_pipeline import oscar_cosmos_wam_evaluator as evaluator
 from blueprint_pipeline import wam_backend_strategy as backend_strategy
 from blueprint_pipeline import wam_generated_video_success_label_gemini as success_label_adapter
 from blueprint_pipeline import wam_score_claim_gate as score_claim_gate
+from blueprint_pipeline.roboworld_evaluator import build_default_progress_profile
 
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
@@ -3565,6 +3566,7 @@ def test_success_label_normalizer_requires_exact_unique_rollout_coverage(
     assert complete["exact_rollout_label_coverage"] is True
     assert complete["wam_success_label_from_generated_video"] is True
 
+
     frame_fragment = label("rollout_1")
     for result in frame_fragment["criterion_results"]:
         result["evidence_refs"] = [f"{one}#frame=0"]
@@ -3905,6 +3907,92 @@ def test_success_label_normalizer_requires_separate_calibration_and_runtime_auth
 
     assert result["status"] == "blocked"
     assert "wam_success_label_calibration_runtime_authorities_not_separated" in result["blockers"]
+
+
+def test_success_label_normalizer_wires_validated_progress_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("cv2")
+    pytest.importorskip("numpy")
+    _configure_success_label_calibration(tmp_path, monkeypatch)
+    video = tmp_path / "progress.mp4"
+    _write_test_video(video, frame_count=4)
+    rollouts = [{"rollout_id": "rollout_1", "generated_video_path": str(video)}]
+    profile = build_default_progress_profile()
+    progress = {
+        "schema_version": "roboworld_progress_score.v1",
+        "profile_id": "roboworld_progress_v1",
+        "profile_sha256": profile["profile_sha256"],
+        "rollout_id": "rollout_1",
+        "segment_index": 0,
+        "criterion_id": "robot_caused_target_motion",
+        "task_progress_score": 5,
+        "policy_progress_stage": "completed",
+        "world_model_failure_stage": "none",
+        "world_model_failure_detected": False,
+        "criterion_evidence_refs": [str(video)],
+        "judge_confidence": 0.95,
+        "judge_abstained": False,
+        "prompt_sha256": "c" * 64,
+        "judge_model_sha256": "d" * 64,
+        "calibration_set_sha256": "e" * 64,
+        "view_evidence": [
+            {
+                "view_id": "fixed_external_left",
+                "roles_used": ["task_progress", "task_completion"],
+                "evidence_refs": [str(video)],
+            }
+        ],
+        "sampled_frame_scores": [4, 5, 5],
+    }
+    label = {
+        "rollout_id": "rollout_1",
+        "success": True,
+        "confidence": 0.95,
+        "visual_evidence_used": True,
+        "evaluation_profile_id": "roboworld_progress_v1",
+        "progress_evaluation": progress,
+        "criterion_results": [
+            {
+                "criterion_id": criterion_id,
+                "passed": True,
+                "evidence_refs": [str(video)],
+            }
+            for criterion_id in (
+                "end_effector_reaches_target",
+                "target_state_change_visible",
+                "robot_caused_target_motion",
+            )
+        ],
+    }
+    command = _attested_success_label_payload(
+        {
+            "status": "completed",
+            "provider": "fake-vlm",
+            "model": "fake-video-judge",
+            "prompt_template_sha256": "c" * 64,
+            "progress_evaluator_profile": profile,
+            "labels": [label],
+        },
+        rollouts=rollouts,
+        tmp_path=tmp_path,
+    )
+
+    result = evaluator._normalize_wam_success_labels(
+        command_payload=command,
+        rollouts=rollouts,
+        generated_at="now",
+        visual_smoke_status="passed_visual_quality_smoke",
+        visual_rollout_useful=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["progress_profile_label_count"] == 1
+    assert result["validated_progress_label_count"] == 1
+    assert result["labels"][0]["task_progress_score"] == 5
+    assert result["labels"][0]["policy_progress_stage"] == "completed"
+    assert result["labels"][0]["world_model_failure_detected"] is False
 
 
 def test_success_label_normalizer_requires_explicit_visual_evidence_use() -> None:

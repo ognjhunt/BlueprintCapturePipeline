@@ -273,12 +273,13 @@ def test_policy_design_requires_fresh_profiled_evaluator_chain_and_passed_contro
     )
 
 
-def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -> None:
+def test_evaluator_profiles_keep_generic_oscar_sc3_and_roboworld_requirements_separate() -> None:
     generic = _design()["rows"][0]
     assert validate_evaluator_evidence(generic)["status"] == "validated"
     assert set(EVALUATOR_EVIDENCE_PROFILES) == {
         "generic_evaluator_bounded_v1",
         "oscar_roboarena_v2",
+        "roboworld_progress_v1",
         "sc3_eval_v3",
     }
     assert required_evaluator_evidence_digest_fields("generic_evaluator_bounded_v1") == (
@@ -287,6 +288,9 @@ def test_evaluator_profiles_keep_generic_oscar_and_sc3_requirements_separate() -
     assert "fk_result_sha256" in required_evaluator_evidence_digest_fields("oscar_roboarena_v2")
     assert "synchronized_multiview_manifest_sha256" in (
         required_evaluator_evidence_digest_fields("sc3_eval_v3")
+    )
+    assert "progress_profile_manifest_sha256" in (
+        required_evaluator_evidence_digest_fields("roboworld_progress_v1")
     )
 
     alternate_backend = deepcopy(generic)

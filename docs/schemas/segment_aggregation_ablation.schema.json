@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/segment_aggregation_ablation.v1.json",
+  "title": "Segment aggregation ablation",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "default_strategy",
+    "maximum_is_experimental",
+    "rollout_count",
+    "policy_count",
+    "strategies",
+    "strategy_promotion_decision",
+    "blockers",
+    "claim_boundary",
+    "report_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "segment_aggregation_ablation.v1" },
+    "status": { "enum": ["measured", "blocked"] },
+    "default_strategy": { "not": { "const": "maximum_experimental" } },
+    "maximum_is_experimental": { "const": true },
+    "rollout_count": { "type": "integer", "minimum": 0 },
+    "policy_count": { "type": "integer", "minimum": 0 },
+    "strategies": {
+      "type": "object",
+      "required": [
+        "progress_then_regression_aware",
+        "terminal",
+        "mean",
+        "minimum",
+        "maximum_experimental",
+        "stable_maintenance"
+      ]
+    },
+    "strategy_promotion_decision": { "const": "not_automatically_selected" },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "claim_boundary": { "type": "object" },
+    "report_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" }
+  }
+}

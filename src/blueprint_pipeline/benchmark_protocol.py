@@ -774,6 +774,19 @@ def _external_metrics(predicted: Sequence[float], reference: Sequence[float]) ->
     }
 
 
+def external_rank_metrics(
+    predicted: Sequence[float], reference: Sequence[float]
+) -> dict[str, float | None]:
+    """Return Blueprint's canonical policy-rank agreement metrics.
+
+    This public wrapper keeps evaluator studies and benchmark reports on the
+    same Pearson, Spearman, Kendall tau-b, pairwise-ordering, and MMRV
+    definitions without requiring those studies to reach into private helpers.
+    """
+
+    return _external_metrics(predicted, reference)
+
+
 def build_external_rank_fidelity_report(
     *,
     reference: Mapping[str, Any],

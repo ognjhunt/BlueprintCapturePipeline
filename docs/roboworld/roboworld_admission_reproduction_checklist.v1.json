@@ -1,0 +1,104 @@
+{
+  "blockers": [
+    "roboworld_bair_diagnostic_not_reproduced",
+    "roboworld_blueprint_comparison_digest_missing:comparison_report_sha256",
+    "roboworld_blueprint_comparison_digest_missing:current_wam_results_sha256",
+    "roboworld_blueprint_comparison_digest_missing:environment_manifest_sha256",
+    "roboworld_blueprint_comparison_digest_missing:external_anchor_results_sha256",
+    "roboworld_blueprint_comparison_digest_missing:frozen_benchmark_spec_sha256",
+    "roboworld_blueprint_comparison_digest_missing:physics_sim_results_sha256",
+    "roboworld_blueprint_comparison_digest_missing:policy_registry_sha256",
+    "roboworld_blueprint_comparison_digest_missing:roboworld_results_sha256",
+    "roboworld_blueprint_identical_matrix_comparison_not_executed",
+    "roboworld_diagnostic_digest_missing:bair_protocol_sha256",
+    "roboworld_diagnostic_digest_missing:metrics_artifact_sha256",
+    "roboworld_diagnostic_digest_missing:step_forcing_checkpoint_sha256",
+    "roboworld_published_reproduction_digest_missing:initial_condition_manifest_sha256",
+    "roboworld_published_reproduction_digest_missing:judge_prompt_sha256",
+    "roboworld_published_reproduction_digest_missing:policy_registry_sha256",
+    "roboworld_published_reproduction_digest_missing:rank_report_sha256",
+    "roboworld_published_reproduction_digest_missing:roboarena_snapshot_sha256",
+    "roboworld_published_reproduction_digest_missing:rollout_results_sha256",
+    "roboworld_published_reproduction_requires_eight_policies",
+    "roboworld_published_reproduction_rollout_count_insufficient",
+    "roboworld_roboarena_result_not_reproduced",
+    "roboworld_upstream_code_not_released",
+    "roboworld_upstream_release_digest_missing:action_normalization_manifest_sha256",
+    "roboworld_upstream_release_digest_missing:checkpoint_sha256",
+    "roboworld_upstream_release_digest_missing:data_filter_manifest_sha256",
+    "roboworld_upstream_release_digest_missing:evaluation_script_sha256",
+    "roboworld_upstream_release_digest_missing:preprocessing_manifest_sha256",
+    "roboworld_upstream_release_digest_missing:software_license_sha256",
+    "roboworld_upstream_release_digest_missing:training_schedule_manifest_sha256",
+    "roboworld_upstream_release_digest_missing:weights_license_sha256",
+    "roboworld_upstream_release_field_missing:checkpoint_uri",
+    "roboworld_upstream_release_field_missing:container_image_digest",
+    "roboworld_upstream_release_field_missing:software_license",
+    "roboworld_upstream_release_field_missing:source_revision",
+    "roboworld_upstream_release_field_missing:source_uri",
+    "roboworld_upstream_release_field_missing:weights_license",
+    "roboworld_upstream_weights_not_released"
+  ],
+  "blueprint_identical_matrix_gate": {
+    "passed": false,
+    "required_backends": [
+      "current_configured_wam",
+      "physics_simulation",
+      "roboworld_candidate",
+      "external_real_anchor"
+    ]
+  },
+  "checklist_id": "roboworld_step_forcing_admission_v1",
+  "checklist_sha256": "6b99361f87bd5c4abbb67212effca6ad5138460d59e4604ea326a54bcc4c6301",
+  "checklist_version": "1.0.0",
+  "claim_boundary": {
+    "checklist_completion_is_not_model_quality_proof": true,
+    "paper_metrics_are_not_blueprint_metrics": true,
+    "public_claim_upgrade_allowed": false,
+    "reproduction_is_not_physical_robot_readiness": true
+  },
+  "deferred_work": {
+    "paper_only_model_backend_integration_authorized": false,
+    "reason": "wait_for_licensed_code_weights_and_reproducible_runtime_artifacts",
+    "step_forcing_training_reimplementation_authorized": false
+  },
+  "diagnostic_reproduction_gate": {
+    "passed": false,
+    "target": "BAIR action-conditioned Step Forcing diagnostic"
+  },
+  "frozen": true,
+  "paper_version": "arXiv:2607.01060v4",
+  "published_result_reproduction_gate": {
+    "passed": false,
+    "targets": {
+      "minimum_rollout_count": 4186,
+      "paper_pearson": 0.989,
+      "paper_spearman": 0.97,
+      "paper_values_are_not_acceptance_substitutes": true,
+      "policy_count": 8
+    }
+  },
+  "schema_version": "roboworld_admission_reproduction_checklist.v1",
+  "status": "awaiting_upstream_release",
+  "upstream_release_gate": {
+    "code_released": false,
+    "passed": false,
+    "required_fields": [
+      "source_uri",
+      "source_revision",
+      "software_license",
+      "software_license_sha256",
+      "checkpoint_uri",
+      "checkpoint_sha256",
+      "weights_license",
+      "weights_license_sha256",
+      "container_image_digest",
+      "preprocessing_manifest_sha256",
+      "data_filter_manifest_sha256",
+      "action_normalization_manifest_sha256",
+      "training_schedule_manifest_sha256",
+      "evaluation_script_sha256"
+    ],
+    "weights_released": false
+  }
+}

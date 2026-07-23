@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/roboworld_admission_reproduction_checklist.v1.json",
+  "title": "Frozen RoboWorld admission and reproduction checklist",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "checklist_id",
+    "checklist_version",
+    "frozen",
+    "paper_version",
+    "status",
+    "upstream_release_gate",
+    "diagnostic_reproduction_gate",
+    "published_result_reproduction_gate",
+    "blueprint_identical_matrix_gate",
+    "deferred_work",
+    "blockers",
+    "claim_boundary",
+    "checklist_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "roboworld_admission_reproduction_checklist.v1" },
+    "checklist_id": { "const": "roboworld_step_forcing_admission_v1" },
+    "checklist_version": { "type": "string", "minLength": 1 },
+    "frozen": { "const": true },
+    "paper_version": { "const": "arXiv:2607.01060v4" },
+    "status": {
+      "enum": [
+        "awaiting_upstream_release",
+        "blocked_reproduction_incomplete",
+        "admitted_for_configured_backend_evaluation"
+      ]
+    },
+    "upstream_release_gate": { "type": "object" },
+    "diagnostic_reproduction_gate": { "type": "object" },
+    "published_result_reproduction_gate": { "type": "object" },
+    "blueprint_identical_matrix_gate": { "type": "object" },
+    "deferred_work": {
+      "type": "object",
+      "required": [
+        "step_forcing_training_reimplementation_authorized",
+        "paper_only_model_backend_integration_authorized",
+        "reason"
+      ],
+      "properties": {
+        "step_forcing_training_reimplementation_authorized": { "const": false },
+        "paper_only_model_backend_integration_authorized": { "const": false }
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "claim_boundary": { "type": "object" },
+    "checklist_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" }
+  }
+}

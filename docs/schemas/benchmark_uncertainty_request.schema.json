@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/benchmark_uncertainty_request.v1.json",
+  "title": "Hierarchical benchmark uncertainty request",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "study_id",
+    "study_version",
+    "frozen",
+    "benchmark_spec_sha256",
+    "attempt_ledger_sha256",
+    "reference_manifest_sha256",
+    "bootstrap",
+    "convergence_subsample_replicates",
+    "rows"
+  ],
+  "properties": {
+    "schema_version": { "const": "benchmark_uncertainty_request.v1" },
+    "study_id": { "type": "string", "minLength": 1 },
+    "study_version": { "type": "string", "minLength": 1 },
+    "frozen": { "const": true },
+    "benchmark_spec_sha256": { "$ref": "#/$defs/sha256" },
+    "attempt_ledger_sha256": { "$ref": "#/$defs/sha256" },
+    "reference_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "bootstrap": {
+      "type": "object",
+      "required": ["seed", "replicate_count"],
+      "properties": {
+        "seed": { "type": "integer", "minimum": 0 },
+        "replicate_count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "convergence_trial_counts": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 3 }
+    },
+    "convergence_subsample_replicates": { "type": "integer", "minimum": 1 },
+    "rows": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "policy_id",
+          "site_id",
+          "task_id",
+          "task_family_id",
+          "initial_condition_id",
+          "predicted_score",
+          "reference_score",
+          "reference_independently_accepted",
+          "policy_checkpoint_sha256",
+          "initial_condition_sha256",
+          "evaluator_output_sha256",
+          "reference_output_sha256"
+        ],
+        "properties": {
+          "predicted_score": { "type": "number" },
+          "reference_score": { "type": "number" },
+          "reference_independently_accepted": { "const": true },
+          "policy_checkpoint_sha256": { "$ref": "#/$defs/sha256" },
+          "initial_condition_sha256": { "$ref": "#/$defs/sha256" },
+          "evaluator_output_sha256": { "$ref": "#/$defs/sha256" },
+          "reference_output_sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" }
+  }
+}

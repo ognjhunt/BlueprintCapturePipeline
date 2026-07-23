@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/roboworld_progress_score.v1.json",
+  "title": "RoboWorld-inspired progress score",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_sha256",
+    "criterion_id",
+    "task_progress_score",
+    "policy_progress_stage",
+    "world_model_failure_stage",
+    "world_model_failure_detected",
+    "criterion_evidence_refs",
+    "judge_confidence",
+    "judge_abstained",
+    "prompt_sha256",
+    "judge_model_sha256",
+    "calibration_set_sha256",
+    "view_evidence",
+    "sampled_frame_scores"
+  ],
+  "properties": {
+    "schema_version": { "const": "roboworld_progress_score.v1" },
+    "profile_id": { "const": "roboworld_progress_v1" },
+    "profile_sha256": { "$ref": "#/$defs/sha256" },
+    "rollout_id": { "type": "string" },
+    "segment_index": { "type": "integer", "minimum": 0 },
+    "criterion_id": { "type": "string", "minLength": 1 },
+    "task_progress_score": { "type": "integer", "minimum": 0, "maximum": 5 },
+    "policy_progress_stage": { "type": "string", "minLength": 1 },
+    "world_model_failure_stage": { "type": "string", "minLength": 1 },
+    "world_model_failure_detected": { "type": "boolean" },
+    "criterion_evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "judge_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "judge_abstained": { "type": "boolean" },
+    "abstention_reason": { "type": ["string", "null"] },
+    "prompt_sha256": { "$ref": "#/$defs/sha256" },
+    "judge_model_sha256": { "$ref": "#/$defs/sha256" },
+    "calibration_set_sha256": { "$ref": "#/$defs/sha256" },
+    "view_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["view_id", "roles_used", "evidence_refs"],
+        "properties": {
+          "view_id": { "type": "string", "minLength": 1 },
+          "roles_used": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "evidence_refs": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+        }
+      }
+    },
+    "sampled_frame_scores": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0, "maximum": 5 }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" }
+  }
+}

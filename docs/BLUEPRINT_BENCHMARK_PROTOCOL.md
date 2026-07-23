@@ -29,6 +29,11 @@ benchmark or simulator a required product dependency.
 - An optional external-reference input compares exact checkpoint matches using
   Pearson, Spearman, Kendall tau-b, pairwise ordering accuracy, and MMRV, each
   with confidence intervals.
+- A separately frozen `benchmark_uncertainty_request.v1` can strengthen that
+  report with policy/site/task/initial-condition hierarchical bootstrap,
+  rollout-count convergence, rank stability versus coverage, and leave-one-policy
+  and leave-one-task-family sensitivity. It remains ineligible for public claim
+  upgrade without the independent external-anchor claim gate.
 
 The JSON Schemas are:
 

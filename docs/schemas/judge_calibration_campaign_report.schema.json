@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/judge_calibration_campaign_report.v1.json",
+  "title": "Blinded multi-judge calibration campaign report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "campaign_version",
+    "status",
+    "frozen",
+    "sample_manifest_sha256",
+    "sample_count",
+    "policy_count",
+    "human_reference",
+    "judges",
+    "blockers",
+    "claim_boundary",
+    "report_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "judge_calibration_campaign_report.v1" },
+    "status": { "enum": ["measured", "blocked"] },
+    "frozen": { "const": true },
+    "sample_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "sample_count": { "type": "integer", "minimum": 0 },
+    "policy_count": { "type": "integer", "minimum": 0 },
+    "judges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "judge_id",
+          "judge_family",
+          "sample_count",
+          "abstention_rate",
+          "mean_signed_error",
+          "mean_absolute_error",
+          "false_success_rate",
+          "confusion_matrix",
+          "confidence_bins",
+          "policy_rank_stability",
+          "bias_breakdowns"
+        ]
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "claim_boundary": { "type": "object" },
+    "report_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$" }
+  }
+}
