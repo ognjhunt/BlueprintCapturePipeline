@@ -545,6 +545,13 @@ action against the retained, watchdog-bound GPU. Do not repeat the CPU image
 build or model-volume preparation unless the image, native dependencies, model
 weights, or cache contract changed. Every refresh must still bind the protected
 source commit and produce its own refresh evidence before another episode.
+Stage each refresh payload under the content-addressed filename emitted by the
+qualification session, not the stable canonical basename. Some paid-worker
+HTTP proxies cache object-store responses by basename even when the object key
+changes; reusing `qualification_refresh_payload.json` can therefore deliver the
+previous revision and fail the SHA gate. Preserve the canonical local artifact
+for review, but transmit the digest-suffixed path returned by
+`refresh_payload.path`.
 
 The official GEAR-SONIC simulator controller publishes a monotonic
 `g1_debug.index`. Use that index as the primary per-command freshness watermark.

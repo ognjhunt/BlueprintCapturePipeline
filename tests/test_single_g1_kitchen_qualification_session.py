@@ -2760,6 +2760,11 @@ def test_refresh_payload_changes_only_allowlisted_overlay_files(tmp_path: Path) 
     assert payload["immutable_binding"]["bundle_sha256"] == manifest["bundle_sha256"]
     assert refresh["control_script_unchanged"] is True
     assert refresh["arbitrary_remote_command_allowed"] is False
+    assert Path(refresh["canonical_path"]).name == qualification.QUALIFICATION_REFRESH_PAYLOAD_NAME
+    assert Path(refresh["path"]).name == (
+        f"qualification_refresh_payload_{refresh['refresh_payload_sha256'][:16]}.json"
+    )
+    assert Path(refresh["path"]).read_bytes() == Path(refresh["canonical_path"]).read_bytes()
     assert Path(refresh["path"]).stat().st_mode & 0o777 == 0o600
     compile(
         qualification._qualification_refresh_installer_source(),

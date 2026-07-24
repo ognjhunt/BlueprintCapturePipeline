@@ -1727,8 +1727,19 @@ def _materialize_qualification_refresh_payload(
         "immutable_binding": immutable,
         "files": encoded_files,
     }
-    path = root / QUALIFICATION_REFRESH_PAYLOAD_NAME
-    _private_write_json(path, payload)
+    canonical_path = root / QUALIFICATION_REFRESH_PAYLOAD_NAME
+    _private_write_json(canonical_path, payload)
+    payload_bytes = canonical_path.read_bytes()
+    payload_sha256 = _sha256_bytes(payload_bytes)
+    # Some paid-worker HTTP proxies cache object-store downloads by basename
+    # even when the object key changes.  A stable ``qualification_refresh_payload.json``
+    # name can therefore return the previous revision to the worker.  Preserve
+    # the canonical local artifact for operators/tests, but stage a
+    # content-addressed filename so both the path and bytes change together.
+    path = root / f"qualification_refresh_payload_{payload_sha256[:16]}.json"
+    with path.open("wb") as handle:
+        handle.write(payload_bytes)
+    path.chmod(0o600)
     episode_sha = encoded_files["qualification_episode_bootstrap.sh"]["sha256"]
     component_sha256s = {
         "groot_server": encoded_files["qualification_groot_server.sh"]["sha256"],
@@ -1745,7 +1756,8 @@ def _materialize_qualification_refresh_payload(
     }
     return {
         "path": str(path),
-        "refresh_payload_sha256": _sha256_bytes(path.read_bytes()),
+        "canonical_path": str(canonical_path),
+        "refresh_payload_sha256": payload_sha256,
         "size_bytes": path.stat().st_size,
         "mode_is_0600": stat.S_IMODE(path.stat().st_mode) == 0o600,
         "from_revision": current_revision,
