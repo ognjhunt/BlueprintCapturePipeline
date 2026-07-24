@@ -264,6 +264,68 @@ def _load_runtime_backend_overlay() -> Any:
     return module
 
 
+def _finalize_isaac_head_render(
+    *,
+    seed: Path,
+    frames_dir: Path,
+    stage_path: Path,
+) -> dict[str, Any]:
+    """Encode and attest frames before SimulationApp shutdown can exit Python."""
+
+    video = seed / "ego_view.mp4"
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-y",
+            "-framerate",
+            str(FPS),
+            "-i",
+            str(frames_dir / "frame_%06d.png"),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "17",
+            str(video),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0 or not video.is_file() or video.stat().st_size <= 0:
+        raise RuntimeError("live_aligned_isaac_video_encode_failed")
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "exact_isaac_rigid_head_episode_rendered",
+        "frame_count": FRAME_COUNT,
+        "fps": FPS,
+        "video_path": str(video),
+        "video_sha256": _sha256(video),
+        "stage_path": str(stage_path),
+        "stage_sha256": _sha256(stage_path),
+        "camera_role": "robot_pov",
+        "camera_motion_model": "rigid_head_local_transform",
+        "third_person_used_for_policy": False,
+        "door_motion_in_training_render": "closed_visual_state_only",
+        "blockers": [],
+        "claim_boundary": {
+            "exact_isaac_visual_domain_rendered": True,
+            "render_is_owned_training_support": True,
+            "contact_not_proven": True,
+            "articulation_transition_not_proven": True,
+            "semantic_success_not_proven": True,
+        },
+    }
+    report_path = seed / "live_aligned_isaac_render_report.json"
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return report
+
+
 def render_isaac(
     *,
     seed_dir: str | Path,
@@ -335,61 +397,16 @@ def render_isaac(
             if not source.is_file() or _sha256(source) != robot_rows[0].get("sha256"):
                 raise RuntimeError("live_aligned_isaac_robot_pov_digest_invalid")
             shutil.copyfile(source, frames_dir / f"frame_{frame_index:06d}.png")
+        # Isaac's SimulationApp.close() may terminate the interpreter as part
+        # of Kit shutdown.  Finalize the durable media while the app is still
+        # alive so successful frame rendering cannot be discarded on exit.
+        return _finalize_isaac_head_render(
+            seed=seed,
+            frames_dir=frames_dir,
+            stage_path=Path(stage_path).expanduser().resolve(),
+        )
     finally:
         backend.close()
-
-    video = seed / "ego_view.mp4"
-    completed = subprocess.run(
-        [
-            "ffmpeg",
-            "-loglevel",
-            "error",
-            "-y",
-            "-framerate",
-            str(FPS),
-            "-i",
-            str(frames_dir / "frame_%06d.png"),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            "17",
-            str(video),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0 or not video.is_file() or video.stat().st_size <= 0:
-        raise RuntimeError("live_aligned_isaac_video_encode_failed")
-    report = {
-        "schema_version": SCHEMA_VERSION,
-        "status": "exact_isaac_rigid_head_episode_rendered",
-        "frame_count": FRAME_COUNT,
-        "fps": FPS,
-        "video_path": str(video),
-        "video_sha256": _sha256(video),
-        "stage_path": str(Path(stage_path).expanduser().resolve()),
-        "stage_sha256": _sha256(Path(stage_path).expanduser().resolve()),
-        "camera_role": "robot_pov",
-        "camera_motion_model": "rigid_head_local_transform",
-        "third_person_used_for_policy": False,
-        "door_motion_in_training_render": "closed_visual_state_only",
-        "blockers": [],
-        "claim_boundary": {
-            "exact_isaac_visual_domain_rendered": True,
-            "render_is_owned_training_support": True,
-            "contact_not_proven": True,
-            "articulation_transition_not_proven": True,
-            "semantic_success_not_proven": True,
-        },
-    }
-    report_path = seed / "live_aligned_isaac_render_report.json"
-    report_path.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return report
 
 
 def _numeric_stats(array: np.ndarray) -> dict[str, list[float]]:

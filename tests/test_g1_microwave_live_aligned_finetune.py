@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -57,3 +60,31 @@ def test_numeric_stats_records_directional_distribution() -> None:
 def test_live_aligned_grasp_uses_qualified_palm_down_convention() -> None:
     assert aligned.LIVE_ALIGNED_HAND_AXIS_POLARITY == -1.0
     assert aligned.LIVE_ALIGNED_GRASP_YAW_RAD == 0.0
+
+
+def test_head_render_is_finalized_before_backend_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = tmp_path / "seed"
+    frames = seed / "isaac_head_frames"
+    frames.mkdir(parents=True)
+    stage = tmp_path / "KitchenRoom.usd"
+    stage.write_bytes(b"stage")
+
+    def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+        assert any(value.endswith("frame_%06d.png") for value in argv)
+        Path(argv[-1]).write_bytes(b"encoded-video")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(aligned.subprocess, "run", fake_run)
+    report = aligned._finalize_isaac_head_render(
+        seed=seed,
+        frames_dir=frames,
+        stage_path=stage,
+    )
+
+    assert report["status"] == "exact_isaac_rigid_head_episode_rendered"
+    assert report["third_person_used_for_policy"] is False
+    assert (seed / "ego_view.mp4").read_bytes() == b"encoded-video"
+    assert (seed / "live_aligned_isaac_render_report.json").is_file()
