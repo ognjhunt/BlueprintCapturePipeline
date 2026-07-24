@@ -50,6 +50,12 @@ GRASP_ARC_MODULE = "g1_microwave_grasp_arc_seed.py"
 REMOTE_GRASP_ARC_MODULE = (
     f"/workspace/runtime_overlay/package/blueprint_pipeline/{GRASP_ARC_MODULE}"
 )
+ISAAC_BACKEND_MODULE = "isaac_runtime_task_backend.py"
+REMOTE_ISAAC_BACKEND_MODULE = f"/workspace/runtime_overlay/{ISAAC_BACKEND_MODULE}"
+ISAAC_RENDERER_MODULE = "isaac_task_review_renderer.py"
+REMOTE_ISAAC_RENDERER_MODULE = (
+    f"/workspace/runtime_overlay/package/blueprint_pipeline/{ISAAC_RENDERER_MODULE}"
+)
 REMOTE_LIVE_ALIGNED_SEED = "/workspace/microwave_live_aligned_seed"
 REMOTE_LIVE_ALIGNED_EVIDENCE = "/workspace/microwave_live_aligned_isaac"
 
@@ -192,6 +198,16 @@ def build_finetune_component(dataset_path: str | Path) -> dict[str, Any]:
     grasp_arc_source = Path(__file__).with_name(GRASP_ARC_MODULE).read_bytes()
     grasp_arc_source_sha256 = _sha256_bytes(grasp_arc_source)
     grasp_arc_source_base64 = base64.b64encode(grasp_arc_source).decode("ascii")
+    isaac_backend_source = Path(__file__).with_name(ISAAC_BACKEND_MODULE).read_bytes()
+    isaac_backend_source_sha256 = _sha256_bytes(isaac_backend_source)
+    isaac_backend_source_base64 = base64.b64encode(isaac_backend_source).decode(
+        "ascii"
+    )
+    isaac_renderer_source = Path(__file__).with_name(ISAAC_RENDERER_MODULE).read_bytes()
+    isaac_renderer_source_sha256 = _sha256_bytes(isaac_renderer_source)
+    isaac_renderer_source_base64 = base64.b64encode(isaac_renderer_source).decode(
+        "ascii"
+    )
     command = bounded_finetune_argv(
         dataset_path=REMOTE_DATASET_PATH,
         output_dir=REMOTE_OUTPUT_DIR,
@@ -211,6 +227,8 @@ EXPECTED_CHECKPOINT={shlex.quote(REMOTE_FINAL_CHECKPOINT)}
 GROOT_OVERLAY={shlex.quote(REMOTE_GROOT_OVERLAY_ROOT)}
 LIVE_ALIGNED_MODULE={shlex.quote(REMOTE_LIVE_ALIGNED_MODULE)}
 GRASP_ARC_MODULE={shlex.quote(REMOTE_GRASP_ARC_MODULE)}
+ISAAC_BACKEND_MODULE={shlex.quote(REMOTE_ISAAC_BACKEND_MODULE)}
+ISAAC_RENDERER_MODULE={shlex.quote(REMOTE_ISAAC_RENDERER_MODULE)}
 LIVE_ALIGNED_SEED={shlex.quote(REMOTE_LIVE_ALIGNED_SEED)}
 LIVE_ALIGNED_EVIDENCE={shlex.quote(REMOTE_LIVE_ALIGNED_EVIDENCE)}
 mkdir -p /workspace/closed_loop_out
@@ -262,6 +280,30 @@ destination.parent.mkdir(parents=True, exist_ok=True)
 destination.write_bytes(payload)
 if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
     raise SystemExit("g1_microwave_grasp_arc_module_materialized_sha256_mismatch")
+PY
+python3 - "$ISAAC_BACKEND_MODULE" <<'PY'
+import base64, hashlib, pathlib, sys
+destination = pathlib.Path(sys.argv[1]).resolve()
+payload = base64.b64decode({isaac_backend_source_base64!r}, validate=True)
+expected = {isaac_backend_source_sha256!r}
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_backend_embedded_sha256_mismatch")
+destination.parent.mkdir(parents=True, exist_ok=True)
+destination.write_bytes(payload)
+if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_backend_materialized_sha256_mismatch")
+PY
+python3 - "$ISAAC_RENDERER_MODULE" <<'PY'
+import base64, hashlib, pathlib, sys
+destination = pathlib.Path(sys.argv[1]).resolve()
+payload = base64.b64decode({isaac_renderer_source_base64!r}, validate=True)
+expected = {isaac_renderer_source_sha256!r}
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_renderer_embedded_sha256_mismatch")
+destination.parent.mkdir(parents=True, exist_ok=True)
+destination.write_bytes(payload)
+if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_renderer_materialized_sha256_mismatch")
 PY
 rm -rf "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
 mkdir -p "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
@@ -677,6 +719,7 @@ include = [
     workspace / "microwave_live_aligned_seed" / "live_aligned_grasp_report.json",
     workspace / "microwave_live_aligned_seed" / "live_aligned_sonic_conversion_report.json",
     workspace / "microwave_live_aligned_seed" / "live_aligned_isaac_render_report.json",
+    workspace / "microwave_live_aligned_seed" / "live_aligned_isaac_motion_evidence.json",
     workspace / "microwave_live_aligned_seed" / "live_aligned_dataset_patch_report.json",
     workspace / "microwave_live_aligned_seed" / "ego_view.mp4",
     workspace / "microwave_live_aligned_seed" / "isaac_head_frames" / "frame_000000.png",
@@ -721,8 +764,19 @@ if [ "$PHASE" != finetune_completed ]; then exit 1; fi
             "module_sha256": live_aligned_source_sha256,
             "grasp_arc_module": GRASP_ARC_MODULE,
             "grasp_arc_module_sha256": grasp_arc_source_sha256,
+            "isaac_backend_module": ISAAC_BACKEND_MODULE,
+            "isaac_backend_module_sha256": isaac_backend_source_sha256,
+            "isaac_renderer_module": ISAAC_RENDERER_MODULE,
+            "isaac_renderer_module_sha256": isaac_renderer_source_sha256,
             "same_session_live_start_required": True,
             "exact_isaac_rigid_head_render_required": True,
+            "per_frame_measured_joint_readback_required": True,
+            "active_arm_robot_pov_motion_required": True,
+            "one_physics_step_per_controller_target_required": True,
+            "render_capture_must_not_add_physics_step": True,
+            "physx_contact_report_monitor_required": True,
+            "unexpected_robot_collisions_fail_closed": True,
+            "door_motion_requires_prior_manipulator_contact": True,
         },
         "remote_dataset_path": REMOTE_DATASET_PATH,
         "remote_output_dir": REMOTE_OUTPUT_DIR,

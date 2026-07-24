@@ -41,6 +41,60 @@ from .task_episode_baseline import (
 )
 
 
+def normalize_physx_contact_reports(
+    contact_headers: Sequence[Any],
+    contact_data: Sequence[Any],
+    *,
+    path_decoder: Callable[[Any], Any],
+) -> list[dict[str, Any]]:
+    """Convert PhysX callback objects into durable, JSON-safe contact evidence."""
+
+    normalized: list[dict[str, Any]] = []
+
+    def decode(value: Any) -> str:
+        path = str(path_decoder(value))
+        if not path.startswith("/"):
+            raise RuntimeError("persistent_isaac_contact_report_path_invalid")
+        return path
+
+    for header in contact_headers:
+        offset = int(header.contact_data_offset)
+        count = int(header.num_contact_data)
+        if offset < 0 or count < 0 or offset + count > len(contact_data):
+            raise RuntimeError("persistent_isaac_contact_report_range_invalid")
+        impulses: list[float] = []
+        minimum_separation = math.inf
+        for item in contact_data[offset : offset + count]:
+            raw_impulse = item.impulse
+            try:
+                impulse_values = [float(value) for value in raw_impulse]
+            except TypeError:
+                impulse_values = [float(raw_impulse)]
+            if not impulse_values or not all(
+                math.isfinite(value) for value in impulse_values
+            ):
+                raise RuntimeError("persistent_isaac_contact_impulse_invalid")
+            impulses.append(math.sqrt(sum(value * value for value in impulse_values)))
+            separation = float(item.separation)
+            if not math.isfinite(separation):
+                raise RuntimeError("persistent_isaac_contact_separation_invalid")
+            minimum_separation = min(minimum_separation, separation)
+        normalized.append(
+            {
+                "event_type": str(header.type),
+                "actor0_prim_path": decode(header.actor0),
+                "actor1_prim_path": decode(header.actor1),
+                "collider0_prim_path": decode(header.collider0),
+                "collider1_prim_path": decode(header.collider1),
+                "contact_point_count": count,
+                "maximum_impulse": max(impulses, default=0.0),
+                "total_impulse": sum(impulses),
+                "minimum_separation_m": minimum_separation if count else None,
+            }
+        )
+    return normalized
+
+
 GEAR_SONIC_STANDING_INITIALIZATION_SCHEMA_VERSION = "gear_sonic_standing_initialization.v1"
 GEAR_SONIC_MANIPULATION_READY_INITIALIZATION_SCHEMA_VERSION = (
     "gear_sonic_manipulation_ready_initialization.v1"
@@ -1090,6 +1144,14 @@ def compose_g1_for_episode(
     """Compose and place G1 exactly once when the raw kitchen lacks it."""
     from pxr import Gf, UsdGeom, UsdPhysics  # type: ignore
 
+    try:
+        from pxr import PhysxSchema  # type: ignore
+    except ImportError:
+        # usd-core supports CPU composition tests but does not ship NVIDIA's
+        # PhysX schemas. The live backend checks this flag and fails before
+        # simulation; only offline scene composition may continue without it.
+        PhysxSchema = None
+
     asset = Path(g1_usd_path).expanduser().resolve()
     if not asset.is_file():
         raise RuntimeError("persistent_isaac_g1_asset_missing")
@@ -1117,6 +1179,20 @@ def compose_g1_for_episode(
     ]
     if not articulation_roots:
         raise RuntimeError("persistent_isaac_g1_articulation_missing_after_composition")
+    contact_report_roots: list[str] = []
+    if PhysxSchema is not None:
+        for root_path in articulation_roots:
+            root_prim = stage.GetPrimAtPath(root_path)
+            if root_prim.HasAPI(PhysxSchema.PhysxContactReportAPI):
+                report_api = PhysxSchema.PhysxContactReportAPI(root_prim)
+            else:
+                report_api = PhysxSchema.PhysxContactReportAPI.Apply(root_prim)
+            if not report_api:
+                raise RuntimeError(
+                    f"persistent_isaac_contact_report_api_apply_failed:{root_path}"
+                )
+            report_api.CreateThresholdAttr(0.0)
+            contact_report_roots.append(root_path)
     return {
         "schema_version": "persistent_isaac_g1_composition.v1",
         "status": "passed",
@@ -1127,6 +1203,9 @@ def compose_g1_for_episode(
         "start_yaw_rad": yaw,
         "robot_was_already_present": existing_valid,
         "articulation_root_paths": articulation_roots,
+        "contact_report_articulation_root_paths": contact_report_roots,
+        "contact_report_schema_available": PhysxSchema is not None,
+        "contact_report_impulse_threshold": 0.0,
         "claim_boundary": (
             "Composition proves a controllable G1 is present at the attempt-bound stance; "
             "it does not prove policy actions or task success."
@@ -1186,6 +1265,14 @@ class IsaacPersistentTaskBackend:
             g1_usd_path=g1_usd_path,
             route_file=route_file,
         )
+        if (
+            self.robot_composition.get("contact_report_schema_available") is not True
+            or not self.robot_composition.get("contact_report_articulation_root_paths")
+        ):
+            raise RuntimeError("persistent_isaac_contact_report_schema_unavailable")
+        self._contact_events: list[dict[str, Any]] = []
+        self._contact_report_error: str | None = None
+        self._contact_report_subscription = self._subscribe_contact_reports()
         # SONIC/GEAR emits control targets at 50 Hz. Configure both independent
         # Isaac clocks while stopped, then fail closed unless their readbacks
         # prove one coherent 0.02 s physics/render/controller tick.
@@ -1224,6 +1311,62 @@ class IsaacPersistentTaskBackend:
         )
         self.review_renderer_articulation_lifecycle = (
             self._prewarm_review_renderer_and_initialize_robot()
+        )
+
+    def _subscribe_contact_reports(self) -> Any:
+        """Subscribe before simulation so every robot contact is evidence-bound."""
+
+        import omni.physx  # type: ignore
+        from pxr import PhysicsSchemaTools  # type: ignore
+
+        def callback(contact_headers: Sequence[Any], contact_data: Sequence[Any]) -> None:
+            try:
+                self._contact_events.extend(
+                    normalize_physx_contact_reports(
+                        contact_headers,
+                        contact_data,
+                        path_decoder=PhysicsSchemaTools.intToSdfPath,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - fail closed at readback boundary
+                self._contact_report_error = f"{type(exc).__name__}:{exc}"
+
+        interface = omni.physx.get_physx_simulation_interface()
+        subscription = interface.subscribe_contact_report_events(callback)
+        if subscription is None:
+            raise RuntimeError("persistent_isaac_contact_report_subscription_failed")
+        return subscription
+
+    def contact_event_cursor(self) -> int:
+        if self._contact_report_error:
+            raise RuntimeError(
+                "persistent_isaac_contact_report_callback_failed:"
+                f"{self._contact_report_error}"
+            )
+        return len(self._contact_events)
+
+    def contact_events_since(self, cursor: int) -> list[dict[str, Any]]:
+        if self._contact_report_error:
+            raise RuntimeError(
+                "persistent_isaac_contact_report_callback_failed:"
+                f"{self._contact_report_error}"
+            )
+        start = int(cursor)
+        if start < 0 or start > len(self._contact_events):
+            raise RuntimeError("persistent_isaac_contact_event_cursor_invalid")
+        return [dict(item) for item in self._contact_events[start:]]
+
+    def measure_revolute_task_open_angle(self, prim_path: str) -> dict[str, Any]:
+        criterion = {
+            "criterion_id": "microwave_door_open_angle",
+            "observable_transition": "articulation_angle_rad",
+            "articulation_prim_path": str(prim_path),
+            "comparison": "increase_at_least",
+            "unit": "rad",
+        }
+        return self._task_joint_sample(
+            self._task_joint_binding(criterion),
+            criterion,
         )
 
     def _prewarm_review_renderer_and_initialize_robot(self) -> dict[str, Any]:
@@ -3428,6 +3571,7 @@ class IsaacPersistentTaskBackend:
         }
 
     def close(self) -> None:
+        self._contact_report_subscription = None
         self.timeline.stop()
         self.app.close()
 

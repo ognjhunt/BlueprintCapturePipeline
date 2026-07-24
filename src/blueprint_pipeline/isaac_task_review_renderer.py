@@ -1443,6 +1443,27 @@ class IsaacTaskReviewRenderer:
         )
         return self.capture_current(step_index=step_index)
 
+    def render_measured_pose(
+        self, *, step_index: int, target_prim_path: str
+    ) -> list[dict[str, Any]]:
+        """Render the current post-physics pose without advancing physics again.
+
+        The caller owns the one controller-target physics step. After that step
+        this method re-authors the rigid head camera from the measured
+        articulation and asks Replicator to capture at ``delta_time=0``. Keeping
+        ``pause_timeline=False`` preserves the live controller loop while the
+        zero delta prevents a hidden second physics step.
+        """
+
+        self.follow_live_robot(target_prim_path=target_prim_path)
+        self.rep.orchestrator.step(
+            delta_time=0.0,
+            pause_timeline=False,
+            wait_for_render=True,
+            rt_subframes=REVIEW_CAPTURE_RT_SUBFRAMES,
+        )
+        return self.capture_current(step_index=step_index)
+
     def capture_current(self, *, step_index: int) -> list[dict[str, Any]]:
         """Persist the latest rendered state without advancing simulation time."""
 

@@ -122,21 +122,64 @@ def test_generated_component_accepts_exact_dataset_archive_members(tmp_path: Pat
     } == component.REQUIRED_DATASET_MEMBERS
 
 
+@pytest.mark.parametrize(
+    ("shell_variable", "source_module"),
+    [
+        ("ISAAC_BACKEND_MODULE", component.ISAAC_BACKEND_MODULE),
+        ("ISAAC_RENDERER_MODULE", component.ISAAC_RENDERER_MODULE),
+    ],
+)
+def test_generated_component_materializes_exact_isaac_runtime_source(
+    tmp_path: Path,
+    shell_variable: str,
+    source_module: str,
+) -> None:
+    built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
+    marker = f'python3 - "${shell_variable}" <<\'PY\'\n'
+    materializer = built["script"].split(marker, 1)[1].split("\nPY\n", 1)[0]
+    destination = tmp_path / source_module
+    completed = subprocess.run(
+        [sys.executable, "-c", materializer, str(destination)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert destination.read_bytes() == (
+        Path(component.__file__).with_name(source_module).read_bytes()
+    )
+
+
 def test_component_requires_live_aligned_isaac_training_episode(tmp_path: Path) -> None:
     built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
     contract = built["live_aligned_training"]
     assert contract["required"] is True
     assert contract["same_session_live_start_required"] is True
     assert contract["exact_isaac_rigid_head_render_required"] is True
+    assert contract["per_frame_measured_joint_readback_required"] is True
+    assert contract["active_arm_robot_pov_motion_required"] is True
+    assert contract["one_physics_step_per_controller_target_required"] is True
+    assert contract["render_capture_must_not_add_physics_step"] is True
+    assert contract["physx_contact_report_monitor_required"] is True
+    assert contract["unexpected_robot_collisions_fail_closed"] is True
+    assert contract["door_motion_requires_prior_manipulator_contact"] is True
     assert len(contract["module_sha256"]) == 64
     assert contract["grasp_arc_module"] == component.GRASP_ARC_MODULE
     assert len(contract["grasp_arc_module_sha256"]) == 64
+    assert contract["isaac_backend_module"] == component.ISAAC_BACKEND_MODULE
+    assert len(contract["isaac_backend_module_sha256"]) == 64
+    assert contract["isaac_renderer_module"] == component.ISAAC_RENDERER_MODULE
+    assert len(contract["isaac_renderer_module_sha256"]) == 64
     script = built["script"]
     assert "prepare-actions" in script
     assert "render-isaac" in script
     assert "patch-dataset" in script
     assert "/workspace/initial_g1_sonic_state.json" in script
     assert component.REMOTE_GRASP_ARC_MODULE in script
+    assert component.REMOTE_ISAAC_BACKEND_MODULE in script
+    assert component.REMOTE_ISAAC_RENDERER_MODULE in script
+    assert "g1_microwave_isaac_backend_materialized_sha256_mismatch" in script
+    assert "g1_microwave_isaac_renderer_materialized_sha256_mismatch" in script
     assert "--stage /workspace/kitchen/KitchenRoom.usd" in script
     assert (
         f"onnxruntime=={component.PINNED_ONNXRUNTIME_VERSION}"

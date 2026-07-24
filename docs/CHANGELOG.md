@@ -1,5 +1,63 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-23
+
+### User-Facing
+
+- Published the model-neutral RoboWorld-inspired progress evaluator,
+  blinded judge-calibration study, and hierarchical benchmark-uncertainty
+  contracts. Results remain digest-bound and claim-ineligible for public rank
+  fidelity without separately accepted frozen external anchors
+  (`src/blueprint_pipeline/roboworld_evaluator.py`,
+  `src/blueprint_pipeline/benchmark_uncertainty.py`,
+  `docs/ROBOWORLD_EVALUATOR_INTEGRATION.md`).
+- Corrected qualification and GEAR-SONIC controller binding so the executable
+  runtime uses the requested controller and each horizon reply must be tied to
+  a fresh, exact action/frame convention. Controller startup, fresh replies,
+  and generated review media still do not establish task success
+  (`src/blueprint_pipeline/single_g1_kitchen_qualification_contract.py`,
+  `src/blueprint_pipeline/gear_sonic_official_zmq_executor.py`).
+- Added a scoped Agentic Real2Sim paper analysis that maps useful planning and
+  repair ideas onto Blueprint's capture-first architecture without adopting
+  the paper's system as a production dependency or inheriting its reported
+  results (`docs/AGENTIC_REAL2SIM_PAPER_ANALYSIS_2026-07-23.md`).
+
+### Employee-Facing
+
+- Hardened OSCAR release provenance and preflight: the image now verifies
+  sealed source/assets without relying on a runtime Git checkout, upgrades the
+  legacy shim before sealing, and propagates verified runtime identity into
+  the qualification path (`src/blueprint_pipeline/oscar_runtime_source_provenance.py`,
+  `deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Release.Dockerfile`).
+- Hardened RunPod WAM teardown for malformed or incomplete provider responses,
+  and corrected controller-FK readiness hand ordering. These are closure and
+  startup-contract improvements, not evidence that a provider allocation,
+  simulator episode, or teardown occurred
+  (`src/blueprint_pipeline/runpod_wam_teardown.py`,
+  `src/blueprint_pipeline/groot_oscar_worker_startup_script.py`).
+- A clean checkout-only branch added late-day controller freshness/head-POV
+  review quality, policy-authoritative OSCAR transitions and action
+  conditioning, GPU PID attribution, and a bounded-finetune probe skip
+  (`src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py`,
+  `src/blueprint_pipeline/isaac_task_review_renderer.py`,
+  `src/blueprint_pipeline/g1_microwave_groot_finetune_component.py`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains nine first-parent `origin/main` commits,
+  `1a2135a2` through `0247bee5` (PRs #169--#177), plus six cleanly committed
+  checkout-only changes, `b0b14622` through `e241a47e`. At review time
+  `main == origin/main`, while detached `HEAD` was 17 commits ahead; no
+  attributable uncommitted July 23 work is recorded.
+- RoboWorld paper metrics, Agentic Real2Sim paper results, evaluator fixtures,
+  unit tests, startup/preflight success, controller freshness, and review
+  renders are not Blueprint ranking-fidelity, live-provider, deployment,
+  public-readiness, simulator-semantic-success, or physical-robot proof.
+- Keep policy actions authoritative over OSCAR state transitions, preserve
+  exact source/runtime/controller bindings, and keep WAM rollout execution,
+  generated-video labels, external forward/inverse consistency scoring, and
+  policy ranking as separate evidence layers.
+
 ## 2026-07-22
 
 ### User-Facing

@@ -758,3 +758,41 @@ def test_prewarm_retries_explicit_zero_delta_capture_until_both_frames_exist() -
         "overview": [480, 640, 4],
         "robot_pov": [480, 640, 4],
     }
+
+
+def test_render_measured_pose_uses_zero_delta_without_pausing_timeline() -> None:
+    events: list[object] = []
+
+    class Orchestrator:
+        def step(self, **kwargs) -> None:
+            events.append(("step", kwargs))
+
+    class Rep:
+        orchestrator = Orchestrator()
+
+    renderer = IsaacTaskReviewRenderer.__new__(IsaacTaskReviewRenderer)
+    renderer.rep = Rep()
+    renderer.follow_live_robot = lambda **kwargs: events.append(("follow", kwargs))
+    renderer.capture_current = lambda **kwargs: [
+        {"camera_role": "robot_pov", **kwargs}
+    ]
+
+    frames = renderer.render_measured_pose(
+        step_index=12,
+        target_prim_path="/root/Microwave017/Microwave017_Door",
+    )
+
+    assert events[0] == (
+        "follow",
+        {"target_prim_path": "/root/Microwave017/Microwave017_Door"},
+    )
+    assert events[1] == (
+        "step",
+        {
+            "delta_time": 0.0,
+            "pause_timeline": False,
+            "wait_for_render": True,
+            "rt_subframes": renderer_module.REVIEW_CAPTURE_RT_SUBFRAMES,
+        },
+    )
+    assert frames == [{"camera_role": "robot_pov", "step_index": 12}]
