@@ -46,6 +46,10 @@ OPEN_LOOP_MAX_ERROR_RATIO = 0.8
 PINNED_ONNXRUNTIME_VERSION = "1.20.1"
 LIVE_ALIGNED_MODULE = "g1_microwave_live_aligned_finetune.py"
 REMOTE_LIVE_ALIGNED_MODULE = f"/workspace/{LIVE_ALIGNED_MODULE}"
+GRASP_ARC_MODULE = "g1_microwave_grasp_arc_seed.py"
+REMOTE_GRASP_ARC_MODULE = (
+    f"/workspace/runtime_overlay/package/blueprint_pipeline/{GRASP_ARC_MODULE}"
+)
 REMOTE_LIVE_ALIGNED_SEED = "/workspace/microwave_live_aligned_seed"
 REMOTE_LIVE_ALIGNED_EVIDENCE = "/workspace/microwave_live_aligned_isaac"
 
@@ -185,6 +189,9 @@ def build_finetune_component(dataset_path: str | Path) -> dict[str, Any]:
     live_aligned_source = Path(__file__).with_name(LIVE_ALIGNED_MODULE).read_bytes()
     live_aligned_source_sha256 = _sha256_bytes(live_aligned_source)
     live_aligned_source_base64 = base64.b64encode(live_aligned_source).decode("ascii")
+    grasp_arc_source = Path(__file__).with_name(GRASP_ARC_MODULE).read_bytes()
+    grasp_arc_source_sha256 = _sha256_bytes(grasp_arc_source)
+    grasp_arc_source_base64 = base64.b64encode(grasp_arc_source).decode("ascii")
     command = bounded_finetune_argv(
         dataset_path=REMOTE_DATASET_PATH,
         output_dir=REMOTE_OUTPUT_DIR,
@@ -203,6 +210,7 @@ EXPECTED_GROOT_REVISION={shlex.quote(PINNED_GROOT_N17_REVISION)}
 EXPECTED_CHECKPOINT={shlex.quote(REMOTE_FINAL_CHECKPOINT)}
 GROOT_OVERLAY={shlex.quote(REMOTE_GROOT_OVERLAY_ROOT)}
 LIVE_ALIGNED_MODULE={shlex.quote(REMOTE_LIVE_ALIGNED_MODULE)}
+GRASP_ARC_MODULE={shlex.quote(REMOTE_GRASP_ARC_MODULE)}
 LIVE_ALIGNED_SEED={shlex.quote(REMOTE_LIVE_ALIGNED_SEED)}
 LIVE_ALIGNED_EVIDENCE={shlex.quote(REMOTE_LIVE_ALIGNED_EVIDENCE)}
 mkdir -p /workspace/closed_loop_out
@@ -242,6 +250,18 @@ if hashlib.sha256(payload).hexdigest() != expected:
 destination.write_bytes(payload)
 if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
     raise SystemExit("g1_microwave_live_aligned_module_materialized_sha256_mismatch")
+PY
+python3 - "$GRASP_ARC_MODULE" <<'PY'
+import base64, hashlib, pathlib, sys
+destination = pathlib.Path(sys.argv[1]).resolve()
+payload = base64.b64decode({grasp_arc_source_base64!r}, validate=True)
+expected = {grasp_arc_source_sha256!r}
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("g1_microwave_grasp_arc_module_embedded_sha256_mismatch")
+destination.parent.mkdir(parents=True, exist_ok=True)
+destination.write_bytes(payload)
+if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
+    raise SystemExit("g1_microwave_grasp_arc_module_materialized_sha256_mismatch")
 PY
 rm -rf "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
 mkdir -p "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
@@ -699,6 +719,8 @@ if [ "$PHASE" != finetune_completed ]; then exit 1; fi
             "required": True,
             "module": LIVE_ALIGNED_MODULE,
             "module_sha256": live_aligned_source_sha256,
+            "grasp_arc_module": GRASP_ARC_MODULE,
+            "grasp_arc_module_sha256": grasp_arc_source_sha256,
             "same_session_live_start_required": True,
             "exact_isaac_rigid_head_render_required": True,
         },

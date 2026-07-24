@@ -129,11 +129,14 @@ def test_component_requires_live_aligned_isaac_training_episode(tmp_path: Path) 
     assert contract["same_session_live_start_required"] is True
     assert contract["exact_isaac_rigid_head_render_required"] is True
     assert len(contract["module_sha256"]) == 64
+    assert contract["grasp_arc_module"] == component.GRASP_ARC_MODULE
+    assert len(contract["grasp_arc_module_sha256"]) == 64
     script = built["script"]
     assert "prepare-actions" in script
     assert "render-isaac" in script
     assert "patch-dataset" in script
     assert "/workspace/initial_g1_sonic_state.json" in script
+    assert component.REMOTE_GRASP_ARC_MODULE in script
     assert "--stage /workspace/kitchen/KitchenRoom.usd" in script
     assert (
         f"onnxruntime=={component.PINNED_ONNXRUNTIME_VERSION}"
