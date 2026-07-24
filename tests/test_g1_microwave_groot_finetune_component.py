@@ -139,9 +139,10 @@ def test_generated_component_materializes_exact_isaac_runtime_source(
     materializer = built["script"].split(marker, 1)[1].split("\nPY\n", 1)[0]
     destination = tmp_path / source_module
     completed = subprocess.run(
-        [sys.executable, "-c", materializer, str(destination)],
+        [sys.executable, "-", str(destination)],
         check=False,
         capture_output=True,
+        input=materializer,
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
