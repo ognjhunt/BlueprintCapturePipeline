@@ -39,6 +39,7 @@ import hashlib
 import json
 import math
 import os
+import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -75,6 +76,8 @@ MIN_PROGRESS_FRAME_COUNT = 24
 # remain at 5, so a segment must carry at least this many samples for that
 # strategy to be computable at all.
 MIN_SEGMENT_FRAME_COUNT = 4
+# Bounds one judge call so a stalled provider cannot outlive the campaign's TTL.
+DEFAULT_JUDGE_TIMEOUT_SECONDS = 900.0
 
 PROMPT_INSTRUCTION = (
     "You are scoring a generated world-model rollout of a robot manipulation task "
@@ -453,6 +456,7 @@ def run_progress_judge_command(
     *,
     output_dir: str | Path,
     governor: Any = None,
+    timeout_seconds: float = DEFAULT_JUDGE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Invoke the configured external judge command for a prepared request.
 
@@ -508,21 +512,48 @@ def run_progress_judge_command(
     environment = dict(os.environ)
     environment[JUDGE_INPUT_ENV] = str(input_path)
     environment[JUDGE_OUTPUT_ENV] = str(output_path)
-    completed = subprocess.run(
-        command,
-        shell=True,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # Settled whether or not the command succeeded: a failed provider call is
-    # still a billable one, and a governor that only counts successes
-    # systematically under-reports spend.
-    governor.settle(
-        frame_count=frame_count,
-        estimated_cost_usd=decision.get("estimated_cost_usd"),
-    )
+    # Split rather than handing the string to a shell: the command is operator
+    # configuration, but routing it through a shell would make any metacharacter
+    # in a path or argument executable, and nothing here needs shell features.
+    argv = shlex.split(command)
+    if not argv:
+        return {
+            "schema_version": JUDGE_RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["progress_judge_command_not_parseable"],
+        }
+    completed = None
+    try:
+        completed = subprocess.run(  # noqa: S603 - argv is operator-configured, not shell-interpreted
+            argv,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            # A stalled provider wrapper would otherwise block forever, holding
+            # the request open past the campaign's TTL and hard-stop envelope.
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        completed = None
+    finally:
+        # Settled on every exit path -- success, non-zero exit, or timeout. A
+        # failed or stuck provider call is still a billable one, and a governor
+        # that only counts successes systematically under-reports spend.
+        # Settlement happens here, before any response payload is built, so an
+        # embedded ledger snapshot reflects the completed settlement.
+        governor.settle(
+            frame_count=frame_count,
+            estimated_cost_usd=decision.get("estimated_cost_usd"),
+        )
+    if completed is None:
+        return {
+            "schema_version": JUDGE_RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "blockers": ["progress_judge_command_timed_out"],
+            "timeout_seconds": timeout_seconds,
+            "spend_ledger": governor.ledger(),
+        }
     if completed.returncode != 0 or not output_path.is_file():
         return {
             "schema_version": JUDGE_RESULT_SCHEMA_VERSION,

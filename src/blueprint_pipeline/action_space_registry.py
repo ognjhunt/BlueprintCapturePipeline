@@ -22,6 +22,7 @@ exact layout with the same strictness the 7-D path always had.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -181,7 +182,7 @@ def validate_action_vector(
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             blockers.append("action_vector_non_numeric")
             break
-        if value != value or value in (float("inf"), float("-inf")):
+        if not math.isfinite(value):
             blockers.append("action_vector_non_finite")
             break
     return sorted(set(blockers))

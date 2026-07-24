@@ -266,6 +266,8 @@ class ResidentOscarWorker:
                     process.stdin.flush()
                     process.stdin.close()
                 except (BrokenPipeError, OSError, ValueError):
+                    # The worker already exited or closed its stdin; the signal
+                    # and wait path below still guarantees teardown.
                     pass
             try:
                 process.wait(timeout=self._shutdown_grace)
@@ -295,6 +297,22 @@ class ResidentOscarWorker:
         self.close()
 
     # -- reporting ---------------------------------------------------------
+
+    def close_and_report(self, output_dir: str | Path) -> dict[str, Any]:
+        """Write the throughput report, then tear the worker down.
+
+        The report is written even when the rollout failed: a run that died
+        halfway is exactly when the per-step timings are worth reading.
+        """
+
+        report = self.throughput_report()
+        try:
+            path = Path(output_dir).expanduser() / "oscar_resident_worker_throughput.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        finally:
+            self.close()
+        return report
 
     def throughput_report(self) -> dict[str, Any]:
         """What residency actually bought, in measured seconds."""
@@ -379,6 +397,55 @@ def build_resident_worker_argv(
         "--fps",
         str(float(fps)),
     ]
+
+
+def start_resident_oscar_generate_from_args(
+    args: Any,
+    *,
+    python: str,
+    extract_next_frame: Callable[[Path, Path], Path | None],
+    build_skeleton_video: Callable[[Sequence[Mapping[str, Any]], Path], Path | None] | None = None,
+    require_gpu_residency: bool = True,
+) -> tuple["ResidentOscarWorker", Callable[[Mapping[str, Any]], dict[str, Any]]]:
+    """Start a resident worker from parsed closed-loop CLI arguments.
+
+    Returns the worker alongside its generate callable so the caller can tear it
+    down and write its throughput report; the worker holds the GPU for the whole
+    rollout, so ownership must be explicit rather than implied.
+    """
+
+    worker = ResidentOscarWorker(
+        argv=build_resident_worker_argv(
+            python=python,
+            oscar_repo=args.oscar_repo,
+            checkpoint=args.checkpoint,
+            num_steps=int(args.oscar_num_steps),
+            guidance=float(args.oscar_guidance),
+            height=int(args.oscar_height),
+            width=int(args.oscar_width),
+            fps=float(args.oscar_fps),
+        ),
+        cwd=str(Path(args.oscar_repo).expanduser()),
+        env=os.environ.copy(),
+        request_timeout_seconds=float(args.provider_timeout_seconds),
+        max_restarts=int(args.oscar_resident_worker_max_restarts),
+        require_gpu_residency=require_gpu_residency,
+    )
+    try:
+        worker.start()
+    except BaseException:
+        # start() spawns the process before it validates the ready handshake, so
+        # a not-ready payload, startup timeout or missing GPU residency would
+        # otherwise leave an OSCAR process alive holding the GPU while the
+        # caller unwinds past its teardown path.
+        worker.close()
+        raise
+    generate = make_resident_oscar_generate(
+        worker=worker,
+        build_skeleton_video=build_skeleton_video,
+        extract_next_frame=extract_next_frame,
+    )
+    return worker, generate
 
 
 def make_resident_oscar_generate(

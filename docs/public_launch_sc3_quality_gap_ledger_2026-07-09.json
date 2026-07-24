@@ -2775,7 +2775,7 @@
             {
               "artifact_id": "SC3-02-AC-01-EV-03",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:fd4302c0866bb0379fb4096006801a6ef4e41e4e473b66d154737e56d5f73fa4",
+              "sha256": "sha256:144419dac51f6d0c9e4dd84c46d1c25eccdba20e70ed0e260c5043985351547c",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3565,7 +3565,7 @@
             {
               "artifact_id": "SC3-08-AC-01-EV-01",
               "path": "src/blueprint_pipeline/action_normalization.py",
-              "sha256": "sha256:72eefe09aecc844f681a65e79653be8d4b688529995e514914ad8a009ce042af",
+              "sha256": "sha256:1685bcc0437bf38ef7144a957372b468802d5798bcc04cfa4f210516051c4aad",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3918,7 +3918,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:fd4302c0866bb0379fb4096006801a6ef4e41e4e473b66d154737e56d5f73fa4",
+              "sha256": "sha256:144419dac51f6d0c9e4dd84c46d1c25eccdba20e70ed0e260c5043985351547c",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4052,7 +4052,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:fd4302c0866bb0379fb4096006801a6ef4e41e4e473b66d154737e56d5f73fa4",
+              "sha256": "sha256:144419dac51f6d0c9e4dd84c46d1c25eccdba20e70ed0e260c5043985351547c",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:073fc185011914b5424f04f268669c9f2f6848874388547fd3f2741060549548",
+              "sha256": "sha256:b0346618bdc07402b9f65480ef0fd0e8b528f3bb32770d24bd751929cf9cc107",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:26d397ebc93ddc50e6ba86eb774592f8a22cad27a30559c1ab8f477c8035fea5",
+              "sha256": "sha256:d8495f325935d529022afdce4dda5b02100d7e62c5c7ea8ec824b20e2f9853b7",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13773,7 +13773,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:3fe0099d651553197dc94de30e850fc3f94f4c44d3f8a799aae1c3e6598f6d19",
+              "sha256": "sha256:04cdb97eaf200d95afa1df1faddb0591570658c1263bb49de7491cb38f2d3c9c",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

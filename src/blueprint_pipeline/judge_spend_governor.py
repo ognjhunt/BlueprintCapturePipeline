@@ -29,6 +29,7 @@ waved through: governing spend you cannot measure is not governance.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -63,7 +64,7 @@ def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
-    return number if number == number and number not in (float("inf"), float("-inf")) else None
+    return number if math.isfinite(number) else None
 
 
 def _positive_int(value: Any) -> int | None:

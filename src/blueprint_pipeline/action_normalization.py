@@ -407,9 +407,10 @@ def build_action_normalization_manifest(
     if stats is not None and not blockers:
         stats_payload = {
             **stats,
-            "action_representation": SC3_ACTION_REPRESENTATION,
-            "action_order": list(SC3_ACTION_ORDER),
-            "action_units": list(SC3_ACTION_UNITS),
+            "action_representation": space.representation,
+            "action_order": list(space.order),
+            "action_units": list(space.units),
+            "action_schema_id": space.action_schema_id,
             "source_trace_sha256": trace_sha,
             "generated_at": utc_now_iso(),
         }
@@ -419,7 +420,9 @@ def build_action_normalization_manifest(
         for episode_id, actions in accepted.items():
             episode_payload = dict(episodes[episode_id])
             normalized_episodes[episode_id] = {
-                "normalized_actions": normalize_actions(actions, stats=stats_payload),
+                "normalized_actions": normalize_actions(
+                    actions, stats=stats_payload, action_schema_id=action_schema_id
+                ),
                 "chunk_start_times_sec": list(
                     episode_payload.get("chunk_start_times_sec") or []
                 ),
@@ -442,7 +445,8 @@ def build_action_normalization_manifest(
         "blockers": blockers,
         "declared_action_dim": declared_dim,
         "action_representation": representation or None,
-        "canonical_action_representation": SC3_ACTION_REPRESENTATION,
+        "canonical_action_representation": space.representation,
+        "canonical_action_schema_id": space.action_schema_id,
         "action_order": list(declared_order),
         "action_units": list(declared_units),
         "config": {

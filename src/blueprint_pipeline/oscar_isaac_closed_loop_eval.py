@@ -6806,24 +6806,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_OSCAR_NUM_FRAMES,
         help="OSCAR clip length per step",
     )
-    parser.add_argument(
-        "--oscar-resident-worker",
-        action="store_true",
-        help=(
-            "keep one OSCAR process alive for the whole rollout instead of "
-            "spawning a torchrun invocation per step, so the checkpoint is read "
-            "once rather than once per generated observation"
-        ),
-    )
-    parser.add_argument(
-        "--oscar-resident-worker-max-restarts",
-        type=int,
-        default=0,
-        help=(
-            "restarts permitted if the resident worker dies; 0 fails the run "
-            "closed rather than silently paying the cold start again"
-        ),
-    )
+    parser.add_argument("--oscar-resident-worker", action="store_true")
+    parser.add_argument("--oscar-resident-worker-max-restarts", type=int, default=0)
     parser.add_argument("--oscar-num-steps", type=int, default=35)
     parser.add_argument("--oscar-guidance", type=float, default=6.0)
     parser.add_argument("--oscar-seed", type=int, default=42)
@@ -7303,8 +7287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if _string(args.action_skeleton_command).strip()
         else None
     )
-    # Bound before the backend branches so the teardown/report path below is
-    # reachable no matter which backend was selected.
+    # Bound before the backend branches so teardown below is always reachable.
     resident_worker = None
     if args.wam_backend == "cosmos3_wam":
         cosmos3_command_env = WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE.get("cosmos3_wam")
@@ -7445,32 +7428,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return output_path if output_path.is_file() else None
 
         if args.oscar_resident_worker:
-            from .oscar_resident_worker import (
-                ResidentOscarWorker,
-                build_resident_worker_argv,
-                make_resident_oscar_generate,
-            )
+            from .oscar_resident_worker import start_resident_oscar_generate_from_args
 
-            resident_worker = ResidentOscarWorker(
-                argv=build_resident_worker_argv(
-                    python=sys.executable,
-                    oscar_repo=args.oscar_repo,
-                    checkpoint=args.checkpoint,
-                    num_steps=int(args.oscar_num_steps),
-                    guidance=float(args.oscar_guidance),
-                    height=int(args.oscar_height),
-                    width=int(args.oscar_width),
-                    fps=float(args.oscar_fps),
-                ),
-                cwd=str(Path(args.oscar_repo).expanduser()),
-                env=os.environ.copy(),
-                request_timeout_seconds=float(args.provider_timeout_seconds),
-                max_restarts=int(args.oscar_resident_worker_max_restarts),
-                require_gpu_residency=True,
-            )
-            resident_worker.start()
-            oscar_generate = make_resident_oscar_generate(
-                worker=resident_worker,
+            resident_worker, oscar_generate = start_resident_oscar_generate_from_args(
+                args,
+                python=sys.executable,
                 build_skeleton_video=_step_skeleton_video_builder,
                 extract_next_frame=extract_next_observation_frame_from_video,
             )
@@ -7579,18 +7541,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             attempt_input_manifest=args.attempt_input_manifest,
         )
     finally:
-        # The resident worker holds the GPU for the whole rollout, so it must be
-        # torn down on the failure path too; its throughput report is written
-        # whether or not the rollout completed, because a run that died halfway
-        # is exactly when the per-step timings are worth reading.
+        # Holds the GPU for the whole rollout, so it is torn down on the failure
+        # path too, after its throughput report is written.
         if resident_worker is not None:
-            try:
-                write_json(
-                    out_dir / "oscar_resident_worker_throughput.json",
-                    resident_worker.throughput_report(),
-                )
-            finally:
-                resident_worker.close()
+            resident_worker.close_and_report(out_dir)
     print(
         json.dumps(
             {"status": manifest["status"], "steps_executed": manifest.get("steps_executed")},

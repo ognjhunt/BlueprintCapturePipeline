@@ -174,7 +174,7 @@ defect wearing a status's clothes.
 rather than asserting: it calls the real validators and scans the real source,
 so a repaired gate stops being reported as dead without editing the audit.
 
-Current findings, all reproducible via `blueprint-audit-gate-reachability`:
+Current findings, all reproducible via `python -m blueprint_pipeline.gate_reachability_audit`:
 
 - `validate_external_study` returns `external_proof_required` for every input,
   and the string `"validated"` does not appear anywhere in that module. So
@@ -196,8 +196,8 @@ what it never will.
 ## Commands
 
 ```bash
-blueprint-audit-gate-reachability --fail-on-unreachable
-blueprint-plan-architecture-adoption --input proposal.json --output plan.json
+python -m blueprint_pipeline.gate_reachability_audit --fail-on-unreachable
+python -m blueprint_pipeline.world_model_architecture_adoption --input proposal.json --output plan.json
 python -m blueprint_pipeline.oscar_isaac_closed_loop_eval --oscar-resident-worker ...
 python -m blueprint_pipeline.vast_provider_adapter --gpu-selection-policy generation ...
 ```

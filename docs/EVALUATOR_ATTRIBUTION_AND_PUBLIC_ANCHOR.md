@@ -176,12 +176,12 @@ world-model quality independent of the harness — and pins
 ## Commands
 
 ```bash
-blueprint-run-control-ranker --input request.json --output report.json
-blueprint-run-roboworld-progress-judge check-sampling --duration-seconds 25 --sampled-frames 60
-blueprint-run-roboworld-progress-judge request --input plan.json --output request.json
-blueprint-run-roboworld-progress-judge score --input judge-output.json --output scores.json
-blueprint-build-public-benchmark-anchor snapshot --input export.json --output snapshot.json
-blueprint-build-public-benchmark-anchor external-reference --input snapshot.json --output reference.json
+python -m blueprint_pipeline.control_ranker --input request.json --output report.json
+python -m blueprint_pipeline.roboworld_progress_judge check-sampling --duration-seconds 25 --sampled-frames 60
+python -m blueprint_pipeline.roboworld_progress_judge request --input plan.json --output request.json
+python -m blueprint_pipeline.roboworld_progress_judge score --input judge-output.json --output scores.json
+python -m blueprint_pipeline.public_benchmark_anchor snapshot --input export.json --output snapshot.json
+python -m blueprint_pipeline.public_benchmark_anchor external-reference --input snapshot.json --output reference.json
 ```
 
 No command launches a provider, trains a model, or allocates paid resources. The
