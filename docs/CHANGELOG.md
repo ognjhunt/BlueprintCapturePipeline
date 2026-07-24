@@ -10,9 +10,15 @@
   that redaction removed. Generated artifacts now start unverified, must be
   conditioned on redaction-verified assets, require their own redaction pass
   over the generated pixels before customer-visible release, and carry takedown
-  keys so a later consent revocation reaches the derivative. The hosted runtime
-  withholds any chunk lacking a release contract
-  (`src/blueprint_pipeline/generated_media_privacy.py`,
+  keys so a later consent revocation reaches the derivative. At the hosted
+  serving boundary a chunk that carries a contract is held to it unconditionally
+  and withheld behind a labelled placeholder if it is not cleared for
+  customer-visible release. Enforcement of the *no-contract* case is staged: no
+  producer attaches contracts to runtime chunks yet, so uncontracted media is
+  served with an explicit `X-Blueprint-Generated-Media-Privacy: unverified`
+  label rather than silently, and `BLUEPRINT_ENFORCE_GENERATED_MEDIA_PRIVACY`
+  withholds it outright. Until a producer exists this defect is contained and
+  visible, not closed (`src/blueprint_pipeline/generated_media_privacy.py`,
   `src/blueprint_pipeline/native_runtime_backend.py`,
   `docs/CUSTOMER_OUTPUT_CONTRACTS.md`).
 - Every Post-Training Data Package now ships a frozen held-out cut carved from

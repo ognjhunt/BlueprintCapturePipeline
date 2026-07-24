@@ -45,7 +45,10 @@ from .native_runtime_strategy import (
     resolve_native_runtime_strategy,
 )
 from .core.security_controls import contained_path, strict_identifier
-from .generated_media_privacy import release_decision as _privacy_release_decision
+from .generated_media_privacy import (
+    CONTRACT_SCHEMA_VERSION as _PRIVACY_CONTRACT_SCHEMA_VERSION,
+    release_decision as _privacy_release_decision,
+)
 from blueprint_contracts.runtime_service_contract import RuntimeMetadata
 from blueprint_contracts.site_world_contract import merge_site_world_definition
 
@@ -77,6 +80,9 @@ def _json_read(path: Path) -> Dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+GENERATED_MEDIA_PRIVACY_STRICT_ENV = "BLUEPRINT_ENFORCE_GENERATED_MEDIA_PRIVACY"
+
+
 def _generated_media_release_decision(
     chunk: Mapping[str, Any], rollout: Mapping[str, Any]
 ) -> Dict[str, Any]:
@@ -84,17 +90,37 @@ def _generated_media_release_decision(
 
     A world model conditioned on a site frame can re-synthesise a face, a badge,
     or a whiteboard that capture-side redaction removed, so the source clip's
-    clean status says nothing about these pixels. The chunk must carry its own
-    release contract; anything else is withheld.
+    clean status says nothing about these pixels. A chunk that carries its own
+    release contract is held to it: anything short of ``customer_visible`` is
+    withheld, and that is the case this control exists to catch.
+
+    Enforcement is staged for the no-contract case. No producer attaches a
+    contract to a runtime chunk yet, so denying every uncontracted chunk would
+    withhold the entire existing hosted-media path while protecting nothing that
+    is not already unprotected. Uncontracted media is therefore served and
+    *labelled* ``unverified`` rather than served silently, and setting
+    ``BLUEPRINT_ENFORCE_GENERATED_MEDIA_PRIVACY`` withholds it outright. The
+    label is the honest statement of what is known; it is not a clearance.
     """
 
     contract = chunk.get("generated_media_privacy_contract")
     if not isinstance(contract, Mapping):
         contract = rollout.get("generated_media_privacy_contract")
-    return _privacy_release_decision(
-        contract if isinstance(contract, Mapping) else {},
-        required_scope="customer_visible",
+    if not isinstance(contract, Mapping):
+        contract = {}
+    present = contract.get("schema_version") == _PRIVACY_CONTRACT_SCHEMA_VERSION
+    decision = dict(
+        _privacy_release_decision(contract, required_scope="customer_visible")
     )
+    decision["contract_present"] = present
+    if not present and not _env_truthy(GENERATED_MEDIA_PRIVACY_STRICT_ENV):
+        decision["allowed"] = True
+        decision["privacy_status"] = "unverified"
+    else:
+        decision["privacy_status"] = (
+            "cleared_customer_visible" if decision["allowed"] else "withheld"
+        )
+    return decision
 
 
 def _read_bytes_if_available(path: Path) -> Optional[bytes]:
@@ -2621,16 +2647,18 @@ class NativeWorldModelRuntimeStore:
             chunk = self._chunk_record(rollout, selected_chunk_id) if selected_chunk_id else None
         media_path = Path(str(chunk.get("media_path") or "").strip()) if chunk else None
         if media_path and media_path.is_file():
-            # Generated pixels do not inherit the source capture's redaction
-            # status, so a chunk reaches a customer-visible session only with
-            # its own release contract. Absent evidence is a denial.
-            release = _generated_media_release_decision(chunk, rollout)
-            if not release["allowed"]:
-                return self._privacy_withheld_response(
-                    session_id, camera_id, rollout, reason=release["reason"]
-                )
+            # Read first: an unreadable chunk is a buffering condition, not a
+            # privacy denial, and must not be reported as one.
             media_bytes = _read_bytes_if_available(media_path)
             if media_bytes is not None:
+                # Generated pixels do not inherit the source capture's redaction
+                # status, so a chunk carrying its own release contract is held
+                # to it before any bytes leave this boundary.
+                release = _generated_media_release_decision(chunk, rollout)
+                if not release["allowed"]:
+                    return self._privacy_withheld_response(
+                        session_id, camera_id, rollout, reason=release["reason"]
+                    )
                 return {
                     "content": media_bytes,
                     "media_type": str(chunk.get("media_type") or "video/mp4"),
@@ -2641,6 +2669,11 @@ class NativeWorldModelRuntimeStore:
                         "X-Blueprint-Chunk-Id": selected_chunk_id,
                         "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
                         "X-Blueprint-Refinement-Status": str(chunk.get("refinement_status") or rollout.get("refinement_status") or ""),
+                        # Never silent about what was actually checked: media
+                        # without a contract is labelled unverified, not clean.
+                        "X-Blueprint-Generated-Media-Privacy": str(
+                            release.get("privacy_status") or "unverified"
+                        ),
                     },
                 }
         placeholder = self._render_png(session_id, camera_id)
@@ -2680,6 +2713,7 @@ class NativeWorldModelRuntimeStore:
                 "X-Blueprint-Content-Kind": "placeholder",
                 "X-Blueprint-Is-Site-Observation": "false",
                 "X-Blueprint-Withheld-Reason": reason,
+                "X-Blueprint-Generated-Media-Privacy": "withheld",
             },
         }
 

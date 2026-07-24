@@ -46,8 +46,25 @@ different artifact digest proves nothing about this one. Absent consent is not
 permission: `unknown` fails closed exactly as `revoked` does.
 
 The hosted runtime now consults this at the serving boundary
-(`native_runtime_backend.media_response`); a chunk without a contract is withheld
-behind a labelled placeholder rather than served.
+(`native_runtime_backend.media_response`). Enforcement there is **staged**, and
+the distinction matters:
+
+- A chunk that **carries a contract** is held to it unconditionally. Anything
+  short of `customer_visible` is withheld behind a labelled placeholder
+  (`X-Blueprint-Render-Source: withheld_privacy_contract`) with the denial
+  reason attached.
+- A chunk with **no contract** is served and labelled
+  `X-Blueprint-Generated-Media-Privacy: unverified`. No producer attaches a
+  contract to a runtime chunk yet, so denying every uncontracted chunk would
+  withhold the whole existing hosted-media path while protecting nothing that is
+  not already unprotected. Setting
+  `BLUEPRINT_ENFORCE_GENERATED_MEDIA_PRIVACY` withholds it outright.
+
+State the consequence plainly: **until a producer attaches contracts, the
+default posture labels rather than blocks**, so this defect is contained and
+visible, not closed. The label is an honest report of what was checked; it is
+not a clearance. Closing it requires the generation path to emit a contract per
+chunk, at which point strict mode becomes the default.
 
 ## 2. Anchor return kits
 
