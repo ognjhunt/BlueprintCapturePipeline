@@ -604,7 +604,16 @@ def stage_wam_provider_bundle_object_store(
             blockers.extend(signed_output_round_trip.get("blockers") or [])
             bundle_url = client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": bucket_value, "Key": bundle_key},
+                # Paid-worker egress proxies have returned stale bytes for a
+                # previously fetched signed object even after the object key
+                # and basename changed.  Bind an S3 response override into the
+                # signature so intermediate caches must revalidate the exact
+                # content-addressed qualification payload.
+                Params={
+                    "Bucket": bucket_value,
+                    "Key": bundle_key,
+                    "ResponseCacheControl": "no-store, max-age=0",
+                },
                 ExpiresIn=int(expiration_seconds),
                 HttpMethod="GET",
             )
