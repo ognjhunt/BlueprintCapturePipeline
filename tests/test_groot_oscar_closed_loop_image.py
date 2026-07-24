@@ -226,6 +226,9 @@ def test_launch_plan_closed_loop_command_points_at_baked_paths():
     assert cmd[cmd.index("--groot-root") + 1] == "/opt/gr00t"
     assert cmd[cmd.index("--groot-sonic-policy-server-url") + 1] == "tcp://127.0.0.1:5550"
     assert cmd[cmd.index("--start-frame") + 1] == "/w/frame.png"
+    assert cmd[cmd.index("--start-frame-evidence") + 1] == (
+        "/workspace/controller_fk_camera_projection_context.json"
+    )
     assert cmd[cmd.index("--route-file") + 1] == "/w/route.json"
     assert cmd[cmd.index("--steps") + 1] == "5"
     assert cmd[cmd.index("--task-prompt") + 1] == "open the top cabinet"

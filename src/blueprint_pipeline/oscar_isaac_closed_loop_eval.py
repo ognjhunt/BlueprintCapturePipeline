@@ -760,6 +760,59 @@ def _validated_post_action_egocentric_frame(
     return latest if latest.pop("visual_signal_valid") is True else {}
 
 
+def _validated_initial_policy_observation(
+    evidence: Mapping[str, Any] | None,
+    *,
+    start_frame_path: str | Path,
+) -> dict[str, Any]:
+    """Validate that the initial policy RGB is the hash-bound Isaac head POV."""
+    context = _mapping(evidence)
+    if not context:
+        raise RuntimeError("initial_policy_observation_evidence_required")
+    frame = _mapping(context.get("source_frame_artifact"))
+    camera = _mapping(context.get("camera_contract"))
+    visual_signal = _mapping(context.get("visual_signal"))
+    resolved_start = Path(start_frame_path).expanduser().resolve()
+    evidence_path = Path(_string(frame.get("path"))).expanduser().resolve()
+    if (
+        resolved_start.is_symlink()
+        or not resolved_start.is_file()
+        or evidence_path != resolved_start
+    ):
+        raise RuntimeError("initial_policy_observation_frame_binding_invalid")
+    observed_sha256 = hashlib.sha256(resolved_start.read_bytes()).hexdigest()
+    expected_sha256 = _string(frame.get("sha256")).strip().lower()
+    if not _is_sha256(expected_sha256) or expected_sha256 != observed_sha256:
+        raise RuntimeError("initial_policy_observation_frame_sha256_mismatch")
+    frame_resolution = [int(frame.get("width") or 0), int(frame.get("height") or 0)]
+    if (
+        frame.get("camera_role") != "robot_pov"
+        or min(frame_resolution) <= 0
+        or camera.get("available") is not True
+        or camera.get("projection_token") != "perspective"
+        or list(camera.get("resolution") or []) != frame_resolution
+        or camera.get("viewpoint_mode") != "robot_head_mounted_egocentric"
+        or camera.get("robot_mounted") is not True
+        or camera.get("policy_observation_eligible") is not True
+        or camera.get("mount_motion_model") != "rigid_head_local_transform"
+        or camera.get("gaze_motion_model") != "inherits_head_orientation_no_task_reaim"
+        or visual_signal.get("status") != "completed"
+        or visual_signal.get("non_uniform") is not True
+    ):
+        raise RuntimeError("initial_policy_observation_camera_contract_invalid")
+    return {
+        "frame_path": str(resolved_start),
+        "sha256": observed_sha256,
+        "camera_role": "robot_pov",
+        "viewpoint_mode": camera["viewpoint_mode"],
+        "mount_motion_model": camera["mount_motion_model"],
+        "gaze_motion_model": camera["gaze_motion_model"],
+        "policy_observation_eligible": True,
+        "third_person_overview_included": False,
+        "camera_contract": dict(camera),
+    }
+
+
 def _landmark_has_numeric_evidence(landmark: Mapping[str, Any]) -> bool:
     for key in ("world_xyz", "camera_xyz", "position_xyz", "xyz", "position"):
         if _finite_numeric_sequence(landmark.get(key), minimum_length=3):
@@ -5370,6 +5423,7 @@ def run_oscar_isaac_closed_loop(
     require_action_derived_skeleton_conditioning: bool = False,
     clean_frame_reanchor_interval: int = 0,
     policy_endpoint: PolicyEndpoint | None = None,
+    initial_observation_evidence: Mapping[str, Any] | None = None,
     wam_consistency_command: str | None = None,
     allow_wam_consistency_scoring: bool = False,
     wam_consistency_timeout_seconds: float | None = None,
@@ -5474,28 +5528,39 @@ def run_oscar_isaac_closed_loop(
     # Waiting until after the first WAM transition would make action zero a
     # deterministic fixture action and poison every downstream identity binding.
     if policy_endpoint is not None:
-        initial_observation = {
-            "schema_version": "oscar_initial_real_policy_observation.v1",
-            "frame_path": current_frame,
-            "camera_frame_path": current_frame,
-            "source_observation_frame": current_frame,
-            "observation_kind": "initial_real_observation",
-            "camera_role": "robot_pov",
-            "viewpoint_mode": "robot_head_mounted_egocentric",
-            "policy_observation_eligible": True,
-            "third_person_overview_included": False,
-            "visual_observation": {
-                "camera_frame_path": current_frame,
-                "camera_role": "robot_pov",
-                "viewpoint_mode": "robot_head_mounted_egocentric",
+        try:
+            validated_initial = _validated_initial_policy_observation(
+                initial_observation_evidence,
+                start_frame_path=current_frame,
+            )
+            initial_observation = {
+                "schema_version": "oscar_initial_real_policy_observation.v1",
+                "frame_path": validated_initial["frame_path"],
+                "frame_sha256": validated_initial["sha256"],
+                "camera_frame_path": validated_initial["frame_path"],
+                "source_observation_frame": validated_initial["frame_path"],
+                "observation_kind": "initial_real_observation",
+                "camera_role": validated_initial["camera_role"],
+                "viewpoint_mode": validated_initial["viewpoint_mode"],
+                "mount_motion_model": validated_initial["mount_motion_model"],
+                "gaze_motion_model": validated_initial["gaze_motion_model"],
                 "policy_observation_eligible": True,
                 "third_person_overview_included": False,
-            },
-            "task_prompt": resolved_task_prompt or None,
-            "route_target_xyz": list(target),
-            "generated_robot_state": {},
-        }
-        try:
+                "visual_observation": {
+                    "camera_frame_path": validated_initial["frame_path"],
+                    "camera_frame_sha256": validated_initial["sha256"],
+                    "camera_role": validated_initial["camera_role"],
+                    "viewpoint_mode": validated_initial["viewpoint_mode"],
+                    "mount_motion_model": validated_initial["mount_motion_model"],
+                    "gaze_motion_model": validated_initial["gaze_motion_model"],
+                    "policy_observation_eligible": True,
+                    "third_person_overview_included": False,
+                    "camera_contract": validated_initial["camera_contract"],
+                },
+                "task_prompt": resolved_task_prompt or None,
+                "route_target_xyz": list(target),
+                "generated_robot_state": {},
+            }
             pending_policy_endpoint_action = dict(policy_endpoint(initial_observation, [], 0) or {})
             if not pending_policy_endpoint_action:
                 raise RuntimeError("initial_policy_action_empty")
@@ -5505,7 +5570,11 @@ def run_oscar_isaac_closed_loop(
             )
             learned_policy_requery_count += 1
         except Exception as exc:  # noqa: BLE001
-            blockers.append(f"initial_learned_policy_query_failed:{type(exc).__name__}")
+            detail = _string(exc).strip()
+            if detail.startswith("initial_policy_observation_"):
+                blockers.append(detail)
+            else:
+                blockers.append(f"initial_learned_policy_query_failed:{type(exc).__name__}")
 
     for step_index in range(1, bounded_steps + 1):
         # 1. policy acts
@@ -6721,6 +6790,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start-frame", required=True, help="initial robot-POV observation frame")
+    parser.add_argument(
+        "--start-frame-evidence",
+        help=(
+            "JSON controller/FK camera-projection context that hash-binds --start-frame "
+            "to the live Isaac rigid-head robot POV. Required before any learned-policy query."
+        ),
+    )
     parser.add_argument("--route-file", required=True, help='JSON: {"route_points": [[x,y,z],...]}')
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--task-prompt", default="walk to the sink")
@@ -6907,6 +6983,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     route = list(route_payload.get("route_points") or [])
     task_success_contract: dict[str, Any] = {}
     initial_groot_policy_state: dict[str, Any] = {}
+    initial_observation_evidence: dict[str, Any] = {}
+    if args.start_frame_evidence:
+        try:
+            initial_observation_evidence = _mapping(
+                json.loads(
+                    Path(args.start_frame_evidence).expanduser().read_text(encoding="utf-8")
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            initial_observation_evidence = {}
     task_success_contract_load_blocker: str | None = None
     if args.task_success_contract:
         try:
@@ -7402,6 +7488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         route_points=route,
         wam_generate_next=backend,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=initial_observation_evidence,
         steps=int(args.steps),
         task_prompt=args.task_prompt,
         harness_backend_kind=args.harness_backend_kind,

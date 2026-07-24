@@ -172,6 +172,30 @@ def _write_frame(path: Path, seed: int) -> Path:
     return path
 
 
+def _initial_robot_pov_evidence(path: Path) -> dict:
+    resolved = path.resolve()
+    return {
+        "source_frame_artifact": {
+            "path": str(resolved),
+            "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+            "width": 64,
+            "height": 48,
+            "camera_role": "robot_pov",
+        },
+        "camera_contract": {
+            "available": True,
+            "projection_token": "perspective",
+            "resolution": [64, 48],
+            "viewpoint_mode": "robot_head_mounted_egocentric",
+            "robot_mounted": True,
+            "policy_observation_eligible": True,
+            "mount_motion_model": "rigid_head_local_transform",
+            "gaze_motion_model": "inherits_head_orientation_no_task_reaim",
+        },
+        "visual_signal": {"status": "completed", "non_uniform": True},
+    }
+
+
 def _projected_landmark(name: str, x: float, y: float) -> dict:
     """Controller/FK evidence with a separately attested image projection."""
     return {
@@ -1580,6 +1604,7 @@ def test_closed_loop_requeries_learned_policy_on_wam_observation(tmp_path: Path)
         harness_backend_kind="fixture",
         generated_at="now",
         policy_endpoint=_policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(start),
     )
 
     assert manifest["status"] == "completed"
@@ -1952,6 +1977,7 @@ def test_closed_loop_generated_video_success_label_is_sim_only_and_required(
         allow_wam_success_labeling=True,
         require_generated_video_success_label=True,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(start),
         wam_consistency_timeout_seconds=5.0,
         wam_success_label_timeout_seconds=5.0,
     )
@@ -5230,6 +5256,9 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
         wam_generate_next=_controller_fk_wam(tmp_path),
         steps=5,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "manipulation_transition_seed.png"
+        ),
         stop_on_task_completion=True,
         perception_target_prompts=["open the refrigerator"],
         task_success_contract={
@@ -5321,6 +5350,9 @@ def test_manipulation_stall_watchdog_terminates_without_claiming_success(tmp_pat
         wam_generate_next=_controller_fk_wam(tmp_path),
         steps=12,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "manipulation_stall_seed.png"
+        ),
         stop_on_task_completion=True,
         stop_on_no_progress=True,
         no_progress_patience_steps=3,
@@ -5424,6 +5456,9 @@ def test_one_action_semantic_terminal_requeries_wam_observation_without_executio
         steps=5,
         min_steps=1,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "step_one_seed.png"
+        ),
         stop_on_task_completion=True,
         perception_target_prompts=["open the microwave door"],
         task_success_contract={
@@ -5514,6 +5549,9 @@ def test_persistent_isaac_apply_precedes_requery_and_supplies_live_state(tmp_pat
         wam_generate_next=_controller_fk_wam(tmp_path, events),
         steps=2,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "apply_before_requery_seed.png"
+        ),
         task_success_contract={"task_kind": "navigation_smoke"},
         task_completion_evaluator=evaluator,
     )
@@ -5574,6 +5612,9 @@ def test_unsafe_live_stance_dynamically_terminates_before_policy_requery(tmp_pat
         wam_generate_next=_controller_fk_wam(tmp_path),
         steps=48,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "unsafe_stance_seed.png"
+        ),
         task_success_contract={"task_kind": "navigation_smoke"},
         task_completion_evaluator=evaluator,
         stop_on_unsafe_stance=True,
@@ -5618,6 +5659,9 @@ def test_malformed_post_action_state_blocks_without_requery(tmp_path):
         wam_generate_next=_controller_fk_wam(tmp_path),
         steps=3,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "malformed_post_action_seed.png"
+        ),
         task_success_contract={"task_kind": "navigation_smoke"},
         task_completion_evaluator=evaluator,
     )
@@ -6225,6 +6269,9 @@ def test_strict_closed_loop_requires_action_differentiated_fk_evidence(
         ),
         steps=4,
         policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / f"strict-seed-{distinct_evidence}.png"
+        ),
         require_fresh_learned_policy_requery=True,
         require_action_derived_skeleton_conditioning=True,
     )
@@ -6245,6 +6292,44 @@ def test_strict_closed_loop_requires_action_differentiated_fk_evidence(
             "fresh_action_conditioning_not_action_differentiated" in blocker
             for blocker in manifest["blockers"]
         )
+
+
+@pytest.mark.parametrize(
+    ("evidence_kind", "expected_blocker"),
+    [
+        ("missing", "initial_policy_observation_evidence_required"),
+        ("third_person", "initial_policy_observation_camera_contract_invalid"),
+    ],
+)
+def test_initial_policy_query_requires_hash_bound_robot_head_pov(
+    tmp_path: Path,
+    evidence_kind: str,
+    expected_blocker: str,
+) -> None:
+    start = _write_frame(tmp_path / f"{evidence_kind}.png", 21)
+    evidence = None
+    if evidence_kind == "third_person":
+        evidence = _initial_robot_pov_evidence(start)
+        evidence["camera_contract"]["viewpoint_mode"] = "task_framed_third_person_review"
+        evidence["camera_contract"]["robot_mounted"] = False
+        evidence["camera_contract"]["policy_observation_eligible"] = False
+    policy_queries: list[dict] = []
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / f"{evidence_kind}-out",
+        start_frame_path=start,
+        route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
+        wam_generate_next=_route_walking_wam(tmp_path),
+        steps=1,
+        policy_endpoint=lambda observation, history, step: (
+            policy_queries.append(observation) or {"policy_action": "unsafe"}
+        ),
+        initial_observation_evidence=evidence,
+    )
+
+    assert policy_queries == []
+    assert manifest["status"] == "blocked"
+    assert expected_blocker in manifest["blockers"]
 
 
 def test_sc3_closed_loop_blocks_egocentric_only_wam_output(tmp_path):
