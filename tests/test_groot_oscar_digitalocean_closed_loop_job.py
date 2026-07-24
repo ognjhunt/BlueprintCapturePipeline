@@ -1319,6 +1319,11 @@ def test_worker_bootstrap_runs_healthcheck_groot_and_task_adaptive_closed_loop()
     script = J.build_worker_bootstrap_script(_active_plan())
 
     assert "upload_phase container_bash_started" in script
+    assert "curl \\\n  --http1.1" in script
+    assert "--retry 8" in script
+    assert "--retry-all-errors" in script
+    assert "--retry-max-time 900" in script
+    assert "--max-time 1200" in script
     assert "groot_oscar_closed_loop_image_healthcheck.py --require-cuda" in script
     assert "/opt/gr00t-venv/bin/python -m gr00t.eval.run_gr00t_server" in script
     assert "BLUEPRINT_CLOSED_LOOP_RC=\"$RC\" python /workspace/write_result.py" in script
