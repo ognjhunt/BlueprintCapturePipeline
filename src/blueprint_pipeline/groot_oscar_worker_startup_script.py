@@ -480,7 +480,6 @@ import hashlib, json, math, os, time
 from pathlib import Path
 
 from blueprint_pipeline.gear_sonic_official_zmq_executor import (
-    _protocol_v4_hand_to_sonic,
     _zmq_roundtrip,
     execute as execute_controller_fk,
 )
@@ -716,6 +715,17 @@ def finite_vector(value, size):
     if len(result) != size or not all(math.isfinite(item) for item in result):
         raise ValueError('controller_readiness_vector_invalid')
     return result
+
+SONIC_TO_PROTOCOL_V4_HAND_INDICES = (4, 5, 6, 0, 1, 2, 3)
+
+def protocol_v4_hand_to_sonic(value):
+    protocol = finite_vector(value, 7)
+    sonic = [0.0] * 7
+    for protocol_index, sonic_index in enumerate(
+        SONIC_TO_PROTOCOL_V4_HAND_INDICES
+    ):
+        sonic[sonic_index] = protocol[protocol_index]
+    return sonic
 
 def load_attempt_bound_projection_context():
     path = Path(projection_context_path_text)
@@ -963,8 +973,8 @@ else:
                 # permutation itself, so invert that permutation here.
                 'sonic_action_chunk': (
                     motion
-                    + _protocol_v4_hand_to_sonic(left)
-                    + _protocol_v4_hand_to_sonic(right)
+                    + protocol_v4_hand_to_sonic(left)
+                    + protocol_v4_hand_to_sonic(right)
                 ),
             }
             source_action_sha256 = canonical_sha256(canary_action)
