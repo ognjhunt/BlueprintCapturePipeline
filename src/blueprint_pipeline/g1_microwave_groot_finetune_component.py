@@ -343,6 +343,19 @@ offline_model = patch_once(
     f"    config.model.model_name = {{str(local_model_root)!r}}",
     "g1_microwave_finetune_local_model",
 )
+deepspeed_probe_guard = patch_once(
+    launch_source,
+    "    run(config)",
+    "    # This bounded single-GPU path does not use DeepSpeed. Accelerate's\\n"
+    "    # generic unwrap helper imports an installed DeepSpeed package anyway,\\n"
+    "    # which probes nvcc even in inference-only release images that correctly\\n"
+    "    # omit the compiler. Keep the package and sealed environment untouched;\\n"
+    "    # disable only that irrelevant availability branch for this process.\\n"
+    "    import accelerate.utils.other as accelerate_other\\n"
+    "    accelerate_other.is_deepspeed_available = lambda: False\\n"
+    "    run(config)",
+    "g1_microwave_finetune_unused_deepspeed_probe",
+)
 report = {{
     "schema_version": "g1_microwave_groot_runtime_overlay.v1",
     "status": "passed",
@@ -352,6 +365,7 @@ report = {{
     "classifier_patch": classifier,
     "processor_patch": processor,
     "offline_model_patch": offline_model,
+    "deepspeed_probe_guard_patch": deepspeed_probe_guard,
     "local_model_root": str(local_model_root),
     "resolved_local_model_root": str(resolved_local_model_root),
     "local_model_files": local_model_files,

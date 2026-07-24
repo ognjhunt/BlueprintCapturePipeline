@@ -86,6 +86,7 @@ def test_component_is_deterministic_hash_bound_and_fixed(tmp_path: Path) -> None
     assert 'checkpoint_processor_root / \\"processor\\"' in script
     assert '"cosmos-reason2" in str(config.model_name).lower()' in script
     assert 'config.model.model_name = "nvidia/Cosmos-Reason2-2B"' in script
+    assert "accelerate_other.is_deepspeed_available = lambda: False" in script
     assert "/opt/blueprint/models/cosmos-reason2-2b" in script
     assert "g1_microwave_finetune_local_cosmos_asset_invalid" in script
     assert 'PYTHONPATH="$GROOT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"' in script
@@ -161,7 +162,8 @@ def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:
     )
     launch_source.write_text(
         "def configure(config):\n"
-        '    config.model.model_name = "nvidia/Cosmos-Reason2-2B"\n',
+        '    config.model.model_name = "nvidia/Cosmos-Reason2-2B"\n'
+        "    run(config)\n",
         encoding="utf-8",
     )
     model_before = model_source.read_bytes()
@@ -217,6 +219,10 @@ def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:
     compile(copied_setup.read_text(), str(copied_setup), "exec")
     assert str(local_model_root) in copied_launch.read_text()
     assert "nvidia/Cosmos-Reason2-2B" not in copied_launch.read_text()
+    assert (
+        "accelerate_other.is_deepspeed_available = lambda: False"
+        in copied_launch.read_text()
+    )
     compile(copied_launch.read_text(), str(copied_launch), "exec")
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "passed"
