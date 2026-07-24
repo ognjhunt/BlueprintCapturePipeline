@@ -6806,6 +6806,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_OSCAR_NUM_FRAMES,
         help="OSCAR clip length per step",
     )
+    parser.add_argument("--oscar-resident-worker", action="store_true")
+    parser.add_argument("--oscar-resident-worker-max-restarts", type=int, default=0)
     parser.add_argument("--oscar-num-steps", type=int, default=35)
     parser.add_argument("--oscar-guidance", type=float, default=6.0)
     parser.add_argument("--oscar-seed", type=int, default=42)
@@ -7285,6 +7287,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if _string(args.action_skeleton_command).strip()
         else None
     )
+    # Bound before the backend branches so teardown below is always reachable.
+    resident_worker = None
     if args.wam_backend == "cosmos3_wam":
         cosmos3_command_env = WAM_PROVIDER_COMMAND_ENV_BY_SUBSTRATE.get("cosmos3_wam")
         cosmos3_command = _string(
@@ -7423,27 +7427,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return None
             return output_path if output_path.is_file() else None
 
-        oscar_generate = make_local_oscar_subprocess_generate(
-            oscar_repo=args.oscar_repo,
-            checkpoint=args.checkpoint,
-            # The sealed worker deliberately keeps GR00T, OSCAR, and Isaac in
-            # separate interpreters.  The closed-loop process itself is
-            # launched with /opt/oscar-venv/bin/python, but that venv is not on
-            # PATH; a bare `python` here can therefore select the system
-            # interpreter and fail at the first OSCAR import.
-            python=sys.executable,
-            num_steps=int(args.oscar_num_steps),
-            guidance=float(args.oscar_guidance),
-            height=int(args.oscar_height),
-            width=int(args.oscar_width),
-            fps=float(args.oscar_fps),
-            timeout_seconds=float(args.provider_timeout_seconds),
-            run=subprocess.run,
-            popen=subprocess.Popen,
-            gpu_query_run=subprocess.run,
-            build_skeleton_video=_step_skeleton_video_builder,
-            extract_next_frame=extract_next_observation_frame_from_video,
-        )
+        if args.oscar_resident_worker:
+            from .oscar_resident_worker import start_resident_oscar_generate_from_args
+
+            resident_worker, oscar_generate = start_resident_oscar_generate_from_args(
+                args,
+                python=sys.executable,
+                build_skeleton_video=_step_skeleton_video_builder,
+                extract_next_frame=extract_next_observation_frame_from_video,
+            )
+        else:
+            oscar_generate = make_local_oscar_subprocess_generate(
+                oscar_repo=args.oscar_repo,
+                checkpoint=args.checkpoint,
+                # The sealed worker deliberately keeps GR00T, OSCAR, and Isaac in
+                # separate interpreters.  The closed-loop process itself is
+                # launched with /opt/oscar-venv/bin/python, but that venv is not on
+                # PATH; a bare `python` here can therefore select the system
+                # interpreter and fail at the first OSCAR import.
+                python=sys.executable,
+                num_steps=int(args.oscar_num_steps),
+                guidance=float(args.oscar_guidance),
+                height=int(args.oscar_height),
+                width=int(args.oscar_width),
+                fps=float(args.oscar_fps),
+                timeout_seconds=float(args.provider_timeout_seconds),
+                run=subprocess.run,
+                popen=subprocess.Popen,
+                gpu_query_run=subprocess.run,
+                build_skeleton_video=_step_skeleton_video_builder,
+                extract_next_frame=extract_next_observation_frame_from_video,
+            )
         backend = make_oscar_per_step_wam_backend(
             oscar_generate=oscar_generate,
             work_dir=out_dir / "oscar_generation",
@@ -7482,49 +7496,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.task_completion_command
         else None
     )
-    manifest = run_oscar_isaac_closed_loop(
-        output_dir=out_dir,
-        start_frame_path=args.start_frame,
-        route_points=route,
-        wam_generate_next=backend,
-        policy_endpoint=policy_endpoint,
-        initial_observation_evidence=initial_observation_evidence,
-        steps=int(args.steps),
-        task_prompt=args.task_prompt,
-        harness_backend_kind=args.harness_backend_kind,
-        harness_backend_command=harness_command,
-        allow_external_backend=args.harness_backend_kind
-        not in {"fixture", GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND},
-        require_fresh_oscar_provider=bool(args.require_fresh_oscar_provider),
-        require_real_perception_backend=bool(args.require_real_perception_backend),
-        require_sam3_completed=bool(args.require_sam3_completed),
-        require_da3_completed=bool(args.require_da3_completed),
-        require_fresh_learned_policy_requery=strict_learned_policy_requested,
-        require_action_derived_skeleton_conditioning=(strict_action_conditioning_requested),
-        clean_frame_reanchor_interval=int(args.clean_frame_reanchor_interval),
-        perception_target_prompts=list(args.perception_target_prompt or []),
-        wam_backend_id=args.wam_backend,
-        wam_backend_readiness=wam_backend_readiness,
-        wam_consistency_command=args.wam_consistency_command,
-        allow_wam_consistency_scoring=bool(args.allow_wam_consistency_scoring),
-        wam_consistency_timeout_seconds=args.wam_consistency_timeout_seconds,
-        require_forward_inverse_consistency=bool(args.require_forward_inverse_consistency),
-        require_synchronized_calibrated_multiview=bool(args.require_forward_inverse_consistency),
-        wam_success_label_command=args.wam_success_label_command,
-        allow_wam_success_labeling=bool(args.allow_wam_success_labeling),
-        require_generated_video_success_label=bool(args.require_generated_video_success_label),
-        wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
-        min_coherent_horizon_frames=int(args.min_coherent_horizon_frames),
-        stop_on_task_completion=bool(args.stop_on_task_completion),
-        stop_on_unsafe_stance=manipulation_completion_requested,
-        stop_on_no_progress=manipulation_completion_requested,
-        no_progress_patience_steps=int(args.no_progress_patience_steps),
-        minimum_task_progress_fraction=float(args.minimum_task_progress_fraction),
-        min_steps=int(args.min_steps),
-        task_success_contract=task_success_contract,
-        task_completion_evaluator=task_completion_evaluator,
-        attempt_input_manifest=args.attempt_input_manifest,
-    )
+    try:
+        manifest = run_oscar_isaac_closed_loop(
+            output_dir=out_dir,
+            start_frame_path=args.start_frame,
+            route_points=route,
+            wam_generate_next=backend,
+            policy_endpoint=policy_endpoint,
+            initial_observation_evidence=initial_observation_evidence,
+            steps=int(args.steps),
+            task_prompt=args.task_prompt,
+            harness_backend_kind=args.harness_backend_kind,
+            harness_backend_command=harness_command,
+            allow_external_backend=args.harness_backend_kind
+            not in {"fixture", GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND},
+            require_fresh_oscar_provider=bool(args.require_fresh_oscar_provider),
+            require_real_perception_backend=bool(args.require_real_perception_backend),
+            require_sam3_completed=bool(args.require_sam3_completed),
+            require_da3_completed=bool(args.require_da3_completed),
+            require_fresh_learned_policy_requery=strict_learned_policy_requested,
+            require_action_derived_skeleton_conditioning=(strict_action_conditioning_requested),
+            clean_frame_reanchor_interval=int(args.clean_frame_reanchor_interval),
+            perception_target_prompts=list(args.perception_target_prompt or []),
+            wam_backend_id=args.wam_backend,
+            wam_backend_readiness=wam_backend_readiness,
+            wam_consistency_command=args.wam_consistency_command,
+            allow_wam_consistency_scoring=bool(args.allow_wam_consistency_scoring),
+            wam_consistency_timeout_seconds=args.wam_consistency_timeout_seconds,
+            require_forward_inverse_consistency=bool(args.require_forward_inverse_consistency),
+            require_synchronized_calibrated_multiview=bool(args.require_forward_inverse_consistency),
+            wam_success_label_command=args.wam_success_label_command,
+            allow_wam_success_labeling=bool(args.allow_wam_success_labeling),
+            require_generated_video_success_label=bool(args.require_generated_video_success_label),
+            wam_success_label_timeout_seconds=args.wam_success_label_timeout_seconds,
+            min_coherent_horizon_frames=int(args.min_coherent_horizon_frames),
+            stop_on_task_completion=bool(args.stop_on_task_completion),
+            stop_on_unsafe_stance=manipulation_completion_requested,
+            stop_on_no_progress=manipulation_completion_requested,
+            no_progress_patience_steps=int(args.no_progress_patience_steps),
+            minimum_task_progress_fraction=float(args.minimum_task_progress_fraction),
+            min_steps=int(args.min_steps),
+            task_success_contract=task_success_contract,
+            task_completion_evaluator=task_completion_evaluator,
+            attempt_input_manifest=args.attempt_input_manifest,
+        )
+    finally:
+        # Holds the GPU for the whole rollout, so it is torn down on the failure
+        # path too, after its throughput report is written.
+        if resident_worker is not None:
+            resident_worker.close_and_report(out_dir)
     print(
         json.dumps(
             {"status": manifest["status"], "steps_executed": manifest.get("steps_executed")},

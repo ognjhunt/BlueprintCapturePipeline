@@ -20,7 +20,10 @@ GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_VISUAL_MOTION_SMOKE"
 LEGACY_GATE_ENV = "BLUEPRINT_ALLOW_LOCAL_WAM_EPISODE_CONSISTENCY"
 DEFAULT_MODEL = "local-cv-visual-motion-smoke-v1"
 DEFAULT_OUTPUT_FILENAME = "wam_visual_motion_smoke.command.json"
-DEFAULT_MAX_FRAMES = 5
+# Five frames per episode cannot localise when a rollout diverged; it can
+# only characterise its end state.  Raised so consistency labels carry
+# enough temporal resolution to be comparable with graded progress scores.
+DEFAULT_MAX_FRAMES = 16
 MIN_FRAME_COUNT = 2
 MIN_EDGE_DENSITY = 0.001
 MIN_MEAN_ABS_DIFF = 1.0

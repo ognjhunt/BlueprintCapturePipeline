@@ -1,5 +1,166 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-24 (third entry)
+
+### User-Facing
+
+- Generated media no longer inherits its source capture's redaction status.
+  Capture-side redaction protects captured pixels; it cannot cover pixels a
+  world model invents, which can re-synthesise a face, a badge, or a whiteboard
+  that redaction removed. Generated artifacts now start unverified, must be
+  conditioned on redaction-verified assets, require their own redaction pass
+  over the generated pixels before customer-visible release, and carry takedown
+  keys so a later consent revocation reaches the derivative. At the hosted
+  serving boundary a chunk that carries a contract is held to it unconditionally
+  and withheld behind a labelled placeholder if it is not cleared for
+  customer-visible release. Enforcement of the *no-contract* case is staged: no
+  producer attaches contracts to runtime chunks yet, so uncontracted media is
+  served with an explicit `X-Blueprint-Generated-Media-Privacy: unverified`
+  label rather than silently, and `BLUEPRINT_ENFORCE_GENERATED_MEDIA_PRIVACY`
+  withholds it outright. Until a producer exists this defect is contained and
+  visible, not closed (`src/blueprint_pipeline/generated_media_privacy.py`,
+  `src/blueprint_pipeline/native_runtime_backend.py`,
+  `docs/CUSTOMER_OUTPUT_CONTRACTS.md`).
+- Every Post-Training Data Package now ships a frozen held-out cut carved from
+  the same capture, plus a check that fails closed when the training payload
+  contains held-out clips. Nothing previously stopped a buyer's evaluation set
+  from overlapping the clips they were sold
+  (`src/blueprint_pipeline/post_training_holdout_split.py`).
+- Site package, proof pack, and rights review manifests now carry a
+  `delivery_integrity` block with per-member digests and a root digest over the
+  member set. A URI without a digest is a blocker: it records where bytes were,
+  not which bytes they were
+  (`src/blueprint_pipeline/signed_delivery_bundle.py`,
+  `src/blueprint_pipeline/proof_contracts.py`).
+- Added anchor return kits so a physical trial's outcomes can actually join to
+  the prediction they answer. Join keys are pre-populated per prediction, and a
+  returned file is validated before ingest rather than after the robot time is
+  spent (`src/blueprint_pipeline/anchor_return_kit.py`).
+- Added per-site difficulty profiles so cross-site policy numbers are
+  interpretable. Difficulty is reported beside a success rate as a covariate,
+  never divided into it (`src/blueprint_pipeline/site_difficulty_profile.py`).
+
+### Employee-Facing
+
+- The OEM handoff summary now reports its own completeness against the required
+  inputs its skill declares, instead of degrading to a one-line prose string
+  when evidence is missing. The hosted runtime's placeholder card is explicitly
+  labelled so it cannot be presented as a rendered site observation
+  (`src/blueprint_pipeline/agent_runtime/orchestrator.py`,
+  `src/blueprint_pipeline/native_runtime_backend.py`).
+
+## 2026-07-24 (second entry)
+
+### User-Facing
+
+- GPU selection is now an explicit per-workload policy rather than one global
+  rule. The Isaac RT-core exclusion (A100/H100, extended to H200/B200/GB200) was
+  being applied to every Vast offer selection, barring generation and training
+  campaigns from the hardware they need. `generation`, `training` and `open`
+  policies carry no denylist and travel with their own rate/VRAM envelopes;
+  Blackwell RTX PRO 6000 96GB, H200, B200 and RTX 5090 are recognised. An
+  unknown policy name fails closed to the Isaac policy
+  (`src/blueprint_pipeline/vast_provider_adapter.py`,
+  `docs/EXECUTION_COST_AND_ARCHITECTURE_GATES.md`).
+- Separated adopting a published world-model architecture from admitting an
+  upstream release. Building on already-pinned permissively licensed components
+  is no longer blocked by a third party's unreleased code; the resulting model
+  is Blueprint-authored, may not use the upstream name or metrics, and must pass
+  ordinary evaluator qualification. Authorisation is to build, not to claim
+  (`src/blueprint_pipeline/world_model_architecture_adoption.py`).
+
+### Employee-Facing
+
+- Added a resident OSCAR worker so a closed-loop rollout loads the checkpoint
+  once instead of once per step. A dead or desynchronised worker fails the step
+  closed rather than falling back to per-step spawning, restarts must be
+  explicitly budgeted and are counted, and cold-start versus warm-step latency
+  is reported separately. This is a throughput change, not evidence of
+  generation quality or task success
+  (`src/blueprint_pipeline/oscar_resident_worker.py`,
+  `src/blueprint_pipeline/oscar_resident_worker_main.py`).
+- Added judge spend governance mirroring the GPU envelope: target spend, hard
+  cap, request and frame ceilings, TTL, a ledger, and a cohort hard stop. Prices
+  are operator-supplied and an unpriceable request is denied rather than waved
+  through; failed requests are still settled. The graded-progress lane treats an
+  absent policy as a refusal (`src/blueprint_pipeline/judge_spend_governor.py`).
+- Retired the platform-wide 7-dimensional action invariant in favour of a
+  registered action-space registry covering the SC3 7-D delta end-effector
+  layout, the 78-D Unitree G1 whole-body command, and a 43-D arm/hand layout.
+  The default remains SC3, so existing callers and blocker strings are
+  unchanged; unregistered spaces fail closed
+  (`src/blueprint_pipeline/action_space_registry.py`,
+  `src/blueprint_pipeline/action_normalization.py`,
+  `src/blueprint_pipeline/oscar_cosmos_wam_command_adapter.py`).
+- Registered a second embodiment as a zero-GPU conformance fixture, differing on
+  base, arm count, action interface and camera rig, and made unknown profile
+  lookups raise a typed `UnknownRobotProfileError`
+  (`src/blueprint_pipeline/scene_placement/robot_profile.py`).
+- Added a gate-reachability audit that probes real validators and source rather
+  than asserting. It records that `validate_external_study` never returns
+  `validated` — making `sc3_eval_protocol`'s `public_rank_fidelity_claim_eligible`,
+  `claim_ready` and `eligible_preregistered_external_rank_fidelity` unreachable
+  by construction — that two claim fields are emitted as literal `False`, and
+  that the two OOD axis vocabularies diverge. Blocker lists can now be split
+  into what waiting could clear and what it never will
+  (`src/blueprint_pipeline/gate_reachability_audit.py`).
+
+## 2026-07-24
+
+### User-Facing
+
+- Added a public real-world benchmark anchor path so the evaluation harness can
+  be validated against independently published robot outcomes before any
+  customer anchor exists. This produces the previously unproduced
+  `roboarena_snapshot_sha256` digest and the previously unproduced
+  `external_reference_results.v1` artifact. Results carry the distinct
+  `harness_validation_public_anchor` scope and are structurally barred from
+  upgrading site-specific rank fidelity, other embodiments, or deployment
+  readiness (`src/blueprint_pipeline/public_benchmark_anchor.py`,
+  `docs/EVALUATOR_ATTRIBUTION_AND_PUBLIC_ANCHOR.md`).
+- Demoted Pearson to supporting evidence in the external rank-fidelity report
+  and promoted pairwise-ordering accuracy to the headline, alongside a
+  resolving-power (minimum-detectable-difference) curve. Correlation degrees of
+  freedom come from the policy cohort, not the rollout count
+  (`src/blueprint_pipeline/benchmark_protocol.py`).
+- Shipped the producer for `roboworld_progress_score.v1` graded task-progress
+  scores, whose consumers (rubric validation, segment aggregation, aggregation
+  ablation, judge calibration) already existed with nothing to feed them.
+  Scores remain generated-media review evidence; a score of 5 does not prove
+  physical task success (`src/blueprint_pipeline/roboworld_progress_judge.py`).
+
+### Employee-Facing
+
+- Added `rank_fidelity_statistics`: Fisher-z correlation intervals, Wilson
+  proportion intervals, two-proportion minimum-detectable-difference, exact
+  one-sided Fisher tests, and bootstrap-reliability judgement. These make the
+  small-sample behaviour of every published evaluator number computable rather
+  than implicit (`src/blueprint_pipeline/rank_fidelity_statistics.py`).
+- Repaired the policy-ranking-ladder acceptance statistic. The ladder accepted
+  `recovered` on a strict ordering of per-rung Bernoulli means at three
+  replicate seeds, where the exact one-sided p-value for an adjacent-rung
+  difference is 0.5. Adjacent-pair separation is now tested exactly and computed
+  before the pass/fail decision, unresolvable separation blocks acceptance with
+  the new `inconclusive_underpowered_separation` status, and the replicate seed
+  count is a builder parameter defaulting to a value derived from the separation
+  it must resolve (`src/blueprint_pipeline/policy_ranking_ladder.py`).
+- Stopped the external rank-fidelity bootstrap from silently discarding
+  undefined replicates, which narrowed rather than widened the published
+  interval. Attempted/defined replicate counts, the undefined fraction, and an
+  explicit reliability verdict are now reported per metric
+  (`src/blueprint_pipeline/benchmark_protocol.py`).
+- Added a world-model-free control ranker (action-chunk jerk, gripper toggle
+  rate, timeout rate, first-frame prior, plus null controls) that attributes an
+  evaluator's rank agreement against the best baseline using a paired bootstrap
+  over policies. A winning baseline is not an evaluator; the arm exists to price
+  the evaluator's marginal contribution
+  (`src/blueprint_pipeline/control_ranker.py`).
+- Raised VLM judge frame budgets from 5-6 to 16 frames and added a rubric-aware
+  sampling contract that fails closed below 2.0 samples/second. Six frames
+  across a 25-second rollout is 0.24 fps, which cannot localise where a rollout
+  diverged (`src/blueprint_pipeline/wam_generated_video_success_label_gemini.py`,
+  `src/blueprint_pipeline/wam_episode_consistency_label_openai.py`).
+
 ## 2026-07-23
 
 ### User-Facing

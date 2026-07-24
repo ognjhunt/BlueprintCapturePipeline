@@ -621,6 +621,151 @@ def test_media_response_falls_back_when_chunk_file_is_unreadable(
     assert media["headers"]["X-Blueprint-Render-Source"] == "placeholder_cosmos_pending"
 
 
+def _store_with_ready_chunk(tmp_path: Path, chunk_extra: dict | None = None) -> tuple:
+    store = NativeWorldModelRuntimeStore(
+        NativeRuntimeConfig(
+            root_dir=tmp_path / "runtime",
+            base_url="http://127.0.0.1:8791",
+            ws_base_url="ws://127.0.0.1:8791",
+        )
+    )
+    store.register_site_world_package(**_site_world_payload())
+    session = store.create_session(
+        "siteworld-1",
+        robot_profile_id="robot-1",
+        task_id="task-1",
+        scenario_id="scenario-1",
+        start_state_id="start-1",
+    )
+    session_id = str(session["session_id"])
+    chunk_path = store._chunk_video_path(session_id, "chunk-0000")
+    chunk_path.parent.mkdir(parents=True, exist_ok=True)
+    chunk_path.write_bytes(b"fake-mp4-chunk")
+    state = store.session_state(session_id)
+    state["rollout"] = {
+        **store._rollout_defaults(),
+        "status": "playing",
+        "active_chunk_id": "chunk-0000",
+        "buffered_chunk_ids": ["chunk-0000"],
+        "chunks": [
+            {
+                "chunk_id": "chunk-0000",
+                "chunk_index": 0,
+                "status": "ready",
+                "media_path": str(chunk_path.resolve()),
+                "media_type": "video/mp4",
+                "render_source": "bootstrap_prebuilt_video",
+                "duration_ms": 1200,
+                **(chunk_extra or {}),
+            }
+        ],
+        "chunk_count": 1,
+    }
+    store._store_session_state(session_id, state)
+    return store, session_id
+
+
+def test_media_response_labels_uncontracted_generated_media_as_unverified(
+    tmp_path: Path,
+) -> None:
+    """No contract means unverified, and the response has to say so.
+
+    Serving the bytes silently would let a client treat generated pixels as
+    carrying the capture's redaction status. The label is the honest statement
+    of what was actually checked.
+    """
+
+    store, session_id = _store_with_ready_chunk(tmp_path)
+
+    media = store.media_response(session_id, camera_id="head_rgb", chunk_id="chunk-0000")
+
+    assert media["media_type"] == "video/mp4"
+    assert media["headers"]["X-Blueprint-Generated-Media-Privacy"] == "unverified"
+
+
+def test_media_response_withholds_uncontracted_media_under_strict_enforcement(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store, session_id = _store_with_ready_chunk(tmp_path)
+    monkeypatch.setenv("BLUEPRINT_ENFORCE_GENERATED_MEDIA_PRIVACY", "1")
+
+    media = store.media_response(session_id, camera_id="head_rgb", chunk_id="chunk-0000")
+
+    assert media["media_type"] == "image/png"
+    assert media["headers"]["X-Blueprint-Render-Source"] == "withheld_privacy_contract"
+    assert media["headers"]["X-Blueprint-Is-Site-Observation"] == "false"
+    assert (
+        media["headers"]["X-Blueprint-Withheld-Reason"]
+        == "generated_media_privacy_contract_missing"
+    )
+
+
+def test_media_response_withholds_a_chunk_whose_contract_denies_release(
+    tmp_path: Path,
+) -> None:
+    """A present contract is enforced unconditionally -- no env flag needed."""
+
+    from blueprint_pipeline.generated_media_privacy import CONTRACT_SCHEMA_VERSION
+
+    store, session_id = _store_with_ready_chunk(
+        tmp_path,
+        chunk_extra={
+            "generated_media_privacy_contract": {
+                "schema_version": CONTRACT_SCHEMA_VERSION,
+                "release_scope": "internal_review_only",
+            }
+        },
+    )
+
+    media = store.media_response(session_id, camera_id="head_rgb", chunk_id="chunk-0000")
+
+    assert media["media_type"] == "image/png"
+    assert media["headers"]["X-Blueprint-Render-Source"] == "withheld_privacy_contract"
+    assert media["headers"]["X-Blueprint-Withheld-Reason"] == (
+        "generated_media_not_cleared_for_customer_release:internal_review_only"
+    )
+
+
+def test_media_response_serves_a_customer_visible_contracted_chunk(tmp_path: Path) -> None:
+    from blueprint_pipeline.generated_media_privacy import CONTRACT_SCHEMA_VERSION
+
+    store, session_id = _store_with_ready_chunk(
+        tmp_path,
+        chunk_extra={
+            "generated_media_privacy_contract": {
+                "schema_version": CONTRACT_SCHEMA_VERSION,
+                "release_scope": "customer_visible",
+            }
+        },
+    )
+
+    media = store.media_response(session_id, camera_id="head_rgb", chunk_id="chunk-0000")
+
+    assert media["media_type"] == "video/mp4"
+    assert media["content"] == b"fake-mp4-chunk"
+    assert (
+        media["headers"]["X-Blueprint-Generated-Media-Privacy"]
+        == "cleared_customer_visible"
+    )
+
+
+def test_contract_on_the_rollout_covers_its_chunks(tmp_path: Path) -> None:
+    from blueprint_pipeline.generated_media_privacy import CONTRACT_SCHEMA_VERSION
+
+    store, session_id = _store_with_ready_chunk(tmp_path)
+    state = store.session_state(session_id)
+    state["rollout"]["generated_media_privacy_contract"] = {
+        "schema_version": CONTRACT_SCHEMA_VERSION,
+        "release_scope": "blocked",
+    }
+    store._store_session_state(session_id, state)
+
+    media = store.media_response(session_id, camera_id="head_rgb", chunk_id="chunk-0000")
+
+    assert media["headers"]["X-Blueprint-Render-Source"] == "withheld_privacy_contract"
+
+
 def test_explorer_frame_bytes_falls_back_when_cached_frame_is_unreadable(
     tmp_path: Path,
     monkeypatch,

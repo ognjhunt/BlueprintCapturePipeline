@@ -20,6 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from .action_space_registry import (
+    SC3_7D_DELTA_EE,
+    get_action_space,
+)
 from .common import ensure_dir, utc_now_iso, write_json
 
 ACTION_NORMALIZATION_SCHEMA_VERSION = "action_normalization.v2"
@@ -214,14 +218,20 @@ def normalize_actions(
     actions: Sequence[Sequence[Any]],
     *,
     stats: Mapping[str, Any],
+    action_schema_id: Optional[str] = None,
 ) -> List[List[float]]:
-    """Return a normalized copy, failing on incomplete or zero-variance stats."""
+    """Return a normalized copy, failing on incomplete or zero-variance stats.
+
+    ``action_schema_id`` names a registered action space; it defaults to the SC3
+    7-D delta end-effector layout, so existing callers are unchanged.
+    """
+    space = get_action_space(action_schema_id)
     per_dim = list(stats.get("per_dimension") or [])
     expected_dim = int(stats.get("expected_dim") or 0)
     rows = _as_float_rows(actions)
     if rows is None or not rows:
         raise ValueError("action_stream_missing_or_non_numeric")
-    if expected_dim != DEFAULT_ACTION_DIM or len(per_dim) != expected_dim:
+    if expected_dim != space.dim or len(per_dim) != expected_dim:
         raise ValueError("normalization_stats_dimension_contract_invalid")
     normalized: List[List[float]] = []
     for row in rows:
@@ -244,6 +254,7 @@ def build_action_normalization_manifest(
     output_dir: str | Path,
     episodes: Mapping[str, Mapping[str, Any]],
     action_space: Mapping[str, Any] | None = None,
+    action_schema_id: Optional[str] = None,
     corpus_provenance: Mapping[str, Any] | None = None,
     config: ActionValidationConfig | None = None,
 ) -> Dict[str, Any]:
@@ -271,6 +282,7 @@ def build_action_normalization_manifest(
     if cfg.expected_dim != declared_dim:
         cfg = ActionValidationConfig(**{**cfg.__dict__, "expected_dim": declared_dim})
 
+    space = get_action_space(action_schema_id)
     contract_blockers: List[str] = []
     representation = str(
         action_contract.get("representation")
@@ -282,13 +294,17 @@ def build_action_normalization_manifest(
     declared_units = tuple(action_contract.get("units") or [])
     if not action_contract:
         contract_blockers.append("action_space_contract_missing")
-    if declared_dim != DEFAULT_ACTION_DIM:
-        contract_blockers.append("action_space_dim_must_equal_7")
-    if representation not in SC3_ACTION_REPRESENTATION_ALIASES:
-        contract_blockers.append("action_representation_not_sc3_7d_delta_end_effector")
-    if declared_order != SC3_ACTION_ORDER:
+    if declared_dim != space.dim:
+        contract_blockers.append(space.dim_blocker)
+    if not space.accepts_representation(representation):
+        contract_blockers.append(
+            "action_representation_not_sc3_7d_delta_end_effector"
+            if space.action_schema_id == SC3_7D_DELTA_EE
+            else f"action_representation_not_{space.action_schema_id}"
+        )
+    if declared_order != space.order:
         contract_blockers.append("action_dimension_order_missing_or_invalid")
-    if declared_units != SC3_ACTION_UNITS:
+    if declared_units != space.units:
         contract_blockers.append("action_dimension_units_missing_or_invalid")
 
     provenance = dict(corpus_provenance or {})
@@ -391,9 +407,10 @@ def build_action_normalization_manifest(
     if stats is not None and not blockers:
         stats_payload = {
             **stats,
-            "action_representation": SC3_ACTION_REPRESENTATION,
-            "action_order": list(SC3_ACTION_ORDER),
-            "action_units": list(SC3_ACTION_UNITS),
+            "action_representation": space.representation,
+            "action_order": list(space.order),
+            "action_units": list(space.units),
+            "action_schema_id": space.action_schema_id,
             "source_trace_sha256": trace_sha,
             "generated_at": utc_now_iso(),
         }
@@ -403,7 +420,9 @@ def build_action_normalization_manifest(
         for episode_id, actions in accepted.items():
             episode_payload = dict(episodes[episode_id])
             normalized_episodes[episode_id] = {
-                "normalized_actions": normalize_actions(actions, stats=stats_payload),
+                "normalized_actions": normalize_actions(
+                    actions, stats=stats_payload, action_schema_id=action_schema_id
+                ),
                 "chunk_start_times_sec": list(
                     episode_payload.get("chunk_start_times_sec") or []
                 ),
@@ -426,7 +445,8 @@ def build_action_normalization_manifest(
         "blockers": blockers,
         "declared_action_dim": declared_dim,
         "action_representation": representation or None,
-        "canonical_action_representation": SC3_ACTION_REPRESENTATION,
+        "canonical_action_representation": space.representation,
+        "canonical_action_schema_id": space.action_schema_id,
         "action_order": list(declared_order),
         "action_units": list(declared_units),
         "config": {

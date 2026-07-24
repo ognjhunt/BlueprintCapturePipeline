@@ -27,7 +27,12 @@ MODEL_ENV = "BLUEPRINT_GEMINI_WAM_SUCCESS_LABEL_MODEL"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_OUTPUT_FILENAME = "wam_success_labels.command.json"
 DEFAULT_MAX_INLINE_BYTES = 95 * 1024 * 1024
-DEFAULT_MAX_FRAMES = 6
+# Six frames across a 20-30 second rollout is 0.24 fps: enough to guess whether
+# the terminal state looks successful, but not enough to localise *when* a
+# rollout went wrong.  Graded task-progress scoring depends on that
+# localisation, so the floor is raised here and enforced separately for the
+# progress rubric in roboworld_progress_judge.
+DEFAULT_MAX_FRAMES = 16
 DEFAULT_MAX_FRAME_DIMENSION = 768
 DEFAULT_JPEG_QUALITY = 82
 PROMPT_INSTRUCTION = (

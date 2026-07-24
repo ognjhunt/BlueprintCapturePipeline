@@ -34,6 +34,9 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
+from .gpu_selection_policy import (
+    GPU_SELECTION_POLICIES, _is_disallowed_for_isaac, _is_isaac_rt_candidate,
+    gpu_allowed_by_policy, policy_manifest, resolve_gpu_selection_policy)
 from .logging_utils import log_event
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
@@ -207,17 +210,6 @@ VAST_REQUIRED_PHASES = (
     "vast_instance_teardown_started",
     "vast_instance_teardown_completed",
 )
-ISAAC_RT_GPU_KEYWORDS = (
-    "RTX 4090",
-    "RTX 3090 TI",
-    "RTX 3090",
-    "RTX A6000",
-    "RTX 6000 ADA",
-    "RTX 6000",
-    "L40S",
-    "L40",
-)
-DISALLOWED_ISAAC_GPU_KEYWORDS = ("A100", "H100")
 SENSITIVE_KEY_MARKERS = (
     "KEY",
     "TOKEN",
@@ -1253,18 +1245,6 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
     return None
 
 
-def _is_disallowed_for_isaac(gpu_name: str) -> bool:
-    upper = gpu_name.upper()
-    return any(item in upper for item in DISALLOWED_ISAAC_GPU_KEYWORDS)
-
-
-def _is_isaac_rt_candidate(gpu_name: str) -> bool:
-    upper = gpu_name.upper()
-    return not _is_disallowed_for_isaac(gpu_name) and any(
-        item in upper for item in ISAAC_RT_GPU_KEYWORDS
-    )
-
-
 def _normalized_compute_cap(value: Any) -> int | None:
     number = _number(value)
     if number is None:
@@ -1572,9 +1552,11 @@ def _select_offer(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool = True,
+    gpu_selection_policy: str | Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
+    policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer) for offer in offers]
     candidates = [
         item
@@ -1595,7 +1577,7 @@ def _select_offer(
             not require_direct_port
             or int(_number(item.get("direct_port_count")) or 0) > 0
         )
-        and not item["disallowed_for_isaac_rendering"]
+        and gpu_allowed_by_policy(_string(item.get("gpu_name")), policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (
             not allowed
@@ -1664,8 +1646,10 @@ def _offer_selection_manifest(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool = True,
+    gpu_selection_policy: str | Mapping[str, Any] | None = None,
     create_retry_attempts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
+    policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer) for offer in offers]
     known_supported_offer_count = sum(
         1
@@ -1706,7 +1690,7 @@ def _offer_selection_manifest(
             not require_direct_port
             or int(_number(item.get("direct_port_count")) or 0) > 0
         )
-        and not item["disallowed_for_isaac_rendering"]
+        and gpu_allowed_by_policy(_string(item.get("gpu_name")), policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (
             not allowed
@@ -1729,6 +1713,7 @@ def _offer_selection_manifest(
         "preferred_gpu_keywords": list(preferred_gpu_keywords),
         "preferred_geolocation_regex": preferred_geolocation_regex,
         "prefer_isaac_rt": prefer_isaac_rt,
+        "gpu_selection_policy": policy_manifest(policy),
         "quality_filtered_offer_count": quality_filtered_offer_count,
         "known_supported_driver_offer_count": known_supported_offer_count,
         "known_unsupported_driver_offer_count": known_unsupported_driver_offer_count,
@@ -4106,6 +4091,7 @@ def run_vast_provider_adapter(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool | None = None,
+    gpu_selection_policy: str | None = None,
     vast_launch_lock_file: str | Path | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
@@ -5181,6 +5167,7 @@ def run_vast_provider_adapter(
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                 preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
+                gpu_selection_policy=gpu_selection_policy,
             )
             offer_blockers: list[str] = []
             if not selected_offer:
@@ -5212,6 +5199,7 @@ def run_vast_provider_adapter(
                 preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                 preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                 prefer_isaac_rt=resolved_prefer_isaac_rt,
+                gpu_selection_policy=gpu_selection_policy,
                 create_retry_attempts=create_retry_attempts,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
@@ -5334,6 +5322,7 @@ def run_vast_provider_adapter(
                     preferred_gpu_keywords=resolved_preferred_gpu_keywords,
                     preferred_geolocation_regex=resolved_preferred_geolocation_regex,
                     prefer_isaac_rt=resolved_prefer_isaac_rt,
+                    gpu_selection_policy=gpu_selection_policy,
                     create_retry_attempts=create_retry_attempts,
                 )
                 write_json(
@@ -6342,6 +6331,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--mode",
         choices=["dry-run", "template-discovery", "live-startup-probe"],
         default="dry-run",
+    )
+    parser.add_argument(
+        "--gpu-selection-policy",
+        choices=sorted(GPU_SELECTION_POLICIES),
+        default=None,
+        help="workload GPU policy; see gpu_selection_policy.GPU_SELECTION_POLICIES",
     )
     parser.add_argument("--max-hourly-rate", type=float, default=DEFAULT_MAX_HOURLY_RATE)
     parser.add_argument("--target-spend-usd", type=float, default=DEFAULT_TARGET_SPEND_USD)

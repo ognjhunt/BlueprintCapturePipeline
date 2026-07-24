@@ -35,6 +35,14 @@ KNOWN_GPU_VRAM_GB: dict[str, float] = {
     "NVIDIA A100-SXM4-80GB": 80.0,
     "NVIDIA H100 PCIe": 80.0,
     "NVIDIA H100 80GB HBM3": 80.0,
+    "NVIDIA H200": 141.0,
+    # Blackwell. The RTX PRO 6000 keeps RT cores, so unlike the datacenter
+    # parts above it is eligible for Isaac rendering as well as generation.
+    "NVIDIA RTX PRO 6000 Blackwell": 96.0,
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition": 96.0,
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition": 96.0,
+    "NVIDIA B200": 180.0,
+    "NVIDIA GeForce RTX 5090": 32.0,
 }
 KNOWN_NO_RT_CORE_GPU_TYPES = frozenset(
     {

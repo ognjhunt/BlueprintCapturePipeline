@@ -103,7 +103,7 @@ def _scorecard(
     registered_action_bounds_sha256: str = REGISTERED_ACTION_BOUNDS_SHA256,
 ) -> dict:
     evidence_root = Path(tempfile.mkdtemp(prefix="policy-ladder-ground-truth-"))
-    replicate_seed_ids = replicate_seed_ids or [7, 104736, 209766]
+    replicate_seed_ids = replicate_seed_ids or ladder_mod.replicate_seed_ids(7)
     task_by_policy = task_by_policy or {}
     condition_descriptor = {
         "schema_version": "policy_ladder_registered_condition.v1",
@@ -136,8 +136,13 @@ def _scorecard(
         ),
         key=lambda item: item[1],
     )
+    # Success counts preserve the intended per-rung *rate* spacing at any
+    # replicate count.  Subtracting a fixed number of successes per rung instead
+    # would shrink the separation as seeds are added, which is the opposite of
+    # what more replicates should buy.
+    span = max(1, len(ordered_empirical_policies) - 1)
     empirical_success_count = {
-        policy_id: max(0, len(replicate_seed_ids) - rank_index)
+        policy_id: round(len(replicate_seed_ids) * (span - rank_index) / span)
         for rank_index, (policy_id, _amplitude) in enumerate(ordered_empirical_policies)
     }
     rankings = [
@@ -300,7 +305,15 @@ def test_ladder_structure_and_expected_ranking() -> None:
         "unitree_groot_n17_sonic_noise_0p6",
     ]
     assert ladder["policy_comparison_mode"] is True
-    assert len(ladder["required_replicate_seeds"]) == 3
+    assert len(ladder["required_replicate_seeds"]) == ladder_mod.DEFAULT_LADDER_SEED_COUNT
+    assert ladder["replicate_seed_count"] == ladder_mod.DEFAULT_LADDER_SEED_COUNT
+    # The default must actually resolve the separation the ladder targets;
+    # otherwise every ordering it accepts is indistinguishable from chance.
+    assert ladder["recommended_seed_count_for_default_separation"] is not None
+    assert (
+        ladder["replicate_seed_count"]
+        >= ladder["recommended_seed_count_for_default_separation"]
+    )
     candidates = ladder["policy_candidates"]
     assert [c["policy_id"] for c in candidates] == [
         *ladder["expected_ranking"],
@@ -354,6 +367,75 @@ def test_ladder_rejects_invalid_inputs() -> None:
         _ladder(amplitudes=(float("nan"),))
     with pytest.raises(ValueError):
         _ladder(amplitudes=(float("inf"),))
+
+
+def test_underpowered_ladder_is_not_accepted_as_recovered() -> None:
+    """A strict ordering of Bernoulli means at three seeds is not evidence.
+
+    At the structural minimum replicate count the attainable per-rung rates are
+    0, 1/3, 2/3 and 1, so adjacent rungs differ by exactly one success and the
+    exact one-sided p-value for that difference is 0.5.  The ladder used to
+    report ``recovered`` on that evidence.
+    """
+
+    ladder = _ladder(replicate_seed_count=ladder_mod.MIN_LADDER_SEED_COUNT)
+    scorecard = _scorecard(
+        {
+            "unitree_groot_n17_sonic": 0.9,
+            "unitree_groot_n17_sonic_noise_0p1": 0.7,
+            "unitree_groot_n17_sonic_noise_0p3": 0.4,
+            "unitree_groot_n17_sonic_noise_0p6": 0.1,
+        },
+        replicate_seed_ids=ladder_mod.replicate_seed_ids(
+            7, ladder_mod.MIN_LADDER_SEED_COUNT
+        ),
+    )
+
+    validation = ladder_mod.validate_policy_ranking_scorecard(
+        scorecard, ladder, generated_at="2026-07-02T00:00:00Z"
+    )
+
+    assert validation["status"] == "inconclusive_underpowered_separation"
+    assert validation["ranker_ordering_recovered"] is False
+    assert (
+        "ladder_empirical_separation_not_statistically_resolvable"
+        in validation["blockers"]
+    )
+    analysis = validation["empirical_separation_analysis"]
+    assert analysis["all_adjacent_pairs_resolvable"] is False
+    assert analysis["resolvable_adjacent_pair_count"] == 0
+    # The single-success gap between adjacent rungs is a coin flip.
+    assert all(
+        row["one_sided_p_value"] == 0.5 for row in analysis["adjacent_pairs"]
+    )
+    # And the report says how many seeds the observed separation would need.
+    assert analysis["minimum_replicate_seed_count_for_statistical_separation"] > (
+        ladder_mod.MIN_LADDER_SEED_COUNT
+    )
+
+
+def test_separation_analysis_is_computed_even_when_blocked() -> None:
+    """The strength of the ordering evidence is reported before the verdict."""
+
+    ladder = _ladder()
+    scorecard = _scorecard(
+        {
+            "unitree_groot_n17_sonic": 0.9,
+            "unitree_groot_n17_sonic_noise_0p1": 0.7,
+            "unitree_groot_n17_sonic_noise_0p3": 0.4,
+            "unitree_groot_n17_sonic_noise_0p6": 0.1,
+        },
+        status="blocked",
+    )
+
+    validation = ladder_mod.validate_policy_ranking_scorecard(
+        scorecard, ladder, generated_at="2026-07-02T00:00:00Z"
+    )
+
+    assert validation["ranker_ordering_recovered"] is False
+    analysis = validation["empirical_separation_analysis"]
+    assert analysis["adjacent_pair_count"] == 3
+    assert analysis["all_adjacent_pairs_resolvable"] is True
 
 
 def test_validation_recovers_monotone_scorecard() -> None:

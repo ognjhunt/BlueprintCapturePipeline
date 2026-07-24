@@ -21,6 +21,13 @@ from typing import Any
 
 from .common import read_json_any, utc_now_iso, write_json
 from .external_tool_runtime import PUBLIC_CLAIM_UPGRADE_KEY
+from .rank_fidelity_statistics import (
+    bootstrap_interval_reliability,
+    fisher_z_interval,
+    minimum_detectable_difference_curve,
+    required_sample_count_for_lower_bound,
+    wilson_interval,
+)
 
 
 SPEC_SCHEMA_VERSION = "blueprint_benchmark_spec.v1"
@@ -40,6 +47,25 @@ BOOTSTRAP_REPLICATES = 10_000
 # Kept separate so focused unit tests can shorten sampling without weakening the
 # validated public protocol, which always requires BOOTSTRAP_REPLICATES.
 _BOOTSTRAP_EXECUTION_REPLICATES = BOOTSTRAP_REPLICATES
+
+# Pearson over policy means is the most fragile number this module produces: its
+# degrees of freedom come from the policy count, so a cohort of seven leaves it
+# consistent with a far lower true correlation regardless of how many rollouts
+# backed each policy.  Pairwise ordering accuracy answers the question a buyer
+# actually asks ("did the evaluator order these two correctly"), degrades
+# gracefully at small cohorts, and carries an interval that stays inside [0, 1],
+# so it is the headline and Pearson is reported alongside it as support.
+HEADLINE_RANK_METRIC = "pairwise_ordering_accuracy"
+METRIC_ROLES = {
+    "pairwise_ordering_accuracy": "headline",
+    "mmrv": "headline",
+    "spearman": "supporting",
+    "kendall_tau_b": "supporting",
+    "pearson": "supporting_fragile_at_small_cohorts",
+}
+# Per-arm trial counts spanning the range a real campaign operates over, used to
+# publish the design's resolving power next to its agreement metrics.
+MDD_CURVE_TRIAL_COUNTS = (5, 10, 20, 50, 100, 200, 500)
 GENERALIZATION_AXES = (
     "task",
     "scene",
@@ -747,6 +773,21 @@ def _pairwise_accuracy(predicted: Sequence[float], reference: Sequence[float]) -
     return correct / total if total else None
 
 
+def _ordered_pair_count(reference: Sequence[float]) -> int:
+    """Reference pairs that carry a strict ordering.
+
+    Pairwise-ordering accuracy is a proportion over exactly these pairs, so the
+    count is required before any interval on it means anything.
+    """
+
+    total = 0
+    for first in range(len(reference)):
+        for second in range(first + 1, len(reference)):
+            if reference[first] != reference[second]:
+                total += 1
+    return total
+
+
 def _mmrv(predicted: Sequence[float], reference: Sequence[float]) -> float | None:
     if len(predicted) < 2 or len(predicted) != len(reference):
         return None
@@ -847,17 +888,31 @@ def build_external_rank_fidelity_report(
     reference_values = [row["external_score"] for row in matched]
     estimates = _external_metrics(predicted_values, reference_values) if len(matched) >= 2 else {}
     bootstrap: dict[str, list[float]] = defaultdict(list)
+    # A resample can be constant in either coordinate, which leaves Pearson and
+    # the rank metrics undefined.  Those replicates used to be discarded
+    # silently, which narrows the published interval rather than widening it, so
+    # the attempted and surviving counts are now both carried through.
+    bootstrap_attempted = 0
     if len(matched) >= 3:
         rng = random.Random(seed)
         for _ in range(_BOOTSTRAP_EXECUTION_REPLICATES):
             sample = [rng.choice(matched) for _ in matched]
             sample_predicted = [row["blueprint_score"] for row in sample]
             sample_reference = [row["external_score"] for row in sample]
+            bootstrap_attempted += 1
             for metric, value in _external_metrics(sample_predicted, sample_reference).items():
                 if value is not None and math.isfinite(value):
                     bootstrap[metric].append(value)
-    metrics = {
-        metric: {
+    pair_count = _ordered_pair_count(reference_values)
+    metrics = {}
+    for metric, value in estimates.items():
+        defined_replicates = len(bootstrap.get(metric, []))
+        reliability = bootstrap_interval_reliability(
+            sample_count=len(matched),
+            replicates_attempted=bootstrap_attempted,
+            replicates_defined=defined_replicates,
+        )
+        entry: dict[str, Any] = {
             "estimate": round(value, 6) if value is not None else None,
             "confidence_interval_95": [
                 round(lower, 6) if (lower := _percentile(bootstrap.get(metric, []), 0.025)) is not None else None,
@@ -866,9 +921,23 @@ def build_external_rank_fidelity_report(
             "sample_count": len(matched),
             "method": "exact_checkpoint_policy_bootstrap.v1",
             "bootstrap_replicates": _BOOTSTRAP_EXECUTION_REPLICATES,
+            "bootstrap_replicates_attempted": bootstrap_attempted,
+            "bootstrap_replicates_defined": defined_replicates,
+            "bootstrap_interval_reliability": reliability,
+            "confidence_interval_95_reliable": bool(reliability.get("reliable")),
+            "metric_role": METRIC_ROLES.get(metric, "supporting"),
         }
-        for metric, value in estimates.items()
-    }
+        if metric in {"pearson", "spearman"}:
+            # Defined at every n >= 4, unlike the percentile interval, so a
+            # small-cohort report still carries an honest width.
+            entry["fisher_z_interval_95"] = fisher_z_interval(value, len(matched))
+            entry["policies_required_for_lower_bound_0_90"] = (
+                required_sample_count_for_lower_bound(value, 0.90)
+            )
+        if metric == "pairwise_ordering_accuracy" and value is not None and pair_count:
+            entry["wilson_interval_95"] = wilson_interval(value * pair_count, pair_count)
+            entry["ordered_pair_count"] = pair_count
+        metrics[metric] = entry
     reference_type = _string(reference.get("reference_type"))
     site_alignment = _string(reference.get("site_alignment"))
     if reference_type == "real_robot" and site_alignment == "same_site":
@@ -898,6 +967,24 @@ def build_external_rank_fidelity_report(
         "task_mapping_sha256": _digest(reference.get("task_mapping_sha256")),
         "matched_policies": matched,
         "metrics": metrics,
+        "headline": {
+            "metric": HEADLINE_RANK_METRIC,
+            "metric_roles": dict(METRIC_ROLES),
+            "value": _mapping(metrics.get(HEADLINE_RANK_METRIC)).get("estimate"),
+            "interval_95": _mapping(
+                _mapping(metrics.get(HEADLINE_RANK_METRIC)).get("wilson_interval_95")
+            )
+            or None,
+            "ordered_pair_count": pair_count,
+            "policy_cohort_size": len(matched),
+            "pearson_is_supporting_only": True,
+            "rationale": (
+                "correlation degrees of freedom come from the policy cohort, not "
+                "the rollout count; pairwise ordering is reported as the headline "
+                "and Pearson alongside it as fragile supporting evidence"
+            ),
+        },
+        "resolving_power": minimum_detectable_difference_curve(MDD_CURVE_TRIAL_COUNTS),
         "blockers": blockers,
         "claim_boundary": {
             "different_site_comparison_is_not_site_specific_validation": site_alignment != "same_site",
